@@ -7756,6 +7756,72 @@
       "file": "wf-bands-rv4-20261011T025335Z.txt",
       "head_sha": "c53fd37c80a855663b173f484b0bbf14a76fe67a",
       "captured_at": "2026-10-10T19:53:50"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261010T195438-cebc.json",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T19:54:38"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T195600-beb5.json",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T19:56:00"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T195602-1d41.json",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T19:56:02"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T195604-6c17.json",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T19:56:04"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T195607-1d3b.json",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T19:56:07"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T195613-f961.json",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T19:56:13"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T200112-1369.json",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T20:01:12"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T200121-3107.json",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T20:01:21"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T200121-9d1d.json",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T20:01:21"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-2026-10-11T03:09:20Z.txt",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T20:09:20"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-2026-10-11T03:09:23Z.txt",
+      "head_sha": "fdf39d6a588188169c1b392b82a51c9a96360eb4",
+      "captured_at": "2026-10-10T20:09:23"
     }
   ]
 }
