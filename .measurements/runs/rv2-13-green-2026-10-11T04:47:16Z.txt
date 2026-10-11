@@ -1,0 +1,2 @@
+# rv2-13 GREEN at the committed head 9510623e878d811e497faf1d4092606160f685a7 — captured 2026-10-11T04:47:16Z
+# the committed estate's every live claim fresh; the verifier rc=0 unmasked at this head.
