@@ -473,6 +473,19 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single node row (the delivered hold's wake)",
     ),
+    # ── The child flows' writes (T28): both are the SPAWNING NODE's own
+    # row — the body's attempt writes its own receipt, never a backlog.
+    "_CHILD_RECEIPT_ENSURE_SQL": (
+        "WHERE id = $1",
+        "keyed single node row (the spawning node's own child_flows "
+        "receipt — the dedup'd ensure-append; the write set is the ONE "
+        "row the attempt claims)",
+    ),
+    "_SPAWN_CURSOR_WRITE_SQL": (
+        "WHERE id = $1",
+        "keyed single node row (the spawning node's own spawn-cursor "
+        "slot write; the write set is the ONE row the attempt claims)",
+    ),
     "_HOLD_AWAITED_LEDGER_SQL": (
         "WHERE id = $1",
         "keyed single ledger row (the wait's awaited stamp)",

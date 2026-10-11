@@ -648,6 +648,10 @@ _WF_ARMS = (
     "wf_join_rederive",
     "wf_outbox_drain",
     "wf_signal_sweep",
+    # T28's child-join wake: the child flow's terminal is the join
+    # hold's resolver (the CAS delivery + the resume + the T26 knock).
+    # Pure append, same as the arms before it.
+    "wf_child_join_wake",
     # The D2 soak's cures: the hold-stamp reconcile (the SIGKILL-during-
     # hold wedge's fleet arm — the hold's state decides) and the outbox
     # TTL (delivered rows are narration, never forever). Pure appends,
