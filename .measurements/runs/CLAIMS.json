@@ -7828,6 +7828,66 @@
       "file": "rv2-13-green-2026-10-11T03:10:03Z.txt",
       "head_sha": "7a775772c8eea667260dedb628775bb09988e460",
       "captured_at": "2026-10-10T20:10:04"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261010T201057-fdfd.json",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:10:57"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261010T201058-6975.json",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:10:58"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261010T201102-c13e.json",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:11:02"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261010T201105-7e22.json",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:11:05"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261010T201105-aab3.json",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:11:05"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261010T201245-9571.json",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:12:45"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261010T201439-1a26.json",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:14:39"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261010T201448-6fbd.json",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:14:48"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261010T201448-218f.json",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:14:48"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-2026-10-11T03:27:00Z.txt",
+      "head_sha": "00dc57f167de4c44bd80f6b41c31e93225cb01a2",
+      "captured_at": "2026-10-10T20:27:00"
     }
   ]
 }
