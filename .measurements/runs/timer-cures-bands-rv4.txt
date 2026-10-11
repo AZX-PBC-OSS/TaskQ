@@ -1,3 +1,3 @@
-# the wf perf bands (test_wf_perf_bands.py) at the timer-cures head c9582f79e556c74fc07f9da8401b407fbca70a4f
+# the wf perf bands (test_wf_perf_bands.py) at the timer-cures head 3be15de244ba8329b24c1331a0b86251c9d94b44
 .....                                                                    [100%]
-5 passed in 15.05s
+5 passed in 16.06s
