@@ -37,5 +37,45 @@ parent session's verdict is its own.*
 
 ## THE PROOF (the gates at the committed head)
 
-See `runs/docsfaces-*` — the receipts' table lives in the lane's close
-report; the head stamps are on each capture.
+Branch head at close: `1e6a5aada` (the source-final head `f3feba2a` +
+the measurement chain `30f4c3e0f` → `48a2b4169` → `37da03f1e` →
+`1e6a5aada` — the two-step shape: the claims re-recorded at the
+source-final head, the receipts' commits measurement-only, the rv2-13
+pin's truthful red at R flipping to green at M).
+
+| Gate | Result | Receipt |
+|---|---|---|
+| `uv sync --extra flows` (F1's live face) | resolves (was: `Extra `flows` is not defined...`) | the packaging pin: `test_flows_extra_is_an_optional_dependency_not_a_project_key` |
+| ruff check . + format --check . | pass, 1705 files, rc=0 ×2 | `runs/lint-format-20261011T030601-docsfaces.txt` |
+| pyright FULL (src/taskq tests) | 0 errors / 0 warnings / 0 informations | `runs/pyright-full-20261011T030601-docsfaces.txt` |
+| the type gate | 39 MUST_ERROR markers red on pyright 1.1.414 AND ty 0.0.85, no strays | `runs/typeprobe-gate-20261011T030601-docsfaces.txt` |
+| mkdocs --strict | rc=0, 0 warnings | `runs/mkdocs-strict-20261011T030601-docsfaces.txt` |
+| the docs-examples tier ×2 (F3's EXECUTION RECEIPT) | 96 fences × 2, rc=0 ×2 — incl. `progress.md:454` (the run_display fence) + the cured rate-limiting fence | `/tmp/opencode/docs-tier-leg{1,2}.txt` summaries in the lane's session record; the tier is green at the final head |
+| the wf battery ×2 at -n 8 | 561 + rv2-13-truthful ×2 → green ×2 at M | `runs/wf-battery-rv4-20261011T030601-docsfaces.txt` |
+| the bands (test_wf_perf_bands) | 5 passed, rc=0 — the band claims re-recorded at `f3feba2a` | `runs/wf-bands-rv4-20261011T030601-docsfaces.txt` + the JSON captures |
+| wf-scoped coverage | 92.99% vs floor 90.0 — green | `runs/wf-scoped-coverage-20261011T030331.json` |
+| the fast tier ×1 at -n 8 (at R) | 1 failed / 9654 passed — rv2-13's TRUTHFUL red (the committed estate stale until the receipts commit) | `runs/fast-tier-n8-20261011T030601-docsfaces.txt` |
+| the fast tier ×1 at -n 8 (at M) | **9655 passed / 4 skipped / 0 failed, rc=0** | `runs/fast-tier-n8-20261011T101129Z-docsfaces.txt` |
+| rv2-13 green (the pin, standalone) | 17/17 at the final head | `runs/rv2-13-green-2026-10-11T100659Z.txt` |
+| the evidence-heads verifier | **rc=0** at the final head `1e6a5aada` | `runs/evidence-heads-verify-2026-10-11T100659Z.txt` |
+
+## THE ESTATE'S HONEST STATE
+
+- The fast tier at R red TRUTHFULLY (the head-stamp law on the
+  pre-cure claims) and was cured by the receipts commits, not gamed —
+  the flip's both captures are on the record.
+- The leg2 kill-and-resume drill flaked ONCE under the loaded battery
+  (its 240 s resume deadline under 8-way contention + real worker
+  subprocesses; it passed solo, passed the ×2 re-runs, and passed
+  under the final fast tier). The loaded-bar discipline's own class;
+  nothing in the lane's diff touches the lease/reclaim path.
+- The code-cure findings REPORTED (not buried): F2 (the in-process
+  driver's rate-limit lift is not small — the worker's
+  `_consumer.py` owns the acquire machinery), F5 (engine.py's
+  failed-parent resolution routes `outcome=="failed"` only — the
+  crash class bypasses the collect fan-in), F6 (the item ladder's
+  `fail_node` ignores the ROW's declared max_attempts for
+  fork-spawned `.item:` children — the holdmap lane's file).
+- The lane's PG (:5816) is destroyed at close; the worktree
+  `/tmp/opencode/wt-docsfaces` and the branch
+  `feat/taskqflow-docsfaces-cures` remain.
