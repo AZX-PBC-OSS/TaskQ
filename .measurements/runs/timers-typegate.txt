@@ -1,0 +1,3 @@
+# the type gate — the head c90f9d686f9acdd83098d2578f37770d321e2cfe
+# the type gate (pyright 1.1.414 + ty 0.0.85, the probe corpus) at the timers lane head c90f9d686f9acdd83098d2578f37770d321e2cfe
+the type gate holds: every MUST_ERROR marker (43) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers

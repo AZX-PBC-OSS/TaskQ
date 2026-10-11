@@ -1,0 +1,89 @@
+# the pin packs (rv2+rv3+pubsub+route) at the timers lane head — green — the head 55895e1ebd309e1efd00b4a07cdb88080a4e4f5e
+.........................................F....................           [100%]
+=================================== FAILURES ===================================
+_________ test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree __________
+
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-22679/test_rv2_13_the_head_stamp_law0')
+
+    def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) -> None:
+        """The verifier against the tree's COMMITTED state (``git ls-files``
+        + ``git show HEAD:`` — the working tree's residue never enters).
+        The verdict is the CLAIMS MANIFEST's (``CLAIMS.json`` rides the
+        committed tree with the captures it indexes): the registry's append
+        order is the run order — no filename parsed, no mtime consulted
+        (the pre-manifest pin restored every file's mtime from its own
+        name's timestamp: the filename-parsing workaround the manifest
+        kills). The verdict is the TREE'S, never the checkout's."""
+        import subprocess
+        import sys
+    
+        runs_rel = ".measurements/runs"
+        listed = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+            ["git", "ls-files", runs_rel],  # noqa: S607  # Why: as above — the repo's own scripts call "git" the same way.
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        assert listed, "the committed tree carries no .measurements/runs artifacts at all"
+        assert f"{runs_rel}/CLAIMS.json" in listed, (
+            "the committed tree carries no claims registry — the captures' index "
+            "(CLAIMS.json) must be committed with the captures it indexes"
+        )
+        runs_dir = tmp_path / "runs"
+        for rel in listed:
+            data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-files-derived path; no shell.
+                ["git", "show", f"HEAD:{rel}"],  # noqa: S607  # Why: as above.
+                cwd=_REPO,
+                capture_output=True,
+                check=True,
+            ).stdout
+            dest = runs_dir / Path(rel).relative_to(runs_rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        proc = subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
+            [
+                sys.executable,
+                str(_REPO / "scripts" / "verify_evidence_heads.py"),
+                "--runs-dir",
+                str(runs_dir),
+            ],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert proc.returncode == 0, (
+            "F-RV2-13: the head-stamp verifier reds on the committed estate:\n"
+            + proc.stdout
+            + proc.stderr
+        )
+E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+E         THE HEAD-STAMP LAW REDS (head 55895e1ebd30):
+E           deslop-pin-packs: the LIVE CLAIM deslop-pin-packs-20261010T221440Z.txt is stale — recorded on 1c561135b530, the head is 55895e1ebd30. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T171716-cd1a.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261010T231459Z.txt is stale — recorded on 406546d4fb29, the head is 55895e1ebd30. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T171729-5365.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           fast-tier-n8: the LIVE CLAIM timers-fasttier-n8.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T171728-ab70.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           lint-format: the LIVE CLAIM timers-lint.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           mkdocs-strict: the LIVE CLAIM timers-mkdocs.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261010T171753-a6a5.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin1-row-width: the LIVE CLAIM pin1-row-width-20261010T171753-eba0.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261010T171759-d51d.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T171716-ad8f.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T171728-e7c8.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           pyright-full: the LIVE CLAIM timers-pyright.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           typeprobe-gate: the LIVE CLAIM timers-typegate.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-bands-rv4: the LIVE CLAIM timers-bands.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-battery-rv4: the LIVE CLAIM timers-wfbatt-leg2.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T171743-99e9.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+E           wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T160950.json is stale — recorded on 11e3e187f5b8, the head is 55895e1ebd30. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-timers/.venv/bin/python3', '/tmp/opencode/wt-timers/scripts/verify_evidence_h... Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.\n', stderr='').returncode
+
+tests/test_wf_attack_rv2.py:1053: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 61 passed in 19.10s
