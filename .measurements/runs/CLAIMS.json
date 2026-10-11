@@ -7804,6 +7804,66 @@
       "file": "wf-rollup-band-20261011T012315-e223.json",
       "head_sha": "04ddbaf54192b6d8287f7266bec9e6dae5892de9",
       "captured_at": "2026-10-11T01:23:15"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "timer-cures-deslop-packs-zero.txt",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:23:48"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T012527-df14.json",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:25:27"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T012528-2318.json",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:25:28"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T012530-88be.json",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:25:30"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T013143-154a.json",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:31:43"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T013143-3619.json",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:31:43"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T013143-0209.json",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:31:43"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T013146-e200.json",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:31:46"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T013156-293f.json",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:31:56"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T013428-c1fc.json",
+      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
+      "captured_at": "2026-10-11T01:34:28"
     }
   ]
 }
