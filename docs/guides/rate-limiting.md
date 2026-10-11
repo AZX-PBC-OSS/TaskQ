@@ -388,12 +388,30 @@ A QUEUE cap bounds concurrency ("5 concurrent"). A STEP's own bucket
 bounds CADENCE ("50/min") — the LLM fleet's varying latency makes the
 two different instruments. The workflow authoring surface takes the
 vanilla `rate_limits=` face: on a `step`, on a `route` arm (per-arm
-buckets), and on a `map_source` (its children's buckets). The fence
-runs as-is under the docs-example harness:
+buckets), and on a `map_source` (its children's buckets).
+
+**WHICH DOOR HONORS THE BUCKETS — the two drivers are not the same
+instrument.** The buckets bind at the FLEET's dispatch claim: the
+worker's consumer acquires the row's buckets (the same registry, the
+same denial path as the vanilla pre-flight — a deny snoozes the row
+budget-free and re-promotes it). The IN-PROCESS driver
+(`FlowRunner.drive(..., execute=True)`, the dev-loop door) claims and
+executes nodes directly and runs NO rate-limit acquire — a fence driven
+in-process finishes at full speed with `rate_limit_blocked_count=0` on
+every row, no matter what the buckets declare. That is not the
+rate limiting being broken; it is the gate living at the door the
+in-process driver does not pass through. To see the buckets honored,
+drive the orchestration-only face — `drive(flow_id, execute=False)` —
+and let a real worker execute the rows (`docs/guides/workflows.md`'s
+"the orchestration-only drive"; the worker must register the buckets —
+the boot's registry collection below). The fence below runs as-is
+under the docs-example harness (in-process — it proves the WIRING, the
+stamp and the boot registration, not the throttle):
 
 ```python
 import asyncio
 import os
+from typing import Literal
 
 import asyncpg
 from pydantic import BaseModel
@@ -418,10 +436,16 @@ class Ingest(BaseModel):
 
 
 class Image(BaseModel):
+    # The DISTINCT required faces are the law the union consumer's
+    # discriminator (E16) demands: field-identical members decode by
+    # first-match luck downstream — carry the discriminator even when
+    # this page never decodes the union.
+    kind: Literal["image"]
     v: int
 
 
 class Audio(BaseModel):
+    kind: Literal["audio"]
     v: int
 
 
@@ -437,7 +461,7 @@ audio_bucket = TokenBucket("fleet-audio", capacity=10, refill_per_second=1.0)
 
 
 async def split(ctx: StepContext, params: Ingest) -> list[Image | Audio]:
-    return [Image(v=1), Audio(v=2)]
+    return [Image(kind="image", v=1), Audio(kind="audio", v=2)]
 
 
 async def ocr_arm(ctx: StepContext, item: Image) -> Report:
@@ -502,6 +526,19 @@ How it honors them — ONE mechanism, the authoring face added:
   surface: its bucket materializes per payload, and a workflow row's
   admission terms are stamped as NAMES at the fork — a declaration that
   cannot name what it stamps is the wiring site's refusal.
+
+**WHERE THE DENIAL RECEIPT LIVES — read the column for what it
+counts.** The job row's `rate_limit_blocked_count` column is bumped on
+the VANILLA actor's pre-flight denial path only. A WORKFLOW row's
+flow-dispatch denial (the intercept's acquire above) currently writes
+NO row-column receipt: the throttled cadence is proven by the rows'
+`started_at` timestamps, the `taskq.ratelimit.denials` counter, and
+the worker's `dispatch-flow-rate-limit-denied` log event — an operator
+grepping the job rows for denial counts on throttled workflow children
+will find zeros. The honest observability face for a flow's throttling
+is the counter + the worker log; the per-job column answers the
+vanilla actors' contention question (`rate-limiting.md`'s "How it
+works" below), not the flow rows'.
 
 ### How it works
 

@@ -39,6 +39,7 @@ def _job_row(**overrides: Any) -> dict[str, Any]:
         "error_class": None,
         "error_message": None,
         "idempotency_key": None,
+        "tags": [],
     }
     row.update(overrides)
     return row
@@ -105,6 +106,26 @@ def test_show_falls_back_to_jobs_archive(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result.exit_code == 0, f"stderr: {result.stderr}"
     assert f"id: {_JOB_ID}" in plain_cli_output(result.output)
     assert "archived: yes" in plain_cli_output(result.output)
+
+
+def test_show_prints_the_rows_tags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE TAGS LINE (the recurring-run's display identity): tags are the
+    operator's grouping/filtering surface everywhere else (the
+    cancel-where/GIN-index face), so the pointed read names them too —
+    the run/cycle tags render on one line; an absent set prints
+    `(none)`, distinguishable from silence. (The column was once
+    missing from the printed set entirely — the operator read tags
+    through SQL while every other surface filtered on them.)"""
+    _patch_db(monkeypatch, _job_row(tags=["run:nightly", "cycle:2026-01-01T00"]))
+
+    tagged = runner.invoke(app, ["job", "show", _JOB_ID])
+    assert tagged.exit_code == 0, f"stderr: {tagged.stderr}"
+    assert "tags: run:nightly, cycle:2026-01-01T00" in plain_cli_output(tagged.output)
+
+    _patch_db(monkeypatch, _job_row(tags=[]))
+    untagged = runner.invoke(app, ["job", "show", _JOB_ID])
+    assert untagged.exit_code == 0, f"stderr: {untagged.stderr}"
+    assert "tags: (none)" in plain_cli_output(untagged.output)
 
 
 def test_show_unknown_job_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:

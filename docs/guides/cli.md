@@ -678,7 +678,7 @@ taskq job show JOB_ID
 |---|---|---|
 | `JOB_ID` | `UUID` | The job's id. A non-UUID value is rejected as a usage error before any database access. |
 
-Prints the operator-facing fields of the stored row: id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed by default, keeping a terminal read from dragging arbitrarily large blobs onto the wire; `error_traceback` and `payload` are available under the opt-in flags below. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
+Prints the operator-facing fields of the stored row: id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, the row's `tags` (the operator's grouping/filtering surface — `(none)` when the row carries none), and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed by default, keeping a terminal read from dragging arbitrarily large blobs onto the wire; `error_traceback` and `payload` are available under the opt-in flags below. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
 
 Under `retry_kind="indefinite"` the stored `max_attempts` ceiling is inert: the retry path never consults it, so the command renders it as `(indefinite)`, the same framing the admin UI uses; a bare number would advertise a budget the job is not enforcing. See [retries.md](retries.md#2-retry-kinds).
 
@@ -697,6 +697,7 @@ created_at: 2026-01-01 00:00:00+00:00
 scheduled_at: 2026-01-01 00:00:00+00:00
 started_at: 2026-01-01 00:00:01+00:00
 finished_at: 2026-01-01 00:00:02+00:00
+tags: run:nightly, cycle:2026-01-01T00
 archived: yes
 ```
 

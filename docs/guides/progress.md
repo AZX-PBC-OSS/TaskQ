@@ -569,6 +569,22 @@ the backpressure law: the bounded queues drop the OLDEST event on
 overflow — the writer never blocks, the newest survives, observability
 degrades FIRST, correctness never.
 
+**THE PUSH IS A POINTER, NOT A PAYLOAD — both event models, one law.**
+`ProgressUpdated` (the workflow listener's push) and the vanilla
+`ProgressEvent` push (§"the wire vs the rows", above) carry the
+event's IDENTITY, never its content: on every NOTIFY-arm push `pct`
+and `message` arrive `None` — the knock is the pointer, a consumer
+that reads the fields reads nothing. The one exception is the
+listener's BACKFILL arm (`source="backfill"`): those events already
+paid the row read and DO carry the `pct`/`message` they witnessed
+(match on `source` if the distinction matters). The payload's home is
+the DURABLE rows: the state-channel snapshot / the per-node
+`wf_node_progress` rows (the snapshot-join face). The model invites
+exactly one reader: "something moved at seq N — fetch the rows". A
+consumer that wants content wires the row read into the handler; the
+`None`-on-notify fields are shape parity with the backfill arm, not a
+promise of content.
+
 **The migration shims** (the fleet's two SSE vocabularies → the ONE
 vocabulary): each old vocabulary is a documented MAPPING over the one
 stream's rows — vocabulary A

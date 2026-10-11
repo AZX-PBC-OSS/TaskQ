@@ -6,6 +6,14 @@ swallowed. This page is the minimal copy-paste form; the
 [demo app](https://github.com/#/examples) runs the SAME graph live with
 the admin's run explorer attached.
 
+> **New to the workflows engine?** The guides are the tutorial:
+> [the workflows guide](../guides/workflows.md) teaches the wiring
+> verbs, the joins, the routes, the retry ladder and the body's three
+> input channels with runnable fences; [the progress
+> guide](../guides/progress.md) owns the run display + the listener;
+> [the rate-limiting guide](../guides/rate-limiting.md) owns the
+> per-step buckets. This page is the one-graph example.
+
 ## Prerequisites (the env vars the fence reads)
 
 Install with the `fastapi` extra (the fence's resolve writes its audit

@@ -6,6 +6,16 @@ entry is `import taskq.workflows` (or a submodule) by a caller that
 opted into the `taskq[flows]` extra. The engine is core-deps-only; the
 extra carries no requirements of its own.
 
+**THE GUIDES ARE THE TUTORIAL, THIS PAGE IS THE DICTIONARY** — every
+verb row below is taught, with runnable fences, in
+[the workflows guide](../guides/workflows.md) (the wiring, the joins,
+the routes, the retry ladder, the deps seam, the body's three input
+channels); [the rate-limiting guide](../guides/rate-limiting.md) owns
+the `rate_limits=` authoring face and WHICH execution door honors the
+buckets; [the progress guide](../guides/progress.md) owns the run
+display + the listener faces. Start there if this page is your first
+contact with the engine.
+
 ## The thirty-second tour
 
 ```python
@@ -57,7 +67,8 @@ module → same compile, byte-stable).
 | --- | --- | --- |
 | `step(body, *args, key=None, actor="wf", queue="default", on_failure="fail_closed", max_attempts=3, retry_kind=None, skip=None, gates=(), cache=False, cache_ttl=None)` | `→ Promise[R]` where `R` is the body's declared return | promise args become the node's incoming edges (several = the fan-in); plain args are the node's data (in signature order). `skip` is the DISPATCH-TIME predicate (cut #4). `cache=True` is the CROSS-RUN CACHE opt-in (T25 — see the guide's cache section): the result serves a later run over the same body + input; `cache_ttl` is the in-DB expiry's seconds (default 24h). |
 | `gather(promises, *, on_failure="fail_closed")` | `list[Promise[A]] → Promise[list[A]]` | the ALL-upstream join, the FLAT shape — the ELEMENT TYPE PRESERVED (a homogeneous join over `Promise[Report]`s is a `Promise[list[Report]]`; a heterogeneous join upcasts to `Promise[list[object]]` honestly). `gather([])` is refused at the verb (the stranded invisible join). |
-| `map_source(source, body, *, queue="default", on_failure="fail_closed", max_attempts=3)` | `Promise[list[T]] × body → Promise[list[R]]` | the map: the source's finalize forks N children (fresh jobs, per-item ledger identity); the join collects. One map per source (a node finalizes once). The join key is DERIVED (`<source>.join`) — the engine's fork addresses the map join by the source's own key; a custom join key is refused, never silently ignored. |
+| `map_source(source, body, *, queue="default", on_failure="fail_closed", max_attempts=3, aggregate=None, rate_limits=())` | `Promise[list[T]] × body → Promise[list[R]]` | the map: the source's finalize forks N children (fresh jobs, per-item ledger identity); the join collects. One map per source (a node finalizes once). The join key is DERIVED (`<source>.join`) — the engine's fork addresses the map join by the source's own key; a custom join key is refused, never silently ignored. `aggregate=` is the user's DECLARED read-side fn over the children's decoded results (progress aggregation — evaluated AT READ TIME, writes nothing; `taskq.workflows.read_map_aggregate` evaluates it). `rate_limits=` stamps the CHILDREN's admission terms (the buckets' names ride each child row's metadata — honored at the FLEET's dispatch claim, see the rate-limiting guide's doors note). The DICT form (`{Type: arm}`) is the typed route — the same lowering as `route`. |
+| `route(source, arms, *, queue="default", on_failure="fail_closed", max_attempts=3, aggregate=None)` | `Promise[list[S]] × Mapping[type, RouteArm[R] \| Callable] → Promise[list[R]]` | the TYPED ROUTE (T27): the source's body returns the elements' list (`list[Image \| Audio]`), and *arms* keys the union MEMBERS' types to the arm bodies — each element runs ITS type's arm as a FRESH job (`<source>.item:<module.qualname>`), the children feed the derived `<source>.join`, and the join packs the arms' returns VERBATIM (R solved to the union of the arms' returns — an arm returning `list[X]` packs that list as ONE element; see the guide's nesting note). Totality is fenced at three doors: the verb refuses a non-total route, `E15-route-totality` re-proves it, and the runtime door raises `RouterNotTotal`. Per-arm placement/admission: `RouteArm(body=fn, actor=None, queue=None, rate_limits=())` — `queue=None` inherits the route's `queue=`, `actor=None` the source's actor; a bare `Callable` arm normalizes to `RouteArm(body=fn)`. |
 | `sink(*promises)` | `→ None` | explicit fire-and-forget — RECORDED in the compiled metadata, never silent. |
 | `build(result, *residuals)` | `Promise[R] × Promise[Never] → Promise[R]` | the terminal completeness point: names the result and accounts for every residual. The residual slot is `Promise[Never]` — a produces-nothing body's handle (`-> NoReturn`); because `Promise` is covariant, every REAL data handle in the slot is the checker's error (the static half of `E2-produced-never-consumed`). |
 | `loop(name, body, *, initial=None, carry_type=None, until=None, max_iterations=None, budget_s=None, on_exhausted="escalate", escalates_to=None, gates=())` | `→ Promise[Any]` | the LOOP node (see the section below — the carry contract, the two walls, the named exhaustion). `initial=` is the initial carry VALUE, `carry_type=` the DECLARED carrier-type (derived from the instance when `initial=` is a model); `until` is AWAITED per iteration (`Callable[[], Awaitable[bool]]`); `gates=` declares the body's HOLD gates for the admin's resolve/deliver doors. |
@@ -188,10 +199,22 @@ the test/demo driver:
 - `create_flow(*, input=None, run_key=None) → JobId` — the run carries
   its INPUT on the root row (cut #7: cross-flow data never dies in a
   Python closure); bodies read `ctx.input`.
-- `drive(flow_id, *, until="held" | "terminal", tick, max_ticks) →
+- `drive(flow_id, *, until="held" | "terminal", tick, max_ticks, execute=True) →
   str` — the driver (cut #10): no consumer hand-rolls a dispatch-poll
   loop; the drive is BOUNDED (`max_ticks` — a hang is a defect with no
-  stack trace).
+  stack trace). **THE RETURN IS THE VERDICT — CHECK IT**: `"terminal"`
+  (the flow row reached `succeeded`/`failed`/`cancelled`), `"held"`
+  (only with `until="held"` — a node waits on a human/deadline), or
+  `"max_ticks"` (the tick budget SPENT WITHOUT reaching `until` — not a
+  status, a bounded give-up). A `"max_ticks"` return with rows still
+  `running` means the run's work is not moving under THIS driver: the
+  in-process drive runs NO lock-reclaim sweep (that is the worker
+  maintenance leader's), so a killed process's `running` rows never
+  re-pend through `drive(execute=True)` — the drive ticks to
+  `max_ticks` silently and changes nothing. Resume a crashed run
+  through the FLEET door (`execute=False` + a real worker — see the
+  rate-limiting guide's doors note and the runbooks' mid-run crash
+  page), not by re-driving in-process.
 - `result(flow_id)` — the terminal node's result, DECODED (cuts
   #14/#19: never a raw jsonb string). A FAILED run's read raises the
   typed `WorkflowRunError` carrying the failing node's error class +

@@ -467,8 +467,14 @@ def step[R](
 ) -> Promise[R]:
     """Wire ONE node: ``p = step(fetch_body, params)`` — the promise is
     ``Promise[R]`` where ``R`` is the BODY's declared return (inferred —
-    the mechanism, not a cast: a body annotated ``-> Report`` wires a
-    ``Promise[Report]``).
+    the mechanism, not a cast: a PLAIN-FUNCTION body annotated
+    ``-> Report`` wires a ``Promise[Report]``). THE BOUNDARY (the honest
+    edge of the promise): an ``@app.actor``-wrapped body does NOT carry
+    the inference — the actor handle's ``__call__`` returns ``object``
+    (the checker cannot see through the wrapper), so wiring one degrades
+    the promise to ``Promise[object]`` and the downstream decoding rides
+    the runtime validator; ``cast`` the promise at the wiring site when
+    the checker must carry the declared return.
 
     Promise arguments become the node's incoming edges (the fan-in when
     there are several — the join's user body IS this node's body, run
@@ -955,8 +961,15 @@ def route[S, R](
     arm as a FRESH job (per-item ledger identity, the fork's child row
     NAMING its arm: ``<source>.item:<module.qualname>``), the children
     feed the derived ``<source>.join`` (the join-back BY CONSTRUCTION —
-    R2's), and the join packs the arms' returns (the TYPED SUM — the flat
-    ``Promise[list[R]]``, R solved to the union of the arms' returns).
+    R2's), and the join packs the arms' returns VERBATIM — the TYPED SUM
+    (``Promise[list[R]]``, R solved to the union of the arms' returns).
+    VERBATIM means ONE join element per child, the arm's return as-is:
+    an arm returning ``Report`` packs ``list[Report]``; an arm returning
+    ``list[RowOutcome]`` packs that LIST as one element (the shape
+    NESTS — the join is ``list[list[RowOutcome]]`` there, and the
+    consumer's annotation must declare the nesting or the decode dies
+    loudly). Flatten in the arm itself (return the items' unpacked sum)
+    when a flat list is wanted.
 
     THE PER-ARM PLACEMENT (R4): an arm spelled
     ``RouteArm(body=process_image, queue="gpu")`` stamps ITS children's

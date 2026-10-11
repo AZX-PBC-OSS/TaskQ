@@ -59,15 +59,6 @@ dependencies = [
     "uuid-utils>=1.0.0,<2",
 ]
 
-flows = []
-# The workflows engine (src/taskq/workflows/) is core-deps-only by design:
-# tors (canonical hashes, truncation, secret scrubbing), asyncpg, uuid_utils —
-# every one already a base dependency, so the extra carries no requirements of
-# its own. It exists as the operator-facing opt-in marker (the §16.1 import
-# law: `import taskq` never imports taskq.workflows; the package only loads
-# when a caller imports it directly), matching the lazy-extra discipline of
-# the obs prometheus module.
-
 [project.scripts]
 taskq = "taskq.cli:main"
 
@@ -79,6 +70,16 @@ Issues = "https://github.com/AZX-PBC-OSS/TaskQ/issues"
 Changelog = "https://github.com/AZX-PBC-OSS/TaskQ/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+# The workflows engine (src/taskq/workflows/) is core-deps-only by design:
+# tors (canonical hashes, truncation, secret scrubbing), asyncpg, uuid_utils —
+# every one already a base dependency, so the extra carries no requirements of
+# its own. It exists as the operator-facing opt-in marker (the §16.1 import
+# law: `import taskq` never imports taskq.workflows; the package only loads
+# when a caller imports it directly), matching the lazy-extra discipline of
+# the obs prometheus module. It MUST live under [project.optional-dependencies]
+# (not bare [project]) or `uv sync --extra flows` fails with "Extra `flows` is
+# not defined in the `optional-dependencies` table".
+flows = []
 redis = [
     "redis>=8.0.1,<9",
 ]

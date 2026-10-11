@@ -3306,6 +3306,7 @@ _JOB_SHOW_COLUMNS: Final = (
     "error_class",
     "error_message",
     "idempotency_key",
+    "tags",
 )
 """The operator-facing columns ``taskq job show`` prints by default.
 
@@ -3433,6 +3434,16 @@ async def _job_show(
         typer.echo(f"error_message: {_format_event_detail(row['error_message'])}")
     if row["idempotency_key"] is not None:
         typer.echo(f"idempotency_key: {row['idempotency_key']}")
+    # THE TAGS LINE (the recurring-run's display identity): tags are the
+    # operator's grouping/filtering surface everywhere else (the
+    # cancel-where/GIN-index face), so the pointed read names them too —
+    # an absent set prints `(none)`, distinguishable from silence.
+    # The text[] column's decode shape is annotated at the row read (the
+    # Any-contract walk's boundary: asyncpg's accessor hands back Any;
+    # the annotation + the isinstance guard below bound the walk's input).
+    tags_row: list[object] | None = row["tags"]
+    tags: list[str] = [str(member) for member in tags_row] if isinstance(tags_row, list) else []
+    typer.echo("tags: " + (", ".join(tags) if tags else "(none)"))
     if show_traceback:
         _print_blob_field("error_traceback", row["error_traceback"])
     if show_payload:

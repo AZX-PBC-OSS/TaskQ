@@ -272,7 +272,11 @@ FIRES with the typed partial result. `FailureInfo` EMBEDS the estate's
 error envelope — never re-spelled: `ErrorInfo(error_class, error_message,
 error_traceback)` (`taskq.backend._protocol`, its bound constants carried
 as-is), with `attempts` / `node_key` / `map_index` as the workflow-only
-extensions. `attempts` carries the FULL attempt history (one entry per
+extensions. THE TYPE'S IMPORT FACE: `from taskq.workflows._types import
+FailureInfo` (the wire-spec submodule — the documented path, the same
+discipline the package root's surface law states; `ErrorInfo` is
+`from taskq.backend._protocol import ErrorInfo`). `attempts` carries
+the FULL attempt history (one entry per
 ladder attempt, every error payload). The fan-in + the fire ride the
 terminalizing tx: the fire is strictly AFTER the last ladder attempt
 (the ts-ordered pin). A SKIP fans in with ZERO ledger rows — a skip is
@@ -281,6 +285,26 @@ absorbed-failure clause in the status derivation,
 `docs/guides/observability.md`); the failure detail's home is the
 ledger/attempts — the join row's array is the bounded summary (the JSONB
 size-cap policy, `docs/guides/maintenance-sweeps.md`).
+
+**THE CRASH CLASS IS THE COLLECT CONTRACT'S EDGE — know it before you
+rely on the absorption.** The fan-in above runs on the child's FAILED
+terminal (the ladder exhausted). A child killed MID-ATTEMPT (SIGKILL,
+OOM, a lost worker) reaches the FAILED-CLASS terminal `crashed` through
+the fleet's lease-reclaim sweep — and that crash-class terminal
+currently contributes NO FailureInfo item to the join's
+`metadata.failures`. What the join then shows, read off the rows: the
+crash-class child occupies its slot in the packed list as `null` (its
+slot is on the record — the decode of a typed sum REFUSES the null
+loudly, `ValidationError … input_value=None`, and the run ends failed —
+correctness is saved by the loud decode, never silently), with the
+failures array EMPTY. The consumer that wants to survive crash-class
+children today must type the join's union accordingly or decode
+defensively; the crash record's home is the child's own row
+(`status='crashed'`, its attempt rows) — `docs/guides/runbooks.md`'s
+mid-run crash page has the operator path. (The engine cure — the
+crash-class child's failure record riding the same collect fan-in — is
+filed against `engine.py`'s failed-parent resolution, which currently
+routes `outcome == "failed"` only.)
 
 ## The retention coupling (T18)
 
@@ -597,7 +621,12 @@ and the flow's work executes in the fleet's workers through the
 queue-routed dispatch. The `execute=True` default is the dev-loop driver,
 unchanged. Each node on ITS pool: a `default`-subscribed worker executes
 the source, a `gpu`-subscribed worker the chain — the queue column is
-load-bearing end to end.
+load-bearing end to end. THE DOORS DIVIDE MORE THAN PLACEMENT: the
+worker's dispatch claim is also where the declared `rate_limits=` bind
+(the in-process dev-loop door runs no rate-limit acquire — see the
+rate-limiting guide's "which door honors the buckets"). Any behavior
+that lives at the CLAIM (rate limiting, queue caps, fairness) is a
+fleet-door behavior; the dev-loop door is for the wiring's logic.
 
 ## The build-time validators
 
@@ -636,6 +665,26 @@ no actor declares and TASKQ_QUEUES does not name — the warning class;
 the worker-boot fail-fast stays the runtime door).
 
 ## THE DEPS SEAM — the body's dependency door (the DI capability)
+
+### THE BODY'S THREE INPUT CHANNELS (one table, one place)
+
+A body's parameters arrive through THREE distinct channels — the
+convention is positional, and every wiring question ("why is my param
+the run input?") is answered by which channel a param rides:
+
+| the channel | how it arrives | what it holds | declared by |
+| --- | --- | --- | --- |
+| **the context** | the FIRST parameter, always `ctx: StepContext` | the RUN's machinery: `ctx.input` (the run's input — the SAME dict for every node of the run), `ctx.progress()`, `ctx.substep`, the emit batch face | fixed — never wired |
+| **the wired payload** | the params AFTER `ctx`, in the wired order | the node's OWN data: each wired source's DECODED result (a producer's model, the map's item, the join's collected list), then the seed payload's plain args (the body call convention: `(ctx, wired_source_1, …, wired_source_n, plain_args…)`) | the wiring verbs' arguments (E10 owns the arity) |
+| **the deps** | the LAST parameter (opt-in) | the app's bound `Deps` instance — clients, store handles; the SAME instance at every node | `deps: MyDeps` annotation + `WorkflowApp(deps=…)` (E12 owns the contract) |
+
+The two dict-shaped channels are the common confusion: `ctx.input` is
+the RUN's input (every node sees it — use it for run-wide facts: the
+run key's dimension, the feed spec read once); a node's OWN payload is
+its wired params (the producer's return, decoded). `run(flow, input=…)`
+seeds `ctx.input` only — it does NOT seed any body's wired params and
+does NOT participate in the cross-run cache's address (the address keys
+on the WIRED payload, see the cache section).
 
 Step bodies need dependencies — a client, a store handle, a queue —
 WITHOUT reaching through `ctx` (the context is the RUN's contract, not a
@@ -961,6 +1010,29 @@ message (WHAT failed, and why, answered AT the read; failed and
 running are never indistinguishable). The driver
 `drive(flow_id, until="held" | "terminal")` (cut #10's cure —
 landed with T19's loop; the bound `max_ticks` is the hang's fence).
+
+**THE DRIVE'S RETURN IS THE VERDICT — CHECK IT.** `drive` returns one
+of three strings: `"terminal"` (the flow row reached
+`succeeded`/`failed`/`cancelled`), `"held"` (only under
+`until="held"` — a node waits on a human/deadline), or `"max_ticks"`
+(the tick budget was SPENT without reaching `until` — a bounded
+give-up, NOT a status). A `"max_ticks"` return is the driver saying "I
+stopped trying"; the operator's next act is to read the ROWS
+(`taskq flows status`, the flow root's status) to learn why — never to
+assume the run advanced. **RESUME SEMANTICS — the crashed in-process
+run is the one door that does not reopen in-process**: the in-process
+drive runs no lock-reclaim sweep (that is the worker maintenance
+leader's job), so a run whose executing process died keeps its
+`running` rows leased by a dead worker, and re-driving
+`drive(execute=True)` on a fresh runner ticks to `max_ticks` (~110 s
+at the defaults) changing nothing. The working resume is the FLEET
+door: `drive(flow_id, execute=False)` (or just the worker fleet) — the
+leader's lease-reclaim sweep waits out the dead claim's lock lease
+(~2 min at the defaults; see the runbooks' mid-run crash page), re-pends
+the killed child, and the fleet executes the rest. The cancel +
+re-issue runbook (a fresh `run_key`) is the alternative when the
+re-drive is not wanted — the idempotent absorbs make the re-issue's
+re-execution safe.
 
 ## §2 — The type contract (T01's two tables)
 
@@ -1683,9 +1755,17 @@ would block on a display question).
   contract), and — when the ring pruned past a reconnecting cursor — a
   NAMED `resync` frame (the partial mode + the state payload): the
   display converges, never a silent empty-success.
-- the run display: `taskq.workflows.run_display(pool, wsql, flow_id)` —
+- the run display:
+  `taskq.workflows._progress_read.run_display(pool, wsql, flow_id)` —
   the ledger-derived states with the progress inside (the explorer's
-  data contract).
+  data contract); `keyed_display(display)` renders it name-first. The
+  `wsql` is the runner's own statement bag (`runner.wsql` — the
+  `FlowRunner` builds it from the schema); the display plumbing is an
+  ENGINE INTERNAL by the package's own surface law, so the import is
+  from its submodule — the documented path
+  (`from taskq.workflows._progress_read import keyed_display,
+  run_display`), never from the root namespace. See
+  `docs/guides/progress.md`'s executable fence.
 - the gauge: workflow-dimensioned ONLY (the `_other_` collapse) —
   **per-child progress is NEVER a metric label series**; it lives in the
   rows (the map line / the display), read on demand.

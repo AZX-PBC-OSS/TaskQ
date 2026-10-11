@@ -51,7 +51,7 @@ crash-vs-shutdown accounting.
 
 **Archival lifecycle.** After a terminal job's per-status retention period elapses (default: 30-90 days depending on status), the maintenance leader's prune sweep moves it from `jobs` to `jobs_archive`. After the archive retention period elapses (default: 1 year), the archive expiry sweep hard-deletes the row. The admin UI job-detail page follows this chain automatically. See [Configuration](configuration.md) for retention settings.
 
-**Deferred jobs.** Pass a timezone-aware `scheduled_at` datetime to delay execution. The job is stored with `status="scheduled"` and is not dispatched until `scheduled_at` is reached. The elected maintenance leader runs a `scheduled_to_pending` sweep every **1 second**, promoting any job whose `scheduled_at <= now` from `scheduled` to `pending`. After promotion the leader sends a `pg_notify` wake signal so idle workers pick up work immediately.
+**Deferred jobs.** Pass a timezone-aware `scheduled_at` datetime to delay execution. The job is stored with `status="scheduled"` and is not dispatched until `scheduled_at` is reached. The elected maintenance leader runs a `scheduled_to_pending` sweep every **1 second**, promoting any job whose `scheduled_at <= now` from `scheduled` to `pending`. After promotion the leader sends a `pg_notify` wake signal so idle workers pick up work immediately. **The ~1 s promotion needs a LIVE leader** — after a leader dies, takeover waits out its lease (`TASKQ_LEADER_LEASE`, 40 s at the default; see [Configuration: timing and liveness](configuration.md#timing-and-liveness) and [maintenance-sweeps.md's leader failover](maintenance-sweeps.md#leader-failover-after-a-leader-death)), so a `scheduled_at` job can sit unpromoted for up to the lease plus the sweep cadence before the new leader's first pass. Size deadline-critical `scheduled_at` windows against the LEASE, not the 1 s sweep.
 
 **Timing precision.** The sweep fires roughly once per second, so a job may be promoted up to ~1 second after its `scheduled_at`. Always pass UTC-aware datetimes (`datetime.now(UTC)`); naive datetimes are not accepted at the backend boundary.
 
@@ -349,7 +349,10 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     queueing
     behavior), matching Postgres' own `lock_timeout = 0` convention.
 3. **Singleton pre-flight**: if `ref.singleton` is `True`, checks for an existing active job for
-   this actor. Raises `SingletonCollisionError` on collision. Cron fires now carry the same
+   this actor. Raises `SingletonCollisionError` on collision — **including the actor's own
+   self-enqueued successor** (a singleton tick that enqueues its own next round collides with
+   itself; the working shapes are in [actors.md's singleton section](actors.md#singleton-actors)).
+   Cron fires now carry the same
    `metadata["singleton"]` stamp and pre-flight: previously the flag was client-enqueue-only
    (see [Cron Scheduling: singleton and `max_pending` interaction](cron.md#singleton-and-max_pending-interaction)).
  4. **`max_pending` count check**: if `ref.max_pending` is set, counts `pending + scheduled` jobs

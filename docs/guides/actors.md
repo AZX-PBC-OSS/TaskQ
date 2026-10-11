@@ -596,6 +596,25 @@ async def daily_report(payload: ReportPayload) -> None: ...
   this key manually; the library unconditionally overwrites it.
 - On collision, [`SingletonCollisionError`](jobs-clients.md#error-handling) is raised.
 
+**THE SELF-SCHEDULING COLLISION — a singleton cannot enqueue its own
+successor.** The running tick IS an active job of the actor, and
+"active" means `pending`/`scheduled`/`running` — so a tick body that
+enqueues the NEXT tick of the same singleton actor deterministically
+collides with itself (the enqueue's singleton pre-flight,
+[jobs-clients.md's evaluation order](jobs-clients.md#enqueue-evaluation-order),
+finds the running job and raises `SingletonCollisionError`). This is
+not a race you can win by timing; it is the semantics working. The two
+working shapes for a periodic singleton:
+
+- **Cron is the scheduler, the actor is the work** — declare a cron
+  schedule for the actor instead of self-enqueueing (cron's
+  suppress-not-fail path handles an overrunning tick:
+  [cron.md's singleton interaction](cron.md#singleton-and-max_pending-interaction)).
+- **A separate continuator actor** — the tick enqueues the next round
+  on a DIFFERENT (non-singleton) actor, guarded app-level (`max_concurrent=1`
+  + identity, or a `ConcurrencyReservation`) so chains stay serial
+  without the self-collision.
+
 ```python no-exec — not executed: fragment, names bound by an earlier fence
 from taskq.exceptions import SingletonCollisionError
 

@@ -81,6 +81,7 @@ Optional extras:
 
 | Extra          | Adds                                                                |
 | -------------- | ------------------------------------------------------------------- |
+| `[flows]`      | Nothing — the core-deps-only opt-in marker for the workflows engine (`import taskq.workflows`) |
 | `[redis]`      | Redis client for real-time progress fanout and Redis rate limiters  |
 | `[fastapi]`    | FastAPI, Jinja2, sse-starlette, uvicorn for the admin UI and SSE    |
 | `[otel]`       | OpenTelemetry SDK + OTLP exporter + instrumentation for provider setup, export, and testing |
