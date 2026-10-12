@@ -1,0 +1,9 @@
+{
+  "mutation": "sweep fire without the flow-status EXISTS leg",
+  "observed": {
+    "fired_post_cancel": 1
+  },
+  "pin": "pin2-pin5-unfenced-sweep-fire",
+  "run": "20261011T213208-3179125-0bd5b8ab",
+  "ts": "2026-10-11T21:32:08"
+}

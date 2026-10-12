@@ -1,0 +1,12 @@
+{
+  "mutation": "the hold resolved during the listener outage: the consumer's card set still holds it open (no event ever announces a death the disconnected listener cannot hear) \u2014 the snapshot reconcile is the only cure",
+  "observed": {
+    "cards_open": [
+      "01a12d88-d3d0-7112-a1a1-d1d61acd2ff7"
+    ],
+    "row_status": "delivered"
+  },
+  "pin": "T26-P6-card-vs-rows-divergence",
+  "run": "20261011T173504-612430-a107dd46",
+  "ts": "2026-10-11T17:35:04"
+}
