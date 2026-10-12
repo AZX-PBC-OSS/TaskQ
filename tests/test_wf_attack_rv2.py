@@ -111,6 +111,7 @@ from taskq.workflows import (
 )
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.api._validate import WorkflowValidationError
+from tests import _evidence
 from tests._wf_fixtures import seed_flow
 
 #: The estate's own display-bound conventions (the panel's
@@ -1023,7 +1024,7 @@ def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) 
     # HEAD — the sha cross-check IS the law (a claim's head_sha must
     # equal the PR head, or be its ancestor plus measurement-only — the
     # freshness teeth unchanged across the branch move).
-    ref = subprocess.run(  # noqa: S603  # Why: as above.
+    ref = subprocess.run(  # Why: as above.
         ["git", "rev-parse", "--verify", "origin/evidence/taskqflow^{commit}"],  # noqa: S607
         cwd=_REPO,
         capture_output=True,
@@ -1031,7 +1032,7 @@ def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) 
         check=False,
     )
     if ref.returncode != 0:
-        ref = subprocess.run(  # noqa: S603  # Why: as above — the local branch's own name.
+        ref = subprocess.run(  # Why: as above — the local branch's own name.
             ["git", "rev-parse", "--verify", "evidence/taskqflow^{commit}"],  # noqa: S607
             cwd=_REPO,
             capture_output=True,
@@ -1108,15 +1109,13 @@ def test_rv2_14_every_ranged_figure_covers_its_captures() -> None:
     at the figure's own cited precision. A capture outside the cited
     range is the cherry-pick/dead-figure class this law exists to
     convict."""
-    measurements = _REPO / ".measurements"
-    captures = sorted(measurements.glob("t20-streaming-bands-*.json"))
-    rolled = measurements / "t20-streaming-bands.json"
-    if rolled.is_file():
-        captures.append(rolled)
+    captures = sorted(_evidence.evidence_glob("t20-streaming-bands-*.json"))
+    if _evidence.evidence_exists(".measurements/t20-streaming-bands.json"):
+        captures.append(".measurements/t20-streaming-bands.json")
     assert captures, "no streaming captures exist at all"
     families: dict[str, dict[str, list[float]]] = {}
-    for path in captures:
-        data = json.loads(path.read_text())
+    for rel in captures:
+        data = json.loads(_evidence.evidence_show(rel))
         for family, metrics in data.items():
             if not isinstance(metrics, dict):
                 continue

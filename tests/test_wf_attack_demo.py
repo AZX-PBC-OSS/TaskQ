@@ -269,7 +269,15 @@ def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
     ``.measurements`` must parse as VALID Prometheus text exposition —
     the strict name grammar (the teeth: the illegal-dots name reds
     today) AND the official client parser's label grammar."""
-    artifacts = sorted((REPO_ROOT / ".measurements").rglob("*.prom"))
+    # THE EXTRACTED ESTATE'S READ: when the tree no longer carries
+    # .measurements, the guard walks the EVIDENCE BRANCH's staged copy —
+    # the same files, one indirection.
+    measurements = REPO_ROOT / ".measurements"
+    if not measurements.is_dir():
+        from tests import _evidence as _evidence_mod
+
+        measurements = _evidence_mod.evidence_measurements_dir()
+    artifacts = sorted(measurements.rglob("*.prom"))
     assert artifacts, "no .prom artifacts under .measurements — the guard lost its subject"
     violations: list[str] = []
     for path in artifacts:
