@@ -704,6 +704,23 @@ Eviction is immediate and one-way: the next run over an evicted address
 is a MISS — the body re-executes and re-fills on its own success. The
 lie's service ends when the operator says so, never silently.
 
+### The fault classes at the finalize: one fault, one semantics
+
+The operator's mental model for a transient blip (a connection storm's
+`ConnectionError` class) landing on a cached step's finalize is the
+RECLAIM class, symmetrically on both faces — the HIT's finalize and the
+MISS's finalize share one machinery seat, and the classifier reads
+WHERE the error escaped, never which face it came from. On either face
+the infra-class fault writes the ledger row `crashed` (never
+`failed`), the retry ladder is untouched, and the node row re-pends:
+the run is reclaim-eligible, not dead. The cleared-fault re-drive
+completes the step through the ordinary fenced finalize — and on the
+hit face the body STILL never runs (that is the cache's whole point);
+the `wf_cache_hit` receipt lands on the reclaimed row with the
+re-drive as its producer. A cached step can therefore never
+terminal-fail on a transport blip that struck after its body (by
+definition) never executed.
+
 ## The sweep arms (wired)
 
 Four healing arms register in the leader's maintenance sweep loop

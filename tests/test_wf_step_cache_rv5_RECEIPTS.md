@@ -233,3 +233,131 @@ state was captured at the lane head BEFORE the reconciling commit
 | K4 (the closure-hole's law) | XFAIL — the law SHIPS verbatim ('A changed HELPER is invisible to the address'); the pin's regex demanded not/never in one LINE-span (the verbatim spans a newline) | the matcher reads the cured spelling (helper…invisible…address across the sentence) | this row |
 | K6 (the eviction door) | XFAIL — the verb ships as `taskq wf cache evict` (the wf sub-typer), DRY-RUN by default, `--yes` deletes; the pin invoked `cache purge <address>` (exit 2) | the reconciled pin drives the cured verb's whole face: the dry run reports + touches nothing, `--yes` evicts, the next run MISSES | this row |
 | K7 (the classifier asymmetry) | XFAIL — NOT flipped: my own run CONFIRMED the front's verdict (the hit's `_finalize_success` still inside the ladder's try; max_attempts=1 → the node terminal-failed `error_class='ConnectionError'`, the body never ran). The cure touches `api/_runner.py`'s finalize/ladder path; the docsfaces lane (still in flight) may touch the adjacent absorb path — the single-writer-per-file law dispatches K7 when docsfaces closes | — (the marker stays) | this row is the lane's ledger note |
+
+---
+
+# THE K7 CURE — THE FLIP RECEIPT (feat/taskqflow-k7-cure)
+
+The dispatch landed (the docsfaces lane closed, `_runner.py`'s territory
+free). The K7 cure is the classifier's law applied SYMMETRICALLY — one
+fault, one semantics, ONE mechanism for both finalize faces.
+
+## THE MECHANISM (the reads decided)
+
+The reads at the base `c1e8f7e24` showed the asymmetry's terminal-fail
+face ALREADY cured by the cache-cures lane's CURE 6a (the hit's
+`_finalize_success` sits OUTSIDE the ladder's body-failure try — the
+claim tail). But the live red had EVOLVED, not died: the fault now
+escaped `drive()` raw and the node was left stale-`running` with NOTHING
+re-pending it — the re-drive wedged (`max_ticks`), the reclaim class's
+"reclaim-eligible" promise unimplemented for the plain step (the loop
+driver had the arm, `_reclaim_loop`; the step tail had none). The ONE
+mechanism the cure adds: **the claim tail's machinery boundary** (in
+`_execute_claimed`, after the body boundary — the seat both finalize
+faces share) classifies an escaping fault with the classifier hook
+(`is_infra_fault` — the escape-point contract's own classifier,
+`_runner_ladder.py`); an infra fault is the RECLAIM class — the ledger
+records `crashed` (never `failed`), the row re-pends
+(`NODE_REPEND_SQL_TEMPLATE`, the loop arm's own shape — the new
+`_reclaim_step` in `_runner_ladder.py`) — and the ESCAPE IS PRESERVED
+(the re-raise), because the cache-cures lane's own pin
+(`test_wf_cache_cures_pins.py::test_hit_finalize_fault_is_infra_never_a_body_failure`)
+pins the raw escape. The cleared-fault re-drive completes the step via
+the HIT (the body still never runs); the `wf_cache_hit` receipt lands
+on the reclaimed row.
+
+## THE RED (the live repro at the base, captured)
+
+- Unmarked (`--runxfail`), base `c1e8f7e24`: **RC=1** —
+  `assert outcome == "terminal", outcome` → `AssertionError: max_ticks`
+  (the reclaim never healed: the stale-`running` row, nothing re-pends
+  it; the node NOT terminal-failed — the ladder unburned, the run
+  wedged). Capture: `.measurements/k7-cure/red-run-raw.txt` (119.72s —
+  the re-drive's 5000-tick bound burning).
+- Marked (the strict-xfail run), same base: **1 xfailed in 114.95s** —
+  the same wedge inside the marker. Capture:
+  `.measurements/k7-cure/marked-run-raw.txt`.
+- The front's verbatim red (the terminal-fail face, pre-CURE-6a @
+  `b77a36782`): the node terminal-failed `error_class='ConnectionError'`
+  with the body never run — recorded in the reconciled-flips table
+  above; at the K7 lane's base that face is already cured, the wedge
+  face is the live red.
+
+## THE FLIP ×2
+
+The marker REMOVED WITH the cure (never weakened — the pin's body is
+untouched, the asserts carry the law):
+
+```
+1 passed in 0.87s
+1 passed in 0.75s
+```
+
+The full reconciled pack ×2 at the cured head (the cache pins +
+the cache-cures pins + the step-cache pins): **36 passed ×2**. The
+kill-window set (the finalize-fault escape pin, the fleet
+at-most-once, the lease contract + the renewal bound, the shutdown
+release reclaim race, the zombie-tx pack, the idempotent-enqueue
+exactly-once, the ledger pins): **48 passed** — the receipt gating and
+the escape shape hold THROUGH the move. The rv6-engine pins (12 passed,
+1 xfailed — rv6-e1's own live finding, another lane's), the holdmap
+pins, the child pins, the HITL/timer pins ×2 (17 passed ×2): green.
+
+---
+
+# THE F4 CURE — THE FAN-IN ENVELOPE'S RESULT CAP (the amendment's flip receipt)
+
+The amendment's dispatch (the perf front's finding, the finalize face's
+own territory). The pin PORTED from the perf front
+(`feat/verify-perf @ c8822df4a`, `tests/perf/test_wf_overhead_ledger.py`)
+into the finalize-family pack
+(`tests/test_wf_finalize_pins.py::test_pin_fanin_envelope_within_the_estate_result_cap`)
+— the bypassed write is THAT family's TERMINAL_MARK face.
+
+## THE MECHANISM (one mechanism, the failures'-collect's own)
+
+`_runner.py`'s `_bounded_collect` — the collected-result face (the
+identity packer's join/gather envelope) mirrors the failures'-collect's
+discipline: the SAME cap (`FANIN_FAILURES_BYTE_CAP`, the estate's
+64 KiB), the SAME honest truncation (the `__truncated__` marker counting
+the items no longer spelled on the row) + the `detail_home` pointer (the
+full collect lives on the child rows — each map child / gather parent
+carries its OWN result row; the row is the bounded summary, never the
+lie). Under the cap: byte-identical to the pre-cure shape. The byte
+measure is the finalize's own (`_jsonb` → utf-8 length), so the recorded
+`result_size_bytes` IS the bounded number.
+
+## THE RED (the byte-exact repro at the base)
+
+```
+assert int(size) <= cap, (
+E   AssertionError: the fan-in envelope is 730001 bytes — 11.1x the estate's 64 KiB result cap: the wf terminal write bypasses the size discipline every plain job's terminal enforces
+E   assert 730001 <= 65536
+```
+
+The front's measured figure VERBATIM (730,001 bytes, 700 children ×
+~1 KiB). Capture: `.measurements/k7-cure/f4-red-run-raw.txt`. The
+marked strict-xfail run: 1 xfailed.
+
+THE PORT'S ONE DEVIATION (documented on the pin): the model + the
+bodies live at MODULE level — the front's function-local `ItemsIn` is
+invisible to the body-hints walk (the closure cell carries only the
+body's own free variables; the annotation is a string under the
+future-import), so the front's local definition reds at the
+AttributeError, never at the size assert — an unfaithful repro. Module
+level = the red names THE ENVELOPE'S BYTES.
+
+## THE FLIP ×2 + THE HONEST ROW'S PROOF
+
+The marker REMOVED WITH the cure:
+
+```
+1 passed in 2.81s
+1 passed in 2.52s
+```
+
+The compacted row's honest shape (the probe at the cured head):
+`size: 64,794 ≤ 65,536 | __truncated__: 638 | kept: 62` — the fitted
+prefix stays spelled, the marker counts the 638 items no longer spelled,
+`detail_home` names the child rows. The finalize + pruner packs green
+with the cure (11 passed).
