@@ -8974,6 +8974,30 @@
       "file": "pin2-partial-index-20261011T183350-55ce.json",
       "head_sha": "2dcb21ff152d6dc6abf7f0921d0449083c9f7c29",
       "captured_at": "2026-10-11T18:33:50"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261011T183418.json",
+      "head_sha": "79f3674c4aae5ea88f1e4e5861f1d77787949cd3",
+      "captured_at": "2026-10-11T18:34:18"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-20261012T013439Z.txt",
+      "head_sha": "79f3674c4aae5ea88f1e4e5861f1d77787949cd3",
+      "captured_at": "2026-10-11T18:34:39"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-20261012T013455Z.txt",
+      "head_sha": "79f3674c4aae5ea88f1e4e5861f1d77787949cd3",
+      "captured_at": "2026-10-11T18:34:55"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-20261012T013455Z.txt",
+      "head_sha": "79f3674c4aae5ea88f1e4e5861f1d77787949cd3",
+      "captured_at": "2026-10-11T18:34:55"
     }
   ]
 }
