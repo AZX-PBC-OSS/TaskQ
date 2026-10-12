@@ -1,3 +1,3 @@
-head: c5ed9fce99a879fa9011097e069b0debabf76a91
-483 passed, 1 skipped, 1 xfailed in 135.15s (0:02:15)
-PACKS LEG2 rc=0
+head: 3a9e098ff5d4bfc7d2fbbc3fcfb07abd97668dff — the pin packs' GREEN leg 2 at the extracted estate
+513 passed, 1 skipped in 26.98s
+rc=0

@@ -1,0 +1,10 @@
+{
+  "mutation": "the claim's ledger row lands in a transaction AFTER the cancel scanned (the two-tx window)",
+  "observed": {
+    "flow": "cancelled",
+    "ledger": "running"
+  },
+  "pin": "pin5-ledger-claim-atomic",
+  "run": "20261012T131844-1058712-97be987b",
+  "ts": "2026-10-12T13:18:44"
+}
