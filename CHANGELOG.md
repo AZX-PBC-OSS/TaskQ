@@ -5,26 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-* **The durable workflows engine** (`taskq[flows]`) — typed DAG workflows
-  on Postgres: steps, maps, typed routes and loops wired by promise
-  arguments with compile-time validation (E1–E20/W1–W6); HITL holds
-  (`ctx.wait_signal`, the deliver CAS, the typed expiry), **durable
-  timers** (`ctx.wait_until` — the clock is the hold's resolver; the
-  hold identity carries the map index), **typed child flows**
-  (`ctx.spawn_flow` — the retry adopts the same child), the **cross-run
-  step cache** (`step(..., cache=True)` — the Nix-style address, the
-  cache hazards refused at the wiring), the **in-flight versioning
-  contract** (`flows status --app` names a redeploy's stranded nodes),
-  the workflow **rate-limit authoring surface** (`rate_limits=` on
-  `step`/`RouteArm`/`map_source`), and the **progress push** (SSE
-  primary, the 1s poll the fallback belt). Ship-with: two
-  adoption-sim example apps (`examples/`) with their drill suites, the
-  production-checklist page, and the shipped-capability coverage
-  matrix.
+<!-- THE MARKERS' LAW (test_breaking_change_markers): this file carries ONLY
+     release-please-generated sections — hand-written blocks are invisible
+     to the release pipeline and are refused by the pin. The workflow
+     engine's announcement lives in the README's feature list and the
+     conventional commit subjects (which generate the release notes). -->
 
 ## [0.2.2](https://github.com/AZX-PBC-OSS/TaskQ/compare/v0.2.1...v0.2.2) (2026-07-22)
 
