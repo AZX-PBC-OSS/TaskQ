@@ -8896,6 +8896,18 @@
       "file": "docs-examples-20261012T182858Z.txt",
       "head_sha": "069022a00c867f9232b171a65b44c9262861b324",
       "captured_at": "2026-10-12T11:29:00"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-20261012T-ENGINEFACES.txt",
+      "head_sha": "501746e73f66c980356d7826ba0c0c4299aeb7d4",
+      "captured_at": "2026-10-12T11:29:42"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-20261012T-ENGINEFACES.txt",
+      "head_sha": "501746e73f66c980356d7826ba0c0c4299aeb7d4",
+      "captured_at": "2026-10-12T11:29:42"
     }
   ]
 }
