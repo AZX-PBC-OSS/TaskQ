@@ -11500,6 +11500,126 @@
       "file": "pin2-partial-index-20261011T222333-1aab.json",
       "head_sha": "a530d72928d906556c6a51f691f7a62557138f9e",
       "captured_at": "2026-10-11T22:23:33"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T222532-9ab3.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:25:32"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T222533-d842.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:25:33"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T222536-0b5e.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:25:36"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T222539-ce54.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:25:39"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T222543-b6d8.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:25:43"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T222543-0a76.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:25:43"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T222543-f00b.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:25:43"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T222546-c6a3.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:25:46"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T222555-505a.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:25:55"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261011T222756.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:27:56"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-residual-20261012T053147.txt",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-residual-20261012T053147.txt",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-residual-20261012T053147.txt",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-residual-20261012T053147.txt",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-residual-20261012T053147.txt",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-perf-bands-residual-20261012T053147.txt",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "deslop-pin-packs-residual-20261012T053147.txt",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-residual-20261012T0541.txt",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
+    },
+    {
+      "stem": "attack-rounds",
+      "file": "attack-rounds-residual-20261012T0541.txt",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261011T222756.json",
+      "head_sha": "fc58b0067983da9ab297b4debb0eb903da5b7714",
+      "captured_at": "2026-10-11T22:31:58"
     }
   ]
 }
