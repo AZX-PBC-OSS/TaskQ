@@ -1,0 +1,23 @@
+{
+  "200": {
+    "child_driven": false,
+    "rederive_ms": 6.492
+  },
+  "1000": {
+    "child_driven": false,
+    "rederive_ms": 6.336
+  },
+  "5000": {
+    "child_driven": true,
+    "rederive_ms": 13.499
+  },
+  "refit": {
+    "marginal_us_per_edge": 1.46,
+    "base_ms": 6.2,
+    "refit_at_bound_ms": 7.66,
+    "outlier_residual_ms": -1.324,
+    "outlier": "1000",
+    "big_edge_explain": "index-driven (no seq scan on jobs/wf_edge)"
+  },
+  "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3"
+}

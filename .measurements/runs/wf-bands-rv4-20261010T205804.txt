@@ -1,0 +1,16 @@
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 43%]
+........................................................................ [ 86%]
+.......................                                                  [100%]
+=============================== warnings summary ===============================
+src/taskq/testing/job_context.py:34
+src/taskq/testing/job_context.py:34
+  /tmp/opencode/wt-land/src/taskq/testing/job_context.py:34: PytestCollectionWarning: cannot collect test class 'JobContext' because it has a __init__ constructor (from: tests/test_job_context_mirror_field_parity.py)
+    @dataclass(frozen=True, slots=True)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_docs_examples.py:55: docs examples execute only with TASKQ_DOCS_EXAMPLES=1 (needs Docker for the PG/Redis containers)
+167 passed, 1 skipped, 2 warnings in 92.09s (0:01:32)

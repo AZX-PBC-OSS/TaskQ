@@ -1,0 +1,3 @@
+# the bands leg at the head (the stamped writers; serial)
+5 passed in 15.15s
+head: 96d5ff1b1e233b14e6e18b877b8e9a252e868621

@@ -1,0 +1,2 @@
+# the type gate (pyright 1.1.414 + ty 0.0.85, the probe corpus) at the timer-cures head 3be15de244ba8329b24c1331a0b86251c9d94b44
+the type gate holds: every MUST_ERROR marker (43) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers

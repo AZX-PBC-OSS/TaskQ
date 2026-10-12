@@ -1,0 +1,3 @@
+# pyright FULL (src/taskq tests) — all extras, the CI's shape
+0 errors, 0 warnings, 0 informations
+head: b4534d29edc132aca4e6501a8c5a0146576679cb

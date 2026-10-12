@@ -1,0 +1,9 @@
+head: 557fcee594659a32973457978a3311d4fa6e7da7
+kind: THE DOCS LANE'S RV2-13 CURE — the superseded-capture index
+
+The three stems the sibling boxes' future-dated clocks (20261011 stamps) held hostage are re-owned by THIS tree's captures:
+  rv2-pins-final      -> runs/rv2-pins-final-20261010T101500-docslane.txt (then the fresh greens recorded after this file)
+  fasttier-final      -> the fresh fasttier-final capture recorded at this head after the circularity breaks (this file's own commit IS the break)
+  evidence-heads-verify -> the fresh green verifier capture recorded immediately after this file's commit
+
+the marks on the 20261011-stamped files point HERE; the honest red history (the docs lane's first fast-tier attempt) rides .measurements/docs-lane-fast-tier-n8-20261010.txt

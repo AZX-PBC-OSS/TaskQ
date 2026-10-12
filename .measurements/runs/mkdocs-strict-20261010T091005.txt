@@ -1,0 +1,4 @@
+# mkdocs build --strict at the source-final head 0ec0ca46eb7fa7e749a98a52613d968a8df4dc03 (the routing-proof lane)
+INFO    -  Documentation built in 15.74 seconds
+mkdocs rc=0
+head: 0ec0ca46eb7fa7e749a98a52613d968a8df4dc03

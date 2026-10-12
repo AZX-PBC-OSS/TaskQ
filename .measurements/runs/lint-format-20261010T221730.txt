@@ -1,0 +1,8 @@
+# lint-format at the source-final head bb22d0fd3560a946dcf86012872c14ad513403e4
+== ruff check .
+All checks passed!
+ruff rc=0
+== ruff format --check .
+1 file would be reformatted, 1665 files already formatted
+format rc=0
+head: bb22d0fd3560a946dcf86012872c14ad513403e4

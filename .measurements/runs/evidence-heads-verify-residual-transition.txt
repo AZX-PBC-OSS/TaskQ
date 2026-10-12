@@ -1,0 +1,5 @@
+head: aab6f2138b740db3b1d64a16c1fe368c545db525
+# THE TRANSITION RECORD (evidence-heads-verify's stem): the verifier's rc=1 at aab6f2138 — the two stale live claims this estate's re-stamp retires (the capture is the verbatim red; the re-record rides this commit; the rc=0 receipt rides M2)
+THE HEAD-STAMP LAW REDS (head aab6f2138b74):
+  evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261011T113332Z.txt is stale — recorded on 1bc074842ccd, the head is aab6f2138b74. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+  rv2-13-green: the LIVE CLAIM rv2-13-green-20261011T113332Z.txt is stale — recorded on 1bc074842ccd, the head is aab6f2138b74. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.

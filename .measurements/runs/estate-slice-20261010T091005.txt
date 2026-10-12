@@ -1,0 +1,6 @@
+# the estate regression slice x3 (tests/test_actor_config_sync.py + tests/test_wf_runner_pins.py, serial) at the source-final head 0ec0ca46eb7fa7e749a98a52613d968a8df4dc03 (the routing-proof lane)
+41 passed in 3.72s
+41 passed in 3.91s
+41 passed in 3.90s
+slice rc=0
+head: 0ec0ca46eb7fa7e749a98a52613d968a8df4dc03

@@ -1,0 +1,3 @@
+head: fab8dbe6e80be144390089bf652858836231baa7
+THE HEAD-STAMP LAW REDS (head fab8dbe6e80b):
+  docs-lane-rv2-13-cure-captures: the LIVE CLAIM docs-lane-rv2-13-cure-captures-20261010T103000.txt is stale — recorded on 557fcee59465, the head is fab8dbe6e80b. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.

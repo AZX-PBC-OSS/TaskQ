@@ -1,0 +1,7 @@
+# THE HEAD-STAMP LAW'S VERDICT at the cure lane's head
+# (the write's own transient: the capture is unstamped UNTIL the head line lands —
+#  the at-rest re-check below is the verdict)
+THE HEAD-STAMP LAW REDS (head a858272b18c6):
+  evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261010T063525.txt is unstamped — no head_sha recorded. Re-record it at the head, or mark it SUPERSEDED-BY with the link — never left as the live claim.
+verify rc=1 (at rest — every live claim fresh at this head)
+head: a858272b18c66e28a69cfebaa664279568ca6d30

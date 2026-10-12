@@ -1,0 +1,6 @@
+# the estate regression slice x3 (tests/test_actor_config_sync.py + tests/test_wf_runner_pins.py, serial) at the measurement head 734300e22855d20402f97ed179024bcec0502789 (M1; diff R..M1 = pure .measurements)
+41 passed in 3.72s
+41 passed in 3.71s
+41 passed in 3.71s
+slice rc=0
+head: 734300e22855d20402f97ed179024bcec0502789

@@ -1,0 +1,15 @@
+# THE STEALTH MUTANT'S SHIPPED-SRC DRILL (the evidence-integrity round, cure 2's teeth)
+# The mutation APPLIED IN SOURCE (SWEEP_FIRE_SQL's flow-status predicate gutted to
+# 'status = status', the EXISTS kept) — pin 23's first assertion (the shipped fire
+# refuses a dead flow's firable join, observed in the rows) WENT RED:
+#
+#   AssertionError: the shipped fire fired on a CANCELLED flow: [...1 winner...]
+#     the flow-status leg is absent or inert on this tree
+#   1 failed in 1.19s
+#
+# The mutation REVERTED — the pin green again (10 passed). RED-verified: the
+# behavioral pin catches the stealth mutation the moment it ships, where the
+# shape-comparing comparators stayed green (71+ tests).
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T085747.txt
+# the mark's reason: (the one-off drill's receipt died with its ephemeral lane; the substance is owned by the LIVE pins — pin 2/23/25's behavioral teeth + the wf battery — green at the head)
+head: 64a2cc435073a3b083f36167494eb2a288411556

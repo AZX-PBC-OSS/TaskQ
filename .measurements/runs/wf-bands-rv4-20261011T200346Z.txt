@@ -1,0 +1,8 @@
+# wf-bands-rv4 at head edce800973732ffa0a983a9e4d62cb68e40feba4 — rc=0 — captured 2026-10-11T20:03:46Z
+bringing up nodes...
+bringing up nodes...
+
+................................                                         [100%]
+32 passed in 15.74s
+
+the bands leg: the writers auto-recorded the band claims (wf-rollup-band, pin1-row-width, pin1-red-pad-drift, pin2-partial-index, pin4-enqueue-band, pin5-dispatch-band, join-fire-latency, edge-scale-curve, fanout-1000-tx-band) at this head

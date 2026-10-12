@@ -1,0 +1,21 @@
+{
+  "pin": "sweep-cost-scale-curve",
+  "provenance": "provenance-1",
+  "head": "f2ffa0cdfd09f4526b63bb4cc88969239826de8a",
+  "recorded_at": "2026-10-09T20:37:14Z",
+  "kind": "CITED-IMPORT (the P1 spike's summary, imported at the consolidation)",
+  "provenance_note": "The P1 spike's primary evidence directory (/tmp/opencode/proto1/spike1/evidence/, SUMMARY.txt item 04) was SESSION-SCOPED and is deleted; the numbers below are the spike summary's imported record, cited verbatim by docs/perf-evidence-workflows.md's sweep-arm section since the consolidation. The primary is GONE - these numbers stand as the imported record, never re-claimed as a fresh measurement; the LIVE regression guard for the shape is the scope pin (the seq-scan conviction), not this curve.",
+  "method": "the P1 spike's sweep-cost scale curve: the set-based re-derive arm vs the unscoped seq-scan monster, wall clock per batch",
+  "scale": {
+    "nodes": 60400,
+    "edges": 30000
+  },
+  "set_based_ms": {
+    "at_200_joins": 14.9,
+    "at_1000_joins": 23.8,
+    "at_5000_joins": 39.3
+  },
+  "unscoped_seq_scan_ms": {
+    "at_75000_rows": 83.7
+  }
+}

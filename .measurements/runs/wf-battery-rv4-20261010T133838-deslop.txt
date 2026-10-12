@@ -1,0 +1,181 @@
+head: 94a70d8986a561f3a5b62e168ec0e3f2824ca7c3
+# THE WF BATTERY x1 (the scoped-coverage gate's run — make test-wf-cov at the de-slop head): 568 passed, 1 xfailed (rv4-1a — the still-live empty-route finding, honest in its xfail), 1 failed = rv2-13 (the same bootstrap). The scoped verdict recorded by the gate's own writer: 93.93% vs floor 90 — green, claim appended to the registry at write time.
+	tests/test_wf_api_fixround_pins.py tests/test_wf_api_surface_pins.py tests/test_wf_attack_admin.py tests/test_wf_attack_cancel.py tests/test_wf_attack_cli.py tests/test_wf_attack_demo.py tests/test_wf_attack_emit.py tests/test_wf_attack_engine.py tests/test_wf_attack_loop_docs.py tests/test_wf_attack_loop.py tests/test_wf_attack_progress.py tests/test_wf_attack_runkey.py tests/test_wf_attack_rv2.py tests/test_wf_cli_pins.py tests/test_wf_context_contract.py tests/test_wf_coverage_closing2.py tests/test_wf_coverage_closing.py tests/test_wf_coverage_gate.py tests/test_wf_create_seam_pins.py tests/test_wf_ctx_annotation_pins.py tests/test_wf_demo_legs.py tests/test_wf_deps_pins.py tests/test_wf_engine_units.py tests/test_wf_ergonomics_contract.py tests/test_wf_execution_py.py tests/test_wf_fanin_bound_pins.py tests/test_wf_finalize_pins.py tests/test_wf_flow_rate_limit_pins.py tests/test_wf_fork_pins.py tests/test_wf_hitl_pins.py tests/test_wf_hitl_pubsub_pins.py tests/test_wf_hitl_web_demo.py tests/test_wf_hold_stamp_wedge_pins.py tests/test_wf_loop_pins.py tests/test_wf_outbox_retention_pins.py tests/test_wf_perf_bands.py tests/test_wf_phase3_cure_pins.py tests/test_wf_pre_workflow_tolerance_pins.py tests/test_wf_progress_emission.py tests/test_wf_progress_faces.py tests/test_wf_progress_persistence.py tests/test_wf_propagation_pins.py tests/test_wf_pruner_pins.py tests/test_wf_runner_pins.py tests/test_wf_rv4_route_cures.py tests/test_wf_scenario_pins.py tests/test_wf_schema_migration.py tests/test_wf_state_event_totality.py tests/test_wf_status_pins.py tests/test_wf_status_property.py tests/test_wf_sweep_pins.py tests/test_wf_t2021_gate_cures.py tests/test_wf_t20_backpressure_pins.py tests/test_wf_t20_crashed_terminal_wedge.py tests/test_wf_t20_emit_pins.py tests/test_wf_t20_fence_probe.py tests/test_wf_t20_maintain_liveness.py tests/test_wf_t20_router_pins.py tests/test_wf_teardown_rv3.py tests/test_wf_typed_route_pins.py tests/test_wf_typed_route_rv4_pins.py tests/test_wf_type_tagged_route_refutation.py tests/test_wf_validate_pins.py \
+	tests/test_fv_redlog_guard.py \
+	tests/test_worker_execution_seam.py tests/attack3-validate.py \
+	tests/attack4-coverage-closers.py \
+	-n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+Using --randomly-seed=4101222266
+rootdir: /tmp/opencode/wt-deslop
+configfile: pyproject.toml
+plugins: hypothesis-6.168.3, asyncio-1.4.0, gremlins-1.9.0, xdist-3.8.0, timeout-2.4.0, randomly-5.0.0, respx-0.23.1, anyio-4.15.1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+timeout: 300.0s
+timeout method: signal
+timeout func_only: False
+created: 4/4 workers
+4 workers [570 items]
+
+........................................................................ [ 12%]
+........................................................................ [ 25%]
+........................................................................ [ 37%]
+........................................................................ [ 50%]
+........................................................................ [ 63%]
+........................................................................ [ 75%]
+.F..................................x................................... [ 88%]
+..................................................................       [100%]
+=================================== FAILURES ===================================
+_________ test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree __________
+[gw2] linux -- Python 3.13.15 /tmp/opencode/wt-deslop/.venv/bin/python
+
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-22202/popen-gw2/test_rv2_13_the_head_stamp_law0')
+
+    def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) -> None:
+        """The verifier against the tree's COMMITTED state (``git ls-files``
+        + ``git show HEAD:`` — the working tree's residue never enters).
+        The verdict is the CLAIMS MANIFEST's (``CLAIMS.json`` rides the
+        committed tree with the captures it indexes): the registry's append
+        order is the run order — no filename parsed, no mtime consulted
+        (the pre-manifest pin restored every file's mtime from its own
+        name's timestamp: the filename-parsing workaround the manifest
+        kills). The verdict is the TREE'S, never the checkout's."""
+        import subprocess
+        import sys
+    
+        runs_rel = ".measurements/runs"
+        listed = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+            ["git", "ls-files", runs_rel],  # noqa: S607  # Why: as above — the repo's own scripts call "git" the same way.
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        assert listed, "the committed tree carries no .measurements/runs artifacts at all"
+        assert f"{runs_rel}/CLAIMS.json" in listed, (
+            "the committed tree carries no claims registry — the captures' index "
+            "(CLAIMS.json) must be committed with the captures it indexes"
+        )
+        runs_dir = tmp_path / "runs"
+        for rel in listed:
+            data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-files-derived path; no shell.
+                ["git", "show", f"HEAD:{rel}"],  # noqa: S607  # Why: as above.
+                cwd=_REPO,
+                capture_output=True,
+                check=True,
+            ).stdout
+            dest = runs_dir / Path(rel).relative_to(runs_rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        proc = subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
+            [
+                sys.executable,
+                str(_REPO / "scripts" / "verify_evidence_heads.py"),
+                "--runs-dir",
+                str(runs_dir),
+            ],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert proc.returncode == 0, (
+            "F-RV2-13: the head-stamp verifier reds on the committed estate:\n"
+            + proc.stdout
+            + proc.stderr
+        )
+E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+E         THE HEAD-STAMP LAW REDS (head 94a70d8986a5):
+E           docs-lane-rv2-13-cure-captures: the LIVE CLAIM docs-lane-rv2-13-cure-captures-20261010T200530.txt is stale — recorded on 54f19915d796, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T132430-ad79.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T132425-9ff7.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           fasttier-final: the LIVE CLAIM fasttier-final-20261010T195500-n8.txt is stale — recorded on 88efb59f786e, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3: the LIVE CLAIM fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3-20261010T191709.txt is stale — recorded on 7a587f45c17d, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T132425-d582.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261010T132527-deslop.txt is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           mkdocs-strict-docslane: the LIVE CLAIM mkdocs-strict-docslane-20261010T190521.txt is stale — recorded on 1c17402d5d84, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261010T132336-7ba7.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin1-row-width: the LIVE CLAIM pin1-row-width-20261010T132336-01cb.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261010T132340-cedd.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T132424-2bda.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T132437-11a3.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           rv2-pins-final: the LIVE CLAIM rv2-pins-final-20261010T200818.txt is stale — recorded on 54f19915d796, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           rv2-pins-final-20261010T193500-precommit-red.txt: the LIVE CLAIM rv2-pins-final-20261010T193500-precommit-red.txt is stale — recorded on 1c17402d5d84, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt: the LIVE CLAIM rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt is stale — recorded on 55bb1b22f10f, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           rv4-pin-packs: the LIVE CLAIM rv4-pin-packs-20261010T193000.txt is stale — recorded on 1c17402d5d84, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-bands-rv4: the LIVE CLAIM wf-bands-rv4-20261010T191500.txt is stale — recorded on 1c17402d5d84, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-battery-rv4: the LIVE CLAIM wf-battery-rv4-20261010T132521-deslop.txt is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T132408-d205.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T132458.json is stale — recorded on 89bd82780d85, the head is 94a70d8986a5. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-deslop/.venv/bin/python', '/tmp/opencode/wt-deslop/scripts/verify_evidence_he... Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.\n', stderr='').returncode
+
+tests/test_wf_attack_rv2.py:1053: AssertionError
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-deslop/src/taskq/workflows/_progress.py:319: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.13.15-final-0 _______________
+
+Name                                        Stmts   Miss Branch BrPart  Cover
+-----------------------------------------------------------------------------
+src/taskq/workflows/__init__.py                11      0      0      0   100%
+src/taskq/workflows/_capture.py                75      4     36      5    92%
+src/taskq/workflows/_cli.py                   116      1     36      2    98%
+src/taskq/workflows/_emit.py                   45      0     10      0   100%
+src/taskq/workflows/_fork.py                   31      1     10      1    95%
+src/taskq/workflows/_progress.py              138     13     30      2    91%
+src/taskq/workflows/_progress_read.py         131      4     44      8    93%
+src/taskq/workflows/_reducers.py               24      0      6      0   100%
+src/taskq/workflows/_sql.py                    82      0      2      0   100%
+src/taskq/workflows/_sql_finalize.py           24      0      0      0   100%
+src/taskq/workflows/_sql_ledger.py              9      0      0      0   100%
+src/taskq/workflows/_sql_progress.py           12      0      0      0   100%
+src/taskq/workflows/_sql_status.py              8      0      0      0   100%
+src/taskq/workflows/_sql_sweep.py              11      0      0      0   100%
+src/taskq/workflows/_status.py                 54      0     16      0   100%
+src/taskq/workflows/_sweep.py                 108      3     24      3    95%
+src/taskq/workflows/_types.py                 107      3      6      2    96%
+src/taskq/workflows/_version.py                10      0      0      0   100%
+src/taskq/workflows/_worker_execution.py      109      3     30      3    96%
+src/taskq/workflows/api/__init__.py             4      0      0      0   100%
+src/taskq/workflows/api/_app.py               146      3     40      3    97%
+src/taskq/workflows/api/_ctx.py                66      0      4      0   100%
+src/taskq/workflows/api/_ctx_wait.py           48      0      4      0   100%
+src/taskq/workflows/api/_deps.py               12      3      2      1    71%
+src/taskq/workflows/api/_graph.py             126      5     18      5    93%
+src/taskq/workflows/api/_hints.py              26      2      4      0    93%
+src/taskq/workflows/api/_hitl.py              250     14     86      8    92%
+src/taskq/workflows/api/_hitl_listen.py       225     36     72     18    79%
+src/taskq/workflows/api/_loop.py               56      0      8      0   100%
+src/taskq/workflows/api/_mermaid.py            54      2     28      2    95%
+src/taskq/workflows/api/_run.py                33      1      2      0    97%
+src/taskq/workflows/api/_runner.py            363     21    100     10    93%
+src/taskq/workflows/api/_runner_chain.py       26      0      0      0   100%
+src/taskq/workflows/api/_runner_codec.py       83     10     36      3    84%
+src/taskq/workflows/api/_runner_errors.py       3      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py        87      4     24      6    91%
+src/taskq/workflows/api/_runner_ladder.py      42      0      6      1    98%
+src/taskq/workflows/api/_runner_loop.py       157     13     42      9    89%
+src/taskq/workflows/api/_sql_loop.py           26      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py         35      0      0      0   100%
+src/taskq/workflows/api/_validate.py          489     15    314     17    96%
+src/taskq/workflows/chain.py                   88      2     32      1    98%
+src/taskq/workflows/context.py                 42      2     10      2    92%
+src/taskq/workflows/definitions.py             66      1     14      1    98%
+src/taskq/workflows/engine.py                 109      0     34      1    99%
+src/taskq/workflows/ledger.py                  78      1     14      2    97%
+-----------------------------------------------------------------------------
+TOTAL                                        3845    167   1144    116    94%
+=========================== short test summary info ============================
+XFAIL tests/test_wf_typed_route_rv4_pins.py::test_rv4_1a_the_empty_route_fires_the_join_with_the_empty_list - LIVE FINDING rv4-1: _route_fork returns None over an empty source list (api/_runner.py:1212-1213) — with a CONSUMER of the route's join the join row never spawns, the consumer's reserved dep never releases, and the run wedges 'running' forever (observed: drive() hit max_ticks with 'media' succeeded, 'consume' pending deps_pending=1, no 'media.join' row)
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+======= 1 failed, 568 passed, 1 xfailed, 1 warning in 151.69s (0:02:31) ========
+make: *** [Makefile:101: test-wf-cov] Error 1

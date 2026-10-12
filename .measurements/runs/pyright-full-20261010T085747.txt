@@ -1,0 +1,4 @@
+# pyright FULL (the CI's own command: pyright src/taskq tests) at the source-final head eeba3ef6b33ca1db6d7ada9b27c9419791b83814 (the routing-proof lane)
+0 errors, 0 warnings, 0 informations
+pyright rc=0
+head: eeba3ef6b33ca1db6d7ada9b27c9419791b83814

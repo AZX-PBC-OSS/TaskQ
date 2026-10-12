@@ -1,0 +1,2 @@
+# the head-stamp verifier at the T25 lane head 3addf5b80e606c48641eb2454c697afd5cd03689 — GREEN (every live claim fresh or superseded)
+the head-stamp law holds: every evidence kind's live claim in .measurements/runs is recorded at THIS head (3addf5b80e606c48641eb2454c697afd5cd03689) or explicitly superseded

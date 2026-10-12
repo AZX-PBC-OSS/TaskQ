@@ -1,0 +1,23 @@
+# the fast tier x1 at -n 8 (the container's max_connections=1000 — the tuned shape; box loadavg ~12/32)
+_ ERROR at teardown of test_a_failed_rebuild_is_reported_and_the_loop_continues _
+2026-10-09 14:41:24 [warning  ] leader-conn-abandoned-caller-owned kind=leader_conn_abandoned_caller_owned reason=election_attempt_failed worker_id=01a1229d-1c4e-7a31-bbcb-40c274276e44
+2026-10-09 14:41:24 [warning  ] election-attempt-failed        error="InterfaceError('connection is closed')" kind=election_attempt_failed worker_id=01a1229d-1c4e-7a31-bbcb-40c274276e44
+        resumed-and-completed, terminal-failed) and nothing is left pending +
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+ERROR tests/test_cli_ui_rotation.py::test_an_explicit_interval_overrides_the_lease
+ERROR tests/test_cli_ui_rotation.py::test_rotation_cadence_is_derived_from_the_granted_lease
+ERROR tests/test_reload_loop.py::test_a_shorter_lease_on_rebuild_tightens_the_next_wait
+ERROR tests/test_reload_loop.py::test_rebuild_is_scheduled_at_half_the_granted_lease
+ERROR tests/test_reload_loop.py::test_a_failed_rebuild_is_reported_and_the_loop_continues
+ERROR tests/test_heartbeat_cadence.py::test_heartbeat_cadence_holds_the_bound_and_does_not_drift
+ERROR tests/test_watchdog_safety.py::test_shutdown_watchdog_cancel_leaves_no_pending_waiters
+ERROR tests/test_producer_claim_cooldown.py::test_a_short_round_waits_out_the_cooldown_before_the_next
+rc=0
+head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0

@@ -1,0 +1,2 @@
+# pyright-full at head 6a2c3e7e20592a630864f21306343b00651174b3 — rc=0 — captured 2026-10-12T00:29:46Z
+0 errors, 0 warnings, 0 informations

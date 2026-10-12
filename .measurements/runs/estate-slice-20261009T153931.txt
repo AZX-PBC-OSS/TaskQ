@@ -1,0 +1,5 @@
+# the estate regression slice x3 (tests/test_actor_config_sync.py + tests/test_wf_runner_pins.py, serial)
+41 passed in 3.36s
+41 passed in 3.47s
+41 passed in 3.58s
+head: b4534d29edc132aca4e6501a8c5a0146576679cb

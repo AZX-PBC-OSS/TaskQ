@@ -1,0 +1,4 @@
+# pyright FULL (pyright src/taskq tests — the CI's own command) — the rv3 lane's consolidated proof
+0 errors, 0 warnings, 0 informations
+rc=0
+head: 96d5ff1b1e233b14e6e18b877b8e9a252e868621

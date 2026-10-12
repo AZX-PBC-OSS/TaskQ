@@ -1,0 +1,3 @@
+head: 8ca5f588fb79f26a6fca56bf433dc807d2e497e6 — rv2-13's TWO green legs at the committed estate (the head-stamp law greens on the committed tree)
+1 passed in 6.38s
+1 passed in 6.41s

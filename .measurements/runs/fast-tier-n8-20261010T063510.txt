@@ -1,0 +1,5 @@
+# the fast tier x1 at -n 8 (non-integration; box: the cure lane's own warm PG on :5764)
+9581 passed, 3 skipped, 121 warnings in 107.54s (0:01:47)
+rc=0
+FAILED/ERROR lines: 0
+head: a858272b18c66e28a69cfebaa664279568ca6d30

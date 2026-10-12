@@ -1,0 +1,4 @@
+# the wf battery — LEG 2 (the cures' second count, same selection as leg 1, the CI's lane filter) at the source-final head eeba3ef6b33ca1db6d7ada9b27c9419791b83814 (the routing-proof lane: the battery includes the lane's own routing-proof pins, 6 green)
+1 failed, 478 passed, 1 skipped, 1 warning in 75.93s (0:01:15)
+the single failure = test_rv2_13 (the head-stamp law's pin — red truthfully at the source head; its cure is the measurement commit landing this estate)
+head: eeba3ef6b33ca1db6d7ada9b27c9419791b83814

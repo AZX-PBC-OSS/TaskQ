@@ -1,0 +1,4 @@
+# THE HEAD-STAMP LAW'S VERDICT at the push head
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-rv3/.measurements/runs is recorded at THIS head (d7f8581f7e47) or explicitly superseded
+verify rc=0
+head: d7f8581f7e47508fd7ffe656fa6667e4e9ab46b0

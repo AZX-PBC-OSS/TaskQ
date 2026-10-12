@@ -1,0 +1,33 @@
+# typeprobe-gate at head edce800973732ffa0a983a9e4d62cb68e40feba4 — rc=1 — captured 2026-10-11T20:02:45Z
+Traceback (most recent call last):
+  File "/tmp/opencode/wt-contentdoor/tests/typeprobe/_gate.py", line 312, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/tmp/opencode/wt-contentdoor/tests/typeprobe/_gate.py", line 261, in main
+    pyright_errors = _pyright_errors(probe)
+  File "/tmp/opencode/wt-contentdoor/tests/typeprobe/_gate.py", line 181, in _pyright_errors
+    out = subprocess.run(
+          ~~~~~~~~~~~~~~^
+        [
+        ^
+    ...<5 lines>...
+        check=True,
+        ^^^^^^^^^^^
+    ).stdout
+    ^
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/rich/.local/share/uv/python/cpython-3.13.15-linux-x86_64-gnu/lib/python3.13/subprocess.py", line 1991, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: 'pyright'

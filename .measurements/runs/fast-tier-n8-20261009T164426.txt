@@ -1,0 +1,5 @@
+# the fast tier x1 at -n 8 (head 64a2cc435073a3b083f36167494eb2a288411556; box loadavg ~11/32)
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+9548 passed, 3 skipped, 121 warnings in 96.88s (0:01:36)
+head: 64a2cc435073a3b083f36167494eb2a288411556

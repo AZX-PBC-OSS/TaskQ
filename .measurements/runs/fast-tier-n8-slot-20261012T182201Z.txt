@@ -1,0 +1,2 @@
+# fast-tier-n8's slot staged at head 2d75eea067e40cde00627b24bbeed79fdaccca48 — captured 2026-10-12T11:22:01Z
+THE GRAND MERGE'S STAGED SLOT: the fast tier's slot — the fast tier's green output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.

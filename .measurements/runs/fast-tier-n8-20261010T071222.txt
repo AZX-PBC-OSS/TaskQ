@@ -1,0 +1,3 @@
+# the fast tier x1 at -n 8 (non-integration) — THE TRANSITION CAPTURE: the only red is the head-stamp law's own bootstrapping (rv2-13 red on the estate THIS commit lands; the green capture at the estate's head follows)
+===== 1 failed, 9593 passed, 4 skipped, 121 warnings in 119.62s (0:01:59) ======
+head: 96d5ff1b1e233b14e6e18b877b8e9a252e868621

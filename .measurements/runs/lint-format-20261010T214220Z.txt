@@ -1,0 +1,3 @@
+# ruff check + ruff format --check at the T25 head b135ad0aa3c0
+All checks passed!
+1700 files already formatted

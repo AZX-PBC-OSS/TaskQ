@@ -1,0 +1,7 @@
+# the wf battery + THE SCOPED COVERAGE GATE (head a858272b18c66e28a69cfebaa664279568ca6d30)
+======================= 327 passed, 1 warning in 43.41s ========================
+[gate] head a858272b18c6 (dirty=False)
+[gate] wf-scoped branch coverage 90.51% vs floor 90.0% — green
+[gate] recorded: /tmp/opencode/wt-t26cure/.measurements/runs/wf-scoped-coverage-20261009T232902.json
+gate rc=0
+head: a858272b18c66e28a69cfebaa664279568ca6d30

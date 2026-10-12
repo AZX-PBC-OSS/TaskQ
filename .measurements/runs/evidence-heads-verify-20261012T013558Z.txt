@@ -1,0 +1,2 @@
+# evidence-heads-verify at head 3f6c24899542b56736a80bbc367ff8c972591893 — rc=0 — captured 20261012T013558Z
+the head-stamp law holds: every evidence kind's live claim in .measurements/runs is recorded at THIS head (3f6c24899542) or explicitly superseded

@@ -1,0 +1,6 @@
+# deslop-pin-packs at head 3f69eaa325d523866de8e4de2e2490e483fe3384 — rc=0 — captured 2026-10-11T21:02:54Z (the content-door lane's green fill of the staged slot)
+bringing up nodes...
+bringing up nodes...
+
+.................................................................        [100%]
+65 passed in 27.30s

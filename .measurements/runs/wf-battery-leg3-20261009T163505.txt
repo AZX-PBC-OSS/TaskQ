@@ -1,0 +1,6 @@
+# the wf battery — leg 3 (the flake hunt: full short summary, head 75dc69d34e2c543f79d32d02aa6e597d3ab686a5)
+FAILED tests/attack4-coverage-closers.py::test_the_finalize_registers_the_flow_reducers_for_the_cold_process
+1 failed, 306 passed, 1 warning in 27.65s
+SUPERSEDED-BY: runs/wf-battery-cov-20261009T164157.txt
+# the mark's reason: (the battery's own run-scoped capture superseded this older battery capture; the substance re-recorded green at the head)
+head: 64a2cc435073a3b083f36167494eb2a288411556

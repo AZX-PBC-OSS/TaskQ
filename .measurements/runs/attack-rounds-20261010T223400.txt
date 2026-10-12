@@ -1,0 +1,7 @@
+# the attack rounds x2 (tests/attack*.py tests/test_attack*.py tests/test_wf_attack*.py, the CI's lane filter: not slow and not load_sensitive) at the source-final head 33c05d5c2548b4525f98b1d9db4e9c45e177be09
+--- round 1:
+1 failed, 640 passed, 2 skipped, 23 deselected, 21 warnings in 248.16s (0:04:08)
+--- round 2:
+1 failed, 640 passed, 2 skipped, 23 deselected, 21 warnings in 251.75s (0:04:11)
+the single failure BOTH rounds = test_rv2_13 (the head-stamp law's pin, red TRUTHFULLY at the source head: its own cure is the measurement commit that lands this estate — see RECEIPTS.md § THE FLIPS)
+head: 33c05d5c2548b4525f98b1d9db4e9c45e177be09

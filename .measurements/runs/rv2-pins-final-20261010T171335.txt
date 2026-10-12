@@ -1,0 +1,5 @@
+# THE RV2 PIN BATTERY AT THE MEASUREMENT HEAD — the estate's verdict capture (the T27 lane)
+# head 468b9a9956c59b1228c3afa1630cb9e73f40e1e1 (M3 — the T27 lane's measurement line; the source tree is content-identical to the source-final R=2d993a83: diff R..M3 = pure .measurements — the off-by-one rule carries this claim fresh)
+# the pin pack: 17 tests = 2 green guards + 15 flipped pins, ALL GREEN — the verifier over the COMMITTED estate rc=0
+17 passed
+head: 468b9a9956c59b1228c3afa1630cb9e73f40e1e1

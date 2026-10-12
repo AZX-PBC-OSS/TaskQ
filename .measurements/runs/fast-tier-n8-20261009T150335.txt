@@ -1,0 +1,22 @@
+# the fast tier x1 at -n 8 (the container tuned 1000; the leak cures landed; box loadavg ~12/32)
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+        resumed-and-completed, terminal-failed) and nothing is left pending +
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+    if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+tests/test_in_memory_terminal_writes.py::TestGetExpiredResults::test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads
+tests/test_rt_payload_surrogate_guards.py::test_mirror_marks_failed_for_surrogate_exception_message
+FAILED tests/test_fv_redlog_guard.py::test_every_law_stamped_redlog_entry_cites_a_live_capture
+FAILED tests/test_attack_loop_liveness.py::test_cancel_during_failure_sleep_absorbed_no_metric_lie
+FAILED tests/test_wf_api_fixround_pins.py::test_e10_the_over_arity_body_is_the_build_refusal
+FAILED tests/test_wf_api_fixround_pins.py::test_e9_the_fabricated_ctx_annotation_is_the_build_refusal
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_delivered_hold_stamp_is_cleared_and_the_run_completes
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_absent_hold_stamp_is_cleared_and_a_fresh_hold_resumes
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_hold_stamp_reconcile_statement_is_the_batch_bounded_self_consuming_shape
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_live_hold_is_left_standing
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_twenty_wedged_runs_all_land_named_terminal_or_resumed
+FAILED tests/test_wf_hold_stamp_wedge_pins.py::test_expired_hold_stamp_is_cleared_and_the_run_lands_the_named_timeout
+10 failed, 9538 passed, 3 skipped, 121 warnings in 100.65s (0:01:40)
+head: c957d49eec658aa6abba04fdfd83ed02bd19525b

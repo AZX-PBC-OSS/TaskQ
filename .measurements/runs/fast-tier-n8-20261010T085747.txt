@@ -1,0 +1,10 @@
+# the fast tier x1 at -n 8 (the CI's lane filter: not slow and not load_sensitive; the contract-true container :5768) at the source-final head eeba3ef6b33ca1db6d7ada9b27c9419791b83814 (the routing-proof lane)
+# FULL CAPTURE — every FAILED/ERROR line of the run (the mandate), plus the tail; the COMPLETE raw log: .measurements/ROUTE-PROOF-eeba3ef6-fasttier-n8-full.log
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+# the single FAILED = test_rv2_13 — the head-stamp law's pin, red TRUTHFULLY at the source head: its own cure is the measurement commit that lands this estate (see RECEIPTS.md § THE FLIPS); the estate's remaining stale live claims (the perf bands, the demo legs, mkdocs-strict, the slices — recorded on 512f7a91/96d5ff1b/d7f8581f/1030dcaa, every one an ancestor) are THAT pending measurement commit's body, not this lane's
+SKIPPED [1] tests/test_wf_ctx_annotation_pins.py:138: pyright is not installed (the typeprobe dependency group owns the binary)
+SKIPPED [1] tests/test_idempotency_key_actor_mismatch.py:122: the caller-connection path is Postgres-only
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+SKIPPED [1] tests/test_memory_jobs_fixture.py:155: PG backend requires @pytest.mark.integration
+1 failed, 13242 passed, 9 skipped, 150 warnings in 691.34s (0:11:31)
+head: eeba3ef6b33ca1db6d7ada9b27c9419791b83814

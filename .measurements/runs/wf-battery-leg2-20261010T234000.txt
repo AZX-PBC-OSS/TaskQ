@@ -1,0 +1,5 @@
+# the wf battery — LEG 2 (the cures' second count, same selection as leg 1, the CI's lane filter) at the source-final head 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+1 failed, 441 passed, 7 deselected, 1 warning in 170.73s (0:02:50)
+the single failure = test_rv2_13 (the estate's pending measurement commit — see RECEIPTS.md § THE FLIPS)
+head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
+SUPERSEDED-BY: runs/wf-battery-leg2-20261010T085747.txt

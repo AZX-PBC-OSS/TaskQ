@@ -1,0 +1,3 @@
+# the bands leg (the stamped run-scoped writers' own re-record; serial)
+13 passed in 27.21s
+head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0

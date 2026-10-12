@@ -1,0 +1,4 @@
+head: a8113f5e9228e27922ab4ebd70f2002a7fbb731b
+# THE RV2 PIN BATTERY AT THE MEASUREMENT HEAD — the flips' terminal capture (THE RV4 LANE): ALL GREEN — rv2-13 (the head-stamp law greens on the committed tree) VERDICT GREEN, the verifier over the COMMITTED estate rc=0
+.........................                                                [100%]
+25 passed in 5.00s

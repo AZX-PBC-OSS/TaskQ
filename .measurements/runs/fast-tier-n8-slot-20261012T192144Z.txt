@@ -1,0 +1,3 @@
+head: 3564464b9b8b41f34ae241d94c79d47c24963d97 — the fast tier at -n 8 — ZERO FAILURES at the committed estate
+9696 passed, 4 skipped, 121 warnings in 116.74s (0:01:56)
+rc=0

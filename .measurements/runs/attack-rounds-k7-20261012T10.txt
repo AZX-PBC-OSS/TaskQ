@@ -1,0 +1,6 @@
+head: b50f8458719fd4cc88384bc9bec54b6b06c0ac14
+# the attack rounds x2 (tests/attack*.py tests/test_attack*.py tests/test_wf_attack*.py, the CI's lane filter: not slow and not load_sensitive) at the k7-cure head b50f8458719fd4cc88384bc9bec54b6b06c0ac14 — each round's only failure rv2-13's TRUTHFUL off-by-one red; the only xfail rv6-e1
+--- round 1:
+1 failed, 640 passed, 2 skipped, 23 deselected, 1 xfailed in 244.02s
+--- round 2:
+1 failed, 640 passed, 2 skipped, 23 deselected, 1 xfailed in 253.09s

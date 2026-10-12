@@ -1,0 +1,2 @@
+# rv2-13-green's slot staged at head 2d75eea067e40cde00627b24bbeed79fdaccca48 — captured 2026-10-12T11:22:01Z
+THE GRAND MERGE'S STAGED SLOT: rv2-13's receipt slot — the green rv2-13 run's output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.

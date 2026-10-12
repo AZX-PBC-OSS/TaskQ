@@ -1,0 +1,7 @@
+# deslop-pin-packs at head 200b55b26013d8a719469f8c917e50016c5671df — rc=0 — captured 2026-10-12T00:37:45Z
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 88%]
+.........                                                                [100%]
+81 passed in 40.45s

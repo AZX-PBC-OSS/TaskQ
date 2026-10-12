@@ -1,0 +1,4 @@
+# the typeprobe gate (tests/typeprobe/_gate.py) — the rv3 lane's consolidated proof
+the type gate holds: every MUST_ERROR marker (34) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+rc=0
+head: 96d5ff1b1e233b14e6e18b877b8e9a252e868621

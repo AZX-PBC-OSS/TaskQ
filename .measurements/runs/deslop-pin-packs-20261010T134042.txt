@@ -1,0 +1,6 @@
+head: cd593a06929d9acfe570d329f3435d319d3e09eb
+# THE DE-SLOPPED PACKS GREEN on the committed estate (the de-slop round's proof leg): the rv4 pack (graduated pins: rv4-1b/2/3/4/5/6/7a/7b/8/9/10 green guards; rv4-1a the still-live xfail), the rv3 pack, the rv2 pack (rv2-13 GREENS — the head-stamp verdict is the committed claims registry's), the fixround pack, the coverage gate's behavioral face (tests/test_wf_coverage_gate.py), the redlog receipt-chain guard. rc=0.
+.......................................................x.........        [100%]
+=========================== short test summary info ============================
+XFAIL tests/test_wf_typed_route_rv4_pins.py::test_rv4_1a_the_empty_route_fires_the_join_with_the_empty_list - LIVE FINDING rv4-1: _route_fork returns None over an empty source list (api/_runner.py:1212-1213) — with a CONSUMER of the route's join the join row never spawns, the consumer's reserved dep never releases, and the run wedges 'running' forever (observed: drive() hit max_ticks with 'media' succeeded, 'consume' pending deps_pending=1, no 'media.join' row)
+64 passed, 1 xfailed in 104.39s (0:01:44)

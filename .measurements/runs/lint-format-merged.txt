@@ -1,0 +1,5 @@
+head: 30d227a892a581b3705924cdea93bd58f2a1323e
+== ruff check
+[*] 5 fixable with the `--fix` option (1 hidden fix can be enabled with the `--unsafe-fixes` option).
+== ruff format --check
+1 file would be reformatted, 1800 files already formatted

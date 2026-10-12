@@ -1,0 +1,51 @@
+# wf-battery-rv4 at head c53fd37c80a855663b173f484b0bbf14a76fe67a — rc=1 — captured 2026-10-11T02:49:38Z
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 11%]
+........................................................................ [ 23%]
+........................................................................ [ 35%]
+........................................................................ [ 47%]
+.......................................F................................ [ 59%]
+........................................................................ [ 71%]
+........................................................................ [ 83%]
+........................................................................ [ 95%]
+............................                                             [100%]
+=================================== FAILURES ===================================
+[gw1] linux -- Python 3.13.15 /tmp/opencode/wt-land/.venv/bin/python
+E   AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+      THE HEAD-STAMP LAW REDS (head c53fd37c80a8):
+        deslop-pin-packs: the LIVE CLAIM deslop-pin-packs-20261011T022130Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T192541-30e9.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261010T231459Z.txt is stale — recorded on 406546d4fb29, the head is c53fd37c80a8. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T192537-0680.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        fast-tier-n8: the LIVE CLAIM fast-tier-n8-20261010T221700Z.txt is stale — recorded on cdb3f11fc783, the head is c53fd37c80a8. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+        join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T192537-8112.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        lint-format: the LIVE CLAIM lint-format-20261011T022005Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261011T022100Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261010T192255-c6ba.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pin1-row-width: the LIVE CLAIM pin1-row-width-20261010T192259-e396.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261010T192303-c7cc.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T192538-a091.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T192549-7b63.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        pyright-full: the LIVE CLAIM pyright-full-20261011T022007Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        typeprobe-gate: the LIVE CLAIM typeprobe-gate-20261011T022047Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        wf-bands-rv4: the LIVE CLAIM wf-bands-rv4-20261011T022536Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        wf-battery-rv4: the LIVE CLAIM wf-battery-rv4-20261011T022144Z.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T192301-b14e.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+        wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T191812.json is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+      
+    assert 1 == 0
+     +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-land/.venv/bin/python', '/tmp/opencode/wt-land/scripts/verify_evidence_heads....es a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)\n', stderr='').returncode
+/tmp/opencode/wt-land/tests/test_wf_attack_rv2.py:1053: AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-land/src/taskq/workflows/_progress.py:349: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 603 passed, 1 warning in 235.75s (0:03:55)

@@ -1,0 +1,5 @@
+# the estate regression slice x3 (the actor-config sync/drift surfaces + the wf runner surfaces; tests/test_actor_config_sync.py + tests/test_wf_runner_pins.py, serial)
+41 passed in 6.36s
+41 passed in 6.73s
+41 passed in 6.60s
+head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0

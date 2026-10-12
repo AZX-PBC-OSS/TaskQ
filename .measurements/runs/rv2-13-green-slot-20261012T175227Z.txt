@@ -1,0 +1,2 @@
+head: 5617b2750621567fe2f16d7348c7c4f7fd94e0c5 — rv2-13's GREEN at the drained estate (the two transition reds of the drain's chicken-and-egg are receipted in the staging commits' messages — bdd21f7f9/5617b2750 — this file carries the LIVE green's own output)
+1 passed in 5.89s

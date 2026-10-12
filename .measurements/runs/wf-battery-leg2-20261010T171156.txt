@@ -1,0 +1,5 @@
+# the wf battery — leg 2 (plain) at the source-final head 2d993a83c7eb0af31aeefe8067091cd2bbd68b27 (the T27 lane; carried fresh by the off-by-one rule)
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+============= 1 failed, 536 passed, 1 warning in 86.30s (0:01:26) ==============
+the single failure = test_rv2_13 (truthful at the source head; the cure is the measurement estate)
+head: 2d993a83c7eb0af31aeefe8067091cd2bbd68b27

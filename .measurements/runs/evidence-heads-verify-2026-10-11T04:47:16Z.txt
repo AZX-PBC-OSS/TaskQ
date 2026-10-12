@@ -1,0 +1,1 @@
+the head-stamp law holds: every evidence kind's live claim in .measurements/runs is recorded at THIS head (9510623e878d811e497faf1d4092606160f685a7) or measurement-only-fresh or explicitly superseded — the verifier's rc=0 receipt

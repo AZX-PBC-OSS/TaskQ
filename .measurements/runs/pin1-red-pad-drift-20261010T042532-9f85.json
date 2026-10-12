@@ -1,0 +1,13 @@
+{
+  "pin": "row-width-red-drill",
+  "vanilla": {
+    "heap_per_row": 241.664,
+    "avg_tuple": "232.0000000000000000"
+  },
+  "padded": {
+    "heap_per_row": 264.6016,
+    "avg_tuple": "251.0000000000000000"
+  },
+  "tuple_delta_bytes": "19.0000000000000000",
+  "head_sha": "5a989cf28947849aa8cbaf1a96984e334b3e98df"
+}

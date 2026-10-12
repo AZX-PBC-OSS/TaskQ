@@ -1,0 +1,9 @@
+# the attack rounds x2 (tests/attack*.py tests/test_attack*.py tests/test_wf_attack*.py, the CI's lane filter: not slow and not load_sensitive) at the source-final head 0ec0ca46eb7fa7e749a98a52613d968a8df4dc03 (the routing-proof lane)
+--- round 1:
+1 failed, 640 passed, 2 skipped, 23 deselected, 21 warnings in 257.67s (0:04:17)
+--- round 2:
+1 failed, 640 passed, 2 skipped, 23 deselected, 21 warnings in 262.69s (0:04:22)
+the single failure EACH round = test_rv2_13 (the head-stamp law's pin, red TRUTHFULLY at the source head: its own cure is the measurement commit that lands this estate — see RECEIPTS.md § THE FLIPS)
+/tmp/opencode/m-a1.log:FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+/tmp/opencode/m-a2.log:FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+head: 0ec0ca46eb7fa7e749a98a52613d968a8df4dc03

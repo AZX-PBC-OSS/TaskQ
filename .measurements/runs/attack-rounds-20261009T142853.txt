@@ -1,0 +1,6 @@
+# the attack rounds 1-4 (the corpus, -n 4) — re-run #2
+FAILED tests/test_wf_attack_demo.py::test_two_drivers_one_schema_one_run_stay_exactly_once
+============= 1 failed, 133 passed, 1 skipped in 177.52s (0:02:57) =============
+rc=0
+head: 9a0148487d9c6364f56527cfa47dd6b42583ffa0
+SUPERSEDED-BY: runs/wf-battery-cov-20261010T085747.txt

@@ -1,0 +1,4 @@
+# the wf perf bands + the schema width/partial-index pins re-recorded (the stale live claims' cure — the T27 lane's source changes moved the head) at the source-final head 2d993a83c7eb0af31aeefe8067091cd2bbd68b27
+pytest tests/test_wf_perf_bands.py tests/test_wf_schema_migration.py tests/test_wf_status_pins.py -m 'load_sensitive or slow' —serial: 6 passed in 18.02s
+the 9 re-recorded stems: edge-scale-curve, fanout-1000-tx-band, join-fire-latency, pin4-enqueue-band, pin5-dispatch-band, wf-rollup-band (20261010T0956*), pin1-red-pad-drift, pin1-row-width, pin2-partial-index (20261010T0954-0955*)
+head: 2d993a83c7eb0af31aeefe8067091cd2bbd68b27

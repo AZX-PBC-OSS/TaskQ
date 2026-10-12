@@ -1,0 +1,4 @@
+# the type gate (the CI's own invocation) at the source-final head eeba3ef6b33ca1db6d7ada9b27c9419791b83814 (the routing-proof lane)
+the type gate holds: every MUST_ERROR marker (38) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+gate rc=0
+head: eeba3ef6b33ca1db6d7ada9b27c9419791b83814

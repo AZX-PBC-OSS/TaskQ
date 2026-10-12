@@ -1,0 +1,4 @@
+# mkdocs --strict
+INFO    -  Documentation built in 16.20 seconds
+mkdocs rc=0
+head: 75dc69d34e2c543f79d32d02aa6e597d3ab686a5
