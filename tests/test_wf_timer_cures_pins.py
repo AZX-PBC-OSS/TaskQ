@@ -76,13 +76,11 @@ from typing import Any
 import asyncpg
 import httpx
 import pytest
-from fastapi import FastAPI
 from pydantic import BaseModel
 from typer.testing import CliRunner
 
 from taskq.backend._protocol import JobId
 from taskq.exceptions import ReservedTimerNamespaceError
-from taskq.web.admin import create_router, setup_admin_state
 from taskq.workflows import (
     Expired,
     FlowRunner,
@@ -225,7 +223,15 @@ def demo_app_module() -> Iterator[types.ModuleType]:
     del sys.modules[MODULE_NAME]
 
 
-def _make_admin_app(pool: asyncpg.Pool, schema: str) -> FastAPI:
+def _make_admin_app(pool: asyncpg.Pool, schema: str) -> Any:
+    """The admin app (the [fastapi] extra's surface): the imports live
+    HERE — the module must import clean on the non-fastapi legs (the
+    vault/aad extras suites run this file too; only the explorer test
+    consumes fastapi, and it importorskips)."""
+    from fastapi import FastAPI
+
+    from taskq.web.admin import create_router, setup_admin_state
+
     bundle = create_router(pool, schema=schema, base_path="")
     app = FastAPI()
     setup_admin_state(app, bundle)
@@ -525,6 +531,7 @@ async def test_the_create_broadcast_never_announces_a_timer_hold(
 # ── CURE 3: the explorer renders a timer AS a timer ─────────────────────
 
 
+@pytest.mark.fastapi  # the admin surface is the [fastapi] extra's — the extras legs select by this
 async def test_the_explorer_renders_a_timer_as_a_timer(
     wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
 ) -> None:
@@ -534,6 +541,7 @@ async def test_the_explorer_renders_a_timer_as_a_timer(
     the form was a lie the operator answered into). Red-first: at the
     base tree the page rendered the Resolve form on the timer (the
     conviction's template repro)."""
+    pytest.importorskip("fastapi")
     app = WorkflowApp()
 
     @app.workflow("c3_timer_flow")
