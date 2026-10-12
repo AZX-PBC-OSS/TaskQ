@@ -2527,7 +2527,7 @@ A workflow is stuck. The order of questions:
 
 **THE WORKFLOW TABLES (the LedgerWatch F10 cure — the operator's SQL is
 sanctioned, and the tables are named where the runbook can find them):**
-the rows-alone reads above are served by five `wf_*` tables in the
+the rows-alone reads above are served by six `wf_*` tables in the
 estate's schema, stable names, no foreign keys (the graph is the
 engine's, never the schema's):
 
