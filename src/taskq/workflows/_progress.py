@@ -482,41 +482,67 @@ async def project_auto_event(
     the node's STREAM-channel counters row in the same statement group
     — an auto-class trim that vanished uncounted would be the
     honest-pair's lie (appended == retained + dropped, BOTH classes)."""
+    async with pool.acquire() as conn:
+        return await project_auto_event_on_conn(
+            conn,
+            wsql,
+            flow_id=flow_id,
+            node_id=node_id,
+            kind=kind,
+            payload=payload,
+            ring_bound=ring_bound,
+        )
+
+
+async def project_auto_event_on_conn(
+    conn: ConnLike,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    node_id: JobId,
+    kind: str,
+    payload: dict[str, Any],
+    ring_bound: int = PROGRESS_RING_BOUND,
+) -> int:
+    """The projection's CONN-LEVEL body (the perf lane's stamp-and-project
+    merge): the projection rides the CALLER'S transaction scope — one
+    acquire for a caller's batched best-effort writes (the code-version
+    stamp riding the STARTED projection), never a second pool churn per
+    node. Same vocabulary fence, same receipt discipline."""
     if kind not in KIND_VOCABULARY:
         raise ValueError(
             f"kind {kind!r} is outside the closed vocabulary "
             f"({sorted(KIND_VOCABULARY)}) — the stream's vocabulary is "
             "closed by design (DH3's fence)"
         )
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            wsql.progress_stream_append,
-            node_id,
-            flow_id,
-            CLASS_AUTO,
-            kind,
-            _jsonb(payload),
-            ring_bound,
-        )
-        assert row is not None  # the statement always returns its row
-        seq = int(row["seq"])
-        dropped = int(row["dropped"])
-        # THE COUNTERS ROW (the receipt discipline — never a silent
-        # discard of the trim's casualties): the same STREAM_CHANNEL
-        # counters row the user class's flush writes, occurrences 1 per
-        # projection. Unconditional — the row IS the record.
-        await conn.execute(
-            wsql.progress_state_upsert,
-            node_id,
-            STREAM_CHANNEL,
-            None,
-            None,
-            None,
-            1,
-            dropped,
-            seq,
-        )
-        # THE PUSH'S KNOCK (CURE 3): the same channel the user flush
-        # knocks — the ring's every event class rides one transport.
-        await knock_progress(conn, schema=wsql.schema, flow_id=flow_id, node_id=node_id, seq=seq)
+    row = await conn.fetchrow(
+        wsql.progress_stream_append,
+        node_id,
+        flow_id,
+        CLASS_AUTO,
+        kind,
+        _jsonb(payload),
+        ring_bound,
+    )
+    assert row is not None  # the statement always returns its row
+    seq = int(row["seq"])
+    dropped = int(row["dropped"])
+    # THE COUNTERS ROW (the receipt discipline — never a silent
+    # discard of the trim's casualties): the same STREAM_CHANNEL
+    # counters row the user class's flush writes, occurrences 1 per
+    # projection. Unconditional — the row IS the record.
+    await conn.execute(
+        wsql.progress_state_upsert,
+        node_id,
+        STREAM_CHANNEL,
+        None,
+        None,
+        None,
+        1,
+        dropped,
+        seq,
+    )
+    # THE PUSH'S KNOCK (CURE 3): the same channel the user flush
+    # knocks — the ring's every event class rides one transport.
+    await knock_progress(conn, schema=wsql.schema, flow_id=flow_id, node_id=node_id, seq=seq)
     return seq

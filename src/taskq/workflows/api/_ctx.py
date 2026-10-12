@@ -259,13 +259,16 @@ class StepContext(CtxWaitOps):
         INNER ledgered effect). The lesser noun renamed: the substep is
         the step-ledger's own vocabulary (``wf_step_ledger`` rows are
         what make it exactly-once)."""
-        async with self._pool.acquire() as conn:
-            steps = WorkflowSteps(
-                conn,
-                self._wsql,
-                flow_id=self.flow_id,
-                job_id=self.job_id,
-                map_index=self._map_index,
-                attempt=self.attempt,
-            )
-            return await steps.step(name, fn, *args, idempotent=idempotent)
+        # THE POOL-BOUND FACE (the perf lane's hold-discipline cure): the
+        # substep's ledger touches are short scopes — the BODY runs
+        # holding NO connection (the holdmap lesson, generalized: a
+        # substep's unbounded I/O never pins a pool slot).
+        steps = WorkflowSteps.on_pool(
+            self._pool,
+            self._wsql,
+            flow_id=self.flow_id,
+            job_id=self.job_id,
+            map_index=self._map_index,
+            attempt=self.attempt,
+        )
+        return await steps.step(name, fn, *args, idempotent=idempotent)

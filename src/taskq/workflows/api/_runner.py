@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
@@ -64,6 +65,7 @@ from taskq.workflows._progress import (
     KIND_NODE_TERMINAL,
     ProgressEmitter,
     project_auto_event,
+    project_auto_event_on_conn,
 )
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sql_finalize import NODE_INSERT_SQL
@@ -397,15 +399,137 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         fleet's workers through the queue-routed dispatch (the
         worker-hosted door). The in-process body execution — the
         dev-loop driver — is the ``execute=True`` default, unchanged."""
-        for _ in range(max_ticks):
-            if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
-                return "terminal"
-            if until == "held" and await self._any_held(flow_id):
-                return "held"
-            ran = await self.tick(flow_id, execute=execute)
-            if not ran:
-                await asyncio.sleep(tick)
+        # THE KNOCK-DRIVEN WAKE (the perf lane's polling-vs-notify cure):
+        # the idle drive's old face was POLL-ONLY — a fixed 20ms sleep per
+        # idle tick, ~4-5 statements a tick (status + claimable + the two
+        # sweep arms) burning ~250 stmts/s while the flow waited for a
+        # human, a timer, or an external arm. The wake now rides the
+        # knock transport that ALREADY EXISTS (the hold broadcasts — T26's
+        # transactional pg_notify): the loop LISTENS (lazily — a short run
+        # that never idles never pays the LISTEN arm) and wakes on the
+        # run's knock; the poll is the BELT (a bounded backoff — the
+        # missed-knock convergence the row-is-the-truth law guarantees).
+        # The listener holds ONE pool connection for the drive's life —
+        # the T26 listener's documented shape (the dedicated connection IS
+        # the cure; size the pool for the drives you run).
+        backoff = tick  # the belt's floor: the first idle waits exactly as long as the old loop
+        belt_cap = 0.2  # the belt's loosest weave: the bounded staleness of the poll face
+        knock: asyncio.Event | None = None
+        arm_failed = False  # the arm's refusal is permanent for this drive — the belt owns the rest
+        listen_conn: Any = None
+        _knock_cbs: list[tuple[str, Any]] = []
+        try:
+            for _ in range(max_ticks):
+                if await self._flow_status(flow_id) in ("succeeded", "failed", "cancelled"):
+                    return "terminal"
+                if until == "held" and await self._any_held(flow_id):
+                    return "held"
+                ran = await self.tick(flow_id, execute=execute)
+                if ran:
+                    backoff = tick  # progress: the belt re-tightens
+                    continue
+                if knock is None and not arm_failed:
+                    event, listen_conn, _knock_cbs = await self._arm_hold_knock(flow_id)
+                    if event is None:
+                        arm_failed = True  # the arm refused ONCE — the pure poll continues, no per-tick re-arm
+                    knock = event
+                if knock is None:
+                    # THE ARM REFUSED (pool exhausted / a PgBouncer face): the
+                    # pure poll continues exactly as before.
+                    await asyncio.sleep(backoff)
+                else:
+                    # THE WAIT IS ON STATE, NOT THE CLOCK: the knock wakes
+                    # the loop the moment the run's hold face moves; the
+                    # timeout is the belt's bound, never the wake.
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(knock.wait(), timeout=backoff)
+                    knock.clear()
+                backoff = min(backoff * 2, belt_cap)
+        finally:
+            if listen_conn is not None:
+                try:
+                    for channel, cb in _knock_cbs:
+                        await listen_conn.remove_listener(channel, cb)
+                except (
+                    Exception
+                ):  # Why: the disarm is best-effort — the release is the cleanup that matters.
+                    logger.debug("drive_knock_disarm_failed", kind="drive_knock_disarm_failed")
+                await self.pool.release(listen_conn)
         return "max_ticks"
+
+    async def _arm_hold_knock(
+        self, flow_id: JobId
+    ) -> tuple[asyncio.Event | None, Any, list[tuple[str, Any]]]:
+        """THE KNOCK ARM (the T26 listener's minimal dev-loop shape): ONE
+        dedicated connection LISTENs the hold channels; a knock whose
+        payload names THIS run (or a payload too broken to name any run —
+        the pointer failed, the belt wakes) sets the event. Returns
+        ``(event, conn, [(channel, cb)…])`` — or ``(None, None, [])`` when
+        the arm cannot be laid (the pure-poll face continues). The row is
+        the truth: a MISSED knock costs the backoff's latency, never a
+        lost wake."""
+        event = asyncio.Event()
+        cbs: list[tuple[str, Any]] = []
+
+        def _on_knock(_conn: Any, _pid: int, channel: str, payload: object) -> None:
+            if not isinstance(payload, str) or not payload:
+                event.set()  # a pointerless knock: wake (the belt decides)
+                return
+            try:
+                doc: object = _json_loads(payload)
+            except Exception:
+                event.set()  # unparseable: wake (converge by the poll)
+                return
+            run_id: object = (
+                cast("object", doc.get("run_id"))  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
+                if isinstance(doc, dict)
+                else None
+            )
+            if run_id is None or str(run_id) == str(flow_id):
+                event.set()
+
+        try:
+            conn = await asyncio.wait_for(self.pool.acquire(), timeout=5.0)
+        except Exception:
+            logger.warning(
+                "drive_knock_arm_refused",
+                kind="drive_knock_arm_refused",
+                run_id=str(flow_id),
+                why="the knock arm could not lay a connection — the drive falls back to pure polling",
+            )
+            return None, None, []
+        try:
+            from taskq.workflows.api._hitl import (
+                HOLD_CHANNEL,
+                HOLD_CREATED_CHANNEL,
+                HOLD_EXPIRED_CHANNEL,
+                HOLD_RESOLVED_CHANNEL,
+            )
+
+            for channel in (
+                HOLD_CHANNEL,
+                HOLD_CREATED_CHANNEL,
+                HOLD_RESOLVED_CHANNEL,
+                HOLD_EXPIRED_CHANNEL,
+            ):
+                # add_listener returns NONE (asyncpg's register is a
+                # statement, not a token) — the callable itself is the
+                # disarm token.
+                await conn.add_listener(channel, _on_knock)
+                cbs.append((channel, _on_knock))
+        except Exception:
+            # THE PARTIAL ARM (one channel refused — a schema-less estate):
+            # tear down, fall back to the pure poll.
+            try:
+                for channel, cb in cbs:
+                    await conn.remove_listener(channel, cb)
+            except Exception:  # Why: the partial arm's teardown is best-effort — the fallback poll owns correctness.
+                logger.debug(
+                    "drive_knock_partial_disarm_failed", kind="drive_knock_partial_disarm_failed"
+                )
+            await self.pool.release(conn)
+            return None, None, []
+        return event, conn, cbs
 
     async def tick(self, flow_id: JobId, *, execute: bool = True) -> bool:
         """One dispatch pass: claim + run + finalize every claimable node
@@ -560,19 +684,53 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # so a re-claimed node's SECOND attempt rewrites the record (the
         # §22.1 record rides BOTH claims). A RECORD, never a gate: a
         # hash failure is a logged loss, never a node failure.
-        await self._stamp_code_version(JobId(row["id"]), row["step_key"], node, body)
-
-        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
-        # additive write, class='auto', the ONE stream. Best-effort: a
-        # lost projection is a logged freshness loss, never a node
-        # failure (the asymmetry — the projection never runs inside the
-        # claim's statements).
-        await self._project_auto(
-            flow_id,
-            JobId(row["id"]),
-            KIND_NODE_STARTED,
-            {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
-        )
+        #
+        # THE STAMP-AND-PROJECT MERGE (the perf lane's round-trip cure):
+        # the stamp and the STARTED projection were TWO pool churns per
+        # node (one acquire + release-reset each) for two best-effort
+        # writes — they ride ONE acquire/transaction now (the projection's
+        # conn-level body). The merged tx is still best-effort (a loss is
+        # the logged freshness loss it was — both members agree on the
+        # record or both are absent; the audit pair cannot half-land).
+        version = self._body_code_version(row["step_key"], node, body)
+        try:
+            async with self.pool.acquire() as conn, conn.transaction():
+                if version is not None:
+                    await conn.execute(
+                        # S608: the schema identifier is the settings boundary the
+                        # runner validated at build; the values are $-bound.
+                        f'UPDATE "{self.schema}".jobs SET code_version = $2 WHERE id = $1',  # noqa: S608
+                        JobId(row["id"]),
+                        version,
+                    )
+                # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+                # additive write, class='auto', the ONE stream. Best-effort: a
+                # lost projection is a logged freshness loss, never a node
+                # failure (the asymmetry — the projection never runs inside the
+                # claim's statements).
+                await project_auto_event_on_conn(
+                    conn,
+                    self.wsql,
+                    flow_id=flow_id,
+                    node_id=JobId(row["id"]),
+                    kind=KIND_NODE_STARTED,
+                    payload={
+                        "step_key": row["step_key"],
+                        "attempt": attempt,
+                        "map_index": row["map_index"],
+                    },
+                )
+        except (
+            Exception
+        ) as exc:  # Why: the asymmetry — the projection degrades first, never correctness.
+            logger.warning(
+                "progress_projection_lost",
+                kind="progress_projection_lost",
+                run_id=str(flow_id),
+                node=str(row["id"]),
+                projection=KIND_NODE_STARTED,
+                error=str(exc)[:200],
+            )
 
         # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
         # flow's state — never at create time.
@@ -848,37 +1006,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             await self._store_step_result(cache_address, result, flow_id, row["step_key"])
         return "succeeded"
 
-    async def _stamp_code_version(self, job_id: JobId, node_key: str, node: Any, body: Any) -> None:
-        """The per-attempt ``code_version`` record's write (T03/§22.1):
-        the claim's own stamp — the body's canonical content hash onto
-        the row. Best-effort (a record, never a gate): a body the hash
-        cannot read (a builtin, a partial) records as NULL, the loss
-        logged; the row's claim never fails on its own audit.
-
-        THE WRAPPER'S UNWRAP (the teardown round's cure): the
-        ``@app.actor`` canonical path wires the ``WorkflowActor`` HANDLE
-        into the node — the stamp read the WRAPPER's identity and
-        ``getsource`` refused the instance outright (every canonical
-        node recorded ``node.code-version-unstamped``, §22.1's
-        deploy-drift feature dead where the docs teach the path). The
-        stamp reads the INNER function through
-        :func:`taskq.workflows.api._hints.inner_fn` — the one-unwrap
-        seam the validator's own walk shares."""
-        version = self._body_code_version(node_key, node, body)
-        if version is None:
-            return
-        async with self.pool.acquire() as conn:
-            # S608: the schema identifier is the settings boundary the
-            # runner validated at build; the values are $-bound.
-            await conn.execute(
-                f'UPDATE "{self.schema}".jobs SET code_version = $2 WHERE id = $1',  # noqa: S608
-                job_id,
-                version,
-            )
-
     def _body_code_version(self, node_key: str, node: Any, body: Any) -> str | None:
         """The body's §22.1 canonical hash — the pure computation the
-        per-attempt RECORD's write (above) and the cross-run cache's
+        per-attempt RECORD's write (the stamp-and-project merge, in
+        :meth:`_execute_claimed`) and the cross-run cache's
         ADDRESS (T25) both consume; ``None`` when the hash cannot read
         the body (a builtin, a partial, an unreadable source): the
         record's loss is logged, and an UNADDRESSABLE body caches
