@@ -1,3 +1,3 @@
-head: 8ca5f588fb79f26a6fca56bf433dc807d2e497e6 — rv2-13's TWO green legs at the committed estate (the head-stamp law greens on the committed tree)
-1 passed in 6.38s
-1 passed in 6.41s
+head: 3a9e098ff5d4bfc7d2fbbc3fcfb07abd97668dff — rv2-13's TWO green legs at the EXTRACTED estate (the pin reads THIS branch's registry; the sha cross-check IS the law — the claims' head equals the PR head)
+1 passed in 6.34s
+1 passed in 7.31s

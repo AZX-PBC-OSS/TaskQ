@@ -1,2 +1,2 @@
-head: 8ca5f588fb79f26a6fca56bf433dc807d2e497e6 — THE HEAD-STAMP VERIFIER'S rc=0 receipt at the PRE-EXTRACTION estate (the content door convicts NOTHING; the estate is complete — this commit is the evidence branch's birth state)
+head: 3a9e098ff5d4bfc7d2fbbc3fcfb07abd97668dff — THE HEAD-STAMP VERIFIER'S rc=0 receipt at the EXTRACTED estate (the content door convicts NOTHING; the law holds across the branch move)
 rc=0
