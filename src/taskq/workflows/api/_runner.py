@@ -94,8 +94,6 @@ from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import LadderOps
 from taskq.workflows.api._runner_loop import LoopOps
 from taskq.workflows.api._sql_runner import (
-    CANCEL_NODES_SQL_TEMPLATE,
-    CANCEL_ROOT_SQL_TEMPLATE,
     CLAIMABLE_NODES_SQL_TEMPLATE,
     EDGE_INSERT_SQL_TEMPLATE,
     FLOW_FAILURE_SQL_TEMPLATE,
@@ -177,6 +175,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         self._chain_steps: dict[str, Any] = {
             step_key: chain for chain in getattr(compiled, "chains", ()) for step_key in chain.steps
         }
+        # THE DESCENDANT RUNNERS' CACHE (T28 — the child flows): the
+        # child flow's runner resolved ONCE per drive (the root's
+        # stamped workflow name → the compile registry).
+        self._child_runners: dict[str, FlowRunner] = {}
 
     # ── create ───────────────────────────────────────────────────────
 
@@ -185,6 +187,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         input: object = None,
         run_key: str | None = None,
+        root_metadata_extra: dict[str, object] | None = None,
     ) -> RunClaim:
         """Create the run: the flow root (its payload CARRIES the input —
         cut #7) + every non-map node upfront (the join-wait rows among
@@ -224,9 +227,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         re-fired. THE REAP BELT: the census-grace arm
         (:func:`taskq.workflows._sweep.reap_nodeless_roots`) reaps any
         orphan that could ever exist (a future statement-order
-        regression's debris) past the grace."""
+        regression's debris) past the grace.
+
+        THE PROVENANCE STAMPS (T28 — the child flows' identity):
+        *root_metadata_extra* rides the SAME create transaction (the
+        child root's parent pointers land ATOMICALLY with the root —
+        never a post-create UPDATE that would re-open the orphan window
+        this seam closed). ``None`` (the default) = the shipped shape
+        byte-identical.
+        """
         async with self.pool.acquire() as conn, conn.transaction():
-            claim = await self._insert_root(conn, input, run_key)
+            claim = await self._insert_root(conn, input, run_key, root_metadata_extra)
             complete = claim.created
             if not complete:
                 # THE RETRY-COMPLETION CENSUS: the orphan's signature is
@@ -265,7 +276,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         raw = await conn.fetchval(render_sql(FLOW_NODE_CENSUS_SQL_TEMPLATE, self.schema), flow_id)
         return int(raw or 0)
 
-    async def _insert_root(self, conn: ConnLike, input: object, run_key: str | None) -> RunClaim:
+    async def _insert_root(
+        self,
+        conn: ConnLike,
+        input: object,
+        run_key: str | None,
+        root_metadata_extra: dict[str, object] | None = None,
+    ) -> RunClaim:
         key = run_key or f"flow:{new_uuid()}"
         entry_payload: dict[str, object] = {INPUT_KEY: encode_data_arg(input)}
         return await insert_flow_run(
@@ -273,6 +290,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             self.wsql,
             entry=FlowEntryShim(self.compiled.name, entry_payload),
             run_key=key,
+            extra_metadata=root_metadata_extra,
         )
 
     async def _insert_static_nodes(self, conn: ConnLike, flow_id: JobId, input: object) -> None:
@@ -420,9 +438,29 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             for row in await self._claimable(flow_id):
                 ran = True
                 await self._run_node(flow_id, row)
+            # THE DESCENDANT FLOWS (T28 — the child flows): the child is
+            # a REAL flow — the dev-loop driver walks the receipts and
+            # claims its rows too (the fleet door needs nothing: the
+            # child's rows are queue-dispatched like any flow's).
+            ran |= await self._drive_descendants(flow_id, execute=execute)
         from taskq.workflows._sweep import drain_outbox, sweep_join_rederive
 
         await sweep_join_rederive(self.pool, self.wsql)
+        # THE CHILD-JOIN WAKE (T28): the child's terminal is the join
+        # hold's resolver — the arm runs AFTER the root-maintain leg (a
+        # child terminalized THIS tick wakes its waiter THIS tick).
+        from taskq.workflows.api._hitl import sweep_child_joins
+
+        await sweep_child_joins(self.pool, self.wsql)
+        # THE EXPIRY ARM (rv5-C5a — the dev-drives parity): the tick
+        # runs the signal sweep's expiry leg, so a ``timeout_s`` wait in
+        # a DEV DRIVE fires the ``Expired`` member exactly as it does
+        # under the leader's belt — the pre-cure dev face parked on the
+        # hold until ``max_ticks`` (the deadline inert, the dev loop a
+        # different engine from the fleet's).
+        from taskq.workflows.api._hitl import sweep_expired_signals
+
+        await sweep_expired_signals(self.pool, schema=self.schema)
         await drain_outbox(self.pool, self.wsql)
         from taskq.workflows.api._hitl import sweep_due_timers
 
@@ -430,6 +468,58 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # timer arm mirrors the leader's — the due set empties per tick.
         await sweep_due_timers(self.pool, schema=self.schema, drain=True)
         return ran
+
+    async def _drive_descendants(self, flow_id: JobId, *, execute: bool) -> bool:
+        """The descendant flows' one claim pass (the dev-loop driver's
+        face — T28): the receipts' recursive walk (the UNION's dedup
+        terminates it), each descendant's claimable nodes run through
+        ITS OWN runner (the child's compiled graph resolves its bodies
+        and args — never the parent's)."""
+        from taskq.workflows._childflow import DESCENDANT_FLOWS_SQL_TEMPLATE
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(render_sql(DESCENDANT_FLOWS_SQL_TEMPLATE, self.schema), flow_id)
+        ran = False
+        for fid_row in rows:
+            fid = JobId(fid_row["fid"])
+            child = await self._runner_for_flow(fid)
+            if child is None or not execute:
+                continue
+            for row in await child._claimable(fid):
+                ran = True
+                await child._run_node(fid, row)
+        return ran
+
+    async def _runner_for_flow(self, flow_id: JobId) -> FlowRunner | None:
+        """The descendant flow's runner: the root row's stamped workflow
+        name resolves through the compile registry (D1 — the same
+        registry the spawn and the fleet door read). ``None`` = the
+        name is unregistered in THIS process (loud, logged; the rows
+        keep their work for a driver that carries the definition)."""
+        from taskq.workflows._childflow import FLOW_WORKFLOW_NAME_SQL_TEMPLATE
+        from taskq.workflows._worker_execution import get_compiled_workflow
+
+        async with self.pool.acquire() as conn:
+            name = await conn.fetchval(
+                render_sql(FLOW_WORKFLOW_NAME_SQL_TEMPLATE, self.schema), flow_id
+            )
+        if not name:
+            return None
+        cached = self._child_runners.get(str(flow_id))
+        if cached is not None:
+            return cached
+        try:
+            compiled = get_compiled_workflow(name)
+        except KeyError:
+            logger.warning(
+                "childflow.definition_unregistered",
+                run_id=str(flow_id),
+                workflow=name,
+            )
+            return None
+        child = FlowRunner(compiled, self.pool, self.schema)
+        self._child_runners[str(flow_id)] = child
+        return child
 
     async def _claimable(self, flow_id: JobId) -> list[dict[str, Any]]:
         async with self.pool.acquire() as conn:
@@ -1074,47 +1164,26 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         reason: str | None = None,
         principal: Any = None,
     ) -> int:
-        """P3 rule 4's cancel (T10): ONE transaction — the flow flip is
-        the linearization point; every non-terminal node + held signal
-        resolves in the same snapshot; running children take the
+        """P3 rule 4's cancel (T10): ONE transaction per run — the flow
+        flip is the linearization point; every non-terminal node + held
+        signal resolves in the same snapshot; running children take the
         existing two-phase cooperative cancel; terminal rows untouched;
         IDEMPOTENT (cancel twice = one cancel — a terminal root updates
         nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
-        log line."""
-        # THE REASON'S SHAPE PIN AT THE WRITE (finding 10's cure): the
-        # root flip binds the reason into `jobs.error_message` — a raw
-        # NUL byte refused THAT bind and rolled back the WHOLE cancel.
-        # One law, both binds: `taskq.audit.bound_reason`.
-        from taskq.audit import bound_reason
-        from taskq.workflows.api._hitl import cancel_run_signals
+        log line.
 
-        bounded_reason = bound_reason(reason or "cancel_workflow", 500)
+        THE CASCADE IS THE ROWS' OWN (rv5-C2b/C4's cure — the SAME walk
+        the id-addressed verb carries): the worklist walk, never Python
+        recursion (a 1200-deep cascade cancels clean), and the children
+        are read from the ROWS' crash-safe ``parent_flow_id`` direction
+        FIRST (the receipts the accelerator, the rows the law — the
+        crash between create and receipt-write no longer orphans a
+        child from the cascade)."""
+        from taskq.workflows.api._runner_exit import cancel_cascade
 
-        async with self.pool.acquire() as conn, conn.transaction():
-            flipped = await conn.fetchval(
-                render_sql(CANCEL_ROOT_SQL_TEMPLATE, self.schema),
-                flow_id,
-                bounded_reason,
-            )
-            if flipped is None:
-                return 0  # already terminal — idempotent
-            await conn.execute(render_sql(CANCEL_NODES_SQL_TEMPLATE, self.schema), flow_id)
-            held = await cancel_run_signals(conn, schema=self.schema, workflow_id=flow_id)
-            # THE AUDIT ROW (the caller owns the tx — the same-tx
-            # guarantee; the lazy import keeps the layering).
-            from taskq.audit import record_admin_action
-
-            await record_admin_action(
-                conn,
-                schema=self.schema,
-                principal=principal,
-                action="workflow.cancel",
-                target_type="workflow_run",
-                target_id=str(flow_id),
-                reason=reason,
-                detail={"held_signals_cancelled": held},
-            )
-        return held + 1
+        return await cancel_cascade(
+            self.pool, schema=self.schema, flow_id=flow_id, reason=reason, principal=principal
+        )
 
     async def _finalize_success(
         self,

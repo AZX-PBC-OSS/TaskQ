@@ -37,7 +37,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
 import asyncpg
@@ -51,6 +51,9 @@ from taskq.backend._protocol import ConnLike, JobId
 from taskq.exceptions import ReservedTimerNamespaceError
 from taskq.obs import get_logger
 from taskq.workflows._capture import redact_hold_context
+
+if TYPE_CHECKING:
+    from taskq.workflows._sql import WorkflowSql
 
 __all__ = [
     "HOLD_CHANNEL",
@@ -892,7 +895,28 @@ async def deliver_payload(
         return DeliveryResult(status="delivered")
 
 
-# ── the expiry sweep (the timer arm) ────────────────────────────────────
+async def _child_join_refusal(conn: ConnLike, schema: str, hold_id: JobId) -> str | None:
+    """The child-join hold's typed refusal (rv5-C5c): a hold whose
+    signal names a CHILD JOIN (``__child__:<child flow id>``) cannot be
+    resolved by an operator — its resolver is the child's own terminal
+    (the wake arm's CAS). ``None`` = a human-resolvable hold, the
+    caller proceeds."""
+    row = await conn.fetchrow(
+        _render("SELECT signal_name FROM {schema}.wf_signals WHERE id = $1", schema),
+        hold_id,
+    )
+    if row is None or not str(row["signal_name"]).startswith(CHILD_JOIN_SIGNAL_PREFIX):
+        return None
+    child_flow_id = str(row["signal_name"])[len(CHILD_JOIN_SIGNAL_PREFIX) :]
+    return (
+        f"hold {hold_id} is a CHILD-JOIN (signal {row['signal_name']!r}) — it is not "
+        "operator-resolvable: the hold resolves when the CHILD FLOW "
+        f"{child_flow_id} terminalizes (the wake arm delivers it — the child's "
+        "terminal is the join's resolver, and a human resolve cannot fake the "
+        "child's verdict). To stop the wait: cancel the child flow "
+        f"{child_flow_id} (the run explorer links it from the parent's page) "
+        "or cancel the parent run."
+    )
 
 
 async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: int = 100) -> int:
@@ -1090,6 +1114,92 @@ async def sweep_due_timers(
     return total
 
 
+# ── the child-join wake (T28 — the child's terminal is the hold's resolver) ─
+
+#: The join hold's signal-name prefix (the arm's query keys on it; the
+#: payload contract is the child's declared result model). ONE home: the
+#: join site (``workflows/_childflow.py``) imports it.
+CHILD_JOIN_SIGNAL_PREFIX = "__child__:"
+
+#: THE BROADCAST'S CHANNEL (the T26 transport's own discipline): the
+#: child's terminal wake — ONE knock per delivered join hold, the
+#: pointer-only payload (the row is the truth).
+CHILD_TERMINAL_CHANNEL = "taskq_wf_child_terminal"
+
+_CHILD_WAKE_DELIVER_SQL = """
+WITH due AS (
+    SELECT s.id, s.workflow_id, s.node_key, s.signal_name,
+           substring(s.signal_name FROM $2::int)::uuid AS child_id
+    FROM {schema}.wf_signals s
+    WHERE s.status = 'held' AND s.signal_name LIKE '__child__:%'
+    LIMIT $1
+), verdicts AS (
+    SELECT d.id, d.workflow_id, d.node_key, d.signal_name, d.child_id,
+           j.status AS child_status
+    FROM due d
+    LEFT JOIN {schema}.jobs j ON j.id = d.child_id AND j.step_key = '__flow__'
+    WHERE j.id IS NULL OR j.status IN
+        ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+)
+UPDATE {schema}.wf_signals s
+SET status = 'delivered',
+    resolved_at = clock_timestamp(),
+    payload = jsonb_build_object('child_flow_id', v.child_id::text,
+                                 'child_status', coalesce(v.child_status::text, 'missing'))
+FROM verdicts v
+WHERE s.id = v.id
+RETURNING s.id, s.workflow_id, s.node_key, s.signal_name, v.child_id, v.child_status
+"""
+
+
+async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size: int = 100) -> int:
+    """THE CHILD-JOIN WAKE ARM (T28 — the sweep's resolver half + its
+    reaper half): every held join whose child flow is TERMINAL (or whose
+    child's root row is GONE — the fail-close face) is CAS-delivered,
+    its parent node resumed, and the T26 transport knocks
+    :data:`CHILD_TERMINAL_CHANNEL`. The wait site's resume reads the
+    child's row and returns the typed member (the union's arms —
+    ``workflows/_childflow.py``).
+
+    The arm is idempotent (the CAS's ``status='held'`` predicate) and
+    bounded (LIMIT); a lost resume (the crash between the CAS and the
+    resume statement) is the hold-stamp reconcile arm's own belt — the
+    delivered hold's stamp is cleared and the row re-claims."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            _render(_CHILD_WAKE_DELIVER_SQL, wsql.schema),
+            batch_size,
+            len(CHILD_JOIN_SIGNAL_PREFIX) + 1,
+        )
+        for row in rows:
+            node_id = await conn.fetchval(
+                _render(
+                    "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
+                    "AND (metadata->>'flow_id')::uuid = $2 AND metadata ? 'hold'",
+                    wsql.schema,
+                ),
+                row["node_key"],
+                row["workflow_id"],
+            )
+            if node_id is not None:
+                await conn.execute(_render(_DELIVER_RESUME_SQL, wsql.schema), node_id)
+            # THE BROADCAST (the pointer law): the knock rides AFTER the
+            # CAS committed (the convicted order's cure — T26's P1).
+            await _broadcast(
+                conn,
+                CHILD_TERMINAL_CHANNEL,
+                {
+                    "schema": wsql.schema,
+                    "parent_flow_id": str(row["workflow_id"]),
+                    "node_key": row["node_key"],
+                    "hold_id": str(row["id"]),
+                    "child_flow_id": str(row["child_id"]),
+                    "child_status": row["child_status"],
+                },
+            )
+    return len(rows)
+
+
 # ── the client surface (the programmatic HITL consumer) ─────────────────
 
 
@@ -1175,8 +1285,35 @@ class HitlClient:
         audit rows, 0 knocks for a lost race (the guard-tx shape wrote
         both BEFORE the CAS and doubled under concurrency). An
         already-resolved hold is the DEFINED no-op (the idempotence
-        pin)."""
+        pin).
+
+        THE CHILD-JOIN REFUSAL (rv5-C5c — the honest face): a
+        CHILD-JOIN hold (signal ``__child__:…``) is NOT operator-
+        resolvable — its resolver is the CHILD'S TERMINAL (the wake
+        arm's own CAS). The pre-cure face DELIVERED on a matching
+        payload, the parent's body re-executed, the live child
+        re-held: the no-op bounce wearing a 200. The typed refusal now
+        teaches where the resolution actually lives; the hold
+        SURVIVES."""
         from taskq.audit import record_admin_action
+
+        # THE CHILD-JOIN REFUSAL (before the boundary — nothing about a
+        # child-join hold is operator-consumable).
+        async with self._pool.acquire() as conn:
+            join_refusal = await _child_join_refusal(conn, self._schema, _as_hold_id(hold_id))
+        if join_refusal is not None:
+            async with self._pool.acquire() as conn, conn.transaction():
+                await record_admin_action(
+                    conn,
+                    schema=self._schema,
+                    principal=principal,
+                    action="hitl.resolve",
+                    target_type="hold",
+                    target_id=str(hold_id),
+                    reason=reason,
+                    detail={"refused": join_refusal},
+                )
+            return delivery_refused(join_refusal)
 
         # THE BOUNDARY (before the CAS — nothing consumed on a refusal).
         refusal, verdict_kind = await _boundary_verdict(

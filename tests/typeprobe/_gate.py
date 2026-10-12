@@ -95,6 +95,12 @@ _CORPUS: tuple[str, ...] = (
     # verbs); the type-keyed green face (and the flat Promise[list[R]]
     # it returns) stays clean.
     "wf_graph_route_negative_types.py",
+    # THE CHILD FLOWS' PROBES (T28): the join's closed union
+    # (``ChildOk[M] | ChildFailed | ChildCancelled | Expired``) forces
+    # the fail-close arms — the bare unwrap reds the attribute, the
+    # ChildOk-only match reds the fall-through against the body's
+    # declared return; the all-arms green door stays clean.
+    "wf_childflow_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

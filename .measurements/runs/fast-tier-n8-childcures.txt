@@ -1,0 +1,7 @@
+# fast-tier-n8 — the cures lane's fast tier (-n 8, full capture) at the source-final head 822772b410c68dd804cbef90ce82b1aa83538473
+SKIPPED [1] tests/test_docs_examples.py:55: docs examples execute only with TASKQ_DOCS_EXAMPLES=1 (needs Docker for the PG/Redis containers)
+SKIPPED [1] tests/test_attack_insights_rec.py:244: uvloop is not installed
+SKIPPED [1] tests/test_memory_jobs_fixture.py:155: PG backend requires @pytest.mark.integration
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+FAILED tests/test_fv_redlog_guard.py::test_every_law_stamped_redlog_entry_cites_a_live_capture
+2 failed, 9673 passed, 3 skipped, 121 warnings in 332.55s (0:05:32)

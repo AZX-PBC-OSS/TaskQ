@@ -26,7 +26,9 @@ their homes WITHOUT the tax:
   its concern modules (``_sql_runner``/``_runner_codec``/
   ``_runner_errors``/``_ctx``/``_ctx_wait``/``_runner_loop``/
   ``_runner_chain``/``_runner_ladder``/``_runner_exit`` — §7b's split)
-  own create/drive/result; ``api._loop`` owns the loop verbs.
+  own create/drive/result; ``api._loop`` owns the loop verbs;
+  ``_childflow`` owns the child flows (T28 — the spawn face + the join
+  handle).
 * ``chain`` owns the chain surface; ``context`` owns ``ctx.step``;
   ``definitions`` owns the registered-definition registry;
   ``ledger`` the step-ledger claim + the run-key arbiter; ``engine`` the
@@ -35,6 +37,17 @@ their homes WITHOUT the tax:
   progress plumbing; ``_status`` the derivation.
 """
 
+from taskq.workflows._childflow import (
+    DEFAULT_SPAWN_MAX_DEPTH,
+    ChildCancelled,
+    ChildFailed,
+    ChildFlowLostError,
+    ChildHandle,
+    ChildOk,
+    ChildOutcome,
+    ChildWorkflowUnknownError,
+    SpawnDepthExceededError,
+)
 from taskq.workflows.api import (
     CompiledWorkflow,
     Exit,
@@ -84,9 +97,17 @@ from taskq.workflows.chain import (
 from taskq.workflows.ledger import RunClaim
 
 __all__ = [
+    "DEFAULT_SPAWN_MAX_DEPTH",
     "DONE",
     "Backfilled",
     "Chain",
+    "ChildCancelled",
+    "ChildFailed",
+    "ChildFlowLostError",
+    "ChildHandle",
+    "ChildOk",
+    "ChildOutcome",
+    "ChildWorkflowUnknownError",
     "CompiledWorkflow",
     "DeliveryResult",
     "Done",
@@ -111,6 +132,7 @@ __all__ = [
     "RouteArm",
     "RouterNotTotal",
     "RunClaim",
+    "SpawnDepthExceededError",
     "Step",
     "StepContext",
     "TimerWake",

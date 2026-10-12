@@ -22,6 +22,7 @@ import asyncpg
 
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
+from taskq.workflows._childflow import CtxSpawnOps
 from taskq.workflows._progress import ProgressEmitter, validate_emission
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import EmitChild
@@ -85,10 +86,12 @@ def build_step_context(
 
 
 @dataclass(frozen=True, slots=True)
-class StepContext(CtxWaitOps, CtxTimerOps):
+class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     """The body's runtime context: the run's identity + the input (cut
     #7) + the memoized step runner. Bodies read ``ctx.input`` and run
-    side effects through ``ctx.step`` (the ledger's replay contract).
+    side effects through ``ctx.step`` (the ledger's replay contract);
+    spawn + join sub-flows through ``ctx.spawn_flow`` (T28 — the child
+    flows' face, the join the HITL hold's own shape).
 
     The two WAIT faces compose in: the HUMAN hold (``ctx.wait_signal``
     — the HITL machinery) and the DURABLE TIMER (``ctx.wait_until`` —

@@ -1,0 +1,2 @@
+# the type gate (41 markers x pyright 1.1.414 + ty 0.0.85) at the source-final head 822772b410c68dd804cbef90ce82b1aa83538473
+the type gate holds: every MUST_ERROR marker (41) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers

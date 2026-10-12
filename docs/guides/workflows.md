@@ -1094,6 +1094,210 @@ addresses it), so naming the node means naming the SOURCE. (An earlier
 revision shipped a `key=` param whose every value was refused — the
 trap is gone; see the changelog.)
 
+## §3b — Child flows: a step spawns a sub-flow and joins its result (T28)
+
+The map's fork fans out inside ONE flow. When the sub-work is another
+WHOLE flow — the agent spawning sub-investigations, each a real run the
+run explorer sees, the admin operates, the CLI lists — the step calls
+`ctx.spawn_flow` and JOINS the child's terminal. The child is a REAL
+flow: its own root row, its own node rows, its own run-key claim — the
+spawn is the child's `create_flow` in the create seam's own ONE
+transaction. The join is the HITL hold's own shape: the wait registers
+a hold on the spawning node, the slot releases (never a failed
+attempt), and the child's terminal is the hold's RESOLVER — the wake
+arm delivers, the body resumes, the closed union's member returns.
+`timeout_s=0.0` would never wait; the example passes `None` (the
+default — wait as long as the child lives; a cancelled parent cancels
+its children, so no join outlives its flow):
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    ChildCancelled,
+    ChildFailed,
+    ChildOk,
+    Expired,
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    step,
+)
+
+
+class Probe(BaseModel):
+    topic: str
+
+
+class SubReport(BaseModel):
+    findings: list[str] = []
+
+
+class Digest(BaseModel):
+    verdict: str
+    findings: list[str] = []
+
+
+child_app = WorkflowApp()
+
+
+@child_app.actor(queue="default", max_attempts=1)
+async def sub_investigate(ctx: StepContext) -> SubReport:
+    # The FLOW INPUT's face: the spawn's `input=` rides the child
+    # root's payload; the body re-hydrates it through the declared
+    # model's own validator (the jsonb value, decoded once).
+    probe = Probe.model_validate(ctx.input)
+    return SubReport(findings=[f"looked at {probe.topic}"])
+
+
+@child_app.workflow("docs_childflow_child")
+def docs_childflow_child() -> Promise[object]:
+    return build(step(sub_investigate, key="probe"))
+
+
+parent_app = WorkflowApp()
+
+
+@parent_app.actor(queue="default", max_attempts=3)
+async def investigate(ctx: StepContext, params: Probe) -> Digest:
+    # THE SPAWN: the child is a REAL flow. The run key
+    # (`childflow:{parent_flow}:{node}:{slot}`) is the TWO-CLAIMS LAW
+    # at the flow level: the retry ADOPTS the same child, never
+    # duplicates it (a terminal child adopted as-is is the
+    # deterministic replay; `key=` overrides the slot).
+    handle = await ctx.spawn_flow(
+        "docs_childflow_child",
+        input=Probe(topic=params.topic),
+        result=SubReport,
+    )
+    # THE JOIN (the wait IS the hold): the CLOSED union — the checker
+    # forces the fail-close arms (a body matching only ChildOk falls
+    # through and reds against this Digest return).
+    outcome = await handle.wait()
+    match outcome:
+        case ChildOk(result=report):
+            return Digest(verdict="ok", findings=report.findings)
+        case ChildFailed():
+            # THE CHILD FAILED — never a silent swallow: the body
+            # DECIDES (finish with what it has here).
+            return Digest(verdict="child-failed")
+        case ChildCancelled():
+            return Digest(verdict="child-cancelled")
+        case Expired():
+            # THE JOIN'S OWN PATIENCE EXPIRED (`timeout_s=` arms the
+            # hold's deadline — the DB clock; the face fires ONCE per
+            # abandoned hold per attempt).
+            return Digest(verdict="expired")
+
+
+@parent_app.workflow("docs_childflow_parent")
+def docs_childflow_parent() -> Promise[object]:
+    return build(step(investigate, Probe(topic="the-estate"), key="spawn_join"))
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+
+    from taskq.workflows import FlowRunner
+
+    # The registration door — the spawn resolves the child's compiled
+    # graph from the registry (the definitions must be imported in the
+    # driver's process).
+    child_app.get("docs_childflow_child")  # noqa: B018  (registers the child)
+    runner = FlowRunner(parent_app.get("docs_childflow_parent"), pool, schema)
+    claim = await runner.create_flow(input=Probe(topic="the-estate"))
+    outcome = await runner.drive(claim.flow_id, until="terminal")
+    assert outcome == "terminal", outcome
+    result = Digest.model_validate(await runner.result(claim.flow_id))
+    assert result.verdict == "ok", result
+    assert result.findings == ["looked at the-estate"], result
+    await pool.close()
+
+
+asyncio.run(main())
+```
+
+The identity runs BOTH directions: the parent's node row carries the
+child's flow id (`metadata.child_flows` — the receipt), the child's
+root row carries the parent's (`parent_flow_id` / `parent_node_id` /
+`parent_step_key` — the provenance). The cancel cascade: cancelling the
+parent's run walks the family from the rows' parent links (the
+receipts the accelerator) and cancels each child's rows — the worklist
+walk below. The fan-out is the body's own loop: spawn K handles (each
+slot a distinct, retry-stable key) and join each — the fork's
+all-members semantics at the flow level.
+
+**THE SPAWN'S ATOMICITY FACE (the gather dragon's cure).** The default
+slot is CLAIMED in one atomic statement (the per-attempt cursor's
+increment and the returned slot are one row-CAS), so K CONCURRENT
+spawns — `asyncio.gather(*[ctx.spawn_flow(...) for t in tenants])`, the
+natural fan-out spelling — take K DISTINCT slots and mint K DISTINCT
+children, each carrying its own input. The pre-cure shape raced the
+cursor's read and write: all K spawns adopted the same slot, minted ONE
+child, and every caller received tenant-0's verdict wearing K labels —
+silent fabricated results, zero errors, green pins. A SAME-key
+concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
+every caller receives THAT child's handle — the honest shared face.
+One discipline applies: a concurrent fan-out that must join STABLY
+across the resume passes `key=` (the slot's allocation order is the
+scheduler's; the author's identity is the caller's — a resumed body
+re-executes the gather and the adoption follows the KEYS).
+
+**THE DEPTH BOUND.** A self-spawning flow (a workflow that spawns
+itself, directly or through a cycle of children) cannot mint a
+generation per sweep tick forever: the spawn walks the ancestor chain
+from the ROWS' `parent_flow_id` links — capped at the declared max
+depth, `DEFAULT_SPAWN_MAX_DEPTH` (32) — and past the bound the typed
+`SpawnDepthExceededError` (`FanInBoundExceededError`'s sibling)
+terminal-fails the node, the retry ladder unburned (re-running cannot
+shrink the ancestor chain). The same walk detects a CYCLE in the parent
+links (a corrupted/operator-written link cannot run the walk forever —
+the same bound fires, the message names it). A fan-out that genuinely
+needs more depth declares `max_depth=` at the spawn site.
+
+**THE RETENTION INTERPLAY (the operator's law).** The cancel cascade
+cancels the family; the retention purge must WALK THE PARENT LINKS the
+same way — purging a child's rows while its parent still runs leaves a
+DANGLING child pointer on the parent's row. The parent's resume now
+FAILS CLOSE on it: the dangling pointer raises the typed
+`ChildFlowLostError` and the run terminal-fails with the class on the
+record. It is NEVER a silent respawn — the pre-cure shape re-minted a
+fresh child on the resume (the purge took the arbiter's row with it),
+the child's side effects ran twice, and the parent SUCCEEDED.
+
+**THE CASCADE WALKS THE ROWS.** The cancel cascade collects children
+from the ROWS' crash-safe `parent_flow_id` direction first — the
+receipts (`metadata.child_flows`) are the accelerator, the rows the
+law. A child created but never receipted (the crash between
+child-create and receipt-write) is STILL collected: the orphan window
+— the crash-then-cancel that let a child escape the cascade forever —
+is unrepresentable. The cascade itself is a WORKLIST WALK, never
+Python recursion: a 1200-deep family cancels clean (the recursive walk
+raised `RecursionError` at the operator and left hundreds of runs
+running).
+
+**THE DEV-DRIVES PARITY.** The dev-loop driver's tick runs the expiry
+arm, so a `timeout_s` wait — including a child join's — fires the
+`Expired` member in a dev drive exactly as it does under the leader's
+sweep belt. The pre-cure dev face parked on the hold until
+`max_ticks`: the deadline inert, the dev loop a different engine from
+the fleet's.
+
+**THE ADMIN SEES THE FAMILY.** The run explorer renders the
+parent↔child links the rows carry: the parent's page links each child
+flow's run page, a child's page links its parent — the identity faces
+the child line landed, surfaced.
+
 ## §9 — Loops & back-edges (T19)
 
 `wf.loop(name, body, *, initial, carry_type, until, max_iterations,

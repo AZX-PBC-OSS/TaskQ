@@ -1,0 +1,5 @@
+# the wf battery x2 AT THE COMMITTED ESTATE (head ff0d900b20a77fdbb7c432e64a5aba400dc49e83 — the measurement commit; the off-by-one rule carries the claims' stamp)
+--- leg 1:
+583 passed, 1 warning in 55.75s
+--- leg 2:
+583 passed, 1 warning in 50.38s

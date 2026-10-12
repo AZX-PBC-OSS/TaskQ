@@ -3,3 +3,6 @@ the law holds at the working tree: every evidence kind's live claim in .measurem
 verify rc=0 (modulo this capture's own stem — the self-reference resolved by this file's stamp)
 head: 512f7a91f72272d0d05af484521a23ad7a9d7cd9
 SUPERSEDED-BY: runs/evidence-heads-verify-20261010T191125.txt
+== the committed run ==
+rc=0
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-child/.measurements/runs is recorded at THIS head (1f4bb1d55758) or explicitly superseded

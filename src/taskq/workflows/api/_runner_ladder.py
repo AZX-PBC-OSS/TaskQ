@@ -85,7 +85,15 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     * :class:`FanInBoundExceededError` — the fork's fan-in past the
       declared bound (the rv4 F8 cure: re-running cannot shrink the
       corpus; the refusal NAMES the child_driven escape — the remedy is
-      a re-wiring, never a retry).
+      a re-wiring, never a retry);
+    * :class:`SpawnDepthExceededError` — the spawn's ancestor walk past
+      the declared max depth (rv5-C2's cure: re-running cannot shrink
+      the ancestor chain — the child line's own bound, the fan-in
+      bound's sibling);
+    * :class:`ChildFlowLostError` — the parent's resume found a
+      DANGLING child pointer (rv5-C3's cure: re-running cannot restore
+      the purged rows — the respawn refusal is the honest face, the
+      silent re-execution it replaced was the lie).
 
     THE ROUTING RULE, per class (the pin drills all three legs):
     ``deterministic = the NAMED terminal`` (finalize immediately, the
@@ -102,6 +110,7 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     laddered failure — the deterministic death, mislabeled transient.
     """
     from taskq.exceptions import ReservedTimerNamespaceError
+    from taskq.workflows._childflow import ChildFlowLostError, SpawnDepthExceededError
     from taskq.workflows._emit import MapIndexExhaustedError, PageDivergedError
     from taskq.workflows._progress import ProgressRefusedError
     from taskq.workflows.definitions import FanInBoundExceededError
@@ -116,6 +125,8 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
         # re-running the body re-raises the same refusal on every
         # attempt (a retry budget spent on it is the record's lie).
         ReservedTimerNamespaceError,
+        SpawnDepthExceededError,
+        ChildFlowLostError,
     )
     return isinstance(exc, deterministic)
 

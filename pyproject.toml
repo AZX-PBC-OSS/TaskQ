@@ -351,6 +351,10 @@ ignore = [
 # interpolation is the module fixture's schema identifier (wf_schema),
 # every caller-controlled value $N-bound.
 "tests/test_wf_hitl_pubsub_pins.py" = ["S608"]
+# The T28 child-flow pins: the same shape — the f-strings' ONLY
+# interpolation is the module fixture's schema identifier (wf_schema),
+# every caller-controlled value $N-bound.
+"tests/test_wf_childflow_pins.py" = ["S608"]
 # The D2 soak's cure pins (the hold-stamp wedge): the same shape — the
 # f-strings' ONLY interpolation is the module fixture's schema identifier
 # (wf_schema), every caller-controlled value $N-bound.
