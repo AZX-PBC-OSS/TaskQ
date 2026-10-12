@@ -1,0 +1,24 @@
+{
+  "mutation": "the retry-storm contagion \u2014 a child's retry re-triggers the map body for the WHOLE list",
+  "observed": {
+    "after": {
+      "deps_pending": 0,
+      "metadata": {
+        "flow_id": "01a12ab2-690f-7e30-a6ca-ed30057fc0e8"
+      },
+      "result": null,
+      "status": "running"
+    },
+    "before": {
+      "deps_pending": 0,
+      "metadata": {
+        "flow_id": "01a12ab2-690f-7e30-a6ca-ed30057fc0e8"
+      },
+      "result": null,
+      "status": "running"
+    }
+  },
+  "pin": "map-retry-barrier-(c)-contagion",
+  "run": "20261011T042137-1129104-af1137d7",
+  "ts": "2026-10-11T04:21:37"
+}

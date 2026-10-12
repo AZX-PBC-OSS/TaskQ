@@ -219,6 +219,7 @@ def test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason() -> None
         node_key="review",
         signal_name="Approval",
         hold_epoch=2,
+        map_index=None,
         call_id="c",
         payload=None,
         payload_schema=None,

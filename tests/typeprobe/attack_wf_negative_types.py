@@ -58,8 +58,9 @@ async def probe_entry_is_any(conn: asyncpg.Connection) -> None:
 
 async def probe_workflow_steps_conn_is_any(conn: asyncpg.Connection) -> None:
     # MUST_ERROR(reportArgumentType, invalid-argument-type): the step
-    # surface binds a DB connection (ConnLike) + statement bundle
-    # (WorkflowSql); arbitrary objects must not type-check.
+    # surface binds a connection POOL (Pool — the acquisition seam; the
+    # claim and the terminal each take their own connection) + statement
+    # bundle (WorkflowSql); arbitrary objects must not type-check.
     steps = WorkflowSteps(
         42, "not-a-bundle", flow_id=conn, job_id=conn
     )  # MUST_ERROR(reportArgumentType, invalid-argument-type)

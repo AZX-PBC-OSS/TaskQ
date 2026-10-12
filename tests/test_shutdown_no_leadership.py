@@ -111,7 +111,10 @@ def _worker_settings() -> WorkerSettings:
         "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
-        "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
+        # The lag lattice's order: check < warn < budget (the warn-vs-
+        # check refusal — the warning storm's cure — fires otherwise).
+        "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",
+        "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.6",
         "TASKQ_MAX_HEARTBEAT_FAILURES": "3",
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",

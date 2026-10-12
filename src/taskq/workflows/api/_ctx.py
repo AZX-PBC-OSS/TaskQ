@@ -263,19 +263,26 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         result (the re-execution doctrine's cheap side: pre-wait side
         effects are substep-ledgered and replay cheap).
 
+        THE CONNECTION IS NEVER YOURS, BODY (the LedgerWatch F4 cure):
+        the claim and the terminal write each take their own
+        acquisition; between them the body runs with NO pool connection
+        held — a hot map fan-out's concurrent substeps are bounded by
+        the workers, never by the execution pool's conn count (the
+        pre-cure shape held ONE connection across *fn* and throttled a
+        300-child fan-out to the dispatcher pool's 4).
+
         THE GLOSSARY LAW (the ergonomic tail's cure): this was
         ``ctx.step`` — the wiring verb ``step()`` already owns that name
         with DIFFERENT semantics (a graph NODE's declaration vs a node's
         INNER ledgered effect). The lesser noun renamed: the substep is
         the step-ledger's own vocabulary (``wf_step_ledger`` rows are
         what make it exactly-once)."""
-        async with self._pool.acquire() as conn:
-            steps = WorkflowSteps(
-                conn,
-                self._wsql,
-                flow_id=self.flow_id,
-                job_id=self.job_id,
-                map_index=self._map_index,
-                attempt=self.attempt,
-            )
-            return await steps.step(name, fn, *args, idempotent=idempotent)
+        steps = WorkflowSteps(
+            self._pool,
+            self._wsql,
+            flow_id=self.flow_id,
+            job_id=self.job_id,
+            map_index=self._map_index,
+            attempt=self.attempt,
+        )
+        return await steps.step(name, fn, *args, idempotent=idempotent)

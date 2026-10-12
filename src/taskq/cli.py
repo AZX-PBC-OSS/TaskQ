@@ -4288,7 +4288,8 @@ async def _flows_list(settings: TaskQSettings, limit: int) -> None:
                          AND e.failure_policy IN ('collect', 'maybe')
                          AND NOT (j2.status = 'pending' AND j2.metadata->>'blocking_reason' IN ('failed_parent', 'orphan_parent', 'flow_dead'))
                    ) AS absorbed,
-                   s.id AS hold_id, s.signal_name, s.expires_at AS hold_expires_at
+                   s.id AS hold_id, s.signal_name, s.map_index AS hold_map_index,
+                   s.expires_at AS hold_expires_at
             FROM runs r
             LEFT JOIN "{settings.schema_name}".jobs n
               ON (n.metadata->>'flow_id')::uuid = r.id
@@ -4335,6 +4336,7 @@ async def _flows_list(settings: TaskQSettings, limit: int) -> None:
                     node_key=row["step_key"],
                     signal_name=row["signal_name"],
                     hold_epoch=0,
+                    map_index=row["hold_map_index"],
                     call_id="",
                     payload={},
                     payload_schema=None,
@@ -4417,7 +4419,7 @@ async def _flows_status(
             raise typer.Exit(code=1)
         node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
         held = await conn.fetch(
-            f"SELECT id, node_key, signal_name, hold_epoch, payload, payload_schema, "  # noqa: S608  # Why: schema identifier-validated above.
+            f"SELECT id, node_key, signal_name, hold_epoch, map_index, payload, payload_schema, "  # noqa: S608  # Why: schema identifier-validated above.
             "created_at, expires_at FROM "
             f'"{settings.schema_name}".wf_signals '
             "WHERE workflow_id = $1 AND status = 'held'",
@@ -4513,6 +4515,7 @@ def _held_context(run_id: str, signal_row: Any) -> Any:
         node_key=signal_row["node_key"],
         signal_name=signal_row["signal_name"],
         hold_epoch=signal_row["hold_epoch"],
+        map_index=signal_row["map_index"],
         call_id="",
         payload=payload,
         payload_schema=signal_row["payload_schema"],

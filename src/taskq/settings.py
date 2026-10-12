@@ -2611,6 +2611,46 @@ class WorkerSettings(TaskQSettings):
         # cannot distinguish from a healthy one is a misconfiguration the
         # operator only meets at the os._exit. Same watchdog gating as
         # the lease invariant above.
+        #
+        # THE WARN BUDGET VS THE CHECK CADENCE (the LedgerWatch F6 cure —
+        # the warning storm's config cannot boot): the tier-1 warn's
+        # healthy baseline IS the sampling period — the detector polls
+        # once per watchdog_check_interval and schedules the beat it
+        # measures from the same poll, so a healthy loop's observed lag
+        # is ~check_interval by construction. A warn budget at or below
+        # the check interval therefore warns on EVERY healthy poll — and
+        # each warn dumps every live asyncio task, the dump blocks the
+        # loop, the block triggers the next warn: a self-sustaining
+        # storm (the adoption team's measured shape: warn 0.4 / check
+        # 0.5 passed this lattice's pre-cure legs, then 295 warn+dump
+        # pairs starved the worker's heartbeat past the fleet's
+        # readiness timeout). Same watchdog gating as the lease
+        # invariant above; the remedy is taught (raise the warn budget —
+        # comfortably above the check interval, below the terminal
+        # budget).
+        if self.watchdog_enabled and (
+            self.watchdog_loop_lag_warn_budget <= self.watchdog_check_interval
+        ):
+            errors.append(
+                ValidationError(
+                    field_name="watchdog_loop_lag_warn_budget",
+                    value=self.watchdog_loop_lag_warn_budget,
+                    error_msg=(
+                        f"watchdog_loop_lag_warn_budget "
+                        f"({self.watchdog_loop_lag_warn_budget}) must be > "
+                        f"watchdog_check_interval ({self.watchdog_check_interval}): "
+                        "the lag detector samples the loop once per check interval, "
+                        "so a healthy loop's observed lag is ~the full check "
+                        "interval — a warn budget at or below it warns and dumps "
+                        "every live task on EVERY healthy poll, the dump blocks "
+                        "the loop, and the block fires the next warn (a "
+                        "self-sustaining warning storm that starves the "
+                        "heartbeat). Raise the warn budget comfortably above the "
+                        "check interval (it must stay below "
+                        "watchdog_loop_lag_budget)."
+                    ),
+                )
+            )
         if self.watchdog_enabled and (
             self.watchdog_loop_lag_warn_budget >= self.watchdog_loop_lag_budget
         ):

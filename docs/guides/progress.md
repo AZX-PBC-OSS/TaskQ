@@ -468,7 +468,7 @@ from taskq.workflows import (
     map_source,
     step,
 )
-from taskq.workflows._progress_read import keyed_display, run_display
+from taskq.workflows import keyed_display, run_display
 
 
 class Ingest(BaseModel):

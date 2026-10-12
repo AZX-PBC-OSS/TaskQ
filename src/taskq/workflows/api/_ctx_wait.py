@@ -116,6 +116,9 @@ class WaitHost(Protocol):
     _wsql: WorkflowSql
     _is_loop: bool
     _ledger_id: JobId | None
+    #: The map item's index (the F2 cure's identity leg: a map
+    #: sibling's holds read and mint per sibling).
+    _map_index: int | None
     #: The REGISTERED workflow's name (D1 — the signal-model catalog's
     #: key; the hold-context redact hook's resolution).
     _workflow_name: str
@@ -309,16 +312,26 @@ class CtxWaitOps(WaitHost):
                 else 0
             )  # pyright: ignore[reportIndexType,reportArgumentType]
             cursor = row_iteration if is_loop_kind else row_cursor
+            # EVERY WAIT-SITE READ CARRIES THE MAP INDEX (the F2 cure):
+            # a MAP SIBLING's answer queue / held representation /
+            # timeout face are the SIBLING'S OWN rows — the pre-cure
+            # node_key-only reads let sibling A's hold contaminate
+            # sibling B's wait (the held-representation wedge) and
+            # sibling B's resume steal sibling A's delivered answer (the
+            # answer theft). `IS NOT DISTINCT FROM` keeps the plain
+            # step's NULL map_index exact.
             queue = await conn.fetch(
                 render_sql(
                     "SELECT id, payload, hold_epoch FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
+                    "AND map_index IS NOT DISTINCT FROM $4 "
                     "AND status = 'delivered' ORDER BY hold_epoch ",
                     self._wsql.schema,
                 ),
                 self.flow_id,
                 self.node_key,
                 [*names, "|".join(names)],
+                self._map_index,
             )
             if is_loop_kind and cursor > len(queue):
                 # THE E13 RULE (the loop's uniform-wait law — C9's cure):
@@ -374,12 +387,14 @@ class CtxWaitOps(WaitHost):
                 render_sql(
                     "SELECT id FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
+                    "AND map_index IS NOT DISTINCT FROM $4 "
                     "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
                     self._wsql.schema,
                 ),
                 self.flow_id,
                 self.node_key,
                 [*names, "|".join(names)],
+                self._map_index,
             )
             if held_row is not None:
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=names)
@@ -400,12 +415,14 @@ class CtxWaitOps(WaitHost):
                 render_sql(
                     "SELECT id, hold_epoch FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
+                    "AND map_index IS NOT DISTINCT FROM $4 "
                     "AND status = 'abandoned' ORDER BY hold_epoch DESC LIMIT 1",
                     self._wsql.schema,
                 ),
                 self.flow_id,
                 self.node_key,
                 [*names, "|".join(names)],
+                self._map_index,
             )
             if abandoned_row is not None:
                 face_key = f"timeout_face_{self.attempt}"
@@ -439,15 +456,20 @@ class CtxWaitOps(WaitHost):
                         hold_id=str(abandoned_row["id"]),
                     )
             # A NEW HOLD: a NEW epoch (the count of this name's holds —
-            # the identity's mint).
+            # the identity's mint). THE MINT IS PER MAP SIBLING (the F2
+            # cure): siblings of one source mint INDEPENDENT epoch
+            # sequences (the pre-cure shared mint collided the
+            # siblings' epochs onto one row).
             epoch = await conn.fetchval(
                 render_sql(
                     "SELECT COALESCE(MAX(hold_epoch), 0) + 1 FROM {schema}.wf_signals "
-                    "WHERE workflow_id = $1 AND node_key = $2",
+                    "WHERE workflow_id = $1 AND node_key = $2 "
+                    "AND map_index IS NOT DISTINCT FROM $3",
                     self._wsql.schema,
                 ),
                 self.flow_id,
                 self.node_key,
+                self._map_index,
             )
             schema_ref: dict[str, object] = {
                 m.__name__: m.model_json_schema()
@@ -466,6 +488,7 @@ class CtxWaitOps(WaitHost):
                 timeout_s=timeout_s,
                 context={"reason": reason, "tool": tool, "args": args},
                 redact=self._redact,
+                map_index=self._map_index,
             )
         raise NodeHeldError(hold_id=str(hold_id), signal_names=names)
 
@@ -496,18 +519,21 @@ class CtxWaitOps(WaitHost):
     async def signal(self, name: str) -> Any:
         """Read a DELIVERED signal's payload on resume (cut #3's cure —
         the payload rides the ROW; the author never hand-rolls a side
-        table)."""
+        table). THE READ IS THE SIBLING'S OWN (the F2 cure): the
+        map_index filter keeps a map sibling off a sibling's answers."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 render_sql(
                     "SELECT payload, status FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
+                    "AND map_index IS NOT DISTINCT FROM $4 "
                     "ORDER BY hold_epoch DESC LIMIT 1",
                     self._wsql.schema,
                 ),
                 self.flow_id,
                 self.node_key,
                 name,
+                self._map_index,
             )
         if row is None or row["status"] != "delivered":
             raise SignalUnavailableError(
