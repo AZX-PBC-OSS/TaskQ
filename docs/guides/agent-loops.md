@@ -244,9 +244,7 @@ async def main() -> None:
     held = await runner.drive(flow_id, until="held")  # the worker RELEASED the slot
     hitl = HitlClient(pool, schema)
     holds = await hitl.list(run=flow_id)  # the hold: a row a UI can render
-    delivery = await hitl.resolve(
-        holds[0].hold_id, {"approved": True, "note": "ship it"}
-    )
+    delivery = await hitl.resolve(holds[0].hold_id, {"approved": True, "note": "ship it"})
     await runner.drive(flow_id, until="terminal")
     final = await runner.result(flow_id)
     print(
@@ -491,7 +489,7 @@ async def main() -> None:
     # knocks pointed at, plus the coalescing's own counter.
     row = await pool.fetchrow(
         f'SELECT pct, message, occurrences FROM "{schema}".wf_node_progress '
-        f'WHERE channel = \'progress\' AND node_id = (SELECT id FROM "{schema}".jobs '
+        f"WHERE channel = 'progress' AND node_id = (SELECT id FROM \"{schema}\".jobs "
         "WHERE step_key = 'read_sources' "
         "AND (metadata->>'flow_id')::uuid = $1)",
         flow_id,
