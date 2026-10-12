@@ -1,6 +1,6 @@
 # T31 — The nested flow spawn/join: sub-investigations with their own run identity
 
-**Status:** DRAFT (the agent-loop parity lane's research) · **Lane:** agentloop-parity · **Ranked:** 2nd of the five gaps (T30–T34)
+**Status:** LANDED — CLOSED (was: this lane's DRAFT, ranked 2nd; the child-flows lane landed the surface) · **Landed as:** `ctx.spawn_flow(name, input=…, result=G, key=…, max_depth=…)` → `ChildHandle[G].wait(timeout_s=…) → ChildOk[G] | ChildFailed | ChildCancelled | Expired` — the child is a REAL flow (its own run rows; the run explorer, the admin, the CLI all see it), the spawn's run key is the TWO-CLAIMS LAW at the flow level (the retry ADOPTS the same child — the per-attempt spawn cursor is stable across retries; an explicit `key=` overrides), the parent's node carries the child's id (`metadata.child_flows`, the ensure-append), the child's root carries the parent's (the create's ONE transaction — never a post-create UPDATE), the join rides the hold machinery (the typed outcome union, the fail-close `Expired` arm), the depth bound (default 32) bounds the recursion, and the child's holds are the CHILD's own. The design-first shape's shared-state channel stays deliberately-not-v1. Pins: `tests/test_wf_childflow_pins.py`, `tests/test_wf_childflow_rv5_pins.py`, `tests/test_wf_childflow_cures_pins.py` — green ×2 at the merged estate. The guide's §Pattern 3 teaches the landed face.
 
 ## The named pattern
 

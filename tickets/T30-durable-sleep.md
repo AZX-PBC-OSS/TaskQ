@@ -1,6 +1,6 @@
 # T30 — The durable sleep / wait-until: a general timer beyond the hold
 
-**Status:** DRAFT (the agent-loop parity lane's research) · **Lane:** agentloop-parity · **Ranked:** 1st of the five gaps (T30–T34)
+**Status:** LANDED — CLOSED (was: this lane's DRAFT, ranked 1st; the timers lane landed the surface) · **Landed as:** `ctx.wait_until(when, key=…)` — the clock is the hold's RESOLVER: the reserved `__timer__` prefix (invisible to `HitlClient.list`, a human resolve refused), the row is the truth (the held representation, the worker's slot released), the relative-float and absolute-datetime deadlines on the DB clock (never re-based), the due-drain fires at-or-after (the wake's receipt: the key, the scheduled instant, `fired_by='timer'`), the due-drain DRAINS until empty per tick (the partial index on the prefix — the 10K-timer tail cured), and the hold identity carries the MAP INDEX (a timer inside a map item mints EACH sibling its own row). Pins: `tests/test_wf_timer_cures_pins.py`, `tests/test_wf_timer_pins.py`, `tests/test_wf_timer_rv5_pins.py` — green ×2 at the merged estate. The guide's §Pattern 5 teaches the landed face.
 
 ## The named pattern
 

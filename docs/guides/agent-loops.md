@@ -1,10 +1,11 @@
-# Agent loops: the five durable patterns (DRAFT — the research lane's word, not a verdict)
+# Agent loops: the five durable patterns
 
-> **Status: DRAFT.** This page is the agent-loop parity lane's deliverable — the
-> pattern mapping, the agent-builder's guide, and the honest where-we-lack list,
-> written against the landed `feat/taskqflow` surface and the frameworks'
-> late-2026 docs (the receipts at the foot of the page). It is evidence for the
-> adoption argument, not the argument itself.
+> **Status: CURRENT** (was: the agent-loop parity lane's DRAFT — T30 and
+> T31 landed since, the sections rewritten to the landed faces). The
+> pattern mapping, the agent-builder's guide, and the honest where-we-lack
+> list, written against the landed `feat/taskqflow` surface and the
+> frameworks' late-2026 docs (the receipts at the foot of the page). It is
+> evidence for the adoption argument, not the argument itself.
 
 The cowork-agent story is the target: agents that run long, wait on humans,
 spawn sub-investigations, stream progress, and survive deploys and crashes.
@@ -29,9 +30,9 @@ the tickets at the end name the missing half.
 | --- | --- | --- | --- | --- |
 | 1 | **The LLM call is a step** | Inngest `step.run("think")` (memoized, retried per step); Temporal the activity-per-LLM-call (the retry policy rides the activity); Trigger.dev `chat` (every turn a span) | `step(llm_body, ..., rate_limits=[TokenBucket(...)], max_attempts=4, cache=True)` — the retry ladder, the ADMISSION cadence cap, and the cross-run cache (T25: same body + input → the same answer without re-billing tokens) | **Parity, one better face** (the cross-run cache + the rate-limit terms stamped on the ROW), one worse (no token accounting on the step face — the spend is the body's problem) |
 | 2 | **The human-approval interrupt** | LangGraph `interrupt(value)` + `Command(resume=...)` (the checkpointer holds the thread); OpenAI `needs_approval` + `RunState.approve` (the state serialization is YOURS); Trigger.dev waitpoint tokens; Temporal Signals | `ctx.wait_signal((Approval,), timeout_s=...)` → the hold ROW (the payload schema declared, the context redacted before persist, the reply audited); `HitlClient.list/get/resolve` (the typed refusal, the idempotent CAS); `Expired` is a VALUE the checker forces the fail-close arm on | **Ours is better on the operator's face** (holds are rows any UI can list, resolve, audit — the frameworks hand you a state blob or a token and leave the store to your app), worse on the ecosystem's (no LangGraph Studio / Slack-in-a-box — the resolve UI is yours) |
-| 3 | **The sub-investigation (spawn/join)** | LangGraph subgraphs (a compiled graph as a node); Temporal child workflows (the handle, the cancellation cascade); Inngest `step.invoke()` (sync) / `sendEvent` (async); LlamaIndex sub-workflows | `map_source(plan_step, investigate_one)` + the gather join — the fan-out's children ARE queue rows (each its own claim, its own retry ladder, its own rate-limit terms), the join fires exactly once in the finalize tx | **Parity for the one-flow fan-out; LACK for the cross-run spawn** — a child investigation with its OWN run identity (its own holds, its own run key, cancellable independently) is not expressible on the landed surface (T31) |
+| 3 | **The sub-investigation (spawn/join)** | LangGraph subgraphs (a compiled graph as a node); Temporal child workflows (the handle, the cancellation cascade); Inngest `step.invoke()` (sync) / `sendEvent` (async); LlamaIndex sub-workflows | **Parity both faces**: the one-flow fan-out — `map_source(plan_step, investigate_one)` + the gather join (the fan-out's children ARE queue rows; the join fires exactly once in the finalize tx) — and the LANDED cross-run spawn: `ctx.spawn_flow(name, input=…, result=G)` → the typed `ChildOk[G] \| ChildFailed \| ChildCancelled \| Expired` join, the child a REAL run (its own holds, its own run key, the retry adopts the same child) | **Parity** — the child-flows lane's cure closed the cross-run gap (T31) |
 | 4 | **The streaming / progress push** | LangGraph `stream_mode="messages"` (token deltas); Trigger.dev realtime + the durable stream (resume from the last chunk); Temporal Workflow Streams (public preview, May 2026); LlamaIndex `handler.stream_events()` | `await ctx.progress(pct, message, data)` — best-effort by construction (the coalescing law: ~20 writes/s, the occurrences counter counts what coalesced), `progress_schema=` the typed door, the STATE channel (latest-wins) + the STREAM channel (the 64-row ring, replay with the named resync), `ProgressListener`/SSE over the same rows | **Worse on granularity** (coalesced latest-wins, not per-token — a token stream needs a different bound and face: T32), **better on honesty** (the progress-lie fence: the ledger's terminal state is never overwritten by a 99% message) |
-| 5 | **The durable wait / timer** | Temporal `sleep()`/`schedule_to_close` (the timer is an event in history); Inngest `step.sleep()` / `waitForEvent` (months); Trigger.dev `wait.for()` / waitpoint timeouts | The hold's `timeout_s=` IS the durable timer: the DB-clock deadline on the ROW, the expiry sweep (the worker leader's arm) abandons it, and the wait site RETURNS `Expired` — the run succeeds carrying the fail-close state. `run(..., until="held")` / the held representation: the worker releases the slot — **no sleeping worker** | **Better on the slot law** (a held node is zero occupancy — the queue's capacity is back), **worse on generality**: there is no plain `ctx.sleep(days)` / wait-until-CHECK — a "re-check the ticket tomorrow" must fake a hold (T30) |
+| 5 | **The durable wait / timer** | Temporal `sleep()`/`schedule_to_close` (the timer is an event in history); Inngest `step.sleep()` / `waitForEvent` (months); Trigger.dev `wait.for()` / waitpoint timeouts | **Both faces landed**: the general timer — `ctx.wait_until(when, key=…)` (the clock is the hold's resolver, the reserved `__timer__` prefix, the due-drain's partial index, the wake's receipt) — and the hold's `timeout_s=` (the expiry sweep abandons it, the wait site RETURNS `Expired` — the fail-close VALUE). The held representation: the worker releases the slot — **no sleeping worker** | **Better on the slot law** (a held node is zero occupancy — the queue's capacity is back); **at parity on generality** — the timers lane's cure closed the plain-sleep gap (T30); the wait-until-CONDITION form (the poll-shaped predicate) stays a recorded-not-built row |
 | 6 | **The state checkpointing** | LangGraph: the checkpointer saves the WHOLE state blob every superstep; `get_state(history)` + replay = time travel; CrewAI checkpointing (replay from a step, fork) | The rows ARE the state: the node row (status, attempt, claim epoch), the step ledger (`wf_step_ledger` — the exactly-once witness), the decoded payloads on the edges, the run-key arbiter (T-G2: the concurrent dedup with the typed claim verdict) | **Better on queryability** (an operator SQLs the run; LangGraph's blob is opaque to the operator), **worse on the declare-and-forget simplicity** (LangGraph never asks you to think about what survives — and gets time travel free; ours is explicit steps, no fork-from-history API: T34) |
 | 7 | **The tool-call idempotency** | Inngest `step.run()` memoization; Temporal the activity ID + the retry policy; Trigger.dev idempotency keys on waits | `ctx.substep(name, fn, ...)` — the step-ledger's exactly-once rows (replay returns the recorded result); the run-key arbiter for the CONCURRENT dedup; the cross-run cache for the LATER dedup | **Parity** — three dedup layers where they have one; the cost is the discipline (the body must ledger its side effects, the framework will not guess) |
 
@@ -367,13 +368,21 @@ Verified output:
 outcome=terminal report={'findings': [{'sources': 3, 'question': 'q1'}, {'sources': 3, 'question': 'q2'}, {'sources': 3, 'question': 'q3'}]}
 ```
 
-**The honest boundary**: this is the sub-investigation INSIDE one flow. A
-child investigation with its OWN run identity — its own holds (the
-sub-agent's approval gate addressable separately from the parent's), its own
-run key (the idempotent re-fire), cancellable independently with the cascade
-— is the spawn/join the frameworks have and we do not (T31). The one-flow
-fan-out covers most deep-research shapes; the moment the sub-agent needs its
-own human gate, the shape leaks.
+**The spawn face is LANDED** (T31 is closed — the child-flows lane's cure):
+`ctx.spawn_flow(name, input=…, result=ChildResult)` is the sub-agent spawn/
+join across run identities — the child is a REAL flow (its own run rows; the
+run explorer, the admin and the CLI all see it), joined through the hold
+machinery into the typed outcome union `ChildOk[ChildResult] |
+ChildFailed | ChildCancelled | Expired`. The retry ADOPTS the same child
+(the spawn's run key is the two-claims law at the flow level — a re-fired
+body re-derives the same slot, never a duplicate child), the depth bound
+(default 32) bounds the recursion, and the child's holds are the CHILD's
+own — the sub-agent's approval gate is addressable separately
+(`HitlClient.list(run=child_id)`), resolved without touching the parent's.
+The one-flow fan-out above stays the right shape for the FLAT deep-research
+(the count known, the children are queue rows, the join is the map's);
+`spawn_flow` is the face for the child that needs its own run identity —
+its own holds, its own run key, its own cancellation.
 
 ## Pattern 4 — The progress push: the nodes report
 
@@ -611,11 +620,30 @@ The expiry is AT-LEAST precision (it fires at the first sweep pass at-or-after
 the deadline — never promise a precise wall time; the fail-close is the
 guarantee). The deliberate re-wait is a NEW body decision (a NEW hold, a NEW
 epoch — hold → expire → re-hold → ∞ is the convicted dragon the face refuses).
-And the honest note the fence carries in its comment: the general-purpose
-durable timer — `ctx.sleep(days)`, wait-until-condition, the cron-shaped
-"re-check tomorrow" WITHOUT a signal row — is NOT on the landed surface. Every
-framework in the comparison has the plain sleep; we have the hold. That gap is
-T30 (the tickets below).
+
+**The general timer is LANDED** (T30 is closed — the timers lane's cure):
+`ctx.wait_until(when, key=…)` is the plain durable timer — the clock is the
+hold's RESOLVER, no human and no payload model in the way. The wait is a ROW
+(the same held representation: pending + a deadline, the worker's slot
+released — the no-sleeping-worker law holds for timers), the row carries the
+reserved `__timer__` prefix (invisible to `HitlClient.list` — a timer is not
+a human's decision; a human resolve is refused), and the due-drain fires it
+at-or-after the deadline (the wake returns the receipt: the key, the
+scheduled instant, `fired_by='timer'`). A relative float or an absolute
+datetime both work; the deadline is the DB clock's (never re-based). The
+"re-check tomorrow" shape:
+
+```python no-exec — not executed: the shape excerpt of a larger listing (the executed timer fences: this section's watch fence, the workflows guide's §4b, the docshelf guide's nightly cursor)
+async def remind_body(ctx: StepContext) -> str:
+    # `when = datetime.now(timezone.utc) + timedelta(days=1)` in production;
+    # the fence's float is 1s so the verified run finishes fast.
+    wake = await ctx.wait_until(1.0, key="remind")
+    return f"wake key={wake.key} fired_by={wake.fired_by}"
+```
+
+The hold-deadline face above stays the right shape for the wait-for-SIGNAL
+(a human or another flow answers); `wait_until` is the timer-only face —
+the same hold machinery underneath, the clock as the only resolver.
 
 ---
 
@@ -674,8 +702,8 @@ adoption cost for the agent-builder who arrives from the framework that has it.
 
 | Ticket | The named pattern | The one-line gap | The arrival cost |
 | --- | --- | --- | --- |
-| `tickets/T30-durable-sleep.md` | The durable sleep / wait-until | No general `ctx.sleep(days)` / wait-until — every "re-check tomorrow" must fake a hold on a signal nobody will send | An agent-builder from Temporal/Inngest reaches for the sleep on day one and finds nothing |
-| `tickets/T31-nested-flow-spawn.md` | The sub-agent spawn/join across runs | Sub-investigations are one-flow fan-outs only; a child with its own run identity, holds, and cancel cascade is not expressible | The deep-research story with per-sub-agent approvals stalls at the one-flow boundary |
+| `tickets/T30-durable-sleep.md` | The durable sleep / wait-until | **LANDED — CLOSED**: `ctx.wait_until(when, key=…)` ships (the clock is the hold's resolver; the row is the truth; the map-index identity reaches the timer hold) — the guide's §Pattern 5 teaches it | — (was: an agent-builder from Temporal/Inngest reaches for the sleep on day one and finds nothing) |
+| `tickets/T31-nested-flow-spawn.md` | The sub-agent spawn/join across runs | **LANDED — CLOSED**: `ctx.spawn_flow(name, input=…, result=G)` ships (the child is a REAL run — its own holds, its own run key, the retry adopts the same child; the typed outcome union) — the guide's §Pattern 3 teaches it | — (was: the deep-research story with per-sub-agent approvals stalls at the one-flow boundary) |
 | `tickets/T32-token-stream-progress.md` | The token-stream progress class | Progress coalesces at ~20 writes/s; there is no fine-grained stream class for rendering the agent's answer as it thinks | The chat-shaped product shows the agent's shape, not its words |
 | `tickets/T33-agent-memory-store.md` | The cross-run agent memory | The cross-run cache dedups; it does not REMEMBER — no namespaced store a run reads and writes for the run after it | Agents that "know the customer from last week" have nowhere to put it |
 | `tickets/T34-time-travel-fork.md` | The time travel / fork-from-history | No declared API to replay/fork a run from an arbitrary node with new input | The "fix the prompt and re-run from step 3" debugging loop is a re-run from zero |
