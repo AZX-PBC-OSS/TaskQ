@@ -91,7 +91,7 @@ from taskq.workflows.api._runner_codec import (
 )
 from taskq.workflows.api._runner_errors import VanishedNodeError, WorkflowRunError
 from taskq.workflows.api._runner_exit import ExitOps
-from taskq.workflows.api._runner_ladder import LadderOps
+from taskq.workflows.api._runner_ladder import LadderOps, is_infra_fault
 from taskq.workflows.api._runner_loop import LoopOps
 from taskq.workflows.api._sql_runner import (
     CLAIMABLE_NODES_SQL_TEMPLATE,
@@ -984,66 +984,89 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             await emitter.aclose()
             await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
             return "laddered"
-        await emitter.aclose()
-        if cache_hit is not None:
-            # THE HIT'S FINALIZE — THE CLAIM TAIL, OUTSIDE THE BODY
-            # BOUNDARY (the unify cure, CURE 6a): a fault escaping THIS
-            # finalize is the MACHINERY's seat, never the body's — the
-            # body never ran, and the identical fault on the MISS path
-            # (below) already escapes through this exact tail (the
-            # escape-point contract: the machinery boundary's classifier
-            # reads WHERE the error escaped). The pre-cure seat routed
-            # the hit's finalize fault through the body ladder: a
-            # transient blip terminal-failed a max_attempts=1 step whose
-            # body never ran (the live repro:
-            # .measurements/cache-cures/hit_finalize_fault_repro.py —
-            # node failed, InterfaceError on the record, the run killed
-            # UnabsorbedNodeFailure). One fault, one seat: the infra
-            # class — the reclaim, the ladder unburned.
-            final = await self._finalize_success(
-                flow_id,
-                row,
-                attempt,
-                node,
-                cache_hit.envelope,
-                claim_epoch=claim_epoch,
-            )
-            if final.applied:
-                await self._write_cache_receipt(
-                    JobId(row["id"]), row["step_key"], flow_id, cache_hit
-                )
-            return "succeeded"
-        # THE FORK-VALIDATION RAISE IS IN THE LADDER'S TRY (rv4 F8's
-        # cure): the map fork's build (and the fork's own validation,
-        # insert_fork's door) runs INSIDE _finalize_success — before this
-        # wrapper, the fan-in bound's exceed escaped the ladder's
-        # boundary, the finalize tx rolled back, and the reclaim
-        # re-crashed the node FOREVER (the wedge the conviction named).
-        # The typed FanInBoundExceededError is a DETERMINISTIC authoring
-        # failure: the ladder's deterministic route terminal-fails it on
-        # the first attempt, the error class on the record — the reclaim
-        # path heals or fails named, never wedges.
         try:
-            final = await self._finalize_success(
-                flow_id,
-                row,
-                attempt,
-                node,
-                result,
-                claim_epoch=claim_epoch,
-                prebuilt_route_fork=route_fork,
-            )
-        except FanInBoundExceededError as exc:
+            # THE CLAIM TAIL'S MACHINERY BOUNDARY (the K7 cure — ONE
+            # fault, ONE semantics): everything from here to the return
+            # is the MACHINERY's own statements (the emitter close, the
+            # finalize on EITHER face, the receipt write, the cache
+            # store) — the body boundary above already routed the body's
+            # exceptions, so ANY exception reaching THIS boundary
+            # escaped the machinery. The classifier's law applies
+            # symmetrically to both finalize faces: an INFRA fault (the
+            # storm's ConnectionError class — :func:`is_infra_fault`)
+            # is the RECLAIM class — the ledger records 'crashed' (never
+            # 'failed': the ladder unburned, no failure record), the row
+            # re-pends (reclaim-eligible — the cleared-fault re-drive
+            # completes the step, via the HIT when cached: the body
+            # still never runs), and the ESCAPE IS PRESERVED (the
+            # re-raise — the driver's loop counts it, the F2-2 arm).
+            # Anything else re-raises unchanged (the loud escape).
             await emitter.aclose()
-            await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
-            return "laddered"
-        # THE SUCCESS-ONLY STORE (T25): the miss ran the body — the
-        # cache fill happens ONLY on the terminal that actually landed
-        # (a fenced write is a zombie's, never a terminal-succeeded).
-        # The CAS inside the store keeps ONE winner per address.
-        if final.applied and cache_address is not None and result is not None:
-            await self._store_step_result(cache_address, result, flow_id, row["step_key"])
-        return "succeeded"
+            if cache_hit is not None:
+                # THE HIT'S FINALIZE — THE CLAIM TAIL, OUTSIDE THE BODY
+                # BOUNDARY (the unify cure, CURE 6a): a fault escaping THIS
+                # finalize is the MACHINERY's seat, never the body's — the
+                # body never ran, and the identical fault on the MISS path
+                # (below) escapes through this exact tail (the
+                # escape-point contract: the machinery boundary's
+                # classifier reads WHERE the error escaped). The pre-cure
+                # seat routed the hit's finalize fault through the body
+                # ladder: a transient blip terminal-failed a
+                # max_attempts=1 step whose body never ran (the live
+                # repro: .measurements/cache-cures/hit_finalize_fault_repro.py —
+                # node failed, InterfaceError on the record, the run killed
+                # UnabsorbedNodeFailure). One fault, one seat: the infra
+                # class — the reclaim, the ladder unburned.
+                final = await self._finalize_success(
+                    flow_id,
+                    row,
+                    attempt,
+                    node,
+                    cache_hit.envelope,
+                    claim_epoch=claim_epoch,
+                )
+                if final.applied:
+                    await self._write_cache_receipt(
+                        JobId(row["id"]), row["step_key"], flow_id, cache_hit
+                    )
+                return "succeeded"
+            # THE FORK-VALIDATION RAISE IS IN THE LADDER'S TRY (rv4 F8's
+            # cure): the map fork's build (and the fork's own validation,
+            # insert_fork's door) runs INSIDE _finalize_success — before this
+            # wrapper, the fan-in bound's exceed escaped the ladder's
+            # boundary, the finalize tx rolled back, and the reclaim
+            # re-crashed the node FOREVER (the wedge the conviction named).
+            # The typed FanInBoundExceededError is a DETERMINISTIC authoring
+            # failure: the ladder's deterministic route terminal-fails it on
+            # the first attempt, the error class on the record — the reclaim
+            # path heals or fails named, never wedges.
+            try:
+                final = await self._finalize_success(
+                    flow_id,
+                    row,
+                    attempt,
+                    node,
+                    result,
+                    claim_epoch=claim_epoch,
+                    prebuilt_route_fork=route_fork,
+                )
+            except FanInBoundExceededError as exc:
+                await emitter.aclose()
+                await self._ladder_or_fail(
+                    flow_id, row, attempt, node, exc, claim_epoch=claim_epoch
+                )
+                return "laddered"
+            # THE SUCCESS-ONLY STORE (T25): the miss ran the body — the
+            # cache fill happens ONLY on the terminal that actually landed
+            # (a fenced write is a zombie's, never a terminal-succeeded).
+            # The CAS inside the store keeps ONE winner per address.
+            if final.applied and cache_address is not None and result is not None:
+                await self._store_step_result(cache_address, result, flow_id, row["step_key"])
+            return "succeeded"
+        except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped (the body's exceptions never reach this tail). BLE001 is the boundary's shape: ANY machinery exception is classified, then reclaimed or re-raised.
+            if is_infra_fault(exc):
+                await self._reclaim_step(flow_id, row, attempt, exc)
+            raise
 
     async def _stamp_code_version(self, job_id: JobId, node_key: str, node: Any, body: Any) -> None:
         """The per-attempt ``code_version`` record's write (T03/§22.1):

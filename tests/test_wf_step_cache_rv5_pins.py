@@ -575,21 +575,16 @@ async def test_k6_the_cache_purge_verb_evicts(
 
 
 # ── F-K7: THE CLASSIFIER ASYMMETRY (one fault, one semantics) ────────────
+# THE FLIP (the K7 cure): the strict-xfail marker is REMOVED WITH the
+# cure — the claim tail's machinery boundary classifies the infra fault
+# at EITHER finalize face as the reclaim class (the ledger says
+# 'crashed', the ladder unburned, the row re-pended reclaim-eligible,
+# the escape preserved) and the cleared-fault re-drive completes the run
+# via the HIT. The red receipt (the pre-cure live repro) rides the
+# receipts file's flip row.
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-k7: a ConnectionError on a HIT's finalize is laddered "
-        "as a BODY failure (the hit's _finalize_success sits INSIDE the ladder's "
-        "try — observed: max_attempts=1 → the node terminal-failed "
-        "error_class='ConnectionError', the run failed, the body NEVER ran); the "
-        "SAME fault on the MISS path's finalize escapes as infra (the reclaim "
-        "class — observed: drive() raised, the node left running/reclaim-eligible, "
-        "the ladder unburned)"
-    ),
-)
 async def test_k7_the_hit_finalize_infra_fault_is_the_reclaim_class(
     wf_conn: asyncpg.Connection,
     wf_schema: str,

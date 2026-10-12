@@ -31,7 +31,7 @@ from taskq.workflows.engine import finalize_node
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
 
-__all__ = ["LadderOps", "is_deterministic_authoring_failure"]
+__all__ = ["LadderOps", "is_deterministic_authoring_failure", "is_infra_fault"]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -287,4 +287,48 @@ class LadderOps(_LadderHost):
                     "step_key": row["step_key"],
                     "error_class": type(exc).__name__,
                 },
+            )
+
+    async def _reclaim_step(
+        self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception
+    ) -> None:
+        """THE STEP NODE'S MACHINERY RECLAIM (the claim tail's
+        escape-point contract — the K7 cure, the classifier's law applied
+        SYMMETRICALLY): an INFRA fault escaping the claim tail's own
+        statements (:meth:`_finalize_success` on EITHER face — the hit's
+        and the miss's finalize share this ONE seat — plus the receipt
+        write and the cache store) is the RECLAIM class:
+
+        * the ledger records the MACHINERY's truth — ``crashed``, never
+          ``failed`` (the ladder is UNTOUCHED, no failure record lands,
+          the retry budget is never spent on a transport blip);
+        * the row re-pends (the vanilla re-claim's own statement —
+          ``NODE_REPEND_SQL_TEMPLATE``, the loop driver's
+          ``_reclaim_loop`` shape) — the node stands RECLAIM-ELIGIBLE;
+        * the ESCAPE ITSELF IS PRESERVED — the caller re-raises: the
+          fault surfaces to the driver (the worker loop counts it, the
+          F2-2 arm), and the cleared-fault RE-DRIVE completes the step —
+          via the HIT when the step is cached (the body still never
+          runs; the cache's whole point).
+
+        One fault, one semantics: the identical fault at either
+        finalize face takes the identical seat — never a second patched
+        boundary."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                self.wsql.ledger_terminal,
+                flow_id,
+                row["step_key"],
+                attempt,
+                "crashed",
+                None,
+                type(exc).__name__,
+                str(exc)[:500],
+                None,
+                row["map_index"],
+            )
+            await conn.execute(
+                render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
+                row["id"],
+                0.05,
             )
