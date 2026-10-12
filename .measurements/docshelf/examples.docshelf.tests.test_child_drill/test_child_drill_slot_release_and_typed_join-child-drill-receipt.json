@@ -1,30 +1,30 @@
 {
-  "delivery_id": "child-e2958cbc",
+  "delivery_id": "child-f36ce73d",
   "failed_children": [
     "poison-0004"
   ],
-  "flow_id": "01a130ff-7282-7e12-9d18-70be19f2c98e",
+  "flow_id": "01a1310f-4c9f-76b0-b6a9-6c61fa15cfcd",
   "hold_and_child_windows": [
     {
-      "child_exec_seconds": 1.838,
-      "child_run_id": "01a130ff-9790-7cc2-9ee0-82966da2ce38",
+      "child_exec_seconds": 1.836,
+      "child_run_id": "01a1310f-714b-7f43-a663-ff0e0f39e4ab",
       "doc_id": "child-0007",
-      "hold_seconds": 5.204,
-      "overlap_seconds": 1.838
+      "hold_seconds": 5.312,
+      "overlap_seconds": 1.836
     },
     {
-      "child_exec_seconds": 1.244,
-      "child_run_id": "01a130ff-9797-7992-9b1e-4e5f2050cce8",
+      "child_exec_seconds": 1.245,
+      "child_run_id": "01a1310f-7151-7262-91a6-3fa0b2ba2816",
       "doc_id": "child-0027",
-      "hold_seconds": 5.204,
-      "overlap_seconds": 1.244
+      "hold_seconds": 5.312,
+      "overlap_seconds": 1.245
     },
     {
-      "child_exec_seconds": 0.005,
-      "child_run_id": "01a130ff-9799-7c83-821e-879bc7ad74e2",
+      "child_exec_seconds": 0.004,
+      "child_run_id": "01a1310f-7152-7680-b055-1a152bb85fa9",
       "doc_id": "poison-0004",
-      "hold_seconds": 5.204,
-      "overlap_seconds": 0.005
+      "hold_seconds": 5.312,
+      "overlap_seconds": 0.004
     }
   ],
   "joined_children": [

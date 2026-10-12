@@ -2,9 +2,9 @@
   "cursor_after_first_pass": 12,
   "cursor_before": 0,
   "cursor_final": 15,
-  "scheduled_fire_at": "2026-10-12 16:44:05.384694+00:00",
+  "scheduled_fire_at": "2026-10-12 17:01:45.702387+00:00",
   "second_pass_new_cursor": 15,
   "second_pass_processed": 3,
-  "tick_enqueued_at": "2026-10-12 16:44:06.097254+00:00",
+  "tick_enqueued_at": "2026-10-12 17:01:46.247950+00:00",
   "worker_killed_mid_timer_wait": true
 }
