@@ -1,0 +1,10 @@
+{
+  "mutation": "the DECREMENT guard flipped to >= 0 (the second tx2 decrements a zeroed counter)",
+  "observed": {
+    "deps_pending_fingerprint": -1,
+    "second_tx2_hits": 0
+  },
+  "pin": "pin23-decrement-guard",
+  "run": "20261012T155314-2099073-a57b02e8",
+  "ts": "2026-10-12T15:53:14"
+}
