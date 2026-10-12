@@ -1344,3 +1344,12 @@ The workflow-run surface: **one question, one command** — each verb answers ex
 
 The face states the age and hands you the check; it renders no verdict — a slow body and a hung body look identical until the lease says whether the holder still breathes (see `job show`'s lease face above).
 
+**The reclaim-requires-a-leader marker.** When the lease check has already answered — a `running` row whose `lock_expires_at` has passed — the face renders the verdict, not the age:
+
+```
+  hang: RECLAIMABLE, awaiting a leader — the lease lapsed 00:02:00 ago (source: the jobs row's lock_expires_at): the holder is presumed DEAD — this is 'the fleet is dead', not 'the work is slow'. The reclaim sweep repends (or crashes) the row within TASKQ_SWEEP_INTERVAL (default 30s) once a leader is up; with no leader the row waits
+       remedy: bring a worker up — the leader's reclaim sweep repends it within TASKQ_SWEEP_INTERVAL; the death's record: taskq job events <job_id>
+```
+
+This is the 3am question's row-visible answer: a lapsed lease with a dead fleet waits forever — the reclaim sweep runs only under a leader, so with no leader up nothing ever stamps the row and the row keeps saying `running` to the end of time. The marker is derived from the row's own lease column at read time (never a stamp the absent sweep would have to write), so the surfaces say "reclaimable, awaiting a leader" for exactly the rows a returning leader will repend.
+
