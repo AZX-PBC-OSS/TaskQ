@@ -674,36 +674,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
         node_key = row["step_key"]
         node = self.compiled.nodes.get(node_key)
-        try:
-            body = self._resolve_body(node_key, node)
-        except WorkflowRunError as exc:
-            # THE VANISHED-NODE WEDGE's fleet face (rv5-t6's cure): the
-            # row is ALREADY claimed by the dispatch — the ledger claim
-            # keys the fleet claim's attempt, then the ladder's
-            # deterministic route terminal-fails the node with the typed
-            # class on the record. The raw escape would have killed the
-            # worker's dispatch loop with the row parked forever.
-            from taskq.workflows.ledger import claim_step_ledger
-
-            async with self.pool.acquire() as conn:
-                await claim_step_ledger(
-                    conn,
-                    self.wsql,
-                    flow_id=flow_id,
-                    job_id=JobId(row["id"]),
-                    step_key=node_key,
-                    map_index=row["map_index"],
-                    attempt=attempt,
-                )
-            logger.warning(
-                "node.vanished-from-registry",
-                run_id=str(flow_id),
-                node=node_key,
-                error_class=type(exc).__name__,
-                error=str(exc)[:200],
-            )
-            await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
-            return "failed"
+        # THE FLEET DOOR KEEPS THE PARKING SHAPE (the deploy matrix's own
+        # law — the door's pins enforce it): a body unresolvable in THIS
+        # process raises; the door translates it to the
+        # WorkflowBodyUnresolvableError parking (the loud, budget-free
+        # snooze) and the fleet's OTHER workers — the new deploy's
+        # rolling wave — re-claim and finish the run. This is the skew
+        # face, deliberately NOT T6's terminal: the dev drive
+        # (:meth:`_run_node`) is the workflow-OWNING process (no other
+        # resolver exists — the vanished key is the run's own wedge, and
+        # THAT door terminal-fails loudly); the fleet worker is one
+        # claimant among many (the parking is the handoff, never a
+        # zombie).
+        body = self._resolve_body(node_key, node)
         async with self.pool.acquire() as conn:
             claim = await claim_step_ledger(
                 conn,
