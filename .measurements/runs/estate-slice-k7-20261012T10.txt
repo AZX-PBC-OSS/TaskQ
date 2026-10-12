@@ -1,0 +1,5 @@
+head: b50f8458719fd4cc88384bc9bec54b6b06c0ac14
+# the estate regression slice x3 (tests/test_actor_config_sync.py + tests/test_wf_runner_pins.py, serial) at the k7-cure head b50f8458719fd4cc88384bc9bec54b6b06c0ac14
+41 passed in 3.78s
+41 passed in 3.52s
+41 passed in 3.63s

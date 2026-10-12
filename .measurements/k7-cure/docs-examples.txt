@@ -1,0 +1,9 @@
+........................................................................ [ 72%]
+...........................                                              [100%]
+=============================== warnings summary ===============================
+src/taskq/testing/job_context.py:34
+  /tmp/opencode/wt-k7/src/taskq/testing/job_context.py:34: PytestCollectionWarning: cannot collect test class 'JobContext' because it has a __init__ constructor (from: tests/test_job_context_mirror_field_parity.py)
+    @dataclass(frozen=True, slots=True)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+99 passed, 13592 deselected, 1 warning in 74.65s (0:01:14)

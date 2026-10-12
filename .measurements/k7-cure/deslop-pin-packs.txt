@@ -1,0 +1,5 @@
+.......x................................................................ [ 76%]
+......................                                                   [100%]
+=========================== short test summary info ============================
+XFAIL tests/test_wf_engine_rv6_pins.py::test_e1_the_in_process_claim_never_executes_on_a_terminal_flow - LIVE FINDING rv6-e1: the in-process driver's claim path (CLAIMABLE_NODES_SQL_TEMPLATE / NODE_CLAIM_SQL_TEMPLATE) carries NO flow-status leg — a bare FlowRunner.tick() claims and EXECUTES a claimable child on a CANCELLED flow (observed: the body ran, the row finalized 'succeeded' with attempt=1 under a cancelled root). The fleet's dispatch SQL carries the terminal-flow fence; this door doesn't
+93 passed, 1 xfailed in 30.19s
