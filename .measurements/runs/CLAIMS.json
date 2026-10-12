@@ -4913,7 +4913,7 @@
       "file": "docs-lane-rv2-13-cure-captures-20261010T103000.txt",
       "head_sha": "557fcee594659a32973457978a3311d4fa6e7da7",
       "captured_at": "2026-10-10T10:30:00",
-      "kind": "THE DOCS LANE'S RV2-13 CURE — the superseded-capture index",
+      "kind": "THE DOCS LANE'S RV2-13 CURE \u2014 the superseded-capture index",
       "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
@@ -6273,8 +6273,7 @@
       "file": "deslop-pin-packs-20261010T210216.txt",
       "head_sha": "13c6e49d82b14c477e7b0bf338ac7925d4c31c75",
       "captured_at": "2026-10-10T210216",
-      "kind": "capture",
-      "superseded_by": "runs/wf-battery-rv4-20261010T180424-01a1.txt"
+      "kind": "capture"
     },
     {
       "stem": "pin4-enqueue-band",
@@ -6784,8 +6783,7 @@
       "stem": "deslop-pin-packs",
       "file": "deslop-pin-packs-20261010T214115Z.txt",
       "head_sha": "b135ad0aa3c0784f717bd74f27170a5edc5c0560",
-      "captured_at": "2026-10-10T16:01:49",
-      "superseded_by": "runs/wf-battery-rv4-20261010T180424-01a1.txt"
+      "captured_at": "2026-10-10T16:01:49"
     },
     {
       "stem": "mkdocs-strict",
@@ -7085,8 +7083,7 @@
       "stem": "deslop-pin-packs",
       "file": "deslop-pin-packs-20261010T221440Z.txt",
       "head_sha": "1c561135b5300ee5cb7a4bd84f18668b0ee31bb8",
-      "captured_at": "2026-10-10T16:14:41",
-      "superseded_by": "runs/wf-battery-rv4-20261010T180424-01a1.txt"
+      "captured_at": "2026-10-10T16:14:41"
     },
     {
       "stem": "evidence-heads-verify",
@@ -7107,8 +7104,6 @@
       "captured_at": "2026-10-10T16:15:31"
     },
     {
-<<<<<<< HEAD
-<<<<<<< HEAD
       "stem": "wf-rollup-band",
       "file": "wf-rollup-band-20261010T163259-0fb8.json",
       "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
@@ -8211,7 +8206,8 @@
       "file": "fast-tier-n8-2026-10-11T05:04:22Z.txt",
       "head_sha": "ca940b2b8b3668c595e4a4463778721a8fc321c3",
       "captured_at": "2026-10-10T22:04:22"
-=======
+    },
+    {
       "stem": "pin1-row-width",
       "file": "pin1-row-width-20261010T165315-0a1e.json",
       "head_sha": "16d24edd52bf862bed1de1098567c91680a40a90",
@@ -8598,26 +8594,26 @@
     {
       "stem": "lint-format",
       "file": "timer-cures-lint.txt",
-      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
-      "captured_at": "2026-10-10T23:38:06"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:40:02"
     },
     {
       "stem": "pyright-full",
       "file": "timer-cures-pyright.txt",
-      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
-      "captured_at": "2026-10-10T23:38:06"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:40:02"
     },
     {
       "stem": "typeprobe-gate",
       "file": "timer-cures-typegate.txt",
-      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
-      "captured_at": "2026-10-10T23:38:06"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:40:02"
     },
     {
       "stem": "mkdocs-strict",
       "file": "timer-cures-mkdocs.txt",
-      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
-      "captured_at": "2026-10-10T23:38:06"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:40:02"
     },
     {
       "stem": "pin4-enqueue-band",
@@ -8682,32 +8678,32 @@
     {
       "stem": "wf-bands-rv4",
       "file": "timer-cures-bands-rv4.txt",
-      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
-      "captured_at": "2026-10-10T23:39:45"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:41:52"
     },
     {
       "stem": "wf-perf-bands",
       "file": "timer-cures-wf-perf-bands.txt",
-      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
-      "captured_at": "2026-10-10T23:39:45"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:41:52"
     },
     {
       "stem": "estate-slice",
       "file": "timer-cures-estate-slice.txt",
-      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
-      "captured_at": "2026-10-10T23:40:04"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:41:52"
     },
     {
       "stem": "attack-rounds",
       "file": "timer-cures-attack-rounds.txt",
-      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
-      "captured_at": "2026-10-10T23:48:56"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:50:12"
     },
     {
       "stem": "deslop-pin-packs",
       "file": "timer-cures-deslop-packs.txt",
-      "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
-      "captured_at": "2026-10-10T23:48:56"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:50:12"
     },
     {
       "stem": "pin1-red-pad-drift",
@@ -8726,30 +8722,6 @@
       "file": "pin2-partial-index-20261010T234944-df13.json",
       "head_sha": "4290d07cce9d2837b03356e56e80dd29d9f63842",
       "captured_at": "2026-10-10T23:49:44"
-    },
-    {
-      "stem": "lint-format",
-      "file": "timer-cures-lint.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:08:50"
-    },
-    {
-      "stem": "pyright-full",
-      "file": "timer-cures-pyright.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:08:50"
-    },
-    {
-      "stem": "typeprobe-gate",
-      "file": "timer-cures-typegate.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:08:50"
-    },
-    {
-      "stem": "mkdocs-strict",
-      "file": "timer-cures-mkdocs.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:08:50"
     },
     {
       "stem": "pin5-dispatch-band",
@@ -8812,36 +8784,6 @@
       "captured_at": "2026-10-11T01:09:51"
     },
     {
-      "stem": "wf-bands-rv4",
-      "file": "timer-cures-bands-rv4.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:10:32"
-    },
-    {
-      "stem": "wf-perf-bands",
-      "file": "timer-cures-wf-perf-bands.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:10:32"
-    },
-    {
-      "stem": "estate-slice",
-      "file": "timer-cures-estate-slice.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:10:32"
-    },
-    {
-      "stem": "attack-rounds",
-      "file": "timer-cures-attack-rounds.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:19:11"
-    },
-    {
-      "stem": "deslop-pin-packs",
-      "file": "timer-cures-deslop-packs.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:19:11"
-    },
-    {
       "stem": "pin1-row-width",
       "file": "pin1-row-width-20261011T011951-df4c.json",
       "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
@@ -8863,19 +8805,13 @@
       "stem": "wf-scoped-coverage",
       "file": "wf-scoped-coverage-20261011T012042.json",
       "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:20:42"
+      "captured_at": "2026-10-11T01:20:47"
     },
     {
       "stem": "wf-battery-cov",
       "file": "timer-cures-wfbatt-leg1.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:20:47"
-    },
-    {
-      "stem": "wf-scoped-coverage",
-      "file": "wf-scoped-coverage-20261011T012042.json",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:20:47"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:51:59"
     },
     {
       "stem": "pin1-red-pad-drift",
@@ -8898,14 +8834,14 @@
     {
       "stem": "wf-battery-leg2",
       "file": "timer-cures-wfbatt-leg2.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:22:03"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:53:08"
     },
     {
       "stem": "wf-battery-rv4",
       "file": "timer-cures-wfbatt-leg2.txt",
-      "head_sha": "c9582f79e556c74fc07f9da8401b407fbca70a4f",
-      "captured_at": "2026-10-11T01:22:03"
+      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
+      "captured_at": "2026-10-11T01:53:08"
     },
     {
       "stem": "wf-rollup-band",
@@ -8916,8 +8852,8 @@
     {
       "stem": "deslop-pin-packs",
       "file": "timer-cures-deslop-packs-zero.txt",
-      "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
-      "captured_at": "2026-10-11T01:23:48"
+      "head_sha": "92f702578951662dff5f77b674e663b7bf078dfc",
+      "captured_at": "2026-10-11T02:09:11"
     },
     {
       "stem": "pin1-red-pad-drift",
@@ -8972,30 +8908,6 @@
       "file": "wf-rollup-band-20261011T013428-c1fc.json",
       "head_sha": "24603c39d8598bffbd42a44eb3f353fb8b057dc1",
       "captured_at": "2026-10-11T01:34:28"
-    },
-    {
-      "stem": "lint-format",
-      "file": "timer-cures-lint.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:40:02"
-    },
-    {
-      "stem": "pyright-full",
-      "file": "timer-cures-pyright.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:40:02"
-    },
-    {
-      "stem": "typeprobe-gate",
-      "file": "timer-cures-typegate.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:40:02"
-    },
-    {
-      "stem": "mkdocs-strict",
-      "file": "timer-cures-mkdocs.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:40:02"
     },
     {
       "stem": "fanout-1000-tx-band",
@@ -9064,36 +8976,6 @@
       "captured_at": "2026-10-11T01:41:51"
     },
     {
-      "stem": "wf-bands-rv4",
-      "file": "timer-cures-bands-rv4.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:41:52"
-    },
-    {
-      "stem": "wf-perf-bands",
-      "file": "timer-cures-wf-perf-bands.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:41:52"
-    },
-    {
-      "stem": "estate-slice",
-      "file": "timer-cures-estate-slice.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:41:52"
-    },
-    {
-      "stem": "deslop-pin-packs",
-      "file": "timer-cures-deslop-packs.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:50:12"
-    },
-    {
-      "stem": "attack-rounds",
-      "file": "timer-cures-attack-rounds.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:50:12"
-    },
-    {
       "stem": "pin1-row-width",
       "file": "pin1-row-width-20261011T015119-be3e.json",
       "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
@@ -9110,18 +8992,6 @@
       "file": "pin2-partial-index-20261011T015124-e1cb.json",
       "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
       "captured_at": "2026-10-11T01:51:24"
-    },
-    {
-      "stem": "wf-scoped-coverage",
-      "file": "wf-scoped-coverage-20261011T015155.json",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:51:55"
-    },
-    {
-      "stem": "wf-battery-cov",
-      "file": "timer-cures-wfbatt-leg1.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:51:59"
     },
     {
       "stem": "wf-scoped-coverage",
@@ -9146,18 +9016,6 @@
       "file": "pin2-partial-index-20261011T015229-1699.json",
       "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
       "captured_at": "2026-10-11T01:52:29"
-    },
-    {
-      "stem": "wf-battery-leg2",
-      "file": "timer-cures-wfbatt-leg2.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:53:08"
-    },
-    {
-      "stem": "wf-battery-rv4",
-      "file": "timer-cures-wfbatt-leg2.txt",
-      "head_sha": "3be15de244ba8329b24c1331a0b86251c9d94b44",
-      "captured_at": "2026-10-11T01:53:08"
     },
     {
       "stem": "join-fire-latency",
@@ -9247,7 +9105,7 @@
       "stem": "wf-scoped-coverage",
       "file": "wf-scoped-coverage-20261011T020813.json",
       "head_sha": "92f702578951662dff5f77b674e663b7bf078dfc",
-      "captured_at": "2026-10-11T02:08:13"
+      "captured_at": "2026-10-11T02:09:11"
     },
     {
       "stem": "pin1-red-pad-drift",
@@ -9268,20 +9126,8 @@
       "captured_at": "2026-10-11T02:08:33"
     },
     {
-      "stem": "deslop-pin-packs",
-      "file": "timer-cures-deslop-packs-zero.txt",
-      "head_sha": "92f702578951662dff5f77b674e663b7bf078dfc",
-      "captured_at": "2026-10-11T02:09:11"
-    },
-    {
       "stem": "wf-battery-cov",
       "file": "timer-cures-wfbatt-leg3-zero.txt",
-      "head_sha": "92f702578951662dff5f77b674e663b7bf078dfc",
-      "captured_at": "2026-10-11T02:09:11"
-    },
-    {
-      "stem": "wf-scoped-coverage",
-      "file": "wf-scoped-coverage-20261011T020813.json",
       "head_sha": "92f702578951662dff5f77b674e663b7bf078dfc",
       "captured_at": "2026-10-11T02:09:11"
     },
@@ -9362,8 +9208,8 @@
       "file": "timer-cures-ehv-final.txt",
       "head_sha": "8f59978fea6278d00212f92ff8a14638e3461038",
       "captured_at": "2026-10-11T02:22:57"
->>>>>>> 3562d3142
-=======
+    },
+    {
       "stem": "edge-scale-curve",
       "file": "edge-scale-curve-20261010T165836-555b.json",
       "head_sha": "23f8ac3395f77f6ea8101976a99173fa753d3eb1",
@@ -9924,74 +9770,74 @@
     {
       "stem": "lint-format",
       "file": "lint-format-childcures.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "pyright-full",
       "file": "pyright-full-childcures.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "typeprobe-gate",
       "file": "typeprobe-gate-childcures.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "mkdocs-strict",
       "file": "mkdocs-strict-childcures.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "wf-battery-cov",
       "file": "wf-battery-childcures-leg1.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "wf-battery-leg2",
       "file": "wf-battery-childcures-leg2.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "wf-perf-bands",
       "file": "wf-perf-bands-childcures.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "estate-slice",
       "file": "estate-slice-childcures.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "attack-rounds",
       "file": "attack-rounds-childcures.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "wf-battery-rv4",
       "file": "wf-battery-childcures-leg1.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "wf-bands-rv4",
       "file": "wf-perf-bands-childcures.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "fast-tier-n8",
       "file": "fast-tier-n8-childcures.txt",
-      "head_sha": "c7237d17b3638a27489b6ba21f8b99164ced37d2",
-      "captured_at": "2026-10-11T01:03:48"
+      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
+      "captured_at": "2026-10-11T01:35:53"
     },
     {
       "stem": "pin1-red-pad-drift",
@@ -10126,78 +9972,6 @@
       "captured_at": "2026-10-11T01:31:37"
     },
     {
-      "stem": "lint-format",
-      "file": "lint-format-childcures.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "pyright-full",
-      "file": "pyright-full-childcures.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "typeprobe-gate",
-      "file": "typeprobe-gate-childcures.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "mkdocs-strict",
-      "file": "mkdocs-strict-childcures.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "wf-battery-cov",
-      "file": "wf-battery-childcures-leg1.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "wf-battery-leg2",
-      "file": "wf-battery-childcures-leg2.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "wf-perf-bands",
-      "file": "wf-perf-bands-childcures.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "estate-slice",
-      "file": "estate-slice-childcures.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "attack-rounds",
-      "file": "attack-rounds-childcures.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "wf-battery-rv4",
-      "file": "wf-battery-childcures-leg1.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "wf-bands-rv4",
-      "file": "wf-perf-bands-childcures.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
-      "stem": "fast-tier-n8",
-      "file": "fast-tier-n8-childcures.txt",
-      "head_sha": "822772b410c68dd804cbef90ce82b1aa83538473",
-      "captured_at": "2026-10-11T01:35:53"
-    },
-    {
       "stem": "evidence-heads-verify",
       "file": "evidence-heads-verify-childcures.txt",
       "head_sha": "7cb8d52fe357bc029ab9c6c3f2dcbce80e71b658",
@@ -10238,7 +10012,6 @@
       "file": "pin1-red-pad-drift-20261011T014351-c83e.json",
       "head_sha": "ff0d900b20a77fdbb7c432e64a5aba400dc49e83",
       "captured_at": "2026-10-11T01:43:51"
->>>>>>> 1e18f4a18
     }
   ]
 }
