@@ -1,0 +1,4 @@
+head: aab6f2138b740db3b1d64a16c1fe368c545db525
+# THE TRANSITION RECORD (rv2-13-green's stem, the residual-cures estate's phase-3):
+# this capture's rv2-13 runs red TRUTHFULLY at aab6f2138 — the two remaining stale live claims (rv2-13-green + evidence-heads-verify, recorded at the child-cures head 1bc074842ccd) carry this commit's own re-stamp: the chicken-and-egg the off-by-one rule exists to break. At THIS commit's child (M1), the committed manifest's re-recorded claims (head_sha = e6fc955a3, source-fresh) make the verifier rc=0 and rv2-13 GREENS — the green capture rides M2 as the live claim. The registry is append-only; the transition is auditable.
+1 failed in 4.26s
