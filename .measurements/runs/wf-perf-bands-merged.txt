@@ -1,4 +1,3 @@
-# wf-perf-bands at head c5ed9fce99a879fa9011097e069b0debabf76a91 — rc=0 — captured 20261012T172655Z
+head: 2d75eea067e40cde00627b24bbeed79fdaccca48
 .....                                                                    [100%]
-5 passed in 21.89s
-rc=0
+5 passed in 15.20s
