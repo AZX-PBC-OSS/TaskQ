@@ -1,3 +1,2 @@
-head: 30d227a892a581b3705924cdea93bd58f2a1323e — rv2-13's TWO green legs at the extracted estate (the pin reads THIS branch's registry against the PR head — the sha cross-check IS the law)
-1 passed in 7.25s
-1 passed in 7.11s
+# rv2-13-green's slot staged at head 30d227a892a581b3705924cdea93bd58f2a1323e — captured 2026-10-12T13:49:39Z
+THE GRAND MERGE'S STAGED SLOT: rv2-13's receipt slot — the green rv2-13 run's output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.
