@@ -193,6 +193,74 @@ from typing import cast
 
 from taskq.testing._claims import RUNS, load_claims
 
+#: THE EVIDENCE BRANCH (the extraction's home — the reviewable PR stops
+#: carrying the estate; the record stays durable and public on its own
+#: branch). The default resolution order: an explicit --evidence-ref, the
+#: local .measurements/ (the dev loop's own shape, when the tree still
+#: carries it), then this ref.
+DEFAULT_EVIDENCE_REF = "origin/evidence/taskqflow"
+
+
+def _evidence_ref_resolves(ref: str) -> bool:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],  # noqa: S607
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def _stage_evidence_ref(ref: str) -> Path:
+    """THE EXTRACTED ESTATE'S READ FACE: stage the ref's .measurements/
+    estate into a temp dir and return its runs/ — every read path (the
+    registry, the captures, the supersession walk, the content door)
+    reads the SAME files they always did, from the branch's snapshot.
+    The extraction is not a weakening: the claims' head_sha is still
+    judged against THIS repo's HEAD (the freshness teeth unchanged)."""
+    if not _evidence_ref_resolves(ref):
+        fallback = ref.removeprefix("origin/")
+        if _evidence_ref_resolves(fallback):
+            ref = fallback
+        else:
+            raise SystemExit(
+                f"the evidence ref {ref!r} does not resolve — the estate was "
+                "EXTRACTED to the evidence branch (the PR stops carrying it). "
+                "Fetch it: git fetch origin evidence/taskqflow (the CI face: "
+                "actions/checkout with fetch-depth: 0, or an explicit fetch "
+                "of evidence/taskqflow before this script runs)."
+            )
+    staging = Path(os.environ.get("TMPDIR", "/tmp")) / (
+        "evidence-estate-" + subprocess.run(
+            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],  # noqa: S607
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()[:12]
+    )
+    if not (staging / "runs" / "CLAIMS.json").is_file():
+        archive = subprocess.run(
+            ["git", "archive", ref, ".measurements"],  # noqa: S607
+            cwd=REPO,
+            capture_output=True,
+            check=False,
+        )
+        if archive.returncode != 0:
+            raise SystemExit(
+                f"the evidence ref {ref!r} carries no .measurements/ estate "
+                "(git archive failed) — the extraction's home is wrong"
+            )
+        import tarfile
+
+        staging.mkdir(parents=True, exist_ok=True)
+        import io
+
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+            tar.extractall(staging)  # noqa: S202  # Why: the archive is the repo's own ref's tree, never untrusted input.
+    return staging / ".measurements" / "runs"
+
 REPO = Path(__file__).resolve().parent.parent
 
 #: THE VERDICT SHAPES the capture families actually write, scanned
@@ -342,6 +410,8 @@ def _supersession_target(marked: str, runs_dir: Path) -> Path:
         return REPO / marked
     if Path(marked).is_absolute():
         return Path(marked)
+    if runs_dir.is_absolute():
+        return runs_dir.parent / marked
     return REPO / runs_dir.parent / marked
 
 
@@ -506,7 +576,8 @@ def _content_door(
     silent pass). Cheap by construction: a linear verdict-shape scan
     over the capture's text, no structured parse (the runtime
     receipt)."""
-    path = REPO / runs_dir / entry["file"]
+    base = runs_dir if runs_dir.is_absolute() else REPO / runs_dir
+    path = base / entry["file"]
     status, evidence, lineno = _content_verdict(path)
     if status == "green":
         return
@@ -640,7 +711,8 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
             # content first (the terminal's capture must EXIST), then
             # freshness — the same rule a live claim carries, applied
             # where the chain actually lands.
-            if not (REPO / runs_dir / terminal["file"]).is_file():
+            base = runs_dir if runs_dir.is_absolute() else REPO / runs_dir
+            if not (base / terminal["file"]).is_file():
                 failures.append(
                     f"{stem}: the supersession chain's TERMINAL capture "
                     f"{terminal['file']} is a GHOST — the chain resolves to a "
@@ -680,7 +752,8 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
                 "stem's proof stale behind a resolving link."
             )
             continue
-        missing = REPO / runs_dir / live["file"]
+        base = runs_dir if runs_dir.is_absolute() else REPO / runs_dir
+        missing = base / live["file"]
         if not missing.is_file():
             failures.append(
                 f"{stem}: the LIVE CLAIM {live['file']} is a GHOST — the registry "
@@ -727,7 +800,30 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs-dir", type=Path, default=RUNS)
+    parser.add_argument(
+        "--evidence-ref",
+        default=None,
+        help=(
+            "the git ref whose .measurements/ estate is the claims' home "
+            "(the EXTRACTED estate's face — the evidence lives on "
+            "evidence/taskqflow, the reviewable PR stops carrying it): the "
+            "ref's registry is read and every claim is judged against THIS "
+            "repo's HEAD — the head-stamp law's teeth unchanged (a claim's "
+            "head_sha must equal the checked-out HEAD, or be its ancestor "
+            "plus measurement-only). Unset, the local .measurements/ is "
+            "used when present (the dev loop's own shape)."
+        ),
+    )
     args = parser.parse_args()
+    runs_dir: Path = args.runs_dir
+    if args.evidence_ref:
+        runs_dir = _stage_evidence_ref(args.evidence_ref)
+    elif not (RUNS / "CLAIMS.json").is_file() and _evidence_ref_resolves(
+        DEFAULT_EVIDENCE_REF
+    ):
+        # THE EXTRACTED ESTATE'S DEFAULT: no local registry (the tree
+        # stopped carrying it) — read the evidence branch's estate.
+        runs_dir = _stage_evidence_ref(DEFAULT_EVIDENCE_REF)
     head, conviction = _verified_head()
     if conviction is not None:
         # THE ENV-FORGED HEAD (D5): the env's claim failed the

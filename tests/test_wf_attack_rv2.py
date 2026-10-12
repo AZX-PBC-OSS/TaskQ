@@ -1015,22 +1015,46 @@ def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) 
     import sys
 
     runs_rel = ".measurements/runs"
-    listed = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
-        ["git", "ls-files", runs_rel],  # noqa: S607  # Why: as above — the repo's own scripts call "git" the same way.
+    # THE EXTRACTED ESTATE'S READ (the maintainer's LoC ruling — the
+    # evidence does NOT belong in the reviewable PR): the registry + the
+    # captures live on the EVIDENCE BRANCH (evidence/taskqflow — the
+    # record stays durable and public); the pin snapshots THAT branch's
+    # estate and the verifier judges its claims against THIS repo's
+    # HEAD — the sha cross-check IS the law (a claim's head_sha must
+    # equal the PR head, or be its ancestor plus measurement-only — the
+    # freshness teeth unchanged across the branch move).
+    ref = subprocess.run(  # noqa: S603  # Why: as above.
+        ["git", "rev-parse", "--verify", "origin/evidence/taskqflow^{commit}"],  # noqa: S607
+        cwd=_REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ref.returncode != 0:
+        ref = subprocess.run(  # noqa: S603  # Why: as above — the local branch's own name.
+            ["git", "rev-parse", "--verify", "evidence/taskqflow^{commit}"],  # noqa: S607
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    evidence_ref = ref.stdout.strip()
+    listed = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the ref-derived paths are the branch's own tree.
+        ["git", "ls-tree", "-r", "--name-only", evidence_ref, runs_rel],  # noqa: S607
         cwd=_REPO,
         capture_output=True,
         text=True,
         check=True,
     ).stdout.splitlines()
-    assert listed, "the committed tree carries no .measurements/runs artifacts at all"
+    assert listed, "the evidence branch carries no .measurements/runs artifacts at all"
     assert f"{runs_rel}/CLAIMS.json" in listed, (
-        "the committed tree carries no claims registry — the captures' index "
+        "the evidence branch carries no claims registry — the captures' index "
         "(CLAIMS.json) must be committed with the captures it indexes"
     )
     runs_dir = tmp_path / "runs"
     for rel in listed:
-        data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-files-derived path; no shell.
-            ["git", "show", f"HEAD:{rel}"],  # noqa: S607  # Why: as above.
+        data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-tree-derived path; no shell.
+            ["git", "show", f"{evidence_ref}:{rel}"],  # noqa: S607  # Why: as above.
             cwd=_REPO,
             capture_output=True,
             check=True,
