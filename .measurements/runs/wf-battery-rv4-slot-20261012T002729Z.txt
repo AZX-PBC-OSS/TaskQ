@@ -1,2 +1,22 @@
-# wf-battery-rv4's slot staged at head 8f834228362ec35647008670c451d5bb1c46279a — captured 2026-10-11T17:27:29Z
-THE CONTENT-DOOR LANE'S STAGED SLOT: the wf battery's slot — the battery leg's green output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.
+# wf-battery-rv4 at head 200b55b26013d8a719469f8c917e50016c5671df — rc=0 — captured 2026-10-12T00:40:01Z (the door-edges lane's green fill of the staged slot)
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 11%]
+........................................................................ [ 23%]
+........................................................................ [ 35%]
+........................................................................ [ 46%]
+........................................................................ [ 58%]
+........................................................................ [ 70%]
+........................................................................ [ 82%]
+........................................................................ [ 93%]
+.....................................                                    [100%]
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-dooredges/src/taskq/workflows/_progress.py:349: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+613 passed, 1 warning in 129.04s (0:02:09)
