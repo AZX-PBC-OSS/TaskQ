@@ -686,6 +686,7 @@ async def register_timer_hold(
     absolute: datetime | None,
     relative: float | None,
     payload_schema: dict[str, object],
+    map_index: int | None = None,
 ) -> JobId:
     """The TIMER hold's mint (T28): the SAME hold machinery as the human
     hold (``register_hold`` — the held representation, the create
@@ -694,7 +695,11 @@ async def register_timer_hold(
     UNCHANGED, the DB clock never re-bases it) or *relative* (the
     float seconds — the DB clock's own now is the base). The row's
     ``expires_at`` IS the wake's ``scheduled`` stamp (the fire reads
-    it back — the receipt and the row cannot disagree)."""
+    it back — the receipt and the row cannot disagree). The hold
+    identity carries the MAP INDEX (the holdmap lane's cure, the
+    merge-order ruling's timer leg): a timer inside a map item mints
+    EACH sibling its OWN row — the clock never collides across
+    siblings."""
     if (absolute is None) == (relative is None):
         raise TypeError(
             "register_timer_hold takes exactly one deadline — the absolute "
@@ -713,6 +718,7 @@ async def register_timer_hold(
         payload_schema=payload_schema,
         timeout_s=relative,
         expires_at=absolute,
+        map_index=map_index,
     )
 
 

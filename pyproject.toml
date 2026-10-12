@@ -352,6 +352,7 @@ ignore = [
 # same shape — the f-strings' ONLY interpolation is the module fixture's
 # schema identifier (wf_schema / module_pg_schema), values all $N-bound.
 "tests/test_wf_holdmap_cures_pins.py" = ["S608"]
+"tests/test_wf_timer_cures_pins.py" = ["S608"]
 # The T26 broadcast pins: the same shape — the f-strings' ONLY
 # interpolation is the module fixture's schema identifier (wf_schema),
 # every caller-controlled value $N-bound.

@@ -596,33 +596,42 @@ async def sub_tail(
 # ── the reprocess flow's body (the cross-run cache's face) ───────────────
 
 
-async def reprocess_doc(ctx: StepContext, ref: DocRef | None, deps: DocShelfDeps) -> IndexedDoc:
-    """A single document's (re-)processing: chunk + extract + index.
-    The wiring opts this step INTO the cross-run cache — an unchanged
-    document's re-run never re-extracts (the cache drill measures it).
-    The run's OWN input is the truth (the wiring's DocRef is the bare-
-    create fallback)."""
+async def unpack_ref(ctx: StepContext, ref: DocRef | None) -> DocRef:
+    """THE UNCACHED UPSTREAM (E18's law): the run's OWN input is the
+    truth (the wiring's DocRef is the bare-create fallback); the ref
+    enters the DATAFLOW here so the cached step's address can see it —
+    ``ctx.input`` never enters a cache address, the WIRED param does."""
     raw = ctx.input if ctx.input is not None else (ref.model_dump() if ref else None)
     if raw is None:
         raise ValueError("the reprocess run carries no document")
-    the_ref = DocRef.model_validate(raw)
+    return DocRef.model_validate(raw)
+
+
+async def reprocess_doc(ctx: StepContext, ref: DocRef, deps: DocShelfDeps) -> IndexedDoc:
+    """A single document's (re-)processing: chunk + extract + index.
+    The wiring opts this step INTO the cross-run cache — an unchanged
+    document's re-run never re-extracts (the cache drill measures it).
+    The ref rides as a WIRED PARAM (lifted by the uncached unpack_ref
+    step — E18's law: the flow input never enters the cache address,
+    the wired arg does), so the address covers the document's identity
+    honestly."""
     pool = await deps.pool()
-    n = chunk_count(the_ref.doc_id, the_ref.content)
+    n = chunk_count(ref.doc_id, ref.content)
     tokens = 0
     for idx in range(n):
         result = await _extract_inner(
             ctx,
             ChunkRef(
-                doc_id=the_ref.doc_id,
+                doc_id=ref.doc_id,
                 idx=idx,
-                text=f"{the_ref.content} [part {idx + 1}/{n}]",
-                chunk_key=f"{the_ref.doc_id}:{idx}",
+                text=f"{ref.content} [part {idx + 1}/{n}]",
+                chunk_key=f"{ref.doc_id}:{idx}",
             ),
             deps,
         )
         tokens += result.tokens
-    await store.upsert_index(pool, deps.schema, the_ref.doc_id, n, tokens)
-    return IndexedDoc(doc_id=the_ref.doc_id, n_chunks=n, tokens=tokens)
+    await store.upsert_index(pool, deps.schema, ref.doc_id, n, tokens)
+    return IndexedDoc(doc_id=ref.doc_id, n_chunks=n, tokens=tokens)
 
 
 # ── the nightly re-index flow's bodies ───────────────────────────────────
@@ -755,10 +764,17 @@ def docshelf_sub_analysis() -> Promise[object]:
 
 @SHELF_APP.workflow("docshelf_reprocess")
 def docshelf_reprocess() -> Promise[object]:
+    ref = step(
+        unpack_ref,
+        DocRef(doc_id="doc-demo", content="demo content"),
+        key="load_ref",
+        actor="docshelf-cpu",
+        queue="docshelf-cpu",
+    )
     return build(
         step(
             reprocess_doc,
-            DocRef(doc_id="doc-demo", content="demo content"),
+            ref,
             key="index_doc",
             actor="docshelf-cpu",
             queue="docshelf-cpu",

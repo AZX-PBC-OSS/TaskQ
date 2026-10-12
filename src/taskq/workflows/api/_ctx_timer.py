@@ -241,12 +241,14 @@ class CtxTimerOps(WaitHost):
                 render_sql(
                     "SELECT id, payload, hold_epoch FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
+                    "AND map_index IS NOT DISTINCT FROM $4 "
                     "AND status = 'delivered' ORDER BY hold_epoch ",
                     self._wsql.schema,
                 ),
                 self.flow_id,
                 self.node_key,
                 signal_name,
+                self._map_index,
             )
             if is_loop_kind and cursor > len(queue):
                 # THE E13 RULE, the timer's leg: the same uniform-wait
@@ -285,17 +287,22 @@ class CtxTimerOps(WaitHost):
                 return TimerWake.model_validate(payload)
             # PAST THE QUEUE: the standing timer hold is THIS wait's
             # wait — the held row stands (idempotent re-hold, never a
-            # second registration of one wait).
+            # second registration of one wait). THE MAP INDEX FILTER
+            # (the holdmap lane's identity cure, the timer's leg): a
+            # sibling's held row is NOT this sibling's — a plain
+            # step's NULL keeps exact via IS NOT DISTINCT FROM.
             held_row = await conn.fetchrow(
                 render_sql(
                     "SELECT id FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = $3 "
+                    "AND map_index IS NOT DISTINCT FROM $4 "
                     "AND status = 'held' ORDER BY hold_epoch DESC LIMIT 1",
                     self._wsql.schema,
                 ),
                 self.flow_id,
                 self.node_key,
                 signal_name,
+                self._map_index,
             )
             if held_row is not None:
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=(signal_name,))
@@ -303,15 +310,19 @@ class CtxTimerOps(WaitHost):
             # other half): no 'abandoned' arm here — the expiry sweep
             # excludes the reserved prefix by law, so a past-due timer
             # is a due timer (the arm fires it), never a fail-close.
-            # A NEW HOLD: a NEW epoch (the count of this name's holds).
+            # A NEW HOLD: a NEW epoch (the count of this name's holds —
+            # THIS identity's: the map index filters, a sibling's epoch
+            # never gates this sibling's next hold).
             epoch = await conn.fetchval(
                 render_sql(
                     "SELECT COALESCE(MAX(hold_epoch), 0) + 1 FROM {schema}.wf_signals "
-                    "WHERE workflow_id = $1 AND node_key = $2",
+                    "WHERE workflow_id = $1 AND node_key = $2 "
+                    "AND map_index IS NOT DISTINCT FROM $3",
                     self._wsql.schema,
                 ),
                 self.flow_id,
                 self.node_key,
+                self._map_index,
             )
             hold_id = await register_timer_hold(
                 conn,
@@ -324,5 +335,6 @@ class CtxTimerOps(WaitHost):
                 absolute=absolute,
                 relative=relative,
                 payload_schema={TIMER_WAKE_SCHEMA_NAME: TimerWake.model_json_schema()},
+                map_index=self._map_index,
             )
         raise NodeHeldError(hold_id=str(hold_id), signal_names=(signal_name,))

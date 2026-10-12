@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import sys
 import time
 import types
@@ -83,12 +84,14 @@ from taskq.backend._protocol import JobId
 from taskq.exceptions import ReservedTimerNamespaceError
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.workflows import (
+    Expired,
     FlowRunner,
     GateDecl,
     Promise,
     StepContext,
     WorkflowApp,
     build,
+    map_source,
     step,
 )
 from taskq.workflows.api._ctx_timer import CtxTimerOps
@@ -783,4 +786,116 @@ def test_the_naive_datetime_law_is_documented_at_the_api_face(
         "the PRE-CURE doc (the doc-deep gap): the coercion was a clause, not "
         "the law — the docstring and the guide carried no exact paragraph",
         {"conviction": "the shipped faces carry the exact one-paragraph law"},
+    )
+
+
+# ── CURE 7: the timer hold GAINS THE MAP INDEX (the ruling's execution) ──
+
+
+class TimerItem(BaseModel):
+    pass
+
+
+class TimerNote(BaseModel):
+    index: int
+
+
+async def test_a_timer_hold_in_a_map_sibling_context_gets_its_own_identity(
+    wf_pool: Any, wf_schema: str, wf_conn: Any, timer_cures_redlog: Any
+) -> None:
+    """THE MERGE-ORDER RULING'S TIMER x HOLDMAP EXECUTION: the holdmap
+    lane's map-index identity (``wf_signals_hold_identity_uniq`` gains
+    ``COALESCE(map_index, -1)``) must reach the TIMER hold too —
+    ``ctx.wait_until`` inside a map item mints EACH sibling its OWN
+    timer row (the clock never collides across siblings), and each
+    sibling wakes on its own fire.
+
+    THE CONVICTED VARIANT (the pre-cure tree, probed live): the timer
+    mint threaded NO map index — every sibling's timer hold landed on
+    the ``-1`` sentinel, and the second sibling's ``wait_until`` raised
+    ``UniqueViolationError`` (``wf_signals_hold_identity_uniq``) INTO
+    the ladder (worker mode) or wedged the run (the wake read one
+    arbitrary sibling's row).
+    """
+    app = WorkflowApp()
+
+    async def src_body(ctx: Any, params: TimerItem) -> list[int]:
+        return [0, 1]
+
+    async def item_body(ctx: Any, item: int) -> TimerNote:
+        wake = await ctx.wait_until(0.05, key="item-tick")
+        if isinstance(wake, Expired):
+            raise AssertionError("the timer expired inside the pin's window")
+        return TimerNote(index=ctx.map_index)
+
+    async def join_body(ctx: Any, notes: list[TimerNote]) -> list[TimerNote]:
+        return notes
+
+    @app.workflow("timer_map_sibling_identity")
+    def flow() -> Promise[object]:
+        src = step(src_body, TimerItem(), key="src")
+        items = map_source(src, item_body)
+        return build(step(join_body, items, key="collect"))
+
+    runner = FlowRunner(app.get("timer_map_sibling_identity"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id, until="held")
+
+    # BOTH siblings' timer holds exist as DISTINCT rows (the second
+    # sibling's mint must never collide on the -1 sentinel).
+    rows: list[Any] = []
+    for _ in range(20):
+        rows = await wf_conn.fetch(
+            render_sql(
+                "SELECT node_key, signal_name, hold_epoch, "
+                "map_index FROM {schema}.wf_signals "
+                "WHERE workflow_id = $1 AND status = 'held'",
+                wf_schema,
+            ),
+            flow_id,
+        )
+        if len(rows) == 2:
+            break
+        await runner.drive(flow_id, until="held")
+    assert len(rows) == 2, (
+        "the map siblings' TIMER holds are NOT distinct rows — the second "
+        f"sibling's wait_until collided on the identity arbiter. Observed: "
+        f"{[dict(r) for r in rows]}"
+    )
+    indexes = sorted(r["map_index"] for r in rows)
+    assert indexes == [0, 1], indexes
+
+    # THE FIRES WAKE THEIR OWN SIBLINGS: drive past the deadline; the
+    # sweep fires both timers; the run completes with BOTH siblings'
+    # notes (a sibling that never woke is the wedged variant's face).
+    await asyncio.sleep(0.2)
+    from taskq.workflows.api._hitl import sweep_due_timers
+
+    await sweep_due_timers(wf_pool, schema=wf_schema)
+    status = None
+    for _ in range(40):
+        await runner.drive(flow_id)
+        status = await wf_conn.fetchval(
+            f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+        )
+        if status in ("succeeded", "failed", "cancelled"):
+            break
+        await asyncio.sleep(0.05)
+    assert status == "succeeded", status
+    collect = await wf_conn.fetchval(
+        f"SELECT result->>'value' FROM \"{wf_schema}\".jobs "
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'collect'",
+        flow_id,
+    )
+    assert collect is not None
+    notes = [n["index"] for n in json.loads(collect)]
+    assert sorted(notes) == [0, 1], notes
+    timer_cures_redlog.red(
+        "c7-timer-hold-map-index",
+        "the PRE-CURE variant (probed live): the timer mint threaded no map "
+        "index — the second map sibling's wait_until raised "
+        "wf_signals_hold_identity_uniq INTO the ladder (the convicted "
+        "collision); the cure threads the item's own index through "
+        "register_timer_hold → register_hold",
+        {"timer_holds": len(rows), "map_indexes": indexes},
     )
