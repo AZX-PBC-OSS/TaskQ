@@ -1,0 +1,19 @@
+{
+  "child_run_id": "01a12aba-c4cb-7c81-b054-9e7df57616ec",
+  "digest": {
+    "child_flows_spawned": 1,
+    "contracts_published": [
+      "crash2-0006"
+    ],
+    "delivery_id": "crash2-88b1b4f0",
+    "expired_children": [],
+    "failed_children": [],
+    "ledger_entries": [],
+    "quarantined": [],
+    "total_chunks": 8,
+    "total_docs": 1
+  },
+  "flow_id": "01a12aba-af75-79b2-8d96-8a57ed42be4d",
+  "hold_survived": true,
+  "killed_mid": "the parent's run-children hold window"
+}

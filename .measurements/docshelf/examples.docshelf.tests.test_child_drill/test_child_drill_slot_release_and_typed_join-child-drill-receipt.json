@@ -1,0 +1,37 @@
+{
+  "delivery_id": "child-1e8b8303",
+  "failed_children": [
+    "poison-0004"
+  ],
+  "flow_id": "01a12abc-c7b8-70e0-ac86-6f05cb20a9b2",
+  "hold_and_child_windows": [
+    {
+      "child_exec_seconds": 1.838,
+      "child_run_id": "01a12abc-ec55-7f11-850b-55fcfd82f64e",
+      "doc_id": "child-0007",
+      "hold_seconds": 6.312,
+      "overlap_seconds": 1.838
+    },
+    {
+      "child_exec_seconds": 1.245,
+      "child_run_id": "01a12abc-ec5d-7140-aa9e-f9ce94834f41",
+      "doc_id": "child-0027",
+      "hold_seconds": 6.312,
+      "overlap_seconds": 1.245
+    },
+    {
+      "child_exec_seconds": 0.008,
+      "child_run_id": "01a12abc-ec60-7050-aa7d-ec407e767247",
+      "doc_id": "poison-0004",
+      "hold_seconds": 6.312,
+      "overlap_seconds": 0.008
+    }
+  ],
+  "joined_children": [
+    "child-0007",
+    "child-0027",
+    "poison-0004"
+  ],
+  "poison_doc": "poison-0004",
+  "worker_slots": 1
+}

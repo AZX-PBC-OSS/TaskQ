@@ -1,0 +1,14 @@
+{
+  "child_flows_spawned": 18,
+  "chunks_re_extracted_after_kill": 0,
+  "digest_total_docs": 30,
+  "extraction_attempts_total": 168,
+  "failed_children": [],
+  "flakes_injected": 32,
+  "flow_id": "01a12ac0-1590-7790-9100-03f118e72831",
+  "iteration": 2,
+  "kill_delay_s": 1.5,
+  "timeouts_injected": 11,
+  "wall_seconds": 9.3,
+  "worker_killed_alive": true
+}
