@@ -66,7 +66,7 @@ from taskq.workflows._progress import (
     project_auto_event,
 )
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._sql_finalize import NODE_INSERT_SQL
+from taskq.workflows._sql_finalize import FANIN_FAILURES_BYTE_CAP, NODE_INSERT_SQL
 from taskq.workflows._types import (
     ChildSpec,
     FinalizeResult,
@@ -126,6 +126,60 @@ from taskq.workflows.ledger import (
 __all__ = ["FlowRunner", "StepContext", "VanishedNodeError", "WorkflowRunError"]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+
+def _bounded_collect(values: list[object]) -> dict[str, object]:
+    """THE COLLECTED RESULT'S CAP (the F4 cure — ONE mechanism with the
+    failures'-collect's own discipline, ``_sql_finalize.py``'s
+    ``COLLECT_FAN_IN_APPEND_SQL`` arms mirrored at the collect face): a
+    join/gather's envelope — the identity packer's
+    ``{"value": [every parent's result]}`` — compacts PAST the estate's
+    result cap (``FANIN_FAILURES_BYTE_CAP``, the SAME 64 Ki bound the
+    failures' array honors):
+
+    * under the cap: byte-identical to the pre-cure shape (the common
+      case pays nothing);
+    * over the cap: the fitted PREFIX of items stays spelled under
+      ``value`` (the collect's arm-2 face — keep what fits), and the
+      truncation is HONEST — ``__truncated__`` counts the items no
+      longer spelled on this row (the marker is the read's own warning,
+      the failures'-collect's arm-3 pattern) and ``detail_home`` names
+      where the full collect lives: THE CHILD ROWS — each map child /
+      gather parent carries its OWN result row (the record never loses
+      the detail; the join row is the bounded summary, exactly the
+      failures' split: the ledger/children the detail, the row the
+      summary).
+
+    The pre-cure face was the bypass: the wf finalize's TERMINAL_MARK
+    checked no ``result_max_bytes`` — a 700-child map landed a
+    730,001-byte envelope (11.1x the cap every plain job's terminal
+    enforces non-retryably); the ceiling at the fan-in bound was
+    ~305 MiB of jsonb in ONE row. The byte measure is the finalize's
+    own (``_jsonb`` → utf-8 length — ``engine._jsonb_len``'s shape), so
+    the recorded ``result_size_bytes`` IS the bounded number."""
+    detail_home = (
+        "the full collect lives on the children's own result rows (the "
+        "fork-spawned .item rows / the gather's parents); this join row "
+        "carries the bounded summary"
+    )
+    envelope: dict[str, object] = {"value": values}
+    if len(_jsonb(envelope).encode("utf-8")) <= FANIN_FAILURES_BYTE_CAP:
+        return envelope
+    kept: list[object] = []
+    for value in values:
+        candidate = {
+            "value": [*kept, value],
+            "__truncated__": len(values) - len(kept) - 1,
+            "detail_home": detail_home,
+        }
+        if len(_jsonb(candidate).encode("utf-8")) > FANIN_FAILURES_BYTE_CAP:
+            break
+        kept.append(value)
+    return {
+        "value": kept,
+        "__truncated__": len(values) - len(kept),
+        "detail_home": detail_home,
+    }
 
 
 class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
@@ -894,7 +948,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     parents_values = [
                         item for v in parents_values for item in cast(list[object], v)
                     ]
-                result = {"value": parents_values}
+                # THE COLLECTED RESULT'S CAP (the F4 cure): the envelope
+                # compacts past the estate's result cap — the same
+                # discipline the failures'-collect ships (the cap, the
+                # honest __truncated__ marker, the detail on the child
+                # rows). Under the cap: byte-identical to the pre-cure
+                # shape.
+                result = _bounded_collect(parents_values)
             else:
                 deps_tail = self._deps_tail(body, len(args))
                 outcome_value = await body(ctx, *args, *deps_tail)

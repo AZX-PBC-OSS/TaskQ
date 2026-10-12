@@ -302,3 +302,62 @@ exactly-once, the ledger pins): **48 passed** — the receipt gating and
 the escape shape hold THROUGH the move. The rv6-engine pins (12 passed,
 1 xfailed — rv6-e1's own live finding, another lane's), the holdmap
 pins, the child pins, the HITL/timer pins ×2 (17 passed ×2): green.
+
+---
+
+# THE F4 CURE — THE FAN-IN ENVELOPE'S RESULT CAP (the amendment's flip receipt)
+
+The amendment's dispatch (the perf front's finding, the finalize face's
+own territory). The pin PORTED from the perf front
+(`feat/verify-perf @ c8822df4a`, `tests/perf/test_wf_overhead_ledger.py`)
+into the finalize-family pack
+(`tests/test_wf_finalize_pins.py::test_pin_fanin_envelope_within_the_estate_result_cap`)
+— the bypassed write is THAT family's TERMINAL_MARK face.
+
+## THE MECHANISM (one mechanism, the failures'-collect's own)
+
+`_runner.py`'s `_bounded_collect` — the collected-result face (the
+identity packer's join/gather envelope) mirrors the failures'-collect's
+discipline: the SAME cap (`FANIN_FAILURES_BYTE_CAP`, the estate's
+64 KiB), the SAME honest truncation (the `__truncated__` marker counting
+the items no longer spelled on the row) + the `detail_home` pointer (the
+full collect lives on the child rows — each map child / gather parent
+carries its OWN result row; the row is the bounded summary, never the
+lie). Under the cap: byte-identical to the pre-cure shape. The byte
+measure is the finalize's own (`_jsonb` → utf-8 length), so the recorded
+`result_size_bytes` IS the bounded number.
+
+## THE RED (the byte-exact repro at the base)
+
+```
+assert int(size) <= cap, (
+E   AssertionError: the fan-in envelope is 730001 bytes — 11.1x the estate's 64 KiB result cap: the wf terminal write bypasses the size discipline every plain job's terminal enforces
+E   assert 730001 <= 65536
+```
+
+The front's measured figure VERBATIM (730,001 bytes, 700 children ×
+~1 KiB). Capture: `.measurements/k7-cure/f4-red-run-raw.txt`. The
+marked strict-xfail run: 1 xfailed.
+
+THE PORT'S ONE DEVIATION (documented on the pin): the model + the
+bodies live at MODULE level — the front's function-local `ItemsIn` is
+invisible to the body-hints walk (the closure cell carries only the
+body's own free variables; the annotation is a string under the
+future-import), so the front's local definition reds at the
+AttributeError, never at the size assert — an unfaithful repro. Module
+level = the red names THE ENVELOPE'S BYTES.
+
+## THE FLIP ×2 + THE HONEST ROW'S PROOF
+
+The marker REMOVED WITH the cure:
+
+```
+1 passed in 2.81s
+1 passed in 2.52s
+```
+
+The compacted row's honest shape (the probe at the cured head):
+`size: 64,794 ≤ 65,536 | __truncated__: 638 | kept: 62` — the fitted
+prefix stays spelled, the marker counts the 638 items no longer spelled,
+`detail_home` names the child rows. The finalize + pruner packs green
+with the cure (11 passed).

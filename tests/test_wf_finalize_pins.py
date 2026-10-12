@@ -13,9 +13,11 @@ the unfenced variants kept in this file forever as the convicted shapes.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import asyncpg
 import pytest
+from pydantic import BaseModel
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
@@ -559,3 +561,98 @@ async def test_pin_13_attempt_fence(
     )
     assert admitted.applied
     assert await fire_count(wf_conn, wf_schema, join2) == 1, "exactly one fire"
+
+
+# ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
+# (ported verbatim from the perf front's conviction —
+# feat/verify-perf @ c8822df4a, tests/perf/test_wf_overhead_ledger.py —
+# into the finalize-family pack: the bypassed write is THIS family's
+# TERMINAL_MARK face. The fixtures are this tree's own wf faces.)
+
+
+# ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
+# (ported from the perf front's conviction — feat/verify-perf @
+# c8822df4a, tests/perf/test_wf_overhead_ledger.py — into the
+# finalize-family pack: the bypassed write is THIS family's
+# TERMINAL_MARK face. The model + the bodies live at module level so the
+# body-hints walk resolves them — the port's one deviation, documented
+# on the pin.)
+
+
+class _F4ItemsIn(BaseModel):
+    n: int = 700
+
+
+_F4_FAT = "x" * 1024  # ~1 KiB per child result
+
+
+async def _f4_emit(ctx: Any, params: _F4ItemsIn) -> list[int]:
+    return list(range(params.n))
+
+
+async def _f4_fat_item(ctx: Any, i: int) -> dict[str, object]:
+    return {"i": i, "fat": _F4_FAT}
+
+
+@pytest.mark.integration
+async def test_pin_fanin_envelope_within_the_estate_result_cap(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """THE FAN-IN ENVELOPE'S SIZE DISCIPLINE (the payload-bloat finding,
+    MEASURED at the perf front's head): a NO-aggregate map's join row
+    collects every child's result into ONE jsonb envelope through the wf
+    finalize's TERMINAL_MARK — and that write checks NO
+    ``result_max_bytes``: the estate's 64 KiB terminal cap (the plain
+    job's non-retryable ResultTooLarge fence, ``settings.result_max_bytes``
+    default) does not bind the workflow's own terminal write.
+
+    THE MEASURED FACE (700 children x ~1 KiB each, the tuned perf
+    cluster): the join row landed ``result_size_bytes = 730_001`` —
+    11.1x the 64 KiB cap; the ceiling at the fan-in bound with cap-sized
+    children (5000 x 64 KiB) is ~305 MiB of jsonb in ONE row.
+
+    THE CURE'S SHAPE: the failures' own collect ALREADY compacts past
+    its cap (``FANIN_FAILURES_BYTE_CAP`` + the ``__truncated__`` marker +
+    the ledger pointer, pinned in ``test_wf_pruner_pins.py``) — the
+    collected RESULT envelope lacks the same discipline. Mirroring it
+    (compact past the cap, the full collect stays on the child rows the
+    read-side aggregate already reads) is the one-mechanism cure; this
+    pin FLIPS GREEN the day it lands.
+
+    THE PORT'S ONE DEVIATION (the repro's fidelity fix): the model and
+    the bodies live at MODULE level (above) — the perf front's
+    function-local ``ItemsIn`` is invisible to the body-hints walk (the
+    closure cell carries only the body's own free variables; the
+    annotation is a string under the future-import), and the front's
+    local definition reds at the AttributeError, never at the size
+    assert — an unfaithful repro. Module level = the annotation
+    resolves, the body runs, the map forks, and the red names THE
+    ENVELOPE'S BYTES (the finding's actual face)."""
+    import taskq.workflows as wf
+    from taskq.workflows import Promise, WorkflowApp, build, map_source, step
+
+    app = WorkflowApp()
+
+    @app.workflow("ledger_envelope")
+    def ledger_envelope() -> Promise[object]:
+        return build(map_source(step(_f4_emit, _F4ItemsIn(), key="src"), _f4_fat_item))
+
+    result = await wf.run(app.get("ledger_envelope"), wf_pool, wf_schema)
+    assert result.outcome == "terminal", result
+    async with wf_pool.acquire() as conn:
+        # S608 is per-file-ignored for this pack (the schema identifier is
+        # the fixture's own settings-validated identifier; values $-bound
+        # or the step key's literal).
+        size = await conn.fetchval(
+            f"SELECT result_size_bytes FROM \"{wf_schema}\".jobs WHERE step_key = 'src.join'"
+        )
+    assert size is not None, "the join row did not terminalize"
+    cap = 64 * 1024
+    assert int(size) <= cap, (
+        f"the fan-in envelope is {int(size)} bytes — {int(size) / cap:.1f}x the "
+        "estate's 64 KiB result cap: the wf terminal write bypasses the "
+        "size discipline every plain job's terminal enforces (the "
+        "payload-bloat finding; the cure is the failures' own compaction "
+        "mechanism mirrored to the collect)"
+    )
