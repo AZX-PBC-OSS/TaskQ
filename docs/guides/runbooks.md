@@ -881,6 +881,60 @@ Nothing is lost by waiting: a held run's budget is PAUSED (the hold counts for n
 
 ---
 
+## A workflow run's mid-run hard crash (the operator's page)
+
+The executing process died mid-attempt (SIGKILL, OOM, the box went
+away). The run's rows stay `running` with a lock lease owned by a dead
+worker. THIS is the runbook the guides' resume sections assume; work
+top to bottom.
+
+1. **Do NOT re-drive in-process and wait.** `FlowRunner.drive(flow_id,
+   execute=True)` on a fresh runner runs NO lock-reclaim sweep — it
+   ticks to its `max_ticks` budget (~110 s at the 5000-tick default),
+   returns the string `"max_ticks"` (a bounded give-up, not a status —
+   CHECK the return), and changes nothing. The in-process driver is the
+   dev-loop door for LIVE runs, not a recovery tool.
+2. **The reclaim is the WORKER-hosted sweep's job, and it costs the
+   lease arithmetic.** The maintenance leader's expired-lock sweep
+   waits out the dead claim's lock lease (`TASKQ_LOCK_LEASE`, 60 s at
+   the default) plus the sweep cadence and the failed-beat cascade
+   margin the lease must cover. MEASURED WALL: ~2 minutes from the
+   kill to the killed child re-pending (122 s for a 40-site fan at the
+   defaults) — a "stuck" run for the first two minutes after a crash
+   is the mechanism working, not wedged. Confirm takeover: the
+   `maintenance_leader` row names a LIVE worker, then the expired
+   sweep's counters move.
+3. **What the reclaim does with the killed child**: the row re-pends
+   (`running→scheduled→pending`) while retry budget remains — the
+   attempt ladder continues, the ledger's idempotency absorbs any
+   partially-written effects of the killed attempt (safe by the step
+   ledger). Budget exhausted (`attempt >= max_attempts`) → the row
+   terminalizes `crashed` (the FAILED class — see the workflow guide's
+   collect-contract note for what a crash-class child means to a
+   `collect` join).
+4. **Resume through the fleet door**: `drive(flow_id, execute=False)`
+   on a runner (the orchestration-only drive — the tick runs the sweep
+   arms, the fleet's workers execute the re-pended work), or simply
+   keep a worker running; the re-pended rows dispatch like any work.
+   The kill-retry cycle is bounded by the child's ladder — budget
+   `max_attempts=` for the crashes you expect.
+5. **The manual verbs refuse live rows — by design**: `taskq flows
+   retry <run_id> <node>` refuses a node that is not terminal-FAILED
+   ("is live … or spent past the attempt ceiling"), and `taskq job
+   retry` refuses a running job. A `running` row under a dead lease is
+   step 2's patient, not a retry target. A terminal-FAILED child (the
+   ladder spent) is the retry verbs' customer.
+6. **When the re-drive is not wanted — cancel + re-issue**: `taskq
+   flows cancel <run_id> --reason ...` (the cascade resolves the live
+   rows in the same snapshot), then re-issue the run under a NEW
+   `run_key` (a terminal run's key is never re-used). The re-issue's
+   re-execution is absorbed by the workflow's idempotent design (the
+   step ledger replays `ctx.substep` records; idempotent upserts in
+   the bodies make data effects exact) — this is the drill-proven path
+   when the fleet is down and the driver is your only instrument.
+
+---
+
 ## Related documentation
 
 - [Observability](observability.md): the metrics these alerts evaluate,

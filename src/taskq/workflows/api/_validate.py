@@ -1323,10 +1323,15 @@ def _rule_fan_in_bound(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
 
     THE MESSAGE NAMES THE REMEDY (the rv4 F8 cure — the refusal's own
     text must reach it): the bound (MAX_FAN_IN_PER_JOIN) AND the
-    child-driven escape (JoinSpec(child_driven=True) at the engine's
-    door; partitioning the map at the graph wiring's) — the pre-cure
-    message named only the partition, the engine-level escape
-    unreachable from the refusal that demanded it."""
+    remedies. THE PUBLIC FACE FIRST: at the graph wiring the remedy is
+    PARTITION THE MAP (batch the source's items so each join's fan-in
+    stays under the bound — the smaller batches are fresh jobs, the
+    data lands exact). The child-driven escape is the ENGINE's fork
+    door (``ForkSpec``'s ``JoinSpec(child_driven=True)`` — the fire
+    counts terminal children from the edge ledger, never a
+    per-joined-row edge list); it is not a parameter on the public
+    ``route``/``map_source`` wiring verbs, so the refusal must not
+    teach it as one."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         if len(node.parents) > MAX_FAN_IN_PER_JOIN:
@@ -1336,10 +1341,13 @@ def _rule_fan_in_bound(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
                     "error",
                     f"join {node.key!r} fans in {len(node.parents)} parents — "
                     f"above the declared maximum fan-in per join "
-                    f"({MAX_FAN_IN_PER_JOIN}). Use the child-driven shape "
-                    "(JoinSpec(child_driven=True) — the fire counts terminal "
-                    "children from the edge ledger, never a per-joined-row "
-                    "edge list) or partition the map.",
+                    f"({MAX_FAN_IN_PER_JOIN}). At the graph wiring, partition "
+                    "the map (batch the source's items so each join stays "
+                    "under the bound). The child-driven escape is the ENGINE's "
+                    "fork door (ForkSpec's JoinSpec(child_driven=True) — the "
+                    "fire counts terminal children from the edge ledger, "
+                    "never a per-joined-row edge list), not a graph-verb "
+                    "parameter.",
                 )
             )
     return diagnostics

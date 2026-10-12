@@ -463,6 +463,26 @@ problem by *where the text comes from*:
   `unnest` statement (SQLSTATE 22021) and lose the failure bookkeeping for
   **every** schedule in the tick.
 
+### Leader failover after a leader death
+
+The sweeps run on the ELECTED maintenance leader — one per fleet. When
+the leader dies (SIGKILL, OOM, the pod evicted), the sweeps STOP until
+a follower takes over: takeover waits out the dead leader's lease
+(`TASKQ_LEADER_LEASE`, **40 s at the default** — a follower trusts the
+lease row that long before electing itself), plus at most one
+heartbeat tick to notice the lapse. The promoted leader's first sweep
+pass then runs the full cycle: expired-lock reclaims, the
+`scheduled_to_pending` promotion (the ~1 s cadence claim in
+[jobs-clients.md](jobs-clients.md#job-lifecycle) presumes a LIVE
+leader — a deferred job's promotion latency after a leader death is
+lease-bound, ~`TASKQ_LEADER_LEASE` + one sweep cycle, and the same
+arithmetic bounds every sweep's stall: lock reclaims, result expiry,
+workflow join rederives). Operators watching a deferred job sit
+unpromoted after a worker/leader death: wait out the lease, or lower
+`TASKQ_LEADER_LEASE` (it is floor-bounded at 4 heartbeat intervals —
+see [configuration.md](configuration.md#timing-and-liveness)); the
+`maintenance_leader` row naming a live worker is the takeover receipt.
+
 ---
 
 **See also:**

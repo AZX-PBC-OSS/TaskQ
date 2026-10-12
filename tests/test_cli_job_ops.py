@@ -474,6 +474,7 @@ def _show_row(**overrides: Any) -> dict[str, Any]:
         "error_class": "ValueError",
         "error_message": "boom",
         "idempotency_key": None,
+        "tags": [],
         "error_traceback": "Traceback (most recent call last):\n  boom",
         "payload": '{"to": "ops@example.com"}',
     }

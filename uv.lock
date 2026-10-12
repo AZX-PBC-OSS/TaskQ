@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -3191,7 +3191,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'fastapi'", specifier = ">=0.51.0,<1" },
     { name = "watchfiles", marker = "extra == 'reload'", specifier = ">=1.2.0" },
 ]
-provides-extras = ["redis", "fastapi", "reload", "bench", "otel", "prometheus", "oidc", "saml", "aad", "aws", "vault"]
+provides-extras = ["flows", "redis", "fastapi", "reload", "bench", "otel", "prometheus", "oidc", "saml", "aad", "aws", "vault"]
 
 [package.metadata.requires-dev]
 dev = [

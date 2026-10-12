@@ -230,10 +230,12 @@ def validate_fork(fork: ForkSpec) -> None:
         raise FanInBoundExceededError(
             f"join {fork.join.step_key!r} fans in {len(fork.children)} "
             f"children — above the declared maximum fan-in per join "
-            f"({MAX_FAN_IN_PER_JOIN}). Use JoinSpec(child_driven=True) "
-            "(the child-driven shape: the fire counts terminal children "
-            "from the edge ledger, never a per-joined-row edge list) or "
-            "partition the map."
+            f"({MAX_FAN_IN_PER_JOIN}). At the graph wiring, partition the "
+            "map (batch the source's items so each join stays under the "
+            "bound). On the engine's fork door, the child-driven shape "
+            "(JoinSpec(child_driven=True) — the fire counts terminal "
+            "children from the edge ledger, never a per-joined-row edge "
+            "list) is the escape."
         )
 
 
