@@ -70,14 +70,19 @@ class FlowNodeRow:
     hold: HoldContext | None = None
     max_attempts: int = 3
     attempt: int = 0
-    # THE 3AM FIELDS (the observability lane's cures): the node row's own
-    # id + started_at (the RUNNING face's age source) + the failed_parent
-    # stamp (metadata.failed_parent — the dead parent NAMED on the
-    # record). Optional with None defaults: every existing constructor
-    # keeps its shape; the CLI's status read supplies them.
+    # THE 3AM FIELDS (the observability lane's cures; the ENGINE-FACES
+    # cure rides the engine query — WORKFLOW_NODES_SQL selects them at
+    # the source, ONE read): the node row's own id + started_at (the
+    # RUNNING face's age source) + the failed_parent stamp
+    # (metadata.failed_parent — the dead parent NAMED on the record) +
+    # the LEASE face's columns (the reclaim-requires-a-leader marker's
+    # derivation input). Optional with None defaults: every existing
+    # constructor keeps its shape.
     job_id: str | None = None
     started_at: datetime | None = None
     failed_parent: str | None = None
+    lock_expires_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
 
     def view(self) -> NodeView:
         """The §17.5 derivation's input — THE ONE CONVERSION (no second
@@ -275,10 +280,45 @@ def _running_lines(
     distinguish stuck from slow (``job show``'s lease face +
     ``job events``' lock_expired record). A row younger than
     *running_face_after_s* is live work, not a finding — its line would
-    be noise on every progress report."""
+    be noise on every progress report.
+
+    THE RECLAIM-REQUIRES-A-LEADER MARKER (the engine-faces lane's cure —
+    the dead-fleet face): a running row whose ``lock_expires_at`` has
+    passed is the OPPOSITE verdict — the holder is presumed dead and the
+    row is RECLAIMABLE, but the reclaim sweep runs only under a leader:
+    with the fleet down nothing ever stamps the row (a sweep-stamp face
+    would lie by absence), so the marker is DERIVED from the row's own
+    lease column — the operator's 'is this work slow or is everyone
+    dead' is answerable from the surface alone."""
     out: list[str] = []
     for n in nodes:
-        if n.status != "running" or n.started_at is None:
+        if n.status != "running":
+            continue
+        if n.lock_expires_at is not None:
+            expires = (
+                n.lock_expires_at
+                if n.lock_expires_at.tzinfo
+                else n.lock_expires_at.replace(tzinfo=UTC)
+            )
+            if expires < now:
+                lapsed_s = max(int((now - expires).total_seconds()), 0)
+                lapsed = f"{lapsed_s // 3600:02d}:{(lapsed_s % 3600) // 60:02d}:{lapsed_s % 60:02d}"
+                out.append(
+                    f"  {n.step_key}: RECLAIMABLE, awaiting a leader — the lease "
+                    f"lapsed {lapsed} ago (source: the jobs row's lock_expires_at): "
+                    "the holder is presumed DEAD — this is 'the fleet is dead', "
+                    "not 'the work is slow'. The reclaim sweep repends (or "
+                    "crashes) the row within TASKQ_SWEEP_INTERVAL (default 30s) "
+                    "once a leader is up; with no leader the row waits"
+                )
+                if n.job_id:
+                    out.append(
+                        "       remedy: bring a worker up — the leader's reclaim "
+                        "sweep repends it within TASKQ_SWEEP_INTERVAL; the "
+                        f"death's record: taskq job events {n.job_id}"
+                    )
+                continue
+        if n.started_at is None:
             continue
         started = n.started_at if n.started_at.tzinfo else n.started_at.replace(tzinfo=UTC)
         age_s = (now - started).total_seconds()

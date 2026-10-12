@@ -95,6 +95,13 @@ _CORPUS: tuple[str, ...] = (
     # verbs); the type-keyed green face (and the flat Promise[list[R]]
     # it returns) stays clean.
     "wf_graph_route_negative_types.py",
+    # THE WIRING'S ELEMENT-TYPE SEAM'S PROBES (the E5 drill's cure — the
+    # engine-faces lane): a list[Word] producer wired into a list[str]
+    # consumer reds at the WIRING SITE on both checkers (the single-
+    # promise list seam is TYPED — the body's list[E] and the promise's
+    # list[E] must agree on E); the matching-element green face stays
+    # clean.
+    "wf_list_element_negative_types.py",
 )
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 

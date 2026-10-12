@@ -70,7 +70,17 @@ GROUP BY status
 # absorbing join's failures array — the derivation reads the record, never
 # a heuristic), and the PARENT LINK (the map-child mark's input — the
 # admin run view collapses a row parented at another run node into its
-# source's hexagon; static nodes are parented at NULL). The absorption record is _absorbed_exists's POLICY-vs-
+# source's hexagon; static nodes are parented at NULL).
+#
+# THE 3AM COLUMNS AT THE SOURCE (the engine-faces lane's cure): the row
+# also carries started_at (the RUNNING face's age source), the
+# failed_parent stamp (metadata.failed_parent — the dead parent's id,
+# named on the record by the T06 cascade), and the LEASE face's columns
+# (lock_expires_at + last_heartbeat_at — the reclaim-requires-a-leader
+# marker's derivation input). Every status surface reads THIS query; the
+# columns at the source are ONE read — the CLI's own supplement read
+# (two reads where one suffices) is retired by them.
+# The absorption record is _absorbed_exists's POLICY-vs-
 # FENCE predicate — the edge's declaration alone absorbs nothing (the
 # envelope never lies, T07's C).
 WORKFLOW_NODES_SQL = (
@@ -78,6 +88,9 @@ WORKFLOW_NODES_SQL = (
 SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        j.metadata->>'blocking_reason' AS blocking_reason,
        j.attempt, j.max_attempts,
+       j.started_at,
+       j.metadata->>'failed_parent' AS failed_parent,
+       j.lock_expires_at, j.last_heartbeat_at,
        """
     + _absorbed_exists("j")
     + """ AS absorbed,

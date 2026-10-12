@@ -153,18 +153,20 @@ _NODE_LEDGER_SQL = (
 )
 
 
-def _cache_hit_of(raw: Any) -> dict[str, Any] | None:
+def _cache_hit_of(raw: object) -> dict[str, object] | None:
     """The wf_cache_hit jsonb's decode (str or dict — asyncpg's bare ->
     lands a string; a typed path a dict). A corrupted row reads None:
-    the receipt is provenance, never load-bearing."""
+    the receipt is provenance, never load-bearing. The casts are the
+    jsonb boundary's declared contract (RFC 8259: the wire's object keys
+    are strings) — the decode's shape, never an inferred Unknown."""
     if isinstance(raw, dict):
-        return raw
+        return cast("dict[str, object]", raw)
     if isinstance(raw, str):
         try:
-            decoded = _json_loads(raw)
+            decoded: object = _json_loads(raw)
         except ValueError:
             return None
-        return decoded if isinstance(decoded, dict) else None
+        return cast("dict[str, object]", decoded) if isinstance(decoded, dict) else None
     return None
 
 

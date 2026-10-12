@@ -3513,23 +3513,27 @@ def _render_cache_hit(row: Any) -> None:
     did: this line is the difference between 'the body ran' and 'an
     earlier run's result was delivered'. Only the receipt is ever
     printed from metadata (the rest of the jsonb stays row-only)."""
-    meta = row.get("metadata") if hasattr(row, "get") else None
+    meta: object = row.get("metadata") if hasattr(row, "get") else None
     if isinstance(meta, str):
         try:
             meta = json_loads(meta)
         except ValueError:
-            meta = None
+            return
     if not isinstance(meta, dict):
         return
-    receipt = meta.get("wf_cache_hit")
+    # The jsonb boundary's declared contract (RFC 8259: the wire's object
+    # keys are strings) — the decode's shape, never an inferred Unknown.
+    fields = cast("dict[str, object]", meta)
+    receipt: object = fields.get("wf_cache_hit")
     if isinstance(receipt, dict):
+        rec = cast("dict[str, object]", receipt)
         typer.echo(
             "cache_hit: the body did NOT run — an earlier run's cached result was "
             "delivered (source: the jobs row's metadata.wf_cache_hit)"
         )
-        typer.echo(f"  producing run: {receipt.get('run_id')}")
-        typer.echo(f"  address: {receipt.get('address')}")
-        typer.echo(f"  stored_at: {receipt.get('stored_at')}")
+        typer.echo(f"  producing run: {rec.get('run_id')}")
+        typer.echo(f"  address: {rec.get('address')}")
+        typer.echo(f"  stored_at: {rec.get('stored_at')}")
 
 
 def _print_blob_field(name: str, value: Any) -> None:
@@ -4225,21 +4229,13 @@ async def _flows_status(settings: TaskQSettings, run_id: str) -> None:
             typer.echo("Action: taskq flows list shows the recent runs.", err=True)
             raise typer.Exit(code=1)
         node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
-        # THE 3AM FIELDS' SUPPLEMENT (the observability lane's cure — the
-        # CLI face's own read, never an engine-SQL edit): the node rows'
-        # started_at (the RUNNING face's age source) + the failed_parent
-        # stamp (the dead parent's id, named on the record by the T06
-        # cascade). One bounded read keyed by the row id — the engine's
-        # WORKFLOW_NODES_SQL already selected j.id, so the merge is by
-        # that key, position-free.
-        supplement_rows = await conn.fetch(
-            f"SELECT id, started_at, metadata->>'failed_parent' AS failed_parent "  # noqa: S608  # Why: the schema is identifier-validated above; every value is a bound parameter.
-            f'FROM "{settings.schema_name}".jobs '
-            "WHERE (metadata->>'flow_id')::uuid = $1::uuid "
-            "AND metadata ? 'flow_id' AND step_key <> '__flow__'",
-            parsed,
-        )
-        supplement_by_id = {str(r["id"]): r for r in supplement_rows}
+        # THE ONE-READ LAW (the engine-faces lane's cure): the 3am
+        # columns ride the ENGINE query — WORKFLOW_NODES_SQL selects
+        # started_at + the failed_parent stamp + the lease face's columns
+        # at the source. The supplement read this seat used to carry (a
+        # second, CLI-owned jobs fetch keyed by the row id) is RETIRED:
+        # two reads where one suffices was the engine query's missing
+        # columns forcing the workaround.
         held = await conn.fetch(
             f"SELECT id, node_key, signal_name, hold_epoch, payload, payload_schema, "  # noqa: S608  # Why: schema identifier-validated above.
             "created_at, expires_at FROM "
@@ -4266,11 +4262,14 @@ async def _flows_status(settings: TaskQSettings, run_id: str) -> None:
             # the read must carry the row's own counters.
             max_attempts=row["max_attempts"],
             attempt=row["attempt"],
-            # THE 3AM FIELDS (the supplement read above): the row id +
-            # started_at + the failed_parent stamp.
+            # THE 3AM FIELDS (the ENGINE query's own columns — the one
+            # read): the row id + started_at + the failed_parent stamp +
+            # the lease face's columns.
             job_id=str(row["id"]),
-            started_at=supplement_by_id.get(str(row["id"]), {}).get("started_at"),
-            failed_parent=supplement_by_id.get(str(row["id"]), {}).get("failed_parent"),
+            started_at=row["started_at"],
+            failed_parent=row["failed_parent"],
+            lock_expires_at=row["lock_expires_at"],
+            last_heartbeat_at=row["last_heartbeat_at"],
             hold=(
                 _held_context(run_id, holds_by_key[row["step_key"]])
                 if row["step_key"] in holds_by_key
