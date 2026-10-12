@@ -1,2 +1,3 @@
-# rv2-13-green's slot staged at head b93d874389d14bf15376b6b1dcec2718f2ce1547 — captured 2026-10-12T12:58:07Z
-THE GRAND MERGE'S STAGED SLOT: rv2-13's receipt slot — the green rv2-13 run's output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.
+head: 8ca5f588fb79f26a6fca56bf433dc807d2e497e6 — rv2-13's TWO green legs at the committed estate (the head-stamp law greens on the committed tree)
+1 passed in 6.38s
+1 passed in 6.41s
