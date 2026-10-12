@@ -12448,6 +12448,18 @@
       "file": "rv2-13-transition-reds-k7.txt",
       "head_sha": "b50f8458719fd4cc88384bc9bec54b6b06c0ac14",
       "captured_at": "2026-10-12T10:55:00"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-k7-M3.txt",
+      "head_sha": "6a772a1fb04c1994ea34259142eebee64dd6fe67",
+      "captured_at": "2026-10-12T11:02:00"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-k7-M3.txt",
+      "head_sha": "6a772a1fb04c1994ea34259142eebee64dd6fe67",
+      "captured_at": "2026-10-12T11:02:00"
     }
   ]
 }
