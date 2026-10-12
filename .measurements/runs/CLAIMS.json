@@ -12436,6 +12436,18 @@
       "file": "deslop-pin-packs-k7-20261012T10.txt",
       "head_sha": "b50f8458719fd4cc88384bc9bec54b6b06c0ac14",
       "captured_at": "2026-10-12T10:37:00"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-transition-reds-k7.txt",
+      "head_sha": "b50f8458719fd4cc88384bc9bec54b6b06c0ac14",
+      "captured_at": "2026-10-12T10:55:00"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "rv2-13-transition-reds-k7.txt",
+      "head_sha": "b50f8458719fd4cc88384bc9bec54b6b06c0ac14",
+      "captured_at": "2026-10-12T10:55:00"
     }
   ]
 }
