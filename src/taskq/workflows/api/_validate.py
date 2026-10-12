@@ -1362,23 +1362,27 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
 
 
 def _rule_actor_queue_cohort(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E17: the DERIVED JOIN's implicit cohort conflict, convicted at
+    """W6: the DERIVED JOIN's implicit cohort conflict, convicted at
     validate (the docshelf adoption team's F3): ``route()``'s derived
     join inherits the source's ACTOR and takes the verb's ``queue=``
     (default ``default``) — a source placed on a NON-DEFAULT queue made
     the derived join split its actor over two queues, the conflict
     discovered ONLY at the worker's boot (the projection's
     ``WorkflowActorQueueConflictError``), ``validate()`` clean. THE
-    CONVICTION IS THE DERIVED, UN-SPELLED COHORT: the join (and the
-    fork's children) ride the map attachment's queue — when that queue
-    differs from the SOURCE NODE's own queue under the SAME actor, the
-    author never spelled the split (the verb's default ambushed them)
-    and this validate refuses at the wiring. An EXPLICIT node-to-node
-    split (a step spelled ``queue='q1'``) is the author's own declared
-    placement — the boot projection's one-queue law remains that
-    face's runtime door. THE REMEDY IS THE ESTATE'S: the split
-    placement is expressed with DISTINCT actor names per queue (e.g.
-    ``actor='wf-gpu', queue='gpu'``)."""
+    AMBUSH IS THE DERIVED, UN-SPELLED COHORT: the join (and the fork's
+    children) ride the map attachment's queue — when that queue differs
+    from the SOURCE NODE's own queue under the SAME actor, the author
+    never spelled the split (the verb's default ambushed them). THE
+    SEVERITY IS THE W2 PRECEDENT'S (the same law's shape: "probably
+    wrong, never a refusal — the worker-boot fail-fast stays the
+    runtime door"): the wiring REPORTS the cohort conflict with the
+    actor, both queues, and the remedy, and the boot projection's
+    one-queue law remains the refusal door — because the SPLIT
+    placement under one actor is also the estate's taught heterogeneous
+    shape (the doc-ingest guide's own wiring), a graph the dev-loop
+    door honors. THE REMEDY for the fleet deployment: DISTINCT actor
+    names per queue (e.g. ``actor='wf-gpu', queue='gpu'``), or wire
+    the map/route's ``queue=`` to the source's own."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         if node.map_item is None and node.map_arms is None:
@@ -1387,19 +1391,19 @@ def _rule_actor_queue_cohort(compiled: CompiledWorkflow) -> list[WorkflowValidat
             continue
         diagnostics.append(
             WorkflowValidationError(
-                "E17-actor-queue-cohort",
-                "error",
+                "W6-actor-queue-cohort",
+                "warning",
                 f"the map/route attachment on {node.key!r} derives its join "
                 f"(and the fork's children) on queue {node.map_queue!r} "
                 f"while the source node itself rides {node.queue!r} — both "
                 f"under actor {node.actor!r}, and actor_config is keyed by "
                 "actor (one queue per actor, the estate's own law): the "
-                "worker boot's cohort projection would refuse this graph "
-                "(or strand its rows), a conflict this validate convicts at "
-                "the wiring instead of at the worker's 3am. The split "
-                "placement is expressed with DISTINCT actor names per queue "
-                "(e.g. actor='wf-gpu', queue='gpu'), or wire the "
-                "map/route's queue= to the source's own.",
+                "worker boot's cohort projection will refuse this graph "
+                "(or strand its rows) — the conflict surfaced here at the "
+                "wiring instead of at the worker's 3am. For a fleet "
+                "deployment, express the split placement with DISTINCT "
+                "actor names per queue (e.g. actor='wf-gpu', queue='gpu'), "
+                "or wire the map/route's queue= to the source's own.",
             )
         )
     return diagnostics

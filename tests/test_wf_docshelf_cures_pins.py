@@ -45,7 +45,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from pydantic import BaseModel
 
 from taskq.workflows import (
@@ -60,7 +59,7 @@ from taskq.workflows import (
     step,
 )
 from taskq.workflows import _worker_execution as seam
-from taskq.workflows.api._validate import WorkflowValidationError
+from taskq.workflows.api._validate import validate_compiled
 
 # ── the shared bodies (module scope — the annotations must resolve) ──────
 
@@ -176,11 +175,14 @@ def test_f3_the_derived_joins_cohort_conflict_is_convicted_at_validate() -> None
     """THE CONFLICT AT THE WIRING, NOT AT THE WORKER'S 3AM: a route's
     source placed on a NON-DEFAULT queue — the derived join inherits the
     source's actor and takes the route's ``queue=`` (default
-    ``default``): one actor over two queues, the boot's cohort
-    projection refuses it (or the rows strand), and the pre-cure
-    ``validate()`` was CLEAN. THE CURE (E17): the same law convicts at
-    validate — the error names the actor, both queues, and the
-    distinct-actor remedy."""
+    ``default``): one actor over two queues, and the pre-cure
+    ``validate()`` was CLEAN — the conflict surfaced only at the
+    worker's boot (the projection's cohort refusal). THE CURE (W6): the
+    same law is REPORTED at validate — the diagnostic names the actor,
+    both queues, and the distinct-actor remedy (the W2 precedent's
+    severity: the wiring warns, the boot projection's one-queue law
+    stays the refusal door — the estate's own taught heterogeneous
+    placement under one actor is the shape the dev-loop door honors)."""
     app = WorkflowApp()
 
     @app.workflow("dsc_f3_join_conflict")
@@ -192,9 +194,14 @@ def test_f3_the_derived_joins_cohort_conflict_is_convicted_at_validate() -> None
         )
         return build(routed)
 
-    with pytest.raises(WorkflowValidationError, match="E17-actor-queue-cohort") as exc_info:
-        app.get("dsc_f3_join_conflict").validate()
-    message = str(exc_info.value)
+    diagnostics = validate_compiled(app.get("dsc_f3_join_conflict"))
+    cohort = [d for d in diagnostics if d.rule == "W6-actor-queue-cohort"]
+    assert cohort, (
+        "F3: the derived join's cohort conflict is INVISIBLE at validate — "
+        "the pre-cure law left the ambush to the worker's boot "
+        f"(the diagnostics: {[d.rule for d in diagnostics]})"
+    )
+    message = cohort[0].message
     assert "'wf-gpu'" in message, message
     assert "gpu" in message and "default" in message, message
 
@@ -203,7 +210,7 @@ def test_f3_the_plain_map_attachments_queue_rides_the_same_rule() -> None:
     """THE SAME LAW AT THE MAP FACE: a map_source whose children's
     declared queue (``queue=``) differs from the source node's own —
     the same actor over two queues, the boot's own walk's face — is
-    convicted at validate too (the rule mirrors the boot's walk)."""
+    reported at validate too (the rule mirrors the boot's walk)."""
     app = WorkflowApp()
 
     @app.workflow("dsc_f3_map_conflict")
@@ -212,8 +219,39 @@ def test_f3_the_plain_map_attachments_queue_rides_the_same_rule() -> None:
         mapped = map_source(source, _arm_image, queue="gpu")
         return build(mapped)
 
-    with pytest.raises(WorkflowValidationError, match="E17-actor-queue-cohort"):
-        app.get("dsc_f3_map_conflict").validate()
+    diagnostics = validate_compiled(app.get("dsc_f3_map_conflict"))
+    assert any(d.rule == "W6-actor-queue-cohort" for d in diagnostics), (
+        f"F3: the map attachment's cohort conflict unreported at validate: "
+        f"{[d.rule for d in diagnostics]}"
+    )
+
+
+def test_f3_the_taught_heterogeneous_shape_stays_clean_at_the_error_severity() -> None:
+    """THE SEVERITY'S GUARD (the doc-ingest guide's own wiring): the
+    heterogeneous placement under ONE actor (the map's children on
+    'enrich', the downstream steps on 'cpu'/'io') is the estate's
+    TAUGHT shape — the dev-loop door honors it, so the validate must
+    never REFUSE it: the cohort diagnostic is a warning, and
+    ``validate()`` (the raising face) stays clean. The boot projection's
+    one-queue law remains the fleet's refusal door."""
+    app = WorkflowApp()
+
+    @app.workflow("dsc_f3_taught_split")
+    def dsc_f3_taught() -> Promise[object]:
+        source = step(_src_body, key="src")
+        mapped = map_source(source, _arm_image, queue="enrich")
+        downstream = step(_f9_barrier_body, mapped, key="downstream", queue="cpu")
+        return build(downstream)
+
+    compiled_taught = app.get("dsc_f3_taught_split")
+    diagnostics = validate_compiled(compiled_taught)
+    cohort = [d for d in diagnostics if d.rule == "W6-actor-queue-cohort"]
+    assert cohort, "the taught split's own ambush went unreported (the rule blind)"
+    assert all(d.severity == "warning" for d in cohort), (
+        f"the cohort law REFUSED the taught shape (the severities: "
+        f"{[d.severity for d in cohort]}) — the dev-loop door would die"
+    )
+    compiled_taught.validate()  # the raising face: no error raises
 
 
 # ── F6: the fan-in bound's escape exposed on the map face ────────────────
