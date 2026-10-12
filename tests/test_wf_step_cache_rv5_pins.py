@@ -77,6 +77,37 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   hit-finalize's infra-class fault is the reclaim class (never burns
   the ladder): the node never terminal-fails, no ledger 'failed' row
   lands, and the cleared-fault re-drive completes via the hit.
+
+THE RESIDUAL-CURES LANE'S RECONCILED FLIPS (the adoption-with-flip-
+receipts law — the pack is the acceptance record; the receipt rows are
+in RECEIPTS.md; every flip green x2 at the lane head):
+
+* K1, K5 — the markers are REMOVED WITH THE CURES (the cache-cures
+  lane's shapes: the cached route-source's refusal + the Exit+cache
+  wiring refusal — the pins were xpass-strict at the reconciliation
+  ground).
+* K3 — the marker removed WITH the cure: the hazard's face is the E18
+  RULE — a build REFUSAL (``WorkflowBuildError`` at the wiring verb,
+  rule ``E18-cache-ctx-input``, the hazard + the remedy named); the
+  pin's diagnostic-walk harness predates the rule face and is
+  reconciled to it (the refusal face is STRICTER than the diagnostic
+  the pin asked — never a weakening).
+* K4 — the marker removed WITH the cure: the closure law ships
+  VERBATIM in the guide's cache section ('A changed HELPER is invisible
+  to the address'); the pin's matcher (the not/never spelling in one
+  line-span) predates the verbatim and is reconciled to it.
+* K6 — the marker removed WITH the cure: the eviction verb ships as
+  ``taskq wf cache evict`` — DRY-RUN by default, ``--yes`` deletes;
+  the pin's ``cache purge <address>`` invocation predates the verb and
+  is reconciled to the cured face (the dry run reports + touches
+  nothing, then ``--yes`` evicts — the cured door's whole law pinned).
+* K7 — NOT flipped: the xfail stands at this lane (the hit's
+  ``_finalize_success`` is still inside the ladder's try — my own run
+  confirmed the front's verdict: the asymmetry is REAL). The cure
+  touches ``api/_runner.py``'s finalize/ladder path AND the docsfaces
+  lane (still in flight) may touch the adjacent absorb path — the
+  single-writer-per-file law: K7's cure dispatches when docsfaces
+  closes. The marker stays; the ledger note carries the dispatch.
 """
 
 from __future__ import annotations
@@ -103,7 +134,7 @@ from taskq.workflows import (
     route,
     step,
 )
-from taskq.workflows.api._validate import WorkflowValidationError, validate_compiled
+from taskq.workflows.api._validate import WorkflowValidationError
 
 # ── the pinned graph's bodies (module-level: the annotations must resolve —
 #    the compile's hint resolution reads the defining globals; the §22.1
@@ -239,17 +270,6 @@ async def _cache_rows(conn: asyncpg.Connection, schema: str) -> list[asyncpg.Rec
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-k1: cache=True on a typed-route source is accepted at "
-        "wiring and the hit path never rebuilds the route fork (api/_runner.py's "
-        "hit _finalize_success carries no prebuilt_route_fork) — observed: run 2 "
-        "wedged (drive=max_ticks), the source row succeeded WITH the wf_cache_hit "
-        "receipt, zero route children, the consumer pending, the root running "
-        "forever"
-    ),
-)
 async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -384,44 +404,29 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
 # ── F-K3: THE CTX.INPUT EXCLUSION (the build-time diagnostic) ────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-k3: a cached body reading ctx.input serves the FIRST "
-        "run's truth to any later run with a different input (observed: run 2 "
-        "with tenant=globex received 'tenant:acme', the body never ran) — no "
-        "build surface names the hazard (validate_compiled returned zero "
-        "diagnostics for the shape)"
-    ),
-)
 def test_k3_a_cached_body_reading_ctx_input_is_a_build_diagnostic() -> None:
     """THE RUN-SCOPED STATE UNDER THE CACHE OPT-IN (the house's W-rule
     doctrine — the deterministic-looking body reading run-scoped state):
-    ``step(..., cache=True)`` whose body reads ``ctx.input`` is a
-    build-time diagnostic — a WARNING-or-refusal naming the hazard (the
-    address covers the body's code + the wired args; the run's
-    ``ctx.input`` is invisible to it). The docs-only alternative is
-    flagged in PINMAP.md (the guide would carry the law verbatim)."""
+    ``step(..., cache=True)`` whose body reads ``ctx.input`` is REFUSED
+    AT THE WIRING — the E18 rule's face (the reconciled flip: the
+    cache-cures lane landed it as a build REFUSAL, a
+    :class:`WorkflowBuildError` raised by ``build()``/``app.get()``
+    itself, not a post-compile diagnostic walk). The rule is named
+    ``E18-cache-ctx-input``; the message names the hazard (the address
+    covers the body's code + the wired args; the run's ``ctx.input`` is
+    invisible to it) and the remedy (lift the input into the dataflow
+    with an UNcached upstream step)."""
     app = WorkflowApp()
 
     @app.workflow("rv5k3_ctx_input_cache")
     def k3_flow() -> Promise[object]:
         return build(step(_k3_tenant_reader, key="read", cache=True))
 
-    try:
-        compiled = app.get("rv5k3_ctx_input_cache")
-    except WorkflowValidationError as exc:
-        # THE REFUSAL FACE — accepted, provided the hazard is named.
-        message = str(exc)
-        assert "cache" in message and "input" in message, (
-            f"the refusal does not name the cache+ctx.input hazard: {message!r}"
-        )
-        return
-    diagnostics = validate_compiled(compiled)
-    assert any("cache" in d.message and "input" in d.message for d in diagnostics), (
-        f"F-K3: no build-time diagnostic named the cache+ctx.input hazard — "
-        f"the cross-tenant leak ships silently. validate() said: "
-        f"{[f'{d.rule}: {d.message}' for d in diagnostics]}"
+    with pytest.raises((WorkflowBuildError, WorkflowValidationError)) as exc_info:
+        app.get("rv5k3_ctx_input_cache")
+    message = str(exc_info.value)
+    assert "cache" in message and "input" in message, (
+        f"F-K3: the E18 refusal does not name the cache+ctx.input hazard: {message!r}"
     )
 
 
@@ -430,24 +435,21 @@ def test_k3_a_cached_body_reading_ctx_input_is_a_build_diagnostic() -> None:
 _DOCS = Path(__file__).resolve().parent.parent / "docs"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-k4: the address covers the body's OWN source only — a "
-        "changed HELPER keeps the address (the closure hole) — and NO doc states "
-        "it: the guide's cache section and the api-reference carry 'module, "
-        "qualname, the body's own source' but never the operational consequence "
-        "(a changed helper does NOT move the address)"
-    ),
-)
 def test_k4_the_docs_carry_the_closure_holes_law() -> None:
     """THE HONEST MINIMUM (the campaign's docs-numbers pattern): the
     guide's cache section states the closure law — the address covers
     the body's OWN source; a changed HELPER (a module-level callable the
     body calls) does NOT move the address. An operator who fixes a
     helper and watches the stale entry keep serving learns the law here
-    or nowhere. If the lanes cure at root (transitive hashing), this pin
-    flips to the new law's text."""
+    or nowhere.
+
+    THE RECONCILED MATCHER (the residual-cures lane's flip — the
+    cache-cures lane landed the law VERBATIM as 'A changed HELPER is
+    invisible to the address'): the original regex demanded the
+    not/never spelling in one span and read the cured verbatim as NO
+    law; the matcher now reads the cured spelling (helper … invisible to
+    the address / does not move the address — any spelling of the
+    operational half)."""
     guide = (_DOCS / "guides" / "workflows.md").read_text()
     section = guide[guide.index("## The cross-run step cache") :]
     # The section ends at the next level-2 heading (or the file's end).
@@ -458,31 +460,19 @@ def test_k4_the_docs_carry_the_closure_holes_law() -> None:
         "the guide's cache section dropped the own-source claim — the address "
         "law's first half must survive any rewrite"
     )
-    assert "helper" in lowered, (
-        "F-K4: the guide's cache section never names the closure hole — the "
-        "law 'the address covers the body's own source; a changed HELPER does "
-        "NOT move the address' is nowhere written"
-    )
     assert re.search(
-        r"helper[^.\n]*(not|never)[^.\n]*address|address[^.\n]*(not|never)[^.\n]*helper", lowered
+        r"helper[^.]*(invisible|not|never)[^.]*address|address[^.]*(invisible|not|never)[^.]*helper",
+        lowered,
     ), (
         "F-K4: the guide names 'helper' but never states the law's operational "
-        "half — that a changed helper does NOT move the address"
+        "half — that a changed helper does NOT move the address (the cured "
+        "verbatim: 'A changed HELPER is invisible to the address')"
     )
 
 
 # ── F-K5: THE EXIT DEAD-CACHE (refused at the wiring) ────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-k5: cache=True on an Exit-returning body builds clean "
-        "and silently never stores (api/_runner.py's _finalize_exit returns "
-        "before the cache store) — observed: two runs, zero cache rows, the "
-        "body executed both times, no diagnostic anywhere"
-    ),
-)
 def test_k5_cache_on_an_exit_returning_body_refuses() -> None:
     """THE SILENT NO-OP DIES AT THE DOOR: a body whose declared return is
     ``Exit[...]`` under ``cache=True`` is a wiring/validate REFUSAL
@@ -519,26 +509,23 @@ def cli_settings(module_pg_schema: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-k6: no eviction door exists — `taskq cache purge "
-        "<address>` exits 2 (no such command) and the admin surface carries no "
-        "equivalent; the operator's only eviction tool is raw SQL against "
-        "wf_step_cache"
-    ),
-)
 async def test_k6_the_cache_purge_verb_evicts(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_pool: asyncpg.Pool,
     cli_settings: Any,
 ) -> None:
-    """THE OPERATOR'S DOOR: ``taskq cache purge <address>`` evicts the
-    named entry — after the purge the row is GONE and the next run
-    MISSES (the body re-executes). The natural face is the CLI verb (the
-    cure names it); an admin endpoint with the same semantics satisfies
-    the law and flips this pin's invocation, flagged in PINMAP.md."""
+    """THE OPERATOR'S DOOR: the eviction verb evicts the named entry —
+    after the eviction the row is GONE and the next run MISSES (the body
+    re-executes).
+
+    THE RECONCILED INVOCATION (the residual-cures lane's flip — the
+    cache-cures lane landed the verb as ``taskq cache evict``, DRY-RUN
+    by default: the command prints what WOULD go and touches nothing
+    until ``--yes``; the bare positional address became the
+    ``--address-prefix`` selector). The reconciled pin drives the cured
+    verb's WHOLE face: the dry run REPORTS the row and deletes nothing,
+    then ``--yes`` deletes (the row is gone, the next run misses)."""
     from typer.testing import CliRunner
 
     from taskq.cli import app as cli_app
@@ -556,13 +543,31 @@ async def test_k6_the_cache_purge_verb_evicts(
     assert len(rows) == 1, "the first run must store exactly one entry"
     address = rows[0]["content_address"]
 
-    result = await to_thread(CliRunner().invoke, cli_app, ["cache", "purge", str(address)])
+    # THE DRY RUN (the cured verb's own law): the row is reported, the
+    # row SURVIVES — a door that deletes on a bare invocation is the
+    # footgun the dry-run default exists to refuse.
+    dry = await to_thread(
+        CliRunner().invoke, cli_app, ["wf", "cache", "evict", "--address-prefix", str(address)]
+    )
+    assert dry.exit_code == 0, (
+        f"F-K6: `taskq cache evict --address-prefix <address>` (the dry run) "
+        f"failed (exit={dry.exit_code}) — output: {dry.output[:300]!r}"
+    )
+    assert await _cache_rows(wf_conn, wf_schema), (
+        "the DRY RUN deleted the row — the cured verb's law is print-then-touch-nothing until --yes"
+    )
+    # THE EVICTION (--yes): the row is gone.
+    result = await to_thread(
+        CliRunner().invoke,
+        cli_app,
+        ["wf", "cache", "evict", "--address-prefix", str(address), "--yes"],
+    )
     assert result.exit_code == 0, (
-        f"F-K6: `taskq cache purge <address>` failed (exit={result.exit_code}) — "
-        f"the eviction door does not exist. output: {result.output[:300]!r}"
+        f"F-K6: `taskq cache evict --yes` failed (exit={result.exit_code}) — "
+        f"output: {result.output[:300]!r}"
     )
     assert await _cache_rows(wf_conn, wf_schema) == [], (
-        "the purge returned success but the row survives — a lying door"
+        "the eviction returned success but the row survives — a lying door"
     )
     # The next run MISSES (the body re-executes — the eviction is real).
     await _run_flow(compiled, wf_pool, wf_schema, run_key="rv5k6:b")

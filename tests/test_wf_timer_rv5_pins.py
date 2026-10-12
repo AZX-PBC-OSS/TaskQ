@@ -72,6 +72,35 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   (the house's loud law — direction flagged in PINMAP.md): the run whose
   pending node's key vanished from the registry TERMINAL-FAILS LOUDLY
   with a NAMED error class, never an eternal zombie.
+
+THE RESIDUAL-CURES LANE'S RECONCILED FLIPS (the adoption-with-flip-
+receipts law — the pack is the acceptance record; every flip green x2
+at the lane head; the reds' verbatim pre-flip captures in RECEIPTS.md):
+
+* T1, T2, T3a — the markers are REMOVED WITH THE CURES (the
+  timer-cures lane's landed shapes: the E17 mint refusal, the broadcast
+  + backfill prefix filters, the drain cascade — the pins were xpass-
+  strict at the reconciliation ground; the receipt rows name the cure
+  commits).
+* T3b — the marker is removed WITH the cure (the due-scan index ships:
+  ``01.00.34_01_pre_wf_timer_due_index.sql``, the partial index leading
+  ``expires_at`` with the timer predicate — better than asked) AND the
+  matcher is fixed to the honest shape (``IF NOT EXISTS`` — the
+  original regex choked on the shipped spelling and read the
+  better-than-asked index as NO index).
+* T4 — the marker is removed WITH the cure (the template branches
+  ``is_timer`` via the holds projection's enrichment field) AND the
+  render harness rides the PRODUCTION enrichment (``_normalize_hold``)
+  — the raw-dict harness predates the field.
+* T5 — THE CLI DRIFT FACE'S OWN CURE (this lane): ``flows status``
+  reads the run's rows' §22.1 stamps and renders the drift line when
+  they are >1 distinct — the drifted nodes named with their hashes,
+  ONE coherent drift section with the stranded face.
+* T6 — THE VANISHED-NODE WEDGE'S OWN CURE (this lane): the typed
+  :class:`VanishedNodeError` (the wedge named, the registry-is-truth
+  law, the cancel-then-restart remedy) terminal-fails the run LOUDLY —
+  the node claimed then finalized through the ladder's deterministic
+  route, the root failed by the propagation, never a zombie.
 """
 
 from __future__ import annotations
@@ -193,18 +222,6 @@ async def _collect(listener: HitlListener, seconds: float) -> list[Any]:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-t1: wait_signal mints a hold under the RESERVED "
-        "__timer__ prefix from a trojan model name (observed: the "
-        "__timer__Approval hold invisible to HitlClient.list(), the hand answer "
-        "refused as a forgery, the expiry arm's fail-close never fires on it, "
-        "and the TIMER arm self-fires it at the deadline into "
-        "error_class='SignalPayloadError' killing the run) — no mint-time "
-        "refusal exists"
-    ),
-)
 async def test_t1_wait_signal_refuses_a_timer_prefixed_model(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -265,17 +282,6 @@ async def test_t1_wait_signal_refuses_a_timer_prefixed_model(
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-t2: durable timers surface as pending HUMAN holds on "
-        "the T26 faces — the hold-create notify is unconditional "
-        "(register_hold's create leg) and the listener's backfill reads WHERE "
-        "status='held' with no prefix filter (_hitl_listen.py) — observed: "
-        "HoldCreated(signal='__timer__leak') on the notify leg AND the backfill "
-        "leg, and Backfilled.open_hold_ids carrying the timer id"
-    ),
-)
 async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -352,16 +358,6 @@ async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-t3a: sweep_due_timers fires ONE bounded batch "
-        "(batch_size=100, no drain) per pass — observed: 1500 seeded due timers, "
-        "one pass fired exactly 100 and left 1400 held; at the 30s default "
-        "cadence a 10k backlog drains in ~50 minutes; no drain= knob exists "
-        "(TypeError)"
-    ),
-)
 async def test_t3a_the_timer_arm_drains_the_due_set_in_one_cascade(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -425,16 +421,6 @@ async def test_t3a_the_timer_arm_drains_the_due_set_in_one_cascade(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-t3b: no index leads the timer due-scan — the "
-        "wf_signals indexes are (id, status) and (workflow_id, status, id) plus "
-        "the hold-identity unique partial; the sweep's WHERE status='held' AND "
-        "starts_with(signal_name,'__timer__') AND expires_at <= now ORDER BY "
-        "expires_at is a seq scan + sort per tick"
-    ),
-)
 def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
     """THE DUE-SCAN'S INDEX (the static leg): the migrations carry an
     index covering the timer due-scan — ``expires_at`` on ``wf_signals``
@@ -444,7 +430,15 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
     statements: list[str] = []
     for path in sorted(migrations.glob("*.sql")):
         statements += re.findall(
-            r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+\w+\s+ON\s+[^;]+", path.read_text(), re.IGNORECASE
+            # THE HONEST MATCHER (the reconciled flip — rv5-t3b's receipt):
+            # the shipped index is the PARTIAL index leading expires_at
+            # with the timer predicate, written CREATE INDEX IF NOT
+            # EXISTS — the original regex's `\w+` choked on the "IF NOT
+            # EXISTS" (matched "IF", demanded "ON", found "NOT") and read
+            # the better-than-asked index as NO index.
+            r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+[^;]+",
+            path.read_text(),
+            re.IGNORECASE,
         )
     signals_indexes = [s for s in statements if "wf_signals" in s]
     assert signals_indexes, "no wf_signals index exists at all (the harness's own witness)"
@@ -460,16 +454,6 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
 # ── F-T4: THE EXPLORER'S FALSE AFFORDANCE (the render-level pin) ─────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-t4: the admin run page renders the human RESOLVE form "
-        "on a TIMER hold row — workflow_detail.html's guard is `h.status == "
-        "'held' and actions_enabled` (any held row); observed at render level: "
-        'the __timer__ hold row renders data-wf-form="resolve" exactly like '
-        "the human hold's"
-    ),
-)
 def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
     """THE FALSE AFFORDANCE DIES AT THE TEMPLATE: render the run page
     with ONE timer hold + ONE human hold (both 'held', actions on) — the
@@ -477,7 +461,16 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
     row renders NONE (the clock is the only resolver; a form that can
     only be refused-as-forgery is a lie on the page). The view-level
     alternative (timer rows never reach the holds projection) is flagged
-    in PINMAP.md."""
+    in PINMAP.md.
+
+    THE HARNESS RIDES THE PRODUCTION ENRICHMENT (the reconciled flip —
+    rv5-t4's receipt): the cured template branches on the ``is_timer``
+    field the holds projection enriches (``web/admin/_wf_rows.py``'s
+    ``_normalize_hold`` — the row's own truth, derived from the signal
+    name), so the harness passes its hold rows through THE SAME
+    enrichment — the raw dict harness predates the field and rendered
+    the timer row's branch off (``h.is_timer`` undefined → the human
+    leg's form)."""
     import jinja2
 
     templates = Path(__file__).resolve().parent.parent / "src" / "taskq" / "web" / "templates"
@@ -509,9 +502,13 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
     )
 
     def hold(hold_id: str, signal: str) -> dict[str, Any]:
-        return {
+        row = {
             "hold_id": hold_id,
             "signal": signal,
+            # The production row's column name — the enrichment reads
+            # `signal_name` to derive is_timer (the template's display
+            # read keeps the `signal` alias).
+            "signal_name": signal,
             "node": "n",
             "epoch": 1,
             "status": "held",
@@ -523,6 +520,13 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
             "created_at": "",
             "expires_at": "",
         }
+        # THE PRODUCTION ENRICHMENT (the reconciled harness): the same
+        # `_normalize_hold` the run page's holds projection runs — the
+        # is_timer/timer_key/timer_fired_by fields derive from the ROW's
+        # own truth, exactly as production renders them.
+        from taskq.web.admin._wf_rows import _normalize_hold
+
+        return _normalize_hold(row)
 
     html = env.get_template("workflow_detail.html").render(
         run=run,
@@ -553,15 +557,6 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-t5: zero code_version references in the CLI/admin — "
-        "the stamps exist (jobs.code_version per claim) but no surface reads "
-        "them: the mixed-version run (observed: 2 distinct stamps on one run's "
-        "rows) gets NO drift line in `taskq flows status`"
-    ),
-)
 async def test_t5_flows_status_surfaces_the_version_drift(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -627,18 +622,6 @@ async def test_t5_flows_status_surfaces_the_version_drift(
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-t6: rename a node in a redeploy and the in-flight "
-        "run's pending row zombies FOREVER — observed: the new-process drive "
-        "RAISES WorkflowRunError raw ('step \\'second\\' is not in workflow ... "
-        "compiled graph nor in its registered definition'), the node stays "
-        "'pending', the root stays 'running', NEVER terminal (the fleet's face "
-        "parks it budget-free at the snooze cadence; nothing surfaces ON THE "
-        "RUN)"
-    ),
-)
 async def test_t6_a_vanished_node_key_terminal_fails_loudly(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:

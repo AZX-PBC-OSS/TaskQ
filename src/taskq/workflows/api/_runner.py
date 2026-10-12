@@ -89,7 +89,7 @@ from taskq.workflows.api._runner_codec import (
     encode_result,
     next_data,
 )
-from taskq.workflows.api._runner_errors import WorkflowRunError
+from taskq.workflows.api._runner_errors import VanishedNodeError, WorkflowRunError
 from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import LadderOps
 from taskq.workflows.api._runner_loop import LoopOps
@@ -123,7 +123,7 @@ from taskq.workflows.ledger import (
     step_idempotency_scope,
 )
 
-__all__ = ["FlowRunner", "StepContext", "WorkflowRunError"]
+__all__ = ["FlowRunner", "StepContext", "VanishedNodeError", "WorkflowRunError"]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -529,7 +529,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     async def _run_node(self, flow_id: JobId, row: dict[str, Any]) -> None:
         node_key = row["step_key"]
         node = self.compiled.nodes.get(node_key)
-        body = self._resolve_body(node_key, node)
+        try:
+            body = self._resolve_body(node_key, node)
+        except WorkflowRunError as exc:
+            # THE VANISHED-NODE WEDGE's LOUD TERMINAL (rv5-t6's cure):
+            # the body resolves NOWHERE (the structural redeploy — the
+            # registry-is-truth law, D1). Before this cure the error
+            # escaped drive() RAW — the row stayed ``pending``, the root
+            # ``running``, NOTHING surfaced on the run (the eternal
+            # zombie). Now the node is CLAIMED (the attempt's ledger row
+            # exists — the record's truth) and routed through the
+            # ladder, whose DETERMINISTIC route terminal-fails it on the
+            # first attempt with the typed class on the record; T06's
+            # propagation fails the root. The driver never raises; the
+            # rows tell the operator the truth.
+            await self._fail_vanished_node(flow_id, row, exc)
+            return
         # THE CLAIM (two fenced writes, one grant of work): the JOB row
         # goes running under this worker (the attempt increments — the
         # fence's token), and the LEDGER claim inserts the attempt's
@@ -565,6 +580,50 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # stamps claim_epoch 0; the fleet's dispatch claim carries the
         # row's epoch).
         await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+
+    async def _fail_vanished_node(
+        self, flow_id: JobId, row: dict[str, Any], exc: WorkflowRunError
+    ) -> None:
+        """THE VANISHED-NODE WEDGE's loud terminal (rv5-t6's cure — the
+        structural redeploy's pending row must terminal-fail, never
+        zombie). The node is claimed HERE (the CAS — pending → running,
+        the attempt incremented, the ledger claim's running row inserted:
+        the record's truth), then the error routes through
+        :meth:`LadderOps._ladder_or_fail` — :class:`VanishedNodeError` is
+        a DETERMINISTIC authoring failure (a re-run can never resolve a
+        key the registry does not carry), so the ladder's deterministic
+        route terminal-fails the node ON THE FIRST ATTEMPT with the typed
+        class + the cancel-then-restart remedy on the record, the ladder
+        unburned; T06's propagation fails the root.
+
+        A lost CAS (a peer claimed the row first — or the flow died)
+        touches nothing: the winner's own drive owns the verdict."""
+        async with self.pool.acquire() as conn:
+            claimed = await conn.fetchval(
+                render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
+            )
+            if claimed is not None:
+                from taskq.workflows.ledger import claim_step_ledger
+
+                await claim_step_ledger(
+                    conn,
+                    self.wsql,
+                    flow_id=flow_id,
+                    job_id=JobId(row["id"]),
+                    step_key=row["step_key"],
+                    map_index=row["map_index"],
+                    attempt=int(claimed),
+                )
+        if claimed is None:
+            return  # someone else claimed it (or the flow died) — their drive owns the verdict
+        logger.warning(
+            "node.vanished-from-registry",
+            run_id=str(flow_id),
+            node=row["step_key"],
+            error_class=type(exc).__name__,
+            error=str(exc)[:200],
+        )
+        await self._ladder_or_fail(flow_id, row, int(claimed), None, exc)
 
     def _deps_tail(self, body: Callable[..., object], wired_count: int) -> tuple[object, ...]:
         """THE DEPS SEAM'S INJECTION (the DI capability's runtime face):
@@ -615,7 +674,36 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
         node_key = row["step_key"]
         node = self.compiled.nodes.get(node_key)
-        body = self._resolve_body(node_key, node)
+        try:
+            body = self._resolve_body(node_key, node)
+        except WorkflowRunError as exc:
+            # THE VANISHED-NODE WEDGE's fleet face (rv5-t6's cure): the
+            # row is ALREADY claimed by the dispatch — the ledger claim
+            # keys the fleet claim's attempt, then the ladder's
+            # deterministic route terminal-fails the node with the typed
+            # class on the record. The raw escape would have killed the
+            # worker's dispatch loop with the row parked forever.
+            from taskq.workflows.ledger import claim_step_ledger
+
+            async with self.pool.acquire() as conn:
+                await claim_step_ledger(
+                    conn,
+                    self.wsql,
+                    flow_id=flow_id,
+                    job_id=JobId(row["id"]),
+                    step_key=node_key,
+                    map_index=row["map_index"],
+                    attempt=attempt,
+                )
+            logger.warning(
+                "node.vanished-from-registry",
+                run_id=str(flow_id),
+                node=node_key,
+                error_class=type(exc).__name__,
+                error=str(exc)[:200],
+            )
+            await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
+            return "failed"
         async with self.pool.acquire() as conn:
             claim = await claim_step_ledger(
                 conn,
@@ -1087,7 +1175,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         the runner's default IDENTITY packer (the join's result IS the
         decoded parents' list). The registry answers FIRST: the
         fork-spawned keys (``<src>.item``, the outbox consumers) have no
-        compiled NodeDecl — their bodies live in the definition only."""
+        compiled NodeDecl — their bodies live in the definition only.
+
+        THE VANISHED-NODE WEDGE (the structural redeploy — rv5-t6's
+        cure): a key in NEITHER the compiled graph nor the registered
+        definition raises the TYPED :class:`VanishedNodeError` — the
+        redeploy renamed/removed the node while this run was in flight,
+        and no re-run can ever resolve it. The claimants of the wedge
+        (``_run_node`` / :meth:`run_fleet_claimed_step`) route the typed
+        error into the ladder's DETERMINISTIC terminal — the node
+        terminal-fails with the class on the record, the root follows,
+        never an eternal zombie."""
         from taskq.workflows.definitions import resolve_step_body
 
         try:
@@ -1095,11 +1193,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         except KeyError:
             pass
         if node is None:
-            raise WorkflowRunError(
+            raise VanishedNodeError(
                 f"step {node_key!r} is not in workflow "
                 f"{self.compiled.name!r}'s compiled graph nor in its "
-                "registered definition — a foreign step key (the registry "
-                "is the only body source, D1)"
+                "registered definition — THE VANISHED-NODE REDEPLOY "
+                "WEDGE: a redeploy renamed or removed this node while "
+                "the run was in flight (the registry is the truth — the "
+                "only body source, D1; a re-run can never resolve a key "
+                "it does not carry). The remedy is cancel-then-restart: "
+                "cancel this run and restart the work on the new deploy "
+                "under a fresh run key"
             )
         return node.body
 

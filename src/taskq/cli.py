@@ -4418,6 +4418,18 @@ async def _flows_status(
             typer.echo("Action: taskq flows list shows the recent runs.", err=True)
             raise typer.Exit(code=1)
         node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
+        # THE §22.1 STAMPS' READ (rv5-t5's cure — the drift face's
+        # data): the run's node rows' code_version stamps — a run
+        # redeployed mid-flight carries >1 DISTINCT stamp on its rows.
+        # The read is the run's OWN rows: no --app door needed (the
+        # stamps are the record, the rows are the truth).
+        stamps = await conn.fetch(
+            f"SELECT step_key, code_version FROM "  # noqa: S608  # Why: schema identifier-validated above.
+            f'"{settings.schema_name}".jobs '
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key <> '__flow__' "
+            "AND code_version IS NOT NULL",
+            parsed,
+        )
         held = await conn.fetch(
             f"SELECT id, node_key, signal_name, hold_epoch, map_index, payload, payload_schema, "  # noqa: S608  # Why: schema identifier-validated above.
             "created_at, expires_at FROM "
@@ -4490,6 +4502,10 @@ async def _flows_status(
         nodes=nodes,
         cancel_in_flight=root["cancel_requested_at"] is not None,
         registry_node_keys=registry_node_keys,
+        # THE STAMPS' DRIFT FACE (rv5-t5's cure): the run's OWN rows'
+        # §22.1 stamps — one coherent drift section with the stranded
+        # face above.
+        code_version_stamps=[(str(r["step_key"]), r["code_version"]) for r in stamps],
     ):
         typer.echo(line)
 

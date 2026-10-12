@@ -206,3 +206,26 @@ The `pinwork-timer` worktree itself carries only the two pin files
 was modified. The F-T2 pin cancels its own flow in a `finally` (the
 red path's hygiene — the module schema is shared across the file), and
 the F-T3a pin reads its counters baseline-relative for the same reason.
+
+---
+
+# THE RESIDUAL-CURES LANE'S RECONCILED FLIPS (the adoption-with-flip-receipts rows)
+
+Pack ported to the reconciliation ground `feat/taskqflow-residual-cures`
+(the four cure lanes' merges + this lane's cures). Every flip below is
+green x2 at the lane's final head; the pre-flip reds were captured at
+the lane head BEFORE the cure commits
+(`.measurements/residual-cures/residual-reds-pre-cure.txt`).
+
+| Pin | Pre-flip state at the reconciliation ground | The cure the flip adopts | Receipt |
+| --- | --- | --- | --- |
+| T1 (the trojan-prefix mint refusal) | XPASS-strict (the pin asserted the SAFE behavior and PASSED — the marker's own lie) | the timer-cures lane's E17 cure (`ReservedTimerNamespaceError` at the `wait_signal` mint; deterministic route) | this row; the cure's own red-first receipt: the timer-cures lane's estate |
+| T2 (the broadcast/backfill leak) | XPASS-strict | the timer-cures lane's prefix filters (the create leg's notify + `_hitl_listen.py`'s backfill) | this row; as above |
+| T3a (the drain cascade) | XPASS-strict | the timer-cures lane's `drain=True` sweep cascade | this row; as above |
+| T3b (the due-scan index) | XFAIL — but for the WRONG reason: the index SHIPS (`01.00.34_01_pre_wf_timer_due_index.sql`, the partial index leading `expires_at` with the timer predicate — better than asked); the pin's regex choked on `IF NOT EXISTS` and read the shipped index as NO index | the matcher fixed to the honest shape (`(?:IF\s+NOT\s+EXISTS\s+)?`); the marker removed | this row; the red's verbatim: `.measurements/residual-cures/residual-reds-pre-cure.txt` (the xfail leg) |
+| T4 (the false affordance) | XFAIL — the template cure SHIPS (the `is_timer` branch) but the render harness's raw dicts predate the enrichment field (`h.is_timer` undefined → the human leg's form) | the harness rides the PRODUCTION enrichment (`web/admin/_wf_rows.py`'s `_normalize_hold` — the row's own truth); the marker removed | this row; red as above |
+| T5 (the CLI drift face) | XFAIL — zero `code_version` references in the status face (the stamps unread) | THIS LANE'S CURE: `flows status` reads the run's rows' §22.1 stamps; >1 distinct renders the drift line — the drifted nodes named with their hashes, ONE coherent section with the stranded face (`code_version_drift_lines` in `workflows/_cli.py` + the stamps' read in `cli.py::_flows_status`) | this row; red as above |
+| T6 (the vanished-node wedge) | XFAIL — the new-process drive raised `WorkflowRunError` raw; the row stayed `pending`, the root `running` | THIS LANE'S CURE: the typed `VanishedNodeError` (the wedge named + the registry-is-truth law + the cancel-then-restart remedy); `_run_node`/`run_fleet_claimed_step` claim-then-ladder — the DETERMINISTIC route terminal-fails the node on the first attempt (the class + remedy on the record), T06's propagation fails the root; never a zombie | this row; red as above |
+
+Flip runs (green x2 at the final head): see the lane's landing capture
+(`.measurements/residual-cures/`).

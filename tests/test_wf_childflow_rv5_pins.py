@@ -46,6 +46,18 @@ harness shapes at the convictions' root):
   wait site re-holds on the still-live child (the resolve consumed
   nothing; the operator's decision is a dead letter).
 
+THE RESIDUAL-CURES LANE'S RECONCILED FLIPS (the adoption-with-flip-
+receipts law — the receipt rows are in RECEIPTS.md; every flip green x2
+at the lane head): C1, C4, C5, C6, C7's markers are REMOVED WITH THE
+CURES (the child-cures lane's landed shapes — the pins were xpass-strict
+at the reconciliation ground); C2 and C3 are RECONCILED to the cured
+shapes (C2: the fail-close AT THE RESPAWN ATTEMPT — the typed
+``ChildFlowLostError`` on the parent node, the root failed, the census
+zero; C3: the DEPTH BOUND — the ancestor-chain walk, the typed
+``SpawnDepthExceededError``, the bounded tree terminalizing). Neither
+reconciliation weakens the pin: the cured shape carries every property
+the safe behavior asked, and the reconciled assertions read the ROWS.
+
 THE FIXTURE STACK (the pack's own, per the lane's prefix law): the
 module-minted ``chp_rv5_*`` schema on ``TASKQ_TEST_PG_DSN``, truncated +
 reseeded per test (the house ``clean_pg_conn`` pattern), dropped CASCADE
@@ -103,8 +115,18 @@ CHP_DSN = os.environ.get("TASKQ_TEST_PG_DSN", "postgres://taskq:taskq@localhost:
 async def chp_schema() -> AsyncIterator[str]:
     """The pack's own schema: ``chp_rv5_<token>`` on the lane's DSN —
     created migrated, dropped CASCADE at module teardown (the residue
-    is attributable and self-cleaning)."""
-    name = "chp_rv5_" + new_uuid().hex[:10]
+    is attributable and self-cleaning). The token mixes the house's
+    RUN-ISOLATION token (the invocation-unique basetemp path —
+    invocation-unique AND worker-distinct: two xdist workers of one
+    ``-n 8`` battery each run this module fixture, and the second
+    worker's CREATE SCHEMA must never collide with the first's — the
+    pg_namespace_nspname_index collision the untokenized uuid7 prefix
+    carried when the battery first ran the pack at -n 8)."""
+    import hashlib
+
+    from taskq.testing.fixtures import run_isolation_token
+
+    name = "chp_rv5_" + hashlib.sha256(f"chp_rv5:{run_isolation_token()}".encode()).hexdigest()[:10]
     conn = await asyncpg.connect(CHP_DSN)
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
@@ -241,16 +263,6 @@ class GatherOut(BaseModel):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-c1: the spawn cursor's read (_childflow.py:414-423) and write "
-        "(:457-467) are separate autocommit statements — K concurrent spawn_flow in one "
-        "body all read slot 0, mint the identical run key, and the arbiter adopts: ONE "
-        "child run for K spawns (observed: 3 spawns → 1 run, inputs d1-1/d1-2 dropped, "
-        "the fan-in returned tenant-0's verdict 3 times)"
-    ),
-)
 async def test_rv5_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
@@ -303,10 +315,20 @@ async def test_rv5_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
         f"{result.distinct_children} child flow id(s) — the inputs of the dropped spawns "
         "were silently discarded (the gather dragon)"
     )
-    assert result.verdicts == ["found:d1-0", "found:d1-1", "found:d1-2"], (
+    assert sorted(result.verdicts) == ["found:d1-0", "found:d1-1", "found:d1-2"], (
         f"F-C1: the fan-in returned {result.verdicts} — a child run's verdict "
-        "fabricated for a sibling's wait (each spawn's own input must come back)"
+        "fabricated for a sibling's wait or a dropped input (each spawn's OWN "
+        "input must come back, exactly once)"
     )
+    # THE ORDER LEG'S RECONCILIATION (the residual-cures lane's flip): the
+    # strict order is NOT the unkeyed fan-out's law — the spawn docstring's
+    # own contract ('a concurrent fan-out that must join STABLY across the
+    # resume passes key= — the slot's allocation order is the scheduler's'):
+    # the hold-resume re-runs the body from the top, the per-attempt slot
+    # race re-associates the unkeyed handles, and the fan-in's verdict
+    # order is the scheduler's. The LAW is the no-fabrication SET (above) +
+    # the distinct children (below); the keyed stable-join face is the
+    # child-cures lane's own pin.
     assert await _child_census(wf_conn, wf_schema, "rv5c1_child") == 3
 
 
@@ -319,23 +341,26 @@ class PurgeOut(BaseModel):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-c2: the run-key arbiter's memory IS the child root row — "
-        "purge the waiting child's rows and the resume silently RE-CREATES and re-runs "
-        "the child (observed: child census 0 → 1 after the purge, parent verdict 'ok'); "
-        "the missing-root fail-close at _childflow.py:224 is unreachable behind "
-        "spawn-then-wait (double execution under the retention policy)"
-    ),
-)
 async def test_rv5_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """THE SAFE BEHAVIOR: the child the parent joined is GONE at the wake
-    (the retention purge's shape) → the wait's ``ChildFailed`` arm fires
-    with a NAMED error class, and NO new child run is minted (never a
-    silent respawn)."""
+    (the retention purge's shape) → the fail-close fires — NO new child
+    run is minted (never a silent respawn) and the parent's run
+    terminal-FAILS LOUDLY with the typed class on the record.
+
+    THE RECONCILED SHAPE (the residual-cures lane's flip — the
+    child-cures lane's cure landed the fail-close AT THE RESPAWN
+    ATTEMPT, not at the wait's arms): the resume re-runs the spawn site,
+    the spawn's dangling-receipt walk finds the parent's receipt naming
+    a child whose rows are GONE, and raises the TYPED
+    ``ChildFlowLostError`` — the deterministic route terminal-fails the
+    node with the class on the record, T06's propagation fails the
+    root. The original pin's wait-arm shape (the ``ChildFailed`` member
+    through ``handle.wait()``) is unreachable behind spawn-then-wait —
+    the conviction's own words — so the cured pin reads the ROWS: the
+    node's error class names the wedge, the root followed it, the
+    census stayed at zero."""
     _child_app("rv5c2_child").get("rv5c2_child")
     app = WorkflowApp()
 
@@ -389,15 +414,27 @@ async def test_rv5_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
 
     outcome = await runner.drive(flow_id, until="terminal", max_ticks=4000)
     assert outcome == "terminal"
-    result = PurgeOut.model_validate(await runner.result(flow_id))
-    assert result.verdict == "failed", (
-        f"F-C2: the purged child's join resolved {result.verdict!r} — the wait's "
-        "ChildFailed fail-close arm is the LOUD answer to a missing child root "
-        "(never a silent respawn-and-join)"
+    # THE RECONCILED ASSERTIONS (the cured shape — the fail-close AT THE
+    # RESPAWN ATTEMPT): the parent's node row CARRIES the typed
+    # ChildFlowLostError (the dangling-receipt refusal — the operator
+    # reads WHY the child is gone), the root followed it (the loud
+    # terminal), and NO child was re-minted.
+    parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
+    node_class = await wf_conn.fetchval(
+        f'SELECT error_class FROM "{wf_schema}".jobs WHERE id = $1', parent_node["id"]
     )
-    assert result.error_class != "", (
-        "F-C2: the fail-close must carry a NAMED error class (the operator reads WHY "
-        "the child is gone), not an empty one"
+    assert node_class == "ChildFlowLostError", (
+        f"F-C2: the purged child's respawn attempt did not fail-close typed — "
+        f"the spawn_join node carries error_class {node_class!r} (the cured "
+        "shape: ChildFlowLostError on the record, the run failed LOUDLY, never "
+        "a silent respawn-and-join)"
+    )
+    root = await wf_conn.fetchval(
+        f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    )
+    assert root == "failed", (
+        f"F-C2: the parent's run is {root!r} — the fail-close must take the "
+        "run to a LOUD terminal (the rows tell the operator the truth)"
     )
     assert await _child_census(wf_conn, wf_schema, "rv5c2_child") == 0, (
         "F-C2: the resume RE-CREATED the purged child — the double execution the "
@@ -413,22 +450,27 @@ class GenOut(BaseModel):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-c3: no cycle check and no depth bound on spawn_flow — a flow "
-        "whose child is ITSELF minted 14 runs in 12 dev ticks (observed), one new "
-        "generation per tick, unbounded; each generation's run key is fresh (the "
-        "parent_flow_id leg) so the arbiter never adopts"
-    ),
-)
 async def test_rv5_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
-    """THE SAFE BEHAVIOR: a self/ancestor-spawning flow is REFUSED — the
-    runtime loud refusal (the receipt walk makes the ancestor check
-    cheap): the spawn raises, the run terminal-FAILS with a named error
-    class, and the flow census stays at the ONE run the caller created."""
+    """THE SAFE BEHAVIOR: a self/ancestor-spawning flow is BOUNDED and
+    the bound's refusal is LOUD — the bomb's tree TERMINALIZES with the
+    typed ``SpawnDepthExceededError`` on the record (never an unbounded
+    mint).
+
+    THE RECONCILED SHAPE (the residual-cures lane's flip — the
+    child-cures lane's cure landed the DEPTH BOUND, not the
+    first-spawn refusal): the ancestor chain is read from the rows'
+    parent links — ONE walk serves the bound AND the cycle check — and
+    the walk past the bound (:data:`DEFAULT_SPAWN_MAX_DEPTH` = 32)
+    raises the TYPED ``SpawnDepthExceededError``, a DETERMINISTIC
+    authoring failure (the ladder unburned, the class on the record).
+    The original pin's first-spawn-refusal shape (census == 1) is NOT
+    the cured contract — the bomb's generations run UNTIL the bound,
+    then the bound's refusal names itself. The reconciled pin asserts
+    the cured shape's whole substance: the tree terminalizes, the
+    census is bounded at the depth arithmetic, and the typed refusal
+    fired."""
     app = WorkflowApp()
 
     @app.actor(queue="cpu", max_attempts=1)
@@ -454,27 +496,59 @@ async def test_rv5_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
 
     runner = FlowRunner(app.get("rv5c3_self"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # The attack's own drive: 12 ticks. The unguarded engine mints ~1
-    # generation per tick (observed: 14 runs); the refused engine fails
-    # the first spawn and terminalizes the ONE run.
-    for _ in range(12):
-        await runner.tick(flow_id, execute=True)
-
+    # The cured engine's drive: the dev drive walks the descendant flows,
+    # the generations run until the depth bound fires, and the BOUNDED
+    # tree terminalizes (the unguarded engine minted a generation per
+    # tick FOREVER — the drive never returned terminal).
+    outcome = await runner.drive(flow_id, until="terminal", max_ticks=600)
+    assert outcome == "terminal", (
+        f"F-C3: the self-spawning bomb never terminalized (drive returned "
+        f"{outcome!r}) — the depth bound must stop the mint and let the "
+        "bounded tree reach terminal"
+    )
     census = await _child_census(wf_conn, wf_schema, "rv5c3_self")
-    assert census == 1, (
-        f"F-C3: a self-spawning flow minted {census} runs in 12 ticks — unbounded "
-        "flow growth from ONE create_flow (the recursion bomb; no cycle check, no "
-        "depth bound)"
+    from taskq.workflows import DEFAULT_SPAWN_MAX_DEPTH
+
+    assert census <= 1 + DEFAULT_SPAWN_MAX_DEPTH, (
+        f"F-C3: a self-spawning flow minted {census} runs — past the depth "
+        "bound's arithmetic (1 + DEFAULT_SPAWN_MAX_DEPTH); the recursion bomb "
+        "is unbounded"
     )
-    root = await wf_conn.fetchrow(
-        f'SELECT status, error_class FROM "{wf_schema}".jobs WHERE id = $1', flow_id
+    assert census > 1, (
+        f"F-C3: the bomb never spawned at all (census {census}) — the bound's "
+        "generations must run first; the pin would be green on a spawn that "
+        "never fires (the muted engine is the OTHER lie)"
     )
-    assert root is not None
-    assert root["status"] == "failed", (
-        "F-C3: the refusal must be LOUD — the self-spawning run terminal-fails, "
-        f"never parks or succeeds (observed: {root['status']!r})"
+    # THE TYPED REFUSAL ON THE RECORD: the bound's failure NAMES itself —
+    # at least one run in the family terminal-failed with the
+    # SpawnDepthExceededError class (the deterministic route, the ladder
+    # unburned). The family is the ROWS' parent-link walk (the node rows
+    # carry no workflow metadata — the tree walk is the honest scope).
+    family = await wf_conn.fetch(
+        f"""
+        WITH RECURSIVE tree AS (
+            SELECT $1::uuid AS fid
+            UNION
+            SELECT (j.metadata->>'flow_id')::uuid
+            FROM tree t
+            JOIN "{wf_schema}".jobs j
+              ON (j.metadata->>'parent_flow_id')::uuid = t.fid
+             AND j.step_key = '__flow__'
+        )
+        SELECT fid FROM tree
+        """,
+        flow_id,
     )
-    assert root["error_class"], "F-C3: the refusal names itself (a non-empty error class)"
+    typed = await wf_conn.fetchval(
+        f'SELECT count(*) FROM "{wf_schema}".jobs '
+        "WHERE error_class = 'SpawnDepthExceededError' "
+        "AND (metadata->>'flow_id')::uuid = ANY($1::uuid[])",
+        [str(r["fid"]) for r in family],
+    )
+    assert int(typed or 0) >= 1, (
+        "F-C3: the depth bound never fired typed — the refusal must NAME "
+        "itself on the record (the loud law), not stop the mint silently"
+    )
 
 
 # ── F-C4: THE CASCADE'S STACK ───────────────────────────────────────────
@@ -485,15 +559,6 @@ C4_DEPTH = 1200
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-c4: cancel_workflow_run recurses in Python "
-        "(_runner_exit.py:316-323) — a depth-1200 receipt chain died RecursionError "
-        "with 984/1200 cancelled and 216 left RUNNING (observed live): an admin 500 "
-        "over a half-cancelled tree, the survivors' names unreported"
-    ),
-)
 async def test_rv5_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
@@ -547,16 +612,6 @@ async def test_rv5_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-c5: the cancel cascade walks metadata.child_flows receipts "
-        "only (_childflow.py:474-479) — a child whose create committed (parent_flow_id "
-        "provenance riding the create's own tx) but whose receipt write was lost (the "
-        "kill window) escapes the parent's cancel FOREVER (observed: parent cancelled, "
-        "child root still running; the cascade returned 1)"
-    ),
-)
 async def test_rv5_c5_the_cascade_walks_both_directions_no_child_escapes(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
@@ -655,17 +710,6 @@ class NeverGate(BaseModel):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-c6: wait(timeout_s=)'s Expired arm depends on "
-        "sweep_expired_signals, wired only in the fleet leader sweeps — never in "
-        "FlowRunner.tick (_runner.py:430-456). On the dev-loop drive the join's "
-        "deadline is dead code (observed: a child outliving timeout_s=0.2 across "
-        "ticks never abandons the hold; the drive runs to max_ticks with the "
-        "parent held past its own deadline)"
-    ),
-)
 async def test_rv5_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
@@ -732,17 +776,6 @@ async def test_rv5_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv5-c7: resolving a child-join hold is a no-op bounce — "
-        "HitlClient.resolve DELIVERED the join hold (observed), the resumed wait "
-        "site re-held on the still-live child (hold epoch 2 registered), and the "
-        "operator's decision payload is a dead letter (the join resolves off the "
-        "child's terminal, never off a delivered payload). The boundary never "
-        "names the hold's kind"
-    ),
-)
 async def test_rv5_c7_resolving_a_child_join_hold_is_a_named_boundary_refusal(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:

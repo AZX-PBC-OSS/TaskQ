@@ -175,6 +175,10 @@ class MintProbe(CtxWaitOps, CtxTimerOps):
         self.attempt = 1
         self._is_loop = False
         self._ledger_id = None
+        # THE MAP SIBLING'S IDENTITY (the holdmap lane's F2 cure — the
+        # WaitHost protocol's identity leg): a PLAIN step's probe carries
+        # map_index None (the pre-cure identity's exact shape).
+        self._map_index = None
         self._workflow_name = "timer_cures_probe_flow"
         self._redact = None
         self._runtime = {}

@@ -40,6 +40,7 @@ __all__ = [
     "FLOW_ROOT_STEP_KEY",
     "FlowListRow",
     "FlowNodeRow",
+    "code_version_drift_lines",
     "derive_flow_status",
     "format_flow_list",
     "format_flow_status",
@@ -285,6 +286,51 @@ def stranded_lines(
     ]
 
 
+def code_version_drift_lines(
+    stamps: Sequence[tuple[str, str | None]],
+) -> list[str]:
+    """THE §22.1 STAMPS' DRIFT FACE (rv5-t5's cure — the surface, the
+    stamps are the data): a run whose node rows carry >1 DISTINCT
+    ``code_version`` was redeployed mid-flight — the run mixes pre- and
+    post-deploy attempts, and the operator sees it HERE, from the run's
+    OWN rows (no ``--app`` door needed: the stamps ride the rows).
+
+    THE OUTPUT CONTRACT (the stranded face's own — one coherent drift
+    section): every line names its evidence source (the run's node rows'
+    ``jobs.code_version``); the multi-hash nodes are named WITH their
+    hashes (a map family whose rows straddle the deploy names both
+    sides); the healthy zero is the EMPTY list (a single-stamp run
+    renders no section)."""
+    by_key: dict[str, set[str]] = {}
+    for step_key, version in stamps:
+        if version is None:
+            continue
+        by_key.setdefault(step_key, set()).add(version)
+    distinct = sorted({v for versions in by_key.values() for v in versions})
+    if len(distinct) < 2:
+        return []
+    multi = sorted(key for key, versions in by_key.items() if len(versions) > 1)
+    lines = [
+        f"code-version drift: {len(distinct)} distinct stamps on this run's rows "
+        f"(source: the node rows' jobs.code_version — the §22.1 record): "
+        + " ".join(f"{v[:12]}…" for v in distinct[:4])
+        + (" …" if len(distinct) > 4 else ""),
+    ]
+    if multi:
+        shown = ", ".join(f"{key} ({'/'.join(sorted(by_key[key])[:3])})" for key in multi[:8])
+        if len(multi) > 8:
+            shown += f" … (+{len(multi) - 8} more)"
+        lines.append(
+            f"  multi-hash nodes: {shown} — a redeploy landed mid-family (the "
+            "map's rows straddle the deploy)"
+        )
+    lines.append(
+        "  the run mixes pre- and post-deploy attempts; if the mix matters, "
+        "cancel + re-run on the current code under a new run key"
+    )
+    return lines
+
+
 def format_flow_status(
     *,
     run_id: str,
@@ -293,16 +339,19 @@ def format_flow_status(
     nodes: Sequence[FlowNodeRow],
     cancel_in_flight: bool = False,
     registry_node_keys: Sequence[str] | None = None,
+    code_version_stamps: Sequence[tuple[str, str | None]] | None = None,
 ) -> list[str]:
     """`flows status <run_id>`'s report lines.
 
     The order is: the header (the run's identity + THE DERIVED status),
     the counts (with their source), the stuck nodes' why-stuck lines
-    (the explain seam), the versioning-drift lines (the stranded-node
-    surface — only when *registry_node_keys* is given: the ``--app``
-    door), the remedy footer. The root row's OWN status is
-    reported as the cache it is (G7's law: the rows are the truth, the
-    root row is a cache)."""
+    (the explain seam), the ONE coherent versioning-drift section — the
+    stranded-node surface (only when *registry_node_keys* is given: the
+    ``--app`` door) + the §22.1 stamps' drift face (when the run's rows
+    carry >1 distinct ``code_version`` — the stamps are the data, no
+    ``--app`` needed) — then the remedy footer. The root row's OWN
+    status is reported as the cache it is (G7's law: the rows are the
+    truth, the root row is a cache)."""
     derived = derive_flow_status(nodes) if nodes else "pending"
     lines = [
         f"run {run_id}",
@@ -318,6 +367,8 @@ def format_flow_status(
                 workflow=workflow,
             )
         )
+    if code_version_stamps:
+        lines.extend(code_version_drift_lines(code_version_stamps))
     if cancel_in_flight:
         lines.append("cancel: IN FLIGHT (the row's cancel_requested_at is set)")
     if not nodes:

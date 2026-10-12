@@ -113,6 +113,7 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     from taskq.workflows._childflow import ChildFlowLostError, SpawnDepthExceededError
     from taskq.workflows._emit import MapIndexExhaustedError, PageDivergedError
     from taskq.workflows._progress import ProgressRefusedError
+    from taskq.workflows.api._runner_errors import VanishedNodeError
     from taskq.workflows.definitions import FanInBoundExceededError
 
     deterministic: tuple[type[BaseException], ...] = (
@@ -127,6 +128,11 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
         ReservedTimerNamespaceError,
         SpawnDepthExceededError,
         ChildFlowLostError,
+        # THE VANISHED-NODE REDEPLOY WEDGE (rv5-t6's cure): a step key
+        # the registry does not carry has NO body on ANY attempt — the
+        # registry is the truth (D1); the remedy is cancel-then-restart,
+        # never a retry budget spent on an unresolvable key.
+        VanishedNodeError,
     )
     return isinstance(exc, deterministic)
 

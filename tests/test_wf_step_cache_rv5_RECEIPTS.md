@@ -214,3 +214,22 @@ tokens remain on the shared container
 untouched). The `pinwork-cache` worktree itself carries only the two pin
 files (untracked) and the pyright `.venv` shim (untracked); no tracked
 file was modified (the mutation drill was restored byte-exact).
+
+---
+
+# THE RESIDUAL-CURES LANE'S RECONCILED FLIPS (the adoption-with-flip-receipts rows)
+
+Pack ported to the reconciliation ground `feat/taskqflow-residual-cures`
+(the four cure lanes' merges + this lane's cures). The pre-reconciliation
+state was captured at the lane head BEFORE the reconciling commit
+(`/tmp/opencode/cache-pack-pre.txt`: K1 + K5 XPASS-strict, K3 + K4 + K6
++ K7 xfail, K2 the green guard).
+
+| Pin | Pre-flip state at the reconciliation ground | The cure the flip adopts | Receipt |
+| --- | --- | --- | --- |
+| K1 (the route-source wedge) | XPASS-strict — the SAFE behavior holds (the cached route-source is refused / the hit re-forks) | the cache-cures lane's refusal | this row |
+| K5 (the Exit dead-cache) | XPASS-strict — the Exit+cache combination is refused at the wiring | the cache-cures lane's wiring refusal | this row |
+| K3 (the ctx.input exclusion) | XFAIL — the pin's harness caught only `WorkflowValidationError` from `app.get`; the cured face is the E18 RULE: a `WorkflowBuildError` raised by the WIRING VERB (rule `E18-cache-ctx-input`, the hazard + the remedy named) | the reconciled pin catches the refusal face (build OR validate) and asserts the hazard named — the cured face is STRICTER than the diagnostic asked | this row |
+| K4 (the closure-hole's law) | XFAIL — the law SHIPS verbatim ('A changed HELPER is invisible to the address'); the pin's regex demanded not/never in one LINE-span (the verbatim spans a newline) | the matcher reads the cured spelling (helper…invisible…address across the sentence) | this row |
+| K6 (the eviction door) | XFAIL — the verb ships as `taskq wf cache evict` (the wf sub-typer), DRY-RUN by default, `--yes` deletes; the pin invoked `cache purge <address>` (exit 2) | the reconciled pin drives the cured verb's whole face: the dry run reports + touches nothing, `--yes` evicts, the next run MISSES | this row |
+| K7 (the classifier asymmetry) | XFAIL — NOT flipped: my own run CONFIRMED the front's verdict (the hit's `_finalize_success` still inside the ladder's try; max_attempts=1 → the node terminal-failed `error_class='ConnectionError'`, the body never ran). The cure touches `api/_runner.py`'s finalize/ladder path; the docsfaces lane (still in flight) may touch the adjacent absorb path — the single-writer-per-file law dispatches K7 when docsfaces closes | — (the marker stays) | this row is the lane's ledger note |

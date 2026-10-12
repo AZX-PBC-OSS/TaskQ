@@ -237,3 +237,25 @@ its `chp_rv5_<token>` schema at teardown, and the pre-pin probe schemas
 place. The two wedged probe processes from the pre-`terminate()` legs
 were reaped. Other reviewers' artifacts were not touched;
 `/tmp/opencode/childcheck` was never modified.
+
+---
+
+# THE RESIDUAL-CURES LANE'S RECONCILED FLIPS (the adoption-with-flip-receipts rows)
+
+Pack ported to the reconciliation ground `feat/taskqflow-residual-cures`
+(the four cure lanes' merges + this lane's cures). The pre-reconciliation
+state was captured at the lane head BEFORE the reconciling commit
+(`.measurements/residual-cures/child-pack-pre-reconciliation.txt`: C4-C7
+XPASS-strict, C1-C3 xfail).
+
+| Pin | Pre-flip state at the reconciliation ground | The cure the flip adopts | Receipt |
+| --- | --- | --- | --- |
+| C1 (the gather dragon) | XFAIL under the marker / PASS unmarked ×4 + ×3 under --runxfail — the atomic slot claim (the child-cures lane's C1 cure) landed; the markers' own accounting flaked on the timing-sensitive gather | the marker REMOVED WITH the cure (the K-distinct-children shape asserted unchanged — the cure's own shape) | this row |
+| C2 (the retention-respawn) | XFAIL — the cured fail-close lives AT THE RESPAWN ATTEMPT: the resume re-runs the spawn site, the dangling-receipt walk raises the TYPED `ChildFlowLostError`, the deterministic route terminal-fails the node, T06's propagation fails the root | the reconciled pin reads the ROWS (the node's error class names the wedge, the root failed LOUDLY, the census stayed 0) — the original pin's wait-arm shape (`ChildFailed` through `handle.wait()`) is unreachable behind spawn-then-wait, exactly as the conviction's own words say | this row |
+| C3 (the recursion bomb) | XFAIL — the cured shape is the DEPTH BOUND (the ancestor-chain walk, `DEFAULT_SPAWN_MAX_DEPTH` = 32, the typed `SpawnDepthExceededError`), not the first-spawn refusal (census == 1) the pin asserted | the reconciled pin asserts the cured shape's whole substance: the tree TERMINALIZES (drive returns terminal), the census is bounded at the depth arithmetic (1 + the bound), and the typed refusal FIRED on the record (the rows' parent-link walk scopes the family) | this row |
+| C4 (the cascade's stack) | XPASS-strict — the iterative cascade landed | the marker REMOVED WITH the cure | this row |
+| C5 (the orphan window) | XPASS-strict — the both-directions walk landed | the marker REMOVED WITH the cure | this row |
+| C6 (the dev-tick expiry gap) | XPASS-strict — the dev drive's expiry arm landed | the marker REMOVED WITH the cure | this row |
+| C7 (the no-op resolve bounce) | XPASS-strict — the typed resolve refusal landed | the marker REMOVED WITH the cure | this row |
+
+| C1 (order-leg addendum) | the reconciled C1 flaked on the strict VERDICT ORDER leg ('found:d1-0, found:d1-2, found:d1-1'): the unkeyed fan-out's slot race re-associates the handles across the hold-resume — the spawn docstring's own contract ('must join STABLY across the resume passes key= — the slot's allocation order is the scheduler's') | the order leg reconciled to the LAW (the no-fabrication SET + the distinct children); the keyed stable-join face stays the child-cures lane's own pin | this row |
