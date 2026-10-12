@@ -410,9 +410,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     async def tick(self, flow_id: JobId, *, execute: bool = True) -> bool:
         """One dispatch pass: claim + run + finalize every claimable node
         (``execute=True`` — the dev-loop driver); then the sweep arms
-        (the crash-window heal + the outbox drain). With
-        ``execute=False`` the sweep arms only — the orchestration-only
-        pass. Returns whether ANY node ran."""
+        (the crash-window heal + the outbox drain + the DURABLE TIMER's
+        fire — T28: the dev loop's timer arm mirrors the leader's, so a
+        timer flow completes in-process exactly as it completes on the
+        fleet). With ``execute=False`` the sweep arms only — the
+        orchestration-only pass. Returns whether ANY node ran."""
         ran = False
         if execute:
             for row in await self._claimable(flow_id):
@@ -422,6 +424,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
         await sweep_join_rederive(self.pool, self.wsql)
         await drain_outbox(self.pool, self.wsql)
+        from taskq.workflows.api._hitl import sweep_due_timers
+
+        # THE DRAIN (the timer-cures lane's cure 4): the dev loop's
+        # timer arm mirrors the leader's — the due set empties per tick.
+        await sweep_due_timers(self.pool, schema=self.schema, drain=True)
         return ran
 
     async def _claimable(self, flow_id: JobId) -> list[dict[str, Any]]:

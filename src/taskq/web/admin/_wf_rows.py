@@ -175,13 +175,32 @@ class RunView:
 def _normalize_hold(row: Mapping[str, Any]) -> dict[str, Any]:
     """The hold row's json-safe shape: the uuid7 id (the reply handle)
     and the clocks as text — the boot JSON and the SSE frames are JSON,
-    and a UUID in them is the TypeError the frame must never carry."""
+    and a UUID in them is the TypeError the frame must never carry.
+
+    THE TIMER'S BRANCH (the timer-cures lane's cure 3): a hold under
+    the reserved ``__timer__`` prefix IS a timer — the enrichment names
+    it so (``is_timer``, the stripped ``timer_key``, and the wake's
+    ``fired_by`` once delivered) so the renderers branch on the ROW's
+    own truth: a timer renders AS a timer (the key, the scheduled
+    instant, the clock as the resolver), never as a human decision
+    with a Resolve form the boundary would refuse."""
     out = dict(row)
     for key, value in out.items():
         if isinstance(value, datetime):
             out[key] = value.isoformat()
         elif isinstance(value, uuid.UUID):
             out[key] = str(value)
+    from taskq.workflows.api._hitl import TIMER_SIGNAL_PREFIX, starts_with_timer
+
+    signal_name = out.get("signal_name")
+    is_timer = isinstance(signal_name, str) and starts_with_timer(signal_name)
+    out["is_timer"] = is_timer
+    out["timer_key"] = str(signal_name)[len(TIMER_SIGNAL_PREFIX) :] if is_timer else None
+    out["timer_fired_by"] = None
+    if is_timer:
+        payload = out.get("payload")
+        if isinstance(payload, dict) and isinstance(payload.get("fired_by"), str):
+            out["timer_fired_by"] = payload["fired_by"]
     return out
 
 

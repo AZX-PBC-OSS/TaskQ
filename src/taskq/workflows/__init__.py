@@ -51,6 +51,7 @@ from taskq.workflows.api import (
     sink,
     step,
 )
+from taskq.workflows.api._ctx_timer import TimerWake
 from taskq.workflows.api._ctx_wait import Expired, LoopWaitShapeError
 from taskq.workflows.api._hitl import DeliveryResult, HitlClient
 from taskq.workflows.api._hitl_listen import (
@@ -112,6 +113,7 @@ __all__ = [
     "RunClaim",
     "Step",
     "StepContext",
+    "TimerWake",
     "WorkflowApp",
     "WorkflowBuildError",
     "WorkflowRunError",

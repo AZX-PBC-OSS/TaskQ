@@ -1,0 +1,4 @@
+# mkdocs strict — the head c90f9d686f9acdd83098d2578f37770d321e2cfe
+# mkdocs build --strict at the timers lane head c90f9d686f9acdd83098d2578f37770d321e2cfe
+INFO    -  Documentation built in 16.06 seconds
+exit=0

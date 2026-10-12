@@ -101,6 +101,7 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     emission used to burn the whole ladder and terminalize as a raw
     laddered failure — the deterministic death, mislabeled transient.
     """
+    from taskq.exceptions import ReservedTimerNamespaceError
     from taskq.workflows._emit import MapIndexExhaustedError, PageDivergedError
     from taskq.workflows._progress import ProgressRefusedError
     from taskq.workflows.definitions import FanInBoundExceededError
@@ -110,6 +111,11 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
         PageDivergedError,
         MapIndexExhaustedError,
         FanInBoundExceededError,
+        # E17 — the reserved-timer-prefix mint refusal (the timer-cures
+        # lane's cure 1): the payload model's NAME is the code's own —
+        # re-running the body re-raises the same refusal on every
+        # attempt (a retry budget spent on it is the record's lie).
+        ReservedTimerNamespaceError,
     )
     return isinstance(exc, deterministic)
 

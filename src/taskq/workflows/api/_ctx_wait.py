@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from taskq.backend._protocol import JobId
     from taskq.workflows._sql import WorkflowSql
 
-__all__ = ["CtxWaitOps", "LoopWaitShapeError", "SignalUnavailableError"]
+__all__ = ["CtxWaitOps", "LoopWaitShapeError", "SignalUnavailableError", "WaitHost"]
 
 import structlog
 
@@ -102,9 +102,11 @@ class Expired(BaseModel):
     hold_id: str
 
 
-class _WaitHost(Protocol):
+class WaitHost(Protocol):
     """The context surface the wait machinery reads (the split's typed
-    seam — the fields live on the context, the machinery here)."""
+    seam — the fields live on the context, the machinery here; the
+    timer's mixin, ``_ctx_timer.CtxTimerOps``, composes on the SAME
+    protocol — the two waits share one host shape)."""
 
     flow_id: JobId
     job_id: JobId
@@ -122,7 +124,7 @@ class _WaitHost(Protocol):
     _redact: Callable[[str], str] | None
 
 
-class CtxWaitOps(_WaitHost):
+class CtxWaitOps(WaitHost):
     """The context's wait/deliver mixin (the machinery's home; the
     context composes it)."""
 
@@ -228,9 +230,21 @@ class CtxWaitOps(_WaitHost):
         signal_name = names[0] if len(names) == 1 else "|".join(names)
         from taskq.workflows.api._hitl import (
             mark_awaited,
+            refuse_reserved_timer_name,
             register_hold,
             register_signal_models,
         )
+
+        # E17 — THE RESERVED NAMESPACE AT THE MINT (the timer-cures
+        # lane's cure 1): a payload model NAMED inside the durable
+        # timer's reserved ``__timer__`` prefix would mint a hold every
+        # reader mis-identifies as the CLOCK's (invisible to
+        # HitlClient.list(), unanswerable, never fail-closing, fired at
+        # the deadline into a SignalPayloadError death). The refusal is
+        # HERE — LOUD, typed, the fix named, BEFORE anything registers
+        # or writes.
+        for model_name in names:
+            refuse_reserved_timer_name(model_name, mint="ctx.wait_signal")
 
         # THE CATALOG (the typed door's runtime registry): this process
         # ran the wait site — the deliver boundary validates against

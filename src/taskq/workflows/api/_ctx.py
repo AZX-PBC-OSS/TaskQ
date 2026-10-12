@@ -5,8 +5,10 @@ through ``ctx.step`` (the ledger's replay contract), report progress
 through ``ctx.progress``, and stream pages through ``ctx.emit_batch``.
 
 The wait/deliver face (``wait_signal``/``signal`` — the HITL machinery)
-lives in ``_ctx_wait`` and composes in; the runner builds the context at
-the claim seam (``_runner``).
+lives in ``_ctx_wait`` and composes in; the DURABLE TIMER
+(``wait_until`` — T28, the hold whose resolver is the clock) lives in
+``_ctx_timer`` beside it; the runner builds the context at the claim
+seam (``_runner``).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from taskq.backend._protocol import JobId
 from taskq.workflows._progress import ProgressEmitter, validate_emission
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._types import EmitChild
+from taskq.workflows.api._ctx_timer import CtxTimerOps
 from taskq.workflows.api._ctx_wait import CtxWaitOps
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._sql_runner import SOURCE_CURSOR_SQL_TEMPLATE, render_sql
@@ -82,10 +85,14 @@ def build_step_context(
 
 
 @dataclass(frozen=True, slots=True)
-class StepContext(CtxWaitOps):
+class StepContext(CtxWaitOps, CtxTimerOps):
     """The body's runtime context: the run's identity + the input (cut
     #7) + the memoized step runner. Bodies read ``ctx.input`` and run
     side effects through ``ctx.step`` (the ledger's replay contract).
+
+    The two WAIT faces compose in: the HUMAN hold (``ctx.wait_signal``
+    — the HITL machinery) and the DURABLE TIMER (``ctx.wait_until`` —
+    T28, the hold whose resolver is the clock).
 
     THE DOCUMENTED ANNOTATION: a workflow body declares its context as
     ``ctx: StepContext`` — the checker verifies the body's ``ctx.*``

@@ -720,6 +720,8 @@ families:
 | `tests/typeprobe/` | T01's negative type probes (pyright + ty, the CI `type-probes` gate) |
 | `tests/test_wf_perf_bands.py` | the perf bands: the 1000-child fan-out tx, the join-fire latency, the enqueue/dispatch noise bands, the T07 edge-join scale curve (the refit + the 100k-edge plan assert) |
 | `tests/test_wf_step_cache_pins.py` | the T25 cross-run cache family: the hit (the body runs ONCE across runs; the receipt on the node row), the success-only law (a failed body's key never squats), the TTL's expiry (the scaled clock: expired is a miss, the re-fill beats the corpse), the CAS (two concurrent misses, ONE winner), the typed decode at the hit (R3's face), the address's code sensitivity (the stale-code face dead), the wiring refusals (the TTL without the opt-in, the non-positive TTL, the gather), the retention arm's fresh/expired split + the disable sentinel |
+| `tests/test_wf_timer_pins.py` | the T28 durable-timer family: the at-least wake (never early, the receipt's arithmetic), the slot's release (the held representation, the ledger's `awaited`), the crash-mid-wait durability (the successor's sweep fires the wake), the cancel interplay (the hold dies with the flow), the Expired/timer orthogonality (both named outcomes fan in), the resolve boundary's refusal (the clock is the only resolver) |
+| `tests/test_wf_versioning_pins.py` | the T29 versioning-contract family: the redeploy face (the adopt at the next node claim + the stamps proving WHICH code ran each row), the mid-wait redeploy (the wake re-enters the NEW body, the replay law across the deploy) |
 
 History note: T03's schema-pin file (`tests/test_workflows_schema_pins.py`)
 was folded when T05 landed — its pins live in
@@ -1606,6 +1608,134 @@ The hold→resume latency band (G11c) is measured and pinned in
 `perf-evidence-workflows.md` (the band from
 `.measurements/t10-hold-resume-band.json`).
 
+## §4b — The durable timer: the clock is a resolver (T28)
+
+"Remind them tomorrow" is a hold whose RESOLVER IS THE CLOCK:
+`ctx.wait_until(when, key=…)` — the body sleeps, the run survives, the
+wake resumes the body. THE TIMER'S FACE INVERTS THE EXPIRY'S: the
+human gate's deadline-pass (`wait_signal`'s `timeout_s`) is the
+`Expired` member — the fail-close the checker forces. **The timer's
+deadline-pass is THE WAKE** — the sweep resolves the hold
+`'held' → 'delivered'` with the clock's own receipt and the body
+RESUMES. The timer's point is the continuation, never the fail-close.
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    Promise,
+    StepContext,
+    TimerWake,
+    WorkflowApp,
+    build,
+    run,
+    step,
+)
+
+app = WorkflowApp()
+
+
+class FollowUp(BaseModel):
+    ticket: str
+
+
+@app.workflow("reminder_flow")
+def reminder_flow() -> Promise[object]:
+    return build(step(remind_body, FollowUp(ticket="T-1"), key="remind"))
+
+
+async def remind_body(ctx: StepContext, params: FollowUp) -> str:
+    # THE ONE-DAY SHAPE: `ctx.wait_until(when, key="remind")` with
+    # `when = datetime.now(timezone.utc) + timedelta(days=1)` — here a
+    # 1-second float so the verified run finishes fast. The pre-timer
+    # side effect is SUBSTEP-ledgered: the resume re-executes the body
+    # from the top and the substep replays (never re-runs).
+    wake = await ctx.wait_until(1.0, key="remind")
+    return (
+        f"ticket={params.ticket} wake={wake.key} by={wake.fired_by} "
+        f"late={wake.lateness_s >= 0.0}"
+    )
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+    outcome = await run(app.get("reminder_flow"), pool, schema)
+    print(f"claim={outcome.claim.kind} outcome={outcome.outcome} result={outcome.result}")
+
+
+asyncio.run(main())
+```
+
+Verified output (this guide's capture, on a fresh schema):
+
+```
+claim=created outcome=terminal result=ticket=T-1 wake=remind by=timer late=True
+```
+
+The machinery, and the laws each piece carries:
+
+- **THE ROW IS THE TRUTH (the hold's law, unmodified)**: the timer IS
+  a `wf_signals` hold row under the reserved `__timer__` signal
+  prefix. The held representation releases the worker's SLOT (no
+  lease, no claim, no attempt burned while sleeping); a LOOP node's
+  budget pauses while the timer stands — the wall is blind while the
+  body waits on the clock, exactly as while it waits on a human.
+- **THE SWEEP'S TIMER ARM** (the expiry arm's inverted twin, wired
+  beside it in the leader's signal sweep and in the dev-loop `tick`):
+  every due timer hold resolves `'delivered'` — never `'abandoned'` —
+  with the WAKE as the payload (`fired_by='timer'`, the timer's
+  `key`, the `scheduled` and `fired_at` instants). The `'held' →
+  'delivered'` CAS is the fence: a twice-fired timer is
+  unrepresentable, and a cancelled flow's timer never wakes.
+- **THE DURABILITY IS THE DESIGN**: a worker DEATH mid-wait changes
+  nothing — the hold row's expiry arms the reclaim, the successor's
+  sweep fires the wake, the body resumes from the top (the
+  re-execution doctrine: pre-timer side effects are
+  `ctx.substep`-ledgered and replay). The pin drops the arming driver
+  and lets a fresh runner's sweep complete the flow.
+- **THE AT-LEAST FACE** (the expiry's own precision law, restated):
+  the fire lands at the FIRST sweep pass at-or-after the deadline —
+  never early, never at a precise wall time. `TimerWake.lateness_s`
+  (the `fired_at` − `scheduled` delta) is that honesty, on every
+  wake. Pass a `float` (seconds; the DB clock owns the base) or a
+  `datetime` (the absolute instant; naive means UTC — the DB never
+  re-bases it).
+- **THE TIMER IS NOT A HUMAN HOLD**: `HitlClient.list()` never
+  enumerates it (the reserved prefix is the split's mark — the
+  display surfaces show it AS a timer), and the resolve boundary
+  REFUSES any hand-delivered payload — a well-formed forgery of the
+  wake's schema included. The clock is the only resolver this hold
+  takes.
+- **THE INTERPLAY**: the cancel cascade kills the timer with the flow
+  (it is an ordinary hold row — the same one-tx cascade); `Expired`
+  and `TimerWake` are orthogonal in one flow (a human gate's
+  fail-close beside a clock's wake fan in as two named outcomes); a
+  mid-wait REDEPLOY re-enters the NEW body on the wake's resume (the
+  versioning contract, §6). In a LOOP the timer shares the answer
+  queue's cursor — the ONE-wait-per-iteration shape law (E13) reads a
+  conditional timer exactly as a conditional `wait_signal`.
+
+**THE NAIVE-DATETIME LAW** (the silent coercion, stated at the API
+face): a naive `datetime` — no `tzinfo` — passed to `wait_until` is
+interpreted as UTC. The coercion is silent (`when.replace(tzinfo=UTC)`):
+no error, no local-zone reading — `17:00` naive means `17:00 UTC`, not
+your server's 17:00. The DB never re-bases the instant: the hold row's
+`expires_at` is exactly the coerced value, the wake fires at that UTC
+instant, and the wake's `scheduled` stamp reads it back unchanged. Pass
+a tz-aware `datetime` (`datetime.now(timezone.utc) + timedelta(...)`)
+to mean what you said; a naive one is accepted for continuity and reads
+as UTC. (A `float` of seconds keeps the relative face — the DB clock's
+own `now` is its base.)
+
 ## §5 — Progress: the nodes report (T21)
 
 A workflow body reports its own progress: `await ctx.progress(75, "page
@@ -1704,6 +1834,101 @@ A consumer of either old vocabulary is served by the ONE stream through
 its shim unchanged — the consolidation is the migration win (the third
 vocabulary cannot sprout: the kind set is closed at the emit path and by
 the storage CHECK).
+---
+
+## §6 — The in-flight versioning contract (T29)
+
+**THE DECISION — the registry-is-truth contract**: a REDEPLOYED
+definition is adopted by the in-flight runs at their NEXT NODE CLAIM.
+The compile's STRUCTURE is the create-time snapshot (the nodes, the
+edges, the wiring — a run's graph never morphs mid-flight); every BODY
+resolves from the CURRENT registry at the claim seam (D1's resolution
+is per-claim, never per-run — the registry answers first, the compiled
+node's own body is the fallback when the registry lacks the key). A
+redeploy keeps the same node KEYS, so the registry hit is the norm:
+the new code runs the old run's remaining nodes.
+
+TODAY'S HONEST PREDECESSOR: before this section existed, the same
+adoption happened SILENTLY — a mid-flow deploy changed in-flight
+behavior with no contract text and no taught read. The contract names
+the behavior; the STAMPS record it.
+
+**THE STAMPS ARE THE OPERATOR'S READ** (§22.1, landed with T03): every
+node claim writes `jobs.code_version` — the body's canonical content
+hash (the tors content hash over the named payload: module, qualname,
+source, and the decorator's explicit pin when given). WHICH code ran
+each row is a ROW fact, per node, per attempt:
+
+```sql
+SELECT step_key, attempt, code_version
+FROM taskq.jobs
+WHERE (metadata->>'flow_id')::uuid = $1
+ORDER BY id;
+```
+
+A run whose rows carry TWO different hashes for one node = the deploy
+drift happened mid-run, and the rows say which side of it each attempt
+ran. The hash is a RECORD, never a gate: a body the hash cannot read
+(a builtin, a partial) records as NULL — the loss is logged, the claim
+never fails on its own audit.
+
+**THE REMEDIATION** (the operator's tool when the adoption is NOT what
+a run should continue with): the **cancel-then-restart path** —
+`FlowRunner.cancel_workflow(run_id)` (or the admin's cancel door),
+then re-run on the current code under a NEW run key (the run-key
+arbiter's own law: the re-run is a NEW key, never a replay of the
+cancelled run's). There is no per-run code pin in v1: a run mid-flight
+cannot be HELD on old code — the adoption is the contract, the
+cancel-restart is the escape.
+
+**THE EDGE CASES, NAMED** (each re-enters the NEW body through the
+same claim-time resolution — the pin covers the second):
+
+- **A run mid-LOOP**: the iteration's body re-resolves at the resume —
+  the next iteration (and the resumed one) runs the NEW code.
+- **A run mid-WAIT**: the wake (the timer's, T28) or the human
+  delivery's resume re-enters the NEW body — a wake is a resume like
+  any other, and the claim-time resolution is the only body source.
+  The answer queue's replay law holds ACROSS the deploy: the new
+  body's wait site consumes the already-delivered answer (the
+  operator's re-run never re-sleeps, the operator never re-answers).
+- **A cached step** (T25): the cache's address INCLUDES the
+  `code_version` — a redeploy is a NEW address, so the new code's
+  results land on the new code's cache line and an old line is never
+  served to a new body (the T25 design's own law — the stale-truth
+  hazard's structural kill).
+
+**THE SNAPSHOT-PER-RUN DESIGN — recorded, not built**: pinning each
+run's code AT CREATE (the create stamps the definition snapshot, the
+run reads its own snapshot forever) is the LATER design — it re-derives
+the compile-time registry discipline and is recorded in
+[the spec's open LATER rows](../design/workflows-spec.md) (§8), not
+shipped. Until it lands, the registry-is-truth contract above is THE
+behavior — rely on the stamps to see it, and on cancel-restart to
+escape it.
+
+**THE WEDGE, NAMED** (the versioning wedge — know it before you
+rename): because the CURRENT registry is the only body source, a
+redeploy that RENAMES or REMOVES a node wedges every in-flight run
+sitting at it: the run's node row still exists (the create-time
+structure snapshot), but the current graph no longer declares the key,
+so the node can never claim a body again — the run is a ZOMBIE: never
+terminal, nothing fails it, and nothing else in the CLI or the admin
+surface said so. The drift is now VISIBLE: `taskq flows status <run_id>
+--app yourapp.workflows:app` compares the run's node inventory against
+the current registry's compiled graph and names the stranded nodes (a
+node the current registry does not declare), the zombie law, and the
+remedy (cancel + re-run). Related, and equally entailed by the
+contract: a mid-map redeploy provably MIXES v1+v2 results in one run —
+the fan-out's children claim the body one at a time, and the code
+changed between claims (the registry-is-truth contract IS the mixing;
+this is not a defect to fix but a fact to see). The per-node stamps
+(`jobs.code_version`) are the read that says which side of the drift
+each attempt ran; the map's summary row can carry mixed versions by
+design. Escape hatches, both: the cancel-then-restart path above, or
+re-deploy the old definition to let the run finish before re-deploying
+the new one.
+
 ---
 
 ## The context contract (what a body asserts on)
