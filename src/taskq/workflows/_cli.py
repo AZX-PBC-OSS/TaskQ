@@ -385,6 +385,8 @@ def code_version_drift_lines(
         "cancel + re-run on the current code under a new run key"
     )
     return lines
+
+
 def _running_lines(
     nodes: Sequence[FlowNodeRow],
     *,

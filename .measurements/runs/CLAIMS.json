@@ -4913,7 +4913,7 @@
       "file": "docs-lane-rv2-13-cure-captures-20261010T103000.txt",
       "head_sha": "557fcee594659a32973457978a3311d4fa6e7da7",
       "captured_at": "2026-10-10T10:30:00",
-      "kind": "THE DOCS LANE'S RV2-13 CURE \u2014 the superseded-capture index",
+      "kind": "THE DOCS LANE'S RV2-13 CURE — the superseded-capture index",
       "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
@@ -17531,6 +17531,18 @@
       "file": "deslop-pin-packs-20261012T-green.txt",
       "head_sha": "3428947e8276c7bb91a8bfc99ce25f7230235c02",
       "captured_at": "2026-10-12T11:31:32"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T114443-31f0.json",
+      "head_sha": "67395eb01e49305153b8009a09ea6ed3906b36ac",
+      "captured_at": "2026-10-12T11:44:43"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T114452-2b05.json",
+      "head_sha": "67395eb01e49305153b8009a09ea6ed3906b36ac",
+      "captured_at": "2026-10-12T11:44:52"
     }
   ]
 }
