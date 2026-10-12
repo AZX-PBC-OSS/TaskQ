@@ -1,0 +1,11 @@
+{
+  "mutation": "the timeout arm wedged: the deadline-failed child leaves the join in join-wait (a join with no timer of its own, waiting on a child that can never terminalize)",
+  "observed": {
+    "blocked_required": 1,
+    "fires": 0,
+    "swept": 1
+  },
+  "pin": "join-failure-policy-timeout-required",
+  "run": "20261011T192847-2044474-51fd4010",
+  "ts": "2026-10-11T19:28:48"
+}

@@ -1,0 +1,9 @@
+{
+  "mutation": "the attempt-counting join \u2014 the M+1 case treated as M-1 (the collect fires where the policy says fail-closed)",
+  "observed": {
+    "required_join_fires": 0
+  },
+  "pin": "join-failure-policy-terminality",
+  "run": "20261009T181002-1755985-c90f762d",
+  "ts": "2026-10-09T18:10:03"
+}

@@ -1,0 +1,12 @@
+{
+  "mutation": "the DETERMINISTIC authoring failure laddered as transient (the retry budget burned on a bug no retry cures)",
+  "observed": {
+    "attempt": 1,
+    "error_class": "ProgressRefusedError",
+    "ledger_failed_rows": 1,
+    "status": "failed"
+  },
+  "pin": "t21-routing-deterministic",
+  "run": "20261010T171744-2864914-348ca467",
+  "ts": "2026-10-10T17:17:44"
+}

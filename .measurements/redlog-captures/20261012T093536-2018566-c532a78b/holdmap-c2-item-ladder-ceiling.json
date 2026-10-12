@@ -1,0 +1,11 @@
+{
+  "mutation": "the pre-cure variant (the item's ladder capped at 3 regardless of the stamped max_attempts=7 \u2014 the row lied)",
+  "observed": {
+    "conviction": "the cured ladder dies AT the stamped ceiling",
+    "observed_attempts": 7,
+    "stamped": 7
+  },
+  "pin": "holdmap-c2-item-ladder-ceiling",
+  "run": "20261012T093536-2018566-c532a78b",
+  "ts": "2026-10-12T09:35:40"
+}

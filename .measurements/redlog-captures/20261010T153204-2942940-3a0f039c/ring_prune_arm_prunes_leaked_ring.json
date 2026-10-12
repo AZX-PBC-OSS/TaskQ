@@ -1,0 +1,10 @@
+{
+  "mutation": "the append-trim bypassed (the red world's unpruned ring)",
+  "observed": {
+    "bound": 64,
+    "rows_before": 801
+  },
+  "pin": "ring_prune_arm_prunes_leaked_ring",
+  "run": "20261010T153204-2942940-3a0f039c",
+  "ts": "2026-10-10T15:32:04"
+}

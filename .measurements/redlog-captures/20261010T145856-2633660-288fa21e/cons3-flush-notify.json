@@ -1,0 +1,9 @@
+{
+  "mutation": "the progress flush + the auto projections carry no pg_notify at 37ab05b8..88539d8f \u2014 PROGRESS_NOTIFY_CHANNEL does not exist; the SSE face's only freshness is the 1s poll (the deploy matrix's PARTIAL)",
+  "observed": {
+    "error": "ImportError: cannot import name 'PROGRESS_NOTIFY_CHANNEL' from 'taskq.workflows._progress'"
+  },
+  "pin": "cons3-flush-notify",
+  "run": "20261010T145856-2633660-288fa21e",
+  "ts": "2026-10-10T14:58:56"
+}

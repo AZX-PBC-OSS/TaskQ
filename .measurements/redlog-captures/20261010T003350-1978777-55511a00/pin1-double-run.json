@@ -1,0 +1,9 @@
+{
+  "mutation": "the memoized lookup's statement mutated to match nothing (the replay forgets)",
+  "observed": {
+    "executions_after_redelivery": 1
+  },
+  "pin": "pin1-double-run",
+  "run": "20261010T003350-1978777-55511a00",
+  "ts": "2026-10-10T00:33:50"
+}

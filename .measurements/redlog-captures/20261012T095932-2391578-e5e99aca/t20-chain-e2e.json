@@ -1,0 +1,30 @@
+{
+  "mutation": "the chain's rows NOT sharing one trace per record (the lineage crosses two systems) or a record's chain stranded non-terminal",
+  "observed": {
+    "None": [
+      [
+        "t20_source",
+        "succeeded"
+      ]
+    ],
+    "app-1": [
+      [
+        "screen",
+        "succeeded"
+      ]
+    ],
+    "app-2": [
+      [
+        "screen",
+        "succeeded"
+      ],
+      [
+        "manual_review",
+        "succeeded"
+      ]
+    ]
+  },
+  "pin": "t20-chain-e2e",
+  "run": "20261012T095932-2391578-e5e99aca",
+  "ts": "2026-10-12T09:59:32"
+}
