@@ -8998,6 +8998,18 @@
       "file": "evidence-heads-verify-20261012T013455Z.txt",
       "head_sha": "79f3674c4aae5ea88f1e4e5861f1d77787949cd3",
       "captured_at": "2026-10-11T18:34:55"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-20261012T013558Z.txt",
+      "head_sha": "3f6c24899542b56736a80bbc367ff8c972591893",
+      "captured_at": "2026-10-11T18:35:58"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-20261012T013558Z.txt",
+      "head_sha": "3f6c24899542b56736a80bbc367ff8c972591893",
+      "captured_at": "2026-10-11T18:35:58"
     }
   ]
 }
