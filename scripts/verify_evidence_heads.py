@@ -57,6 +57,13 @@ THE MECHANICS (what this verifier enforces over the estate's registry,
 * A registry entry whose capture FILE is missing, and a registry that
   is missing entirely, FAIL — an index naming ghosts is the estate's
   own rot, and an estate without an index is unverifiable.
+* A registry that parses and carries ZERO claims is the LOUD REFUSAL,
+  never the green (the door-edges round's cure): zero claims is zero
+  verdicts — an empty estate CANNOT verify anything, so the empty
+  registry exits nonzero with the typed refusal. The WARNING-class
+  content (the bootstrapping case is real and honest — a new estate
+  has no captures yet) is carried INSIDE the refusal's text; the
+  verdict is still never the green.
 
 THE CONTENT DOOR (the content-door round's cure): **the verifier reads
 each EFFECTIVE capture's own verdict — a capture whose content records
@@ -70,21 +77,106 @@ capture's first line) standing as the green proof of their stems
 registry's own: a fresh live claim (or a fresh chain terminal) IS the
 stem's green — so the door's mismatch test is one-sided by
 construction: the content records failure ⇒ the claim lies. The check
-is CHEAP — the stamp (the first lines) and the summary TAIL are
-scanned, never a full parse; the runtime regression is measured on the
-real estate (the content-door round's receipt). And the door is HONEST
-about formats: the families' summary shapes differ (the pytest tail's
-``N failed``, the run-scoped stamp's ``rc=``, the JSON band payload's
-measurements), the parser handles the estate's ACTUAL families — and a
-capture with NO parsable verdict shape is the TYPED WARNING, not a
-silent pass: silence is the defect class this cure kills. The door
-judges the claims that GREEN the estate at this head (the fresh live
-claim, the fresh chain terminal); a stale or CITED-IMPORT claim is
-already judged by its own law, and history's content is history's.
+is CHEAP — a LINEAR SCAN of the capture's text for VERDICT-SHAPED
+lines, never a line-count window, never a structured parse; the
+runtime is measured on the real estate (the door-edges round's
+receipt — the full-file scan holds the content-door budget). And the
+door is HONEST about formats: the families' summary shapes differ (the
+pytest tail's ``N failed``, the run-scoped stamp's ``rc=``, the JSON
+band payload's measurements), the parser handles the estate's ACTUAL
+families — and a capture with NO parsable verdict shape is the TYPED
+WARNING, not a silent pass: silence is the defect class this cure
+kills. The door judges the claims that GREEN the estate at this head
+(the fresh live claim, the fresh chain terminal); a stale or
+CITED-IMPORT claim is already judged by its own law, and history's
+content is history's.
+
+THE FIVE EDGES (the door-edges round's cures — the content door's own
+face, each convicted red-first and pinned
+``tests/test_evidence_door_rv6_pins.py``):
+
+* **THE SCAN WINDOW IS VERDICT-SHAPED, NEVER LINE-COUNTED** (D1). The
+  content door's first cut read only the first 3 + last 12 lines — a
+  red verdict pushed MID-FILE by post-run chatter (the NATURAL case:
+  pytest piped through ``tee``, which exits 0 honestly) greened with
+  red content on disk. The cure: the capture's FULL text is scanned
+  for verdict-shaped lines (``rc=``, ``N failed``, ``FAILED …``) WHEREVER
+  they sit; the cheap-law balance holds because a linear scan of a
+  text file is measured cheap (the content-door round's +0.1s budget
+  is the neighborhood — the receipt is re-measured at this cure).
+* **THE JSON BODY'S VERDICT FIELDS ARE READ** (D2). A ``*.json``
+  capture carrying ``{"rc": 1, "failed": 3}`` parses as valid JSON —
+  the suffix alone greened it by construction. The cure: the JSON
+  payloads' verdict fields (``rc`` / ``failed`` / ``errors`` — the
+  estate's actual band-payload shapes carry none) are read like any
+  stamp; a JSON with a failure-shaped verdict is THE CONVICTION; a
+  JSON with only measurements greens as before; a torn body stays the
+  typed warning.
+* **THE EMPTY REGISTRY IS THE LOUD REFUSAL** (D3). A registry with
+  ``claims: []`` greened "the law holds" vacuously — zero claims is
+  zero verdicts. The cure: the typed refusal above (the bootstrapping
+  case named in the refusal's own text, the exit nonzero, NEVER the
+  green). A future-only registry (every capture convicted by the
+  capture-time door below) reds for the same reason: nothing honest
+  was verified.
+* **THE CAPTURE-TIME DOOR — ``captured_at`` IS PARSED** (D4). The
+  registry's timestamp was never read: a 2030-dated capture with a
+  fresh stamp greened. The cure: ``captured_at`` (and the run-scoped
+  filename's embedded stamp, where present) is parsed and judged
+  against the reader's clock — a capture dated in the FUTURE beyond
+  the tolerance is THE CONVICTION, the fresh ``head_sha`` cannot
+  rescue the clock it rides on. THE TOLERANCE, stated: one day
+  (``_FUTURE_TOLERANCE``) — the writer's wall clock is recorded
+  zoned-less (``record_claim`` writes naive local time), so the
+  tolerance must absorb a zone-class skew between the writing and
+  reading machines; the future-dating class (years) is far past any
+  honest skew a day cannot cover.
+* **THE VERIFIED HEAD IS THE REPO'S OWN HEAD** (D5, the severe one).
+  ``_head`` trusted ``GITHUB_EVENT_PATH``'s pull-request sha as the
+  verified head — an attacker-influenced env made the verifier judge
+  against a sha that isn't HEAD (observed: rc=0 with the verifier
+  printing "recorded at THIS head (ffffffffffff)" for a sha that
+  exists nowhere in the repo). The cure: the verified head is
+  ``git rev-parse HEAD`` — ALWAYS; the env face is CROSS-CHECKED,
+  never trusted: when the event carries a pull-request head sha, that
+  sha must exist in THIS checkout's history (an ancestor of the
+  checkout) AND differ from it by nothing outside the measurements
+  estate — the freshness law's own teeth (the off-by-one rule)
+  applied to the env's claim. A forged or impossible sha — or one
+  whose source differs from the checked-out tree — is THE CONVICTION,
+  never rc=0. When the env sha passes the teeth it verifies nothing
+  on its own: the repo's head stands, and the off-by-one rule already
+  judges claims recorded at the env's sha against it. THE CARVE-OUT
+  IS RETIRED, named: the old merge-ref escape (verify the PR's own
+  head because the merge checkout carries main's side) was the
+  forged-head hole itself — the env's say-so installing a head — and
+  no workflow in this repo consumes it; under the cured law a CI PR
+  checkout greens exactly when its checked-out tree is
+  source-identical to the claims' heads, which is the law's own
+  honest bar everywhere else.
+
+THE CONTRACT RULING (the unparsable-capture face — stated where the
+front flagged it): the front argued a LIVE claim whose verdict cannot
+be read should arguably RED, not warn — the split law (the live claim
+unparsable = the conviction; the staged/no-verdict declaration = the
+warning). THE READS DECIDED AGAINST THE SPLIT: the landed chain-cure's
+own control pin (``test_the_honest_chain_stays_green``) builds an
+honest, fresh chain terminal whose synthetic capture carries no
+verdict shape — the conviction side of the split would red the landed
+law's own control, and the estate's honest shapes (the staged slot's
+declaration is a convention of CONTENT, not of registry structure) are
+not separable from it by anything the verifier can read. The typed
+WARNING therefore stands for every unparsable capture — the ruling's
+defensible core (silence is the defect) is kept either way: an
+unparsable capture is never a silent pass. This paragraph IS the
+recorded decision; a future round that can distinguish the staged
+declaration structurally (a registry ``kind:`` field for slots) may
+revisit.
 
 Usage:  python scripts/verify_evidence_heads.py [--runs-dir .measurements/runs]
 
-Exits 1 with the named stale claims and content-verdict mismatches.
+Exits 1 with the named stale claims, content-verdict mismatches,
+future-dated captures, and the env-forged head's conviction.
 """
 
 from __future__ import annotations
@@ -95,20 +187,19 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from taskq.testing._claims import RUNS, load_claims
 
 REPO = Path(__file__).resolve().parent.parent
 
-#: THE CONTENT DOOR'S SCAN WINDOW — the stamp (the writer's first
-#: lines, where the run-scoped rc lives) and the summary TAIL (where
-#: pytest's counts and short-summaries land). The cheap read: a handful
-#: of lines, never a full parse (the runtime receipt measures the cost).
-_HEAD_LINES = 3
-_TAIL_LINES = 12
-
-#: The failure verdicts the capture families actually write. The
+#: THE VERDICT SHAPES the capture families actually write, scanned
+#: across the capture's FULL text (the door-edges round's cure — the
+#: first cut's first-3/last-12 window let a red verdict pushed mid-file
+#: green silently; a linear scan of a text file is measured cheap, the
+#: content-door round's +0.1s budget is the neighborhood). The
 #: run-scoped stamp records ``rc=N`` (the writer's own header); pytest's
 #: tail records ``N failed``; the short-summary names ``FAILED tests/…``
 #: lines even when the count is suppressed. ``0 failed``/``rc=0`` are
@@ -126,41 +217,87 @@ _GREEN_SHAPES = (
     re.compile(r"\b0 errors\b"),
 )
 
+#: THE JSON VERDICT KEYS (the door-edges round's cure — the suffix alone
+#: used to green a JSON capture by construction). The estate's actual
+#: band payloads carry none of these (they record MEASUREMENTS); a
+#: payload that DOES carry them gets its verdict read like any stamp.
+_JSON_RC_KEYS = ("rc", "returncode")
+_JSON_COUNT_KEYS = ("failed", "errors")
+
+#: THE RUN-SCOPED FILENAME'S EMBEDDED STAMP (the second clock seat, read
+#: where present — ``record_claim``'s families name their captures with
+#: the capture instant: ``…-20261011T200831Z.txt``).
+_FILE_STAMP = re.compile(r"\d{8}T\d{6}Z?")
+
+#: THE CAPTURE-TIME DOOR'S TOLERANCE (D4's stated tolerance): one day.
+#: The writer's wall clock is recorded ZONED-LESS (``record_claim``
+#: writes naive local time), so the tolerance must absorb a zone-class
+#: skew between the writing and reading machines — a day covers every
+#: honest clock/zone skew; the future-dating class (the convicted
+#: 2030-dated capture) is years past it.
+_FUTURE_TOLERANCE = timedelta(hours=24)
+
 
 def _git(*args: str, check: bool = True) -> str:
     out = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, check=check)
     return out.stdout.strip()
 
 
-def _head() -> str:
-    """The head the claims are verified against.
+def _verified_head() -> tuple[str, str | None]:
+    """The verified head — THE REPO'S OWN HEAD — and the env face's
+    conviction, if the env's claim fails the law's cross-check.
 
-    Under GitHub Actions, a PR's checkout is the MERGE REF (the PR's
-    head merged into main) — a commit that exists nowhere in the
-    branch's own history: every locally-recorded claim's ``head_sha``
-    is then "stale" BY CONSTRUCTION (the merge ref's diff carries
-    main's side), and the law can never green in CI. The claims verify
-    THE BRANCH's estate, so under Actions the law verifies against the
-    PR's OWN head sha (the event payload's ``pull_request.head.sha``);
-    the local runs (the dev loop, the lanes) keep ``git rev-parse
-    HEAD``.
+    THE LAW (the door-edges round's D5 cure): the head the claims are
+    verified against is ``git rev-parse HEAD``, env-influenceable
+    never. The ``GITHUB_EVENT_PATH`` face (the CI PR checkout) is
+    CROSS-CHECKED, never trusted: when the event payload carries a
+    pull-request head sha, that sha must be an ANCESTOR of the
+    checked-out HEAD (it must EXIST in this checkout's history) and
+    its diff from the checkout must carry NOTHING outside the
+    measurements estate — the freshness law's own teeth (the off-by-one
+    rule) applied to the env's claim. A forged or impossible sha — or
+    one whose source differs from the checked-out tree — is THE
+    CONVICTION (returned as the second element), never rc=0. When the
+    env sha passes the teeth it verifies nothing on its own: the
+    repo's head stands, and the off-by-one rule already judges claims
+    recorded at the env's sha against it (the old merge-ref carve-out —
+    verify the PR's own head — was the forged-head hole itself: the
+    env's say-so installing a head; retired, see the module docstring).
     """
+    head = _git("rev-parse", "HEAD")
     event = os.environ.get("GITHUB_EVENT_PATH")
-    if event and Path(event).is_file():
-        try:
-            payload = json.loads(Path(event).read_text())
-            pr_head = payload.get("pull_request", {}).get("head", {}).get("sha")
-            if pr_head:
-                return str(pr_head)
-        except (json.JSONDecodeError, OSError):
-            pass  # not a PR event (a push/schedule run) — the checkout IS the head
-    return _git("rev-parse", "HEAD")
+    if not event or not Path(event).is_file():
+        return head, None
+    try:
+        payload: object = json.loads(Path(event).read_text())
+    except (json.JSONDecodeError, OSError):
+        return head, None  # not a PR event (a push/schedule run) — the checkout IS the head
+    pr = (
+        cast("dict[str, object]", payload).get("pull_request")
+        if isinstance(payload, dict)
+        else None
+    )
+    pr_head = cast("dict[str, object]", pr).get("head") if isinstance(pr, dict) else None
+    sha = cast("dict[str, object]", pr_head).get("sha") if isinstance(pr_head, dict) else None
+    if not isinstance(sha, str) or not sha or sha == head:
+        return head, None
+    if _off_by_one_fresh(sha):
+        return head, None  # the env's sha is this checkout's history, source-identical — it stands
+    return head, (
+        f"the GITHUB_EVENT_PATH face names the pull-request head {sha[:12]} — and the "
+        f"law's cross-check REFUSES it: the sha is not an ancestor of the checked-out "
+        f"HEAD {head[:12]} (it exists nowhere in this checkout's history), or its diff "
+        "from the checkout carries source changes. THE ENV-FORGED HEAD is THE "
+        "CONVICTION, never rc=0: the verified head is THE REPO'S OWN HEAD — an env's "
+        "say-so cannot install one, and a sha the repo cannot name as this checkout's "
+        "history never verifies the estate."
+    )
 
 
 def _source_changes_since(head_sha: str) -> bool:
     """Whether ANY commit since *head_sha* touched anything OUTSIDE the
-    measurements estate. THE OFF-BY-ONE RULE (see the module docstring):
-    a claim recorded on H is fresh at H2 when H2 is H plus
+    measurements estate. THE OFF-BY-ONE RULE's diff half (see the module
+    docstring): a claim recorded on H is fresh at H2 when H2 is H plus
     measurement-only changes. An unresolvable claimed head (not an
     ancestor) = stale."""
     proc = subprocess.run(
@@ -171,8 +308,30 @@ def _source_changes_since(head_sha: str) -> bool:
         check=False,
     )
     if proc.returncode != 0:
-        return True  # the claimed head is not an ancestor — stale by definition
+        return True  # the claimed head is not resolvable — stale by definition
     return bool(proc.stdout.strip())
+
+
+def _off_by_one_fresh(recorded: str) -> bool:
+    """THE OFF-BY-ONE RULE with its own teeth (the door-edges round's
+    non-ancestor-stamp cure, taken — the fix is one cheap subprocess):
+    *recorded* must be an ANCESTOR of HEAD — a sha that resolves
+    nowhere, or a discarded/orphan commit that exists in the object
+    store but is no part of this checkout's history, can never verify
+    the checked-out tree — AND the diff since it must touch nothing
+    outside the measurements estate. ``git merge-base --is-ancestor``
+    exits nonzero for both the unresolvable and the non-ancestor sha
+    (one subprocess, the walk's cost — measured with the rest)."""
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", recorded, "HEAD"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        return False
+    return not _source_changes_since(recorded)
 
 
 def _supersession_target(marked: str, runs_dir: Path) -> Path:
@@ -186,50 +345,81 @@ def _supersession_target(marked: str, runs_dir: Path) -> Path:
     return REPO / runs_dir.parent / marked
 
 
-def _scan_window(text: str) -> list[tuple[int, str]]:
-    """The capture's verdict window: the first ``_HEAD_LINES`` lines
-    (the writer's stamp) and the last ``_TAIL_LINES`` (the summary
-    tail), as (1-based line, text) pairs — the door's ENTIRE read."""
-    lines = text.splitlines()
-    total = len(lines)
-    window = list(enumerate(lines[:_HEAD_LINES], start=1))
-    tail_start = max(_HEAD_LINES, total - _TAIL_LINES)
-    window.extend(enumerate(lines[tail_start:], start=tail_start + 1))
-    return window
+def _json_verdict(payload: object) -> tuple[str, str] | None:
+    """The JSON body's OWN verdict, read from its verdict fields (the
+    door-edges round's D2 cure — the suffix alone used to green a JSON
+    capture by construction).
+
+    Returns ``(status, evidence)`` where status is ``"failure"`` (a
+    verdict field carries a failing value: a nonzero ``rc``/
+    ``returncode``, a positive ``failed``/``errors`` count), ``"green"``
+    (verdict fields present, none failing), or ``None`` — NO verdict
+    fields at all (the estate's actual band payloads: the body records
+    MEASUREMENTS, and the JSON family's old green stands).
+    """
+    if not isinstance(payload, dict):
+        return None
+    body = cast("dict[str, object]", payload)
+    fields: list[str] = []
+    failure = False
+    for key in _JSON_RC_KEYS:
+        value = body.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            fields.append(f"{key}={value}")
+            failure = failure or value != 0
+    for key in _JSON_COUNT_KEYS:
+        value = body.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            fields.append(f"{key}={value}")
+            failure = failure or value > 0
+    if not fields:
+        return None
+    evidence = "the JSON body's own verdict fields (" + ", ".join(fields) + ")"
+    return ("failure" if failure else "green", evidence)
 
 
 def _content_verdict(path: Path) -> tuple[str, str, int | None]:
     """The capture's OWN verdict, parsed from its content — cheaply.
 
+    THE SCAN IS THE FULL FILE (the door-edges round's D1 cure): every
+    line is scanned for the verdict shapes, WHEREVER they sit — the
+    first cut's first-3/last-12 window let a red verdict pushed mid-file
+    by post-run chatter (pytest piped through ``tee``, which exits 0
+    honestly) green with red content on disk. A linear scan of a text
+    file is measured cheap (the runtime receipt).
+
     Returns ``(status, evidence, line)`` where status is:
 
     * ``"failure"`` — the content records the run failing (a nonzero
-      rc in the stamp, a nonzero failed count or a FAILED short-summary
-      line in the tail); *evidence* quotes the capture's own failing
-      words at *line* (1-based);
+      rc, a nonzero failed count, or a FAILED short-summary line,
+      ANYWHERE in the capture); *evidence* quotes the capture's own
+      failing words at *line* (1-based);
     * ``"green"`` — the content records a verdict and it is not a
       failure (rc=0, the green pytest count, pyright's zero errors, or
-      the JSON family's successful parse);
+      the JSON family's verdict-free measurements);
     * ``"unparsable"`` — NO verdict shape the door parses (a verdict
       shape may be new — TEACH THE DOOR, never teach the capture to be
       silent).
     """
     if path.suffix == ".json":
-        # The JSON band family: the payloads record MEASUREMENTS, not
-        # verdicts — the honest shape loads as the JSON its suffix
-        # declares and greens. A torn/unparsable body is the warning.
+        # The JSON families: the body is loaded (a torn/unparsable body
+        # is the warning) and its VERDICT FIELDS are read — the suffix
+        # alone never greens a failure-shaped body (D2).
         try:
-            json.loads(path.read_text())
+            payload: object = json.loads(path.read_text())
         except (ValueError, OSError):
             return ("unparsable", "the JSON its suffix declares does not load", None)
-        return ("green", "the JSON band family (measurements, no verdict line)", None)
+        verdict = _json_verdict(payload)
+        if verdict is None:
+            return ("green", "the JSON band family (measurements, no verdict fields)", None)
+        return (verdict[0], verdict[1], None)
     try:
         text = path.read_text(errors="replace")
     except OSError:
         return ("unparsable", "the capture's content is unreadable", None)
     failure: tuple[str, int] | None = None
     parsable = False
-    for lineno, line in _scan_window(text):
+    for lineno, line in enumerate(text.splitlines(), start=1):
         rc = _RC_STAMP.search(line)
         if rc is not None:
             parsable = True
@@ -247,8 +437,58 @@ def _content_verdict(path: Path) -> tuple[str, str, int | None]:
     if failure is not None:
         return ("failure", failure[0], failure[1])
     if parsable:
-        return ("green", "the stamp/tail's green verdict", None)
-    return ("unparsable", "the stamp carries no rc=, the tail no passed/failed summary", None)
+        return ("green", "the capture's green verdict", None)
+    return ("unparsable", "the capture carries no rc=, no passed/failed summary", None)
+
+
+def _parse_stamp(raw: str) -> datetime | None:
+    """The capture instant, parsed — ``None`` when the seat carries no
+    parsable stamp (the legacy/synthetic ``t0``-style seats: the door
+    judges only what parses, it never guesses)."""
+    try:
+        stamp = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        # The writer's zoned-less wall clock (record_claim's shape),
+        # read in the reader's zone — the tolerance absorbs the skew.
+        return stamp.astimezone()
+    return stamp
+
+
+def _capture_time_door(stem: str, entry: dict[str, str], failures: list[str]) -> None:
+    """THE CAPTURE-TIME DOOR (the door-edges round's D4 cure): the
+    effective claim's capture clocks — the registry's ``captured_at``
+    and the run-scoped filename's embedded stamp, where present — are
+    PARSED and judged against the reader's clock. A capture dated in
+    the FUTURE beyond the tolerance is THE CONVICTION: no honest run
+    produces a capture before it runs, and the fresh ``head_sha``
+    cannot rescue the clock it rides on. Unparsable seats are never
+    guessed at (the door judges only what parses)."""
+    now = datetime.now().astimezone()
+    seats: list[tuple[str, str, datetime]] = []
+    raw_stamp = entry.get("captured_at") or ""
+    parsed_stamp = _parse_stamp(raw_stamp) if raw_stamp else None
+    if parsed_stamp is not None:
+        seats.append(("the registry's captured_at", raw_stamp, parsed_stamp))
+    file_stamp = _FILE_STAMP.search(entry.get("file", ""))
+    if file_stamp is not None:
+        raw_file = file_stamp.group(0)
+        parsed_file = _parse_stamp(raw_file[:-1] if raw_file.endswith("Z") else raw_file)
+        if parsed_file is not None:
+            seats.append(("the filename's embedded stamp", raw_file, parsed_file))
+    for seat, raw, stamp in seats:
+        ahead = stamp - now
+        if ahead <= _FUTURE_TOLERANCE:
+            continue
+        failures.append(
+            f"{stem}: the FUTURE-DATED CAPTURE at {entry['file']} — {seat} reads {raw}, "
+            f"which is {ahead} ahead of the reader's clock (the law's tolerance is "
+            f"+{_FUTURE_TOLERANCE}, stated in the module docstring). A capture dated in "
+            "the future cannot have been produced by any honest run, and the fresh "
+            "head_sha cannot rescue the clock it rides on — the future-dating class is "
+            "THE CONVICTION, never the green."
+        )
 
 
 def _content_door(
@@ -263,8 +503,9 @@ def _content_door(
     claim. A capture whose content records failure while the claim
     greens the stem is THE CONTENT-VERDICT MISMATCH (a conviction);
     a capture with no parsable verdict is the TYPED WARNING (never a
-    silent pass). Cheap by construction: the stamp + the tail, no full
-    parse."""
+    silent pass). Cheap by construction: a linear verdict-shape scan
+    over the capture's text, no structured parse (the runtime
+    receipt)."""
     path = REPO / runs_dir / entry["file"]
     status, evidence, lineno = _content_verdict(path)
     if status == "green":
@@ -301,6 +542,29 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
             ],
             [],
         )
+    entries = load_claims(runs_dir)
+    if not entries:
+        # THE EMPTY REGISTRY IS THE LOUD REFUSAL (the door-edges round's
+        # D3 cure): zero claims is zero verdicts — the loop over zero
+        # stems proves nothing, and the vacuous "the law holds" was the
+        # conviction. The refusal carries the warning-class content (the
+        # bootstrapping case is real and honest) INSIDE the nonzero
+        # verdict: the state is honest, the verdict is never the green.
+        return (
+            [
+                f"{runs_dir / 'CLAIMS.json'}: the claims registry is EMPTY — zero "
+                "claims, zero verdicts: an estate with no claims CANNOT verify "
+                "anything, and the law never greens on no evidence (the vacuous pass "
+                "is the conviction this refusal kills). WARNING (empty-estate): the "
+                "bootstrapping case is real and honest — a new estate has no captures "
+                "yet, and this is not corruption (the MISSING registry is that "
+                "failure). Record the FIRST claim — any writer's append "
+                "(taskq.testing._claims.record_claim) — and the law has something to "
+                "judge; until then the empty registry is the loud refusal, never the "
+                "green."
+            ],
+            [],
+        )
     # Group by stem; the registry's append order is the run order — the
     # LAST entry of a stem is the live claim. No filename is parsed: the
     # manifest is the index (the name only ever points at the file).
@@ -309,7 +573,7 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
     # the same file may be claimed by several stems — the registry's
     # append order decides (the LAST claim of a file owns the walk).
     by_path: dict[str, dict[str, str]] = {}
-    for entry in load_claims(runs_dir):
+    for entry in entries:
         stem = entry.get("stem", "")
         file = entry.get("file", "")
         if not stem or not file:
@@ -387,12 +651,15 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
                 continue
             recorded = terminal.get("head_sha") or None
             if recorded == head:
+                _capture_time_door(stem, terminal, failures)
                 _content_door(stem, terminal, runs_dir, failures, warnings)
                 continue  # the terminal is FRESH — the chain lands on this head
-            if recorded is not None and not _source_changes_since(recorded):
-                # The off-by-one rule at the terminal: nothing outside the
-                # measurements estate changed since the terminal's claimed
-                # head — the capture verifies a content-identical tree.
+            if recorded is not None and _off_by_one_fresh(recorded):
+                # The off-by-one rule at the terminal (with its ancestry
+                # teeth): the terminal's claimed head is an ancestor of
+                # HEAD and nothing outside the measurements estate changed
+                # since it — the capture verifies a content-identical tree.
+                _capture_time_door(stem, terminal, failures)
                 _content_door(stem, terminal, runs_dir, failures, warnings)
                 continue
             if str(terminal.get("kind", "")).startswith("CITED-IMPORT"):
@@ -423,12 +690,15 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
             continue
         recorded = live.get("head_sha") or None
         if recorded == head:
+            _capture_time_door(stem, live, failures)
             _content_door(stem, live, runs_dir, failures, warnings)
             continue  # the live claim is FRESH — verified on its own head
-        if recorded is not None and not _source_changes_since(recorded):
-            # The off-by-one rule: nothing outside the measurements
-            # estate changed since the claimed head — the source tree
-            # the claim verifies is content-identical. Fresh.
+        if recorded is not None and _off_by_one_fresh(recorded):
+            # The off-by-one rule (with its ancestry teeth): the claimed
+            # head is an ancestor of HEAD and nothing outside the
+            # measurements estate changed since it — the source tree the
+            # claim verifies is content-identical. Fresh.
+            _capture_time_door(stem, live, failures)
             _content_door(stem, live, runs_dir, failures, warnings)
             continue
         if str(live.get("kind", "")).startswith("CITED-IMPORT"):
@@ -458,7 +728,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs-dir", type=Path, default=RUNS)
     args = parser.parse_args()
-    head = _head()
+    head, conviction = _verified_head()
+    if conviction is not None:
+        # THE ENV-FORGED HEAD (D5): the env's claim failed the
+        # cross-check — the conviction, never rc=0.
+        print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
+        print(f"  {conviction}")
+        return 1
     failures, warnings = verify(args.runs_dir, head)
     if failures:
         print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
