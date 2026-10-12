@@ -1,6 +1,0 @@
-# mkdocs-strict — mkdocs build --strict
-# head: 1f4bb1d55758f724aeff2708cdb8ac5cb270205c
-# mkdocs-strict capture @ 1f4bb1d55758f724aeff2708cdb8ac5cb270205c 2026-10-11T00:51:31Z
-  - guides/migrating-from-langgraph.md
-INFO    -  Documentation built in 19.80 seconds
-rc=0

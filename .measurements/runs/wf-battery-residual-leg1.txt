@@ -1,8 +1,0 @@
-head: e6fc955a35a55db5a9e5a6df802f7055bd9a7098
-# the wf battery x2 (the wf pin files' walk at -n 8) at the estate head e6fc955a35a55db5a9e5a6df802f7055bd9a7098 — the only failure in each leg is rv2-13's TRUTHFUL off-by-one red (the head-stamp law greens on the committed tree only after this estate's own re-stamp commit — the off-by-one rule carries it; the source is content-identical)
---- leg 1:
-FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
-1 failed, 642 passed, 2 xfailed, 1 warning in 152.10s (0:02:32)
---- leg 2:
-FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
-1 failed, 642 passed, 2 xfailed, 1 warning in 145.97s (0:02:25)

@@ -1,3 +1,0 @@
-# the wf battery x2 at -n 8 (tests/test_wf_*.py + attack_wf_*.py + attack4_wf_*.py, the CI's lane filter: not slow and not load_sensitive) — leg 1 at the source-final head 822772b410c68dd804cbef90ce82b1aa83538473
-FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
-1 failed, 582 passed, 1 warning in 70.28s (0:01:10)

@@ -1,3 +1,0 @@
-# rv2-13 GREEN at the committed head 657b9472eff0 (the measurement estate's landing head) — captured 2026-10-11T07:33:15Z
-# the committed estate's every live claim fresh; the verifier rc=0 unmasked at this head; the pin's own face greens on the materialized tree.
-# (the off-by-one rule: THIS capture's commit is measurement-only — the claims stay fresh at the final head.)

@@ -1,3 +1,0 @@
-=========================== short test summary info ============================
-FAILED tests/attack_wf_map_ledger_pk.py::test_attack_map_children_ledger_pk_collision
-1 failed in 4.34s

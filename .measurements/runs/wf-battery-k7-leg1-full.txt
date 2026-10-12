@@ -1,4 +1,0 @@
-head: b50f8458719fd4cc88384bc9bec54b6b06c0ac14
-# the wf battery x2 at -n 8 (tests/test_wf_*.py) at the k7-cure head b50f8458719fd4cc88384bc9bec54b6b06c0ac14 — each leg's only failure rv2-13's TRUTHFUL off-by-one red (its cure: this estate's own re-stamp commit); the only xfail rv6-e1 (the engine lane's own live finding); the K7 xfail GONE (the flip) and the F4 pin riding green
-leg1: 1 failed, 644 passed, 1 xfailed in 57.18s
-leg2: 1 failed, 644 passed, 1 xfailed in 55.75s

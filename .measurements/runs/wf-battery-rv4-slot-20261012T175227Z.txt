@@ -1,3 +1,0 @@
-head: 5617b2750621567fe2f16d7348c7c4f7fd94e0c5 — wf-battery-rv4's GREEN battery leg at the committed estate (run at the head; the slot staged at bdd21f7f9 — every commit between measurement-only, the off-by-one rule carries)
-662 passed, 1 skipped, 1 xfailed, 1 warning in 146.71s (0:02:26)
-rc=0

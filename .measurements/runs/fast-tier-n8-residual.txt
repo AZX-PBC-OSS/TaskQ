@@ -1,3 +1,0 @@
-head: e6fc955a35a55db5a9e5a6df802f7055bd9a7098
-# the fast tier at -n 8 (not integration) at the estate head e6fc955a35a55db5a9e5a6df802f7055bd9a7098 — the 1 failed is rv2-13's TRUTHFUL off-by-one red (its cure: this estate's own re-stamp commit; the source is content-identical)
-1 failed, 9668 passed, 8 skipped, 121 warnings in 107.43s (0:01:47)

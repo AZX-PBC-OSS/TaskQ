@@ -1,2 +1,0 @@
-# the head-stamp verifier's GREEN run at the estate head dbe273767e32 (the source content == the claim chain's heads c90f9d68/cfc52973 — every commit since is measurement-only, the off-by-one rule holds)
-the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-timers/.measurements/runs is recorded at THIS head (dbe273767e32) or explicitly superseded

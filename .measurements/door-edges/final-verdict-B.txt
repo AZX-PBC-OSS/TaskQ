@@ -1,1 +1,0 @@
-the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-dooredges/.measurements/runs is recorded at THIS head (a47c3276e535) or explicitly superseded

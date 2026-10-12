@@ -1,2 +1,0 @@
-# evidence-heads-verify at head 79f3674c4aae5ea88f1e4e5861f1d77787949cd3 — rc=0 — captured 20261012T013455Z
-# evidence-heads-verify staged at head 79f3674c4aae — the self-referential pair staged for the off-by-one carry (the verifier rc=0 fills this slot at the next commit; the staged body is the honest declaration, never a green lie)

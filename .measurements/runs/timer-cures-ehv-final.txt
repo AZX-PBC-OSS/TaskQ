@@ -1,3 +1,0 @@
-# the head-stamp verifier's GREEN run at the timer-cures final head 8f59978fea6278d00212f92ff8a14638e3461038
-the head-stamp law holds: every evidence kind's live claim in .measurements/runs is recorded at THIS head (8f59978fea62) or explicitly superseded
-verifier rc=0

@@ -1,3 +1,0 @@
-round1: 15 passed in 27.71s
-round2: 15 passed in 27.57s
-round3: 15 passed in 27.66s

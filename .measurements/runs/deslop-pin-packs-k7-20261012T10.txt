@@ -1,3 +1,0 @@
-head: b50f8458719fd4cc88384bc9bec54b6b06c0ac14
-# the de-slopped packs' pack at the k7-cure head b50f8458719fd4cc88384bc9bec54b6b06c0ac14 (the cache rv5 pins + the rv6 engine pins + the rv4 pack + the typed-route pack + the teardown rv3 pack + the fixround pack + the coverage gate's behavioral face + the redlog guard + the coverage-closing packs) — rc=0, the only xfail rv6-e1; the redlog guard's live-records face GREENS (the battery's appends ride the working tree at this head)
-93 passed, 1 xfailed in 30.19s

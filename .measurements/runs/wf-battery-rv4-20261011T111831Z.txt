@@ -1,3 +1,0 @@
-# wf-battery-rv4 at head 37147ad2690cbbf5cf2773100c8c4d456c880c48 — rc=1 — captured 20261011T111831Z (leg 1 of 2, under --cov for the scoped-coverage gate; rv2-13's red here is the pre-estate truth — its cure is the measurement commit)
-FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
-1 failed, 564 passed, 1 skipped, 1 warning in 59.67s

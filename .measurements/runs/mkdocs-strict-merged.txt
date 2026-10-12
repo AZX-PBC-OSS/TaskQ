@@ -1,2 +1,0 @@
-head: b93d874389d14bf15376b6b1dcec2718f2ce1547
-INFO    -  Documentation built in 16.22 seconds

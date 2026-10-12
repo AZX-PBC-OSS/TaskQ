@@ -1,3 +1,0 @@
-# the wf bands at the cache-cures lane head 9126f995c7668634d6ddbd6181fde96f265e2e5c — rc=0
-.....                                                                    [100%]
-5 passed in 16.65s

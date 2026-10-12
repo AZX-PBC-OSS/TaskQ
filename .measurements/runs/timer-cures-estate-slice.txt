@@ -1,4 +1,0 @@
-# the estate regression slice x3 (tests/test_actor_config_sync.py + tests/test_wf_runner_pins.py, serial) at the timer-cures head 3be15de244ba8329b24c1331a0b86251c9d94b44
-41 passed in 3.51s
-41 passed in 3.53s
-41 passed in 3.45s

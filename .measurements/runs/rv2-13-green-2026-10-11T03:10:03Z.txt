@@ -1,4 +1,0 @@
-# rv2-13 GREEN at the committed head 7a775772c8eea667260dedb628775bb09988e460 — captured 2026-10-11T03:10:03Z
-# test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree: 1 passed (+ the coverage gate's 2) —
-# the committed estate's every live claim fresh; the merged+fixed line's estate is COMPLETE.
-# The verifier's own receipt at this head: 'the head-stamp law holds ... rc=0' (run unmasked, rc=0).

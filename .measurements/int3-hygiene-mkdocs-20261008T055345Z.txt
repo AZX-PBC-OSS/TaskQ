@@ -1,3 +1,0 @@
-# mkdocs strict — head 223a09b1
-  - design/tors-adoption-map.md
-INFO    -  Documentation built in 15.87 seconds

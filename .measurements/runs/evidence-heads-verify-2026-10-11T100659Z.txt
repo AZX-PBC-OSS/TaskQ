@@ -1,5 +1,0 @@
-# rv2-13 GREEN at the committed head 30f4c3e0f01f10197feb9dafe1cb88c444cca329 — captured 2026-10-11T10:07:19Z
-# the committed estate's live claims re-recorded at the source-final head f3feba2a by 30f4c3e0f
-# (measurement-only); the two self-referential receipts recorded at THIS head before the run.
-# the verifier rc=0 unmasked at this head:
-the head-stamp law holds: every evidence kind's live claim in .measurements/runs is recorded at THIS head (30f4c3e0f01f) or explicitly superseded

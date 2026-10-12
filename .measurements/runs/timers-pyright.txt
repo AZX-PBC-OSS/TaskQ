@@ -1,3 +1,0 @@
-# pyright full tree — the head c90f9d686f9acdd83098d2578f37770d321e2cfe
-# pyright FULL (src/taskq + tests) at the timers lane head c90f9d686f9acdd83098d2578f37770d321e2cfe
-0 errors, 0 warnings, 0 informations

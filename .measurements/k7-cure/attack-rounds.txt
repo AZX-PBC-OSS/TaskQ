@@ -1,3 +1,0 @@
---- round 1: 1 failed, 640 passed, 2 skipped, 23 deselected, 1 xfailed (the only red: rv2-13's truthful off-by-one; the only xfail: rv6-e1)
---- round 2: 1 failed, 640 passed, 2 skipped, 23 deselected, 1 xfailed (identical)
-head: b50f8458719fd4cc88384bc9bec54b6b06c0ac14

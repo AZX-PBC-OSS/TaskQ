@@ -1,3 +1,0 @@
-CANCEL: stopped=2
-STATE: root=cancelled signal=cancelled audit_rows=1
-BASE-INSTALL CANCEL: END-TO-END GREEN

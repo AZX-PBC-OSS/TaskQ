@@ -1,2 +1,0 @@
-# pyright FULL (src + tests) at the source-final head 822772b410c68dd804cbef90ce82b1aa83538473
-0 errors, 0 warnings, 0 informations

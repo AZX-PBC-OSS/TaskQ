@@ -1,3 +1,0 @@
-# mkdocs --strict at the source-final head 822772b410c68dd804cbef90ce82b1aa83538473
-INFO    -  Documentation built in 16.50 seconds
-mkdocs rc=0

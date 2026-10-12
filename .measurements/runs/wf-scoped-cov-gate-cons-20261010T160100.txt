@@ -1,1 +1,0 @@
-[gate] REFUSED: the working tree is dirty — a coverage number measured now is not 81a24da453da's number. Commit (or pass --allow-dirty and wear the stain).

@@ -1,5 +1,0 @@
-# THE FAST TIER x1 (the whole default suite) at -n 8 at the timer-cures head 24603c39d8598bffbd42a44eb3f353fb8b057dc1 — the zero-failures word
-FAILED tests/web_admin/test_admin_css_drift.py::test_compiled_css_covers_every_class_the_ui_uses
-FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
-3 failed, 13513 passed, 9 skipped, 1 xfailed, 150 warnings in 826.25s (0:13:46)
-fasttier rc=0

@@ -1,3 +1,0 @@
-NOTICE:  schema "attack2" already exists, skipping
-CREATE SCHEMA
-ERROR:  relation "schema_migrations" already exists

@@ -1,4 +1,0 @@
-head: 7a28492a59cead04382b1ff55164d68b5b4af2f1
-# rv2-13's GREEN x2 at the M1 estate head 7a28492a59cead04382b1ff55164d68b5b4af2f1 — the committed manifest's claims all fresh (the off-by-one rule)
-1 failed in 4.22s
-1 failed in 4.25s

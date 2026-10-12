@@ -1,2 +1,0 @@
-All checks passed!
-2 files reformatted, 21 files left unchanged

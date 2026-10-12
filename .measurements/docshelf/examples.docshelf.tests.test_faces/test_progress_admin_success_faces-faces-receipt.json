@@ -1,8 +1,0 @@
-{
-  "child_flows_linked": 9,
-  "child_links_note": "the parent\u2194child link is the app's own rows (the child edge is invisible to the graph view \u2014 friction F3)",
-  "digest_total_docs": 20,
-  "flow_id": "01a1310e-fafb-7921-82bd-bc7f4633f54d",
-  "sse_frames_captured": 8,
-  "sse_terminal_frames": 0
-}

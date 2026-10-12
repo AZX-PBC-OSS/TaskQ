@@ -1,8 +1,0 @@
-{
-  "pin": "fanout-1000-tx-band",
-  "elapsed_ms": 75.671773,
-  "children": 1000,
-  "band_ms": 500,
-  "method": "wall clock of finalize_node tx1+tx2, 1000-child fork, chunked parallel-array inserts (500/chunk), one tx",
-  "head_sha": "2487398e1889309cc29a8eaf18a50ab2c8bc056c"
-}

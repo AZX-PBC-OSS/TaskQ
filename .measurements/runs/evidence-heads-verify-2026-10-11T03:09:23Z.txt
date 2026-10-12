@@ -1,1 +1,0 @@
-the head-stamp law holds: every evidence kind's live claim in .measurements/runs is recorded at THIS head (fdf39d6a588188169c1b392b82a51c9a96360eb4) or measurement-only-fresh or explicitly superseded — the verifier's rc=0 receipt at the landing head (the prior stale pair — the fast-tier landing capture + this receipt — cured by the measurement commits landing them)

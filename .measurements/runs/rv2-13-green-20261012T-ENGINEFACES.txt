@@ -1,7 +1,0 @@
-# rv2-13 GREEN at the committed head 501746e73f66c980356d7826ba0c0c4299aeb7d4 — the engine-faces lane's measurement commit (the flip receipt).
-# the committed estate's every live claim fresh; the verifier rc=0 unmasked at this head
-# (the pre-flip red's ONLY staleness was this self-referential pair — the bootstrap the
-# off-by-one rule exists to break: the pair is recorded at H3, the run below is its receipt).
-# the pre-flip red receipt: the pair named the only stale claims (recorded on 9510623e878d,
-# the head then 501746e73f66) — nothing else in the estate was stale.
-# the rv2-13 pin's green at this head (the verifier rc=0, the committed claims registry's own verdict):

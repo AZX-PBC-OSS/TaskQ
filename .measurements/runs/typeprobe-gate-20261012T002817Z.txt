@@ -1,6 +1,0 @@
-# typeprobe-gate at head 6a2c3e7e20592a630864f21306343b00651174b3 — rc=0 — captured 2026-10-12T00:28:17Z
-the type gate holds: every MUST_ERROR marker (39) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
-warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
-         If the cache and target directories are on different filesystems, hardlinking may not be supported.
-         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
-Installed 1 package in 29ms

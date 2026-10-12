@@ -1,5 +1,0 @@
-# the attack rounds x2 (tests/attack*.py tests/test_attack*.py tests/test_wf_attack*.py, the CI's lane filter: not slow and not load_sensitive) at the timer-cures head 3be15de244ba8329b24c1331a0b86251c9d94b44
---- round 1:
-1 failed, 640 passed, 2 skipped, 23 deselected, 1 xfailed, 21 warnings in 242.95s (0:04:02)
---- round 2:
-1 failed, 640 passed, 2 skipped, 23 deselected, 1 xfailed, 20 warnings in 232.71s (0:03:52)

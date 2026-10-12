@@ -1,3 +1,0 @@
-head: b93d874389d14bf15376b6b1dcec2718f2ce1547
-the docs-example tier at -n 1 (TASKQ_DOCS_EXAMPLES=1): all executed fences green
-107 passed in 79.96s (0:01:19)

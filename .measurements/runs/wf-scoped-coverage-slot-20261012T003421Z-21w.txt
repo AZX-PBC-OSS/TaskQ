@@ -1,2 +1,0 @@
-# wf-scoped-coverage's slot restaged at head a852c2b503b4cd923556c5a12e574753bed2eab2 — captured 2026-10-11T17:34:21Z
-THE DOOR-EDGES LANE'S STAGED SLOT: the scoped-coverage gate's slot RESTAGED — the gate's JSON receipt lands at the coverage leg (the gate needs the clean tree this commit makes); no verdict recorded yet — the typed warning, never a lie.

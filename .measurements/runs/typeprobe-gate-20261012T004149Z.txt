@@ -1,2 +1,0 @@
-# typeprobe-gate at head 6766ad788ee8c5c1528478ce0cefa77be33a2781 — rc=0 — captured 20261012T004149Z
-the type gate holds: every MUST_ERROR marker (39) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
