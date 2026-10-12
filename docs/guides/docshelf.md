@@ -62,7 +62,9 @@ API = MockExtractionAPI(AdverseDynamics(extract_flake_rate=0.0, extract_timeout_
 
 async def feed(ctx: StepContext) -> list[DocPayload]:
     # The upload feed's stand-in: three documents.
-    return [DocPayload(doc_id=f"mini-{i}", content=f"the text of document {i} " * 9) for i in range(3)]
+    return [
+        DocPayload(doc_id=f"mini-{i}", content=f"the text of document {i} " * 9) for i in range(3)
+    ]
 
 
 async def extract_doc(ctx: StepContext, doc: DocPayload) -> list[ExtractedChunk]:
@@ -73,8 +75,12 @@ async def extract_doc(ctx: StepContext, doc: DocPayload) -> list[ExtractedChunk]
     for idx in range(n):
         out.append(
             await API.call(
-                ChunkRef(doc_id=doc.doc_id, idx=idx, text=f"{doc.content} [part {idx + 1}/{n}]",
-                         chunk_key=f"{doc.doc_id}:{idx}"),
+                ChunkRef(
+                    doc_id=doc.doc_id,
+                    idx=idx,
+                    text=f"{doc.content} [part {idx + 1}/{n}]",
+                    chunk_key=f"{doc.doc_id}:{idx}",
+                ),
                 ctx.attempt,
             )
         )

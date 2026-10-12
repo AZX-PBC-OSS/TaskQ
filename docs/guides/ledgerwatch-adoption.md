@@ -134,9 +134,9 @@ async def ingest_body(ctx: StepContext, params: list[Txn]) -> list[Txn]:
     return [Txn.model_validate(t) for t in raw]
 
 
-async def branch_body(ctx: StepContext, enriched: list[HighRiskTxn | ClearableTxn]) -> list[
-    HighRiskTxn | ClearableTxn
-]:
+async def branch_body(
+    ctx: StepContext, enriched: list[HighRiskTxn | ClearableTxn]
+) -> list[HighRiskTxn | ClearableTxn]:
     # THE ROUTE'S SEAT: the typed route attaches to a wired SOURCE node —
     # a map's derived join declares no body, so the pass-through IS the
     # honest spelling of "the route's source is the enriched collect".
@@ -144,7 +144,9 @@ async def branch_body(ctx: StepContext, enriched: list[HighRiskTxn | ClearableTx
     return enriched
 
 
-async def queue_for_review(ctx: StepContext, txn: HighRiskTxn, pool: asyncpg.Pool) -> PendingReviewTxn:
+async def queue_for_review(
+    ctx: StepContext, txn: HighRiskTxn, pool: asyncpg.Pool
+) -> PendingReviewTxn:
     # THE HIGH-RISK ARM: open ONE review run for the transaction
     # (idempotent by the run key). THE HOLD LIVES THERE — a hold's
     # identity is (workflow_id, node_key, signal_name, epoch): map
@@ -284,7 +286,10 @@ async def main() -> None:
             for hold in await client.list(str(r["id"])):
                 delivered = await client.resolve(hold.hold_id, {"approved": True})
                 assert delivered.status == "delivered"
-            assert await review_runner.drive(str(r["id"]), until="terminal", max_ticks=300) == "terminal"
+            assert (
+                await review_runner.drive(str(r["id"]), until="terminal", max_ticks=300)
+                == "terminal"
+            )
             # the read face decodes ONCE (a dict); the TYPED verdict is
             # the declared model re-validated over it
             raw = await review_runner.result(str(r["id"]))
