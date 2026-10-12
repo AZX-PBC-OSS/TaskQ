@@ -148,3 +148,27 @@ The pack touches no PG (static pins; the shared container at
 `localhost:5891` was verified untouched by this pack). The
 `pinwork-rv6-docs` worktree carries only the two pin files (untracked)
 and the pyright `.venv` shim (untracked); no tracked file was modified.
+
+## THE FLIP (the engine-cures lane, feat/taskqflow-engine-cures)
+
+The three xfail-strict pins were re-convicted at the base head
+`0e2f5cc09` (the port's own run: 3 failed + 1 passed under `--runxfail`),
+the doc cures landed, and the pins XPASS-strict'd — the markers REMOVED
+WITH the cures; the pack stands 4/4 GREEN:
+
+```
+tests/test_docs_rv6_pins.py ....    [100%]   4 passed
+```
+
+* **rv6-docs1** — the api-reference's wiring-verbs table carries the
+  `route` row (and the `chain_source` row the `__all__`-walk convicted
+  beside it).
+* **rv6-docs2** — the guide's fan-in bound section NAMES
+  `FanInBoundExceededError` beside the remedy (the child-driven escape —
+  now exposed at the authoring verbs as `child_driven=`, the F6 cure).
+* **rv6-docs3** — the guide's route teaching states the single-value
+  disposition by name (the MAP-face build refusal + the chain step's
+  in-body `Route`).
+* **rv6-docs4** — the anti-rot guard ported GREEN (the miscounted
+  runbook paragraph lives on the unmerged holdmap lane; the guard holds
+  this tree's docs to the count-and-list law).

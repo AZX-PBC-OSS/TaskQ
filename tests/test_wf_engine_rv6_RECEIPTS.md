@@ -152,3 +152,28 @@ the E1 red path's residue (a cancelled root over a pending child) is the
 cancel arm's own lag-tolerant shape (nothing asserted against), and the
 E2 residue (a running root over held/pending siblings) reconstructs
 non-terminal — both runs carried zero teardown errors.
+
+## THE FLIP (the engine-cures lane, feat/taskqflow-engine-cures)
+
+The cures landed on the engine-cures branch and the pack was PORTED there
+unmarked-from-xfail — both pins ran xfail-strict at the base head
+`0e2f5cc09` (the reds above are THIS lane's own live re-conviction,
+captured verbatim: the E1 sentinel fired `['e1-body-ran']` and the E2
+middle-out resolve woke the wrong sibling), and the cures flipped them
+XPASS-strict — the markers REMOVED WITH the cure. The pins stand GREEN:
+
+```
+tests/test_wf_engine_rv6_pins.py ..    [100%]   2 passed
+```
+
+* **rv6-e1's cure** — the terminal-flow fence on BOTH in-process claim
+  seats (`workflows/api/_sql_runner.py`: the claimable SELECT's flow leg
+  AND the claim CAS's flow leg — the ESCALATION-KIND exemption riding
+  exactly as the fleet fence carries it, the terminal set rendered from
+  `statemachine.TERMINAL_STATUSES`; the doors may not disagree).
+* **rv6-e2's cure** — the wake resolves by the node's
+  `metadata->>'hold'` stamp (`workflows/api/_hitl.py`'s
+  `deliver_payload`): the hold id `register_hold` writes in the mint's
+  own tx — one hold, one node, one resume; no ORDER BY lottery left to
+  win. (The same semantic the holdmap lane's `1528719d2` carries; the
+  trees are unmerged — the merge-order ruling reconciles.)
