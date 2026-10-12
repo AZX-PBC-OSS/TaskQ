@@ -1329,6 +1329,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 queue=node.map_queue,
                 consumers=bindings,
                 failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators.
+                # THE FAN-IN BOUND'S ESCAPE, EXPOSED AT THE WIRING (the
+                # docshelf team's F6): the map_source's child_driven= —
+                # past the bound the fire counts its terminal children
+                # FROM THE EDGE LEDGER (the choice recorded on the joined
+                # node), never the counter cache.
+                child_driven=node.map_child_driven,
             ),
             max_attempts=node.map_max_attempts,
         )
@@ -1417,6 +1423,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 queue=node.map_queue,
                 consumers=bindings,
                 failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators (the map fork's own declaration, the same seam).
+                # THE FAN-IN BOUND'S ESCAPE (F6 — the same face the map
+                # fork carries): the route's child_driven= rides ITS join.
+                child_driven=node.map_child_driven,
             ),
             max_attempts=node.map_max_attempts,
         )

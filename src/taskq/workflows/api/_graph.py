@@ -282,6 +282,14 @@ class NodeDecl:
     map_queue: str = "default"
     map_max_attempts: int = 3
     map_on_failure: str = "fail_closed"
+    #: THE FAN-IN BOUND'S ESCAPE, EXPOSED AT THE WIRING (the docshelf
+    #: adoption team's F6): the map/route join's ``child_driven`` shape —
+    #: past :data:`MAX_FAN_IN_PER_JOIN` the fork's join counts its
+    #: terminal children FROM THE EDGE LEDGER at fire time (the
+    #: counter-as-cache never trusted; ``metadata.join_shape`` records
+    #: the choice). ``False`` (the default) keeps the bounded declared-
+    #: edge shape the bound exists to protect.
+    map_child_driven: bool = False
     #: The map's CHILDREN's admission terms (CURE 2 — the plain map's
     #: face; the typed route's arms carry their own on the RouteArm).
     map_rate_limits: tuple[RateLimitDecl, ...] = ()
@@ -607,6 +615,7 @@ def map_source[S, R](
     max_attempts: int = 3,
     aggregate: Callable[[list[Any]], object] | None = None,
     rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
+    child_driven: bool = False,
 ) -> Promise[list[R]]: ...
 
 
@@ -620,6 +629,7 @@ def map_source[S, R](
     max_attempts: int = 3,
     aggregate: Callable[[list[Any]], object] | None = None,
     rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
+    child_driven: bool = False,
 ) -> Promise[list[R]]: ...
 
 
@@ -632,6 +642,7 @@ def map_source[S, R](
     max_attempts: int = 3,
     aggregate: Callable[[list[Any]], object] | None = None,
     rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
+    child_driven: bool = False,
 ) -> Promise[list[R]]:
     """Wire a MAP over *source*'s items: the source's body returns the
     list; each item runs *body* as a FRESH job (per-item ledger
@@ -689,6 +700,7 @@ def map_source[S, R](
                 on_failure=on_failure,
                 max_attempts=max_attempts,
                 aggregate=aggregate,
+                child_driven=child_driven,
             ),
         )  # Why: the promise's STATIC type is the overload's Promise[list[R]] (R solved at the call site); the attachment erases to list[object] — the cast is the seam.
     # THE LOUD DOOR at the wiring site (the keyed-ref refusal — the same
@@ -721,6 +733,7 @@ def map_source[S, R](
     source_node.map_max_attempts = max_attempts
     source_node.map_on_failure = on_failure
     source_node.map_aggregate = aggregate
+    source_node.map_child_driven = child_driven
     source_node.map_rate_limits = tuple(rate_limits)
     join_key = f"{source.key}.join"
     graph.add(
@@ -761,6 +774,7 @@ def _attach_route[S](
     on_failure: EdgeFailurePolicy,
     max_attempts: int,
     aggregate: Callable[[list[Any]], object] | None,
+    child_driven: bool = False,
 ) -> Promise[list[object]]:
     """THE TYPED ROUTE'S LOWERING (T27 — the type-tagged Route's machinery
     extended to the graph level): the arms are keyed by the source's
@@ -922,6 +936,7 @@ def _attach_route[S](
     source_node.map_max_attempts = max_attempts
     source_node.map_on_failure = on_failure
     source_node.map_aggregate = aggregate
+    source_node.map_child_driven = child_driven
     join_key = f"{source.key}.join"
     graph.add(
         NodeDecl(
@@ -947,6 +962,7 @@ def route[S, R](
     on_failure: EdgeFailurePolicy = "fail_closed",
     max_attempts: int = 3,
     aggregate: Callable[[list[Any]], object] | None = None,
+    child_driven: bool = False,
 ) -> Promise[list[R]]:
     """Wire a TYPED ROUTE over *source*'s items (T27 — the graph-DSL's
     face of the type-tagged Route): the source's body returns the
@@ -987,7 +1003,19 @@ def route[S, R](
     deprecated for dispatch — teach the typed route.
 
     ``map_source(src, {A: fn_a, B: fn_b})`` is this verb's dict form —
-    the SAME lowering (the per-element case at the map face)."""
+    the SAME lowering (the per-element case at the map face).
+
+    THE FAN-IN BOUND'S ESCAPE (``child_driven=True`` — the docshelf
+    adoption team's F6): a route/map over a corpus past
+    :data:`MAX_FAN_IN_PER_JOIN` is REFUSED
+    (:class:`taskq.workflows.FanInBoundExceededError`) — the escape is
+    the CHILD-DRIVEN join shape, declared HERE at the wiring (the
+    escape was reachable only through the raw ``JoinSpec`` before; the
+    verb is the authoring face): the fire counts its terminal children
+    FROM THE EDGE LEDGER, never the per-joined-row counter cache, and
+    the choice is recorded on the joined node's
+    ``metadata.join_shape='child_driven'``. Prefer PARTITIONING the map
+    over the escape (the guide's fan-in section prices both)."""
     return cast(
         "Promise[list[R]]",
         _attach_route(
@@ -997,6 +1025,7 @@ def route[S, R](
             on_failure=on_failure,
             max_attempts=max_attempts,
             aggregate=aggregate,
+            child_driven=child_driven,
         ),
     )  # Why: the promise's STATIC type is the overload's Promise[list[R]] (R solved from the arms' bodies' returns — the union of the arms); the attachment erases to list[object] — the cast is the seam.
 

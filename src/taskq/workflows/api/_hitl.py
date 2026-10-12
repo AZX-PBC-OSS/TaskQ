@@ -707,15 +707,27 @@ async def deliver_payload(
         )
         resumed = None
         if cas["node_key"]:
+            # THE WAKE ADDRESSES THE HOLD'S OWN NODE (rv6-e2's cure — the
+            # resume-addressing face): the node's ``metadata->>'hold'``
+            # IS the resolved hold's id (register_hold stamps it in the
+            # hold-mint's own tx), so the wake resolves by the STAMP —
+            # one hold, one node, one resume. The pre-cure read matched
+            # step_key + flow + ``metadata ? 'hold'`` — no addressing leg
+            # for the map siblings (one step_key, distinct signals): a
+            # middle sibling's resolve woke the arbitrary first-matching
+            # row (a sibling that was never answered re-ran; the answered
+            # node's delivered payload stayed unconsumable). The stamp is
+            # unique per hold by construction (the hold id is minted per
+            # register_hold), so no ORDER BY lottery is left to win.
             node_id = await conn.fetchval(
                 _render(
-                    "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                    "AND (metadata->>'flow_id')::uuid = $2 "
-                    "AND metadata ? 'hold'",
+                    "SELECT id FROM {schema}.jobs "
+                    "WHERE (metadata->>'flow_id')::uuid = $1 "
+                    "AND metadata->>'hold' = $2",
                     schema,
                 ),
-                cas["node_key"],
                 workflow_id,
+                str(hold_id),
             )
             if node_id is not None:
                 resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, schema), node_id)

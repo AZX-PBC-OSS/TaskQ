@@ -162,6 +162,7 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_loop_wait_shape(compiled)
     diagnostics += _rule_cross_graph(compiled)
     diagnostics += _rule_unknown_queue(compiled)
+    diagnostics += _rule_actor_queue_cohort(compiled)
     diagnostics += _rule_carrier_type(compiled)
     diagnostics += _rule_loop_promise_carry(compiled)
     diagnostics += _rule_eternal_loop(compiled)
@@ -1357,6 +1358,48 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
                     "fail-fast remains the runtime door",
                 )
             )
+    return diagnostics
+
+
+def _rule_actor_queue_cohort(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E17: ONE actor name projected onto TWO queues — the cohort
+    conflict convicted at validate (the docshelf adoption team's F3):
+    ``actor_config`` is keyed by actor (one queue per actor, the
+    estate's own law), so a graph whose declared placements split one
+    actor across queues builds rows the boot REFUSES (the projection's
+    ``WorkflowActorQueueConflictError``) or strands — the conflict was
+    discovered ONLY at the worker's boot, ``validate()`` clean. The
+    walk mirrors the boot projection's own faces (the node decls, the
+    map attachments' ``map_queue``, the chains) so the conviction is
+    the SAME law at the wiring, before any row exists. THE REMEDY IS
+    THE ESTATE'S: the split placement is expressed with DISTINCT actor
+    names per queue (e.g. ``actor='wf-gpu', queue='gpu'``)."""
+    actor_queues: dict[str, set[str]] = {}
+    for node in compiled.nodes.values():
+        actor_queues.setdefault(node.actor, set()).add(node.queue)
+        if node.map_item is not None or node.map_arms is not None:
+            # The fork's children (and the derived join) ride the map
+            # attachment's declared queue — the boot's walk's face.
+            actor_queues.setdefault(node.actor, set()).add(node.map_queue)
+    for chain in getattr(compiled, "chains", ()):
+        actor_queues.setdefault(chain.actor, set()).add(chain.queue)
+    diagnostics: list[WorkflowValidationError] = []
+    for actor, queues in sorted(actor_queues.items()):
+        if len(queues) <= 1:
+            continue
+        diagnostics.append(
+            WorkflowValidationError(
+                "E17-actor-queue-cohort",
+                "error",
+                f"workflow actor {actor!r} is declared over queues "
+                f"{sorted(queues)} — actor_config is keyed by actor (one "
+                "queue per actor, the estate's own law): the worker boot's "
+                "cohort projection would refuse this graph (or strand its "
+                "rows), a conflict this validate now convicts at the "
+                "wiring. The split placement is expressed with DISTINCT "
+                "actor names per queue (e.g. actor='wf-gpu', queue='gpu').",
+            )
+        )
     return diagnostics
 
 

@@ -15,7 +15,32 @@ from typing import Any
 
 import asyncpg
 
+from taskq.backend.statemachine import TERMINAL_STATUSES
+from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
+
 __all__ = ["wf_conn_fetchval"]
+
+#: THE TERMINAL-FLOW FENCE'S SET (the fleet's dispatch fence's own
+#: derivation — ``statemachine.TERMINAL_STATUSES`` rendered once at
+#: import, the engine's own vocabulary, never caller input): the two
+#: claim doors may not disagree — the fleet's dispatch refuses a
+#: terminal flow's rows, so the in-process door's claim refuses the
+#: same. Rendered by the same token-replace the fleet's
+#: ``_wf_dispatch_fence`` uses (never ``.format`` — the templates keep
+#: ``{schema}`` for the call-site render).
+_TERMINAL_FLOW_SQL_SET: str = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
+
+
+def _render_fence_tokens(template: str) -> str:
+    """The in-process fence's token substitution (the fleet's
+    ``_wf_dispatch_fence``'s shape, mirrored): the terminal-status set
+    and the escalation step key are the engine's own constants — never
+    caller input; every user-controlled value in the statement is
+    $n-bound by the templates this renders."""
+    return template.replace("__WF_TERMINAL__", _TERMINAL_FLOW_SQL_SET).replace(
+        "__WF_ESCALATION_STEP__", WF_LOOP_ESCALATION_STEP_KEY
+    )
+
 
 #: The flow input key on the root row's payload (cut #7: the input rides
 #: the ROW — a restart between stages reads it back).
@@ -32,7 +57,7 @@ WF_ARGS_KEY = "wf_args"
 #: The map child's single-arg key (the fork's per-item identity).
 ITEM_KEY = "wf_item"
 
-NODE_CLAIM_SQL_TEMPLATE = """
+NODE_CLAIM_SQL_TEMPLATE = _render_fence_tokens("""
 UPDATE {schema}.jobs
 SET status = 'running', locked_by_worker = $2, lock_expires_at = now() + interval '90 seconds',
     attempt = attempt + 1, claim_epoch = 0
@@ -52,8 +77,30 @@ WHERE id = $1
   -- re-claimer's body parked on a delivery this driver can never see
   -- (the parked-forever review row the two-drivers pin convicted).
   AND NOT metadata ? 'hold'
+  -- THE TERMINAL-FLOW FENCE (the fleet's dispatch fence's parity —
+  -- rv6-e1's cure): a node row on a TERMINAL flow is not work — the
+  -- flow flip is the cancel's linearization point, and the claim CAS
+  -- re-checks the flow status INSIDE its own statement (the same
+  -- leg the dispatch fence carries at its own claim seat). A claimable
+  -- SELECT's snapshot can PREDATE the cancel's commit (the drain's
+  -- documented exemption window: the join fire won, the cascade landed
+  -- after); the SELECT's fence closes the common window, THIS leg
+  -- closes the race — the claim is the GRANT of work, and a granted
+  -- body executes. The exemption rides EXACTLY as the fleet fence
+  -- carries it (the loop's registered escalation consumer — the
+  -- pages-a-human duty: the exhaust tx commits the escalation's outbox
+  -- row and the flow's terminal TOGETHER, so the consumer row is BORN
+  -- into a terminal flow; the two fences may not disagree).
+  AND (
+    step_key = '__WF_ESCALATION_STEP__'
+    OR NOT EXISTS (
+      SELECT 1 FROM {schema}.jobs wf_flow
+      WHERE wf_flow.id = ({schema}.jobs.metadata->>'flow_id')::uuid
+        AND wf_flow.status IN __WF_TERMINAL__
+    )
+  )
 RETURNING attempt
-"""
+""")
 
 NODE_REPEND_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
@@ -114,7 +161,7 @@ SET deps_pending = deps_pending + 1,
 WHERE id = $1
 """
 
-CLAIMABLE_NODES_SQL_TEMPLATE = """
+CLAIMABLE_NODES_SQL_TEMPLATE = _render_fence_tokens("""
 SELECT id, step_key, map_index, attempt, trace_id, payload FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status IN ('pending', 'scheduled')
@@ -122,8 +169,26 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND deps_pending = 0
   AND step_key <> '__flow__'
   AND NOT metadata ? 'hold'
+  -- THE TERMINAL-FLOW FENCE (the fleet's dispatch fence's parity —
+  -- rv6-e1's cure): a terminal/cancelled flow's nodes are UNCLAIMABLE
+  -- through THIS door too — a bare tick() (the driver's public dispatch
+  -- pass, never gated by drive()'s loop-top check) on a dead flow
+  -- claims NOTHING and executes NOTHING. The fleet's dispatch carries
+  -- the same leg at its own claim seat (the ESCALATION-KIND exemption
+  -- included: the pages-a-human duty is the ONE thing that survives a
+  -- flow's terminality — the two fences may not disagree, a probe that
+  -- disagrees with its claim is the worker-sleeps-the-page-never-runs
+  -- shape).
+  AND (
+    step_key = '__WF_ESCALATION_STEP__'
+    OR NOT EXISTS (
+      SELECT 1 FROM {schema}.jobs wf_flow
+      WHERE wf_flow.id = ({schema}.jobs.metadata->>'flow_id')::uuid
+        AND wf_flow.status IN __WF_TERMINAL__
+    )
+  )
 ORDER BY id
-"""
+""")
 
 #: THE NODE CENSUS (the create-seam's retry-completion read): the run's
 #: node-row count — a nodeless root (the orphan's signature: pending +
