@@ -1,0 +1,2 @@
+# evidence-heads-verify's slot staged at head bdd21f7f9532191fb5c88abf9a81b786e6c03a3d — captured 2026-10-12T10:52:27Z
+THE GRAND MERGE'S STAGED SLOT: the verifier's receipt slot — the green verifier run's output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.

@@ -51,6 +51,8 @@ CHAIN_REPOINTS = {
     "fixround-migration-chain": "wf-battery-rv4",
     "fixround-touched-pins-x2": "wf-battery-rv4",
     "rv2-pins-final": "wf-battery-rv4",
+    "rv2-pins-final-20261010T193500-precommit-red.txt": "wf-battery-rv4",
+    "rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt": "wf-battery-rv4",
     "rv4-pin-packs": "deslop-pin-packs",
     "stealth-mutant-shipped-drill": "deslop-pin-packs",
     "fasttier-final": "fast-tier-n8",
