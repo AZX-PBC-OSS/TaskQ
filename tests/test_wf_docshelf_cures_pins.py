@@ -17,13 +17,17 @@ its cure landed — the red receipts are this lane's captures):
   extended to the arms' effective pairs
   (``_workflow_cohorts`` — the runner's ``_route_fork`` arithmetic, one
   vocabulary); a boot that strands silently is the defect.
-* **F3** — THE DERIVED JOIN'S COHORT CONFLICT CONVICTED AT VALIDATE:
+* **F3** — THE DERIVED JOIN'S COHORT CONFLICT REPORTED AT VALIDATE:
   ``route()``'s derived join inherits the source's ACTOR and takes the
   route's ``queue=`` (default ``default``) — a source placed on a
   non-default queue split its actor over two queues, the conflict
-  discovered ONLY at the worker's boot, ``validate()`` clean. THE CURE:
-  the validate-time cohort rule (``E17-actor-queue-cohort``) — the
-  conflict convicted at the wiring, not at the worker's 3am.
+  discovered ONLY at the worker's boot, ``validate()`` clean. THE CURE
+  (``W6-actor-queue-cohort``, the W2 precedent's severity — the wiring
+  warns, the boot projection's one-queue law stays the refusal door,
+  because the split placement under one actor is also the taught
+  heterogeneous shape): the ambush reported at the wiring — the actor,
+  both queues, and the distinct-actor remedy named; the map's EXPLICIT
+  ``queue=`` knob (the doc-ingest guide's Shape-4 wiring) stays silent.
 * **F6** — THE FAN-IN BOUND'S ESCAPE EXPOSED ON THE MAP FACE: the
   1000-parent bound is real (the docshelf's ``FanInBoundExceededError``
   at 2335 chunks) and the child-driven escape was reachable only through
@@ -206,23 +210,27 @@ def test_f3_the_derived_joins_cohort_conflict_is_convicted_at_validate() -> None
     assert "gpu" in message and "default" in message, message
 
 
-def test_f3_the_plain_map_attachments_queue_rides_the_same_rule() -> None:
-    """THE SAME LAW AT THE MAP FACE: a map_source whose children's
-    declared queue (``queue=``) differs from the source node's own —
-    the same actor over two queues, the boot's own walk's face — is
-    reported at validate too (the rule mirrors the boot's walk)."""
+def test_f3_the_taught_map_knobs_split_stays_silent() -> None:
+    """THE MAP'S EXPLICIT KNOB IS NOT THE AMBUSH: the plain map_source's
+    ``queue=`` is the taught Shape-4 placement (the doc-ingest guide's
+    own wiring — the item children on 'enrich' under the source's
+    default-queue actor): an EXPLICIT author choice, never the derived
+    join's un-spelled default. Its split stays silent at validate (the
+    boot projection's one-queue law remains that face's door) — the
+    zero-warning budget the examples pin holds."""
     app = WorkflowApp()
 
-    @app.workflow("dsc_f3_map_conflict")
+    @app.workflow("dsc_f3_map_knob")
     def dsc_f3_map() -> Promise[object]:
-        source = step(_src_body, key="src", actor="wf-split", queue="default")
-        mapped = map_source(source, _arm_image, queue="gpu")
+        source = step(_src_body, key="src")
+        mapped = map_source(source, _arm_image, queue="enrich")
         return build(mapped)
 
-    diagnostics = validate_compiled(app.get("dsc_f3_map_conflict"))
-    assert any(d.rule == "W6-actor-queue-cohort" for d in diagnostics), (
-        f"F3: the map attachment's cohort conflict unreported at validate: "
-        f"{[d.rule for d in diagnostics]}"
+    diagnostics = validate_compiled(app.get("dsc_f3_map_knob"))
+    assert not any(d.rule == "W6-actor-queue-cohort" for d in diagnostics), (
+        f"F3: the map's TAUGHT explicit queue split was reported — the "
+        f"knob is the doc-ingest guide's own wiring: "
+        f"{[d.message for d in diagnostics if d.rule == 'W6-actor-queue-cohort']}"
     )
 
 
@@ -231,8 +239,8 @@ def test_f3_the_taught_heterogeneous_shape_stays_clean_at_the_error_severity() -
     heterogeneous placement under ONE actor (the map's children on
     'enrich', the downstream steps on 'cpu'/'io') is the estate's
     TAUGHT shape — the dev-loop door honors it, so the validate must
-    never REFUSE it: the cohort diagnostic is a warning, and
-    ``validate()`` (the raising face) stays clean. The boot projection's
+    never REFUSE it: the validate() raising face stays clean (the
+    zero-warnings budget the examples pin), and the boot projection's
     one-queue law remains the fleet's refusal door."""
     app = WorkflowApp()
 
@@ -246,10 +254,9 @@ def test_f3_the_taught_heterogeneous_shape_stays_clean_at_the_error_severity() -
     compiled_taught = app.get("dsc_f3_taught_split")
     diagnostics = validate_compiled(compiled_taught)
     cohort = [d for d in diagnostics if d.rule == "W6-actor-queue-cohort"]
-    assert cohort, "the taught split's own ambush went unreported (the rule blind)"
-    assert all(d.severity == "warning" for d in cohort), (
-        f"the cohort law REFUSED the taught shape (the severities: "
-        f"{[d.severity for d in cohort]}) — the dev-loop door would die"
+    assert not cohort, (
+        f"the taught heterogeneous wiring was reported (the map's explicit "
+        f"knob is not the ambush): {[d.message for d in cohort]}"
     )
     compiled_taught.validate()  # the raising face: no error raises
 

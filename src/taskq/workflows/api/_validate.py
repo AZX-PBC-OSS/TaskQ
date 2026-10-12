@@ -1385,7 +1385,15 @@ def _rule_actor_queue_cohort(compiled: CompiledWorkflow) -> list[WorkflowValidat
     the map/route's ``queue=`` to the source's own."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        if node.map_item is None and node.map_arms is None:
+        # THE ROUTE'S DERIVED JOIN ONLY (the F3 finding's letter): the
+        # route's join inherits the source's ACTOR and takes the verb's
+        # ``queue=`` (default ``default``) — a source on a non-default
+        # queue made the DERIVED join split the actor without the author
+        # ever placing it. The PLAIN MAP's ``queue=`` is the taught
+        # Shape-4 knob (the item placement the doc-ingest guide wires —
+        # an EXPLICIT author choice): its split stays silent here, the
+        # boot projection's one-queue law remains its door.
+        if node.map_arms is None:
             continue
         if node.map_queue == node.queue:
             continue
@@ -1393,17 +1401,18 @@ def _rule_actor_queue_cohort(compiled: CompiledWorkflow) -> list[WorkflowValidat
             WorkflowValidationError(
                 "W6-actor-queue-cohort",
                 "warning",
-                f"the map/route attachment on {node.key!r} derives its join "
-                f"(and the fork's children) on queue {node.map_queue!r} "
-                f"while the source node itself rides {node.queue!r} — both "
-                f"under actor {node.actor!r}, and actor_config is keyed by "
-                "actor (one queue per actor, the estate's own law): the "
-                "worker boot's cohort projection will refuse this graph "
-                "(or strand its rows) — the conflict surfaced here at the "
-                "wiring instead of at the worker's 3am. For a fleet "
-                "deployment, express the split placement with DISTINCT "
-                "actor names per queue (e.g. actor='wf-gpu', queue='gpu'), "
-                "or wire the map/route's queue= to the source's own.",
+                f"the route on {node.key!r} derives its join on queue "
+                f"{node.map_queue!r} (the verb's queue=, its default "
+                f"'default' included) while the source node itself rides "
+                f"{node.queue!r} — both under actor {node.actor!r}, and "
+                "actor_config is keyed by actor (one queue per actor, the "
+                "estate's own law): the worker boot's cohort projection "
+                "will refuse this graph (or strand its rows) — the "
+                "conflict surfaced here at the wiring instead of at the "
+                "worker's 3am. For a fleet deployment, express the split "
+                "placement with DISTINCT actor names per queue (the "
+                "arm's RouteArm(actor=..., queue=...)), or wire the "
+                "route's queue= to the source's own.",
             )
         )
     return diagnostics
