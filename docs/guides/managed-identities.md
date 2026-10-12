@@ -234,7 +234,8 @@ export TASKQ_REDIS_CREDENTIAL_PROVIDER=myapp.auth:make_provider   # optional
 taskq worker --actors myapp.actors:registry
 ```
 
-```python
+```python no-exec — requires the taskq[aad] extra (azure-identity) and live
+Azure resources; not executable in the docs-example harness
 # myapp/auth.py
 from azure.identity.aio import DefaultAzureCredential
 from taskq.aad import EntraIdProvider
@@ -1000,7 +1001,8 @@ myapp.auth:make_provider` (also `migrate status`, and `ui serve
 
 ## FastAPI lifespan example
 
-```python
+```python no-exec — requires the taskq[aad] extra (azure-identity) and live
+Azure resources; not executable in the docs-example harness
 from contextlib import asynccontextmanager
 from azure.identity.aio import DefaultAzureCredential
 from taskq import TaskQ, make_pg_pool_factory, make_redis_client_factory
@@ -1033,3 +1035,5 @@ async def lifespan(app):
 ```
 
 See `examples/fastapi_app/aad.py` for a runnable end-to-end scaffold.
+
+> Every `TASKQ_*` variable this guide touches is documented — meaning, default, unit, constraints, failure behavior — on the [Configuration Reference](configuration.md).

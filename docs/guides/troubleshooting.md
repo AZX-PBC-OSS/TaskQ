@@ -550,6 +550,7 @@ The worker process exits immediately with a non-zero exit code and an error or t
 
 | Failure | Detail |
 |---|---|
+| Postgres unreachable | `OSError: [Errno 111] Connect call failed ('127.0.0.1', PORT)` — nothing is listening at the DSN's host:port (the container is down, the port mapping differs, or the DSN points at the wrong instance). Raw asyncpg, so the message names the address but not the remedy. |
 | Migration not applied | TaskQ tables do not exist; queries raise `UndefinedTableError`. |
 | Actor registry import error | `module:attr` does not resolve: module not found, attribute missing, or wrong type. |
 | DI validation failure | `MissingProvider`, `ScopeViolation`, or `DependencyCycle` during `registry.validate()`. |
@@ -573,6 +574,7 @@ SELECT actor, max_concurrent, max_pending, queue FROM {schema}.actor_config ORDE
 ### Fix
 
 - **Migration not applied:** `taskq migrate up`, then restart.
+- **Postgres unreachable:** confirm the server is up and the DSN matches it — `docker compose ps` (the bundled stack maps `5432`), then `psql "$TASKQ_PG_DSN" -c 'select 1'`. A stale `TASKQ_PG_DSN` in `.env` pointing at a torn-down lane/container produces exactly this face.
 - **Import error:** verify the `module:attr` string resolves to a `Mapping[str, ActorRef]` or `Iterable[ActorRef]`:
   ```shell
   python -c "from myapp.actors import registry; print(type(registry))"

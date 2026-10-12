@@ -351,9 +351,16 @@ clears the card on every subscribed stream — no polling, no refresh.
 Runnable form of the whole demo:
 
 ```bash no-exec — not executed: the demo's run command (a long-running server, not a fence)
-TASKQ_HITL_DEMO=1 TASKQ_PG_DSN=postgresql://... TASKQ_WF_SCHEMA=public \
+TASKQ_HITL_DEMO=1 TASKQ_PG_DSN=postgresql://... TASKQ_WF_SCHEMA=taskq \
   uv run uvicorn examples.deep_research_web:app --port 8088
 ```
+
+> `TASKQ_WF_SCHEMA` must name the schema the migrations ran in — the same
+> value as `TASKQ_SCHEMA_NAME` (`taskq` unless you overrode it). A mismatch
+> here does not crash the demo: the HITL listener retries forever with
+> backoff logging `relation "public.wf_signals" does not exist`, and the app
+> looks up while holding nobody.
+
 
 ## One run per slot: the per-run idempotency keys
 
@@ -447,3 +454,5 @@ durability is the database. The concept map and the worked port are in
   walks reverse edges — but there is no `on_failure="compensate"` verb
   yet. Hand-rolled compensation steps are the current answer; see
   [the pattern catalog](patterns.md).
+
+> Every `TASKQ_*` variable this guide touches is documented — meaning, default, unit, constraints, failure behavior — on the [Configuration Reference](configuration.md).

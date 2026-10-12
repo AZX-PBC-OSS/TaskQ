@@ -40,9 +40,17 @@ def setup_otel() -> None:
     tracing (e.g. enqueue spans), call this before enqueuing.
     """
     from opentelemetry import metrics, trace
-    from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
-        OTLPMetricExporter,
-    )
+    try:
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
+            OTLPMetricExporter,
+        )
+    except ImportError as exc:
+        raise SystemExit(
+            "the OTLP exporter is not installed. It ships in the [otel] extra:\n"
+            '  uv add "taskq-py[otel]"    # or: pip install "taskq-py[otel]"\n'
+            "(the bare import names opentelemetry.exporter, but the pip "
+            "distribution is opentelemetry-exporter-otlp)"
+        ) from exc
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
         OTLPSpanExporter,
     )

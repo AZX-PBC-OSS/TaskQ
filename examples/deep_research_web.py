@@ -299,7 +299,7 @@ es.addEventListener("backfilled", ev => {{ const keep = new Set(JSON.parse(ev.da
 if os.environ.get("TASKQ_HITL_DEMO"):  # the runnable switch (tests never set it)
     app: FastAPI = build_app(
         os.environ.get("TASKQ_PG_DSN", "postgresql://localhost/taskq"),
-        os.environ.get("TASKQ_WF_SCHEMA", "public"),
+        os.environ.get("TASKQ_WF_SCHEMA", os.environ.get("TASKQ_SCHEMA_NAME", "taskq")),
     )
 else:
     app = FastAPI(title="taskq HITL embedding demo (import-inert)")

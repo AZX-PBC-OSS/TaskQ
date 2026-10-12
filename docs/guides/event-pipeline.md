@@ -413,3 +413,5 @@ hexagon (addressed by `?map_index=N`) — see [Task stacks](task-stacks.md)
   yours to size.
 - **Backpressure bounds are per-workflow, declared at wiring.** There
   is no global credit pool.
+
+> Every `TASKQ_*` variable this guide touches is documented — meaning, default, unit, constraints, failure behavior — on the [Configuration Reference](configuration.md).

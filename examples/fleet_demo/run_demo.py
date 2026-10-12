@@ -467,7 +467,11 @@ def act8_workflow() -> None:
 
         compiled = wf_app.get("fleet_doc_ingest")
         runner = FlowRunner(compiled, await _get_pool(), SCHEMA_NAME)
-        run_id = str(await runner.create_flow())
+        # create_flow returns the typed RunClaim (created / existing-running /
+        # existing-terminal) — take .flow_id, never str(claim): the claim is
+        # not a UUID string and uuid.UUID(claim) dies on it.
+        claim = await runner.create_flow()
+        run_id = str(claim.flow_id)
         print(f"  run {run_id[:8]}… created (the fleet worker executes the rows)")
         print("  waiting for the review hold…")
 

@@ -671,3 +671,8 @@ Next steps: run the flagship fleet demo (narrated in
 patterns — dispatch, rate-limit denials, cancels, cron, shutdown — through a
 real worker's logs on real containers, and browse `examples/README.md` for
 the full example application (trigger UI, admin UI, worker entrypoints).
+
+Every `TASKQ_*` environment variable this tutorial set (`TASKQ_QUEUES`,
+`TASKQ_REDIS_URL`, ...) — and the 130+ it did not — has a row on the
+[Configuration Reference](configuration.md): meaning, default, unit
+(seconds vs milliseconds), constraints, and what breaks when it is wrong.

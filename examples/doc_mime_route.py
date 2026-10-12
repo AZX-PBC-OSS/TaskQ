@@ -236,7 +236,12 @@ async def main() -> None:
     import os
 
     dsn = os.environ.get("TASKQ_PG_DSN", "postgresql://postgres:taskq@localhost:5774/taskq")
-    schema = os.environ.get("TASKQ_PG_SCHEMA", "public")
+    # THE SCHEMA NAME IS TASKQ_SCHEMA_NAME — the same env var every other
+    # consumer reads (src/taskq/settings.py); the tree's default schema is
+    # "taskq". This example used to read TASKQ_PG_SCHEMA and default to
+    # "public", which drove the flow into a schema the migrations never
+    # touched (relation "public.jobs" does not exist).
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
     import asyncpg
 
     pool = await asyncpg.create_pool(dsn)

@@ -285,3 +285,5 @@ the confirm-SQL and the under-provisioned-vs-stalled distinction —
 - **Dynamic control flow lives in the loop's typed union** (`Done`/
   `Refine`), not in imperative `goto` — an unchecked cycle is the
   failure mode this design declines.
+
+> Every `TASKQ_*` variable this guide touches is documented — meaning, default, unit, constraints, failure behavior — on the [Configuration Reference](configuration.md).

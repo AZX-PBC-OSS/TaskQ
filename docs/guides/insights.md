@@ -552,3 +552,5 @@ FROM taskq.jobs c
 WHERE c.parent_id = $1
 GROUP BY c.step_key;
 ```
+
+> Every `TASKQ_*` variable this guide touches is documented — meaning, default, unit, constraints, failure behavior — on the [Configuration Reference](configuration.md).

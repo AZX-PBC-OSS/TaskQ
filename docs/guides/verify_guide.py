@@ -144,7 +144,7 @@ async def main() -> None:
         verdict("A1 validate", True, "no findings on the ported graph")
 
         runner = FlowRunner(app.get("doc_ingest"), pool, schema)
-        flow_id = await runner.create_flow(input={"doc_id": "d1"})
+        flow_id = str((await runner.create_flow(input={"doc_id": "d1"})).flow_id)
         await runner.drive(flow_id, until="held")
         verdict(
             "A2 held-not-crashed",
@@ -203,7 +203,9 @@ async def main() -> None:
 
         # ── BLOCK B: the map-reduce port — dynamic cardinality + the join ──
         runner_b = FlowRunner(app.get("batch_ingest"), pool, schema)
-        flow_b = await runner_b.create_flow(input={"doc_ids": [f"d{i}" for i in range(7)]})
+        flow_b = str(
+            (await runner_b.create_flow(input={"doc_ids": [f"d{i}" for i in range(7)]})).flow_id
+        )
         await runner_b.drive(flow_b, until="terminal")
         verdict(
             "B1 fan-out cardinality",
@@ -220,13 +222,16 @@ async def main() -> None:
             f"the join collected all children: {join_row['status'] if join_row else None}",
         )
 
-        # the run-key arbiter: the same key → the SAME run (no second run)
+        # the run-key arbiter: the same key → the SAME run (no second run).
+        # create_flow returns the typed RunClaim; the SAME RUN is the claim's
+        # .flow_id agreeing (the claim's created/status differ by definition —
+        # the second caller was NOT the creator).
         flow_c = await runner_b.create_flow(input={"doc_ids": []}, run_key="batch:slot-1")
         flow_d = await runner_b.create_flow(input={"doc_ids": []}, run_key="batch:slot-1")
         verdict(
             "B3 run-key arbiter",
-            flow_c == flow_d,
-            f"same slot twice → one run: {flow_c} == {flow_d}",
+            flow_c.flow_id == flow_d.flow_id,
+            f"same slot twice → one run: {flow_c.flow_id} == {flow_d.flow_id}",
         )
     finally:
         pg.stop()
