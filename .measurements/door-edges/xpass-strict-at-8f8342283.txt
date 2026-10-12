@@ -1,0 +1,19 @@
+FFFFF                                                                    [100%]
+=================================== FAILURES ===================================
+_______ test_d1_the_door_convicts_a_red_verdict_anywhere_in_the_capture ________
+[XPASS(strict)] LIVE FINDING rv6-d1: _content_verdict reads only the first 3 + last 12 lines (_scan_window) — a capture whose stamp says rc=0 whose true red verdict ('1 failed, N passed') sits mid-file (pushed out of the tail window by trailing chatter) greens silently (observed: rc=0, 'the head-stamp law holds')
+______________ test_d2_a_json_capture_verdict_is_never_laundered _______________
+[XPASS(strict)] LIVE FINDING rv6-d2: a capture named *.json carrying {"rc": 1, "failed": 3} parses as valid JSON and greens — the door never reads verdict content inside JSON; the suffix alone is the exemption (observed: rc=0)
+_________________ test_d3_the_empty_registry_is_a_loud_refusal _________________
+[XPASS(strict)] LIVE FINDING rv6-d3: a claims registry with "claims": [] passes ('the head-stamp law holds') — an estate with NO claims greens vacuously (observed: rc=0)
+__________________ test_d4_a_future_dated_capture_is_refused ___________________
+[XPASS(strict)] LIVE FINDING rv6-d4: captured_at is never parsed — a capture dated 2030 with a fresh head_sha greens (observed: rc=0). Neither the registry field nor the filename's embedded timestamp is read
+__________________ test_d5_the_verified_head_is_the_repos_own __________________
+[XPASS(strict)] LIVE FINDING rv6-d5: GITHUB_EVENT_PATH pointing at a hand-written payload makes the verifier judge against a sha that isn't HEAD — observed: rc=0 with the verifier itself printing 'recorded at THIS head (ffffffffffff)' for a sha that exists nowhere in the repo
+=========================== short test summary info ============================
+FAILED tests/test_evidence_door_rv6_pins_marked_tmp.py::test_d1_the_door_convicts_a_red_verdict_anywhere_in_the_capture
+FAILED tests/test_evidence_door_rv6_pins_marked_tmp.py::test_d2_a_json_capture_verdict_is_never_laundered
+FAILED tests/test_evidence_door_rv6_pins_marked_tmp.py::test_d3_the_empty_registry_is_a_loud_refusal
+FAILED tests/test_evidence_door_rv6_pins_marked_tmp.py::test_d4_a_future_dated_capture_is_refused
+FAILED tests/test_evidence_door_rv6_pins_marked_tmp.py::test_d5_the_verified_head_is_the_repos_own
+5 failed in 1.40s
