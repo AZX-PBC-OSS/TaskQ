@@ -3306,6 +3306,17 @@ _JOB_SHOW_COLUMNS: Final = (
     "error_class",
     "error_message",
     "idempotency_key",
+    # THE 3AM FACES (the observability lane's cure): the lease columns
+    # (the lost-worker drill's "the worker died" vs "the work is slow"
+    # distinction — the reclaim sweep's input is lock_expires_at) + the
+    # metadata jsonb (the cross-run cache hit's receipt lives at
+    # metadata.wf_cache_hit; the audit drill's provenance face). The
+    # RENDER stays conditional: a terminal row's lease face is history,
+    # not liveness, and only the receipt is ever printed from metadata.
+    "locked_by_worker",
+    "last_heartbeat_at",
+    "lock_expires_at",
+    "metadata",
 )
 """The operator-facing columns ``taskq job show`` prints by default.
 
@@ -3413,6 +3424,8 @@ async def _job_show(
     typer.echo(f"scheduled_at: {row['scheduled_at']}")
     typer.echo(f"started_at: {row['started_at']}")
     typer.echo(f"finished_at: {row['finished_at']}")
+    _render_lease_face(row)
+    _render_cache_hit(row)
     if row["error_class"] is not None:
         # THE DB-SOURCED TEXT'S DISCIPLINE (finding 14's cure — the
         # job-show seat's own face): error_class is written by the
@@ -3439,6 +3452,84 @@ async def _job_show(
         _print_blob_field("payload", row["payload"])
     if archived:
         typer.echo("archived: yes")
+
+
+def _as_aware_dt(value: Any) -> datetime | None:
+    """A timestamptz column's value as an AWARE datetime (asyncpg returns
+    aware datetimes; a test double may hand a string) — None for NULL,
+    naive values read as UTC (the DB clock's own zone)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    parsed = datetime.fromisoformat(str(value))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+_LEASE_LIVE_STATUSES: Final[frozenset[str]] = frozenset({"pending", "scheduled", "running"})
+
+
+def _render_lease_face(row: Any) -> None:
+    """THE LEASE FACE (the lost-worker drill's cure — ``job show``'s
+    liveness section): who holds the row, when the holder last breathed,
+    when the lease lapses — and, past the lapse, the LAPSED verdict: the
+    holder is presumed dead and the reclaim sweep repends the row within
+    ``TASKQ_SWEEP_INTERVAL`` (default 30 s) once a leader is up. This is
+    the operator's "the worker died" vs "the work is slow" distinction,
+    which the row has always carried and the CLI never printed.
+
+    A terminal row's lease columns are HISTORY (the lease lapsed because
+    the work finished) — the face renders for the live statuses only."""
+    if str(row["status"]) not in _LEASE_LIVE_STATUSES:
+        return
+    holder = row.get("locked_by_worker") if hasattr(row, "get") else None
+    heartbeat = _as_aware_dt(row.get("last_heartbeat_at") if hasattr(row, "get") else None)
+    expires = _as_aware_dt(row.get("lock_expires_at") if hasattr(row, "get") else None)
+    if holder is not None:
+        typer.echo(f"locked_by_worker: {holder}")
+    if heartbeat is not None:
+        typer.echo(f"last_heartbeat_at: {heartbeat}")
+    if expires is not None:
+        typer.echo(f"lock_expires_at: {expires}")
+        if expires < datetime.now(UTC):
+            lapsed_s = int((datetime.now(UTC) - expires).total_seconds())
+            typer.echo(
+                f"lease: LAPSED ({lapsed_s}s ago) — the holder is presumed DEAD: this is "
+                "'the worker died', not 'the work is slow'. The reclaim sweep repends "
+                "the row (or crashes it past the attempt budget) within "
+                "TASKQ_SWEEP_INTERVAL (default 30s) — but only while a leader is up: "
+                "a lapsed lease with no live worker stays running until one returns. "
+                "Confirm the death: taskq job events " + str(row["id"])
+            )
+        else:
+            typer.echo("lease: held (the heartbeat renews it while the holder lives)")
+
+
+def _render_cache_hit(row: Any) -> None:
+    """THE CACHE-HIT RECEIPT (the audit drill's cure — the provenance
+    face): the cross-run step cache's hit stamp (metadata.wf_cache_hit:
+    the address + the producing run's id + the store instant) printed
+    when present. A step that never executed must not read like one that
+    did: this line is the difference between 'the body ran' and 'an
+    earlier run's result was delivered'. Only the receipt is ever
+    printed from metadata (the rest of the jsonb stays row-only)."""
+    meta = row.get("metadata") if hasattr(row, "get") else None
+    if isinstance(meta, str):
+        try:
+            meta = json_loads(meta)
+        except ValueError:
+            meta = None
+    if not isinstance(meta, dict):
+        return
+    receipt = meta.get("wf_cache_hit")
+    if isinstance(receipt, dict):
+        typer.echo(
+            "cache_hit: the body did NOT run — an earlier run's cached result was "
+            "delivered (source: the jobs row's metadata.wf_cache_hit)"
+        )
+        typer.echo(f"  producing run: {receipt.get('run_id')}")
+        typer.echo(f"  address: {receipt.get('address')}")
+        typer.echo(f"  stored_at: {receipt.get('stored_at')}")
 
 
 def _print_blob_field(name: str, value: Any) -> None:
@@ -4134,6 +4225,21 @@ async def _flows_status(settings: TaskQSettings, run_id: str) -> None:
             typer.echo("Action: taskq flows list shows the recent runs.", err=True)
             raise typer.Exit(code=1)
         node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
+        # THE 3AM FIELDS' SUPPLEMENT (the observability lane's cure — the
+        # CLI face's own read, never an engine-SQL edit): the node rows'
+        # started_at (the RUNNING face's age source) + the failed_parent
+        # stamp (the dead parent's id, named on the record by the T06
+        # cascade). One bounded read keyed by the row id — the engine's
+        # WORKFLOW_NODES_SQL already selected j.id, so the merge is by
+        # that key, position-free.
+        supplement_rows = await conn.fetch(
+            f"SELECT id, started_at, metadata->>'failed_parent' AS failed_parent "  # noqa: S608  # Why: the schema is identifier-validated above; every value is a bound parameter.
+            f'FROM "{settings.schema_name}".jobs '
+            "WHERE (metadata->>'flow_id')::uuid = $1::uuid "
+            "AND metadata ? 'flow_id' AND step_key <> '__flow__'",
+            parsed,
+        )
+        supplement_by_id = {str(r["id"]): r for r in supplement_rows}
         held = await conn.fetch(
             f"SELECT id, node_key, signal_name, hold_epoch, payload, payload_schema, "  # noqa: S608  # Why: schema identifier-validated above.
             "created_at, expires_at FROM "
@@ -4160,6 +4266,11 @@ async def _flows_status(settings: TaskQSettings, run_id: str) -> None:
             # the read must carry the row's own counters.
             max_attempts=row["max_attempts"],
             attempt=row["attempt"],
+            # THE 3AM FIELDS (the supplement read above): the row id +
+            # started_at + the failed_parent stamp.
+            job_id=str(row["id"]),
+            started_at=supplement_by_id.get(str(row["id"]), {}).get("started_at"),
+            failed_parent=supplement_by_id.get(str(row["id"]), {}).get("failed_parent"),
             hold=(
                 _held_context(run_id, holds_by_key[row["step_key"]])
                 if row["step_key"] in holds_by_key
