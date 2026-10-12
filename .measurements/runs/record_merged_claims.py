@@ -22,7 +22,7 @@ from taskq.testing._claims import record_claim  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 
 #: (stem, file) — the merged estate's captures, measured at
-#: 2d75eea067e4a2ea8dc37ff0e40b78b782a434a5 (the source-final head).
+#: 2d75eea067e40cde00627b24bbeed79fdaccca48 (the source-final head).
 #: THE CONTENT DOOR'S LADDER: the battery + fast-tier stems are NOT here —
 #: their runs at THIS head carry rv2-13's TRUTHFUL pre-estate red (the
 #: committed claims were stale at the merged head; THIS commit is the
@@ -31,15 +31,15 @@ REPO = Path(__file__).resolve().parents[2]
 #: the runs at THIS committed tree (rv2-13 green there — the off-by-one
 #: rule carries the freshness).
 CAPTURES: list[tuple[str, str, str]] = [
-    ("lint-format", "lint-format-merged.txt", "2d75eea067e4a2ea8dc37ff0e40b78b782a434a5"),
-    ("pyright-full", "pyright-full-merged.txt", "2d75eea067e4a2ea8dc37ff0e40b78b782a434a5"),
-    ("typeprobe-gate", "typeprobe-gate-merged.txt", "2d75eea067e4a2ea8dc37ff0e40b78b782a434a5"),
-    ("mkdocs-strict", "mkdocs-strict-merged.txt", "2d75eea067e4a2ea8dc37ff0e40b78b782a434a5"),
-    ("docs-examples", "docs-examples-merged.txt", "2d75eea067e4a2ea8dc37ff0e40b78b782a434a5"),
-    ("deslop-pin-packs", "pinpacks-merged-leg1.txt", "2d75eea067e4a2ea8dc37ff0e40b78b782a434a5"),
-    ("estate-slice", "estate-slice-merged.txt", "2d75eea067e4a2ea8dc37ff0e40b78b782a434a5"),
-    ("wf-perf-bands", "wf-perf-bands-merged.txt", "2d75eea067e4a2ea8dc37ff0e40b78b782a434a5"),
-    ("wf-bands-rv4", "wf-bands-rv4-merged.txt", "2d75eea067e4a2ea8dc37ff0e40b78b782a434a5"),
+    ("lint-format", "lint-format-merged.txt", "2d75eea067e40cde00627b24bbeed79fdaccca48"),
+    ("pyright-full", "pyright-full-merged.txt", "2d75eea067e40cde00627b24bbeed79fdaccca48"),
+    ("typeprobe-gate", "typeprobe-gate-merged.txt", "2d75eea067e40cde00627b24bbeed79fdaccca48"),
+    ("mkdocs-strict", "mkdocs-strict-merged.txt", "2d75eea067e40cde00627b24bbeed79fdaccca48"),
+    ("docs-examples", "docs-examples-merged.txt", "2d75eea067e40cde00627b24bbeed79fdaccca48"),
+    ("deslop-pin-packs", "pinpacks-merged-leg1.txt", "2d75eea067e40cde00627b24bbeed79fdaccca48"),
+    ("estate-slice", "estate-slice-merged.txt", "2d75eea067e40cde00627b24bbeed79fdaccca48"),
+    ("wf-perf-bands", "wf-perf-bands-merged.txt", "2d75eea067e40cde00627b24bbeed79fdaccca48"),
+    ("wf-bands-rv4", "wf-bands-rv4-merged.txt", "2d75eea067e40cde00627b24bbeed79fdaccca48"),
 ]
 
 
