@@ -31,15 +31,15 @@ REPO = Path(__file__).resolve().parents[2]
 #: the runs at THIS committed tree (rv2-13 green there — the off-by-one
 #: rule carries the freshness).
 CAPTURES: list[tuple[str, str, str]] = [
-    ("lint-format", "lint-format-merged.txt", ""),
-    ("pyright-full", "pyright-full-merged.txt", ""),
-    ("typeprobe-gate", "typeprobe-gate-merged.txt", ""),
-    ("mkdocs-strict", "mkdocs-strict-merged.txt", ""),
-    ("docs-examples", "docs-examples-merged.txt", ""),
-    ("deslop-pin-packs", "pinpacks-merged-leg1.txt", ""),
-    ("estate-slice", "estate-slice-merged.txt", ""),
-    ("wf-perf-bands", "wf-perf-bands-merged.txt", ""),
-    ("wf-bands-rv4", "wf-bands-rv4-merged.txt", ""),
+    ("lint-format", "lint-format-merged.txt", "b93d874389d14bf15376b6b1dcec2718f2ce1547"),
+    ("pyright-full", "pyright-full-merged.txt", "b93d874389d14bf15376b6b1dcec2718f2ce1547"),
+    ("typeprobe-gate", "typeprobe-gate-merged.txt", "b93d874389d14bf15376b6b1dcec2718f2ce1547"),
+    ("mkdocs-strict", "mkdocs-strict-merged.txt", "b93d874389d14bf15376b6b1dcec2718f2ce1547"),
+    ("docs-examples", "docs-examples-merged.txt", "b93d874389d14bf15376b6b1dcec2718f2ce1547"),
+    ("deslop-pin-packs", "pinpacks-merged-leg1.txt", "b93d874389d14bf15376b6b1dcec2718f2ce1547"),
+    ("estate-slice", "estate-slice-merged.txt", "b93d874389d14bf15376b6b1dcec2718f2ce1547"),
+    ("wf-perf-bands", "wf-perf-bands-merged.txt", "b93d874389d14bf15376b6b1dcec2718f2ce1547"),
+    ("wf-bands-rv4", "wf-bands-rv4-merged.txt", "b93d874389d14bf15376b6b1dcec2718f2ce1547"),
 ]
 
 

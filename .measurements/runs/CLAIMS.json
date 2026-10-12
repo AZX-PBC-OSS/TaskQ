@@ -18438,6 +18438,114 @@
       "file": "rv2-13-green-slot-20261012T195807Z.txt",
       "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
       "captured_at": "2026-10-12T12:58:07"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-merged.txt",
+      "head_sha": "5f70fed23252abdaa9b51da1a06b31e66c6e6bff",
+      "captured_at": "2026-10-12T12:58:29"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-merged.txt",
+      "head_sha": "5f70fed23252abdaa9b51da1a06b31e66c6e6bff",
+      "captured_at": "2026-10-12T12:58:29"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-merged.txt",
+      "head_sha": "5f70fed23252abdaa9b51da1a06b31e66c6e6bff",
+      "captured_at": "2026-10-12T12:58:29"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-merged.txt",
+      "head_sha": "5f70fed23252abdaa9b51da1a06b31e66c6e6bff",
+      "captured_at": "2026-10-12T12:58:29"
+    },
+    {
+      "stem": "docs-examples",
+      "file": "docs-examples-merged.txt",
+      "head_sha": "5f70fed23252abdaa9b51da1a06b31e66c6e6bff",
+      "captured_at": "2026-10-12T12:58:29"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "pinpacks-merged-leg1.txt",
+      "head_sha": "5f70fed23252abdaa9b51da1a06b31e66c6e6bff",
+      "captured_at": "2026-10-12T12:58:29"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-merged.txt",
+      "head_sha": "5f70fed23252abdaa9b51da1a06b31e66c6e6bff",
+      "captured_at": "2026-10-12T12:58:29"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-merged.txt",
+      "head_sha": "5f70fed23252abdaa9b51da1a06b31e66c6e6bff",
+      "captured_at": "2026-10-12T12:58:29"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-bands-rv4-merged.txt",
+      "head_sha": "5f70fed23252abdaa9b51da1a06b31e66c6e6bff",
+      "captured_at": "2026-10-12T12:58:29"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-merged.txt",
+      "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
+      "captured_at": "2026-10-12T12:58:36"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-merged.txt",
+      "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
+      "captured_at": "2026-10-12T12:58:36"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-merged.txt",
+      "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
+      "captured_at": "2026-10-12T12:58:36"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-merged.txt",
+      "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
+      "captured_at": "2026-10-12T12:58:36"
+    },
+    {
+      "stem": "docs-examples",
+      "file": "docs-examples-merged.txt",
+      "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
+      "captured_at": "2026-10-12T12:58:36"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "pinpacks-merged-leg1.txt",
+      "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
+      "captured_at": "2026-10-12T12:58:36"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-merged.txt",
+      "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
+      "captured_at": "2026-10-12T12:58:36"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-merged.txt",
+      "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
+      "captured_at": "2026-10-12T12:58:36"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-bands-rv4-merged.txt",
+      "head_sha": "b93d874389d14bf15376b6b1dcec2718f2ce1547",
+      "captured_at": "2026-10-12T12:58:36"
     }
   ]
 }
