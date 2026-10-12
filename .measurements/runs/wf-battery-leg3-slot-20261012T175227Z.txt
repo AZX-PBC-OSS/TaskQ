@@ -1,2 +1,3 @@
-# wf-battery-leg3's slot staged at head bdd21f7f9532191fb5c88abf9a81b786e6c03a3d — captured 2026-10-12T10:52:27Z
-THE GRAND MERGE'S STAGED SLOT: the wf battery's leg-3 slot — the battery leg's green output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.
+head: 5617b2750621567fe2f16d7348c7c4f7fd94e0c5 — wf-battery-leg3's GREEN battery leg at the committed estate (run at the head; the slot staged at bdd21f7f9 — every commit between measurement-only, the off-by-one rule carries)
+662 passed, 1 skipped, 1 xfailed, 1 warning in 146.71s (0:02:26)
+rc=0
