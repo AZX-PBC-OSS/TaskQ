@@ -1362,42 +1362,44 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
 
 
 def _rule_actor_queue_cohort(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E17: ONE actor name projected onto TWO queues — the cohort
-    conflict convicted at validate (the docshelf adoption team's F3):
-    ``actor_config`` is keyed by actor (one queue per actor, the
-    estate's own law), so a graph whose declared placements split one
-    actor across queues builds rows the boot REFUSES (the projection's
-    ``WorkflowActorQueueConflictError``) or strands — the conflict was
-    discovered ONLY at the worker's boot, ``validate()`` clean. The
-    walk mirrors the boot projection's own faces (the node decls, the
-    map attachments' ``map_queue``, the chains) so the conviction is
-    the SAME law at the wiring, before any row exists. THE REMEDY IS
-    THE ESTATE'S: the split placement is expressed with DISTINCT actor
-    names per queue (e.g. ``actor='wf-gpu', queue='gpu'``)."""
-    actor_queues: dict[str, set[str]] = {}
-    for node in compiled.nodes.values():
-        actor_queues.setdefault(node.actor, set()).add(node.queue)
-        if node.map_item is not None or node.map_arms is not None:
-            # The fork's children (and the derived join) ride the map
-            # attachment's declared queue — the boot's walk's face.
-            actor_queues.setdefault(node.actor, set()).add(node.map_queue)
-    for chain in getattr(compiled, "chains", ()):
-        actor_queues.setdefault(chain.actor, set()).add(chain.queue)
+    """E17: the DERIVED JOIN's implicit cohort conflict, convicted at
+    validate (the docshelf adoption team's F3): ``route()``'s derived
+    join inherits the source's ACTOR and takes the verb's ``queue=``
+    (default ``default``) — a source placed on a NON-DEFAULT queue made
+    the derived join split its actor over two queues, the conflict
+    discovered ONLY at the worker's boot (the projection's
+    ``WorkflowActorQueueConflictError``), ``validate()`` clean. THE
+    CONVICTION IS THE DERIVED, UN-SPELLED COHORT: the join (and the
+    fork's children) ride the map attachment's queue — when that queue
+    differs from the SOURCE NODE's own queue under the SAME actor, the
+    author never spelled the split (the verb's default ambushed them)
+    and this validate refuses at the wiring. An EXPLICIT node-to-node
+    split (a step spelled ``queue='q1'``) is the author's own declared
+    placement — the boot projection's one-queue law remains that
+    face's runtime door. THE REMEDY IS THE ESTATE'S: the split
+    placement is expressed with DISTINCT actor names per queue (e.g.
+    ``actor='wf-gpu', queue='gpu'``)."""
     diagnostics: list[WorkflowValidationError] = []
-    for actor, queues in sorted(actor_queues.items()):
-        if len(queues) <= 1:
+    for node in compiled.nodes.values():
+        if node.map_item is None and node.map_arms is None:
+            continue
+        if node.map_queue == node.queue:
             continue
         diagnostics.append(
             WorkflowValidationError(
                 "E17-actor-queue-cohort",
                 "error",
-                f"workflow actor {actor!r} is declared over queues "
-                f"{sorted(queues)} — actor_config is keyed by actor (one "
-                "queue per actor, the estate's own law): the worker boot's "
-                "cohort projection would refuse this graph (or strand its "
-                "rows), a conflict this validate now convicts at the "
-                "wiring. The split placement is expressed with DISTINCT "
-                "actor names per queue (e.g. actor='wf-gpu', queue='gpu').",
+                f"the map/route attachment on {node.key!r} derives its join "
+                f"(and the fork's children) on queue {node.map_queue!r} "
+                f"while the source node itself rides {node.queue!r} — both "
+                f"under actor {node.actor!r}, and actor_config is keyed by "
+                "actor (one queue per actor, the estate's own law): the "
+                "worker boot's cohort projection would refuse this graph "
+                "(or strand its rows), a conflict this validate convicts at "
+                "the wiring instead of at the worker's 3am. The split "
+                "placement is expressed with DISTINCT actor names per queue "
+                "(e.g. actor='wf-gpu', queue='gpu'), or wire the "
+                "map/route's queue= to the source's own.",
             )
         )
     return diagnostics
