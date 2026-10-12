@@ -123,8 +123,10 @@ async def feed_in(
 
 async def _extract_inner(ctx: StepContext, chunk: ChunkRef, deps: DocShelfDeps) -> ExtractedChunk:
     """ONE chunk through the mock boundary under the app's inner budget
-    (the flake/timeout absorber — the framework ladder cannot express
-    this profile; see extract_doc_chunks' docstring and friction F1)."""
+    (the fast absorber — a transient flake or timeout costs a cheap
+    inner retry inside the SAME attempt, never a body re-run; the
+    framework ladder above it honors the stamped budget — friction F1
+    is CURED, see extract_doc_chunks' docstring)."""
     pool = await deps.pool()
     dyn = deps.cfg.dynamics
     last: Exception | None = None
@@ -178,13 +180,13 @@ async def extract_doc_chunks(
 
     * the INNER budget (``extract_inner_retries``, the app's own): the
       flaky API's transient failures + timeouts are absorbed with a
-      short jittered backoff — at the recorded profile (27% per call)
-      the framework's 3-attempt ladder would kill ~2% of all chunks;
-      the app's contract ("no document dies of flakiness") needs an
-      inner budget of 10. THE FRAMEWORK'S LADDER CANNOT EXPRESS THIS
-      (measured: the workflow seam's ladder exhausts at 3 regardless of
-      the wiring's max_attempts, the @app.actor declaration, and
-      actor_config — see the friction list, F1).
+      short jittered backoff INSIDE one attempt — a flake costs a cheap
+      re-call, never a body re-run (the chunk's earlier chunks replay
+      free through the substep ledger, but the re-run still re-enters
+      the map body). The framework ladder HONORS ITS STAMP now (friction
+      F1 is CURED — the holdmap lane's ladder-inheritance cure: the map
+      item ladders to the wired ``max_attempts=``, pinned green), so the
+      inner budget is a performance choice, not a compensation.
     * the FRAMEWORK ladder (the map's ladder): the layer for INFRA
       faults — a reclaim after a crash re-runs the attempt without
       burning it. The child drill's poison exercises the ladder itself.
@@ -239,11 +241,13 @@ async def run_sub_analyses(
     The LAST child tail to finish assembles every child's recorded
     outcome and delivers the BATCH payload into the hold — the resolve's
     CAS makes the delivery exactly-once (a second assembler's resolve is
-    the defined no-op). THE SHAPE IS THE ENGINE'S OWN LAW: a hold's
-    identity is (run, node key, signal, epoch) — concurrent waits on ONE
-    node key collide on the epoch (measured: UniqueViolationError), and
-    a wait-per-child burns an attempt row per hold — so the batch joins
-    through ONE hold, ONE resume."""
+    the defined no-op). THE SHAPE IS THE BATCH JOIN'S OWN DESIGN, NOT A
+    COLLISION DODGE: the hold identity now carries the MAP INDEX
+    (friction F5 is CURED — the holdmap lane's map-index identity:
+    concurrent per-item holds on ONE node key are addressable and
+    individually resolvable, pinned green), so a wait-per-child would
+    no longer collide; the batch still joins through ONE hold, ONE
+    resume because the parent consumes ONE batch answer."""
     pool = await deps.pool()
     parent = str(ctx.flow_id)
     runner = FlowRunner(SHELF_APP.get("docshelf_sub_analysis"), pool, deps.schema)
@@ -408,11 +412,12 @@ async def contract_summary_arm(
     ctx: StepContext, doc: ContractDoc, deps: DocShelfDeps
 ) -> ContractSummary:
     """The CONTRACT arm: the summary. Its element arrives AS the declared
-    model — the route's decode law. THE DECORATOR IS LOAD-BEARING: the
-    route's arms fork at RUNTIME (they are not compiled nodes), so the
-    boot projection never sees their cohorts — without the declared
-    actor the arm's rows strand (measured: stranded_jobs_no_actor_config
-    on every arm queue; the projection's blind face, friction F2)."""
+    model — the route's decode law. The ARM'S PLACEMENT lives on the
+    wiring's ``RouteArm(actor=..., queue=...)`` (the authoritative stamp
+    the fork writes); the boot projection walks the arms' effective
+    placements since the engine-cures lane's F2 cure — the arm's rows
+    project at boot, never strand (the decorator's registration is the
+    same pair, belt-and-suspenders)."""
     return ContractSummary(
         doc_id=doc.doc_id,
         n_chunks=doc.n_chunks,
@@ -425,7 +430,8 @@ async def contract_summary_arm(
 
 @SHELF_APP.actor(name="docshelf-ledger", queue="docshelf-ledger")
 async def ledger_arm(ctx: StepContext, doc: InvoiceDoc, deps: DocShelfDeps) -> LedgerEntry:
-    """The INVOICE arm: the ledger entry (declared — see the summary arm)."""
+    """The INVOICE arm: the ledger entry (the placement lives on the
+    wiring's RouteArm — see the summary arm)."""
     return LedgerEntry(
         doc_id=doc.doc_id,
         n_chunks=doc.n_chunks,
@@ -439,7 +445,8 @@ async def ledger_arm(ctx: StepContext, doc: InvoiceDoc, deps: DocShelfDeps) -> L
 
 @SHELF_APP.actor(name="docshelf-quarantine", queue="docshelf-quarantine")
 async def quarantine_arm(ctx: StepContext, doc: UnknownDoc, deps: DocShelfDeps) -> QuarantinedDoc:
-    """The UNKNOWN arm: the quarantine (declared — see the summary arm)."""
+    """The UNKNOWN arm: the quarantine (the placement lives on the
+    wiring's RouteArm — see the summary arm)."""
     return QuarantinedDoc(
         doc_id=doc.doc_id,
         n_chunks=doc.n_chunks,
@@ -817,16 +824,20 @@ async def deliver_batch(pool: asyncpg.Pool, schema: str, batch: DeliveryBatch) -
     double-run (the run-key arbiter's claim; the duplicate-feed drill
     exercises it).
 
-    THE PAGE (the adoption's measured scale law): one flow's ROUTE fan
-    is safe to ~150 classified elements SOLO — past it, AND under
-    multi-page concurrency, the route join's fire/arg-resolution races
-    its consumer (friction F4's evidence: the digest's ladder exhausts
-    on 'the parent has no result yet' / a None-packed slot). The feed
-    therefore pages its deliveries AND delivers the pages ONE AT A TIME
-    (each page's run reaches terminal before the next page fires). The
-    zero-loss invariant is per DOCUMENT across the pages. A single-page
-    delivery returns without waiting (the crash drills' shape: the flow
-    must be RUNNING while the drill kills the worker).
+    THE PAGE (the adoption's measured scale law, its honest residual):
+    one flow's ROUTE fan is safe to ~150 classified elements SOLO — past
+    it, AND under multi-page concurrency, the route join's
+    fire/arg-resolution raced its consumer (friction F4). The in-process
+    face is clean since the engine-cures lane's re-probe (3 rounds x
+    200 elements, all green) and the connection-hold cure landed (the
+    holdmap lane's pool pin — a substep no longer pins the pool
+    connection across the body); the FLEET face was never re-convicted
+    and never disproven, so the feed still pages its deliveries AND
+    delivers the pages ONE AT A TIME (each page's run reaches terminal
+    before the next page fires). The zero-loss invariant is per DOCUMENT
+    across the pages. A single-page delivery returns without waiting
+    (the crash drills' shape: the flow must be RUNNING while the drill
+    kills the worker).
 
     Returns one flow id per page."""
     page_size = DOCSHELF_CONFIG.delivery_page_docs

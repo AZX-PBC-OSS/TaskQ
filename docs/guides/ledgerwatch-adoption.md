@@ -377,7 +377,10 @@ committed at `examples/ledgerwatch/FINDINGS.md` (F1–F10, severities
 named). The headline: F2, concurrent HITL holds from map siblings wedge
 a run silently — the framework cure owed is the hold identity's map
 index (or the loud doc); the shipped product cures itself with the
-per-transaction review run.
+per-transaction review run. **The cures have since LANDED**: the
+holdmap-cures lane's map-index identity (F2), the ladder-inheritance
+(F3), the connection-hold (F4) and the watchdog's warn-budget refusal
+(F6) — each annotated CURED-BY in FINDINGS.md with its green pin.
 
 ## The receipts
 

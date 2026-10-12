@@ -10,6 +10,13 @@ library's `src/` was never read (the readiness test). Every finding
 below was hit in flight, then worked around IN THE APP (an adopting team
 files friction; it never patches the framework).
 
+> **The merge-time note (the record stays honest):** several findings'
+> framework cures LANDED after this adoption ran (the holdmap-cures and
+> engine-cures lanes). They are annotated CURED-BY below with the cure's
+> lane and its green pin — the findings' text is LEFT AS FILED (the
+> adoption's truth at its own time); the annotations are the framework's
+> answer, dated by the merge.
+
 ---
 
 ## F1 — the typed route cannot attach to a map's join (a missing verb shape)
@@ -60,6 +67,14 @@ files friction; it never patches the framework).
 - **Severity**: MAJOR — the natural per-item HITL shape wedges a run
   silently. The wedged sibling's record (a `running` row on a live-looking
   flow) is the worst failure mode an operator can be handed.
+- **CURED-BY** (the framework, after this adoption): the holdmap-cures
+  lane's map-index identity (feat/taskqflow-holdmap-cures `1528719d2`,
+  the migration `01.00.34_02_pre_wf_signals_map_index.sql`) — the hold
+  identity carries the MAP INDEX, so concurrent per-item holds on ONE
+  node key are addressable and individually resolvable. Pinned green:
+  `tests/test_wf_holdmap_cures_pins.py::test_map_sibling_holds_are_addressable_and_resolvable_individually`.
+  The per-item HITL shape this finding owed is now the framework's own
+  face.
 
 ## F3 — the map item's ladder ignores the wired `max_attempts`
 
@@ -77,6 +92,13 @@ files friction; it never patches the framework).
   kills ~0.8% of items per attempt window; a batch's run FAILS on items
   that "never die of flakiness" only because the product re-implemented
   the ladder.
+- **CURED-BY** (the framework, after this adoption): the holdmap-cures
+  lane's ladder-inheritance cure (feat/taskqflow-holdmap-cures
+  `1528719d2`) — the map item ladders to the STAMPED `max_attempts=`
+  (the row's budget honored, the knob no longer a lie). Pinned green:
+  `tests/test_wf_holdmap_cures_pins.py::test_map_item_ladder_honors_the_stamped_max_attempts`.
+  The app's own in-body retry policy stays as the cheap in-attempt
+  absorber — a performance choice now, not a compensation.
 
 ## F4 — the substep's ledger claim serializes concurrent map children
 
@@ -91,6 +113,13 @@ files friction; it never patches the framework).
   provides the receipt instead.
 - **Severity**: moderate — the tax is real and silent; a substep on a
   hot path is the natural first move and it quietly eats the fan-out.
+- **CURED-BY** (the framework, after this adoption): the holdmap-cures
+  lane's connection-hold cure (feat/taskqflow-holdmap-cures) — the
+  substep no longer pins the pool connection across the body (the
+  serialization's cause). Pinned green:
+  `tests/test_wf_holdmap_cures_pins.py::test_the_substep_does_not_hold_the_pool_connection_across_the_body`.
+  The substep is the hot path's natural first move again; this app's
+  journal-receipt choice stays (honest, and cheaper than a ledger row).
 
 ## F5 — the workflow node's retry backoff curve is undocumented
 
@@ -122,6 +151,10 @@ files friction; it never patches the framework).
 - **Severity**: moderate — a mis-tuned (but VALIDATED) config starves a
   worker silently; the operator sees a warning STORM, which is at least
   loud.
+- **CURED-BY** (the framework, after this adoption): the holdmap-cures
+  lane's validation cure — the boot/validate lattice now REFUSES a warn
+  budget below the check interval. Pinned green:
+  `tests/test_wf_holdmap_cures_pins.py::test_the_watchdog_refuses_a_warn_budget_below_the_check_interval`.
 
 ## F7 — the display read face is taught from a private module path
 

@@ -59,9 +59,11 @@ class AdverseDynamics:
     sub_analysis_max_s: float = 3.0
 
     #: The extraction ladder's depth (stamped on the map's child rows).
-    #: NOTE the friction finding F1: the workflow seam's ladder exhausts
-    #: at a hard 3 regardless of this stamp — the inner budget below is
-    #: what actually absorbs the recorded profile.
+    #: The ladder HONORS this stamp (friction F1 is CURED — the holdmap
+    #: lane's ladder-inheritance cure: the map item ladders to the
+    #: wired max_attempts, pinned green). The inner budget below stays
+    #: as the cheap in-attempt absorber — a flake costs a re-call, not
+    #: a body re-run.
     extract_max_attempts: int = 8
 
     #: The app's INNER retry budget (the flaky-call absorber): 10 inner
