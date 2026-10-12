@@ -11944,6 +11944,18 @@
       "file": "evidence-heads-verify-residual-transition.txt",
       "head_sha": "e6fc955a35a55db5a9e5a6df802f7055bd9a7098",
       "captured_at": "2026-10-11T22:48:49"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-residual-M2.txt",
+      "head_sha": "f7c3309199f930da60d314becc36ce99538c83be",
+      "captured_at": "2026-10-11T22:49:42"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-residual-M1.txt",
+      "head_sha": "f7c3309199f930da60d314becc36ce99538c83be",
+      "captured_at": "2026-10-11T22:49:42"
     }
   ]
 }
