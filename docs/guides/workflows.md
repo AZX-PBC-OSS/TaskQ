@@ -14,7 +14,9 @@
 Everything you need to run a workflow: wire steps (the promise arguments
 ARE the edges), fan items out with `map_source`, run ONE call, read the
 decoded result. This fence runs as-is under the docs-example harness
-(`TASKQ_PG_DSN` supplied by the harness):
+(`TASKQ_PG_DSN` and `TASKQ_SCHEMA_NAME` supplied by the harness; set
+`TASKQ_PG_DSN` yourself and the schema defaults to `taskq` — the same
+default the settings carry):
 
 ```python
 import asyncio
@@ -72,7 +74,7 @@ def doc_pipeline() -> Promise[object]:
 
 async def main() -> None:
     dsn = os.environ["TASKQ_PG_DSN"]
-    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
     pool = await asyncpg.create_pool(dsn)
@@ -461,7 +463,7 @@ def cache_flow() -> Promise[object]:
 
 async def main() -> None:
     dsn = os.environ["TASKQ_PG_DSN"]
-    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
     pool = await asyncpg.create_pool(dsn)
@@ -610,7 +612,7 @@ def tenant_cache_flow() -> Promise[object]:
 
 async def main() -> None:
     dsn = os.environ["TASKQ_PG_DSN"]
-    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
     pool = await asyncpg.create_pool(dsn)
@@ -1509,7 +1511,7 @@ def docs_childflow_parent() -> Promise[object]:
 
 async def main() -> None:
     dsn = os.environ["TASKQ_PG_DSN"]
-    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
     pool = await asyncpg.create_pool(dsn)
@@ -2207,7 +2209,7 @@ async def remind_body(ctx: StepContext, params: FollowUp) -> str:
 
 async def main() -> None:
     dsn = os.environ["TASKQ_PG_DSN"]
-    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
     pool = await asyncpg.create_pool(dsn)

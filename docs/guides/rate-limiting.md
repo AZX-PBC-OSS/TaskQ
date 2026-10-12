@@ -491,7 +491,7 @@ def demo() -> Promise[object]:
 
 async def main() -> None:
     dsn = os.environ["TASKQ_PG_DSN"]
-    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
     runner = FlowRunner(app.get("step_rate_limit_demo"), await asyncpg.create_pool(dsn), schema)

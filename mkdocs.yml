@@ -125,7 +125,10 @@ nav:
       - CLI: guides/cli.md
       - Troubleshooting: guides/troubleshooting.md
       - Migrating Graph-Checkpoint Workflows: guides/migrating-graph-checkpoints.md
+      - Migrating from LangGraph: guides/migrating-from-langgraph.md
+      - The LedgerWatch Adoption Story: guides/ledgerwatch-adoption.md
       - Upgrading: guides/upgrading.md
+      - The Production Checklist: guides/production-checklist.md
       - Production Deployment: guides/deployment.md
       - Scaling: guides/scaling.md
       - Operations & Adoption: guides/ops.md
@@ -152,11 +155,15 @@ nav:
       - HashiCorp Vault: api-reference/vault.md
       - CLI: api-reference/cli.md
   - Architecture: architecture.md
+  - Examples:
+      - The Doc-Ingest Pipeline: examples/doc-ingest.md
   - Design:
       - SQL Hot-Path Follow-Ups: design/sql-hotpath-followups.md
       - Debugging Playbook: design/debugging-playbook.md
       - The Landing Doctrine: design/landing-doctrine.md
       - The System-E2E Tier: design/system-e2e-tier.md
+      - The Workflows Spec: design/workflows-spec.md
+  - The Shipped-Capability Matrix: taskqflow-coverage.md
   - Changelog: changelog.md
 
 extra:

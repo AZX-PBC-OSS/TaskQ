@@ -21,6 +21,16 @@ Async-native, Postgres-backed background job library for Python 3.12+.
 
 ## Features
 
+- **Durable workflows (the DAG engine)**: wire typed steps, maps, typed
+  routes, and loops into one graph — the promise arguments ARE the
+  edges; the compile validates the wiring (`E1–E20`) before a single
+  row exists. Bodies park on typed holds (`wait_signal`) or durable
+  timers (`wait_until` — the clock is the resolver, the hold row is the
+  truth) while the worker's slot is released; `ctx.spawn_flow` runs
+  typed sub-flows; `step(..., cache=True)` dedups unchanged work across
+  runs; a redeploy's in-flight runs are named by the versioning
+  contract. See [Workflows](docs/guides/workflows.md) and the
+  [production checklist](docs/guides/production-checklist.md).
 - **Actors**: decorate plain `async def` (or sync) functions with `@actor`;
   payloads are validated with Pydantic models and dispatched as typed
   `ActorRef` handles.

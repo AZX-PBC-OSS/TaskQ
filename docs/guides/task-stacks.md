@@ -74,7 +74,7 @@ def doc_pipeline() -> Promise[object]:
 
 async def main() -> None:
     dsn = os.environ["TASKQ_PG_DSN"]
-    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
     pool = await asyncpg.create_pool(dsn)

@@ -247,7 +247,7 @@ _APPROVAL_GATE = GateDecl(
 async def main() -> None:
     global SCHEMA
     dsn = os.environ["TASKQ_PG_DSN"]
-    SCHEMA = os.environ["TASKQ_SCHEMA_NAME"]
+    SCHEMA = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
     await taskq.migrate.apply_pending_locked(dsn, schema=SCHEMA, phase="pre")
     await taskq.migrate.apply_pending_locked(dsn, schema=SCHEMA, phase="post")
     pool = await asyncpg.create_pool(dsn)

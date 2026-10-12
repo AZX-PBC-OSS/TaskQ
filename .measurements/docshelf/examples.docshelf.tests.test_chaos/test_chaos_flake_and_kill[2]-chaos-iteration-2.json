@@ -2,13 +2,13 @@
   "child_flows_spawned": 18,
   "chunks_re_extracted_after_kill": 0,
   "digest_total_docs": 30,
-  "extraction_attempts_total": 168,
+  "extraction_attempts_total": 164,
   "failed_children": [],
-  "flakes_injected": 32,
-  "flow_id": "01a12ac0-1590-7790-9100-03f118e72831",
+  "flakes_injected": 27,
+  "flow_id": "01a13101-c403-7501-a826-e7092506fb81",
   "iteration": 2,
   "kill_delay_s": 1.5,
-  "timeouts_injected": 11,
-  "wall_seconds": 9.3,
+  "timeouts_injected": 6,
+  "wall_seconds": 39.2,
   "worker_killed_alive": true
 }

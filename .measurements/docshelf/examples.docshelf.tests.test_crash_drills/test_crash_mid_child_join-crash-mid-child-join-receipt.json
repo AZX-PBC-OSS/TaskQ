@@ -1,11 +1,11 @@
 {
-  "child_run_id": "01a12aba-c4cb-7c81-b054-9e7df57616ec",
+  "child_run_id": "01a13107-1d13-7b60-9cc0-2736ee024faa",
   "digest": {
     "child_flows_spawned": 1,
     "contracts_published": [
       "crash2-0006"
     ],
-    "delivery_id": "crash2-88b1b4f0",
+    "delivery_id": "crash2-9d546458",
     "expired_children": [],
     "failed_children": [],
     "ledger_entries": [],
@@ -13,7 +13,7 @@
     "total_chunks": 8,
     "total_docs": 1
   },
-  "flow_id": "01a12aba-af75-79b2-8d96-8a57ed42be4d",
+  "flow_id": "01a13107-0927-7111-9e78-25b719387595",
   "hold_survived": true,
   "killed_mid": "the parent's run-children hold window"
 }
