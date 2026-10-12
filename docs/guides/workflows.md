@@ -2127,8 +2127,7 @@ async def remind_body(ctx: StepContext, params: FollowUp) -> str:
     # from the top and the substep replays (never re-runs).
     wake = await ctx.wait_until(1.0, key="remind")
     return (
-        f"ticket={params.ticket} wake={wake.key} by={wake.fired_by} "
-        f"late={wake.lateness_s >= 0.0}"
+        f"ticket={params.ticket} wake={wake.key} by={wake.fired_by} late={wake.lateness_s >= 0.0}"
     )
 
 
