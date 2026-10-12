@@ -23,15 +23,20 @@ import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-MEASUREMENTS = REPO / ".measurements"
+
+
+def _evidence_measurements_dir() -> Path:
+    from tests import _evidence as _evidence_mod
+
+    return _evidence_mod.evidence_measurements_dir()
+
+
 # THE EXTRACTED ESTATE (the extraction's own): when the tree no longer
 # carries .measurements (the PR stops being the estate's home), the pins
 # walk the EVIDENCE BRANCH's staged copy — the same files, one
 # indirection; the sha cross-check stays the verifier's and rv2-13's law.
-if not MEASUREMENTS.is_dir():
-    from tests import _evidence as _evidence_mod
-
-    MEASUREMENTS = _evidence_mod.evidence_measurements_dir()
+_LOCAL_MEASUREMENTS = REPO / ".measurements"
+MEASUREMENTS = _LOCAL_MEASUREMENTS if _LOCAL_MEASUREMENTS.is_dir() else _evidence_measurements_dir()
 PERF_DOC = REPO / "perf-evidence-workflows.md"
 STREAMING_DOC = REPO / "perf-evidence-workflows-streaming.md"
 GUIDE = REPO / "docs" / "guides" / "workflows.md"
