@@ -1,0 +1,5 @@
+# the attack rounds x2 (tests/attack*.py tests/test_attack*.py tests/test_wf_attack*.py, the CI's lane filter: not slow and not load_sensitive) at the source-final head 822772b410c68dd804cbef90ce82b1aa83538473
+--- round 1:
+1 failed, 640 passed, 2 skipped, 23 deselected, 1 xfailed, 3 warnings in 241.25s (0:04:01)
+--- round 2:
+1 failed, 640 passed, 2 skipped, 23 deselected, 1 xfailed, 21 warnings in 266.88s (0:04:26)

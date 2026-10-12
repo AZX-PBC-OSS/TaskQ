@@ -64,7 +64,8 @@ NOT_INSTALLED = "workflows not installed; run taskq migrate up to enable"
 
 _RUN_ROOT_SQL = (
     "SELECT id, actor, status, created_at, finished_at, cancel_requested_at, "
-    "error_class, error_message, metadata->>'workflow' AS workflow "
+    "error_class, error_message, metadata->>'workflow' AS workflow, "
+    "metadata->>'parent_flow_id' AS parent_flow_id "
     "FROM \"{schema}\".jobs WHERE id = $1 AND step_key = '__flow__'"
 )
 
@@ -94,6 +95,18 @@ _RUN_HOLDS_SQL = (
     "SELECT id, node_key, signal_name, hold_epoch, payload, payload_schema, "
     'status, created_at, expires_at, resolved_at FROM "{schema}".wf_signals '
     "WHERE workflow_id = $1 ORDER BY id"
+)
+
+#: THE CHILD FLOWS' LINKS (rv5-C5b — the admin is not child-blind): the
+#: run's child-flow receipts (the parent's node rows' ``child_flows``),
+#: dedup'd and bounded (a 10k fan-out renders the count, the first ids
+#: capped by the display bound the runs list carries).
+_RUN_CHILD_FLOWS_SQL = (
+    "SELECT DISTINCT (e.val)::text AS child_id "
+    'FROM "{schema}".jobs j '
+    "CROSS JOIN LATERAL jsonb_array_elements_text(j.metadata->'child_flows') AS e(val) "
+    "WHERE (j.metadata->>'flow_id')::uuid = $1 AND j.metadata ? 'child_flows' "
+    "ORDER BY child_id LIMIT $2"
 )
 
 
@@ -161,6 +174,13 @@ class RunView:
     # a run with no map/fork fan-out.
     root_map_done: int = 0
     root_map_children: int = 0
+    # THE PARENT↔CHILD LINKS (rv5-C5b's cure — the admin is not
+    # child-blind): the run's own child-flow receipts (the parent's
+    # page links each child's run page) and the run's OWN parent (a
+    # child flow's page links back). Both are ROW facts — the identity
+    # faces the child line landed, surfaced.
+    child_flows: tuple[str, ...] = ()
+    parent_flow_id: str | None = None
 
     def derive(self) -> str:
         """THE derivation's output, cached onto the view (the report's
@@ -175,13 +195,32 @@ class RunView:
 def _normalize_hold(row: Mapping[str, Any]) -> dict[str, Any]:
     """The hold row's json-safe shape: the uuid7 id (the reply handle)
     and the clocks as text — the boot JSON and the SSE frames are JSON,
-    and a UUID in them is the TypeError the frame must never carry."""
+    and a UUID in them is the TypeError the frame must never carry.
+
+    THE TIMER'S BRANCH (the timer-cures lane's cure 3): a hold under
+    the reserved ``__timer__`` prefix IS a timer — the enrichment names
+    it so (``is_timer``, the stripped ``timer_key``, and the wake's
+    ``fired_by`` once delivered) so the renderers branch on the ROW's
+    own truth: a timer renders AS a timer (the key, the scheduled
+    instant, the clock as the resolver), never as a human decision
+    with a Resolve form the boundary would refuse."""
     out = dict(row)
     for key, value in out.items():
         if isinstance(value, datetime):
             out[key] = value.isoformat()
         elif isinstance(value, uuid.UUID):
             out[key] = str(value)
+    from taskq.workflows.api._hitl import TIMER_SIGNAL_PREFIX, starts_with_timer
+
+    signal_name = out.get("signal_name")
+    is_timer = isinstance(signal_name, str) and starts_with_timer(signal_name)
+    out["is_timer"] = is_timer
+    out["timer_key"] = str(signal_name)[len(TIMER_SIGNAL_PREFIX) :] if is_timer else None
+    out["timer_fired_by"] = None
+    if is_timer:
+        payload = out.get("payload")
+        if isinstance(payload, dict) and isinstance(payload.get("fired_by"), str):
+            out["timer_fired_by"] = payload["fired_by"]
     return out
 
 
@@ -220,13 +259,27 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
         if node_ids
         else {}
     )
-    return _run_view_from_rows(
+    view = _run_view_from_rows(
         dict(root),
         [dict(r) for r in node_rows],
         [dict(r) for r in edge_rows],
         [dict(r) for r in hold_rows],
         progress,
     )
+    # THE PARENT↔CHILD LINKS (rv5-C5b): the receipts' read rides the
+    # SAME grouped read (one connection, the page's own query budget).
+    child_rows = await conn.fetch(
+        _RUN_CHILD_FLOWS_SQL.format(schema=schema), run_id, _CHILD_LINKS_DISPLAY_LIMIT
+    )
+    view.child_flows = tuple(str(r["child_id"]) for r in child_rows)
+    if root["parent_flow_id"] is not None:
+        view.parent_flow_id = str(root["parent_flow_id"])
+    return view
+
+
+#: The child-links' display bound (the runs list's pagination idiom: a
+#: 10k fan-out renders the first ids; the count speaks past the cap).
+_CHILD_LINKS_DISPLAY_LIMIT: int = 50
 
 
 #: The display bound the jobs page's Data section carries (the same

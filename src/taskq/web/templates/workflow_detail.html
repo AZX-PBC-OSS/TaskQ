@@ -43,10 +43,27 @@
     </div>
 </div>
 
-{# THE GRAPH: rendered ONCE by the vendored mermaid from the boot JSON's
-   rows-alone emission; every later update is a classList/text patch on
-   data-node-key — zero re-renders. Keyboard operability: each node is
-   tab-focusable and Enter opens the panel. #}
+{# THE FLOW FAMILY (rv5-C5b's cure — the admin is not child-blind):
+   the parent↔child links are ROW facts (the child flows' receipts on
+   the parent's node rows; the parent pointer on the child's root) —
+   the identity faces the child line landed, surfaced: the operator can
+   walk the family, cancel the right run, see whose join waits. #}
+{% if run.parent_flow_id or run.child_flows %}
+<div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6" data-wf="flow-family">
+    <h3 class="text-sm font-semibold mb-2">Flow family</h3>
+    {% if run.parent_flow_id %}
+    <div class="text-sm"><span class="text-xs uppercase text-slate-500 dark:text-slate-400">Parent flow:</span>
+        <a class="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline" href="{{ base_path }}/workflows/{{ run.parent_flow_id }}" data-wf="parent-link">{{ run.parent_flow_id }}</a></div>
+    {% endif %}
+    {% if run.child_flows %}
+    <div class="text-sm mt-1"><span class="text-xs uppercase text-slate-500 dark:text-slate-400">Child flows ({{ run.child_flows | length }}):</span>
+        <span class="font-mono text-xs">
+        {% for c in run.child_flows %}<a class="text-blue-600 dark:text-blue-400 hover:underline" href="{{ base_path }}/workflows/{{ c }}" data-wf="child-link">{{ c[:8] }}</a>{% endfor %}
+        </span></div>
+    {% endif %}
+</div>
+{% endif %}
+
 <div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold">Run graph</h3>
@@ -80,6 +97,34 @@
     {% else %}
     <ul class="space-y-3">
         {% for h in holds %}
+        {% if h.is_timer %}
+        {# THE TIMER'S BRANCH (the timer-cures lane's cure 3): a timer
+           hold renders AS a timer — the key, the scheduled instant, the
+           clock as the resolver — and NO resolve affordance: the
+           boundary is refuse-only (the clock is the only resolver this
+           hold takes). #}
+        <li class="border border-slate-200 dark:border-slate-800 rounded p-3 text-sm" data-hold-id="{{ h.hold_id }}">
+            <div class="flex flex-wrap items-center gap-2">
+                <span class="font-mono text-xs">{{ h.hold_id }}</span>
+                {% if h.status == 'held' %}
+                <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">held</span>
+                {% else %}
+                <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">{{ h.status }}</span>
+                {% endif %}
+                <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-200">durable timer</span>
+                <span>timer key: {{ h.timer_key or '(anonymous)' }} · node {{ h.node }} · epoch {{ h.epoch }}</span>
+            </div>
+            <div class="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                <div>scheduled: {{ h.expires_at or '—' }}</div>
+                {% if h.timer_fired_by %}<div>fired_by: {{ h.timer_fired_by }} (the clock resolved this hold)</div>{% endif %}
+                {% if h.resolved_at %}<div>resolved_at: {{ h.resolved_at }}</div>{% endif %}
+            </div>
+            <div class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                the clock is the only resolver — the wake fires itself at/after the
+                scheduled instant; there is nothing for a hand to answer here.
+            </div>
+        </li>
+        {% else %}
         <li class="border border-slate-200 dark:border-slate-800 rounded p-3 text-sm" data-hold-id="{{ h.hold_id }}">
             <div class="flex flex-wrap items-center gap-2">
                 <span class="font-mono text-xs">{{ h.hold_id }}</span>
@@ -119,6 +164,7 @@
             </form>
             {% endif %}
         </li>
+        {% endif %}
         {% endfor %}
     </ul>
     {% endif %}

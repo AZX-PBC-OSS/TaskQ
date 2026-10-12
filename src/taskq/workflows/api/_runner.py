@@ -89,13 +89,11 @@ from taskq.workflows.api._runner_codec import (
     encode_result,
     next_data,
 )
-from taskq.workflows.api._runner_errors import WorkflowRunError
+from taskq.workflows.api._runner_errors import VanishedNodeError, WorkflowRunError
 from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import LadderOps
 from taskq.workflows.api._runner_loop import LoopOps
 from taskq.workflows.api._sql_runner import (
-    CANCEL_NODES_SQL_TEMPLATE,
-    CANCEL_ROOT_SQL_TEMPLATE,
     CLAIMABLE_NODES_SQL_TEMPLATE,
     EDGE_INSERT_SQL_TEMPLATE,
     FLOW_FAILURE_SQL_TEMPLATE,
@@ -125,7 +123,7 @@ from taskq.workflows.ledger import (
     step_idempotency_scope,
 )
 
-__all__ = ["FlowRunner", "StepContext", "WorkflowRunError"]
+__all__ = ["FlowRunner", "StepContext", "VanishedNodeError", "WorkflowRunError"]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -177,6 +175,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         self._chain_steps: dict[str, Any] = {
             step_key: chain for chain in getattr(compiled, "chains", ()) for step_key in chain.steps
         }
+        # THE DESCENDANT RUNNERS' CACHE (T28 — the child flows): the
+        # child flow's runner resolved ONCE per drive (the root's
+        # stamped workflow name → the compile registry).
+        self._child_runners: dict[str, FlowRunner] = {}
 
     # ── create ───────────────────────────────────────────────────────
 
@@ -185,6 +187,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         input: object = None,
         run_key: str | None = None,
+        root_metadata_extra: dict[str, object] | None = None,
     ) -> RunClaim:
         """Create the run: the flow root (its payload CARRIES the input —
         cut #7) + every non-map node upfront (the join-wait rows among
@@ -224,9 +227,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         re-fired. THE REAP BELT: the census-grace arm
         (:func:`taskq.workflows._sweep.reap_nodeless_roots`) reaps any
         orphan that could ever exist (a future statement-order
-        regression's debris) past the grace."""
+        regression's debris) past the grace.
+
+        THE PROVENANCE STAMPS (T28 — the child flows' identity):
+        *root_metadata_extra* rides the SAME create transaction (the
+        child root's parent pointers land ATOMICALLY with the root —
+        never a post-create UPDATE that would re-open the orphan window
+        this seam closed). ``None`` (the default) = the shipped shape
+        byte-identical.
+        """
         async with self.pool.acquire() as conn, conn.transaction():
-            claim = await self._insert_root(conn, input, run_key)
+            claim = await self._insert_root(conn, input, run_key, root_metadata_extra)
             complete = claim.created
             if not complete:
                 # THE RETRY-COMPLETION CENSUS: the orphan's signature is
@@ -265,7 +276,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         raw = await conn.fetchval(render_sql(FLOW_NODE_CENSUS_SQL_TEMPLATE, self.schema), flow_id)
         return int(raw or 0)
 
-    async def _insert_root(self, conn: ConnLike, input: object, run_key: str | None) -> RunClaim:
+    async def _insert_root(
+        self,
+        conn: ConnLike,
+        input: object,
+        run_key: str | None,
+        root_metadata_extra: dict[str, object] | None = None,
+    ) -> RunClaim:
         key = run_key or f"flow:{new_uuid()}"
         entry_payload: dict[str, object] = {INPUT_KEY: encode_data_arg(input)}
         return await insert_flow_run(
@@ -273,6 +290,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             self.wsql,
             entry=FlowEntryShim(self.compiled.name, entry_payload),
             run_key=key,
+            extra_metadata=root_metadata_extra,
         )
 
     async def _insert_static_nodes(self, conn: ConnLike, flow_id: JobId, input: object) -> None:
@@ -410,19 +428,98 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     async def tick(self, flow_id: JobId, *, execute: bool = True) -> bool:
         """One dispatch pass: claim + run + finalize every claimable node
         (``execute=True`` — the dev-loop driver); then the sweep arms
-        (the crash-window heal + the outbox drain). With
-        ``execute=False`` the sweep arms only — the orchestration-only
-        pass. Returns whether ANY node ran."""
+        (the crash-window heal + the outbox drain + the DURABLE TIMER's
+        fire — T28: the dev loop's timer arm mirrors the leader's, so a
+        timer flow completes in-process exactly as it completes on the
+        fleet). With ``execute=False`` the sweep arms only — the
+        orchestration-only pass. Returns whether ANY node ran."""
         ran = False
         if execute:
             for row in await self._claimable(flow_id):
                 ran = True
                 await self._run_node(flow_id, row)
+            # THE DESCENDANT FLOWS (T28 — the child flows): the child is
+            # a REAL flow — the dev-loop driver walks the receipts and
+            # claims its rows too (the fleet door needs nothing: the
+            # child's rows are queue-dispatched like any flow's).
+            ran |= await self._drive_descendants(flow_id, execute=execute)
         from taskq.workflows._sweep import drain_outbox, sweep_join_rederive
 
         await sweep_join_rederive(self.pool, self.wsql)
+        # THE CHILD-JOIN WAKE (T28): the child's terminal is the join
+        # hold's resolver — the arm runs AFTER the root-maintain leg (a
+        # child terminalized THIS tick wakes its waiter THIS tick).
+        from taskq.workflows.api._hitl import sweep_child_joins
+
+        await sweep_child_joins(self.pool, self.wsql)
+        # THE EXPIRY ARM (rv5-C5a — the dev-drives parity): the tick
+        # runs the signal sweep's expiry leg, so a ``timeout_s`` wait in
+        # a DEV DRIVE fires the ``Expired`` member exactly as it does
+        # under the leader's belt — the pre-cure dev face parked on the
+        # hold until ``max_ticks`` (the deadline inert, the dev loop a
+        # different engine from the fleet's).
+        from taskq.workflows.api._hitl import sweep_expired_signals
+
+        await sweep_expired_signals(self.pool, schema=self.schema)
         await drain_outbox(self.pool, self.wsql)
+        from taskq.workflows.api._hitl import sweep_due_timers
+
+        # THE DRAIN (the timer-cures lane's cure 4): the dev loop's
+        # timer arm mirrors the leader's — the due set empties per tick.
+        await sweep_due_timers(self.pool, schema=self.schema, drain=True)
         return ran
+
+    async def _drive_descendants(self, flow_id: JobId, *, execute: bool) -> bool:
+        """The descendant flows' one claim pass (the dev-loop driver's
+        face — T28): the receipts' recursive walk (the UNION's dedup
+        terminates it), each descendant's claimable nodes run through
+        ITS OWN runner (the child's compiled graph resolves its bodies
+        and args — never the parent's)."""
+        from taskq.workflows._childflow import DESCENDANT_FLOWS_SQL_TEMPLATE
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(render_sql(DESCENDANT_FLOWS_SQL_TEMPLATE, self.schema), flow_id)
+        ran = False
+        for fid_row in rows:
+            fid = JobId(fid_row["fid"])
+            child = await self._runner_for_flow(fid)
+            if child is None or not execute:
+                continue
+            for row in await child._claimable(fid):
+                ran = True
+                await child._run_node(fid, row)
+        return ran
+
+    async def _runner_for_flow(self, flow_id: JobId) -> FlowRunner | None:
+        """The descendant flow's runner: the root row's stamped workflow
+        name resolves through the compile registry (D1 — the same
+        registry the spawn and the fleet door read). ``None`` = the
+        name is unregistered in THIS process (loud, logged; the rows
+        keep their work for a driver that carries the definition)."""
+        from taskq.workflows._childflow import FLOW_WORKFLOW_NAME_SQL_TEMPLATE
+        from taskq.workflows._worker_execution import get_compiled_workflow
+
+        async with self.pool.acquire() as conn:
+            name = await conn.fetchval(
+                render_sql(FLOW_WORKFLOW_NAME_SQL_TEMPLATE, self.schema), flow_id
+            )
+        if not name:
+            return None
+        cached = self._child_runners.get(str(flow_id))
+        if cached is not None:
+            return cached
+        try:
+            compiled = get_compiled_workflow(name)
+        except KeyError:
+            logger.warning(
+                "childflow.definition_unregistered",
+                run_id=str(flow_id),
+                workflow=name,
+            )
+            return None
+        child = FlowRunner(compiled, self.pool, self.schema)
+        self._child_runners[str(flow_id)] = child
+        return child
 
     async def _claimable(self, flow_id: JobId) -> list[dict[str, Any]]:
         async with self.pool.acquire() as conn:
@@ -432,7 +529,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     async def _run_node(self, flow_id: JobId, row: dict[str, Any]) -> None:
         node_key = row["step_key"]
         node = self.compiled.nodes.get(node_key)
-        body = self._resolve_body(node_key, node)
+        try:
+            body = self._resolve_body(node_key, node)
+        except WorkflowRunError as exc:
+            # THE VANISHED-NODE WEDGE's LOUD TERMINAL (rv5-t6's cure):
+            # the body resolves NOWHERE (the structural redeploy — the
+            # registry-is-truth law, D1). Before this cure the error
+            # escaped drive() RAW — the row stayed ``pending``, the root
+            # ``running``, NOTHING surfaced on the run (the eternal
+            # zombie). Now the node is CLAIMED (the attempt's ledger row
+            # exists — the record's truth) and routed through the
+            # ladder, whose DETERMINISTIC route terminal-fails it on the
+            # first attempt with the typed class on the record; T06's
+            # propagation fails the root. The driver never raises; the
+            # rows tell the operator the truth.
+            await self._fail_vanished_node(flow_id, row, exc)
+            return
         # THE CLAIM (two fenced writes, one grant of work): the JOB row
         # goes running under this worker (the attempt increments — the
         # fence's token), and the LEDGER claim inserts the attempt's
@@ -468,6 +580,50 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # stamps claim_epoch 0; the fleet's dispatch claim carries the
         # row's epoch).
         await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+
+    async def _fail_vanished_node(
+        self, flow_id: JobId, row: dict[str, Any], exc: WorkflowRunError
+    ) -> None:
+        """THE VANISHED-NODE WEDGE's loud terminal (rv5-t6's cure — the
+        structural redeploy's pending row must terminal-fail, never
+        zombie). The node is claimed HERE (the CAS — pending → running,
+        the attempt incremented, the ledger claim's running row inserted:
+        the record's truth), then the error routes through
+        :meth:`LadderOps._ladder_or_fail` — :class:`VanishedNodeError` is
+        a DETERMINISTIC authoring failure (a re-run can never resolve a
+        key the registry does not carry), so the ladder's deterministic
+        route terminal-fails the node ON THE FIRST ATTEMPT with the typed
+        class + the cancel-then-restart remedy on the record, the ladder
+        unburned; T06's propagation fails the root.
+
+        A lost CAS (a peer claimed the row first — or the flow died)
+        touches nothing: the winner's own drive owns the verdict."""
+        async with self.pool.acquire() as conn:
+            claimed = await conn.fetchval(
+                render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
+            )
+            if claimed is not None:
+                from taskq.workflows.ledger import claim_step_ledger
+
+                await claim_step_ledger(
+                    conn,
+                    self.wsql,
+                    flow_id=flow_id,
+                    job_id=JobId(row["id"]),
+                    step_key=row["step_key"],
+                    map_index=row["map_index"],
+                    attempt=int(claimed),
+                )
+        if claimed is None:
+            return  # someone else claimed it (or the flow died) — their drive owns the verdict
+        logger.warning(
+            "node.vanished-from-registry",
+            run_id=str(flow_id),
+            node=row["step_key"],
+            error_class=type(exc).__name__,
+            error=str(exc)[:200],
+        )
+        await self._ladder_or_fail(flow_id, row, int(claimed), None, exc)
 
     def _deps_tail(self, body: Callable[..., object], wired_count: int) -> tuple[object, ...]:
         """THE DEPS SEAM'S INJECTION (the DI capability's runtime face):
@@ -518,6 +674,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
 
         node_key = row["step_key"]
         node = self.compiled.nodes.get(node_key)
+        # THE FLEET DOOR KEEPS THE PARKING SHAPE (the deploy matrix's own
+        # law — the door's pins enforce it): a body unresolvable in THIS
+        # process raises; the door translates it to the
+        # WorkflowBodyUnresolvableError parking (the loud, budget-free
+        # snooze) and the fleet's OTHER workers — the new deploy's
+        # rolling wave — re-claim and finish the run. This is the skew
+        # face, deliberately NOT T6's terminal: the dev drive
+        # (:meth:`_run_node`) is the workflow-OWNING process (no other
+        # resolver exists — the vanished key is the run's own wedge, and
+        # THAT door terminal-fails loudly); the fleet worker is one
+        # claimant among many (the parking is the handoff, never a
+        # zombie).
         body = self._resolve_body(node_key, node)
         async with self.pool.acquire() as conn:
             claim = await claim_step_ledger(
@@ -614,6 +782,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             None  # the typed route's prebuilt fork (T27 — the body path builds it from the LIVE elements)
         )
 
+        # THE RESULT'S BINDING (the tail's read): the miss path's
+        # envelope, None on the hit path (the hit's finalize IS the
+        # tail's — below — and returns before the miss finalize reads
+        # this).
+        result: dict[str, object] | None = None
         ctx = build_step_context(
             flow_id=flow_id,
             job_id=JobId(row["id"]),
@@ -669,6 +842,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             # store happens ON TERMINAL-SUCCEEDED ONLY (the
             # failed-run-squats-the-key bug closed by construction).
             cache_address: str | None = None
+            cache_hit: CachedStep | None = None
             if node is not None and node.cache and body is not None and node.kind == "step":
                 code_version = self._body_code_version(row["step_key"], node, body)
                 if code_version is None:
@@ -688,24 +862,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     hit = await lookup_step_cache(self.pool, self.wsql, address=cache_address)
                     if hit is not None:
                         # THE HIT: the cached envelope IS the result —
-                        # the same fenced finalize, the same typed
-                        # decode downstream (the body NEVER runs).
-                        final = await self._finalize_success(
-                            flow_id,
-                            row,
-                            attempt,
-                            node,
-                            hit.envelope,
-                            claim_epoch=claim_epoch,
-                        )
-                        await emitter.aclose()
-                        if final.applied:
-                            await self._write_cache_receipt(
-                                JobId(row["id"]), row["step_key"], flow_id, hit
-                            )
-                        return "succeeded"
+                        # the finalize runs OUTSIDE the body boundary
+                        # (the claim tail, below — the unify cure): the
+                        # body NEVER runs, the same typed decode
+                        # downstream.
+                        cache_hit = hit
 
-            if body is None:
+            if cache_hit is not None:
+                # THE HIT: the body NEVER runs — the cached envelope's
+                # finalize is the CLAIM TAIL'S (below, outside the body
+                # boundary: the unify cure — a finalize fault there is
+                # machinery, never a body failure).
+                pass
+            elif body is None:
                 # THE DEFAULT IDENTITY PACKER (the join/gather kinds): the
                 # join's result IS the decoded parents' list — the FLAT
                 # shape the downstream body's list param declares (the
@@ -725,7 +894,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     parents_values = [
                         item for v in parents_values for item in cast(list[object], v)
                     ]
-                result: dict[str, object] | None = {"value": parents_values}
+                result = {"value": parents_values}
             else:
                 deps_tail = self._deps_tail(body, len(args))
                 outcome_value = await body(ctx, *args, *deps_tail)
@@ -816,6 +985,34 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
             return "laddered"
         await emitter.aclose()
+        if cache_hit is not None:
+            # THE HIT'S FINALIZE — THE CLAIM TAIL, OUTSIDE THE BODY
+            # BOUNDARY (the unify cure, CURE 6a): a fault escaping THIS
+            # finalize is the MACHINERY's seat, never the body's — the
+            # body never ran, and the identical fault on the MISS path
+            # (below) already escapes through this exact tail (the
+            # escape-point contract: the machinery boundary's classifier
+            # reads WHERE the error escaped). The pre-cure seat routed
+            # the hit's finalize fault through the body ladder: a
+            # transient blip terminal-failed a max_attempts=1 step whose
+            # body never ran (the live repro:
+            # .measurements/cache-cures/hit_finalize_fault_repro.py —
+            # node failed, InterfaceError on the record, the run killed
+            # UnabsorbedNodeFailure). One fault, one seat: the infra
+            # class — the reclaim, the ladder unburned.
+            final = await self._finalize_success(
+                flow_id,
+                row,
+                attempt,
+                node,
+                cache_hit.envelope,
+                claim_epoch=claim_epoch,
+            )
+            if final.applied:
+                await self._write_cache_receipt(
+                    JobId(row["id"]), row["step_key"], flow_id, cache_hit
+                )
+            return "succeeded"
         # THE FORK-VALIDATION RAISE IS IN THE LADDER'S TRY (rv4 F8's
         # cure): the map fork's build (and the fork's own validation,
         # insert_fork's door) runs INSIDE _finalize_success — before this
@@ -961,7 +1158,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         the runner's default IDENTITY packer (the join's result IS the
         decoded parents' list). The registry answers FIRST: the
         fork-spawned keys (``<src>.item``, the outbox consumers) have no
-        compiled NodeDecl — their bodies live in the definition only."""
+        compiled NodeDecl — their bodies live in the definition only.
+
+        THE VANISHED-NODE WEDGE (the structural redeploy — rv5-t6's
+        cure): a key in NEITHER the compiled graph nor the registered
+        definition raises the TYPED :class:`VanishedNodeError` — the
+        redeploy renamed/removed the node while this run was in flight,
+        and no re-run can ever resolve it. The claimants of the wedge
+        (``_run_node`` / :meth:`run_fleet_claimed_step`) route the typed
+        error into the ladder's DETERMINISTIC terminal — the node
+        terminal-fails with the class on the record, the root follows,
+        never an eternal zombie."""
         from taskq.workflows.definitions import resolve_step_body
 
         try:
@@ -969,11 +1176,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         except KeyError:
             pass
         if node is None:
-            raise WorkflowRunError(
+            raise VanishedNodeError(
                 f"step {node_key!r} is not in workflow "
                 f"{self.compiled.name!r}'s compiled graph nor in its "
-                "registered definition — a foreign step key (the registry "
-                "is the only body source, D1)"
+                "registered definition — THE VANISHED-NODE REDEPLOY "
+                "WEDGE: a redeploy renamed or removed this node while "
+                "the run was in flight (the registry is the truth — the "
+                "only body source, D1; a re-run can never resolve a key "
+                "it does not carry). The remedy is cancel-then-restart: "
+                "cancel this run and restart the work on the new deploy "
+                "under a fresh run key"
             )
         return node.body
 
@@ -1067,47 +1279,26 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         reason: str | None = None,
         principal: Any = None,
     ) -> int:
-        """P3 rule 4's cancel (T10): ONE transaction — the flow flip is
-        the linearization point; every non-terminal node + held signal
-        resolves in the same snapshot; running children take the
+        """P3 rule 4's cancel (T10): ONE transaction per run — the flow
+        flip is the linearization point; every non-terminal node + held
+        signal resolves in the same snapshot; running children take the
         existing two-phase cooperative cancel; terminal rows untouched;
         IDEMPOTENT (cancel twice = one cancel — a terminal root updates
         nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
-        log line."""
-        # THE REASON'S SHAPE PIN AT THE WRITE (finding 10's cure): the
-        # root flip binds the reason into `jobs.error_message` — a raw
-        # NUL byte refused THAT bind and rolled back the WHOLE cancel.
-        # One law, both binds: `taskq.audit.bound_reason`.
-        from taskq.audit import bound_reason
-        from taskq.workflows.api._hitl import cancel_run_signals
+        log line.
 
-        bounded_reason = bound_reason(reason or "cancel_workflow", 500)
+        THE CASCADE IS THE ROWS' OWN (rv5-C2b/C4's cure — the SAME walk
+        the id-addressed verb carries): the worklist walk, never Python
+        recursion (a 1200-deep cascade cancels clean), and the children
+        are read from the ROWS' crash-safe ``parent_flow_id`` direction
+        FIRST (the receipts the accelerator, the rows the law — the
+        crash between create and receipt-write no longer orphans a
+        child from the cascade)."""
+        from taskq.workflows.api._runner_exit import cancel_cascade
 
-        async with self.pool.acquire() as conn, conn.transaction():
-            flipped = await conn.fetchval(
-                render_sql(CANCEL_ROOT_SQL_TEMPLATE, self.schema),
-                flow_id,
-                bounded_reason,
-            )
-            if flipped is None:
-                return 0  # already terminal — idempotent
-            await conn.execute(render_sql(CANCEL_NODES_SQL_TEMPLATE, self.schema), flow_id)
-            held = await cancel_run_signals(conn, schema=self.schema, workflow_id=flow_id)
-            # THE AUDIT ROW (the caller owns the tx — the same-tx
-            # guarantee; the lazy import keeps the layering).
-            from taskq.audit import record_admin_action
-
-            await record_admin_action(
-                conn,
-                schema=self.schema,
-                principal=principal,
-                action="workflow.cancel",
-                target_type="workflow_run",
-                target_id=str(flow_id),
-                reason=reason,
-                detail={"held_signals_cancelled": held},
-            )
-        return held + 1
+        return await cancel_cascade(
+            self.pool, schema=self.schema, flow_id=flow_id, reason=reason, principal=principal
+        )
 
     async def _finalize_success(
         self,

@@ -85,7 +85,15 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     * :class:`FanInBoundExceededError` — the fork's fan-in past the
       declared bound (the rv4 F8 cure: re-running cannot shrink the
       corpus; the refusal NAMES the child_driven escape — the remedy is
-      a re-wiring, never a retry).
+      a re-wiring, never a retry);
+    * :class:`SpawnDepthExceededError` — the spawn's ancestor walk past
+      the declared max depth (rv5-C2's cure: re-running cannot shrink
+      the ancestor chain — the child line's own bound, the fan-in
+      bound's sibling);
+    * :class:`ChildFlowLostError` — the parent's resume found a
+      DANGLING child pointer (rv5-C3's cure: re-running cannot restore
+      the purged rows — the respawn refusal is the honest face, the
+      silent re-execution it replaced was the lie).
 
     THE ROUTING RULE, per class (the pin drills all three legs):
     ``deterministic = the NAMED terminal`` (finalize immediately, the
@@ -101,8 +109,11 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     emission used to burn the whole ladder and terminalize as a raw
     laddered failure — the deterministic death, mislabeled transient.
     """
+    from taskq.exceptions import ReservedTimerNamespaceError
+    from taskq.workflows._childflow import ChildFlowLostError, SpawnDepthExceededError
     from taskq.workflows._emit import MapIndexExhaustedError, PageDivergedError
     from taskq.workflows._progress import ProgressRefusedError
+    from taskq.workflows.api._runner_errors import VanishedNodeError
     from taskq.workflows.definitions import FanInBoundExceededError
 
     deterministic: tuple[type[BaseException], ...] = (
@@ -110,6 +121,18 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
         PageDivergedError,
         MapIndexExhaustedError,
         FanInBoundExceededError,
+        # E17 — the reserved-timer-prefix mint refusal (the timer-cures
+        # lane's cure 1): the payload model's NAME is the code's own —
+        # re-running the body re-raises the same refusal on every
+        # attempt (a retry budget spent on it is the record's lie).
+        ReservedTimerNamespaceError,
+        SpawnDepthExceededError,
+        ChildFlowLostError,
+        # THE VANISHED-NODE REDEPLOY WEDGE (rv5-t6's cure): a step key
+        # the registry does not carry has NO body on ANY attempt — the
+        # registry is the truth (D1); the remedy is cancel-then-restart,
+        # never a retry budget spent on an unresolvable key.
+        VanishedNodeError,
     )
     return isinstance(exc, deterministic)
 
@@ -135,6 +158,24 @@ class LadderOps(_LadderHost):
 
     __slots__ = ()
 
+    def _map_child_ladder_terms(self, node_key: str) -> tuple[int, str]:
+        """The fork-spawned map child's LADDER TERMS (the F3 cure): the
+        SOURCE's ``map_max_attempts`` + ``retry_kind`` — the same
+        inheritance the progress schema's read carries
+        (:meth:`_progress_schema`: the ``.item`` / ``.item:`` derived
+        namespaces have no decl of their own). A step key that is no
+        map child (an outbox consumer, the escalation step) keeps the
+        engine's defaults (3 / transient) — the pre-cure fallback,
+        correct for every key the fork never spawned."""
+        source: Any = None
+        if node_key.endswith(".item"):
+            source = self.compiled.nodes.get(node_key[: -len(".item")])
+        elif ".item:" in node_key:
+            source = self.compiled.nodes.get(node_key.split(".item:", 1)[0])
+        if source is not None:
+            return source.map_max_attempts, source.retry_kind if source.retry_kind else "transient"
+        return 3, "transient"
+
     async def _ladder_or_fail(
         self,
         flow_id: JobId,
@@ -150,14 +191,27 @@ class LadderOps(_LadderHost):
         terminal-fails (T06's propagation takes over). ``permanent`` retry
         kinds fail immediately (cut #12's classifier knob).
 
+        THE MAP CHILD'S INHERITANCE (the LedgerWatch F3 cure): a
+        fork-spawned map child (``<src>.item`` / ``<src>.item:<tag>``)
+        has NO compiled decl of its own — the ladder reads the SOURCE's
+        ``map_max_attempts`` (the knob the operator wired onto the
+        map_source, stamped on the child rows by the fork). The
+        pre-cure fallback (the bare 3) made the ROW LIE: the record
+        carried the operator's budget, the death came at the hardcoded
+        ceiling (the team's probe: a plain step wired 7 laddered 7; a
+        map item wired 7 died at 3).
+
         THE DETERMINISTIC ROUTE (the failure-class routing rule —
         :func:`is_deterministic_authoring_failure`): a DETERMINISTIC
         authoring failure finalizes immediately with the named class, the
         ladder unburned — whatever the declared ``retry_kind`` (the rule
         outranks the knob: a retry budget spent on a deterministic death
         is the record's lie)."""
-        max_attempts = node.max_attempts if node is not None else 3
-        retry_kind = node.retry_kind if node is not None else "transient"
+        if node is not None:
+            max_attempts = node.max_attempts
+            retry_kind = node.retry_kind
+        else:
+            max_attempts, retry_kind = self._map_child_ladder_terms(row["step_key"])
         # THE DETERMINISTIC ROUTE: the ladder (the count read + the
         # re-pend) is skipped entirely for a deterministic authoring
         # failure — the finalizer below runs on the first attempt.

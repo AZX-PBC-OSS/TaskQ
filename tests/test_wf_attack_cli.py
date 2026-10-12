@@ -473,6 +473,7 @@ async def test_f_cli_4_holds_collapses_and_bounds_db_sourced_reason_text(
         node_key="review",
         signal_name="Approval",
         hold_epoch=1,
+        map_index=None,
         call_id="c",
         payload=None,
         payload_schema=None,

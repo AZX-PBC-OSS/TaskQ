@@ -76,6 +76,24 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   ``Refine[...]`` feedback model (T19's pin 5, enforced): unrelated
   carriers refuse at compile; undeclarable shapes are never convicted
   on a guess.
+* E17 cache-route-source (the cache-cures round's CURE 1) — ``cache=``
+  on a typed-route source is the run that wedges FOREVER at the first
+  cache hit (the hit path cannot rebuild the route fork — the arm
+  dispatch reads the element's runtime type, the cached envelope cannot
+  carry it). Refused at the wiring attachment; re-proved here.
+* E18 cache-ctx-input (the round's CURE 3) — ``cache=True`` on a body
+  reading ``ctx.input`` is the cross-tenant leak (the flow input never
+  enters the address). Refused at the wiring verb on the static
+  source-scan; re-proved here.
+* E19 cache-exit-body (the round's CURE 6b) — ``cache=True`` on an
+  Exit-returning body silently no-ops (the exit finalize is not the
+  success-only store's seam). Refused at the wiring verb; re-proved
+  here.
+* E20 cache-unverifiable-source (the round's AMENDMENT B) —
+  ``cache=True`` on a body whose own source is not verifiable is the
+  SILENTLY uncached step (the operator learns it from a missing hit).
+  Refused at the wiring verb on the same ``own_source`` read the
+  stamper shares; re-proved here.
 * W1 the-eternal-wait — a node whose gate declares no timeout: a workflow
   that waits forever on a human is a support ticket (the explicitness
   warning, T10's ``timeout=None`` rule).
@@ -107,8 +125,12 @@ from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
-from taskq.workflows.api._graph import GateDecl, route_child_key
-from taskq.workflows.api._hints import body_hints, inner_fn, own_source
+from taskq.workflows.api._graph import (
+    GateDecl,
+    declared_exit_return,
+    route_child_key,
+)
+from taskq.workflows.api._hints import body_hints, ctx_input_reads, inner_fn, own_source
 from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
 
 if TYPE_CHECKING:
@@ -154,6 +176,10 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_deps_contract(compiled)
     diagnostics += _rule_route_totality(compiled)
     diagnostics += _rule_union_discriminator(compiled)
+    diagnostics += _rule_cache_route_source(compiled)
+    diagnostics += _rule_cache_ctx_input(compiled)
+    diagnostics += _rule_cache_exit_body(compiled)
+    diagnostics += _rule_cache_unverifiable_source(compiled)
     diagnostics += _rule_gate_door(compiled)
     diagnostics += _rule_gate_wiring(compiled)
     diagnostics += _rule_fan_in_bound(compiled)
@@ -736,6 +762,171 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
                         "contract the decode enforces.",
                     )
                 )
+    return diagnostics
+
+
+def _rule_cache_route_source(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E17 (THE CACHE-ROUTE WEDGE'S REFUSAL — the cache-cures round's
+    CURE 1, MERGE-BLOCKER P8f): ``cache=True`` on a typed-route source is
+    the run that wedges FOREVER at its first cache hit. The hit path
+    terminalizes the source from the cached envelope and NEVER rebuilds
+    the route fork — the arm dispatch reads the element's RUNTIME type
+    and the cached envelope carries only encoded dicts, so the fork
+    CANNOT be rebuilt from the envelope by construction (this is the
+    reads' own evidence: the map face rebuilds from the envelope, the
+    route face mechanically cannot). The route's children never spawn,
+    the join never fires, and the run stands wedged with the source row
+    reading ``succeeded`` wearing a ``wf_cache_hit`` receipt — the
+    operator's first look says healthy. The wiring verbs refuse the
+    combination (``route()`` / ``map_source``'s dict form at the
+    attachment); this rule re-proves the fence from the compiled graph
+    itself (public, mutable data — E3's precedent). The alternative the
+    message names: cache the route's ARMS' work, never the fork-spawning
+    source."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        if node.map_arms is None or not node.cache:
+            continue
+        diagnostics.append(
+            WorkflowValidationError(
+                "E17-cache-route-source",
+                "error",
+                f"node {node.key!r} declares cache=True and carries a "
+                "typed route — the combination wedges the run FOREVER at "
+                "the first cache hit: the hit path never rebuilds the "
+                "route fork (the arm dispatch reads the element's runtime "
+                "type; the cached envelope carries only encoded dicts), "
+                "the route's children and join never spawn, and the run "
+                "stands wedged with the source reading succeeded wearing "
+                "a wf_cache_hit receipt. Cache the route's ARMS' work, "
+                "not the fork: leave the source uncached and let each "
+                "arm's own downstream cacheable step carry the cache=True",
+            )
+        )
+    return diagnostics
+
+
+def _rule_cache_ctx_input(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E18 (THE ctx.input CROSS-TENANT LEAK'S REFUSAL — the cache-cures
+    round's CURE 3): ``cache=True`` on a body whose source reads
+    ``ctx.input`` is the leak the address cannot see. The address covers
+    the WIRED args only — the FLOW input never enters it — so a cached
+    answer produced under one flow input serves a LATER run whose flow
+    input differs: tenant A's answer delivered to tenant B,
+    terminal-success, audits clean (the live repro:
+    ``.measurements/cache-cures/ctx_input_leak_repro.py``). The wiring
+    verb refuses on the same static source-scan
+    (:func:`taskq.workflows.api._hints.ctx_input_reads` — the ONE walk
+    both faces read); this rule re-proves the fence from the compiled
+    graph (checker-independently). The scan is CRUDE, on purpose: a
+    helper the body calls may read ``ctx.input`` unseen — the same
+    closure boundary the address's helper-closure law states (the
+    guide's determinism section); the cure it names regardless: lift the
+    flow input into the dataflow with an UNcached upstream step and wire
+    its result as a PARAM (the param enters the address). An unreadable
+    body source SKIPS (the zero-false-positive doctrine — a guess is
+    never convicted)."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        if not node.cache or node.body is None:
+            continue
+        reads = ctx_input_reads(node.body)
+        if reads is None or not reads:
+            continue  # the unreadable source — a guess is never convicted
+        diagnostics.append(
+            WorkflowValidationError(
+                "E18-cache-ctx-input",
+                "error",
+                f"node {node.key!r} declares cache=True but its body "
+                "reads ctx.input — the flow input never enters the cache "
+                "address (the wired args do): the cached answer produced "
+                "under one flow input would serve a LATER run whose "
+                "input differs (the cross-tenant leak — A's answer "
+                "delivered to B, terminal-success, audits clean). Lift "
+                "the flow input into the dataflow with an UNcached "
+                "upstream step and wire its result as this body's PARAM "
+                "(the param enters the address), or drop cache=True",
+            )
+        )
+    return diagnostics
+
+
+def _rule_cache_exit_body(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E19 (THE Exit NO-OP'S REFUSAL — the cache-cures round's CURE 6b):
+    ``cache=True`` on an Exit-returning body SILENTLY NO-OPS. The
+    sentinel terminalizes through the exit finalize
+    (``_finalize_exit``), which the success-only store never sees —
+    every run re-executes the body while the operator believes it
+    caches (the store's seam is the succeeded finalize's tail; the exit
+    path returns before it). The wiring verb refuses on the same static
+    read (:func:`taskq.workflows.api._graph.declared_exit_return` — the
+    ONE walk both faces read, unions and list elements included); this
+    rule re-proves the fence from the compiled graph. The cure the
+    message names: return the DATA result and let the cache hold it, or
+    drop cache=True. An unresolvable annotation SKIPS (the
+    zero-false-positive doctrine)."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        if not node.cache or node.body is None:
+            continue
+        if not declared_exit_return(node.body):
+            continue
+        diagnostics.append(
+            WorkflowValidationError(
+                "E19-cache-exit-body",
+                "error",
+                f"node {node.key!r} declares cache=True but its body "
+                "declares the Exit sentinel as (or inside) its return — "
+                "an Exit terminalizes through the exit finalize, which "
+                "the success-only store never sees: the cache would "
+                "silently no-op (every run re-executes the body while "
+                "the operator believes it caches). Return the DATA "
+                "result (the declared R) and let the cache hold it, or "
+                "drop cache=True",
+            )
+        )
+    return diagnostics
+
+
+def _rule_cache_unverifiable_source(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """E20 (THE UNVERIFIABLE-SOURCE PRECONDITION — the cache-cures
+    round's AMENDMENT B, the import-probe's #3): ``cache=True`` on a body
+    whose OWN source is not verifiable (a builtin, a partial, an exec'd
+    fragment whose slice cannot be proven its own) is the SILENTLY
+    uncached step. The address requires the §22.1 code-version canon —
+    module + qualname + the body's own source, through the same
+    :func:`taskq.workflows.api._hints.own_source` read the claim path's
+    stamper shares — and an unreadable source made the runner log
+    ``step-cache-unaddressable`` and cache NOTHING: the wiring accepted
+    cache=True, every run re-executed the body, and the only trace was a
+    log line the operator never reads (the operator learned the face
+    from a MISSING HIT — the defect the loud face exists to refuse). The
+    wiring verb refuses on the same read (deterministic — the claim
+    path's hash reads the same source through the same seam, so no
+    false-positive risk); this rule re-proves the fence from the
+    compiled graph. The cure the message names: a module-level def the
+    source reader can read, or drop cache=True."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        if not node.cache or node.body is None:
+            continue
+        if own_source(node.body) is not None:
+            continue
+        diagnostics.append(
+            WorkflowValidationError(
+                "E20-cache-unverifiable-source",
+                "error",
+                f"node {node.key!r} declares cache=True but its body's "
+                "source is not verifiable (a builtin, a partial, or an "
+                "exec'd fragment — the cache cannot hash what it cannot "
+                "read): the address requires the §22.1 code-version canon "
+                "(module + qualname + the body's own source), and an "
+                "unverifiable source made this step SILENTLY uncached — "
+                "every run re-executes the body while the cache machinery "
+                "looks armed. Define the body as a module-level def its "
+                "source can be read from, or drop cache=True",
+            )
+        )
     return diagnostics
 
 

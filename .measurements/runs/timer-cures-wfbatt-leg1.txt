@@ -1,0 +1,11 @@
+# THE WF BATTERY x1 at -n 8 + THE SCOPED COVERAGE GATE — leg 1 at the timer-cures head 3be15de244ba8329b24c1331a0b86251c9d94b44
+-------------------------------------------------------------------------------
+TOTAL                                          4353    297   1300    173    91%
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_wf_ctx_annotation_pins.py:138: pyright is not installed (the typeprobe dependency group owns the binary)
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 587 passed, 1 skipped, 1 warning in 60.79s (0:01:00)
+leg1 rc=0
+[gate] wf-scoped branch coverage 90.62% vs floor 90.0% — green
+[gate] recorded: /tmp/opencode/wt-timer-cures/.measurements/runs/wf-scoped-coverage-20261011T015155.json
+gate rc=0

@@ -587,17 +587,43 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             batch_size=ctx.deps.settings.event_writer_batch_size,
         )
 
-    async def wf_signal_sweep_call() -> int:
-        # THE SIGNAL SWEEP'S EXPIRY ARM (T10): the ONLY live timer on a
-        # held row — the deadline is DB-CLOCK compared; the expired hold
-        # → the DEFINED 'abandoned' state (never a silent orphan). The
-        # lazy import keeps the §16.1 import law.
-        from taskq.workflows.api._hitl import sweep_expired_signals
+    async def wf_child_join_wake_call() -> int:
+        # THE CHILD-JOIN WAKE ARM (T28): the child flow's terminal is
+        # the join hold's resolver — the terminal child CAS-delivers the
+        # held join, the parent node resumes, the T26 transport knocks.
+        # The lazy import keeps the §16.1 import law.
+        from taskq.workflows.api._hitl import sweep_child_joins
+        from taskq.workflows.engine import render_workflow_sql
 
-        return await sweep_expired_signals(
+        return await sweep_child_joins(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+        )
+
+    async def wf_signal_sweep_call() -> int:
+        # THE SIGNAL SWEEP'S TWO ARMS (T10 + T28): the expiry arm — the
+        # deadline is DB-CLOCK compared; the expired HUMAN hold → the
+        # DEFINED 'abandoned' state (never a silent orphan) — and the
+        # TIMER arm (T28, the hold whose resolver is the clock): the
+        # due timer hold → RESOLVED 'delivered' with the clock's own
+        # wake receipt (the inverted face: the wake, never the
+        # fail-close). The lazy import keeps the §16.1 import law.
+        from taskq.workflows.api._hitl import sweep_due_timers, sweep_expired_signals
+
+        expired = await sweep_expired_signals(
             ctx.deps.dispatcher_pool,
             schema=ctx.deps.settings.schema_name,
         )
+        fired = await sweep_due_timers(
+            ctx.deps.dispatcher_pool,
+            schema=ctx.deps.settings.schema_name,
+            # THE DRAIN (the timer-cures lane's cure 4): the leader's
+            # arm empties the due set per tick (batch-bounded per
+            # iteration) — the one-batch-per-pass face measured a
+            # ~50-minute worst-case tail at 10k due timers.
+            drain=True,
+        )
+        return expired + fired
 
     async def wf_hold_stamp_reconcile_call() -> int:
         # THE HOLD-STAMP RECONCILE ARM (the D2 soak's P1: the
@@ -937,6 +963,19 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             drain=False,
             dbg_tick=_dbg_tick("wf_signal_sweep_tick"),
+        ),
+        _SweepSpec(
+            # wf_child_join_wake — THE CHILD-JOIN WAKE (T28): the child
+            # flow's terminal is the join hold's resolver; a lost resume
+            # is the hold-stamp reconcile arm's belt.
+            name="wf_child_join_wake",
+            call=wf_child_join_wake_call,
+            warn_event="sweep-wf-child-join-wake-failed",
+            warn_kind="sweep_wf_child_join_wake_failed",
+            gated_on=("workflow_sweeps_capable",),
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            drain=True,
+            dbg_tick=_dbg_tick("wf_child_join_wake_tick"),
         ),
         _SweepSpec(
             # wf_hold_stamp_reconcile — THE HOLD-STAMP WEDGE'S CURE (the

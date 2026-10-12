@@ -1,0 +1,8 @@
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_wf_timer_pins.py:28: in <module>
+    from taskq.workflows import (
+E   ImportError: cannot import name 'TimerWake' from 'taskq.workflows' (/tmp/opencode/wt-timers/src/taskq/workflows/__init__.py)
+=========================== short test summary info ============================
+ERROR tests/test_wf_timer_pins.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.25s

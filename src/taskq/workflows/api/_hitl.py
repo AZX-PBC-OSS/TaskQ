@@ -36,7 +36,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
 import asyncpg
@@ -47,21 +48,31 @@ from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
+from taskq.exceptions import ReservedTimerNamespaceError
 from taskq.obs import get_logger
 from taskq.workflows._capture import redact_hold_context
+
+if TYPE_CHECKING:
+    from taskq.workflows._sql import WorkflowSql
 
 __all__ = [
     "HOLD_CHANNEL",
     "HOLD_CREATED_CHANNEL",
     "HOLD_EXPIRED_CHANNEL",
     "HOLD_RESOLVED_CHANNEL",
+    "TIMER_SIGNAL_PREFIX",
+    "TIMER_WAKE_SCHEMA_NAME",
     "DeliveryResult",
     "HitlClient",
     "delivery_refused",
+    "refuse_reserved_timer_name",
     "register_hold",
     "register_signal_models",
+    "register_timer_hold",
     "resolve_payload_fit",
     "resolve_signal_models",
+    "starts_with_timer",
+    "sweep_due_timers",
     "sweep_expired_signals",
 ]
 
@@ -97,6 +108,24 @@ NOTIFY_PAYLOAD_MAX_BYTES = 8000
 #: The hold row's status vocabulary (the statemachine's totality for the
 #: signal rows).
 SignalStatus = Literal["held", "delivered", "cancelled", "abandoned"]
+
+#: THE DURABLE TIMER'S RESERVED SIGNAL PREFIX (T28): a ``wait_until``
+#: hold is an ORDINARY hold row whose ``signal_name`` carries this
+#: prefix — the row IS the truth (the same three-row held
+#: representation, the same cancel cascade, the same answer queue),
+#: and the prefix is the ONLY thing that distinguishes the clock's
+#: hold from a human's. The faces that read holds split on it BY LAW:
+#: the expiry arm NEVER abandons a timer hold (the timer's deadline
+#: pass is THE WAKE — the inverted face), the HITL enumeration never
+#: lists one (a timer is not a human's decision), and the display
+#: surfaces (the run explorer, the CLI's holds panel) show it AS a
+#: timer — the reserved prefix is the record's own voice.
+TIMER_SIGNAL_PREFIX = "__timer__"
+
+#: The timer hold's payload-schema key (the wake's declared contract —
+#: the strict fit at the resolve boundary refuses any hand-delivered
+#: payload, so the clock stays the only resolver).
+TIMER_WAKE_SCHEMA_NAME = "TimerWake"
 
 
 # ── THE SIGNAL MODEL CATALOG (the typed door's runtime registry) ────────
@@ -281,9 +310,9 @@ def delivery_refused(reason: str) -> DeliveryResult:
 
 _HOLD_INSERT_SQL = """\
 INSERT INTO {schema}.wf_signals
-    (id, workflow_id, node_key, signal_name, hold_epoch, call_id,
+    (id, workflow_id, node_key, signal_name, hold_epoch, map_index, call_id,
      payload, payload_schema, status, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, 'held', $9)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, 'held', $10)
 RETURNING created_at
 """
 
@@ -321,17 +350,32 @@ WHERE id = $1
 RETURNING id
 """
 
+# THE HELD NODE'S ADDRESS (the F2 cure's resume leg): the hold id the
+# register stamped into the node's metadata — ONE hold, ONE node. The
+# pre-cure lookup matched `metadata ? 'hold'` alone, which EVERY
+# holding sibling satisfied: a resolve woke an arbitrary one (the map
+# siblings' shared step key made the match ambiguous).
+_HELD_NODE_BY_HOLD_SQL = """\
+SELECT id FROM {schema}.jobs WHERE step_key = $1 \
+AND (metadata->>'flow_id')::uuid = $2 \
+AND metadata->>'hold' = $3 \
+"""
+
 _LIST_SQL = """\
-SELECT id, workflow_id, node_key, signal_name, hold_epoch, call_id,
+SELECT id, workflow_id, node_key, signal_name, hold_epoch, map_index, call_id,
        payload, payload_schema, status, created_at, expires_at
 FROM {schema}.wf_signals
 WHERE workflow_id = $1
   AND status = 'held'
+  -- THE TIMER'S EXCLUSION (T28): the HITL enumeration lists the
+  -- pending HUMAN decisions — a timer hold is the clock's, the
+  -- reserved prefix is its mark (the wake fires itself).
+  AND NOT starts_with(signal_name, '__timer__')
 ORDER BY id
 """
 
 _GET_SQL = """\
-SELECT id, workflow_id, node_key, signal_name, hold_epoch, call_id,
+SELECT id, workflow_id, node_key, signal_name, hold_epoch, map_index, call_id,
        payload, payload_schema, status, created_at, expires_at, resolved_at
 FROM {schema}.wf_signals
 WHERE id = $1
@@ -359,6 +403,12 @@ WITH expired AS (
     WHERE status = 'held'
       AND expires_at IS NOT NULL
       AND expires_at <= clock_timestamp()
+      -- THE TIMER'S EXCLUSION (T28 — the inverted face): a timer
+      -- hold's deadline pass is THE WAKE, never the fail-close; the
+      -- expiry arm (the 'abandoned' state, the Expired member) is the
+      -- HUMAN hold's face and may never touch the reserved prefix —
+      -- the timer arm (sweep_due_timers) owns the clock's holds.
+      AND NOT starts_with(signal_name, '__timer__')
     ORDER BY id
     LIMIT $1
     FOR UPDATE SKIP LOCKED
@@ -409,6 +459,43 @@ def _as_hold_id(hold_id: JobId | str) -> JobId:
     return hold_id if isinstance(hold_id, UUID) else JobId(UUID(str(hold_id)))
 
 
+def starts_with_timer(signal_name: str) -> bool:
+    """The reserved prefix's one comparison (the timer hold's mark —
+    T28): the boundary's refusal leg and the sweep arms' exclusions all
+    read THIS predicate's law (the SQL arms inline the same prefix)."""
+    return signal_name.startswith(TIMER_SIGNAL_PREFIX)
+
+
+def refuse_reserved_timer_name(name: str, *, mint: str) -> None:
+    """E17 — THE RESERVED NAMESPACE AT THE MINT (the timer-cures lane's
+    cure 1): a HAND-facing mint may not name a hold inside the durable
+    timer's reserved ``__timer__`` prefix. A payload model named
+    ``__timer__Approval`` (or a ``wait_until`` key beginning with the
+    prefix) would mint a hold every reader mis-identifies as the
+    CLOCK's — invisible to ``HitlClient.list()``, unanswerable (the
+    boundary refuses every hand delivery as a timer forgery), never
+    fail-closing (the expiry arm never abandons the prefix), and fired
+    at the deadline into a ``SignalPayloadError`` death (the wake cannot
+    fit a human payload model). The refusal is at the MINT — no row is
+    written — and NAMES the fix. The TIMER's own mint
+    (:func:`register_timer_hold`) composes this prefix by construction
+    and never passes through here."""
+    if starts_with_timer(name):
+        raise ReservedTimerNamespaceError(
+            f"E17-reserved-timer-prefix: {mint} refuses to mint a hold named "
+            f"{name!r} — the __timer__ prefix is the DURABLE TIMER's reserved "
+            "namespace, and a hold named inside it is a hold every reader "
+            "mis-identifies as the clock's: invisible to HitlClient.list(), "
+            "unanswerable (the resolve boundary refuses every hand delivery as "
+            "a timer forgery), never fail-closing (the expiry arm never "
+            "abandons the prefix), and fired at the deadline into a "
+            "SignalPayloadError death (the wake cannot fit a human payload "
+            f"model). THE FIX: rename the payload model to drop the {TIMER_SIGNAL_PREFIX!r} "
+            "prefix (and choose a wait_until key outside it) — the reserved "
+            "namespace is the clock's alone"
+        )
+
+
 # ── the hold registration (the wait site's door) ────────────────────────
 
 
@@ -435,6 +522,8 @@ async def register_hold(
     timeout_s: float | None,
     context: dict[str, object] | None = None,
     redact: Callable[[str], str] | None = None,
+    expires_at: datetime | None = None,
+    map_index: int | None = None,
 ) -> JobId:
     """Register ONE hold: a NEW epoch mints a NEW row (multi-hold — the
     same signal name can hold again; the stale-payload dragon dies
@@ -442,6 +531,18 @@ async def register_hold(
     ``scheduled_at`` = deadline + the signal row as truth — the worker
     releases, no slot held); a LOOP node's budget PAUSES (the wall is
     blind while the loop waits on a human).
+
+    THE IDENTITY CARRIES THE MAP INDEX (the LedgerWatch F2 cure): the
+    unresolved-uniqueness arbiter is
+    ``(workflow_id, node_key, signal_name, COALESCE(map_index, -1),
+    hold_epoch)`` — MAP SIBLINGS of one source hold CONCURRENTLY as
+    DISTINCT rows (the per-item approval — the natural
+    moderation/approval pipeline shape — is the machinery's own shape,
+    never a workaround). A plain step's hold carries ``map_index=None``
+    and keeps the pre-cure identity exactly. The resume addresses the
+    hold's OWN node by the hold id stamped into that node's metadata —
+    one hold, one node, one resume; a resolve can never wake a
+    sibling.
 
     THE CONTEXT RIDES THE INSERT'S OWN TRANSACTION (attack-3 H3's cure
     — the crash-window's closure): reason/tool/args pass the redact
@@ -465,7 +566,15 @@ async def register_hold(
     model — a contract-less hold is the audit hole (ANY payload delivers
     to it from a fresh process), so the mint REFUSES one. The boundary
     additionally refuses any legacy row that predates the law (the
-    migration backfilled those to the explicit no-contract marker)."""
+    migration backfilled those to the explicit no-contract marker).
+
+    THE DEADLINE'S TWO FACES (T28): *timeout_s* is the RELATIVE arm —
+    the DB clock's now plus the seconds (the C8 law: the wait site's
+    value arms the sweep); *expires_at* is the ABSOLUTE arm — the
+    instant rides through UNCHANGED, the DB clock never re-bases it
+    (the durable timer's datetime face). Exactly one meaning survives:
+    the absolute wins when both arrive (the timer mint is the only
+    caller that pairs them, and it never does)."""
     if not payload_schema:
         raise TypeError(
             "register_hold requires a non-empty payload_schema — a hold "
@@ -473,7 +582,7 @@ async def register_hold(
             "door refuses to mint one)"
         )
     hold_id = JobId(new_uuid())
-    deadline = await _deadline_expr(conn, timeout_s)
+    deadline = await _deadline_expr(conn, timeout_s, expires_at=expires_at)
     # THE CONTEXT, REDACTED BEFORE PERSIST: the masked dict is the
     # insert's payload (a mask that broke the JSON shape degrades to the
     # masked TEXT record — the operator still reads a scrubbed row).
@@ -499,6 +608,7 @@ async def register_hold(
             node_key,
             signal_name,
             hold_epoch,
+            map_index,
             call_id,
             dumps_jsonb_str(
                 payload_doc
@@ -517,29 +627,92 @@ async def register_hold(
         # THE BROADCAST, CREATE LEG (T26 — TRANSACTIONAL: the NOTIFY
         # rides THIS tx, so a rolled-back hold-create is silent; the
         # payload carries the schema + the pointer, never the payload).
-        await _broadcast(
-            conn,
-            HOLD_CREATED_CHANNEL,
-            {
-                "schema": schema,
-                "flow_id": str(workflow_id),
-                "run_id": str(workflow_id),
-                "hold_id": str(hold_id),
-                "signal": signal_name,
-                "node_key": node_key,
-                "created_at": created_at.isoformat(),
-            },
-        )
+        # THE TIMER'S EXCLUSION (the timer-cures lane's cure 2 — the
+        # reserved prefix's ONE mechanism, applied at this face too):
+        # this leg is the APPROVAL broadcast — a timer hold is NOT an
+        # approval, and announcing one here surfaced the clock's hold as
+        # a pending human decision on every SSE/cowork-UI consumer. The
+        # timer's faces that WANT the mint's news announce it themselves
+        # (the wake's RESOLVED leg fires at the deadline); the pending
+        # surfaces (the listener's backfill, HitlClient.list) split on
+        # the SAME prefix.
+        if not starts_with_timer(signal_name):
+            await _broadcast(
+                conn,
+                HOLD_CREATED_CHANNEL,
+                {
+                    "schema": schema,
+                    "flow_id": str(workflow_id),
+                    "run_id": str(workflow_id),
+                    "hold_id": str(hold_id),
+                    "signal": signal_name,
+                    "node_key": node_key,
+                    "created_at": created_at.isoformat(),
+                },
+            )
     return hold_id
 
 
-async def _deadline_expr(conn: ConnLike, timeout_s: float | None) -> Any:
+async def _deadline_expr(
+    conn: ConnLike, timeout_s: float | None, *, expires_at: datetime | None = None
+) -> Any:
     """The deadline FROM PG'S CLOCK (the DB-clock doctrine): None → NULL
-    (the explicit eternal wait — the W1 warning's subject)."""
+    (the explicit eternal wait — the W1 warning's subject). The TIMER'S
+    ABSOLUTE FACE (T28): *expires_at* given → the instant rides through
+    UNCHANGED — the DB clock never re-bases it (the body asked for a
+    datetime; the row stores that datetime; the float face keeps the
+    relative arm whose base is the DB's own now)."""
+    if expires_at is not None:
+        return expires_at
     if timeout_s is None:
         return None
     return await conn.fetchval(
         "SELECT now() + ($1::double precision * interval '1 second')", timeout_s
+    )
+
+
+# ── the durable timer (T28 — the hold whose resolver is the clock) ──────
+
+
+async def register_timer_hold(
+    conn: ConnLike,
+    *,
+    schema: str,
+    workflow_id: JobId,
+    node_id: JobId,
+    node_key: str,
+    signal_name: str,
+    hold_epoch: int,
+    absolute: datetime | None,
+    relative: float | None,
+    payload_schema: dict[str, object],
+) -> JobId:
+    """The TIMER hold's mint (T28): the SAME hold machinery as the human
+    hold (``register_hold`` — the held representation, the create
+    broadcast, the redact-free context), with exactly one deadline face
+    given: *absolute* (the body's datetime — it rides through
+    UNCHANGED, the DB clock never re-bases it) or *relative* (the
+    float seconds — the DB clock's own now is the base). The row's
+    ``expires_at`` IS the wake's ``scheduled`` stamp (the fire reads
+    it back — the receipt and the row cannot disagree)."""
+    if (absolute is None) == (relative is None):
+        raise TypeError(
+            "register_timer_hold takes exactly one deadline — the absolute "
+            "instant (the body's datetime) or the relative seconds (the DB "
+            "clock's base), never both and never neither"
+        )
+    return await register_hold(
+        conn,
+        schema=schema,
+        workflow_id=workflow_id,
+        node_id=node_id,
+        node_key=node_key,
+        signal_name=signal_name,
+        hold_epoch=hold_epoch,
+        call_id=f"timer:{new_uuid()}",
+        payload_schema=payload_schema,
+        timeout_s=relative,
+        expires_at=absolute,
     )
 
 
@@ -592,6 +765,20 @@ async def _boundary_verdict(
         row = await conn.fetchrow(_render(_HOLD_FOR_BOUNDARY_SQL, schema), hold_id)
         if row is None or row["status"] != "held":
             return None, None  # the CAS owns the stale/cancelled arm's refusal
+        # THE TIMER'S REFUSAL (T28 — the clock is the only resolver): a
+        # hold under the reserved prefix is the CLOCK's — no hand
+        # delivers to it, whatever the payload's shape (a well-formed
+        # forgery of the wake's schema included). The hold SURVIVES the
+        # refusal; the sweep's timer arm fires the real wake.
+        if row["signal_name"] and starts_with_timer(row["signal_name"]):
+            return (
+                "this hold is a DURABLE TIMER (the reserved __timer__ "
+                "prefix): the clock resolves it — no hand delivers the "
+                "wake. The hold SURVIVES; the timer arm fires at the "
+                "deadline (HitlClient: the wake is not a human's to "
+                "deliver)",
+                None,
+            )
         workflow_name = await conn.fetchval(_render(_WORKFLOW_NAME_SQL, schema), row["workflow_id"])
     resolved = resolve_signal_models(workflow_name, row["node_key"], row["signal_name"])
     if resolved is not None:
@@ -707,15 +894,15 @@ async def deliver_payload(
         )
         resumed = None
         if cas["node_key"]:
+            # THE HELD NODE'S ADDRESS (the F2 cure): by the hold id THIS
+            # register stamped — one hold, one node, one resume (the
+            # pre-cure lookup matched every holding sibling and woke an
+            # arbitrary one).
             node_id = await conn.fetchval(
-                _render(
-                    "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                    "AND (metadata->>'flow_id')::uuid = $2 "
-                    "AND metadata ? 'hold'",
-                    schema,
-                ),
+                _render(_HELD_NODE_BY_HOLD_SQL, schema),
                 cas["node_key"],
                 workflow_id,
+                str(hold_id),
             )
             if node_id is not None:
                 resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, schema), node_id)
@@ -733,7 +920,28 @@ async def deliver_payload(
         return DeliveryResult(status="delivered")
 
 
-# ── the expiry sweep (the timer arm) ────────────────────────────────────
+async def _child_join_refusal(conn: ConnLike, schema: str, hold_id: JobId) -> str | None:
+    """The child-join hold's typed refusal (rv5-C5c): a hold whose
+    signal names a CHILD JOIN (``__child__:<child flow id>``) cannot be
+    resolved by an operator — its resolver is the child's own terminal
+    (the wake arm's CAS). ``None`` = a human-resolvable hold, the
+    caller proceeds."""
+    row = await conn.fetchrow(
+        _render("SELECT signal_name FROM {schema}.wf_signals WHERE id = $1", schema),
+        hold_id,
+    )
+    if row is None or not str(row["signal_name"]).startswith(CHILD_JOIN_SIGNAL_PREFIX):
+        return None
+    child_flow_id = str(row["signal_name"])[len(CHILD_JOIN_SIGNAL_PREFIX) :]
+    return (
+        f"hold {hold_id} is a CHILD-JOIN (signal {row['signal_name']!r}) — it is not "
+        "operator-resolvable: the hold resolves when the CHILD FLOW "
+        f"{child_flow_id} terminalizes (the wake arm delivers it — the child's "
+        "terminal is the join's resolver, and a human resolve cannot fake the "
+        "child's verdict). To stop the wait: cancel the child flow "
+        f"{child_flow_id} (the run explorer links it from the parent's page) "
+        "or cancel the parent run."
+    )
 
 
 async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: int = 100) -> int:
@@ -757,13 +965,10 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
             # error (the re-execution doctrine: the body re-runs from
             # the top; pre-wait side effects are ctx.step-ledgered).
             node_id = await conn.fetchval(
-                _render(
-                    "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                    "AND (metadata->>'flow_id')::uuid = $2 AND metadata ? 'hold'",
-                    schema,
-                ),
+                _render(_HELD_NODE_BY_HOLD_SQL, schema),
                 row["node_key"],
                 row["workflow_id"],
+                str(row["id"]),
             )
             if node_id is not None:
                 await conn.execute(_render(_DELIVER_RESUME_SQL, schema), node_id)
@@ -788,6 +993,235 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
     return len(rows)
 
 
+# THE SWEEP'S TIMER ARM (T28): the deadline's pass → the hold RESOLVED
+# by the clock — 'delivered', never 'abandoned' (the inverted face). The
+# fire is ONE CAS statement (the same fence shape the deliver CAS keeps:
+# only 'held' rows resolve, so a cancelled flow's timer never wakes, and
+# a twice-fired timer is unrepresentable). The wake's payload is THE
+# CLOCK'S OWN RECEIPT, built statement-side: fired_by='timer', the
+# timer's key (the reserved prefix stripped), the scheduled instant (the
+# row's own expires_at) and the fired-at instant (ONE clock_timestamp()
+# for the whole pass — the resolved_at column and the payload stamp are
+# the same instant, the record cannot disagree with itself).
+_TIMER_FIRE_SQL = """\
+WITH fired_ts AS (SELECT clock_timestamp() AS ts),
+due AS (
+    SELECT s.id, s.workflow_id, s.node_key, s.signal_name, s.expires_at
+    FROM {schema}.wf_signals s, fired_ts
+    WHERE s.status = 'held'
+      AND starts_with(s.signal_name, '__timer__')
+      AND s.expires_at IS NOT NULL
+      AND s.expires_at <= fired_ts.ts
+    ORDER BY s.expires_at, s.id
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE {schema}.wf_signals s
+SET status = 'delivered',
+    payload = jsonb_build_object(
+        'fired_by', 'timer',
+        'key', substring(s.signal_name from char_length('__timer__') + 1),
+        'scheduled', to_char(d.expires_at AT TIME ZONE 'UTC',
+                             'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'fired_at', to_char(fired_ts.ts AT TIME ZONE 'UTC',
+                            'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+    ),
+    resolved_at = fired_ts.ts
+FROM due d, fired_ts
+WHERE s.id = d.id
+RETURNING s.id, s.workflow_id, s.node_key, s.signal_name
+"""
+
+
+async def sweep_due_timers(
+    pool: asyncpg.Pool,
+    *,
+    schema: str,
+    batch_size: int = 100,
+    drain: bool = False,
+    max_batches: int = 1000,
+) -> int:
+    """THE SWEEP'S TIMER ARM (T28) — the expiry arm's inverted twin:
+    every DUE timer hold (the reserved ``__timer__`` prefix, the DB
+    clock's comparison) resolves 'delivered' — never 'abandoned' —
+    with the CLOCK'S OWN RECEIPT as the payload (``fired_by='timer'``,
+    the scheduled vs the fired-at stamps; :class:`~taskq.workflows.
+    api._ctx_timer.TimerWake` re-validates it at the wait site). The
+    node's held representation clears and the row re-claims (the same
+    resume the deliver CAS writes), the body re-executes from the top
+    and the wait site RETURNS the wake — the continuation is the
+    timer's point.
+
+    THE AT-LEAST FACE: the deadline fires at the FIRST sweep pass
+    at-or-after it — never early (the ``<=`` comparison is the whole
+    gate), never at a precise wall time (the sweep interval + a
+    leader failover's gap ride the wake's ``fired_at``; the delta is
+    the receipt's own arithmetic). THE DURABILITY: the arm reads ROWS,
+    not processes — the worker that armed the timer may be dead (a
+    SIGKILL mid-wait); the successor's sweep fires the wake exactly
+    the same (the row's expiry arms the reclaim). THE EXACTLY-ONCE:
+    the 'held' → 'delivered' CAS is the fence — a row resolved here
+    can never resolve again, by the arm or by a hand.
+
+    THE DRAIN (the timer-cures lane's cure 4 — the 10k-timer tail): the
+    pre-cure arm fired ONE bounded batch per pass, so a backlog of *N*
+    due timers needed ``ceil(N / batch_size)`` passes — at the 30 s
+    sweep cadence and batch 100, 10k due timers measured a ~50-minute
+    worst-case tail (the drill's receipt). ``drain=True`` — the LEADER
+    and the dev-loop ``tick`` pass it — sweeps due timers until the due
+    set is EMPTY per tick: each iteration fires one ``batch_size``-
+    bounded batch, and the loop ends at the SHORT batch (fewer rows
+    than asked = the due set is exhausted for this pass; a concurrent
+    sweeper's locked rows are the at-least face's next pass, never a
+    correctness debt). ``max_batches`` bounds a pathological drain (a
+    fire resuming a body that mints an ALREADY-due timer could feed
+    itself): 1000 batches x batch 100 = 100k fires per tick, measured
+    far past the drill's 10k shape. The due-scan is INDEX-LED by the
+    timer's own partial index (``wf_signals_timer_due_idx`` —
+    ``(expires_at, id) WHERE status = 'held' AND starts_with(signal_name,
+    '__timer__')``): no seq scan, no sort.
+
+    Returns the fired count (the drained total)."""
+    total = 0
+    first_node: str | None = None
+    async with pool.acquire() as conn:
+        batches = 0
+        while True:
+            rows = await conn.fetch(_render(_TIMER_FIRE_SQL, schema), batch_size)
+            for row in rows:
+                # The held node's marker clears → the node re-pends; the
+                # wait site's resume finds the delivered wake → the typed
+                # TimerWake (the re-execution doctrine: the body re-runs
+                # from the top; pre-timer side effects are ctx.substep-
+                # ledgered). The same shape the expiry arm keeps — the
+                # faces differ ONLY in the row's resolution state.
+                node_id = await conn.fetchval(
+                    _render(
+                        "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
+                        "AND (metadata->>'flow_id')::uuid = $2 AND metadata ? 'hold'",
+                        schema,
+                    ),
+                    row["node_key"],
+                    row["workflow_id"],
+                )
+                if node_id is not None:
+                    await conn.execute(_render(_DELIVER_RESUME_SQL, schema), node_id)
+                # THE BROADCAST, RESOLVED LEG (T26's channels — the timer's
+                # wake is a RESOLUTION by the clock: the same transactional
+                # discipline does not apply here — the fire statement
+                # committed the moment it returned, autocommit — so the
+                # notify rides AFTER it, the expiry arm's own order).
+                await _broadcast(
+                    conn,
+                    HOLD_RESOLVED_CHANNEL,
+                    {
+                        "schema": schema,
+                        "hold_id": str(row["id"]),
+                        "flow_id": str(row["workflow_id"]),
+                        "verdict_kind": TIMER_WAKE_SCHEMA_NAME,
+                    },
+                )
+            total += len(rows)
+            if first_node is None and rows:
+                first_node = str(rows[0]["node_key"])
+            batches += 1
+            if not drain or len(rows) < batch_size or batches >= max_batches:
+                break
+    if total:
+        logger.info(
+            "timer.wake_fired",
+            fired=total,
+            first_node=first_node or "unknown",
+        )
+    return total
+
+
+# ── the child-join wake (T28 — the child's terminal is the hold's resolver) ─
+
+#: The join hold's signal-name prefix (the arm's query keys on it; the
+#: payload contract is the child's declared result model). ONE home: the
+#: join site (``workflows/_childflow.py``) imports it.
+CHILD_JOIN_SIGNAL_PREFIX = "__child__:"
+
+#: THE BROADCAST'S CHANNEL (the T26 transport's own discipline): the
+#: child's terminal wake — ONE knock per delivered join hold, the
+#: pointer-only payload (the row is the truth).
+CHILD_TERMINAL_CHANNEL = "taskq_wf_child_terminal"
+
+_CHILD_WAKE_DELIVER_SQL = """
+WITH due AS (
+    SELECT s.id, s.workflow_id, s.node_key, s.signal_name,
+           substring(s.signal_name FROM $2::int)::uuid AS child_id
+    FROM {schema}.wf_signals s
+    WHERE s.status = 'held' AND s.signal_name LIKE '__child__:%'
+    LIMIT $1
+), verdicts AS (
+    SELECT d.id, d.workflow_id, d.node_key, d.signal_name, d.child_id,
+           j.status AS child_status
+    FROM due d
+    LEFT JOIN {schema}.jobs j ON j.id = d.child_id AND j.step_key = '__flow__'
+    WHERE j.id IS NULL OR j.status IN
+        ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
+)
+UPDATE {schema}.wf_signals s
+SET status = 'delivered',
+    resolved_at = clock_timestamp(),
+    payload = jsonb_build_object('child_flow_id', v.child_id::text,
+                                 'child_status', coalesce(v.child_status::text, 'missing'))
+FROM verdicts v
+WHERE s.id = v.id
+RETURNING s.id, s.workflow_id, s.node_key, s.signal_name, v.child_id, v.child_status
+"""
+
+
+async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size: int = 100) -> int:
+    """THE CHILD-JOIN WAKE ARM (T28 — the sweep's resolver half + its
+    reaper half): every held join whose child flow is TERMINAL (or whose
+    child's root row is GONE — the fail-close face) is CAS-delivered,
+    its parent node resumed, and the T26 transport knocks
+    :data:`CHILD_TERMINAL_CHANNEL`. The wait site's resume reads the
+    child's row and returns the typed member (the union's arms —
+    ``workflows/_childflow.py``).
+
+    The arm is idempotent (the CAS's ``status='held'`` predicate) and
+    bounded (LIMIT); a lost resume (the crash between the CAS and the
+    resume statement) is the hold-stamp reconcile arm's own belt — the
+    delivered hold's stamp is cleared and the row re-claims."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            _render(_CHILD_WAKE_DELIVER_SQL, wsql.schema),
+            batch_size,
+            len(CHILD_JOIN_SIGNAL_PREFIX) + 1,
+        )
+        for row in rows:
+            node_id = await conn.fetchval(
+                _render(
+                    "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
+                    "AND (metadata->>'flow_id')::uuid = $2 AND metadata ? 'hold'",
+                    wsql.schema,
+                ),
+                row["node_key"],
+                row["workflow_id"],
+            )
+            if node_id is not None:
+                await conn.execute(_render(_DELIVER_RESUME_SQL, wsql.schema), node_id)
+            # THE BROADCAST (the pointer law): the knock rides AFTER the
+            # CAS committed (the convicted order's cure — T26's P1).
+            await _broadcast(
+                conn,
+                CHILD_TERMINAL_CHANNEL,
+                {
+                    "schema": wsql.schema,
+                    "parent_flow_id": str(row["workflow_id"]),
+                    "node_key": row["node_key"],
+                    "hold_id": str(row["id"]),
+                    "child_flow_id": str(row["child_id"]),
+                    "child_status": row["child_status"],
+                },
+            )
+    return len(rows)
+
+
 # ── the client surface (the programmatic HITL consumer) ─────────────────
 
 
@@ -806,6 +1240,10 @@ class HoldContext:
     node_key: str
     signal_name: str
     hold_epoch: int
+    #: The map item's index (the F2 cure's face): a MAP SIBLING's hold
+    #: carries its item index — the operator's UI addresses the item it
+    #: renders; a plain step's hold carries ``None``.
+    map_index: int | None
     call_id: str
     payload: Any
     payload_schema: Any
@@ -843,7 +1281,12 @@ class HitlClient:
     async def list(self, run: JobId | str) -> list[HoldContext]:
         """The pending holds for ONE run — a run with MULTIPLE
         concurrent holds lists ALL of them distinctly; the multi-
-        workflow property: the filter is BY RUN, resolves never cross."""
+        workflow property: the filter is BY RUN, resolves never cross.
+        THE MAP SIBLINGS INCLUDED (the F2 cure): two map items of one
+        source holding on one signal name are TWO rows — the hold
+        identity carries the map index, each sibling's hold is
+        addressable (its own ``hold_id``) and resolvable
+        INDIVIDUALLY."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(_render(_LIST_SQL, self._schema), run)
         return [self._context(r) for r in rows]
@@ -873,8 +1316,35 @@ class HitlClient:
         audit rows, 0 knocks for a lost race (the guard-tx shape wrote
         both BEFORE the CAS and doubled under concurrency). An
         already-resolved hold is the DEFINED no-op (the idempotence
-        pin)."""
+        pin).
+
+        THE CHILD-JOIN REFUSAL (rv5-C5c — the honest face): a
+        CHILD-JOIN hold (signal ``__child__:…``) is NOT operator-
+        resolvable — its resolver is the CHILD'S TERMINAL (the wake
+        arm's own CAS). The pre-cure face DELIVERED on a matching
+        payload, the parent's body re-executed, the live child
+        re-held: the no-op bounce wearing a 200. The typed refusal now
+        teaches where the resolution actually lives; the hold
+        SURVIVES."""
         from taskq.audit import record_admin_action
+
+        # THE CHILD-JOIN REFUSAL (before the boundary — nothing about a
+        # child-join hold is operator-consumable).
+        async with self._pool.acquire() as conn:
+            join_refusal = await _child_join_refusal(conn, self._schema, _as_hold_id(hold_id))
+        if join_refusal is not None:
+            async with self._pool.acquire() as conn, conn.transaction():
+                await record_admin_action(
+                    conn,
+                    schema=self._schema,
+                    principal=principal,
+                    action="hitl.resolve",
+                    target_type="hold",
+                    target_id=str(hold_id),
+                    reason=reason,
+                    detail={"refused": join_refusal},
+                )
+            return delivery_refused(join_refusal)
 
         # THE BOUNDARY (before the CAS — nothing consumed on a refusal).
         refusal, verdict_kind = await _boundary_verdict(
@@ -948,15 +1418,15 @@ class HitlClient:
             )
             resumed = None
             if cas["node_key"]:
+                # THE HELD NODE'S ADDRESS (the F2 cure): by the hold id —
+                # one hold, one node, one resume (the pre-cure lookup
+                # matched every holding sibling and woke an arbitrary
+                # one).
                 node_id = await conn.fetchval(
-                    _render(
-                        "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                        "AND (metadata->>'flow_id')::uuid = $2 "
-                        "AND metadata ? 'hold'",
-                        self._schema,
-                    ),
+                    _render(_HELD_NODE_BY_HOLD_SQL, self._schema),
                     cas["node_key"],
                     cas["workflow_id"],
+                    str(hold_id),
                 )
                 if node_id is not None:
                     resumed = await conn.fetchval(
@@ -1015,6 +1485,7 @@ class HitlClient:
             node_key=row["node_key"],
             signal_name=row["signal_name"],
             hold_epoch=row["hold_epoch"],
+            map_index=row["map_index"],
             call_id=row["call_id"],
             payload=payload,
             payload_schema=schema_ref,

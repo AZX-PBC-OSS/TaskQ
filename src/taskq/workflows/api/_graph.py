@@ -31,6 +31,7 @@ from taskq.ratelimit.refs import KeyedRateLimitRef
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.workflows._types import EdgeFailurePolicy
+from taskq.workflows.api._hints import body_hints, ctx_input_reads, inner_fn, own_source
 from taskq.workflows.chain import Chain
 
 if TYPE_CHECKING:
@@ -52,6 +53,7 @@ __all__ = [
     "WorkflowBuildError",
     "active_graph",
     "build",
+    "declared_exit_return",
     "gather",
     "map_source",
     "rate_limit_names",
@@ -449,6 +451,32 @@ def _promise_args(args: tuple[object, ...]) -> tuple[list[str], list[object]]:
     return keys, data
 
 
+def declared_exit_return(body: object) -> bool:
+    """Whether the body's DECLARED return is (or contains) the
+    :class:`Exit` sentinel — the static read the cache-opt-in's refusal
+    (below) shares with the validator's E19 re-proof. The resolved
+    hints are walked THROUGH unions and list elements (a
+    ``Report | Exit[Report]`` body is as exit-terminal as a bare
+    ``Exit[Report]``); an UNRESOLVABLE annotation resolves to no hint —
+    the skip (the zero-false-positive doctrine: a guess is never
+    convicted)."""
+    from types import UnionType
+    from typing import Union
+
+    returned = body_hints(cast("Callable[..., object]", body)).get("return")
+    stack: list[object] = [returned]
+    while stack:
+        ann = stack.pop()
+        if ann is None:
+            continue
+        if ann is Exit or get_origin(ann) is Exit:
+            return True
+        origin = get_origin(ann)
+        if origin is Union or origin is UnionType or origin is list:
+            stack.extend(get_args(ann))
+    return False
+
+
 def step[R](
     body: Callable[..., Awaitable[R]],
     *args: object,
@@ -500,6 +528,20 @@ def step[R](
     is DETERMINISTIC for the same input — a non-deterministic body with
     ``cache=True`` is the stale truth BY CHOICE (the address promises
     "same body, same input"; it cannot promise the world stood still).
+    THE ADDRESS'S SCOPE (the which-input-counts law): the address
+    covers the body's OWN source + the WIRED args — a changed HELPER is
+    invisible to the address (bump the body's own source when the
+    closure's truth changes — the documented contract), and the FLOW
+    input (``ctx.input``) NEVER enters it. That scope is why the
+    refusals below exist: a body reading ``ctx.input`` is refused (the
+    flow input differs per run — the cross-tenant leak; a SOURCE node's
+    run input is its only input, so wire the spec IN as data or lift it
+    through an uncached upstream step's wired result), an
+    Exit-returning body is refused (the sentinel never reaches the
+    store), a typed-route source is refused at the route attachment
+    (the hit path cannot rebuild the fork), and an unverifiable body
+    source is refused (the cache cannot hash what it cannot read —
+    without the refusal the step is silently uncached).
 
     THE TWO FACES (be honest about the boundary): the checker reads the
     HANDLE flow (R's inference, the promise threading, build's
@@ -547,6 +589,72 @@ def step[R](
             "multi-parent fan-in) — the v1 cache surface is the plain "
             "step: the gather's join face is the engine's own machinery, "
             "not a cacheable body's"
+        )
+    # THE ADDRESS-SCOPE REFUSALS (the cache-cures round): two more
+    # mechanically-impossible shapes, both LIES the address cannot see —
+    #
+    # * the body reads ``ctx.input`` (CURE 3 — THE CROSS-TENANT LEAK):
+    #   the address covers the WIRED args only; the FLOW input never
+    #   enters it. A cached answer produced under one flow input serves
+    #   a LATER run whose flow input differs — tenant A's answer
+    #   delivered to tenant B, terminal-success, audits clean (the live
+    #   repro: .measurements/cache-cures/ctx_input_leak_repro.py). The
+    #   typed refusal names the fix: lift the flow input into the
+    #   dataflow with an UNcached upstream step and wire its result as a
+    #   PARAM — the param enters the address, the value differs per
+    #   input, the cache caches per value.
+    # * the body returns the Exit sentinel (CURE 6b): an Exit
+    #   terminalizes through the exit finalize, which the success-only
+    #   store never sees — cache=True would silently no-op (every run
+    #   re-executes the body while the operator believes it caches).
+    if cache and bool(ctx_input_reads(body)):
+        raise WorkflowBuildError(
+            f"node {node_key!r} declares cache=True but its body reads "
+            "ctx.input — the flow input never enters the cache address "
+            "(the wired args do): the cached answer produced under one "
+            "flow input would serve a LATER run whose input differs (the "
+            "cross-tenant leak — A's answer delivered to B, "
+            "terminal-success, audits clean). Lift the flow input into "
+            "the dataflow with an UNcached upstream step and wire its "
+            "result as this body's PARAM (the param enters the address), "
+            "or drop cache=True"
+        )
+    if cache and declared_exit_return(body):
+        raise WorkflowBuildError(
+            f"node {node_key!r} declares cache=True but its body "
+            "declares the Exit sentinel as (or inside) its return — an "
+            "Exit terminalizes through the exit finalize, which the "
+            "success-only store never sees: the cache would silently "
+            "no-op (every run re-executes the body while the operator "
+            "believes it caches). Return the DATA result (the declared "
+            "R) and let the cache hold it, or drop cache=True"
+        )
+    # THE UNVERIFIABLE-SOURCE PRECONDITION (the cache-cures round's
+    # AMENDMENT B — the import-probe's #3): the address requires the
+    # §22.1 code-version canon (module + qualname + the body's OWN
+    # source, through the same own_source read the stamper and the
+    # validator share) — an UNVERIFIABLE source (a builtin, a partial,
+    # an exec'd fragment whose slice cannot be proven its own) made the
+    # step SILENTLY uncached: the wiring accepted cache=True, every run
+    # re-executed the body, and the ONLY trace was the
+    # ``step-cache-unaddressable`` log line (the live repro:
+    # .measurements/cache-cures/unverifiable_source_silent_repro.py).
+    # The operator must never learn the face from a missing hit — the
+    # precondition refuses here, by name. The read is DETERMINISTIC (the
+    # runner's own hash reads the same source through the same seam), so
+    # the refusal carries no false-positive risk: a source the wiring
+    # cannot read is a source the claim path will never hash.
+    if cache and own_source(body) is None:
+        raise WorkflowBuildError(
+            f"node {node_key!r} declares cache=True but its body's "
+            "source is not verifiable (a builtin, a partial, or an "
+            "exec'd fragment — the cache cannot hash what it cannot "
+            "read): the address requires the §22.1 code-version canon "
+            "(module + qualname + the body's own source), and an "
+            "unverifiable source made this step SILENTLY uncached — "
+            "every run re-executes the body while the cache machinery "
+            "looks armed. Define the body as a module-level def its "
+            "source can be read from, or drop cache=True"
         )
     # THE SMUGGLE CHECK (attack-3 M3's cure): a promise arg whose home
     # recorder is NOT this graph is RECORDED — validate convicts it
@@ -837,10 +945,36 @@ def _attach_route[S](
             f"node {source.key!r} already carries a map or a route — a node "
             "finalizes once (one fork); wire the second from a distinct source"
         )
+    if source_node.cache:
+        # THE ROUTE-SOURCE WEDGE'S REFUSAL (the cache-cures round's
+        # CURE 1 — MERGE-BLOCKER P8f): cache=True on a typed-route
+        # source wedges the run FOREVER at the first cache hit — the
+        # hit path never rebuilds the route fork (the arm dispatch
+        # reads the element's RUNTIME type; the cached envelope carries
+        # only encoded dicts — the fork CANNOT be rebuilt from it), the
+        # route children never spawn, the join never fires, and the run
+        # stands wedged with the source row reading `succeeded` wearing
+        # a wf_cache_hit receipt (the live repro:
+        # .measurements/cache-cures/route_wedge_repro.py). The typed
+        # refusal names the alternative: the fork is the engine's own
+        # machinery — cache the deterministic ARM BODIES' work (each
+        # arm's expensive step its own cache=True), never the
+        # fork-spawning source.
+        raise WorkflowBuildError(
+            f"node {source.key!r} declares cache=True and now carries a "
+            "typed route — the combination is refused: at the first "
+            "cache hit the source terminalizes from the cached envelope "
+            "and the route fork NEVER SPAWNS (the arm dispatch reads the "
+            "element's runtime type, which the cached envelope cannot "
+            "carry) — the route's children and join never exist, the "
+            "downstream waits forever, and the run wedges with the "
+            "source reading succeeded. Cache the route's ARMS' work, not "
+            "the fork: leave the source uncached and let each arm's own "
+            "downstream cacheable step (its deterministic, "
+            "addressable subwork) carry the cache=True"
+        )
     # THE UNION MEMBERS, RESOLVED (the same resolution E5 and the codec
     # read — the resolved-hints seam; the actor handle unwrapped first).
-    from taskq.workflows.api._hints import body_hints, inner_fn
-
     source_body = source_node.body
     if source_body is not None:
         inner = inner_fn(source_body)

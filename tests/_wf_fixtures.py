@@ -56,9 +56,6 @@ def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[ob
     return cast("Callable[[], Promise[object]]", fn)
 
 
-_source_changes_cache: dict[tuple[str, str], bool] = {}
-
-
 def source_changes_since(head_sha_value: str) -> bool:
     """THE OFF-BY-ONE RULE (the head-stamp verifier's own, mirrored for
     the in-suite guards): whether ANY commit since *head_sha_value*
@@ -67,26 +64,27 @@ def source_changes_since(head_sha_value: str) -> bool:
     the source tree the claim verifies is content-identical. An
     unresolvable claimed head (not an ancestor) = stale by definition.
 
-    THE MEMO (the redlog guard's timeout cure): the answer depends only
-    on the (claimed head, HEAD) pair, but the sinks hold THOUSANDS of
-    records sharing a handful of distinct heads — the guard's
-    per-record check was one git subprocess per RECORD (the merged
-    estate's growth crossed the suite's 300s timeout), now one per
-    DISTINCT pair. The verdict is bit-identical; the recomputation is
-    what died."""
+    THE PER-RUN MEMO (the estate's scale — 18k+ sink records across
+    ~100 distinct claimed heads): the verdict is a pure function of the
+    claimed sha and THIS RUN's HEAD — and HEAD cannot move mid-run
+    (a test process never commits; the run's git world is fixed), so
+    each distinct claimed sha is resolved AT MOST ONCE per process.
+    The guard's walk over every sink record collapses from
+    O(records) git subprocesses (18k+ — the per-test timeout's knife
+    edge at 300 s, convicted: the wf battery's redlog-guard timeout)
+    to O(distinct heads)."""
     import subprocess
 
-    head = head_sha()
-    key = (head_sha_value, head)
-    cached = _source_changes_cache.get(key)
+    cached = _SOURCE_CHANGES_MEMO.get(head_sha_value)
     if cached is not None:
         return cached
+
     proc = subprocess.run(
         [
             "git",
             "diff",
             "--name-only",
-            f"{head_sha_value}..{head}",
+            f"{head_sha_value}..HEAD",
             "--",
             ".",
             ":(exclude).measurements",
@@ -96,9 +94,16 @@ def source_changes_since(head_sha_value: str) -> bool:
         text=True,
         check=False,
     )
-    result = True if proc.returncode != 0 else bool(proc.stdout.strip())
-    _source_changes_cache[key] = result
-    return result
+    verdict = True
+    if proc.returncode == 0:
+        verdict = bool(proc.stdout.strip())
+    _SOURCE_CHANGES_MEMO[head_sha_value] = verdict
+    return verdict
+
+
+#: The memo's store (see :func:`source_changes_since` — the verdict is
+#: pure in (claimed sha, the run's fixed HEAD)).
+_SOURCE_CHANGES_MEMO: dict[str, bool] = {}
 
 
 def head_sha() -> str:
@@ -375,6 +380,34 @@ def wedge_redlog() -> Iterator[RedLog]:
     tree's corpse-greens: the reconstruction's running, the maintenance
     pass's non-heal, the G7 blind spot)."""
     log = RedLog("wedge-pin-reds.json")
+    yield log
+    log.flush()
+
+
+@pytest.fixture
+def timer_redlog() -> Iterator[RedLog]:
+    """The red sink for the T28 durable-timer pins (the pre-implementation
+    reds + the convicted variants)."""
+    log = RedLog("t28-timer-pin-reds.json")
+    yield log
+    log.flush()
+
+
+@pytest.fixture
+def versioning_redlog() -> Iterator[RedLog]:
+    """The red sink for the T29 versioning-contract pins (the redeploy
+    face's reds)."""
+    log = RedLog("t29-versioning-pin-reds.json")
+    yield log
+    log.flush()
+
+
+@pytest.fixture
+def timer_cures_redlog() -> Iterator[RedLog]:
+    """The red sink for the timer-cures lane's pins (the six cures' reds:
+    the trojan prefix, the broadcast leak, the explorer's template, the
+    10k tail, the versioning wedge's surface, the naive-datetime doc)."""
+    log = RedLog("timer-cures-pin-reds.json")
     yield log
     log.flush()
 

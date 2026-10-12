@@ -326,6 +326,21 @@ arbiter physically blocks double-recording, and map children of one step
 key are DIFFERENT claims. `ctx.substep("name", fn)` is the user-facing
 shape: default idempotent ON, `idempotent=False` opts a step out.
 
+**THE SUBSTEP HOLDS NO CONNECTION ACROSS THE BODY** (the LedgerWatch F4
+cure — the measured tax, stated so nobody re-pays it): the claim and the
+terminal write are ~1 ms statements, each on its OWN pool acquisition;
+between them the body runs with NO connection held. The pre-cure shape
+held ONE connection from the claim to the terminal — and the workflow
+execution door runs bodies on the DISPATCHER pool (4 connections at the
+shipped default), so a hot map fan-out's concurrent substeps collapsed
+to the conn count: the team's A/B measured a 300-child fan-out drop
+from 32 in-flight to 4 (10.1 s → 27.1 s at their profile; 11.1 s →
+42.2 s at 0.5 s/call on the cure tree's red run). The exactly-once law
+never needed the held connection — the claim arbiter linearizes the
+grant, and the terminal keys the claim's OWN row id. Substep the calls
+that cannot tolerate a re-run freely: the replay face is now
+throughput-free.
+
 Run-level idempotency claims against
 the same composite arbiter with the scope `workflow-run:<flow name>` — a
 conflict returns the EXISTING run's TYPED claim (`RunClaim`: `created` /
@@ -479,12 +494,181 @@ is refused at the wiring site, a non-positive TTL is refused, and a
 cache on the multi-parent gather is refused (the v1 surface is the
 plain step).
 
+THE ADDRESS'S SCOPE — what "same body, same input" covers, exactly:
+
+- **The code half covers the body's OWN source only** — module,
+  qualname, the body's source text. **A changed HELPER is invisible to
+  the address**: a helper's redeploy is a byte-identical address, and
+  the PRE-DEPLOY truth serves until the TTL. That is the documented
+  contract, and the operator's discipline is the cure: when the
+  closure's truth changes, change the BODY's own source too (even a
+  comment-line change moves the address). A transitive-closure hash
+  (the helpers' sources hashed in) was considered and not built — the
+  cost (a source-read walk over the whole call graph at the claim
+  path, per attempt) and the false-positive face (an unrelated helper
+  edit invalidating every address) are not justified by the hazard the
+  discipline covers.
+- **The input half covers the WIRED args only.** The FLOW input
+  (`ctx.input`) NEVER enters the address. That is why `cache=True` on
+  a body reading `ctx.input` is REFUSED at the wiring (E18): the
+  cached answer produced under one flow input would serve a later run
+  whose input differs — the cross-tenant leak (tenant A's answer
+  delivered to tenant B, terminal-success, audits clean). For a SOURCE
+  node the flow input is its only run-varying input, so a source body
+  reading the run input has NO sound address either (the 640-row feed
+  served its cached answer to the 60-row feed — the import probe's
+  live conviction); the refusal teaches the fix.
+
+The cure is the same shape for both faces — **lift the flow input into
+the dataflow with an UNcached upstream step and wire its result as the
+cached body's param** (the param enters the address, the value differs
+per input, the cache caches per value):
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    run,
+    step,
+)
+
+
+class Tenant(BaseModel):
+    tenant_id: str
+
+
+class Report(BaseModel):
+    ref: str
+
+
+calls = {"priced": 0}
+
+
+async def read_tenant(ctx: StepContext) -> Tenant:
+    """The UNcached lift: the flow input's value enters the dataflow
+    here — the flow input still never enters any address."""
+    return Tenant(tenant_id=ctx.input["tenant_id"])
+
+
+async def price_for(ctx: StepContext, tenant: Tenant) -> Report:
+    """The CACHED body: the tenant is a PARAM — it enters the address,
+    so each tenant's pricing caches under its own address."""
+    calls["priced"] += 1
+    return Report(ref=f"{tenant.tenant_id}:price")
+
+
+app = WorkflowApp()
+
+
+@app.workflow("tenant_cache_flow")
+def tenant_cache_flow() -> Promise[object]:
+    tenant = step(read_tenant, key="tenant")
+    report = step(price_for, tenant, key="price", cache=True, cache_ttl=3600.0)
+    return build(report)
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+
+    first = await run(
+        app.get("tenant_cache_flow"), pool, schema, input={"tenant_id": "tenant-A"}, key="tenant:a"
+    )
+    second = await run(
+        app.get("tenant_cache_flow"), pool, schema, input={"tenant_id": "tenant-B"}, key="tenant:b"
+    )
+    third = await run(
+        app.get("tenant_cache_flow"), pool, schema, input={"tenant_id": "tenant-A"}, key="tenant:a2"
+    )
+    print(f"priced_calls={calls['priced']} (2: one per tenant — B's run paid, A's re-run hit)")
+    print(f"A's answer: {await _ref(pool, schema, third.flow_id)} (never B's)")
+
+
+async def _ref(pool: asyncpg.Pool, schema: str, flow_id: str) -> str:
+    raw = await pool.fetchval(
+        f"SELECT result->'value'->>'ref' FROM \"{schema}\".jobs "
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'price'",
+        flow_id,
+    )
+    return str(raw)
+
+
+asyncio.run(main())
+```
+
+Verified output (this guide's capture, on a fresh schema — the SECOND
+run per tenant never re-ran the body):
+
+```
+priced_calls=2 (2: one per tenant — B's run paid, A's re-run hit)
+A's answer: tenant-A:price (never B's)
+```
+
+Three more refusals close the remaining sound-address holes, each at
+the wiring site (and re-proved by the validator's own rules — E17/E19/
+E20):
+
+- **A typed-route source is refused** (E17): `cache=True` on a source
+  that carries `route(...)` arms wedges the run FOREVER at the first
+  cache hit — the hit path cannot rebuild the route fork (the arm
+  dispatch reads the element's runtime type; the cached envelope
+  carries only encoded dicts), so the route's children and join never
+  spawn while the source row reads `succeeded` wearing a cache receipt.
+  Cache the route's arms' work, never the fork-spawning source.
+- **An Exit-returning body is refused** (E19): the sentinel
+  terminalizes through the exit finalize, which the success-only store
+  never sees — `cache=True` would silently no-op (every run
+  re-executes the body while the cache machinery looks armed).
+- **An unverifiable body source is refused** (E20): a builtin, a
+  partial, or an exec'd fragment cannot be hashed (the address
+  requires the §22.1 canon — module + qualname + the body's own
+  source), and the pre-refusal shape was the SILENTLY uncached step:
+  the wiring accepted `cache=True`, every run re-executed the body,
+  and the only trace was a log line. Define the body as a module-level
+  def, or drop `cache=True`.
+
 The TTL is the in-DB expiry (`expires_at`, compared against the DB
 clock): an expired row IS a miss — the re-run re-executes and re-fills.
 The sweep's retention arm (`wf_step_cache_retention`, the
 `TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD` setting, default 1h,
 `timedelta(0)` disables) prunes the expired rows — the freshness
 decision is the lookup's; the pruner only deletes the dead weight.
+
+### Operating the cache: the eviction face
+
+A well-shaped lie at a known address — a body that was deterministic
+when it stored and is not anymore, a poisoned payload, a result produced
+under a bug since fixed — serves every future run until the TTL with no
+way to take it out. The operator's face is the `taskq wf` surface:
+
+- `taskq wf cache list [--address-prefix PREFIX] [--limit N]` — the
+  cache's rows (the address, fresh/EXPIRED, the producing run, the
+  store and expiry instants) AND the hits' `wf_cache_hit` receipts (the
+  hit runs' node rows, naming the address and the producing run each).
+  The receipt already existed on the rows; this is its one surface.
+- `taskq wf cache evict [--address-prefix P | --flow RUN_ID | --step
+  STEP_KEY | --all] [--yes]` — the poison-pill door. **DRY-RUN by
+  default**: the command prints the rows that WOULD go and touches
+  nothing; `--yes` deletes. `--step` resolves the addresses through the
+  step's own `wf_cache_hit` receipts (the only address↔step pairing
+  the rows carry) — for an address no receipt names, use
+  `--address-prefix`.
+
+Eviction is immediate and one-way: the next run over an evicted address
+is a MISS — the body re-executes and re-fills on its own success. The
+lie's service ends when the operator says so, never silently.
 
 ## The sweep arms (wired)
 
@@ -720,6 +904,8 @@ families:
 | `tests/typeprobe/` | T01's negative type probes (pyright + ty, the CI `type-probes` gate) |
 | `tests/test_wf_perf_bands.py` | the perf bands: the 1000-child fan-out tx, the join-fire latency, the enqueue/dispatch noise bands, the T07 edge-join scale curve (the refit + the 100k-edge plan assert) |
 | `tests/test_wf_step_cache_pins.py` | the T25 cross-run cache family: the hit (the body runs ONCE across runs; the receipt on the node row), the success-only law (a failed body's key never squats), the TTL's expiry (the scaled clock: expired is a miss, the re-fill beats the corpse), the CAS (two concurrent misses, ONE winner), the typed decode at the hit (R3's face), the address's code sensitivity (the stale-code face dead), the wiring refusals (the TTL without the opt-in, the non-positive TTL, the gather), the retention arm's fresh/expired split + the disable sentinel |
+| `tests/test_wf_timer_pins.py` | the T28 durable-timer family: the at-least wake (never early, the receipt's arithmetic), the slot's release (the held representation, the ledger's `awaited`), the crash-mid-wait durability (the successor's sweep fires the wake), the cancel interplay (the hold dies with the flow), the Expired/timer orthogonality (both named outcomes fan in), the resolve boundary's refusal (the clock is the only resolver) |
+| `tests/test_wf_versioning_pins.py` | the T29 versioning-contract family: the redeploy face (the adopt at the next node claim + the stamps proving WHICH code ran each row), the mid-wait redeploy (the wake re-enters the NEW body, the replay law across the deploy) |
 
 History note: T03's schema-pin file (`tests/test_workflows_schema_pins.py`)
 was folded when T05 landed — its pins live in
@@ -812,6 +998,17 @@ and PURE — that SPELLS the graph by dataflow:
   step (the barrier, §1's barrier section below).
   `map_source(source, {A: fn_a, B: fn_b})` is the same verb's dict
   form — one machinery, two spellings;
+  **THE ROUTE ATTACHES TO A WIRED SOURCE NODE** (the LedgerWatch F1
+  cure — the constraint stated where the verb is taught, not only in
+  the error): a route's source must be a node with a BODY — the route
+  dispatches the source's own return. A map's derived join
+  (`<source>.join`) declares no body (it is the default identity
+  packer), so `route(enriched, arms)` over a map's collect is REFUSED
+  at build. The natural enrich-then-branch pipeline spells the
+  identity pass-through step between the map and the route — the
+  honest one-liner: `enriched = step(branch_seam, mapped, key="branch")`,
+  `route(enriched, arms)` (the pass-through's body returns its
+  argument; the route's source is then the enriched collect, named);
 - `sink(...)` is the explicit fire-and-forget (RECORDED in the compiled
   metadata — never silent); `build(result, *residuals)` is the terminal
   completeness point (the `Promise[Never]` residuals are the static
@@ -1091,6 +1288,230 @@ the join's key is DERIVED (`<source-key>.join` — the engine's fork
 addresses it), so naming the node means naming the SOURCE. (An earlier
 revision shipped a `key=` param whose every value was refused — the
 trap is gone; see the changelog.)
+
+**THE ITEM LADDER HONORS THE STAMPED `max_attempts`** (the LedgerWatch
+F3 cure — the knob is the operator's, the record keeps it): a
+transient-failing item ladders to the `max_attempts` wired on the
+`map_source` — the SAME knob a plain `step` honors, stamped on every
+child row by the fork. The pre-cure ladder capped items at the bare 3
+regardless (the row LIED — the team's probe: a plain step wired 7
+laddered 7; a map item wired 7 died at 3 — and every adoption
+re-implemented the ladder client-side). The deterministic-failure and
+`permanent` routes are unchanged (they never ride the ladder).
+
+**THE LADDER'S BACKOFF CURVE** (the LedgerWatch F5 cure — the plan-ahead
+numbers): a laddered attempt's re-pend waits
+`0.05 × 2^(failed_count)` seconds — 50 ms after the first failure, then
+100 ms, 200 ms, 400 ms, 800 ms, 1.6 s, 3.2 s… doubling with no cap
+inside the ladder (the vanilla actors' retry curve has its own
+documented jitter and caps — `docs/guides/retries.md`; the workflow
+node's ladder is this plain doubling). A drill's worst-case wall
+budget for `max_attempts=N` is therefore the sum of the first N−1
+doublings plus each attempt's own run time.
+
+## §3b — Child flows: a step spawns a sub-flow and joins its result (T28)
+
+The map's fork fans out inside ONE flow. When the sub-work is another
+WHOLE flow — the agent spawning sub-investigations, each a real run the
+run explorer sees, the admin operates, the CLI lists — the step calls
+`ctx.spawn_flow` and JOINS the child's terminal. The child is a REAL
+flow: its own root row, its own node rows, its own run-key claim — the
+spawn is the child's `create_flow` in the create seam's own ONE
+transaction. The join is the HITL hold's own shape: the wait registers
+a hold on the spawning node, the slot releases (never a failed
+attempt), and the child's terminal is the hold's RESOLVER — the wake
+arm delivers, the body resumes, the closed union's member returns.
+`timeout_s=0.0` would never wait; the example passes `None` (the
+default — wait as long as the child lives; a cancelled parent cancels
+its children, so no join outlives its flow):
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    ChildCancelled,
+    ChildFailed,
+    ChildOk,
+    Expired,
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    step,
+)
+
+
+class Probe(BaseModel):
+    topic: str
+
+
+class SubReport(BaseModel):
+    findings: list[str] = []
+
+
+class Digest(BaseModel):
+    verdict: str
+    findings: list[str] = []
+
+
+child_app = WorkflowApp()
+
+
+@child_app.actor(queue="default", max_attempts=1)
+async def sub_investigate(ctx: StepContext) -> SubReport:
+    # The FLOW INPUT's face: the spawn's `input=` rides the child
+    # root's payload; the body re-hydrates it through the declared
+    # model's own validator (the jsonb value, decoded once).
+    probe = Probe.model_validate(ctx.input)
+    return SubReport(findings=[f"looked at {probe.topic}"])
+
+
+@child_app.workflow("docs_childflow_child")
+def docs_childflow_child() -> Promise[object]:
+    return build(step(sub_investigate, key="probe"))
+
+
+parent_app = WorkflowApp()
+
+
+@parent_app.actor(queue="default", max_attempts=3)
+async def investigate(ctx: StepContext, params: Probe) -> Digest:
+    # THE SPAWN: the child is a REAL flow. The run key
+    # (`childflow:{parent_flow}:{node}:{slot}`) is the TWO-CLAIMS LAW
+    # at the flow level: the retry ADOPTS the same child, never
+    # duplicates it (a terminal child adopted as-is is the
+    # deterministic replay; `key=` overrides the slot).
+    handle = await ctx.spawn_flow(
+        "docs_childflow_child",
+        input=Probe(topic=params.topic),
+        result=SubReport,
+    )
+    # THE JOIN (the wait IS the hold): the CLOSED union — the checker
+    # forces the fail-close arms (a body matching only ChildOk falls
+    # through and reds against this Digest return).
+    outcome = await handle.wait()
+    match outcome:
+        case ChildOk(result=report):
+            return Digest(verdict="ok", findings=report.findings)
+        case ChildFailed():
+            # THE CHILD FAILED — never a silent swallow: the body
+            # DECIDES (finish with what it has here).
+            return Digest(verdict="child-failed")
+        case ChildCancelled():
+            return Digest(verdict="child-cancelled")
+        case Expired():
+            # THE JOIN'S OWN PATIENCE EXPIRED (`timeout_s=` arms the
+            # hold's deadline — the DB clock; the face fires ONCE per
+            # abandoned hold per attempt).
+            return Digest(verdict="expired")
+
+
+@parent_app.workflow("docs_childflow_parent")
+def docs_childflow_parent() -> Promise[object]:
+    return build(step(investigate, Probe(topic="the-estate"), key="spawn_join"))
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+
+    from taskq.workflows import FlowRunner
+
+    # The registration door — the spawn resolves the child's compiled
+    # graph from the registry (the definitions must be imported in the
+    # driver's process).
+    child_app.get("docs_childflow_child")  # noqa: B018  (registers the child)
+    runner = FlowRunner(parent_app.get("docs_childflow_parent"), pool, schema)
+    claim = await runner.create_flow(input=Probe(topic="the-estate"))
+    outcome = await runner.drive(claim.flow_id, until="terminal")
+    assert outcome == "terminal", outcome
+    result = Digest.model_validate(await runner.result(claim.flow_id))
+    assert result.verdict == "ok", result
+    assert result.findings == ["looked at the-estate"], result
+    await pool.close()
+
+
+asyncio.run(main())
+```
+
+The identity runs BOTH directions: the parent's node row carries the
+child's flow id (`metadata.child_flows` — the receipt), the child's
+root row carries the parent's (`parent_flow_id` / `parent_node_id` /
+`parent_step_key` — the provenance). The cancel cascade: cancelling the
+parent's run walks the family from the rows' parent links (the
+receipts the accelerator) and cancels each child's rows — the worklist
+walk below. The fan-out is the body's own loop: spawn K handles (each
+slot a distinct, retry-stable key) and join each — the fork's
+all-members semantics at the flow level.
+
+**THE SPAWN'S ATOMICITY FACE (the gather dragon's cure).** The default
+slot is CLAIMED in one atomic statement (the per-attempt cursor's
+increment and the returned slot are one row-CAS), so K CONCURRENT
+spawns — `asyncio.gather(*[ctx.spawn_flow(...) for t in tenants])`, the
+natural fan-out spelling — take K DISTINCT slots and mint K DISTINCT
+children, each carrying its own input. The pre-cure shape raced the
+cursor's read and write: all K spawns adopted the same slot, minted ONE
+child, and every caller received tenant-0's verdict wearing K labels —
+silent fabricated results, zero errors, green pins. A SAME-key
+concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
+every caller receives THAT child's handle — the honest shared face.
+One discipline applies: a concurrent fan-out that must join STABLY
+across the resume passes `key=` (the slot's allocation order is the
+scheduler's; the author's identity is the caller's — a resumed body
+re-executes the gather and the adoption follows the KEYS).
+
+**THE DEPTH BOUND.** A self-spawning flow (a workflow that spawns
+itself, directly or through a cycle of children) cannot mint a
+generation per sweep tick forever: the spawn walks the ancestor chain
+from the ROWS' `parent_flow_id` links — capped at the declared max
+depth, `DEFAULT_SPAWN_MAX_DEPTH` (32) — and past the bound the typed
+`SpawnDepthExceededError` (`FanInBoundExceededError`'s sibling)
+terminal-fails the node, the retry ladder unburned (re-running cannot
+shrink the ancestor chain). The same walk detects a CYCLE in the parent
+links (a corrupted/operator-written link cannot run the walk forever —
+the same bound fires, the message names it). A fan-out that genuinely
+needs more depth declares `max_depth=` at the spawn site.
+
+**THE RETENTION INTERPLAY (the operator's law).** The cancel cascade
+cancels the family; the retention purge must WALK THE PARENT LINKS the
+same way — purging a child's rows while its parent still runs leaves a
+DANGLING child pointer on the parent's row. The parent's resume now
+FAILS CLOSE on it: the dangling pointer raises the typed
+`ChildFlowLostError` and the run terminal-fails with the class on the
+record. It is NEVER a silent respawn — the pre-cure shape re-minted a
+fresh child on the resume (the purge took the arbiter's row with it),
+the child's side effects ran twice, and the parent SUCCEEDED.
+
+**THE CASCADE WALKS THE ROWS.** The cancel cascade collects children
+from the ROWS' crash-safe `parent_flow_id` direction first — the
+receipts (`metadata.child_flows`) are the accelerator, the rows the
+law. A child created but never receipted (the crash between
+child-create and receipt-write) is STILL collected: the orphan window
+— the crash-then-cancel that let a child escape the cascade forever —
+is unrepresentable. The cascade itself is a WORKLIST WALK, never
+Python recursion: a 1200-deep family cancels clean (the recursive walk
+raised `RecursionError` at the operator and left hundreds of runs
+running).
+
+**THE DEV-DRIVES PARITY.** The dev-loop driver's tick runs the expiry
+arm, so a `timeout_s` wait — including a child join's — fires the
+`Expired` member in a dev drive exactly as it does under the leader's
+sweep belt. The pre-cure dev face parked on the hold until
+`max_ticks`: the deadline inert, the dev loop a different engine from
+the fleet's.
+
+**THE ADMIN SEES THE FAMILY.** The run explorer renders the
+parent↔child links the rows carry: the parent's page links each child
+flow's run page, a child's page links its parent — the identity faces
+the child line landed, surfaced.
 
 ## §9 — Loops & back-edges (T19)
 
@@ -1438,6 +1859,40 @@ reference — `HitlClient.resolve(id, decision)` addresses ONE hold; the
 resolve is IDEMPOTENT (an already-resolved hold is the DEFINED no-op)
 and AUDITED (G4: "who resolved this" is a ROW, not a log line).
 
+**MAP SIBLINGS HOLD CONCURRENTLY, AS DISTINCT ROWS** (the LedgerWatch
+F2 cure — the per-item approval is the machinery's OWN shape): the hold
+identity is
+`(workflow_id, node_key, signal_name, COALESCE(map_index, -1),
+hold_epoch)` — the map index rides the identity, so two items of one
+`map_source` holding on the same signal name are TWO hold rows
+(`HitlClient.list(run=…)` lists BOTH; each `HoldContext` carries its
+`map_index` — the UI renders the item it addresses). Each resolve wakes
+exactly the hold it names: the resume addresses the hold's OWN node by
+the hold id stamped into that node's metadata — one hold, one node,
+one answer consumed by its own sibling. The pre-cure shape (one shared
+identity per node key) collided the siblings — the second sibling
+wedged `running` forever in-process, or its hold INSERT died of the
+unique arbiter into the ladder and its retry STOLE the first sibling's
+delivered answer. A per-item review workflow (one hold per item, all
+concurrent) is spelled directly on the map — no per-item run keys, no
+side table.
+
+**THE HOLD ROW'S STATUS VOCABULARY** (the LedgerWatch F8 cure — the
+four spellings the ROWS carry, in one table; the guides previously said
+"pending" for the wait and "abandoned" for the expiry while the rows
+say `held`):
+
+| `status` | how a hold gets there | what the wait site does on resume |
+| --- | --- | --- |
+| `held` | the wait site registered it (the live hold) | the wait site re-reads it (the idempotent re-hold) |
+| `delivered` | a resolve/deliver won the CAS | the answer queue replays its payload |
+| `abandoned` | the expiry sweep fired past `expires_at` | the wait returns the `Expired` member (the fail-close) |
+| `cancelled` | the run's cancel cascade swept it | the flow is terminal — the body does not resume |
+
+All four live on `wf_signals.status` (partial-unique over the
+UNRESOLVED holds only — `resolved_at IS NULL`); `resolved_at` is set
+by every non-`held` transition.
+
 **THE CONTEXT CONTRACT** (round-8): the hold carries the payload-model
 schema (what a UI renders from), the author-supplied
 reason/tool/args, the provenance (run id, node key, gate name, epoch,
@@ -1606,6 +2061,134 @@ The hold→resume latency band (G11c) is measured and pinned in
 `perf-evidence-workflows.md` (the band from
 `.measurements/t10-hold-resume-band.json`).
 
+## §4b — The durable timer: the clock is a resolver (T28)
+
+"Remind them tomorrow" is a hold whose RESOLVER IS THE CLOCK:
+`ctx.wait_until(when, key=…)` — the body sleeps, the run survives, the
+wake resumes the body. THE TIMER'S FACE INVERTS THE EXPIRY'S: the
+human gate's deadline-pass (`wait_signal`'s `timeout_s`) is the
+`Expired` member — the fail-close the checker forces. **The timer's
+deadline-pass is THE WAKE** — the sweep resolves the hold
+`'held' → 'delivered'` with the clock's own receipt and the body
+RESUMES. The timer's point is the continuation, never the fail-close.
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    Promise,
+    StepContext,
+    TimerWake,
+    WorkflowApp,
+    build,
+    run,
+    step,
+)
+
+app = WorkflowApp()
+
+
+class FollowUp(BaseModel):
+    ticket: str
+
+
+@app.workflow("reminder_flow")
+def reminder_flow() -> Promise[object]:
+    return build(step(remind_body, FollowUp(ticket="T-1"), key="remind"))
+
+
+async def remind_body(ctx: StepContext, params: FollowUp) -> str:
+    # THE ONE-DAY SHAPE: `ctx.wait_until(when, key="remind")` with
+    # `when = datetime.now(timezone.utc) + timedelta(days=1)` — here a
+    # 1-second float so the verified run finishes fast. The pre-timer
+    # side effect is SUBSTEP-ledgered: the resume re-executes the body
+    # from the top and the substep replays (never re-runs).
+    wake = await ctx.wait_until(1.0, key="remind")
+    return (
+        f"ticket={params.ticket} wake={wake.key} by={wake.fired_by} "
+        f"late={wake.lateness_s >= 0.0}"
+    )
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+    outcome = await run(app.get("reminder_flow"), pool, schema)
+    print(f"claim={outcome.claim.kind} outcome={outcome.outcome} result={outcome.result}")
+
+
+asyncio.run(main())
+```
+
+Verified output (this guide's capture, on a fresh schema):
+
+```
+claim=created outcome=terminal result=ticket=T-1 wake=remind by=timer late=True
+```
+
+The machinery, and the laws each piece carries:
+
+- **THE ROW IS THE TRUTH (the hold's law, unmodified)**: the timer IS
+  a `wf_signals` hold row under the reserved `__timer__` signal
+  prefix. The held representation releases the worker's SLOT (no
+  lease, no claim, no attempt burned while sleeping); a LOOP node's
+  budget pauses while the timer stands — the wall is blind while the
+  body waits on the clock, exactly as while it waits on a human.
+- **THE SWEEP'S TIMER ARM** (the expiry arm's inverted twin, wired
+  beside it in the leader's signal sweep and in the dev-loop `tick`):
+  every due timer hold resolves `'delivered'` — never `'abandoned'` —
+  with the WAKE as the payload (`fired_by='timer'`, the timer's
+  `key`, the `scheduled` and `fired_at` instants). The `'held' →
+  'delivered'` CAS is the fence: a twice-fired timer is
+  unrepresentable, and a cancelled flow's timer never wakes.
+- **THE DURABILITY IS THE DESIGN**: a worker DEATH mid-wait changes
+  nothing — the hold row's expiry arms the reclaim, the successor's
+  sweep fires the wake, the body resumes from the top (the
+  re-execution doctrine: pre-timer side effects are
+  `ctx.substep`-ledgered and replay). The pin drops the arming driver
+  and lets a fresh runner's sweep complete the flow.
+- **THE AT-LEAST FACE** (the expiry's own precision law, restated):
+  the fire lands at the FIRST sweep pass at-or-after the deadline —
+  never early, never at a precise wall time. `TimerWake.lateness_s`
+  (the `fired_at` − `scheduled` delta) is that honesty, on every
+  wake. Pass a `float` (seconds; the DB clock owns the base) or a
+  `datetime` (the absolute instant; naive means UTC — the DB never
+  re-bases it).
+- **THE TIMER IS NOT A HUMAN HOLD**: `HitlClient.list()` never
+  enumerates it (the reserved prefix is the split's mark — the
+  display surfaces show it AS a timer), and the resolve boundary
+  REFUSES any hand-delivered payload — a well-formed forgery of the
+  wake's schema included. The clock is the only resolver this hold
+  takes.
+- **THE INTERPLAY**: the cancel cascade kills the timer with the flow
+  (it is an ordinary hold row — the same one-tx cascade); `Expired`
+  and `TimerWake` are orthogonal in one flow (a human gate's
+  fail-close beside a clock's wake fan in as two named outcomes); a
+  mid-wait REDEPLOY re-enters the NEW body on the wake's resume (the
+  versioning contract, §6). In a LOOP the timer shares the answer
+  queue's cursor — the ONE-wait-per-iteration shape law (E13) reads a
+  conditional timer exactly as a conditional `wait_signal`.
+
+**THE NAIVE-DATETIME LAW** (the silent coercion, stated at the API
+face): a naive `datetime` — no `tzinfo` — passed to `wait_until` is
+interpreted as UTC. The coercion is silent (`when.replace(tzinfo=UTC)`):
+no error, no local-zone reading — `17:00` naive means `17:00 UTC`, not
+your server's 17:00. The DB never re-bases the instant: the hold row's
+`expires_at` is exactly the coerced value, the wake fires at that UTC
+instant, and the wake's `scheduled` stamp reads it back unchanged. Pass
+a tz-aware `datetime` (`datetime.now(timezone.utc) + timedelta(...)`)
+to mean what you said; a naive one is accepted for continuity and reads
+as UTC. (A `float` of seconds keeps the relative face — the DB clock's
+own `now` is its base.)
+
 ## §5 — Progress: the nodes report (T21)
 
 A workflow body reports its own progress: `await ctx.progress(75, "page
@@ -1706,6 +2289,101 @@ vocabulary cannot sprout: the kind set is closed at the emit path and by
 the storage CHECK).
 ---
 
+## §6 — The in-flight versioning contract (T29)
+
+**THE DECISION — the registry-is-truth contract**: a REDEPLOYED
+definition is adopted by the in-flight runs at their NEXT NODE CLAIM.
+The compile's STRUCTURE is the create-time snapshot (the nodes, the
+edges, the wiring — a run's graph never morphs mid-flight); every BODY
+resolves from the CURRENT registry at the claim seam (D1's resolution
+is per-claim, never per-run — the registry answers first, the compiled
+node's own body is the fallback when the registry lacks the key). A
+redeploy keeps the same node KEYS, so the registry hit is the norm:
+the new code runs the old run's remaining nodes.
+
+TODAY'S HONEST PREDECESSOR: before this section existed, the same
+adoption happened SILENTLY — a mid-flow deploy changed in-flight
+behavior with no contract text and no taught read. The contract names
+the behavior; the STAMPS record it.
+
+**THE STAMPS ARE THE OPERATOR'S READ** (§22.1, landed with T03): every
+node claim writes `jobs.code_version` — the body's canonical content
+hash (the tors content hash over the named payload: module, qualname,
+source, and the decorator's explicit pin when given). WHICH code ran
+each row is a ROW fact, per node, per attempt:
+
+```sql
+SELECT step_key, attempt, code_version
+FROM taskq.jobs
+WHERE (metadata->>'flow_id')::uuid = $1
+ORDER BY id;
+```
+
+A run whose rows carry TWO different hashes for one node = the deploy
+drift happened mid-run, and the rows say which side of it each attempt
+ran. The hash is a RECORD, never a gate: a body the hash cannot read
+(a builtin, a partial) records as NULL — the loss is logged, the claim
+never fails on its own audit.
+
+**THE REMEDIATION** (the operator's tool when the adoption is NOT what
+a run should continue with): the **cancel-then-restart path** —
+`FlowRunner.cancel_workflow(run_id)` (or the admin's cancel door),
+then re-run on the current code under a NEW run key (the run-key
+arbiter's own law: the re-run is a NEW key, never a replay of the
+cancelled run's). There is no per-run code pin in v1: a run mid-flight
+cannot be HELD on old code — the adoption is the contract, the
+cancel-restart is the escape.
+
+**THE EDGE CASES, NAMED** (each re-enters the NEW body through the
+same claim-time resolution — the pin covers the second):
+
+- **A run mid-LOOP**: the iteration's body re-resolves at the resume —
+  the next iteration (and the resumed one) runs the NEW code.
+- **A run mid-WAIT**: the wake (the timer's, T28) or the human
+  delivery's resume re-enters the NEW body — a wake is a resume like
+  any other, and the claim-time resolution is the only body source.
+  The answer queue's replay law holds ACROSS the deploy: the new
+  body's wait site consumes the already-delivered answer (the
+  operator's re-run never re-sleeps, the operator never re-answers).
+- **A cached step** (T25): the cache's address INCLUDES the
+  `code_version` — a redeploy is a NEW address, so the new code's
+  results land on the new code's cache line and an old line is never
+  served to a new body (the T25 design's own law — the stale-truth
+  hazard's structural kill).
+
+**THE SNAPSHOT-PER-RUN DESIGN — recorded, not built**: pinning each
+run's code AT CREATE (the create stamps the definition snapshot, the
+run reads its own snapshot forever) is the LATER design — it re-derives
+the compile-time registry discipline and is recorded in
+[the spec's open LATER rows](../design/workflows-spec.md) (§8), not
+shipped. Until it lands, the registry-is-truth contract above is THE
+behavior — rely on the stamps to see it, and on cancel-restart to
+escape it.
+
+**THE WEDGE, NAMED** (the versioning wedge — know it before you
+rename): because the CURRENT registry is the only body source, a
+redeploy that RENAMES or REMOVES a node wedges every in-flight run
+sitting at it: the run's node row still exists (the create-time
+structure snapshot), but the current graph no longer declares the key,
+so the node can never claim a body again — the run is a ZOMBIE: never
+terminal, nothing fails it, and nothing else in the CLI or the admin
+surface said so. The drift is now VISIBLE: `taskq flows status <run_id>
+--app yourapp.workflows:app` compares the run's node inventory against
+the current registry's compiled graph and names the stranded nodes (a
+node the current registry does not declare), the zombie law, and the
+remedy (cancel + re-run). Related, and equally entailed by the
+contract: a mid-map redeploy provably MIXES v1+v2 results in one run —
+the fan-out's children claim the body one at a time, and the code
+changed between claims (the registry-is-truth contract IS the mixing;
+this is not a defect to fix but a fact to see). The per-node stamps
+(`jobs.code_version`) are the read that says which side of the drift
+each attempt ran; the map's summary row can carry mixed versions by
+design. Escape hatches, both: the cancel-then-restart path above, or
+re-deploy the old definition to let the run finish before re-deploying
+the new one.
+
+---
+
 ## The context contract (what a body asserts on)
 
 The body's `ctx` is the observability primitive: every field the contract names is on the LIVE surface (a body asserting on ctx is a pin, not a mock):
@@ -1746,3 +2424,19 @@ A workflow is stuck. The order of questions:
 3. **Is a node failed?** The status names it + the ladder's headroom (`attempt` vs `max_attempts`). The manual resume: `taskq flows retry <run_id> <node>` — the ledger is KEPT (the spent attempts stay recorded), the ceiling raises past the spent attempt, the blocked closure re-opens.
 4. **Is it a join that can never fire?** The status renders the join-wait rows with the deps counter. A join blocked `failed_parent` re-opens when the failed parent's retry lands; a join blocked `orphan_parent`/`flow_dead` is the fence's record — see the failure-propagation section.
 5. **Still stuck?** The admin's run page renders the SAME derivation + the node panel's attempt ledger + the audit trail. The rows-alone law: if the CLI and the page disagree, the ROWS decide — file it as a defect with both outputs.
+
+**THE WORKFLOW TABLES (the LedgerWatch F10 cure — the operator's SQL is
+sanctioned, and the tables are named where the runbook can find them):**
+the rows-alone reads above are served by five `wf_*` tables in the
+estate's schema, stable names, no foreign keys (the graph is the
+engine's, never the schema's):
+
+| table | what it holds |
+| --- | --- |
+| `jobs` | the node rows (the root is `step_key = '__flow__'`; the map children's step keys are `<source>.item` / `<source>.item:<tag>`; `metadata.flow_id` names the run) |
+| `wf_edge` | the edge ledger — the parent→child wiring, each row carrying the join's declared `failure_policy` |
+| `wf_step_ledger` | the attempt ledger — the claim arbiter `(flow_id, step_key, COALESCE(map_index, -1), attempt)`; `awaited` rows are holds, `failed` rows are the ladder's count |
+| `wf_signals` | the HITL holds — the status vocabulary is the table in §4; the reply handle is `id` |
+| `wf_outbox` | the fired joins' delivery queue (the consumer rows the drain inserts) |
+| `wf_join_fire` | the exactly-once fire receipt (at most one row per joined node) |
+| `wf_node_progress` | the progress state channel's durable rows (the SSE replay's source) |

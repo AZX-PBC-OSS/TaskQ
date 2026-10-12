@@ -1,0 +1,7 @@
+# evidence-heads-verify — the verifier's own receipt at the estate commit 822772b41 (the source-final head 7cb8d52fe357bc029ab9c6c3f2dcbce80e71b658's off-by-one stamp: R..M is pure .measurements)
+# the run AT the measurement commit says verify rc=0
+THE HEAD-STAMP LAW REDS (head 7cb8d52fe357):
+  evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261010T180433.txt is stale — recorded on 1f4bb1d55758, the head is 7cb8d52fe357. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+verifier rc=1
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-child-cures/.measurements/runs is recorded at THIS head (7cb8d52fe357) or explicitly superseded
+verifier rc=0

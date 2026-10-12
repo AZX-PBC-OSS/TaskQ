@@ -195,6 +195,16 @@ co-invariant lock lease — the settings validator's cascade floor).
 
 ## 8. The open LATER rows (recorded, not settled)
 
+* **Snapshot-per-run versioning** (the run's code pinned AT CREATE —
+  the create stamps the definition snapshot, the run reads its own
+  snapshot forever): the shipped contract is the OPPOSITE face (§the
+  guide's versioning section): the registry-is-truth — the in-flight
+  runs adopt the NEW code at their next node claim, the §22.1 stamps
+  record which code ran each row, and the cancel-then-restart path is
+  the remediation. The snapshot design re-derives the compile-time
+  registry discipline (a snapshot per run, a pruning story for the
+  dead snapshots, the deploy matrix's pinned-code replay semantics) —
+  recorded here, not built.
 * **Holds as child rows** (parallel holds inside one iteration): NOT a
   feature add — a REPLACEMENT of the proven hold representation; the
   fence matrix, the epoch identity and the T10/T19 pins re-derive.

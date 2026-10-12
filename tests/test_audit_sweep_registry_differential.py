@@ -281,6 +281,7 @@ def _make_deps(pool: Any, sweep_interval: str = "5.0", **overrides: str) -> Work
         LOCK_LEASE="3.0",
         WATCHDOG_LOOP_LAG_BUDGET="1.2",
         WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
+        WATCHDOG_CHECK_INTERVAL="0.25",  # the lag lattice: check < warn (the F6 storm refusal)
         MAX_HEARTBEAT_FAILURES="3",
         CANCELLATION_GRACE_PERIOD="0.0",
         CLEANUP_GRACE_PERIOD="0.0",
@@ -648,6 +649,10 @@ _WF_ARMS = (
     "wf_join_rederive",
     "wf_outbox_drain",
     "wf_signal_sweep",
+    # T28's child-join wake: the child flow's terminal is the join
+    # hold's resolver (the CAS delivery + the resume + the T26 knock).
+    # Pure append, same as the arms before it.
+    "wf_child_join_wake",
     # The D2 soak's cures: the hold-stamp reconcile (the SIGKILL-during-
     # hold wedge's fleet arm — the hold's state decides) and the outbox
     # TTL (delivered rows are narration, never forever). Pure appends,
