@@ -1,0 +1,3 @@
+# rv2-13-green at head 2bfca6f5958ef0702443955881ef119973d3e2f7 — rc=0 — captured 2026-10-11T21:24:42Z (the content-door lane's green fill of the staged slot)
+.                                                                        [100%]
+1 passed in 3.39s

@@ -1,0 +1,8 @@
+# wf-bands-rv4 at head 3f69eaa325d523866de8e4de2e2490e483fe3384 — rc=0 — captured 2026-10-11T20:59:21Z
+bringing up nodes...
+bringing up nodes...
+
+................................                                         [100%]
+32 passed in 15.27s
+
+the bands leg on the CONTRACT PG (postgres:18-alpine + the shared pair tuning): the writers auto-recorded the band claims at this head

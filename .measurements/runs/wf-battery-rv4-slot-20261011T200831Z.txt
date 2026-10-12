@@ -1,0 +1,24 @@
+# wf-battery-rv4 at head 3f69eaa325d523866de8e4de2e2490e483fe3384 — rc=0 — captured 2026-10-11T21:02:26Z (the content-door lane's green fill of the staged slot)
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 11%]
+..........................................s............................. [ 23%]
+........................................................................ [ 35%]
+........................................................................ [ 46%]
+........................................................................ [ 58%]
+........................................................................ [ 70%]
+........................................................................ [ 82%]
+........................................................................ [ 93%]
+.....................................                                    [100%]
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-contentdoor/src/taskq/workflows/_progress.py:349: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_wf_ctx_annotation_pins.py:138: pyright is not installed (the typeprobe dependency group owns the binary)
+612 passed, 1 skipped, 1 warning in 86.04s (0:01:26)

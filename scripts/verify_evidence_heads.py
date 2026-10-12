@@ -37,7 +37,19 @@ THE MECHANICS (what this verifier enforces over the estate's registry,
   claimed head makes the claim stale.
 * A live claim may be marked ``superseded_by`` (the manifest entry's
   field — the migration bakes in the text files' ``SUPERSEDED-BY:``
-  lines): history by its own declaration, the link must resolve.
+  lines): history by its own declaration. THE CHAIN IS THE CLAIM (the
+  estate-cures round, cure 1): the verifier resolves the supersession
+  CHAIN to its TERMINAL entry — the first entry in the chain with no
+  ``superseded_by`` — and applies the head-sha rule THERE: freshness +
+  the capture's presence are judged at the END of the chain, not the
+  head link (the effective claim is what proves the stem). A dead link
+  at ANY hop, a target no registry entry claims (the dangling chain), a
+  chain that cycles (it never terminates), and a terminal that is a
+  ghost or stale ALL FAIL. The convicted hole this replaces: the old
+  law read only "the link must resolve" — the HEAD link's existence was
+  the whole check, so a stem GREENED while its effective (terminal)
+  claim was stale or missing, the rot hidden one hop behind a resolving
+  link (the round-four sin's shape, at the registry's own door).
 * A live claim declared ``kind: CITED-IMPORT…`` (the imported
   provenance record — the primary drill's session evidence gone, the
   import IS the provenance) is history by its own declaration: never a
@@ -46,9 +58,33 @@ THE MECHANICS (what this verifier enforces over the estate's registry,
   is missing entirely, FAIL — an index naming ghosts is the estate's
   own rot, and an estate without an index is unverifiable.
 
+THE CONTENT DOOR (the content-door round's cure): **the verifier reads
+each EFFECTIVE capture's own verdict — a capture whose content records
+failure while the claim greens the stem is THE CONTENT-VERDICT
+MISMATCH.** The convicted hole this closes: the head-stamp law checked
+the stamp's SHA and never the stamp's VERDICT — the live estate carried
+captures whose OWN HEADERS say ``rc=1`` (the run failed, in the
+capture's first line) standing as the green proof of their stems
+(the real instances: ``wf-battery-rv4-20261011T043000Z.txt`` and
+``deslop-pin-packs-20261011T042947Z.txt``). The claim's verdict is the
+registry's own: a fresh live claim (or a fresh chain terminal) IS the
+stem's green — so the door's mismatch test is one-sided by
+construction: the content records failure ⇒ the claim lies. The check
+is CHEAP — the stamp (the first lines) and the summary TAIL are
+scanned, never a full parse; the runtime regression is measured on the
+real estate (the content-door round's receipt). And the door is HONEST
+about formats: the families' summary shapes differ (the pytest tail's
+``N failed``, the run-scoped stamp's ``rc=``, the JSON band payload's
+measurements), the parser handles the estate's ACTUAL families — and a
+capture with NO parsable verdict shape is the TYPED WARNING, not a
+silent pass: silence is the defect class this cure kills. The door
+judges the claims that GREEN the estate at this head (the fresh live
+claim, the fresh chain terminal); a stale or CITED-IMPORT claim is
+already judged by its own law, and history's content is history's.
+
 Usage:  python scripts/verify_evidence_heads.py [--runs-dir .measurements/runs]
 
-Exits 1 with the named stale claims.
+Exits 1 with the named stale claims and content-verdict mismatches.
 """
 
 from __future__ import annotations
@@ -56,6 +92,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -63,6 +100,31 @@ from pathlib import Path
 from taskq.testing._claims import RUNS, load_claims
 
 REPO = Path(__file__).resolve().parent.parent
+
+#: THE CONTENT DOOR'S SCAN WINDOW — the stamp (the writer's first
+#: lines, where the run-scoped rc lives) and the summary TAIL (where
+#: pytest's counts and short-summaries land). The cheap read: a handful
+#: of lines, never a full parse (the runtime receipt measures the cost).
+_HEAD_LINES = 3
+_TAIL_LINES = 12
+
+#: The failure verdicts the capture families actually write. The
+#: run-scoped stamp records ``rc=N`` (the writer's own header); pytest's
+#: tail records ``N failed``; the short-summary names ``FAILED tests/…``
+#: lines even when the count is suppressed. ``0 failed``/``rc=0`` are
+#: the GREEN words — only a nonzero count or rc is a failure.
+_RC_STAMP = re.compile(r"\brc=(\d+)\b")
+_FAILED_COUNT = re.compile(r"\b(\d+) failed\b")
+_FAILED_LINE = re.compile(r"^FAILED\s")
+#: The GREEN verdict shapes (the parsable families' success words): the
+#: stamp's rc, pytest's passed count, pyright's zero-errors. A capture
+#: showing NONE of the shapes (failure or green) is UNPARSABLE — the
+#: typed warning, never a silent pass.
+_GREEN_SHAPES = (
+    _RC_STAMP,
+    re.compile(r"\b\d+ passed\b"),
+    re.compile(r"\b0 errors\b"),
+)
 
 
 def _git(*args: str, check: bool = True) -> str:
@@ -113,41 +175,243 @@ def _source_changes_since(head_sha: str) -> bool:
     return bool(proc.stdout.strip())
 
 
-def verify(runs_dir: Path, head: str) -> list[str]:
-    """The stale live claims, named (empty = the estate holds)."""
+def _supersession_target(marked: str, runs_dir: Path) -> Path:
+    """The ``superseded_by`` link's target path (the manifest entry's
+    field spells the capture three ways — runs-relative, estate-relative,
+    or absolute; the migration's three shapes, honored as recorded)."""
+    if marked.startswith(".measurements"):
+        return REPO / marked
+    if Path(marked).is_absolute():
+        return Path(marked)
+    return REPO / runs_dir.parent / marked
+
+
+def _scan_window(text: str) -> list[tuple[int, str]]:
+    """The capture's verdict window: the first ``_HEAD_LINES`` lines
+    (the writer's stamp) and the last ``_TAIL_LINES`` (the summary
+    tail), as (1-based line, text) pairs — the door's ENTIRE read."""
+    lines = text.splitlines()
+    total = len(lines)
+    window = list(enumerate(lines[:_HEAD_LINES], start=1))
+    tail_start = max(_HEAD_LINES, total - _TAIL_LINES)
+    window.extend(enumerate(lines[tail_start:], start=tail_start + 1))
+    return window
+
+
+def _content_verdict(path: Path) -> tuple[str, str, int | None]:
+    """The capture's OWN verdict, parsed from its content — cheaply.
+
+    Returns ``(status, evidence, line)`` where status is:
+
+    * ``"failure"`` — the content records the run failing (a nonzero
+      rc in the stamp, a nonzero failed count or a FAILED short-summary
+      line in the tail); *evidence* quotes the capture's own failing
+      words at *line* (1-based);
+    * ``"green"`` — the content records a verdict and it is not a
+      failure (rc=0, the green pytest count, pyright's zero errors, or
+      the JSON family's successful parse);
+    * ``"unparsable"`` — NO verdict shape the door parses (a verdict
+      shape may be new — TEACH THE DOOR, never teach the capture to be
+      silent).
+    """
+    if path.suffix == ".json":
+        # The JSON band family: the payloads record MEASUREMENTS, not
+        # verdicts — the honest shape loads as the JSON its suffix
+        # declares and greens. A torn/unparsable body is the warning.
+        try:
+            json.loads(path.read_text())
+        except (ValueError, OSError):
+            return ("unparsable", "the JSON its suffix declares does not load", None)
+        return ("green", "the JSON band family (measurements, no verdict line)", None)
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return ("unparsable", "the capture's content is unreadable", None)
+    failure: tuple[str, int] | None = None
+    parsable = False
+    for lineno, line in _scan_window(text):
+        rc = _RC_STAMP.search(line)
+        if rc is not None:
+            parsable = True
+            if int(rc.group(1)) != 0 and failure is None:
+                failure = (f"rc={rc.group(1)}", lineno)
+        count = _FAILED_COUNT.search(line)
+        if count is not None:
+            parsable = True
+            if int(count.group(1)) > 0 and failure is None:
+                failure = (count.group(0), lineno)
+        if _FAILED_LINE.match(line) and failure is None:
+            failure = ("the FAILED short-summary line", lineno)
+        if not parsable and any(shape.search(line) for shape in _GREEN_SHAPES):
+            parsable = True
+    if failure is not None:
+        return ("failure", failure[0], failure[1])
+    if parsable:
+        return ("green", "the stamp/tail's green verdict", None)
+    return ("unparsable", "the stamp carries no rc=, the tail no passed/failed summary", None)
+
+
+def _content_door(
+    stem: str,
+    entry: dict[str, str],
+    runs_dir: Path,
+    failures: list[str],
+    warnings: list[str],
+) -> None:
+    """THE CONTENT DOOR at the claim that greens the stem: the
+    effective capture's own verdict is parsed and checked AGAINST the
+    claim. A capture whose content records failure while the claim
+    greens the stem is THE CONTENT-VERDICT MISMATCH (a conviction);
+    a capture with no parsable verdict is the TYPED WARNING (never a
+    silent pass). Cheap by construction: the stamp + the tail, no full
+    parse."""
+    path = REPO / runs_dir / entry["file"]
+    status, evidence, lineno = _content_verdict(path)
+    if status == "green":
+        return
+    if status == "unparsable":
+        warnings.append(
+            f"WARNING (unparsable-capture): {stem}: the capture {entry['file']} records "
+            f"NO verdict shape the content door parses ({evidence}) — judged on the "
+            "head-stamp law alone. If this family's verdict shape is new, TEACH THE "
+            "DOOR; never teach the capture to be silent."
+        )
+        return
+    failures.append(
+        f"{stem}: the CONTENT-VERDICT MISMATCH at {entry['file']}"
+        + (f":{lineno}" if lineno is not None else "")
+        + f' — the capture\'s own content records FAILURE ("{evidence}") while the '
+        "claim greens the stem: the verifier that never read capture content was "
+        "greenstamping live captures whose own words record the run's failure. "
+        "Re-run the capture at its head — the honest re-record — or correct the "
+        "claim; never leave a red capture standing as the green proof."
+    )
+
+
+def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
+    """The stale live claims and content-verdict mismatches, named (the
+    failures empty = the estate holds; the warnings name every capture
+    the content door could not parse — surfaced, never silent)."""
     if not (runs_dir / "CLAIMS.json").is_file():
-        return [
-            f"{runs_dir / 'CLAIMS.json'}: the claims registry is missing — "
-            "the estate has no index, so no capture is verifiable (the writers "
-            "append one entry per capture; the migration pass built the initial one)"
-        ]
+        return (
+            [
+                f"{runs_dir / 'CLAIMS.json'}: the claims registry is missing — "
+                "the estate has no index, so no capture is verifiable (the writers "
+                "append one entry per capture; the migration pass built the initial one)"
+            ],
+            [],
+        )
     # Group by stem; the registry's append order is the run order — the
     # LAST entry of a stem is the live claim. No filename is parsed: the
     # manifest is the index (the name only ever points at the file).
     stems: dict[str, list[dict[str, str]]] = {}
+    # The registry entry per capture path (the chain resolver's index):
+    # the same file may be claimed by several stems — the registry's
+    # append order decides (the LAST claim of a file owns the walk).
+    by_path: dict[str, dict[str, str]] = {}
     for entry in load_claims(runs_dir):
         stem = entry.get("stem", "")
         file = entry.get("file", "")
         if not stem or not file:
             failures_entry = entry.get("file") or entry.get("stem") or json.dumps(entry)
-            return [f"the claims registry carries a malformed entry: {failures_entry}"]
+            return (
+                [f"the claims registry carries a malformed entry: {failures_entry}"],
+                [],
+            )
         stems.setdefault(stem, []).append(entry)
+        by_path[str((runs_dir / file).resolve())] = entry
     failures: list[str] = []
+    warnings: list[str] = []
     for stem, entries in sorted(stems.items()):
         live = entries[-1]
         marked = live.get("superseded_by")
         if marked:
-            if marked.startswith(".measurements"):
-                target = REPO / marked
-            elif Path(marked).is_absolute():
-                target = Path(marked)
-            else:
-                target = REPO / runs_dir.parent / marked
-            if not target.is_file():
+            # THE CHAIN LAW (the module docstring): walk the supersession
+            # chain to its TERMINAL entry, then judge the terminal by the
+            # head-sha rule. Every hop's content is checked (a chain
+            # through a missing capture proves nothing), the walk must
+            # terminate, and the termination point must be a real, fresh
+            # capture — the effective claim is the chain's END.
+            chain: list[dict[str, str]] = []
+            current = live
+            terminal: dict[str, str] | None = None
+            while True:
+                link = current.get("superseded_by")
+                if not link:
+                    terminal = current
+                    break
+                target = _supersession_target(link, runs_dir)
+                if not target.is_file():
+                    failures.append(
+                        f"{stem}: the supersession chain's link at {current['file']} "
+                        f"names {link} but the target does not exist — the chain is "
+                        "dead mid-walk (content is checked at EVERY hop, not just the "
+                        "head link: a chain through a missing capture proves nothing)"
+                    )
+                    break
+                owner = by_path.get(str(target.resolve()))
+                if owner is None:
+                    failures.append(
+                        f"{stem}: the supersession chain's link at {current['file']} "
+                        f"names {link} — the file exists but NO registry entry claims "
+                        "it, so the chain dangles past the index (the manifest is the "
+                        "estate's only index; a capture outside it does not exist to "
+                        "the verdict, and an unowned terminal proves nothing)"
+                    )
+                    break
+                if any(owner is walked for walked in chain):
+                    walked_path = " → ".join(w["file"] for w in [*chain, current, owner])
+                    failures.append(
+                        f"{stem}: the supersession chain CYCLES — the walk "
+                        f"{walked_path} re-enters itself and never reaches a "
+                        "terminal entry; a chain with no end has no effective "
+                        "claim (the self-supersession is the lie here)"
+                    )
+                    break
+                chain.append(current)
+                current = owner
+            if terminal is None:
+                continue
+            # THE HEAD-SHA RULE AT THE TERMINAL (the end of the chain):
+            # content first (the terminal's capture must EXIST), then
+            # freshness — the same rule a live claim carries, applied
+            # where the chain actually lands.
+            if not (REPO / runs_dir / terminal["file"]).is_file():
                 failures.append(
-                    f"{stem}: {live['file']} is marked superseded_by {marked} but the "
-                    "target does not exist — the link is dead"
+                    f"{stem}: the supersession chain's TERMINAL capture "
+                    f"{terminal['file']} is a GHOST — the chain resolves to a "
+                    "registry entry whose capture is not on disk (the index and the "
+                    "estate disagree at the END of the chain, where the effective "
+                    "claim lives; restore the file or extend the chain to a real capture)"
                 )
+                continue
+            recorded = terminal.get("head_sha") or None
+            if recorded == head:
+                _content_door(stem, terminal, runs_dir, failures, warnings)
+                continue  # the terminal is FRESH — the chain lands on this head
+            if recorded is not None and not _source_changes_since(recorded):
+                # The off-by-one rule at the terminal: nothing outside the
+                # measurements estate changed since the terminal's claimed
+                # head — the capture verifies a content-identical tree.
+                _content_door(stem, terminal, runs_dir, failures, warnings)
+                continue
+            if str(terminal.get("kind", "")).startswith("CITED-IMPORT"):
+                # The CITED-IMPORT declaration at the terminal: the chain
+                # ends at an imported provenance record — history by its
+                # own declaration, never re-recordable (the live claim's
+                # own escape, applied where the chain lands).
+                continue
+            failures.append(
+                f"{stem}: the supersession chain's TERMINAL claim {terminal['file']} is "
+                + (
+                    f"stale — recorded on {recorded[:12]}, the head is {head[:12]}"
+                    if recorded
+                    else "unstamped — no head_sha recorded"
+                )
+                + ". The chain's END is the effective claim: re-record it at the "
+                "head, or extend the chain to a fresh capture — never leave the "
+                "stem's proof stale behind a resolving link."
+            )
             continue
         missing = REPO / runs_dir / live["file"]
         if not missing.is_file():
@@ -159,11 +423,13 @@ def verify(runs_dir: Path, head: str) -> list[str]:
             continue
         recorded = live.get("head_sha") or None
         if recorded == head:
+            _content_door(stem, live, runs_dir, failures, warnings)
             continue  # the live claim is FRESH — verified on its own head
         if recorded is not None and not _source_changes_since(recorded):
             # The off-by-one rule: nothing outside the measurements
             # estate changed since the claimed head — the source tree
             # the claim verifies is content-identical. Fresh.
+            _content_door(stem, live, runs_dir, failures, warnings)
             continue
         if str(live.get("kind", "")).startswith("CITED-IMPORT"):
             # THE CITED-IMPORT DECLARATION (the docs-numbers round's own
@@ -185,7 +451,7 @@ def verify(runs_dir: Path, head: str) -> list[str]:
             + ". Re-record it at the head, or mark the entry superseded_by "
             "with the link — never left as the live claim."
         )
-    return failures
+    return (failures, warnings)
 
 
 def main() -> int:
@@ -193,17 +459,21 @@ def main() -> int:
     parser.add_argument("--runs-dir", type=Path, default=RUNS)
     args = parser.parse_args()
     head = _head()
-    failures = verify(args.runs_dir, head)
+    failures, warnings = verify(args.runs_dir, head)
     if failures:
         print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
         for failure in failures:
             print(f"  {failure}")
+        for warning in warnings:
+            print(f"  {warning}")
         return 1
     print(
         f"the head-stamp law holds: every evidence kind's live claim in "
         f"{args.runs_dir} is recorded at THIS head ({head[:12]}) or "
         "explicitly superseded"
     )
+    for warning in warnings:
+        print(f"  {warning}")
     return 0
 
 

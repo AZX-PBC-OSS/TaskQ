@@ -1,0 +1,20 @@
+>       assert proc.returncode == 1, "the cycling chain must red"
+E       AssertionError: the cycling chain must red
+E       assert 0 == 1
+E        +  where 0 = CompletedProcess(args=['/tmp/opencode/wt-contentdoor/.venv/bin/python', '/tmp/opencode/wt-contentdoor/scripts/verify_e...23459/test_the_cycling_chain_reds0/runs is recorded at THIS head (0e2f5cc09672) or explicitly superseded\n", stderr='').returncode
+
+tests/test_wf_evidence_chain_pins.py:162: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_evidence_content_door_pins.py::test_the_failed_short_summary_convicts
+FAILED tests/test_evidence_content_door_pins.py::test_the_unparsable_capture_is_the_typed_warning
+FAILED tests/test_evidence_content_door_pins.py::test_the_unparsable_json_is_the_typed_warning
+FAILED tests/test_evidence_content_door_pins.py::test_the_chain_terminal_content_door
+FAILED tests/test_evidence_content_door_pins.py::test_the_forged_stamp_convicts
+FAILED tests/test_evidence_content_door_pins.py::test_the_rc1_stamp_convicts
+FAILED tests/test_wf_evidence_chain_pins.py::test_the_dangling_chain_reds - A...
+FAILED tests/test_wf_evidence_chain_pins.py::test_the_stale_terminal_two_hops_reds
+FAILED tests/test_wf_evidence_chain_pins.py::test_the_ghost_terminal_reds - A...
+FAILED tests/test_wf_evidence_chain_pins.py::test_the_stale_terminal_one_hop_reds
+FAILED tests/test_wf_evidence_chain_pins.py::test_the_stale_terminal_is_never_saved_by_its_stems_fresh_tail
+FAILED tests/test_wf_evidence_chain_pins.py::test_the_cycling_chain_reds - As...
+12 failed, 5 passed in 4.31s
