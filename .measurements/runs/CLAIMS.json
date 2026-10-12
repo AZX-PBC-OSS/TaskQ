@@ -8908,6 +8908,12 @@
       "file": "evidence-heads-verify-20261012T-ENGINEFACES.txt",
       "head_sha": "501746e73f66c980356d7826ba0c0c4299aeb7d4",
       "captured_at": "2026-10-12T11:29:42"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "deslop-pin-packs-20261012T-green.txt",
+      "head_sha": "3428947e8276c7bb91a8bfc99ce25f7230235c02",
+      "captured_at": "2026-10-12T11:31:32"
     }
   ]
 }
