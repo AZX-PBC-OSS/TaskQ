@@ -248,3 +248,13 @@ SICK_ACTORS: dict[str, ActorRef[Any, Any]] = {
     "offline_meter": offline_meter,
     "ghost_job": ghost_job,
 }
+
+# THE IMPORT LAW (§16.1): a worker can only execute (and boot-project) the
+# workflow rows of a WorkflowApp it IMPORTED. `taskq worker --actors
+# examples.fleet_demo.actors:FLEET_ACTORS` imports THIS module, so THIS
+# module must import the demo's wf_app — without this import the worker
+# projects no workflow actor configs, dispatches nothing on the `fleetwf`
+# cohort queue, and the fleet demo's ACT 8 run sits at `pending` until its
+# hold-wait deadline ("the run never held (the review gate)").
+from examples.fleet_demo import workflows as _wf_app_module  # noqa: F401  # noqa: E402
+

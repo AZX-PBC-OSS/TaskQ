@@ -93,6 +93,13 @@ async def enrich_body(ctx: StepContext, doc_id: str) -> EnrichOutcome:
 
 SCREEN_CHAIN = Chain(
     name="fleet-doc-screen",
+    # THE COHORT DECLARATION (the §16.1 projection's face): a chain with no
+    # actor/queue defaults to actor "wf" on queue "default" — a queue the
+    # fleet worker (TASKQ_QUEUES=fleet,fleetwf) never subscribes, so the
+    # run sits at pending until the hold-wait deadline ("the run never
+    # held"). Declare the fleetwf cohort the worker actually consumes.
+    actor="wf-fleet-doc-screen",
+    queue=FLEETWF_QUEUES,
     start="screen",
     steps={
         "screen": Step(
