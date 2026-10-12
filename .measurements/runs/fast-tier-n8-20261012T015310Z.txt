@@ -1,0 +1,9 @@
+# fast-tier-n8 at head f1c1afc3961388b5e2c6dc1d0c4b7c83d4635fee — rc=1 — captured 20261012T015310Z
+# THE FAST TIER at -n 8 — TWO LEGS at the final source content (2dcb21ff1..f1c1afc39 measurement-only) — captured 2026-10-12T01:53:10Z
+# LEG 1 (at 2dcb21ff1, pre-estate): 13342 passed / 9 skipped / 1 xfailed / 1 failed — the failure was rv2-13's TRUTHFUL pre-estate red (its cure: the estate commits) — every other test green.
+# LEG 2 (at f1c1afc39, the final head): 13340 passed / 9 skipped / 1 xfailed / 3 failed — ALL THREE the maintenance-lock contention metric (test_prometheus_metrics_review's TestFleetHandover + the two exposition legs): the election-cadence flake under full-battery load — the SOLO leg is 38/38 green (135s, rc=0) and the module is untouched by this lane's diff (the claim SQL / the HITL wake / the validate rules / the wiring verbs); leg 1 at the SAME source content passed it under the same load.
+# The discrimination: a load flake, receipted — never masked, never a source regression verdict.
+
+leg1 tail: FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree = 1 failed, 13342 passed, 9 skipped, 1 xfailed, 150 warnings in 636.22s (0:10:36) = 
+leg2 tail: = 3 failed, 13340 passed, 9 skipped, 1 xfailed, 150 warnings in 619.21s (0:10:19) =
+solo: ======================== 38 passed in 135.01s (0:02:15) ========================

@@ -1,0 +1,3 @@
+# rv2-13-green at head 3f6c24899542b56736a80bbc367ff8c972591893 — rc=0 — captured 20261012T013558Z
+# rv2-13-green at head 3f6c24899542 — the head-stamp law greens on the committed tree (the verifier rc=0; the staged slot FILLED by the green run) — captured 2026-10-12T01:35:58Z
+1 passed in 3.47s

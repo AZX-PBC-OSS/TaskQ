@@ -191,7 +191,13 @@ re-fires.
 **The bound: ≤ 1000 declared parents per join** (`MAX_FAN_IN_PER_JOIN`) —
 enforced at validate (`wf.validate()` / the validators): a join declaring
 more is REFUSED, the error naming the bound and the child-driven
-alternative.
+alternative. The refusal's class is
+**`FanInBoundExceededError`** (a `ValueError` subclass, exported from
+`taskq.workflows`) — the class the operator meets: it is the fork's
+DETERMINISTIC authoring failure (the run record carries
+`error_class='FanInBoundExceededError'`, the retry ladder never burns —
+re-running cannot shrink the corpus), and its message carries the
+remedy: the child-driven escape below, or partition the map.
 
 THE HONEST DERIVATION (F7, restated — never a line through points that
 don't share one): P1's three measured points — 200 → 14.9 ms, 1000 →
@@ -218,7 +224,9 @@ the landed code, re-derive the marginal from the fit, and re-state the
 argument against the refit numbers; the bound moves only by that argument
 in review.
 
-**The child-driven escape** (`JoinSpec(child_driven=True)`): past the
+**The child-driven escape** (`child_driven=True` on `map_source` /
+`route` — the authoring verbs' own param; the engine-level spelling is
+`JoinSpec(child_driven=True)`): past the
 bound, the join does not trust the per-joined-row counter cache — the
 fire counts its terminal children FROM THE EDGE LEDGER (each child's
 finalize names its join target; the choice is RECORDED on the joined
@@ -1008,7 +1016,18 @@ and PURE — that SPELLS the graph by dataflow:
   identity pass-through step between the map and the route — the
   honest one-liner: `enriched = step(branch_seam, mapped, key="branch")`,
   `route(enriched, arms)` (the pass-through's body returns its
-  argument; the route's source is then the enriched collect, named);
+  argument; the route's source is then the enriched collect, named).
+
+**THE SINGLE-VALUE DISPOSITION (stated, because the refusal names it)**:
+`route(source, arms)` is a MAP face — its source produces the
+ELEMENTS' list, and a SINGLE-VALUE (non-list) `Promise[A|B]` is refused
+at build (`route's source 'x' does not declare a list[...] return —
+the route is a MAP face: the source produces the elements' list, the
+arms key its members`). There is no per-value arm dispatch on a plain
+step: routing ONE union value is the chain step's in-body `Route`
+(the §router below — `Route({EnrichOutcome.OK: "score", …})`, the
+total-over-the-outcome-enum fence at declaration time); inside a graph
+body, match the union yourself and return the arm's product.
 - `sink(...)` is the explicit fire-and-forget (RECORDED in the compiled
   metadata — never silent); `build(result, *residuals)` is the terminal
   completeness point (the `Promise[Never]` residuals are the static

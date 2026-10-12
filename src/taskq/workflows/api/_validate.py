@@ -188,6 +188,7 @@ def _run_rules(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     diagnostics += _rule_loop_wait_shape(compiled)
     diagnostics += _rule_cross_graph(compiled)
     diagnostics += _rule_unknown_queue(compiled)
+    diagnostics += _rule_actor_queue_cohort(compiled)
     diagnostics += _rule_carrier_type(compiled)
     diagnostics += _rule_loop_promise_carry(compiled)
     diagnostics += _rule_eternal_loop(compiled)
@@ -1548,6 +1549,63 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
                     "fail-fast remains the runtime door",
                 )
             )
+    return diagnostics
+
+
+def _rule_actor_queue_cohort(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
+    """W6: the DERIVED JOIN's implicit cohort conflict, convicted at
+    validate (the docshelf adoption team's F3): ``route()``'s derived
+    join inherits the source's ACTOR and takes the verb's ``queue=``
+    (default ``default``) — a source placed on a NON-DEFAULT queue made
+    the derived join split its actor over two queues, the conflict
+    discovered ONLY at the worker's boot (the projection's
+    ``WorkflowActorQueueConflictError``), ``validate()`` clean. THE
+    AMBUSH IS THE DERIVED, UN-SPELLED COHORT: the join (and the fork's
+    children) ride the map attachment's queue — when that queue differs
+    from the SOURCE NODE's own queue under the SAME actor, the author
+    never spelled the split (the verb's default ambushed them). THE
+    SEVERITY IS THE W2 PRECEDENT'S (the same law's shape: "probably
+    wrong, never a refusal — the worker-boot fail-fast stays the
+    runtime door"): the wiring REPORTS the cohort conflict with the
+    actor, both queues, and the remedy, and the boot projection's
+    one-queue law remains the refusal door — because the SPLIT
+    placement under one actor is also the estate's taught heterogeneous
+    shape (the doc-ingest guide's own wiring), a graph the dev-loop
+    door honors. THE REMEDY for the fleet deployment: DISTINCT actor
+    names per queue (e.g. ``actor='wf-gpu', queue='gpu'``), or wire
+    the map/route's ``queue=`` to the source's own."""
+    diagnostics: list[WorkflowValidationError] = []
+    for node in compiled.nodes.values():
+        # THE ROUTE'S DERIVED JOIN ONLY (the F3 finding's letter): the
+        # route's join inherits the source's ACTOR and takes the verb's
+        # ``queue=`` (default ``default``) — a source on a non-default
+        # queue made the DERIVED join split the actor without the author
+        # ever placing it. The PLAIN MAP's ``queue=`` is the taught
+        # Shape-4 knob (the item placement the doc-ingest guide wires —
+        # an EXPLICIT author choice): its split stays silent here, the
+        # boot projection's one-queue law remains its door.
+        if node.map_arms is None:
+            continue
+        if node.map_queue == node.queue:
+            continue
+        diagnostics.append(
+            WorkflowValidationError(
+                "W6-actor-queue-cohort",
+                "warning",
+                f"the route on {node.key!r} derives its join on queue "
+                f"{node.map_queue!r} (the verb's queue=, its default "
+                f"'default' included) while the source node itself rides "
+                f"{node.queue!r} — both under actor {node.actor!r}, and "
+                "actor_config is keyed by actor (one queue per actor, the "
+                "estate's own law): the worker boot's cohort projection "
+                "will refuse this graph (or strand its rows) — the "
+                "conflict surfaced here at the wiring instead of at the "
+                "worker's 3am. For a fleet deployment, express the split "
+                "placement with DISTINCT actor names per queue (the "
+                "arm's RouteArm(actor=..., queue=...)), or wire the "
+                "route's queue= to the source's own.",
+            )
+        )
     return diagnostics
 
 

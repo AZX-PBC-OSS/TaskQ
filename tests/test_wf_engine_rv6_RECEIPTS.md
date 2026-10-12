@@ -153,20 +153,27 @@ cancel arm's own lag-tolerant shape (nothing asserted against), and the
 E2 residue (a running root over held/pending siblings) reconstructs
 non-terminal — both runs carried zero teardown errors.
 
----
+## THE FLIP (the engine-cures lane, feat/taskqflow-engine-cures)
 
-# THE RESIDUAL-CURES LANE'S RE-RUN + E2'S RECONCILED FLIP
+The cures landed on the engine-cures branch and the pack was PORTED there
+unmarked-from-xfail — both pins ran xfail-strict at the base head
+`0e2f5cc09` (the reds above are THIS lane's own live re-conviction,
+captured verbatim: the E1 sentinel fired `['e1-body-ran']` and the E2
+middle-out resolve woke the wrong sibling), and the cures flipped them
+XPASS-strict — the markers REMOVED WITH the cure. The pins stand GREEN:
 
-The pack re-ran at the reconciliation ground `feat/taskqflow-residual-cures`
-(the four cure lanes' merges + this lane's cures — the re-run is
-MANDATORY there: the terminal-fail cure touches the claim machinery).
+```
+tests/test_wf_engine_rv6_pins.py ..    [100%]   2 passed
+```
 
-* E1 — the xfail STANDS (the in-process post-terminal execution hole is
-  still live at this tree — the engine-cures lane's cure has not
-  landed; unregressed, unflipped).
-* E2 — RECONCILED FLIP: the pin was XPASS-strict at the ground — the
-  holdmap lane's cure (1528719d2, the resume addressing the hold's OWN
-  node by the metadata hold stamp + the map-sibling identity) IS this
-  finding's cure, landed by the holdmap merge. The marker is removed
-  with the cure (the adoption-with-flip-receipts law — never a
-  deletion, the pin's assertions unchanged). Green x2 at the lane head.
+* **rv6-e1's cure** — the terminal-flow fence on BOTH in-process claim
+  seats (`workflows/api/_sql_runner.py`: the claimable SELECT's flow leg
+  AND the claim CAS's flow leg — the ESCALATION-KIND exemption riding
+  exactly as the fleet fence carries it, the terminal set rendered from
+  `statemachine.TERMINAL_STATUSES`; the doors may not disagree).
+* **rv6-e2's cure** — the wake resolves by the node's
+  `metadata->>'hold'` stamp (`workflows/api/_hitl.py`'s
+  `deliver_payload`): the hold id `register_hold` writes in the mint's
+  own tx — one hold, one node, one resume; no ORDER BY lottery left to
+  win. (The same semantic the holdmap lane's `1528719d2` carries; the
+  trees are unmerged — the merge-order ruling reconciles.)

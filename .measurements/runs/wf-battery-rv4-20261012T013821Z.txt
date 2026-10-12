@@ -1,0 +1,33 @@
+# wf-battery-rv4 at head f1c1afc3961388b5e2c6dc1d0c4b7c83d4635fee — rc=0 — captured 20261012T013821Z
+============================= test session starts ==============================
+platform linux -- Python 3.13.15, pytest-9.1.1, pluggy-1.6.0
+Using --randomly-seed=1029298256
+rootdir: /tmp/opencode/wt-enginecures
+configfile: pyproject.toml
+plugins: gremlins-1.9.0, asyncio-1.4.0, cov-7.1.0, hypothesis-6.168.3, respx-0.23.1, anyio-4.15.1, timeout-2.4.0, randomly-5.0.0, xdist-3.8.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+timeout: 300.0s
+timeout method: signal
+timeout func_only: False
+created: 8/8 workers
+8 workers [573 items]
+
+........................................................................ [ 12%]
+........................................................................ [ 25%]
+........................................................................ [ 37%]
+........................................................................ [ 50%]
+........................................................................ [ 62%]
+.........................................s.............................. [ 75%]
+........................................................................ [ 87%]
+.....................................................................    [100%]
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-enginecures/src/taskq/workflows/_progress.py:349: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_wf_ctx_annotation_pins.py:138: pyright is not installed (the typeprobe dependency group owns the binary)
+================== 572 passed, 1 skipped, 1 warning in 57.02s ==================

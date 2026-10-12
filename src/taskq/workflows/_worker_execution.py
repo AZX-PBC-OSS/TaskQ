@@ -228,12 +228,28 @@ def _workflow_cohorts(compiled: Any) -> set[tuple[str, str]]:
     nodes' decls, the map attachments' child placement (``map_queue`` —
     the fork's children ride it), the chains' step rows (every row of a
     chain — the emitted starts and the forked children alike — lands on
-    the chain's own pair)."""
+    the chain's own pair), and THE ROUTE ARMS' FORKED COHORTS (the
+    docshelf adoption team's F2): the arms' children fork at RUNTIME —
+    the source's finalize stamps each arm's effective placement
+    (``actor=arm.actor or node.actor, queue=arm.queue or node.map_queue``,
+    the runner's ``_route_fork``) — so the projection walks the SAME
+    effective pairs here. The pre-cure walk read the decls only: an
+    arm's rows stamped a cohort the boot never projected — the rows
+    STRANDED SILENTLY (no actor_config → no dispatch capacity, the
+    strict-queue worker never listened) until the app provisioned the
+    cohorts itself. A boot that strands silently is the defect; the
+    projection extends to every cohort the fork can stamp."""
     cohorts: set[tuple[str, str]] = set()
     for node in compiled.nodes.values():
         cohorts.add((node.actor, node.queue))
-        if node.map_item is not None:
+        if node.map_item is not None or node.map_arms is not None:
             cohorts.add((node.actor, node.map_queue))
+        if node.map_arms is not None:
+            for arm in node.map_arms.values():
+                # THE EFFECTIVE PLACEMENT (the runner's _route_fork's own
+                # arithmetic — one vocabulary): the arm overrides DOWN
+                # from the source, never up.
+                cohorts.add((arm.actor or node.actor, arm.queue or node.map_queue))
     for chain in getattr(compiled, "chains", ()):
         for _step_key in chain.steps:
             cohorts.add((chain.actor, chain.queue))

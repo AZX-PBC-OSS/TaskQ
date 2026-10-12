@@ -1,13 +1,17 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""ATTACK PINS — the rv6 round's ENGINE pack (the pushed head 0e2f5cc09).
+"""ATTACK PINS — the rv6 round's ENGINE pack (the pushed head 0e2f5cc09),
+PORTED TO the engine-cures lane and FLIPPED GREEN by its cures.
 
-Provenance: the rv6 front's live convictions, each reproduced against this
-head BEFORE pinning (the pre-pin repro script + output are in the pin
-pack's ``repro/``; the receipts carry the verbatim verdicts). Per the
-doctrine, a LIVE finding is pinned under ``pytest.mark.xfail(strict=True,
-reason="LIVE FINDING rv6-e<id>: …")`` asserting the SAFE behavior — the
-cure flips the pin to XPASS-strict (a red that says: remove the marker
-WITH the cure).
+Provenance: the rv6 front's live convictions, each reproduced against the
+pinned head BEFORE pinning. Per the doctrine, a LIVE finding is pinned
+under ``pytest.mark.xfail(strict=True, reason="LIVE FINDING rv6-e<id>: …")``
+asserting the SAFE behavior — the cure flips the pin to XPASS-strict (a
+red that says: remove the marker WITH the cure). THE FLIP IS DONE: both
+pins ran xfail-strict at the base (the red receipts are in this pack's
+RECEIPTS file and the lane's captures) and the cures
+(``_sql_runner.py``'s terminal-flow fence on BOTH claim seats;
+``_hitl.py``'s hold-stamp-addressed wake) flipped them — the markers are
+REMOVED WITH the cure, the assertions stand as the permanent green pins.
 
 The findings (each convicted live):
 
@@ -76,18 +80,6 @@ async def _e1_child_body(ctx: StepContext) -> str:
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING rv6-e1: the in-process driver's claim path "
-        "(CLAIMABLE_NODES_SQL_TEMPLATE / NODE_CLAIM_SQL_TEMPLATE) carries NO "
-        "flow-status leg — a bare FlowRunner.tick() claims and EXECUTES a "
-        "claimable child on a CANCELLED flow (observed: the body ran, the row "
-        "finalized 'succeeded' with attempt=1 under a cancelled root). The "
-        "fleet's dispatch SQL carries the terminal-flow fence; this door "
-        "doesn't"
-    ),
-)
 async def test_e1_the_in_process_claim_never_executes_on_a_terminal_flow(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:

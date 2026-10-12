@@ -894,10 +894,21 @@ async def deliver_payload(
         )
         resumed = None
         if cas["node_key"]:
-            # THE HELD NODE'S ADDRESS (the F2 cure): by the hold id THIS
-            # register stamped — one hold, one node, one resume (the
-            # pre-cure lookup matched every holding sibling and woke an
-            # arbitrary one).
+            # THE WAKE ADDRESSES THE HOLD'S OWN NODE (the F2 cure —
+            # rv6-e2's resume-addressing face, the same stamp both lanes
+            # cured): the node's ``metadata->>'hold'`` IS the resolved
+            # hold's id (register_hold stamps it in the hold-mint's own
+            # tx), so the wake resolves by the STAMP — one hold, one
+            # node, one resume. The pre-cure read matched step_key + flow
+            # + ``metadata ? 'hold'`` — no addressing leg for the map
+            # siblings (one step_key, distinct signals): a middle
+            # sibling's resolve woke the arbitrary first-matching row (a
+            # sibling that was never answered re-ran; the answered node's
+            # delivered payload stayed unconsumable). The stamp is unique
+            # per hold by construction (the hold id is minted per
+            # register_hold), so no ORDER BY lottery is left to win; the
+            # step_key leg stays as the CHEAPEST index discriminator (the
+            # stamp alone would scan the flow's every job).
             node_id = await conn.fetchval(
                 _render(_HELD_NODE_BY_HOLD_SQL, schema),
                 cas["node_key"],
@@ -964,6 +975,14 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
             # wait site's resume finds the row 'abandoned' → the typed
             # error (the re-execution doctrine: the body re-runs from
             # the top; pre-wait side effects are ctx.step-ledgered).
+            # THE WAKE ADDRESSES THE HOLD'S OWN NODE (rv6-e2's law at the
+            # expiry seat — the same stamp addressing deliver_payload's
+            # wake carries): the node's ``metadata->>'hold'`` IS this
+            # hold's id, so the resolve matches the EXPIRED hold's own
+            # node — a map sibling's expiry can never wake a sibling
+            # that was never timed out (the pre-cure read matched
+            # step_key + flow + hold-marker: the arbitrary first-match
+            # won, a live sibling re-ran with the Expired verdict).
             node_id = await conn.fetchval(
                 _render(_HELD_NODE_BY_HOLD_SQL, schema),
                 row["node_key"],
