@@ -269,11 +269,13 @@ def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
     ``.measurements`` must parse as VALID Prometheus text exposition —
     the strict name grammar (the teeth: the illegal-dots name reds
     today) AND the official client parser's label grammar."""
-    # THE EXTRACTED ESTATE'S READ: when the tree no longer carries
-    # .measurements, the guard walks the EVIDENCE BRANCH's staged copy —
-    # the same files, one indirection.
+    # THE EXTRACTED ESTATE'S READ: the estate's home is decided by its
+    # INDEX (the claims registry), never by the directory's existence —
+    # a concurrent writer's redlog-captures dir can exist locally without
+    # the estate (the partial-local-dir race). No local registry → the
+    # EVIDENCE BRANCH's staged copy — the same files, one indirection.
     measurements = REPO_ROOT / ".measurements"
-    if not measurements.is_dir():
+    if not (measurements / "runs" / "CLAIMS.json").is_file():
         from tests import _evidence as _evidence_mod
 
         measurements = _evidence_mod.evidence_measurements_dir()

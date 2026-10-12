@@ -31,12 +31,18 @@ def _evidence_measurements_dir() -> Path:
     return _evidence_mod.evidence_measurements_dir()
 
 
-# THE EXTRACTED ESTATE (the extraction's own): when the tree no longer
-# carries .measurements (the PR stops being the estate's home), the pins
-# walk the EVIDENCE BRANCH's staged copy — the same files, one
-# indirection; the sha cross-check stays the verifier's and rv2-13's law.
-_LOCAL_MEASUREMENTS = REPO / ".measurements"
-MEASUREMENTS = _LOCAL_MEASUREMENTS if _LOCAL_MEASUREMENTS.is_dir() else _evidence_measurements_dir()
+# THE EXTRACTED ESTATE (the extraction's own): the estate's home is
+# decided by its INDEX (the claims registry), never by the directory's
+# existence — a concurrent writer's redlog-captures dir can exist
+# locally without the estate (the partial-local-dir race). No local
+# registry → the pins walk the EVIDENCE BRANCH's staged copy — the same
+# files, one indirection; the sha cross-check stays the verifier's and
+# rv2-13's law.
+MEASUREMENTS = (
+    REPO / ".measurements"
+    if (REPO / ".measurements" / "runs" / "CLAIMS.json").is_file()
+    else _evidence_measurements_dir()
+)
 PERF_DOC = REPO / "perf-evidence-workflows.md"
 STREAMING_DOC = REPO / "perf-evidence-workflows-streaming.md"
 GUIDE = REPO / "docs" / "guides" / "workflows.md"

@@ -529,11 +529,16 @@ def _dump_timeline() -> Any:
     import os
 
     if _TIMELINE:
-        path = os.path.join(
+        base = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
             ".measurements",
             "p5",
-            "march-timeline.json",
         )
+        # THE EXTRACTION'S OWN (the estate left the PR's tree): the
+        # capture dir is gitignored and may not exist on a fresh
+        # checkout — the writer creates it (the capture lands locally,
+        # gitignored; the record rides the evidence branch).
+        os.makedirs(base, exist_ok=True)
+        path = os.path.join(base, "march-timeline.json")
         with open(path, "w") as f:
             json.dump(_TIMELINE, f, indent=2)
