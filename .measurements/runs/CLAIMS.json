@@ -4913,7 +4913,7 @@
       "file": "docs-lane-rv2-13-cure-captures-20261010T103000.txt",
       "head_sha": "557fcee594659a32973457978a3311d4fa6e7da7",
       "captured_at": "2026-10-10T10:30:00",
-      "kind": "THE DOCS LANE'S RV2-13 CURE — the superseded-capture index",
+      "kind": "THE DOCS LANE'S RV2-13 CURE \u2014 the superseded-capture index",
       "superseded_by": "runs/wf-battery-rv4-20261010T133838-deslop.txt"
     },
     {
@@ -11956,6 +11956,264 @@
       "file": "evidence-heads-verify-residual-M1.txt",
       "head_sha": "f7c3309199f930da60d314becc36ce99538c83be",
       "captured_at": "2026-10-11T22:49:42"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T000314-b286.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:03:14"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T000315-16a5.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:03:15"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T000320-749f.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:03:20"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-20261011T071706Z.txt",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:17:06"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-20261011T071706Z.txt",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:17:07"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-20261011T071707Z.txt",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:17:46"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-20261011T071746Z.txt",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:04"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "deslop-pin-packs-20261011T071804Z.txt",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:10"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T001823-ff97.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:23"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T001823-c036.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:23"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-bands-rv4-20261011T071810Z.txt",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:24"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T001826-2a57.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:26"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T001855-b6cc.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:55"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T001857-84f7.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:57"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T001857-e906.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:57"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T001858-d745.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:18:58"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T001902-21c2.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:19:02"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T001904-b824.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:19:04"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T001905-44bf.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:19:05"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T001912-54a1.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:19:12"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T001913-63bb.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:19:13"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261011T001932.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:19:32"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T001956-ee92.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:19:56"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T001957-88c5.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:19:57"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T002004-369a.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:20:04"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261011T002004-ca4c.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:20:04"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261011T002005-bf57.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:20:05"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261011T002005-12c4.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:20:05"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261011T002009-13ca.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:20:09"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261011T002020-ef5d.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:20:20"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261011T002028-1975.json",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:20:28"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-rv4-20261011T071932Z.txt",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:20:51"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-20261011T072612Z.txt",
+      "head_sha": "351e1863f252b1d5368690d41b8ba7ca82f15fca",
+      "captured_at": "2026-10-11T00:26:24"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T003142-64f7.json",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:31:42"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T003142-363f.json",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:31:42"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T003148-9728.json",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:31:48"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-2026-10-11T07:26:59Z.txt",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:38:13"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-2026-10-11T07:43:09Z.txt",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:43:09"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-2026-10-11T07:43:09Z.txt",
+      "head_sha": "3af85243cb4f58262646001071c69c96402100ba",
+      "captured_at": "2026-10-11T00:43:09"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261011T004909-0ac9.json",
+      "head_sha": "4e6d65705ff45c3c1595a7ea1bb5c3fb74584af8",
+      "captured_at": "2026-10-11T00:49:09"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261011T004910-312d.json",
+      "head_sha": "4e6d65705ff45c3c1595a7ea1bb5c3fb74584af8",
+      "captured_at": "2026-10-11T00:49:10"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261011T004915-afc3.json",
+      "head_sha": "4e6d65705ff45c3c1595a7ea1bb5c3fb74584af8",
+      "captured_at": "2026-10-11T00:49:15"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-2026-10-11T07:44:15Z.txt",
+      "head_sha": "4e6d65705ff45c3c1595a7ea1bb5c3fb74584af8",
+      "captured_at": "2026-10-11T00:55:20"
     }
   ]
 }

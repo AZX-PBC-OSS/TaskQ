@@ -127,6 +127,17 @@ async def transcode_video(payload: TranscodePayload, ctx: JobContext[TranscodePa
 See [`ctx.progress()` in the Actor API](actors.md#progress-reporting) for the full
 parameter reference.
 
+!!! note "Fast jobs coalesce — the stream is as dense as the flush interval"
+    The transcode above sleeps between segments, so each call lands in its own
+    flush window and the consumer sees one event per step. A **fast** actor that
+    calls `ctx.progress()` once per item and finishes inside
+    `TASKQ_PROGRESS_COALESCE_INTERVAL` (default 0.5 s) collapses to roughly one
+    snapshot per flush: a 30-item loop can leave only the final
+    `step=30 / percent=100` state on the row. That is the design — the durable
+    row and every stream carry the *latest* state, not the event count — so
+    push step counters, not per-item events, if you want a dense stream; do not
+    read a thin stream on a sub-second job as progress reporting failing.
+
 ---
 
 ## Consuming progress in Python
