@@ -20574,6 +20574,60 @@
       "file": "rv2-13-green-slot-20261012T234700Z.txt",
       "head_sha": "02968a5b9129090c979c9685dbc2681a5c69429d",
       "captured_at": "2026-10-12T16:47:00"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-merged.txt",
+      "head_sha": "420a3a85270d349b7a15da77399a778346fd7057",
+      "captured_at": "2026-10-12T16:47:31"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-merged.txt",
+      "head_sha": "420a3a85270d349b7a15da77399a778346fd7057",
+      "captured_at": "2026-10-12T16:47:31"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-merged.txt",
+      "head_sha": "420a3a85270d349b7a15da77399a778346fd7057",
+      "captured_at": "2026-10-12T16:47:31"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-merged.txt",
+      "head_sha": "420a3a85270d349b7a15da77399a778346fd7057",
+      "captured_at": "2026-10-12T16:47:31"
+    },
+    {
+      "stem": "docs-examples",
+      "file": "docs-examples-merged.txt",
+      "head_sha": "420a3a85270d349b7a15da77399a778346fd7057",
+      "captured_at": "2026-10-12T16:47:31"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "pinpacks-merged-leg1.txt",
+      "head_sha": "420a3a85270d349b7a15da77399a778346fd7057",
+      "captured_at": "2026-10-12T16:47:31"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-merged.txt",
+      "head_sha": "420a3a85270d349b7a15da77399a778346fd7057",
+      "captured_at": "2026-10-12T16:47:31"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-merged.txt",
+      "head_sha": "420a3a85270d349b7a15da77399a778346fd7057",
+      "captured_at": "2026-10-12T16:47:31"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-bands-rv4-merged.txt",
+      "head_sha": "420a3a85270d349b7a15da77399a778346fd7057",
+      "captured_at": "2026-10-12T16:47:31"
     }
   ]
 }
