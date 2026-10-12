@@ -5550,7 +5550,7 @@
       "file": "mkdocs-strict-docslane-20261010T190521.txt",
       "head_sha": "1c17402d5d8480df09e214c90e5c16d1fee2c1b4",
       "captured_at": "2026-10-10T19:05:21",
-      "superseded_by": "runs/mkdocs-strict-20261011T200223Z.txt"
+      "superseded_by": "runs/mkdocs-strict-20261012T002805Z.txt"
     },
     {
       "stem": "docs-lane-rv2-13-cure-captures",
@@ -5817,7 +5817,7 @@
       "file": "wf-perf-bands-20261010T234000.txt",
       "head_sha": "512f7a91f72272d0d05af484521a23ad7a9d7cd9",
       "captured_at": "2026-10-10T23:40:00",
-      "superseded_by": "runs/wf-bands-rv4-20261011T200346Z.txt"
+      "superseded_by": "runs/wf-bands-rv4-20261012T003058Z.txt"
     },
     {
       "stem": "fast-tier-n8",
@@ -8968,6 +8968,18 @@
       "file": "deslop-pin-packs-20261012T003141Z.txt",
       "head_sha": "6a2c3e7e20592a630864f21306343b00651174b3",
       "captured_at": "2026-10-11T17:31:41"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "deslop-pin-packs-20261012T003302Z.txt",
+      "head_sha": "de049e46f7dbbe0899773f47699620f8edb46f0b",
+      "captured_at": "2026-10-11T17:33:02"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "deslop-pin-packs-slot-20261012T003329Z.txt",
+      "head_sha": "de049e46f7dbbe0899773f47699620f8edb46f0b",
+      "captured_at": "2026-10-11T17:33:29"
     }
   ]
 }
