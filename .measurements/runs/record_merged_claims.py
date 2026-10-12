@@ -22,7 +22,7 @@ from taskq.testing._claims import record_claim  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 
 #: (stem, file) — the merged estate's captures, measured at
-#: 9c7b9dc39ea6ab1485bf93453c931aee4516144c (the source-final head).
+#:  (the source-final head).
 #: THE CONTENT DOOR'S LADDER: the battery + fast-tier stems are NOT here —
 #: their runs at THIS head carry rv2-13's TRUTHFUL pre-estate red (the
 #: committed claims were stale at the merged head; THIS commit is the
@@ -31,15 +31,15 @@ REPO = Path(__file__).resolve().parents[2]
 #: the runs at THIS committed tree (rv2-13 green there — the off-by-one
 #: rule carries the freshness).
 CAPTURES: list[tuple[str, str, str]] = [
-    ("lint-format", "lint-format-merged.txt", "9c7b9dc39ea6ab1485bf93453c931aee4516144c"),
-    ("pyright-full", "pyright-full-merged.txt", "9c7b9dc39ea6ab1485bf93453c931aee4516144c"),
-    ("typeprobe-gate", "typeprobe-gate-merged.txt", "9c7b9dc39ea6ab1485bf93453c931aee4516144c"),
-    ("mkdocs-strict", "mkdocs-strict-merged.txt", "9c7b9dc39ea6ab1485bf93453c931aee4516144c"),
-    ("docs-examples", "docs-examples-merged.txt", "9c7b9dc39ea6ab1485bf93453c931aee4516144c"),
-    ("deslop-pin-packs", "pinpacks-merged-leg1.txt", "9c7b9dc39ea6ab1485bf93453c931aee4516144c"),
-    ("estate-slice", "estate-slice-merged.txt", "9c7b9dc39ea6ab1485bf93453c931aee4516144c"),
-    ("wf-perf-bands", "wf-perf-bands-merged.txt", "9c7b9dc39ea6ab1485bf93453c931aee4516144c"),
-    ("wf-bands-rv4", "wf-bands-rv4-merged.txt", "9c7b9dc39ea6ab1485bf93453c931aee4516144c"),
+    ("lint-format", "lint-format-merged.txt", ""),
+    ("pyright-full", "pyright-full-merged.txt", ""),
+    ("typeprobe-gate", "typeprobe-gate-merged.txt", ""),
+    ("mkdocs-strict", "mkdocs-strict-merged.txt", ""),
+    ("docs-examples", "docs-examples-merged.txt", ""),
+    ("deslop-pin-packs", "pinpacks-merged-leg1.txt", ""),
+    ("estate-slice", "estate-slice-merged.txt", ""),
+    ("wf-perf-bands", "wf-perf-bands-merged.txt", ""),
+    ("wf-bands-rv4", "wf-bands-rv4-merged.txt", ""),
 ]
 
 
