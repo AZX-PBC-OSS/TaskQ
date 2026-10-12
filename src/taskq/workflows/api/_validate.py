@@ -373,6 +373,29 @@ def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidation
                 produced = _join_produced_shape(compiled, parent)
             else:
                 produced = body_hints(parent.body).get("return")
+            # THE LIST-PRODUCER ARM (the E5 drill's cure — THE ELEMENT
+            # LAW): a body producing ``list[PE]`` wired into a consumer's
+            # param is the ELEMENT-level compatibility — the same
+            # totality discipline E1-E16 apply at the node level. The
+            # pre-cure walk skipped every list-producing parent (the
+            # generic alias is not a ``type``): the drill's
+            # ``list[Word]`` → ``list[str]`` wiring PASSED build-time
+            # validation and the run died at RUNTIME with a pydantic
+            # ValidationError on every attempt. THE LAW IS ABSOLUTE: a
+            # wiring that dies at runtime with a type error is a
+            # BUILD-TIME conviction. (The checker half is the typed
+            # single-promise list seam on the wiring verb — the
+            # typeprobe corpus's element probes; this is the
+            # checker-independent half.)
+            if get_origin(produced) is list:
+                (p_elem,) = get_args(cast("type[object]", produced))
+                diagnostics += _element_compat(
+                    node.key,
+                    str(parent_key),
+                    p_elem,
+                    param,
+                )
+                continue
             if not (isinstance(produced, type) and issubclass(produced, BaseModel)):
                 continue
             # THE LIST-PARAM ARM (the bodyless-join edge's other half): a
@@ -445,6 +468,93 @@ def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidation
                     )
                 )
     return diagnostics
+
+
+def _element_compat(
+    consumer_key: str,
+    parent_key: str,
+    p_elem: object,
+    param: object,
+) -> list[WorkflowValidationError]:
+    """THE ELEMENT LAW's comparison (the E5 drill's cure): the producer's
+    ELEMENT type vs the consumer's wired element type — the pydantic
+    models' compatibility at the element level. The zero-false-positive
+    doctrine governs the skips (a guess is never convicted):
+
+    * the consumer's element unresolved / ``Any`` / ``object`` — the
+      duck-shaped element consumes anything the codec delivers: SKIP;
+    * both elements models — the issubclass door (the producer's element
+      must BE or SUBCLASS the consumer's; an unrelated model is the
+      wiring promising data the consumer cannot accept) — CONVICT;
+    * the producer's element a model, the consumer's a RESOLVED
+      non-model type (``list[str]`` under a ``list[Word]`` producer —
+      the drill): the decode's TypeAdapter reds it on every attempt —
+      CONVICT;
+    * both non-models — the codec's TypeAdapter owns the scalar
+      coercions: SKIP (the list[non-model] convention, kept).
+    """
+    p_m: type[BaseModel] | None = (
+        p_elem if isinstance(p_elem, type) and issubclass(p_elem, BaseModel) else None
+    )
+    if get_origin(param) is list:
+        (c_elem,) = get_args(cast("type[object]", param))
+        c_m: type[BaseModel] | None = (
+            c_elem if isinstance(c_elem, type) and issubclass(c_elem, BaseModel) else None
+        )
+        if c_elem is Any or c_elem is object or (c_m is None and not isinstance(c_elem, type)):
+            return []  # the duck-shaped element — the codec's contract, unguessable
+        if p_m is not None and c_m is not None:
+            if p_m is not c_m and not issubclass(p_m, c_m):
+                return [
+                    WorkflowValidationError(
+                        "E5-incompatible-consumer",
+                        "error",
+                        f"{consumer_key!r} consumes {parent_key!r}'s "
+                        f"list[{p_m.__name__}] as {param!r} — unrelated "
+                        "ELEMENT models: the join's element and the "
+                        "consumer's element are different models (a "
+                        "wiring that dies at runtime with a type error "
+                        "is a BUILD-TIME conviction)",
+                    )
+                ]
+            return []
+        if p_m is not None:
+            return [
+                WorkflowValidationError(
+                    "E5-incompatible-consumer",
+                    "error",
+                    f"{consumer_key!r} consumes {parent_key!r}'s "
+                    f"list[{p_m.__name__}] as {param!r} — the consumer's "
+                    "ELEMENT is not the producer's model: the decode's "
+                    "TypeAdapter reds the payload at runtime (a pydantic "
+                    "ValidationError on every attempt). Annotate the "
+                    f"param list[{p_m.__name__}] — the annotation IS "
+                    "the wiring",
+                )
+            ]
+        return []  # both non-models — the codec's TypeAdapter owns it
+    if p_m is not None and isinstance(param, type) and issubclass(param, BaseModel):
+        # A LIST producer wired into a SINGLE-model param: the decode
+        # feeds a list payload to a model expecting fields — the
+        # ValidationError is certain. A RootModel[list[...]] consumer
+        # TAKES the list — the skip is its door.
+        from pydantic import RootModel
+
+        if issubclass(param, RootModel):
+            return []
+        return [
+            WorkflowValidationError(
+                "E5-incompatible-consumer",
+                "error",
+                f"{consumer_key!r} consumes {parent_key!r}'s "
+                f"list[{p_m.__name__}] as the single model "
+                f"{param.__name__} — a list payload cannot decode into "
+                "one model (declare the param list["
+                f"{p_m.__name__}]; the element law's the same "
+                "totality discipline E1-E16 apply at the node level)",
+            )
+        ]
+    return []  # the duck-shaped param under a list producer — unguessable
 
 
 def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:

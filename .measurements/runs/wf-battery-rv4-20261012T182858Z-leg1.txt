@@ -1,0 +1,222 @@
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [ 12%]
+........................................................................ [ 24%]
+........................................................................ [ 36%]
+........................................................................ [ 48%]
+........................................................................ [ 60%]
+....F................................................................... [ 72%]
+........................................................................ [ 84%]
+........................................................................ [ 96%]
+.....................                                                    [100%]
+=================================== FAILURES ===================================
+_________ test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree __________
+[gw1] linux -- Python 3.13.15 /tmp/opencode/wt-engfaces/.venv/bin/python
+
+tmp_path = PosixPath('/tmp/pytest-of-rich/pytest-24348/popen-gw1/test_rv2_13_the_head_stamp_law0')
+
+    def test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree(tmp_path: Path) -> None:
+        """The verifier against the tree's COMMITTED state (``git ls-files``
+        + ``git show HEAD:`` — the working tree's residue never enters).
+        The verdict is the CLAIMS MANIFEST's (``CLAIMS.json`` rides the
+        committed tree with the captures it indexes): the registry's append
+        order is the run order — no filename parsed, no mtime consulted
+        (the pre-manifest pin restored every file's mtime from its own
+        name's timestamp: the filename-parsing workaround the manifest
+        kills). The verdict is the TREE'S, never the checkout's."""
+        import subprocess
+        import sys
+    
+        runs_rel = ".measurements/runs"
+        listed = subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+            ["git", "ls-files", runs_rel],  # noqa: S607  # Why: as above — the repo's own scripts call "git" the same way.
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        assert listed, "the committed tree carries no .measurements/runs artifacts at all"
+        assert f"{runs_rel}/CLAIMS.json" in listed, (
+            "the committed tree carries no claims registry — the captures' index "
+            "(CLAIMS.json) must be committed with the captures it indexes"
+        )
+        runs_dir = tmp_path / "runs"
+        for rel in listed:
+            data = subprocess.run(  # noqa: S603  # Why: fixed argv + a git-ls-files-derived path; no shell.
+                ["git", "show", f"HEAD:{rel}"],  # noqa: S607  # Why: as above.
+                cwd=_REPO,
+                capture_output=True,
+                check=True,
+            ).stdout
+            dest = runs_dir / Path(rel).relative_to(runs_rel)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        proc = subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier; fixed argv, no shell.
+            [
+                sys.executable,
+                str(_REPO / "scripts" / "verify_evidence_heads.py"),
+                "--runs-dir",
+                str(runs_dir),
+            ],
+            cwd=_REPO,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+>       assert proc.returncode == 0, (
+            "F-RV2-13: the head-stamp verifier reds on the committed estate:\n"
+            + proc.stdout
+            + proc.stderr
+        )
+E       AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate:
+E         THE HEAD-STAMP LAW REDS (head 069022a00c86):
+E           deslop-pin-packs: the LIVE CLAIM deslop-pin-packs-20261011T042947Z.txt is stale — recorded on 61bcd3f60d9e, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           edge-scale-curve: the LIVE CLAIM edge-scale-curve-20261010T215643-7bdf.json is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-2026-10-11T04:47:16Z.txt is stale — recorded on 9510623e878d, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           fanout-1000-tx-band: the LIVE CLAIM fanout-1000-tx-band-20261010T215640-7c3b.json is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           fast-tier-n8: the LIVE CLAIM fast-tier-n8-2026-10-11T05:04:22Z.txt is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           join-fire-latency: the LIVE CLAIM join-fire-latency-20261010T215640-3bf2.json is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           lint-format: the LIVE CLAIM lint-format-20261011T042838Z.txt is stale — recorded on 61bcd3f60d9e, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           mkdocs-strict: the LIVE CLAIM mkdocs-strict-20261011T042928Z.txt is stale — recorded on 61bcd3f60d9e, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin1-red-pad-drift: the LIVE CLAIM pin1-red-pad-drift-20261010T214847-9cd1.json is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin1-row-width: the LIVE CLAIM pin1-row-width-20261010T214848-7a4c.json is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin2-partial-index: the LIVE CLAIM pin2-partial-index-20261010T214855-6623.json is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin4-enqueue-band: the LIVE CLAIM pin4-enqueue-band-20261010T215653-1276.json is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pin5-dispatch-band: the LIVE CLAIM pin5-dispatch-band-20261010T215652-b593.json is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           pyright-full: the LIVE CLAIM pyright-full-20261011T042838Z.txt is stale — recorded on 61bcd3f60d9e, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           rv2-13-green: the LIVE CLAIM rv2-13-green-2026-10-11T04:47:16Z.txt is stale — recorded on 9510623e878d, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           typeprobe-gate: the LIVE CLAIM typeprobe-gate-20261011T042916Z.txt is stale — recorded on 61bcd3f60d9e, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-bands-rv4: the LIVE CLAIM wf-bands-rv4-20261011T043122Z.txt is stale — recorded on 61bcd3f60d9e, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-battery-rv4: the LIVE CLAIM wf-battery-rv4-20261011T043000Z.txt is stale — recorded on 61bcd3f60d9e, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-rollup-band: the LIVE CLAIM wf-rollup-band-20261010T215014-6dc2.json is stale — recorded on ca940b2b8b36, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E           wf-scoped-coverage: the LIVE CLAIM wf-scoped-coverage-20261010T212835.json is stale — recorded on 61bcd3f60d9e, the head is 069022a00c86. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/tmp/opencode/wt-engfaces/.venv/bin/python', '/tmp/opencode/wt-engfaces/scripts/verify_evidenc... Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.\n', stderr='').returncode
+
+tests/test_wf_attack_rv2.py:1053: AssertionError
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-engfaces/src/taskq/workflows/_progress.py:349: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.13.15-final-0 _______________
+
+Name                                          Stmts   Miss Branch BrPart  Cover
+-------------------------------------------------------------------------------
+src/taskq/workflows/__init__.py                  12      0      0      0   100%
+src/taskq/workflows/_cache.py                    52      1      4      1    96%
+src/taskq/workflows/_capture.py                  75      4     36      5    92%
+src/taskq/workflows/_cli.py                     155      3     56      4    97%
+src/taskq/workflows/_emit.py                     45      0     10      0   100%
+src/taskq/workflows/_fork.py                     33      1     12      1    96%
+src/taskq/workflows/_progress.py                145     13     30      2    91%
+src/taskq/workflows/_progress_read.py           151      4     54      8    94%
+src/taskq/workflows/_reducers.py                 24      0      6      0   100%
+src/taskq/workflows/_sql.py                      83      0      2      0   100%
+src/taskq/workflows/_sql_finalize.py             24      0      0      0   100%
+src/taskq/workflows/_sql_ledger.py                9      0      0      0   100%
+src/taskq/workflows/_sql_progress.py             12      0      0      0   100%
+src/taskq/workflows/_sql_status.py                8      0      0      0   100%
+src/taskq/workflows/_sql_sweep.py                12      0      0      0   100%
+src/taskq/workflows/_status.py                   54      0     16      0   100%
+src/taskq/workflows/_sweep.py                   112      3     24      4    95%
+src/taskq/workflows/_types.py                   107      3      6      2    96%
+src/taskq/workflows/_version.py                  10      0      0      0   100%
+src/taskq/workflows/_worker_execution.py        133      4     46      5    95%
+src/taskq/workflows/api/__init__.py               4      0      0      0   100%
+src/taskq/workflows/api/_app.py                 146      3     40      3    97%
+src/taskq/workflows/api/_ctx.py                  66      3      4      1    94%
+src/taskq/workflows/api/_ctx_wait.py             48      6      4      1    83%
+src/taskq/workflows/api/_deps.py                 12      3      2      1    71%
+src/taskq/workflows/api/_graph.py               132      5     18      5    93%
+src/taskq/workflows/api/_hints.py                26      2      4      0    93%
+src/taskq/workflows/api/_hitl.py                250     53     86     13    70%
+src/taskq/workflows/api/_hitl_listen.py         225     36     72     18    79%
+src/taskq/workflows/api/_loop.py                 56      7      8      3    84%
+src/taskq/workflows/api/_mermaid.py              54      2     28      2    95%
+src/taskq/workflows/api/_progress_listen.py     220     40     64     19    76%
+src/taskq/workflows/api/_run.py                  33      1      2      0    97%
+src/taskq/workflows/api/_runner.py              405     27    114     12    92%
+src/taskq/workflows/api/_runner_chain.py         26      0      0      0   100%
+src/taskq/workflows/api/_runner_codec.py         83     10     36      3    84%
+src/taskq/workflows/api/_runner_errors.py         3      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py          87      4     24      6    91%
+src/taskq/workflows/api/_runner_ladder.py        42      0      6      1    98%
+src/taskq/workflows/api/_runner_loop.py         158     13     42      9    89%
+src/taskq/workflows/api/_sql_loop.py             26      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py           35      0      0      0   100%
+src/taskq/workflows/api/_validate.py            513     18    330     19    96%
+src/taskq/workflows/chain.py                     88      2     32      1    98%
+src/taskq/workflows/context.py                   42      2     10      2    92%
+src/taskq/workflows/definitions.py               66      1     14      1    98%
+src/taskq/workflows/engine.py                   109      6     34      4    92%
+src/taskq/workflows/ledger.py                    78      1     14      2    97%
+-------------------------------------------------------------------------------
+TOTAL                                          4289    281   1290    158    91%
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 596 passed, 1 warning in 57.78s
+leg1 rc=1
+Name                                          Stmts   Miss Branch BrPart  Cover
+-------------------------------------------------------------------------------
+src/taskq/workflows/__init__.py                  12      0      0      0   100%
+src/taskq/workflows/_cache.py                    52      1      4      1    96%
+src/taskq/workflows/_capture.py                  75      4     36      5    92%
+src/taskq/workflows/_cli.py                     155      3     56      4    97%
+src/taskq/workflows/_emit.py                     45      0     10      0   100%
+src/taskq/workflows/_fork.py                     33      1     12      1    96%
+src/taskq/workflows/_progress.py                145     13     30      2    91%
+src/taskq/workflows/_progress_read.py           151      4     54      8    94%
+src/taskq/workflows/_reducers.py                 24      0      6      0   100%
+src/taskq/workflows/_sql.py                      83      0      2      0   100%
+src/taskq/workflows/_sql_finalize.py             24      0      0      0   100%
+src/taskq/workflows/_sql_ledger.py                9      0      0      0   100%
+src/taskq/workflows/_sql_progress.py             12      0      0      0   100%
+src/taskq/workflows/_sql_status.py                8      0      0      0   100%
+src/taskq/workflows/_sql_sweep.py                12      0      0      0   100%
+src/taskq/workflows/_status.py                   54      0     16      0   100%
+src/taskq/workflows/_sweep.py                   112      3     24      4    95%
+src/taskq/workflows/_types.py                   107      3      6      2    96%
+src/taskq/workflows/_version.py                  10      0      0      0   100%
+src/taskq/workflows/_worker_execution.py        133      4     46      5    95%
+src/taskq/workflows/api/__init__.py               4      0      0      0   100%
+src/taskq/workflows/api/_app.py                 146      3     40      3    97%
+src/taskq/workflows/api/_ctx.py                  66      3      4      1    94%
+src/taskq/workflows/api/_ctx_wait.py             48      6      4      1    83%
+src/taskq/workflows/api/_deps.py                 12      3      2      1    71%
+src/taskq/workflows/api/_graph.py               132      5     18      5    93%
+src/taskq/workflows/api/_hints.py                26      2      4      0    93%
+src/taskq/workflows/api/_hitl.py                250     53     86     13    70%
+src/taskq/workflows/api/_hitl_listen.py         225     36     72     18    79%
+src/taskq/workflows/api/_loop.py                 56      7      8      3    84%
+src/taskq/workflows/api/_mermaid.py              54      2     28      2    95%
+src/taskq/workflows/api/_progress_listen.py     220     40     64     19    76%
+src/taskq/workflows/api/_run.py                  33      1      2      0    97%
+src/taskq/workflows/api/_runner.py              405     27    114     12    92%
+src/taskq/workflows/api/_runner_chain.py         26      0      0      0   100%
+src/taskq/workflows/api/_runner_codec.py         83     10     36      3    84%
+src/taskq/workflows/api/_runner_errors.py         3      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py          87      4     24      6    91%
+src/taskq/workflows/api/_runner_ladder.py        42      0      6      1    98%
+src/taskq/workflows/api/_runner_loop.py         158     13     42      9    89%
+src/taskq/workflows/api/_sql_loop.py             26      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py           35      0      0      0   100%
+src/taskq/workflows/api/_validate.py            513     18    330     19    96%
+src/taskq/workflows/chain.py                     88      2     32      1    98%
+src/taskq/workflows/context.py                   42      2     10      2    92%
+src/taskq/workflows/definitions.py               66      1     14      1    98%
+src/taskq/workflows/engine.py                   109      6     34      4    92%
+src/taskq/workflows/ledger.py                    78      1     14      2    97%
+-------------------------------------------------------------------------------
+TOTAL                                          4289    281   1290    158    91%
+
+[gate] head 069022a00c86 (dirty=False)
+[gate] wf-scoped branch coverage 91.06% vs floor 90.0% — green
+[gate] recorded: /tmp/opencode/wt-engfaces/.measurements/runs/wf-scoped-coverage-20261012T112516.json
+gate rc=0

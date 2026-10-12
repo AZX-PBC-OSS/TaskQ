@@ -197,6 +197,7 @@
       "status: " + data.status,
       "attempt: " + data.attempt + "/" + data.max_attempts + (data.retry_kind ? " (" + data.retry_kind + ")" : ""),
       data.trace_id ? "trace: " + data.trace_id : null,
+      data.cache_hit ? "cache_hit: the body did NOT run — an earlier run's cached result was delivered (producing run " + (data.cache_hit.run_id || "?") + ")" : null,
       data.error_class ? "error: " + data.error_class + " — " + (data.error_message || "") : null,
       data.parent ? "upstream hop: " + data.parent.step_key + " (" + data.parent.status + ")" : null,
       "created: " + (data.created_at || "—"),

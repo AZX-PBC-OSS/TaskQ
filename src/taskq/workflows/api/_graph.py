@@ -559,11 +559,19 @@ def step[R](
 
     THE TWO FACES (be honest about the boundary): the checker reads the
     HANDLE flow (R's inference, the promise threading, build's
-    ``Promise[Never]`` residuals); the DECODED-payload compat between a
-    producer's model and this body's param models is the validator's face
-    (``validate()``'s ``E5-incompatible-consumer``) — the bodies take
-    decoded data, not handles, so the wiring call itself is erased to
-    ``object`` and the checker cannot see the edge's payload."""
+    ``Promise[Never]`` residuals — and the ELEMENT law on the handle:
+    ``Promise[list[Word]]`` is not ``Promise[list[str]]``, the covariant
+    promise + the invariant list). The DECODED-payload compat between a
+    producer's declared data type and this body's param types is the
+    validator's face (``validate()``'s ``E5-incompatible-consumer`` —
+    since the engine-faces cure, at the ELEMENT level too: a
+    ``list[Word]`` producer wired into a ``list[str]`` consumer refuses
+    at build) — the bodies take decoded data, not handles, so the wiring
+    call itself is erased to ``object`` and the checker cannot see the
+    edge's payload. A fallback overload cannot rescue a seam it erases:
+    the wire-type walk was probed (the corpus's wiring-site probe) and
+    the permissive ``*args: object`` overload always matched last — the
+    validate-time probe is the mechanism the reads picked."""
     graph = active_graph()
     keys, _data = _promise_args(args)
     node_key = key or graph.auto_key(getattr(body, "__name__", "step"))

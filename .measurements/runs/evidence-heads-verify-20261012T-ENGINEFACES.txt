@@ -1,0 +1,5 @@
+THE HEAD-STAMP LAW REDS (head 501746e73f66):
+  evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-20261012T-ENGINEFACES.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+  rv2-13-green: the LIVE CLAIM rv2-13-green-20261012T-ENGINEFACES.txt is a GHOST — the registry names a capture that is not on disk (the index and the estate disagree; restore the file or drop the entry)
+rc=1
+the head-stamp law holds: every evidence kind's live claim in .measurements/runs is recorded at THIS head (501746e73f66c980356d7826ba0c0c4299aeb7d4) or measurement-only-fresh or explicitly superseded — the verifier's rc=0 receipt (the engine-faces lane's flip)

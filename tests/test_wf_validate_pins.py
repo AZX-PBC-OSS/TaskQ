@@ -10,8 +10,10 @@ back from the captured run (BUILD-PROTOCOL §2/§3).
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 
 from taskq.workflows import (
     Promise,
@@ -181,6 +183,187 @@ def test_incompatible_consumer_mutation() -> None:
 
     rules = _rules(_compiled("incompatible", app))
     assert rules == {"E5-incompatible-consumer"}, rules
+
+
+class Word(BaseModel):
+    """The E5 ELEMENT probe's producer element — module-level: the
+    annotations must resolve (a function-local model is invisible to the
+    compile's hint resolution by construction)."""
+
+    text: str
+
+
+async def _words_body(ctx: StepContext, params: Ingest) -> list[Word]:
+    return [Word(text=params.doc_id)]
+
+
+async def _str_list_consumer(ctx: StepContext, words: list[str]) -> dict[str, int]:
+    return {"n": len(words)}
+
+
+async def _words_list_consumer(ctx: StepContext, words: list[Word]) -> dict[str, int]:
+    return {"n": len(words)}
+
+
+async def _unrelated_list_consumer(ctx: StepContext, words: list[Unrelated]) -> dict[str, int]:
+    return {"n": 1}
+
+
+async def _any_list_consumer(ctx: StepContext, words: list[Any]) -> dict[str, int]:
+    return {"n": len(words)}
+
+
+async def _ints_body(ctx: StepContext, params: Ingest) -> list[int]:
+    return [len(params.doc_id)]
+
+
+async def _words_scalar_consumer(ctx: StepContext, word: Word) -> dict[str, int]:
+    return {"n": len(word.text)}
+
+
+class WordList(RootModel[list[Word]]):
+    """The RootModel door's shape (a list payload IS its contract)."""
+
+
+async def _root_list_consumer(ctx: StepContext, words: WordList) -> dict[str, int]:
+    return {"n": len(words.root)}
+
+
+async def _duck_consumer(ctx: StepContext, words: str) -> dict[str, int]:
+    return {"n": len(words)}
+
+
+def test_incompatible_list_element_mutation() -> None:
+    """E5's ELEMENT LAW (the E5 drill's conviction — the typed wiring's
+    whole promise): a ``list[Word]`` producer wired into a
+    ``list[str]`` consumer passed BUILD-TIME VALIDATION and the run died
+    at RUNTIME with a pydantic ValidationError on every attempt — the
+    LIST level was checked (the bodyless-join arm), the ELEMENT level
+    was not. The law is absolute: a wiring that dies at runtime with a
+    type error is a BUILD-TIME conviction (the element compatibility is
+    the same totality discipline E1-E16 apply at the node level)."""
+    app = WorkflowApp()
+
+    @app.workflow("list_elem")
+    def list_elem() -> Promise[object]:
+        words = step(_words_body, Ingest(doc_id="d"), key="words")
+        return build(step(_str_list_consumer, words, key="sink_words"))
+
+    rules = _rules(_compiled("list_elem", app))
+    assert rules == {"E5-incompatible-consumer"}, rules
+
+
+def test_matching_list_element_stays_clean() -> None:
+    """The element law's GREEN face (the zero-false-positive budget): a
+    ``list[Word]`` producer wired into a ``list[Word]`` consumer — the
+    element types agree — produces ZERO diagnostics."""
+    app = WorkflowApp()
+
+    @app.workflow("list_elem_ok")
+    def list_elem_ok() -> Promise[object]:
+        words = step(_words_body, Ingest(doc_id="d"), key="words")
+        return build(step(_words_list_consumer, words, key="sink_words"))
+
+    assert _rules(_compiled("list_elem_ok", app)) == set()
+
+
+def test_unrelated_list_element_models_mutation() -> None:
+    """The element law's model-vs-model face: ``list[Word]`` consumed as
+    ``list[Unrelated]`` — the join's element and the consumer's element
+    are different models."""
+    app = WorkflowApp()
+
+    @app.workflow("list_elem_unrel")
+    def list_elem_unrel() -> Promise[object]:
+        words = step(_words_body, Ingest(doc_id="d"), key="words")
+        return build(step(_unrelated_list_consumer, words, key="sink_words"))
+
+    rules = _rules(_compiled("list_elem_unrel", app))
+    assert rules == {"E5-incompatible-consumer"}, rules
+
+
+def test_duck_list_element_is_the_skipped_face() -> None:
+    """The zero-false-positive skip: ``list[Any]`` — the duck-shaped
+    element consumes anything the codec delivers, unguessable, never a
+    conviction."""
+    app = WorkflowApp()
+
+    @app.workflow("list_elem_any")
+    def list_elem_any() -> Promise[object]:
+        words = step(_words_body, Ingest(doc_id="d"), key="words")
+        return build(step(_any_list_consumer, words, key="sink_words"))
+
+    assert _rules(_compiled("list_elem_any", app)) == set()
+
+
+def test_scalar_list_elements_are_the_codecs_face() -> None:
+    """Both elements non-model (``list[int]`` → ``list[str]``): the
+    codec's TypeAdapter owns the scalar coercions — the element law
+    convicts the MODEL mismatches, never a guessed scalar one."""
+    app = WorkflowApp()
+
+    @app.workflow("list_scalar")
+    def list_scalar() -> Promise[object]:
+        nums = step(_ints_body, Ingest(doc_id="d"), key="nums")
+        return build(step(_str_list_consumer, nums, key="sink_words"))
+
+    assert _rules(_compiled("list_scalar", app)) == set()
+
+
+def test_list_producer_into_single_model_param_mutation() -> None:
+    """The element law's other face: a LIST producer wired into a
+    SINGLE-model param — the decode feeds a list payload to a model
+    expecting fields; the ValidationError is certain."""
+    app = WorkflowApp()
+
+    @app.workflow("list_into_model")
+    def list_into_model() -> Promise[object]:
+        words = step(_words_body, Ingest(doc_id="d"), key="words")
+        return build(step(_words_scalar_consumer, words, key="sink_word"))
+
+    rules = _rules(_compiled("list_into_model", app))
+    assert rules == {"E5-incompatible-consumer"}, rules
+
+
+def test_root_model_list_param_is_the_skipped_door() -> None:
+    """The RootModel door: a consumer declaring
+    ``RootModel[list[Word]]`` TAKES the list payload — the element law's
+    single-model conviction does not fire on it."""
+    app = WorkflowApp()
+
+    @app.workflow("list_into_root")
+    def list_into_root() -> Promise[object]:
+        words = step(_words_body, Ingest(doc_id="d"), key="words")
+        return build(step(_root_list_consumer, words, key="sink_words"))
+
+    assert _rules(_compiled("list_into_root", app)) == set()
+
+
+def test_list_producer_into_duck_param_is_the_skipped_face() -> None:
+    """The duck-shaped param under a list producer (``str`` is no model,
+    no list): unguessable — the zero-false-positive skip, never a
+    conviction."""
+    app = WorkflowApp()
+
+    @app.workflow("list_into_duck")
+    def list_into_duck() -> Promise[object]:
+        words = step(_words_body, Ingest(doc_id="d"), key="words")
+        return build(step(_duck_consumer, words, key="sink_words"))
+
+    assert _rules(_compiled("list_into_duck", app)) == set()
+
+
+def test_the_drills_runtime_death_is_real() -> None:
+    """The runtime door the element law pre-empts: the codec's TypeAdapter
+    reds the drill's payload — the pydantic ValidationError the drill hit
+    on every attempt. The conviction moves it to build; this pin holds
+    the runtime's own red so the law's necessity is never arguable."""
+    from pydantic import ValidationError
+
+    from taskq.workflows.api._runner_codec import coerce_arg
+
+    with pytest.raises(ValidationError):
+        coerce_arg([{"text": "payload arrives as the model's dicts"}], param=list[str])
 
 
 def test_fan_in_bound_mutation() -> None:

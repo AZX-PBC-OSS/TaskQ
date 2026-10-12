@@ -115,6 +115,7 @@ _NODE_PANEL_SQL = (
     "SELECT id, step_key, status, attempt, max_attempts, retry_kind, map_index, "
     "trace_id, error_class, error_message, error_traceback, "
     "metadata->>'error' AS captured_error, parent_id, "
+    "metadata->'wf_cache_hit' AS cache_hit, "
     "created_at, started_at, finished_at "
     'FROM "{schema}".jobs WHERE step_key = $1 '
     "AND (metadata->>'flow_id')::uuid = $2 AND step_key <> '__flow__' "
@@ -125,6 +126,7 @@ _NODE_PANEL_CHILD_SQL = (
     "SELECT id, step_key, status, attempt, max_attempts, retry_kind, map_index, "
     "trace_id, error_class, error_message, error_traceback, "
     "metadata->>'error' AS captured_error, parent_id, "
+    "metadata->'wf_cache_hit' AS cache_hit, "
     "created_at, started_at, finished_at "
     'FROM "{schema}".jobs WHERE step_key = $1 '
     "AND (metadata->>'flow_id')::uuid = $2 AND map_index = $3 "
@@ -149,6 +151,23 @@ _NODE_LEDGER_SQL = (
     "SELECT step_key, attempt, status, error_class, error_message, created_at "
     'FROM "{schema}".wf_step_ledger WHERE job_id = $1 ORDER BY id'
 )
+
+
+def _cache_hit_of(raw: object) -> dict[str, object] | None:
+    """The wf_cache_hit jsonb's decode (str or dict — asyncpg's bare ->
+    lands a string; a typed path a dict). A corrupted row reads None:
+    the receipt is provenance, never load-bearing. The casts are the
+    jsonb boundary's declared contract (RFC 8259: the wire's object keys
+    are strings) — the decode's shape, never an inferred Unknown."""
+    if isinstance(raw, dict):
+        return cast("dict[str, object]", raw)
+    if isinstance(raw, str):
+        try:
+            decoded: object = _json_loads(raw)
+        except ValueError:
+            return None
+        return cast("dict[str, object]", decoded) if isinstance(decoded, dict) else None
+    return None
 
 
 def _iso(value: Any) -> str | None:
@@ -512,6 +531,14 @@ def register_actions(router: APIRouter) -> None:
                 ]
             ),
             "parent": dict(parent) | {"id": str(parent["id"])} if parent else None,
+            # THE CACHE-HIT RECEIPT (the audit drill's cure — the
+            # provenance face): the cross-run cache's hit stamp (address
+            # + producing run + stored instant), None on an executed
+            # step. A step that never executed must not read like one
+            # that did. The jsonb arrives as a JSON string through the
+            # bare -> operator — decoded HERE so the panel's JSON is the
+            # object the JS renders.
+            "cache_hit": _cache_hit_of(node["cache_hit"]),
             "timeline": [dict(r) | {"created_at": _iso(r["created_at"])} for r in ledger],
             "children": children if len(children) > 1 else [],
             "created_at": _iso(node["created_at"]),

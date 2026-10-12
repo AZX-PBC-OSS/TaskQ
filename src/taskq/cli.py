@@ -3374,6 +3374,17 @@ _JOB_SHOW_COLUMNS: Final = (
     "error_message",
     "idempotency_key",
     "tags",
+    # THE 3AM FACES (the observability lane's cure): the lease columns
+    # (the lost-worker drill's "the worker died" vs "the work is slow"
+    # distinction — the reclaim sweep's input is lock_expires_at) + the
+    # metadata jsonb (the cross-run cache hit's receipt lives at
+    # metadata.wf_cache_hit; the audit drill's provenance face). The
+    # RENDER stays conditional: a terminal row's lease face is history,
+    # not liveness, and only the receipt is ever printed from metadata.
+    "locked_by_worker",
+    "last_heartbeat_at",
+    "lock_expires_at",
+    "metadata",
 )
 """The operator-facing columns ``taskq job show`` prints by default.
 
@@ -3481,6 +3492,8 @@ async def _job_show(
     typer.echo(f"scheduled_at: {row['scheduled_at']}")
     typer.echo(f"started_at: {row['started_at']}")
     typer.echo(f"finished_at: {row['finished_at']}")
+    _render_lease_face(row)
+    _render_cache_hit(row)
     if row["error_class"] is not None:
         # THE DB-SOURCED TEXT'S DISCIPLINE (finding 14's cure — the
         # job-show seat's own face): error_class is written by the
@@ -3517,6 +3530,88 @@ async def _job_show(
         _print_blob_field("payload", row["payload"])
     if archived:
         typer.echo("archived: yes")
+
+
+def _as_aware_dt(value: Any) -> datetime | None:
+    """A timestamptz column's value as an AWARE datetime (asyncpg returns
+    aware datetimes; a test double may hand a string) — None for NULL,
+    naive values read as UTC (the DB clock's own zone)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    parsed = datetime.fromisoformat(str(value))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+_LEASE_LIVE_STATUSES: Final[frozenset[str]] = frozenset({"pending", "scheduled", "running"})
+
+
+def _render_lease_face(row: Any) -> None:
+    """THE LEASE FACE (the lost-worker drill's cure — ``job show``'s
+    liveness section): who holds the row, when the holder last breathed,
+    when the lease lapses — and, past the lapse, the LAPSED verdict: the
+    holder is presumed dead and the reclaim sweep repends the row within
+    ``TASKQ_SWEEP_INTERVAL`` (default 30 s) once a leader is up. This is
+    the operator's "the worker died" vs "the work is slow" distinction,
+    which the row has always carried and the CLI never printed.
+
+    A terminal row's lease columns are HISTORY (the lease lapsed because
+    the work finished) — the face renders for the live statuses only."""
+    if str(row["status"]) not in _LEASE_LIVE_STATUSES:
+        return
+    holder = row.get("locked_by_worker") if hasattr(row, "get") else None
+    heartbeat = _as_aware_dt(row.get("last_heartbeat_at") if hasattr(row, "get") else None)
+    expires = _as_aware_dt(row.get("lock_expires_at") if hasattr(row, "get") else None)
+    if holder is not None:
+        typer.echo(f"locked_by_worker: {holder}")
+    if heartbeat is not None:
+        typer.echo(f"last_heartbeat_at: {heartbeat}")
+    if expires is not None:
+        typer.echo(f"lock_expires_at: {expires}")
+        if expires < datetime.now(UTC):
+            lapsed_s = int((datetime.now(UTC) - expires).total_seconds())
+            typer.echo(
+                f"lease: LAPSED ({lapsed_s}s ago) — the holder is presumed DEAD: this is "
+                "'the worker died', not 'the work is slow'. The reclaim sweep repends "
+                "the row (or crashes it past the attempt budget) within "
+                "TASKQ_SWEEP_INTERVAL (default 30s) — but only while a leader is up: "
+                "a lapsed lease with no live worker stays running until one returns. "
+                "Confirm the death: taskq job events " + str(row["id"])
+            )
+        else:
+            typer.echo("lease: held (the heartbeat renews it while the holder lives)")
+
+
+def _render_cache_hit(row: Any) -> None:
+    """THE CACHE-HIT RECEIPT (the audit drill's cure — the provenance
+    face): the cross-run step cache's hit stamp (metadata.wf_cache_hit:
+    the address + the producing run's id + the store instant) printed
+    when present. A step that never executed must not read like one that
+    did: this line is the difference between 'the body ran' and 'an
+    earlier run's result was delivered'. Only the receipt is ever
+    printed from metadata (the rest of the jsonb stays row-only)."""
+    meta: object = row.get("metadata") if hasattr(row, "get") else None
+    if isinstance(meta, str):
+        try:
+            meta = json_loads(meta)
+        except ValueError:
+            return
+    if not isinstance(meta, dict):
+        return
+    # The jsonb boundary's declared contract (RFC 8259: the wire's object
+    # keys are strings) — the decode's shape, never an inferred Unknown.
+    fields = cast("dict[str, object]", meta)
+    receipt: object = fields.get("wf_cache_hit")
+    if isinstance(receipt, dict):
+        rec = cast("dict[str, object]", receipt)
+        typer.echo(
+            "cache_hit: the body did NOT run — an earlier run's cached result was "
+            "delivered (source: the jobs row's metadata.wf_cache_hit)"
+        )
+        typer.echo(f"  producing run: {rec.get('run_id')}")
+        typer.echo(f"  address: {rec.get('address')}")
+        typer.echo(f"  stored_at: {rec.get('stored_at')}")
 
 
 def _print_blob_field(name: str, value: Any) -> None:
@@ -4496,11 +4591,20 @@ async def _flows_status(
             typer.echo("Action: taskq flows list shows the recent runs.", err=True)
             raise typer.Exit(code=1)
         node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
+        # THE ONE-READ LAW (the engine-faces lane's cure): the 3am
+        # columns ride the ENGINE query — WORKFLOW_NODES_SQL selects
+        # started_at + the failed_parent stamp + the lease face's columns
+        # at the source. The supplement read this seat used to carry (a
+        # second, CLI-owned jobs fetch keyed by the row id) is RETIRED:
+        # two reads where one suffices was the engine query's missing
+        # columns forcing the workaround.
         # THE §22.1 STAMPS' READ (rv5-t5's cure — the drift face's
         # data): the run's node rows' code_version stamps — a run
         # redeployed mid-flight carries >1 DISTINCT stamp on its rows.
         # The read is the run's OWN rows: no --app door needed (the
-        # stamps are the record, the rows are the truth).
+        # stamps are the record, the rows are the truth). The engine
+        # query does not carry code_version (the stamp is the drift
+        # face's own column, read only here).
         stamps = await conn.fetch(
             f"SELECT step_key, code_version FROM "  # noqa: S608  # Why: schema identifier-validated above.
             f'"{settings.schema_name}".jobs '
@@ -4534,6 +4638,14 @@ async def _flows_status(
             # the read must carry the row's own counters.
             max_attempts=row["max_attempts"],
             attempt=row["attempt"],
+            # THE 3AM FIELDS (the ENGINE query's own columns — the one
+            # read): the row id + started_at + the failed_parent stamp +
+            # the lease face's columns.
+            job_id=str(row["id"]),
+            started_at=row["started_at"],
+            failed_parent=row["failed_parent"],
+            lock_expires_at=row["lock_expires_at"],
+            last_heartbeat_at=row["last_heartbeat_at"],
             hold=(
                 _held_context(run_id, holds_by_key[row["step_key"]])
                 if row["step_key"] in holds_by_key

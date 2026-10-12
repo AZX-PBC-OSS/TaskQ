@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Final, cast
 
 from pydantic import BaseModel
@@ -72,6 +72,19 @@ class FlowNodeRow:
     hold: HoldContext | None = None
     max_attempts: int = 3
     attempt: int = 0
+    # THE 3AM FIELDS (the observability lane's cures; the ENGINE-FACES
+    # cure rides the engine query — WORKFLOW_NODES_SQL selects them at
+    # the source, ONE read): the node row's own id + started_at (the
+    # RUNNING face's age source) + the failed_parent stamp
+    # (metadata.failed_parent — the dead parent NAMED on the record) +
+    # the LEASE face's columns (the reclaim-requires-a-leader marker's
+    # derivation input). Optional with None defaults: every existing
+    # constructor keeps its shape.
+    job_id: str | None = None
+    started_at: datetime | None = None
+    failed_parent: str | None = None
+    lock_expires_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
 
     def view(self) -> NodeView:
         """The §17.5 derivation's input — THE ONE CONVERSION (no second
@@ -181,8 +194,35 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
             # THE DISCIPLINE: a DB-sourced reason cannot forge a line.
             lines.insert(1, f"       reason: {_bounded_line(node.hold.reason)}")
         return lines
-    if node.blocking_reason is not None and node.view().is_blocked_row:
+    if (
+        node.blocking_reason is not None
+        and node.blocking_reason != "join"
+        and node.view().is_blocked_row
+    ):
+        # THE 'join' EXCLUSION (the 3am drill's false-remedy cure): the
+        # bare 'join' stamp is the HEALTHY join-wait shape every emitted
+        # join carries — it must fall through to the JOIN-WAIT arm below
+        # (the honest "the join fires when its parents finalize"), never
+        # into this arm's retry-the-failed-upstream remedy, which names a
+        # failed node that does not exist.
         reason = node.blocking_reason
+        if reason == "flow_dead":
+            # THE FENCE'S RECORD (the 3am drill's wedge face): flow_dead
+            # means the FLOW died — the failure cascade flipped the root
+            # — and this join can never fire. The line says the path is
+            # DEAD first; the retry command alone would read as if a
+            # retry revives a dead path.
+            return [
+                f"  {node.step_key}: BLOCKED — flow_dead "
+                "(source: the row's metadata.blocking_reason stamp): the "
+                "fence's record — the FLOW died (the failure cascade "
+                "finalized the run) and this join can never fire; this "
+                "run's path is dead",
+                f"       remedy: cancel the run — taskq flows cancel {run_id} "
+                "--reason '...'; or retry the failed upstream node "
+                f"(taskq flows status {run_id} names it) to re-open the "
+                "path",
+            ]
         if reason == "failed_parent":
             lines = [
                 f"  {node.step_key}: BLOCKED — failed_parent "
@@ -193,6 +233,17 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
                 f"taskq flows status {run_id} names it "
                 "(or cancel the run: the path is dead)",
             ]
+            if node.failed_parent:
+                # THE DEAD PARENT, NAMED ON THE RECORD (the 3am drill's
+                # gap: the cascade stamps metadata.failed_parent with the
+                # parent's id — the line must PRINT it, never send the
+                # operator hunting through the run's other nodes).
+                lines.insert(
+                    1,
+                    f"       the failed parent, NAMED on the record "
+                    f"(metadata.failed_parent): {node.failed_parent}",
+                )
+            return lines
         else:
             lines = [
                 f"  {node.step_key}: BLOCKED — {reason} "
@@ -207,7 +258,12 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
             "result(s) (source: the row's deps_pending counter, jobs.deps_pending)",
             "       remedy: none — the join fires when its parents finalize",
         ]
-    if node.status == "failed":
+    if node.status in ("failed", "crashed", "abandoned"):
+        # THE TERMINAL-CRASH FOLD'S FACE (the 3am drill's cure): the
+        # derivation folds crashed/abandoned into the failed class (the
+        # §17.5 row-0), and the why-stuck face must fold with it — a
+        # '1 crashed' count with no line left the row's story (the
+        # WorkerCrashed class, the reclaim's death record) invisible.
         headroom = node.max_attempts - node.attempt
         headroom_note = (
             f" · ladder headroom {headroom} attempt(s) left"
@@ -329,6 +385,84 @@ def code_version_drift_lines(
         "cancel + re-run on the current code under a new run key"
     )
     return lines
+def _running_lines(
+    nodes: Sequence[FlowNodeRow],
+    *,
+    now: datetime,
+    running_face_after_s: float,
+    cap: int = 6,
+) -> list[str]:
+    """THE RUNNING FACE (the 3am drill's stuck-vs-slow cure): a running
+    row's AGE, named — a hung body (a long wait inside the step's own
+    code) produces NO stuck finding (a running row is not a finding), so
+    without this face every surface read the hang as a bare '1 running'
+    count. The face states the age FACTUALLY (source-named: the jobs
+    row's started_at) and names the lease-check remedy that CAN
+    distinguish stuck from slow (``job show``'s lease face +
+    ``job events``' lock_expired record). A row younger than
+    *running_face_after_s* is live work, not a finding — its line would
+    be noise on every progress report.
+
+    THE RECLAIM-REQUIRES-A-LEADER MARKER (the engine-faces lane's cure —
+    the dead-fleet face): a running row whose ``lock_expires_at`` has
+    passed is the OPPOSITE verdict — the holder is presumed dead and the
+    row is RECLAIMABLE, but the reclaim sweep runs only under a leader:
+    with the fleet down nothing ever stamps the row (a sweep-stamp face
+    would lie by absence), so the marker is DERIVED from the row's own
+    lease column — the operator's 'is this work slow or is everyone
+    dead' is answerable from the surface alone."""
+    out: list[str] = []
+    for n in nodes:
+        if n.status != "running":
+            continue
+        if n.lock_expires_at is not None:
+            expires = (
+                n.lock_expires_at
+                if n.lock_expires_at.tzinfo
+                else n.lock_expires_at.replace(tzinfo=UTC)
+            )
+            if expires < now:
+                lapsed_s = max(int((now - expires).total_seconds()), 0)
+                lapsed = f"{lapsed_s // 3600:02d}:{(lapsed_s % 3600) // 60:02d}:{lapsed_s % 60:02d}"
+                out.append(
+                    f"  {n.step_key}: RECLAIMABLE, awaiting a leader — the lease "
+                    f"lapsed {lapsed} ago (source: the jobs row's lock_expires_at): "
+                    "the holder is presumed DEAD — this is 'the fleet is dead', "
+                    "not 'the work is slow'. The reclaim sweep repends (or "
+                    "crashes) the row within TASKQ_SWEEP_INTERVAL (default 30s) "
+                    "once a leader is up; with no leader the row waits"
+                )
+                if n.job_id:
+                    out.append(
+                        "       remedy: bring a worker up — the leader's reclaim "
+                        "sweep repends it within TASKQ_SWEEP_INTERVAL; the "
+                        f"death's record: taskq job events {n.job_id}"
+                    )
+                continue
+        if n.started_at is None:
+            continue
+        started = n.started_at if n.started_at.tzinfo else n.started_at.replace(tzinfo=UTC)
+        age_s = (now - started).total_seconds()
+        if age_s < running_face_after_s:
+            continue
+        age = f"{int(age_s // 3600):02d}:{int((age_s % 3600) // 60):02d}:{int(age_s % 60):02d}"
+        clock = started.strftime("%H:%M:%S")
+        if n.job_id:
+            out.append(
+                f"  {n.step_key}: RUNNING for {age} (since {clock} UTC · source: the "
+                "jobs row's started_at) — this face cannot tell stuck from slow; "
+                f"the lease check names the holder: taskq job show {n.job_id} "
+                f"+ taskq job events {n.job_id}"
+            )
+        else:
+            out.append(
+                f"  {n.step_key}: RUNNING for {age} (since {clock} UTC · source: the "
+                "jobs row's started_at)"
+            )
+    if len(out) > cap:
+        out = out[:cap]
+        out.append(f"  ... and {len(out)} more running row(s) — see the run explorer")
+    return out
 
 
 def format_flow_status(
@@ -340,18 +474,22 @@ def format_flow_status(
     cancel_in_flight: bool = False,
     registry_node_keys: Sequence[str] | None = None,
     code_version_stamps: Sequence[tuple[str, str | None]] | None = None,
+    now: datetime | None = None,
+    running_face_after_s: float = 60.0,
 ) -> list[str]:
     """`flows status <run_id>`'s report lines.
 
     The order is: the header (the run's identity + THE DERIVED status),
-    the counts (with their source), the stuck nodes' why-stuck lines
-    (the explain seam), the ONE coherent versioning-drift section — the
-    stranded-node surface (only when *registry_node_keys* is given: the
-    ``--app`` door) + the §22.1 stamps' drift face (when the run's rows
-    carry >1 distinct ``code_version`` — the stamps are the data, no
-    ``--app`` needed) — then the remedy footer. The root row's OWN
-    status is reported as the cache it is (G7's law: the rows are the
-    truth, the root row is a cache)."""
+    the counts (with their source), the running face (each long-running
+    row's age + the lease-check remedy — the stuck-vs-slow seam), the
+    stuck nodes' why-stuck lines (the explain seam), the ONE coherent
+    versioning-drift section — the stranded-node surface (only when
+    *registry_node_keys* is given: the ``--app`` door) + the §22.1
+    stamps' drift face (when the run's rows carry >1 distinct
+    ``code_version`` — the stamps are the data, no ``--app`` needed) —
+    then the remedy footer. The root row's OWN status is reported as the
+    cache it is (G7's law: the rows are the truth, the root row is a
+    cache)."""
     derived = derive_flow_status(nodes) if nodes else "pending"
     lines = [
         f"run {run_id}",
@@ -359,6 +497,20 @@ def format_flow_status(
         f"status: {derived}  (derived from the node rows — §17.5; "
         f"the root row caches {root_status!r})",
     ]
+    if registry_node_keys is not None and nodes:
+        lines.extend(
+            stranded_lines(
+                [n.step_key for n in nodes],
+                registry_node_keys,
+                workflow=workflow,
+            )
+        )
+    if code_version_stamps:
+        lines.extend(code_version_drift_lines(code_version_stamps))
+    # THE ONE COHERENT VERSIONING-DRIFT SECTION (the timer-cures lane's
+    # cure 5 + rv5-t5's stamps): the stranded-node surface (only when
+    # *registry_node_keys* is given: the --app door) + the §22.1 stamps'
+    # drift face (the stamps are the data, no --app needed).
     if registry_node_keys is not None and nodes:
         lines.extend(
             stranded_lines(
@@ -382,6 +534,14 @@ def format_flow_status(
         return lines
     counts = ", ".join(f"{c} {s}" for s, c in _counts_by_status(nodes))
     lines.append(f"nodes: {len(nodes)} — {counts} (source: jobs rows by metadata.flow_id)")
+    # THE RUNNING FACE (the 3am drill's cure) — before the stuck lines:
+    # a hung body's row is 'running', which no stuck arm ever names.
+    running_face = _running_lines(
+        nodes,
+        now=now if now is not None else datetime.now(UTC),
+        running_face_after_s=running_face_after_s,
+    )
+    lines.extend(running_face)
     # The stuck section is BOUNDED (the admin's timeline-truncation
     # convention): a 1000-child map's 3 failures name themselves; a
     # 500-child stuck map would otherwise flood the operator's terminal —

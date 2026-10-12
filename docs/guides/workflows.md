@@ -2541,19 +2541,41 @@ A workflow is stuck. The order of questions:
 3. **Is a node failed?** The status names it + the ladder's headroom (`attempt` vs `max_attempts`). The manual resume: `taskq flows retry <run_id> <node>` — the ledger is KEPT (the spent attempts stay recorded), the ceiling raises past the spent attempt, the blocked closure re-opens.
 4. **Is it a join that can never fire?** The status renders the join-wait rows with the deps counter. A join blocked `failed_parent` re-opens when the failed parent's retry lands; a join blocked `orphan_parent`/`flow_dead` is the fence's record — see the failure-propagation section.
 5. **Still stuck?** The admin's run page renders the SAME derivation + the node panel's attempt ledger + the audit trail. The rows-alone law: if the CLI and the page disagree, the ROWS decide — file it as a defect with both outputs.
+6. **Is the work slow or is the holder dead? (the stuck-vs-slow triage.)** A body that hangs inside its own code (a long wait, a dead dependency) is never a stuck finding — its row is `running`, which no why-stuck arm names. `flows status` gives running rows their own face: each running row older than a minute prints its running AGE (since `started_at`) and the lease check. The lease check is the verdict:
+   - `taskq job show <job_id>` on a `running` row prints the lease face (`locked_by_worker`, `last_heartbeat_at`, `lock_expires_at`). A FRESH lease is work in progress — slow is slow. A LAPSED lease is a dead holder — the row says so (`lease: LAPSED ... the holder is presumed DEAD`).
+   - The reclaim sweep repends a lapsed row (or crashes it past the attempt budget) within `TASKQ_SWEEP_INTERVAL` (default 30 s) — **but only while a leader is up.** A lapsed lease with no live worker stays `running` until one returns: if the whole fleet died, the rows wait, and the FIRST 3am fix is to bring a worker back. Confirm the death from the record: `taskq job events <job_id>` carries one `state_change` row with `reason: lock_expired` and the dead worker's id per reclaim.
+   - The timers' face: a node waiting on a typed signal (a hold) is NOT running — `taskq flows holds <run_id>` names the hold with its DEADLINE (the wake time: when the timeout fires, the body's `Expired` arm runs). A hold with no deadline is the W1 warning's subject (step 2).
 
-**THE WORKFLOW TABLES (the LedgerWatch F10 cure — the operator's SQL is
-sanctioned, and the tables are named where the runbook can find them):**
-the rows-alone reads above are served by six `wf_*` tables in the
-estate's schema, stable names, no foreign keys (the graph is the
-engine's, never the schema's):
+## §7.1 — the operator's rows: the `wf_*` tables and the closed vocabularies
 
-| table | what it holds |
-| --- | --- |
-| `jobs` | the node rows (the root is `step_key = '__flow__'`; the map children's step keys are `<source>.item` / `<source>.item:<tag>`; `metadata.flow_id` names the run) |
-| `wf_edge` | the edge ledger — the parent→child wiring, each row carrying the join's declared `failure_policy` |
-| `wf_step_ledger` | the attempt ledger — the claim arbiter `(flow_id, step_key, COALESCE(map_index, -1), attempt)`; `awaited` rows are holds, `failed` rows are the ladder's count |
-| `wf_signals` | the HITL holds — the status vocabulary is the table in §4; the reply handle is `id` |
-| `wf_outbox` | the fired joins' delivery queue (the consumer rows the drain inserts) |
-| `wf_join_fire` | the exactly-once fire receipt (at most one row per joined node) |
-| `wf_node_progress` | the progress state channel's durable rows (the SSE replay's source) |
+Every workflow fact is a row in the same database; the CLI and the explorer are conveniences over these tables, and at 3am the raw query is always reachable. The tables (all in your schema, default `taskq`):
+
+| Table | One row per | The columns that matter |
+|---|---|---|
+| `jobs` (the workflow rows) | a run's root (`step_key='__flow__'`), every node, every map child | `step_key` (the positional node key — never changes across holds/retries/reclaims), `deps_pending` (the join counter — a CACHE; the edge ledger is truth), `map_index` (the fan-out slot), `parent_id` (the graph's parent pointer — the fork's source node), `code_version` (the per-attempt code hash), `metadata` (`flow_id`, `workflow`, `blocking_reason`, `failed_parent`, `wf_cache_hit`), plus the vanilla columns (`status`, `attempt`, `max_attempts`, the lease columns, the error columns) |
+| `wf_edge` | dependency edge (`child_id`, `parent_id`, `failure_policy`) | the join counter's ONLY truth source; the failure policy the edge was wired with (`collect`/`maybe`/`fail_closed`) |
+| `wf_join_fire` | exactly-once join fire (`join_job_id` UNIQUE) | the fire guard's record: at most one fire per joined node, ever |
+| `wf_outbox` | a fired join's consumer delivery | `delivered` false = the drain still owes the consumer rows |
+| `wf_step_ledger` | one attempt of one step (`flow_id`, `step_key`, `map_index`, `attempt`) | the attempt record: `status` (the attempt's outcome), `result`, `error_class`, `error_message`, `capture` (the failure IO-capture, per the workflow's policy) |
+| `wf_signals` | one hold/delivery (`workflow_id`, `node_key`, `signal_name`, `hold_epoch`) | `status='held'` = a pending human wait; `expires_at` = the deadline; `payload_schema` = the declared payload shape |
+| `wf_node_progress` / `wf_node_stream` | per-node progress/state-channel rows | the T21 progress faces |
+| `wf_step_cache` | one cached step result (`content_address`) | `run_id` (the producing run), `result`, `expires_at` (the TTL) |
+
+**The closed vocabularies** (the values the surfaces render, and what each means):
+
+- A node row's `status` is the vanilla jobs vocabulary: `pending`, `scheduled`, `running`, `succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`. Two derived pending SHAPES exist — join-wait (`pending` + `deps_pending > 0`) and held (`pending` + the unresolved `wf_signals` row). `crashed`/`abandoned` are TERMINALS (zero outbound transitions; the derivation folds them into the failed class).
+- The run status is DERIVED from the node rows (§17.5): `running` (any node live or a cancel in flight) → `failed` (any unabsorbed failure) → `blocked` (any hold, join-wait, or blocked row) → `complete` → `cancelled` → `pending`. The root row's own `status` is a CACHE of this derivation.
+- `metadata.blocking_reason` (why a pending row cannot be claimed): `join` — a HEALTHY join-wait (fires when its parents finalize); `failed_parent` — a fail_closed parent finalized as FAILURE (the parent's id is stamped beside it in `metadata.failed_parent`); `orphan_parent` — the rederive arm found join-wait rows with no edges (the belt-and-suspenders stamp); `flow_dead` — the fence's record: the flow died and the join can never fire; `body_unavailable` — a fired join whose body never resolved in any worker's process (the delivery CONTINUED; the warning is the record).
+
+## §7.2 — the audit recipe: "what did this run actually do?"
+
+Reconstructing a run's story from the surfaces (no app source, no logs):
+
+1. **The shape:** `taskq flows status <run_id>` — the nodes, the derived status, every stuck row's why + remedy.
+2. **The attempts:** each node's `attempt` vs `max_attempts` is the ladder; the LEDGER is the per-attempt record. The CLI's node read (and the explorer's node panel) renders the attempt ledger per node; in SQL: `SELECT step_key, attempt, status, error_class, created_at FROM taskq.wf_step_ledger WHERE flow_id = '<run_id>' ORDER BY created_at` — every attempt's outcome, in order, with the class of every death.
+3. **The vanilla events:** `taskq job events <job_id>` — the state changes (`lock_expired` reclaims carry the dead worker's id).
+4. **The cache hits:** a node row with `metadata.wf_cache_hit` (rendered by `taskq job show <job_id>` as `cache_hit:` and by the explorer's node panel) NEVER executed — the body ran in the receipt's `run_id`, and `wf_step_cache` holds the delivered result (`SELECT content_address, run_id, created_at FROM taskq.wf_step_cache WHERE content_address = '<address>'`). A bad cached result is evicted by deleting the address's row; the next run re-executes and re-fills it:
+   `DELETE FROM taskq.wf_step_cache WHERE content_address = '<address>';`
+5. **The graph:** `jobs.parent_id` is the fork's source pointer (every map child points at the source node; node rows point at their wired parents); `wf_edge` is the complete edge list with each edge's failure policy. The parent↔child walk is a two-column query:
+   `SELECT child.step_key, child.map_index, parent.step_key AS via FROM taskq.wf_edge e JOIN taskq.jobs child ON child.id = e.child_id JOIN taskq.jobs parent ON parent.id = e.parent_id WHERE e.flow_id = '<run_id>';`
+6. **The operator's actions:** the explorer's audit-trail section (and `admin_audit` rows) record every resolve/deliver/cancel — including the REFUSED ones.
