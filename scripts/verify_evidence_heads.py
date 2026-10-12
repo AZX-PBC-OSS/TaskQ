@@ -187,6 +187,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -203,7 +204,7 @@ DEFAULT_EVIDENCE_REF = "origin/evidence/taskqflow"
 
 def _evidence_ref_resolves(ref: str) -> bool:
     proc = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],  # noqa: S607
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
         cwd=REPO,
         capture_output=True,
         text=True,
@@ -231,9 +232,10 @@ def _stage_evidence_ref(ref: str) -> Path:
                 "actions/checkout with fetch-depth: 0, or an explicit fetch "
                 "of evidence/taskqflow before this script runs)."
             )
-    staging = Path(os.environ.get("TMPDIR", "/tmp")) / (
-        "evidence-estate-" + subprocess.run(
-            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],  # noqa: S607
+    staging = Path(tempfile.gettempdir()) / (
+        "evidence-estate-"
+        + subprocess.run(
+            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
             cwd=REPO,
             capture_output=True,
             text=True,
@@ -242,7 +244,7 @@ def _stage_evidence_ref(ref: str) -> Path:
     )
     if not (staging / "runs" / "CLAIMS.json").is_file():
         archive = subprocess.run(
-            ["git", "archive", ref, ".measurements"],  # noqa: S607
+            ["git", "archive", ref, ".measurements"],
             cwd=REPO,
             capture_output=True,
             check=False,
@@ -260,6 +262,7 @@ def _stage_evidence_ref(ref: str) -> Path:
         with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
             tar.extractall(staging)  # noqa: S202  # Why: the archive is the repo's own ref's tree, never untrusted input.
     return staging / ".measurements" / "runs"
+
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -818,9 +821,7 @@ def main() -> int:
     runs_dir: Path = args.runs_dir
     if args.evidence_ref:
         runs_dir = _stage_evidence_ref(args.evidence_ref)
-    elif not (RUNS / "CLAIMS.json").is_file() and _evidence_ref_resolves(
-        DEFAULT_EVIDENCE_REF
-    ):
+    elif not (RUNS / "CLAIMS.json").is_file() and _evidence_ref_resolves(DEFAULT_EVIDENCE_REF):
         # THE EXTRACTED ESTATE'S DEFAULT: no local registry (the tree
         # stopped carrying it) — read the evidence branch's estate.
         runs_dir = _stage_evidence_ref(DEFAULT_EVIDENCE_REF)
@@ -831,7 +832,7 @@ def main() -> int:
         print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
         print(f"  {conviction}")
         return 1
-    failures, warnings = verify(args.runs_dir, head)
+    failures, warnings = verify(runs_dir, head)
     if failures:
         print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
         for failure in failures:
@@ -841,7 +842,7 @@ def main() -> int:
         return 1
     print(
         f"the head-stamp law holds: every evidence kind's live claim in "
-        f"{args.runs_dir} is recorded at THIS head ({head[:12]}) or "
+        f"{runs_dir} is recorded at THIS head ({head[:12]}) or "
         "explicitly superseded"
     )
     for warning in warnings:
