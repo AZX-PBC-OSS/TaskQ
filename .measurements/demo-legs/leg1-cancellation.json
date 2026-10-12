@@ -1,9 +1,6 @@
-  "run_id": "01a12949-f448-74f0-a792-920c7f2bb89d",
-  "run_id": "01a12a41-08ed-7273-8886-671d2eff71a8",
-=======
-  "run_id": "01a12a22-2f37-7a42-9dd7-f0158df6944c",
-  "run_id": "01a12949-f448-74f0-a792-920c7f2bb89d",
-  "run_id": "01a12a41-08ed-7273-8886-671d2eff71a8",
+{
+  "leg": "1 \u2014 the cancellation",
+  "run_id": "01a129e2-ab55-7033-ba2d-b068839a62fb",
   "root_status": "cancelled",
   "derived_status": "cancelled",
   "nodes": {
@@ -15,9 +12,9 @@
     "publish": "cancelled",
     "route": "cancelled",
     "summarize": "cancelled",
+    "review": "cancelled",
     "ingest.item": "cancelled",
-    "ingest.join": "cancelled",
-    "review": "cancelled"
+    "ingest.join": "cancelled"
   },
   "audit_row": {
     "principal": "cli:demo",

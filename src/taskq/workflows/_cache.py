@@ -18,6 +18,32 @@ construction; the same body over the same input at any position in any
 run is the SAME address — the cross-run face's whole point
 (position-independent on purpose).
 
+THE ADDRESS'S SCOPE, STATED EXACTLY (the which-input-counts law):
+
+* the CODE half covers the body's OWN source only — module + qualname
+  + the body's source text. A HELPER the body calls is INVISIBLE to
+  the address: a helper's redeploy is a byte-identical address, and the
+  pre-deploy truth serves until the TTL. The operator's discipline is
+  the documented contract: bump the body's own source (or its
+  ``code_version``-visible text) when the closure's truth changes. A
+  transitive-closure hash (the helpers' sources hashed in) was
+  considered and NOT built — the cost (a source-read walk over the
+  whole call graph at the claim path, per attempt) and the
+  false-positive face (an unrelated helper edit invalidating every
+  address) are not justified by the hazard the discipline covers.
+* the INPUT half covers the WIRED args only — the runner's resolved
+  args in signature order. The FLOW input (``ctx.input``) NEVER enters
+  the address: that is why ``cache=True`` on a body reading
+  ``ctx.input`` is REFUSED at the wiring (the cross-tenant leak —
+  E18), and why a SOURCE node (whose only run-varying input IS the
+  flow input) can only be cached when its input is wired IN as data —
+  for a source node whose body reads the run input there is no sound
+  address, only the refusal teaching the wire-it-in fix (the
+  import-probe's 640→60 stale hit, the refusal's red receipt).
+  ``ctx.input``-shaped values that arrive as WIRED args (lifted into
+  the dataflow by an uncached upstream step) DO enter the address —
+  the wired-param version caches per value.
+
 THE SUCCESS-ONLY LAW: the store is called from the runner's
 terminal-succeeded path ONLY — a failed run's key never squats the
 address (a cached failure is a lie the next run would read as truth).

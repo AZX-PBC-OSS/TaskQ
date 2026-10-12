@@ -711,6 +711,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             None  # the typed route's prebuilt fork (T27 — the body path builds it from the LIVE elements)
         )
 
+        # THE RESULT'S BINDING (the tail's read): the miss path's
+        # envelope, None on the hit path (the hit's finalize IS the
+        # tail's — below — and returns before the miss finalize reads
+        # this).
+        result: dict[str, object] | None = None
         ctx = build_step_context(
             flow_id=flow_id,
             job_id=JobId(row["id"]),
@@ -766,6 +771,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             # store happens ON TERMINAL-SUCCEEDED ONLY (the
             # failed-run-squats-the-key bug closed by construction).
             cache_address: str | None = None
+            cache_hit: CachedStep | None = None
             if node is not None and node.cache and body is not None and node.kind == "step":
                 code_version = self._body_code_version(row["step_key"], node, body)
                 if code_version is None:
@@ -785,24 +791,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     hit = await lookup_step_cache(self.pool, self.wsql, address=cache_address)
                     if hit is not None:
                         # THE HIT: the cached envelope IS the result —
-                        # the same fenced finalize, the same typed
-                        # decode downstream (the body NEVER runs).
-                        final = await self._finalize_success(
-                            flow_id,
-                            row,
-                            attempt,
-                            node,
-                            hit.envelope,
-                            claim_epoch=claim_epoch,
-                        )
-                        await emitter.aclose()
-                        if final.applied:
-                            await self._write_cache_receipt(
-                                JobId(row["id"]), row["step_key"], flow_id, hit
-                            )
-                        return "succeeded"
+                        # the finalize runs OUTSIDE the body boundary
+                        # (the claim tail, below — the unify cure): the
+                        # body NEVER runs, the same typed decode
+                        # downstream.
+                        cache_hit = hit
 
-            if body is None:
+            if cache_hit is not None:
+                # THE HIT: the body NEVER runs — the cached envelope's
+                # finalize is the CLAIM TAIL'S (below, outside the body
+                # boundary: the unify cure — a finalize fault there is
+                # machinery, never a body failure).
+                pass
+            elif body is None:
                 # THE DEFAULT IDENTITY PACKER (the join/gather kinds): the
                 # join's result IS the decoded parents' list — the FLAT
                 # shape the downstream body's list param declares (the
@@ -822,7 +823,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     parents_values = [
                         item for v in parents_values for item in cast(list[object], v)
                     ]
-                result: dict[str, object] | None = {"value": parents_values}
+                result = {"value": parents_values}
             else:
                 deps_tail = self._deps_tail(body, len(args))
                 outcome_value = await body(ctx, *args, *deps_tail)
@@ -913,6 +914,34 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
             return "laddered"
         await emitter.aclose()
+        if cache_hit is not None:
+            # THE HIT'S FINALIZE — THE CLAIM TAIL, OUTSIDE THE BODY
+            # BOUNDARY (the unify cure, CURE 6a): a fault escaping THIS
+            # finalize is the MACHINERY's seat, never the body's — the
+            # body never ran, and the identical fault on the MISS path
+            # (below) already escapes through this exact tail (the
+            # escape-point contract: the machinery boundary's classifier
+            # reads WHERE the error escaped). The pre-cure seat routed
+            # the hit's finalize fault through the body ladder: a
+            # transient blip terminal-failed a max_attempts=1 step whose
+            # body never ran (the live repro:
+            # .measurements/cache-cures/hit_finalize_fault_repro.py —
+            # node failed, InterfaceError on the record, the run killed
+            # UnabsorbedNodeFailure). One fault, one seat: the infra
+            # class — the reclaim, the ladder unburned.
+            final = await self._finalize_success(
+                flow_id,
+                row,
+                attempt,
+                node,
+                cache_hit.envelope,
+                claim_epoch=claim_epoch,
+            )
+            if final.applied:
+                await self._write_cache_receipt(
+                    JobId(row["id"]), row["step_key"], flow_id, cache_hit
+                )
+            return "succeeded"
         # THE FORK-VALIDATION RAISE IS IN THE LADDER'S TRY (rv4 F8's
         # cure): the map fork's build (and the fork's own validation,
         # insert_fork's door) runs INSIDE _finalize_success — before this

@@ -479,12 +479,181 @@ is refused at the wiring site, a non-positive TTL is refused, and a
 cache on the multi-parent gather is refused (the v1 surface is the
 plain step).
 
+THE ADDRESS'S SCOPE — what "same body, same input" covers, exactly:
+
+- **The code half covers the body's OWN source only** — module,
+  qualname, the body's source text. **A changed HELPER is invisible to
+  the address**: a helper's redeploy is a byte-identical address, and
+  the PRE-DEPLOY truth serves until the TTL. That is the documented
+  contract, and the operator's discipline is the cure: when the
+  closure's truth changes, change the BODY's own source too (even a
+  comment-line change moves the address). A transitive-closure hash
+  (the helpers' sources hashed in) was considered and not built — the
+  cost (a source-read walk over the whole call graph at the claim
+  path, per attempt) and the false-positive face (an unrelated helper
+  edit invalidating every address) are not justified by the hazard the
+  discipline covers.
+- **The input half covers the WIRED args only.** The FLOW input
+  (`ctx.input`) NEVER enters the address. That is why `cache=True` on
+  a body reading `ctx.input` is REFUSED at the wiring (E18): the
+  cached answer produced under one flow input would serve a later run
+  whose input differs — the cross-tenant leak (tenant A's answer
+  delivered to tenant B, terminal-success, audits clean). For a SOURCE
+  node the flow input is its only run-varying input, so a source body
+  reading the run input has NO sound address either (the 640-row feed
+  served its cached answer to the 60-row feed — the import probe's
+  live conviction); the refusal teaches the fix.
+
+The cure is the same shape for both faces — **lift the flow input into
+the dataflow with an UNcached upstream step and wire its result as the
+cached body's param** (the param enters the address, the value differs
+per input, the cache caches per value):
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    run,
+    step,
+)
+
+
+class Tenant(BaseModel):
+    tenant_id: str
+
+
+class Report(BaseModel):
+    ref: str
+
+
+calls = {"priced": 0}
+
+
+async def read_tenant(ctx: StepContext) -> Tenant:
+    """The UNcached lift: the flow input's value enters the dataflow
+    here — the flow input still never enters any address."""
+    return Tenant(tenant_id=ctx.input["tenant_id"])
+
+
+async def price_for(ctx: StepContext, tenant: Tenant) -> Report:
+    """The CACHED body: the tenant is a PARAM — it enters the address,
+    so each tenant's pricing caches under its own address."""
+    calls["priced"] += 1
+    return Report(ref=f"{tenant.tenant_id}:price")
+
+
+app = WorkflowApp()
+
+
+@app.workflow("tenant_cache_flow")
+def tenant_cache_flow() -> Promise[object]:
+    tenant = step(read_tenant, key="tenant")
+    report = step(price_for, tenant, key="price", cache=True, cache_ttl=3600.0)
+    return build(report)
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ["TASKQ_SCHEMA_NAME"]
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+
+    first = await run(
+        app.get("tenant_cache_flow"), pool, schema, input={"tenant_id": "tenant-A"}, key="tenant:a"
+    )
+    second = await run(
+        app.get("tenant_cache_flow"), pool, schema, input={"tenant_id": "tenant-B"}, key="tenant:b"
+    )
+    third = await run(
+        app.get("tenant_cache_flow"), pool, schema, input={"tenant_id": "tenant-A"}, key="tenant:a2"
+    )
+    print(f"priced_calls={calls['priced']} (2: one per tenant — B's run paid, A's re-run hit)")
+    print(f"A's answer: {await _ref(pool, schema, third.flow_id)} (never B's)")
+
+
+async def _ref(pool: asyncpg.Pool, schema: str, flow_id: str) -> str:
+    raw = await pool.fetchval(
+        f"SELECT result->'value'->>'ref' FROM \"{schema}\".jobs "
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'price'",
+        flow_id,
+    )
+    return str(raw)
+
+
+asyncio.run(main())
+```
+
+Verified output (this guide's capture, on a fresh schema — the SECOND
+run per tenant never re-ran the body):
+
+```
+priced_calls=2 (2: one per tenant — B's run paid, A's re-run hit)
+A's answer: tenant-A:price (never B's)
+```
+
+Three more refusals close the remaining sound-address holes, each at
+the wiring site (and re-proved by the validator's own rules — E17/E19/
+E20):
+
+- **A typed-route source is refused** (E17): `cache=True` on a source
+  that carries `route(...)` arms wedges the run FOREVER at the first
+  cache hit — the hit path cannot rebuild the route fork (the arm
+  dispatch reads the element's runtime type; the cached envelope
+  carries only encoded dicts), so the route's children and join never
+  spawn while the source row reads `succeeded` wearing a cache receipt.
+  Cache the route's arms' work, never the fork-spawning source.
+- **An Exit-returning body is refused** (E19): the sentinel
+  terminalizes through the exit finalize, which the success-only store
+  never sees — `cache=True` would silently no-op (every run
+  re-executes the body while the cache machinery looks armed).
+- **An unverifiable body source is refused** (E20): a builtin, a
+  partial, or an exec'd fragment cannot be hashed (the address
+  requires the §22.1 canon — module + qualname + the body's own
+  source), and the pre-refusal shape was the SILENTLY uncached step:
+  the wiring accepted `cache=True`, every run re-executed the body,
+  and the only trace was a log line. Define the body as a module-level
+  def, or drop `cache=True`.
+
 The TTL is the in-DB expiry (`expires_at`, compared against the DB
 clock): an expired row IS a miss — the re-run re-executes and re-fills.
 The sweep's retention arm (`wf_step_cache_retention`, the
 `TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD` setting, default 1h,
 `timedelta(0)` disables) prunes the expired rows — the freshness
 decision is the lookup's; the pruner only deletes the dead weight.
+
+### Operating the cache: the eviction face
+
+A well-shaped lie at a known address — a body that was deterministic
+when it stored and is not anymore, a poisoned payload, a result produced
+under a bug since fixed — serves every future run until the TTL with no
+way to take it out. The operator's face is the `taskq wf` surface:
+
+- `taskq wf cache list [--address-prefix PREFIX] [--limit N]` — the
+  cache's rows (the address, fresh/EXPIRED, the producing run, the
+  store and expiry instants) AND the hits' `wf_cache_hit` receipts (the
+  hit runs' node rows, naming the address and the producing run each).
+  The receipt already existed on the rows; this is its one surface.
+- `taskq wf cache evict [--address-prefix P | --flow RUN_ID | --step
+  STEP_KEY | --all] [--yes]` — the poison-pill door. **DRY-RUN by
+  default**: the command prints the rows that WOULD go and touches
+  nothing; `--yes` deletes. `--step` resolves the addresses through the
+  step's own `wf_cache_hit` receipts (the only address↔step pairing
+  the rows carry) — for an address no receipt names, use
+  `--address-prefix`.
+
+Eviction is immediate and one-way: the next run over an evicted address
+is a MISS — the body re-executes and re-fills on its own success. The
+lie's service ends when the operator says so, never silently.
 
 ## The sweep arms (wired)
 
