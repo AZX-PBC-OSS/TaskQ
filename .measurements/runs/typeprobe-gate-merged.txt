@@ -1,2 +1,2 @@
-head: 2d75eea067e40cde00627b24bbeed79fdaccca48
-the type gate holds: every MUST_ERROR marker (45) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+head: fa39654c0599d8f5861ca546526926bbb1ee5dd6
+the type gate holds: every MUST_ERROR marker (46) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers

@@ -201,6 +201,10 @@ def _job_row(**overrides: Any) -> dict[str, Any]:
         "error_class": None,
         "error_message": None,
         "idempotency_key": None,
+        # THE TAGS COLUMN (the sync-friction lane's operator-face cure):
+        # tags ride the pointed read (the recurring-run's display
+        # identity — an absent set renders `(none)`).
+        "tags": None,
         "locked_by_worker": None,
         "lock_expires_at": None,
         "last_heartbeat_at": None,

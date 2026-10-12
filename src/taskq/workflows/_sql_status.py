@@ -91,6 +91,7 @@ SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        j.started_at,
        j.metadata->>'failed_parent' AS failed_parent,
        j.lock_expires_at, j.last_heartbeat_at,
+       j.code_version,
        """
     + _absorbed_exists("j")
     + """ AS absorbed,

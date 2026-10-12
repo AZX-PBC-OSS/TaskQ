@@ -217,6 +217,10 @@ def _node_row(**overrides: Any) -> dict[str, Any]:
         "failed_parent": None,
         "lock_expires_at": real_now + timedelta(minutes=5),
         "last_heartbeat_at": started,
+        # THE §22.1 STAMP (rv5-t5's cure — the drift face's data): the
+        # node row's code_version rides the row; the stamps' read names
+        # a run whose rows straddle a redeploy.
+        "code_version": None,
     }
     row.update(overrides)
     return row

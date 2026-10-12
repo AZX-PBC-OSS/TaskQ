@@ -4598,20 +4598,16 @@ async def _flows_status(
         # second, CLI-owned jobs fetch keyed by the row id) is RETIRED:
         # two reads where one suffices was the engine query's missing
         # columns forcing the workaround.
-        # THE §22.1 STAMPS' READ (rv5-t5's cure — the drift face's
-        # data): the run's node rows' code_version stamps — a run
-        # redeployed mid-flight carries >1 DISTINCT stamp on its rows.
-        # The read is the run's OWN rows: no --app door needed (the
-        # stamps are the record, the rows are the truth). The engine
-        # query does not carry code_version (the stamp is the drift
-        # face's own column, read only here).
-        stamps = await conn.fetch(
-            f"SELECT step_key, code_version FROM "  # noqa: S608  # Why: schema identifier-validated above.
-            f'"{settings.schema_name}".jobs '
-            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key <> '__flow__' "
-            "AND code_version IS NOT NULL",
-            parsed,
-        )
+        # THE §22.1 STAMPS (rv5-t5's cure — the drift face's data) ride
+        # THE SAME READ: WORKFLOW_NODES_SQL carries j.code_version, so
+        # the drift face derives from the node rows themselves (a run
+        # redeployed mid-flight carries >1 DISTINCT stamp on its rows —
+        # the stamps are the record, the rows are the truth, ONE read).
+        stamps = [
+            (str(r["step_key"]), r["code_version"])
+            for r in node_rows
+            if r["code_version"] is not None
+        ]
         held = await conn.fetch(
             f"SELECT id, node_key, signal_name, hold_epoch, map_index, payload, payload_schema, "  # noqa: S608  # Why: schema identifier-validated above.
             "created_at, expires_at FROM "
@@ -4695,7 +4691,7 @@ async def _flows_status(
         # THE STAMPS' DRIFT FACE (rv5-t5's cure): the run's OWN rows'
         # §22.1 stamps — one coherent drift section with the stranded
         # face above.
-        code_version_stamps=[(str(r["step_key"]), r["code_version"]) for r in stamps],
+        code_version_stamps=stamps,
     ):
         typer.echo(line)
 

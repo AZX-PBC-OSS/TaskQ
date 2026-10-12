@@ -1,4 +1,4 @@
-# the estate regression slice x3 at the source-final head 2d75eea067e40cde00627b24bbeed79fdaccca48
-41 passed in 3.40s
-41 passed in 3.33s
-41 passed in 3.50s
+# the estate regression slice x3 at the source-final head fa39654c0599d8f5861ca546526926bbb1ee5dd6
+41 passed in 3.35s
+41 passed in 3.43s
+41 passed in 3.36s

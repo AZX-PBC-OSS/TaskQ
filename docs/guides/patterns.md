@@ -9,7 +9,7 @@ fail; every claim links its guide section and its example. For the
 whole-competitor comparison (Temporal, DBOS, Hatchet, Restate, Prefect,
 Dagster, Airflow, Windmill, Trigger.dev, Inngest — the faces, the
 verdicts, and the ranked gap list), read [the coverage doc's ecosystem
-matrix](../taskqflow-coverage.md#-the-ecosystem-parity-matrix--the-honest-competitor-comparison).
+matrix](../taskqflow-coverage.md#the-matrix).
 
 ## The headline: one hold row, five mechanisms
 

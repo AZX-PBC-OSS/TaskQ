@@ -1,5 +1,5 @@
-head: 2d75eea067e40cde00627b24bbeed79fdaccca48
+head: fa39654c0599d8f5861ca546526926bbb1ee5dd6
 == ruff check
 All checks passed!
 == ruff format --check
-1790 files already formatted
+1 file would be reformatted, 1800 files already formatted
