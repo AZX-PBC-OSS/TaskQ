@@ -221,10 +221,8 @@ async def _words_scalar_consumer(ctx: StepContext, word: Word) -> dict[str, int]
     return {"n": len(word.text)}
 
 
-class WordList(RootModel):
+class WordList(RootModel[list[Word]]):
     """The RootModel door's shape (a list payload IS its contract)."""
-
-    root: list[Word]
 
 
 async def _root_list_consumer(ctx: StepContext, words: WordList) -> dict[str, int]:
