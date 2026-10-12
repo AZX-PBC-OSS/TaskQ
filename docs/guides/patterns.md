@@ -5,7 +5,11 @@ answers it per feature, honestly: **the pattern (as the ecosystem's
 orchestrators name it) → the face here → the runnable example**. Where
 the honest answer is "not built", that is said in the same row, with the
 current answer named. The landing faces are pinned by tests that can
-fail; every claim links its guide section and its example.
+fail; every claim links its guide section and its example. For the
+whole-competitor comparison (Temporal, DBOS, Hatchet, Restate, Prefect,
+Dagster, Airflow, Windmill, Trigger.dev, Inngest — the faces, the
+verdicts, and the ranked gap list), read [the coverage doc's ecosystem
+matrix](../taskqflow-coverage.md#-the-ecosystem-parity-matrix--the-honest-competitor-comparison).
 
 ## The headline: one hold row, five mechanisms
 
