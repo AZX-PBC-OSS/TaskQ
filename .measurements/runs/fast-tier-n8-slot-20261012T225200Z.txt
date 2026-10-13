@@ -1,3 +1,2 @@
-head: 02968a5b9129090c979c9685dbc2681a5c69429d — the fast tier at -n 8 — ZERO FAILURES at the final estate
-9696 passed, 4 skipped, 121 warnings in 108.92s (0:01:48)
-rc=0
+# fast-tier-n8's slot staged at head 420a3a85270d349b7a15da77399a778346fd7057 — captured 2026-10-12T15:52:00Z
+THE GRAND MERGE'S STAGED SLOT: the fast tier's slot — the fast tier's green output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.

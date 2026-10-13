@@ -1,2 +1,2 @@
-head: 02968a5b9129090c979c9685dbc2681a5c69429d — THE HEAD-STAMP VERIFIER'S rc=0 receipt at the final estate (run from the source checkout against THIS branch's registry; the content door convicts NOTHING)
-rc=0
+# evidence-heads-verify's slot staged at head 420a3a85270d349b7a15da77399a778346fd7057 — captured 2026-10-12T15:52:00Z
+THE GRAND MERGE'S STAGED SLOT: the verifier's receipt slot — the green verifier run's output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.
