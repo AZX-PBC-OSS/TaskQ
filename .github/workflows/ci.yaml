@@ -403,7 +403,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # fetch-depth 0: the evidence-estate read face (tests/_evidence.py).
+      # The docs-honesty pins resolve MEASUREMENTS at COLLECTION time from
+      # origin/evidence/taskqflow when no local registry exists; a default
+      # shallow PR checkout fetches only the merge ref, the ref does not
+      # resolve, and the lane dies in collection before a single test runs
+      # (run 38346989984: slow-suite + load-sensitive, both legs, exit 1/2).
+      # Every leg that collects tests/ with fetch-depth 0 collected the
+      # same module GREEN in the same run — the depth is the cure, not a
+      # test change.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Defaults are exactly this family's environment: --all-extras --group
       # dev (redis included — the fleet and chaos tests are redis-marked, and
@@ -426,7 +437,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      # fetch-depth 0: the evidence-estate read face (tests/_evidence.py) —
+      # same reason as the slow-suite lane above: the docs-honesty pins'
+      # collection resolves origin/evidence/taskqflow, which a shallow
+      # checkout never provides (run 38346989984, exit 2 in collection).
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # The workflow-level pin (test_ci_workflow.py) requires Node on every
       # job whose pytest can reach tests/web_admin; keep it unconditional.
