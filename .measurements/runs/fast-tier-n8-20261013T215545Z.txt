@@ -1,0 +1,4 @@
+# THE FAST TIER at -n 8 — the ZERO-FAILURES fill at the estate re-stamp head 8a7d1ddbf2d496bdf5d37d182f142512100f9519
+13486 passed, 8 skipped, 1 xfailed, 158 warnings in 607.09s (0:10:07)
+rc=0
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519

@@ -1,0 +1,7 @@
+# rv2-13-green at the estate re-stamp head 8a7d1ddbf2d496bdf5d37d182f142512100f9519 — the head-stamp law greens on the committed tree (the pin's rc=0 x2, the pushed branch judged at the source head)
+--- run 1:
+1 passed in 10.30s
+--- run 2:
+1 passed in 8.49s
+rc=0
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519

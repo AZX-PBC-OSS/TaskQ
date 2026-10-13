@@ -1,0 +1,7 @@
+# the wf battery's FILL — the ZERO-FAILURE run at the estate re-stamp head 8a7d1ddbf2d496bdf5d37d182f142512100f9519 — every battery-family stem's fill
+696 passed, 9 warnings in 67.56s (0:01:07)
+the scoped coverage gate green in-run (its tail):
+[gate] wf-scoped branch coverage 91.77% vs floor 90.0% — green
+[gate] recorded: /tmp/opencode/wt-land/.measurements/runs/wf-scoped-coverage-20261013T150918.json
+rc=0
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519
