@@ -1,0 +1,9 @@
+{
+  "mutation": "the PRE-CURE sweep (the drill's live conviction): one pass fired 100 of 10000 due timers \u2014 100 passes x the 30 s cadence = ~50 minutes worst-case tail; the due-scan EXPLAIN was a Seq Scan + Sort",
+  "observed": {
+    "conviction": "the shipped arm drains until empty (batch-bounded per iteration) and the partial index leads the scan (the EXPLAIN receipt is in this pin's assertion)"
+  },
+  "pin": "c4-drain-until-empty",
+  "run": "20261012T120508-256676-4149b000",
+  "ts": "2026-10-12T12:05:09"
+}

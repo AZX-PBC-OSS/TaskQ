@@ -1,0 +1,9 @@
+{
+  "mutation": "the fan-in append unbounded (the plain concat) \u2014 the collect row grows with the failure count (the P3 residual risk, measured real)",
+  "observed": {
+    "failures_size_bytes": 197
+  },
+  "pin": "t18-pin4-unbounded-jsonb",
+  "run": "20261010T160746-247985-a1ed8b3b",
+  "ts": "2026-10-10T16:07:46"
+}

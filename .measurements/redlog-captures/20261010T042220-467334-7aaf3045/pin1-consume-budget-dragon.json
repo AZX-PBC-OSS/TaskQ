@@ -1,0 +1,11 @@
+{
+  "mutation": "the CONSUME variant (P3 1a') \u2014 the arm consumes the budget instead of pausing",
+  "observed": {
+    "conviction": "the shipped arm carries AND NOT budget_paused; the drill red is in t19-pin-reds.json",
+    "held_loop_killed_mid_hold": true,
+    "operator_approval_refused": "deliver -> False"
+  },
+  "pin": "pin1-consume-budget-dragon",
+  "run": "20261010T042220-467334-7aaf3045",
+  "ts": "2026-10-10T04:22:20"
+}

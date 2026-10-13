@@ -1,0 +1,11 @@
+{
+  "mutation": "the arbiter's scope reverted to the bare global 'workflow-run'",
+  "observed": {
+    "cross_flow_created": false,
+    "cross_flow_run_id": "01a12dbd-603e-7ec1-93fb-5c6e19a15a5c",
+    "existing_run_id": "01a12dbd-603e-7ec1-93fb-5c6e19a15a5c"
+  },
+  "pin": "pin4-run-key-replay",
+  "run": "20261011T183228-1310623-905bf9d8",
+  "ts": "2026-10-11T18:32:28"
+}
