@@ -1,0 +1,4 @@
+# the wf battery's FILL — the ZERO-FAILURE run at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8 — the leg + cov slot's fill
+696 passed, 9 warnings in 54.39s
+rc=0
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8

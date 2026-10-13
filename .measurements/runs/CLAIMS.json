@@ -23586,6 +23586,138 @@
       "file": "fill-slot-20261013T113000Z.txt",
       "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
       "captured_at": "2026-10-13T11:04:03"
+    },
+    {
+      "stem": "battery-wf-suite",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "battery-final-wf-attacks",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "wf-battery-cov",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "wf-battery-leg2",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "wf-battery-leg3",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "rv2-pins-final",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "rv2-pins-final-20261010T193500-precommit-red.txt",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "fixround-final-pins",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "fixround-migration-chain",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "fixround-touched-pins-x2",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "rv4-pin-packs",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "stealth-mutant-shipped-drill",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "docs-lane-rv2-13-cure-captures",
+      "file": "wf-battery-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "attack-rounds",
+      "file": "attack-rounds-fill-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "fasttier-final",
+      "file": "fast-tier-n8-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3",
+      "file": "fast-tier-n8-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-20261013T114500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:12:13"
     }
   ]
 }

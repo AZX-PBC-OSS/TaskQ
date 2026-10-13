@@ -1,0 +1,7 @@
+# rv2-13-green at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8 — the head-stamp law greens on the committed tree (the verifier rc=0) — GREEN x2
+--- run 1:
+1 passed in 8.57s
+--- run 2:
+1 passed in 8.76s
+rc=0
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8
