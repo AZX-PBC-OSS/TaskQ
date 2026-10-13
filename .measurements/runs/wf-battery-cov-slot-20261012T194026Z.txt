@@ -1,3 +1,0 @@
-head: da4d52331c01cada7bacb744239306348f97806e — wf-battery-cov's GREEN battery leg at the final estate
-692 passed, 1 skipped, 1 warning in 70.54s (0:01:10)
-rc=0
