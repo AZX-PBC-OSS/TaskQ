@@ -21528,6 +21528,168 @@
       "file": "wf-bands-rv4-merged.txt",
       "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
       "captured_at": "2026-10-12T19:30:34"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T193106-ed41.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:31:06"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T193107-860c.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:31:07"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T193108-f393.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:31:08"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T193110-f88a.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:31:10"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T193117-82de.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:31:17"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T193131-b552.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:31:31"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261012T193140-4244.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:31:40"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261012T193144-e33a.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:31:44"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261012T193144-196f.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:31:44"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261012T193235-c2eb.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:32:35"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261012T193235-9bd6.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:32:35"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T193235-0564.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:32:35"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T193235-46ca.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:32:35"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T193236-3196.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:32:36"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T193238-f90c.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:32:38"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261012T193240-23cb.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:32:40"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T193246-e937.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:32:46"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T193251-6fd4.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:32:51"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261012T193408-4e29.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:34:08"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261012T193408-e674.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:34:08"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261012T193412-b373.json",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:34:12"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-rv4-slot-20261013T023003Z.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:40:27"
+    },
+    {
+      "stem": "wf-battery-cov",
+      "file": "wf-battery-cov-slot-20261013T023003Z.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:40:27"
+    },
+    {
+      "stem": "wf-battery-leg2",
+      "file": "wf-battery-leg2-slot-20261013T023003Z.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:40:27"
+    },
+    {
+      "stem": "wf-battery-leg3",
+      "file": "wf-battery-leg3-slot-20261013T023003Z.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:40:27"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-slot-20261013T023003Z.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:40:27"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-slot-20261013T023003Z.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T19:40:27"
     }
   ]
 }
