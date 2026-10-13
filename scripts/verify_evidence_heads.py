@@ -802,7 +802,7 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs-dir", type=Path, default=RUNS)
+    parser.add_argument("--runs-dir", type=Path, default=None)
     parser.add_argument(
         "--evidence-ref",
         default=None,
@@ -818,13 +818,21 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
-    runs_dir: Path = args.runs_dir
-    if args.evidence_ref:
+    # THE EXPLICIT --runs-dir WINS ALWAYS (the pins' synthetic estates':
+    # test_evidence_content_door_pins builds a tmp estate and passes it —
+    # the default face below must never override an EXPLICIT argument;
+    # the override was the bug that verified the evidence branch's REAL
+    # estate against a synthetic run and returned rc=0 for it).
+    if args.runs_dir is not None:
+        runs_dir: Path = args.runs_dir
+    elif args.evidence_ref:
         runs_dir = _stage_evidence_ref(args.evidence_ref)
     elif not (RUNS / "CLAIMS.json").is_file() and _evidence_ref_resolves(DEFAULT_EVIDENCE_REF):
         # THE EXTRACTED ESTATE'S DEFAULT: no local registry (the tree
         # stopped carrying it) — read the evidence branch's estate.
         runs_dir = _stage_evidence_ref(DEFAULT_EVIDENCE_REF)
+    else:
+        runs_dir = RUNS
     head, conviction = _verified_head()
     if conviction is not None:
         # THE ENV-FORGED HEAD (D5): the env's claim failed the
