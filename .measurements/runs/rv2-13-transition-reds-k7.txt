@@ -1,8 +1,0 @@
-head: b50f8458719fd4cc88384bc9bec54b6b06c0ac14
-# the TRANSITION REDS at the M1 head 865d9440eabd5c2ed4f8ba54b7573c55855e20ca (the chicken-and-egg's own break, documented): rv2-13's test runs the verifier over the COMMITTED estate — at M1 the two self-referential claims (rv2-13-green, evidence-heads-verify) still point at f7c330919 (the residual estate's), so the verifier names exactly those two and the test reds; the cure is the NEXT measurement commit (this one), which re-stamps the pair at the source-final head b50f8458719fd4cc88384bc9bec54b6b06c0ac14 — fresh at that head by the off-by-one rule (measurement-only since), and the greens ride the commit after
-rv2-13 run 1 at M1: 1 failed in 4.27s
-rv2-13 run 2 at M1: 1 failed in 4.36s
-the verifier at M1:
-  evidence-heads-verify: the LIVE CLAIM evidence-heads-verify-residual-M1.txt is stale — recorded on f7c3309199f9, the head is 865d9440eabd.
-  rv2-13-green: the LIVE CLAIM rv2-13-green-residual-M2.txt is stale — recorded on f7c3309199f9, the head is 865d9440eabd.
-  VERIFIER_RC=1

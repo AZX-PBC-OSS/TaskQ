@@ -1,4 +1,0 @@
-# ruff check + ruff format --check — the head c90f9d686f9acdd83098d2578f37770d321e2cfe
-# ruff check + ruff format --check at the timers lane head c90f9d686f9acdd83098d2578f37770d321e2cfe
-All checks passed!
-1498 files already formatted

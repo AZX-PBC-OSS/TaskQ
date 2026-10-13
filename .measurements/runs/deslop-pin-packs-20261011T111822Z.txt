@@ -1,3 +1,0 @@
-# deslop-pin-packs at head 37147ad2690cbbf5cf2773100c8c4d456c880c48 — rc=1 — captured 20261011T111822Z (the pin packs: attack-rv2 + the rv4 route cures + the typed route pins + the phase3 + the t20/21 gate cures — rv2-13's red here is the pre-estate truth, its cure the measurement commit)
-FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
-1 failed, 91 passed in 5.14s

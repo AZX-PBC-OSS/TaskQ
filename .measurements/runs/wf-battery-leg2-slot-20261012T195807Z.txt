@@ -1,3 +1,0 @@
-head: 8ca5f588fb79f26a6fca56bf433dc807d2e497e6 — wf-battery-leg2's GREEN battery leg at the committed estate
-692 passed, 1 skipped, 1 warning in 68.10s (0:01:08)
-rc=0

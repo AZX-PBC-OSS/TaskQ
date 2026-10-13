@@ -1,4 +1,0 @@
-head: 6a772a1fb04c1994ea34259142eebee64dd6fe67
-# rv2-13's GREEN x2 at the M2 head 6a772a1fb04c1994ea34259142eebee64dd6fe67 (the committed manifest's every live claim fresh or superseded — the off-by-one rule greens the claims recorded at the source-final head b50f84587)
-1 passed in 4.71s
-1 passed in 5.09s

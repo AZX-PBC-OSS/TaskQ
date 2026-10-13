@@ -1,6 +1,0 @@
-# THE WF BATTERY x1 at -n 8 — LEG 4 (the cures' second zero-failure count, same selection, the CI's lane filter) at the timer-cures head 92f702578951662dff5f77b674e663b7bf078dfc
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-SKIPPED [1] tests/test_wf_ctx_annotation_pins.py:138: pyright is not installed (the typeprobe dependency group owns the binary)
-588 passed, 1 skipped, 1 warning in 50.93s
-leg4 rc=0

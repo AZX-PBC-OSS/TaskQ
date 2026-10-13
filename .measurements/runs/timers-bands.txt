@@ -1,6 +1,0 @@
-# the wf perf bands at the timers lane head — green — the head c90f9d686f9acdd83098d2578f37770d321e2cfe
-bringing up nodes...
-bringing up nodes...
-
-.....                                                                    [100%]
-5 passed in 18.25s

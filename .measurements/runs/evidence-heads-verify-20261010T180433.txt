@@ -1,4 +1,0 @@
-# evidence-heads-verify — the verifier's own receipt at the lane head
-# head: 1f4bb1d55758f724aeff2708cdb8ac5cb270205c
-# the run AT the measurement commit (this estate's commit M — the off-by-one
-# rule carries the stamp: R..M is pure .measurements) says verify rc=0

@@ -1,3 +1,0 @@
-# wf-bands-rv4 at head 37147ad2690cbbf5cf2773100c8c4d456c880c48 — rc=0 — captured 20261011T111817Z
-.....                                                                    [100%]
-5 passed in 15.35s

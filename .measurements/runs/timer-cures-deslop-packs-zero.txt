@@ -1,3 +1,0 @@
-# the pin packs (rv2+rv3+pubsub+route) at the timer-cures head 92f702578951662dff5f77b674e663b7bf078dfc — THE ZERO-FAILURE CAPTURE
-..............................................................           [100%]
-62 passed in 15.96s

@@ -1,4 +1,0 @@
-# the head-stamp verifier's green run at the timer-cures head 4bd98f0f167bb4114f54d9d317c70f8f4cb75434
-THE HEAD-STAMP LAW REDS (head 4bd98f0f167b):
-  evidence-heads-verify: the LIVE CLAIM timers-ehv.txt is stale — recorded on cfc529734fd7, the head is 4bd98f0f167b. Re-record it at the head, or mark the entry superseded_by with the link — never left as the live claim.
-verifier rc=1

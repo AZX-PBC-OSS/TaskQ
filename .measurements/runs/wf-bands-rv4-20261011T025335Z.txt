@@ -1,6 +1,0 @@
-# wf-bands-rv4 at head c53fd37c80a855663b173f484b0bbf14a76fe67a — rc=0 — captured 2026-10-11T02:53:35Z
-bringing up nodes...
-bringing up nodes...
-
-.....                                                                    [100%]
-5 passed in 14.14s

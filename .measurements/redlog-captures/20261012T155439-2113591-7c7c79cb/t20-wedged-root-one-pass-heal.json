@@ -1,9 +1,0 @@
-{
-  "mutation": "the liveness predicates (has_unresolved/has_live) counting the terminal-crash class: the maintenance pass leaves the corpse root 'running' forever (the att_t20 evidence roots' shape)",
-  "observed": {
-    "root_status_after_one_pass": "failed"
-  },
-  "pin": "t20-wedged-root-one-pass-heal",
-  "run": "20261012T155439-2113591-7c7c79cb",
-  "ts": "2026-10-12T15:54:39"
-}

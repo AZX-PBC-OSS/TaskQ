@@ -1,5 +1,0 @@
-head: b50f8458719fd4cc88384bc9bec54b6b06c0ac14
-== ruff check
-All checks passed!
-== ruff format --check
-1729 files already formatted

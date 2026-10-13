@@ -1,4 +1,0 @@
-# lint+format at the source-final head 822772b410c68dd804cbef90ce82b1aa83538473
-All checks passed!
-ruff rc=0
-1499 files already formatted

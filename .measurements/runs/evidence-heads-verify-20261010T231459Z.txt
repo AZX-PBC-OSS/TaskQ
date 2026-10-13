@@ -1,1 +1,0 @@
-the head-stamp law holds: every evidence kind's live claim in .measurements/runs is recorded at THIS head (406546d4fb29) or explicitly superseded

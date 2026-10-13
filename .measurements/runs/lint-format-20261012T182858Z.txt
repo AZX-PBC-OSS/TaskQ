@@ -1,3 +1,0 @@
-All checks passed!
-1710 files already formatted
-rc=0

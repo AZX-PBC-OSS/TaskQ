@@ -1,9 +1,0 @@
-# wf-bands-rv4 at head f3feba2ac0f5bded8e765593e6d8c3188796d40c — captured 2026-10-11T03:06:01Z
-# tests/test_wf_perf_bands.py — 5 passed, rc=0 (the bands re-recorded at this head)
-
-bringing up nodes...
-bringing up nodes...
-
-.....                                                                    [100%]
-5 passed in 16.45s
-rc=0

@@ -1,9 +1,0 @@
-{
-  "mutation": "the cursor checkpoint NOT fenced on the claim (a zombie emit lands children from a superseded attempt \u2014 the double-emit dragon with no fence)",
-  "observed": {
-    "committed_children": 0
-  },
-  "pin": "t20-emit-zombie",
-  "run": "20261012T165821-2493637-a80098bc",
-  "ts": "2026-10-12T16:58:22"
-}
