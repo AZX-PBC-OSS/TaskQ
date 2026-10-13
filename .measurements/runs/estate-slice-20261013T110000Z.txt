@@ -1,0 +1,6 @@
+# the estate regression slice x3 (tests/test_actor_config_sync.py + tests/test_wf_runner_pins.py, serial) at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8
+41 passed in 3.32s
+41 passed in 3.39s
+41 passed in 3.34s
+slice rc=0
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8

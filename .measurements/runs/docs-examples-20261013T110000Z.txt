@@ -1,0 +1,4 @@
+# the docs examples (TASKQ_DOCS_EXAMPLES=1, pytest -m docs_examples) at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8 — the FIVE-MINUTE FENCE's corrected shape (the ctx.input door, the four-doc corpus, the assertion) runs inside
+107 passed, 13665 deselected, 2 warnings in 87.57s (0:01:27)
+docs-examples rc=0
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8

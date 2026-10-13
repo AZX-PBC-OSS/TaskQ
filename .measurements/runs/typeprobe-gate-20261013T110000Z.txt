@@ -1,0 +1,4 @@
+# the type gate (the CI's own invocation: tests/typeprobe/_gate.py) at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8
+the type gate holds: every MUST_ERROR marker (46) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+gate rc=0
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8

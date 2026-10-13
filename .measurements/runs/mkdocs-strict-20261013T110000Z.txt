@@ -1,0 +1,4 @@
+# mkdocs build --strict at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8
+INFO    -  Documentation built in 15.58 seconds
+mkdocs rc=0
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8

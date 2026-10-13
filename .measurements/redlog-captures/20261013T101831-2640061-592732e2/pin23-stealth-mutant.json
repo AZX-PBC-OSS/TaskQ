@@ -1,0 +1,10 @@
+{
+  "mutation": "the EXISTS kept, the predicate gutted to status = status (the leg's letter without its substance)",
+  "observed": {
+    "fired": 2,
+    "flow_fire_rows": 2
+  },
+  "pin": "pin23-stealth-mutant",
+  "run": "20261013T101831-2640061-592732e2",
+  "ts": "2026-10-13T10:18:31"
+}

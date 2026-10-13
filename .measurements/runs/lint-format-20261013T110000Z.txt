@@ -1,0 +1,8 @@
+# lint-format at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8 (20261013T173159Z)
+== ruff check .
+All checks passed!
+ruff rc=0
+== ruff format --check .
+1802 files already formatted
+format rc=0
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8

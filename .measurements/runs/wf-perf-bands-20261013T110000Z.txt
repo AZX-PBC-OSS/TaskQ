@@ -1,0 +1,4 @@
+# the bands leg (tests/test_wf_perf_bands.py + tests/test_wf_status_pins.py, the stamped writers, serial) at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8
+13 passed in 16.65s
+bands rc=0
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8

@@ -1,0 +1,13 @@
+{
+  "mutation": "the pre-cure variant (the substep held its pool connection across the body: the dispatcher pool's 4 conns throttled the fan-out \u2014 the A/B's 11.1 s \u2192 42.2 s collapse)",
+  "observed": {
+    "bodies": 6,
+    "body_s": 0.3,
+    "conviction": "the cured substep releases across the body",
+    "observed_wall_s": 0.32,
+    "pool_conns": 2
+  },
+  "pin": "holdmap-c3-substep-conn-release",
+  "run": "20261013T101542-2601715-87e6d4ed",
+  "ts": "2026-10-13T10:15:42"
+}

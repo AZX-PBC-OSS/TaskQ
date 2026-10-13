@@ -1,0 +1,9 @@
+# the attack rounds x2 (tests/attack*.py tests/test_attack*.py tests/test_wf_attack*.py, the CI's lane filter: not slow and not load_sensitive) at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8
+--- round 1:
+1 failed, 640 passed, 2 skipped, 1 xfailed, 25 warnings in 87.80s (0:01:27)
+--- round 2:
+1 failed, 640 passed, 2 skipped, 1 xfailed, 25 warnings in 80.46s (0:01:20)
+the single failure EACH round = test_rv2_13 (the head-stamp law's pin, red TRUTHFULLY at the source head: its own cure is the measurement commit that lands this estate — see RECEIPTS.md § THE FLIPS)
+/tmp/opencode/sr-a1.log:FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+/tmp/opencode/sr-a2.log:FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8

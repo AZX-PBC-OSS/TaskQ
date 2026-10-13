@@ -1,0 +1,6 @@
+# THE SIGNATURE-CURES LANE'S STAGED SLOT at head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8 — captured 2026-10-13T10:59:45Z
+The re-stamp's staged slot: the fill run's green output fills this file's
+claim in place (the append-order tail); no verdict is recorded yet — the
+content door's typed warning (unparsable-capture) is this slot's honest
+state until the fill. The fill's own capture follows in the fill commit.
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8
