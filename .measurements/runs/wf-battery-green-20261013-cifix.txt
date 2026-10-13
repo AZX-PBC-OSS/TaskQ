@@ -1,0 +1,25 @@
+# the wf battery's GREEN run at head 8ae1991ed24e05d99cecf532456c6cf6c23478fb — captured 2026-10-13T05:27:31Z — the leg + cov slot's fill
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  9%]
+........................................................................ [ 19%]
+........................................................................ [ 29%]
+........................................................................ [ 39%]
+........................................................................ [ 48%]
+........................................................................ [ 58%]
+........................................................................ [ 68%]
+........................................................................ [ 78%]
+........................................................................ [ 88%]
+........................................................................ [ 97%]
+...............                                                          [100%]
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-land/src/taskq/workflows/_progress.py:349: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+735 passed, 1 warning in 69.66s (0:01:09)
+rc=0

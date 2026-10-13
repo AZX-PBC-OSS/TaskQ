@@ -1,0 +1,2 @@
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-land/.measurements/runs is recorded at THIS head (8ae1991ed24e) or explicitly superseded
+rc=0

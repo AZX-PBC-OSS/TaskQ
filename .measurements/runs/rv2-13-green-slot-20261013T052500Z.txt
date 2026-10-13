@@ -1,2 +1,4 @@
-# rv2-13-green's slot staged at head 8ae1991ed24e05d99cecf532456c6cf6c23478fb — captured 2026-10-12T22:25:00-07:00
-rv2-13's slot — the green run's output fills this file in place; no verdict is recorded yet — the content door's typed warning is this slot's honest state until the fill.
+# rv2-13's slot — the GREEN runs x2 at head 8ae1991ed24e05d99cecf532456c6cf6c23478fb — captured 2026-10-13T05:28:45Z
+1 passed in 7.84s
+1 passed in 8.39s
+rc=0
