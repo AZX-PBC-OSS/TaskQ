@@ -1,0 +1,10 @@
+# THE ESTATE RE-STAMP'S STAGED SLOT at head 8a7d1ddbf2d496bdf5d37d182f142512100f9519 — captured 2026-10-13T14:55:17Z
+The re-stamp's staged slot: the fill run's green output fills this
+file's claim in place (the append-order tail); no verdict is recorded
+yet — the content door's typed warning (unparsable-capture) is this
+slot's honest state until the fill. The fill's own capture follows in
+the fill commit. The red-tailed phase-A capture this slot stands for
+records the head-stamp law's OWN pin red truthfully: the estate's live
+claims still name the prior head's entries, and the pin's cure is the
+measurement commit landing this re-stamp — the state, never the clock.
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519

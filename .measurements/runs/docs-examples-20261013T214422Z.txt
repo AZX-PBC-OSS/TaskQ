@@ -1,0 +1,4 @@
+# the docs examples (TASKQ_DOCS_EXAMPLES=1, pytest -m docs_examples) at the estate re-stamp head 8a7d1ddbf2d496bdf5d37d182f142512100f9519 — the four probe examples' folded shapes (the sync, fan-out, import, recurring-refresh) run inside
+107 passed, 13665 deselected, 2 warnings in 84.82s (0:01:24)
+docs-examples rc=0
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519

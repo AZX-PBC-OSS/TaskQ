@@ -1,0 +1,7 @@
+# the wf battery (tests/test_wf_*.py + tests/attack_wf_*.py + tests/attack4_wf_*.py, the CI's lane filter, -n 8) + THE SCOPED COVERAGE GATE — leg 1 at the estate re-stamp head 8a7d1ddbf2d496bdf5d37d182f142512100f9519
+1 failed, 695 passed, 9 warnings in 69.32s (0:01:09)
+the single failure = test_rv2_13 (the head-stamp law's pin — red truthfully at the source head: the estate's live claims still name the bb8a20cc6-era entries; its cure is the measurement commit landing this re-stamp — the state, never the clock; the fill's zero-failure leg rides the fill commit)
+[gate] wf-scoped branch coverage 91.69% vs floor 90.0% — green
+[gate] recorded: /tmp/opencode/wt-land/.measurements/runs/wf-scoped-coverage-20261013T144833.json
+coverage-gate rc=0
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519

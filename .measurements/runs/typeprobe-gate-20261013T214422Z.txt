@@ -1,0 +1,4 @@
+# the type gate (the CI's own invocation: tests/typeprobe/_gate.py) at the estate re-stamp head 8a7d1ddbf2d496bdf5d37d182f142512100f9519
+the type gate holds: every MUST_ERROR marker (46) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+gate rc=0
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519

@@ -1,0 +1,4 @@
+# pyright FULL (the CI's own command: pyright src/taskq tests) at the estate re-stamp head 8a7d1ddbf2d496bdf5d37d182f142512100f9519
+0 errors, 0 warnings, 0 informations
+pyright rc=0
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519

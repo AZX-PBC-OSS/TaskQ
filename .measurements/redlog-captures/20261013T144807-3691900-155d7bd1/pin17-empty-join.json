@@ -1,0 +1,10 @@
+{
+  "mutation": "child-row recount (count children WHERE non-terminal)",
+  "observed": {
+    "fires_early": true,
+    "j2_child_rows": 0
+  },
+  "pin": "pin17-empty-join",
+  "run": "20261013T144807-3691900-155d7bd1",
+  "ts": "2026-10-13T14:48:07"
+}

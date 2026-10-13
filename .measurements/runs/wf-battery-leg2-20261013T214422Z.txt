@@ -1,0 +1,4 @@
+# the wf battery — LEG 2 (the second count, same selection, -n 8) at the estate re-stamp head 8a7d1ddbf2d496bdf5d37d182f142512100f9519
+1 failed, 695 passed, 9 warnings in 58.98s
+the single failure = test_rv2_13 (the estate's pending re-stamp — the state, never the clock)
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519
