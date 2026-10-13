@@ -1,2 +1,3 @@
-# wf-battery-cov's slot staged at head 420a3a85270d349b7a15da77399a778346fd7057 — captured 2026-10-12T15:52:00Z
-THE GRAND MERGE'S STAGED SLOT: the wf battery's cov-leg slot — the battery leg's green output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.
+head: 02968a5b9129090c979c9685dbc2681a5c69429d — wf-battery-cov's GREEN battery leg at the final estate
+692 passed, 1 skipped, 1 warning in 81.05s (0:01:21)
+rc=0
