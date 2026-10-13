@@ -74,7 +74,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -103,16 +102,22 @@ from taskq.workflows import (
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import render_workflow_sql
 
-#: The lane's DSN (the review cluster; the fixture stack owns the
-#: chp_-prefixed schema's lifecycle on it).
-CHP_DSN = os.environ.get("TASKQ_TEST_PG_DSN", "postgres://taskq:taskq@localhost:5891/taskq")
+#: THE PACK'S DSN SEAM IS THE HOUSE ``pg_dsn`` FIXTURE (module-scoped
+#: database on the invocation's shared container). The dev loop's
+#: external cluster keeps working: the shared fixture honors
+#: ``TASKQ_TEST_PG_DSN`` as-is when it is set. The dead
+#: ``localhost:5891`` literal a previous constant defaulted to was the
+#: pack's never-executed-in-CI face (run 38351644136: 7 connection-
+#: refused errors per leg — the review cluster the pack was authored
+#: against does not exist on a runner, and the import-time read
+#: bypassed the fixture seam no matter what CI set).
 
 
 # ── the pack's fixture stack (the chp_ prefix law; house idioms) ────────
 
 
 @pytest_asyncio.fixture(scope="module")
-async def chp_schema() -> AsyncIterator[str]:
+async def chp_schema(pg_dsn: str) -> AsyncIterator[str]:
     """The pack's own schema: ``chp_rv5_<token>`` on the lane's DSN —
     created migrated, dropped CASCADE at module teardown (the residue
     is attributable and self-cleaning). The token mixes the house's
@@ -127,14 +132,14 @@ async def chp_schema() -> AsyncIterator[str]:
     from taskq.testing.fixtures import run_isolation_token
 
     name = "chp_rv5_" + hashlib.sha256(f"chp_rv5:{run_isolation_token()}".encode()).hexdigest()[:10]
-    conn = await asyncpg.connect(CHP_DSN)
+    conn = await asyncpg.connect(pg_dsn)
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
         await apply_pending(conn, schema=name)
     finally:
         await conn.close()
     yield name
-    conn = await asyncpg.connect(CHP_DSN)
+    conn = await asyncpg.connect(pg_dsn)
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')
     finally:
@@ -142,11 +147,11 @@ async def chp_schema() -> AsyncIterator[str]:
 
 
 @pytest_asyncio.fixture
-async def wf_schema(chp_schema: str) -> AsyncIterator[str]:
+async def wf_schema(chp_schema: str, pg_dsn: str) -> AsyncIterator[str]:
     """Per-test clean slate on the pack's schema (the house
     ``clean_pg_conn`` pattern: truncate every dynamic table, reseed the
     default actors — migration state intact)."""
-    conn = await asyncpg.connect(CHP_DSN)
+    conn = await asyncpg.connect(pg_dsn)
     try:
         await reset_schema(conn, chp_schema)
     finally:
@@ -155,13 +160,13 @@ async def wf_schema(chp_schema: str) -> AsyncIterator[str]:
 
 
 @pytest_asyncio.fixture
-async def wf_pool(wf_schema: str) -> AsyncIterator[asyncpg.Pool]:
+async def wf_pool(wf_schema: str, pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
     """The runner's pool on the lane's DSN (one per test — the house
     ``wf_pool`` pattern). Teardown TERMINATES, never graceful-closes:
     the F-C4 red's RecursionError destroys a holder-release task
     mid-flight, and ``close()`` waits on that never-released holder
     forever (the pack's own seam — a red must never wedge the suite)."""
-    pool = await asyncpg.create_pool(CHP_DSN)
+    pool = await asyncpg.create_pool(pg_dsn)
     try:
         yield pool
     finally:
@@ -169,9 +174,9 @@ async def wf_pool(wf_schema: str) -> AsyncIterator[asyncpg.Pool]:
 
 
 @pytest_asyncio.fixture
-async def wf_conn(wf_schema: str) -> AsyncIterator[asyncpg.Connection]:
+async def wf_conn(wf_schema: str, pg_dsn: str) -> AsyncIterator[asyncpg.Connection]:
     """A bare connection on the lane's DSN (the row reads; per-test)."""
-    conn = await asyncpg.connect(CHP_DSN)
+    conn = await asyncpg.connect(pg_dsn)
     try:
         yield conn
     finally:

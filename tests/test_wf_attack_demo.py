@@ -264,37 +264,27 @@ _PROM_LINE_RE = re.compile(
 
 
 # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-5]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: the live finding
-def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
-    from tests import _evidence as _evidence
-
+def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> None:
     """THE EVIDENCE-LAW GUARD: every ``.prom`` artifact under
     ``.measurements`` must parse as VALID Prometheus text exposition —
     the strict name grammar (the teeth: the illegal-dots name reds
-    today) AND the official client parser's label grammar."""
-    # THE EXTRACTED ESTATE'S READ: the estate's home is decided by its
-    # INDEX (the claims registry), never by the directory's existence —
-    # a concurrent writer's redlog-captures dir can exist locally without
-    # the estate (the partial-local-dir race). No local registry → the
-    # EVIDENCE BRANCH's ls-tree/show face (the tree listing's own read —
-    # the staged-copy face's sibling; this read PROVES its subject: the
-    # failure names the ref it walked).
-    measurements = REPO_ROOT / ".measurements"
-    artifacts: list[tuple[str, str]] = []  # (rel path, content)
-    if (measurements / "runs" / "CLAIMS.json").is_file():
-        for path in sorted(measurements.rglob("*.prom")):
-            artifacts.append((str(path.relative_to(REPO_ROOT)), path.read_text()))
-    else:
-        from tests import _evidence as _evidence_mod
+    today) AND the official client parser's label grammar.
 
-        for rel in _evidence_mod.evidence_glob("*.prom"):
-            artifacts.append((rel, _evidence_mod.evidence_show(rel)))
-    assert artifacts, (
-        "no .prom artifacts under .measurements — the guard lost its subject "
-        f"(the local estate present: {(measurements / 'runs' / 'CLAIMS.json').is_file()}; "
-        f"the evidence ref: {_evidence.evidence_ref() if not (measurements / 'runs' / 'CLAIMS.json').is_file() else 'local'})"
-    )
+    THE GUARD GENERATES ITS OWN SUBJECT (the state-not-clock law: a
+    guard tests the VALIDATOR, never the estate's leftovers): the valid
+    exposition's shapes and the convicted illegal-dots shape are minted
+    in *tmp_path* and driven through the same validator the estate walk
+    uses. The estate's real .prom artifacts — the local walk when the
+    registry is present, the evidence branch's ls-tree/show face when
+    it is not — are the BELT, scanned when present, never the subject:
+    in CI the estate does not ride the checkout, and the band writers'
+    runtime-created registry must not mask the guard's own teeth (the
+    lost-subject red of run 38351644136's 3.14 leg)."""
+    from tests import _evidence as _evidence
+
     violations: list[str] = []
-    for rel, text in artifacts:
+
+    def _validate(rel: str, text: str) -> None:
         for lineno, line in enumerate(text.splitlines(), 1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -306,13 +296,62 @@ def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
                 text_string_to_metric_families,
             )
         except ImportError:
-            continue  # the strict regex above is the floor; the parser is the second leg
+            return  # the strict regex above is the floor; the parser is the second leg
         try:
             list(text_string_to_metric_families(text))
         except Exception as exc:
             violations.append(f"{rel}: parser refused: {exc}")
+
+    # THE GUARD'S OWN SUBJECT, minted: the exposition's honest shapes —
+    # a plain gauge, labels, the dot-carrying ORIGINAL name POST-sanitize
+    # (what the real exporter ships), a comment, a NaN, an explicit
+    # timestamp. Every one must green.
+    good_artifact = "\n".join(
+        [
+            "# a shape-honest fabricated scrape (the guard's own subject)",
+            "taskq_wf_progress_nodes_total 12.0",
+            'taskq_wf_progress_nodes_total{queue="demo-enrich",step="ingest"} 3.0',
+            "taskq_wf_holds_held_total NaN",
+            "taskq_wf_timer_fired_total 1.0 1728000000000",  # the explicit-timestamp leg
+        ]
+    )
+    _validate("the-guard's-own-valid-sample.prom", good_artifact)
+    subject_violations = list(violations)
+    assert not subject_violations, (
+        "the guard's own VALID exposition sample did not green — the "
+        "validator's teeth are miscalibrated:\n" + "\n".join(subject_violations)
+    )
+
+    # THE TEETH: the convicted illegal-dots name MUST red (the finding
+    # that minted this guard — dots are illegal in the exposition
+    # grammar; the validator that greens one is the fabrication-enabler).
+    _validate("the-illegal-dots-shape.prom", "taskq.wf_progress_nodes_total 1.0\n")
+    teeth = [v for v in violations if v.startswith("the-illegal-dots-shape.prom")]
+    assert teeth, (
+        "the validator GREENED the illegal-dots name (taskq.wf_progress_nodes_total) "
+        "— the strict grammar's teeth are gone and the guard proves nothing"
+    )
+    violations = [v for v in violations if not v.startswith("the-illegal-dots-shape.prom")]
+
+    # THE BELT: the estate's real artifacts, scanned when present. The
+    # estate's home is decided by its INDEX (the claims registry), never
+    # by the directory's existence; no local registry → the EVIDENCE
+    # BRANCH's ls-tree/show face. Neither present (the CI face) is
+    # HONEST here — the subject above is the guard's own.
+    measurements = REPO_ROOT / ".measurements"
+    artifacts: list[tuple[str, str]] = []  # (rel path, content)
+    if (measurements / "runs" / "CLAIMS.json").is_file():
+        for path in sorted(measurements.rglob("*.prom")):
+            artifacts.append((str(path.relative_to(REPO_ROOT)), path.read_text()))
+    else:
+        from tests import _evidence as _evidence_mod
+
+        for rel in _evidence_mod.evidence_glob("*.prom"):
+            artifacts.append((rel, _evidence_mod.evidence_show(rel)))
+    for rel, text in artifacts:
+        _validate(rel, text)
     assert not violations, (
-        "a .measurements .prom artifact is NOT valid Prometheus exposition "
+        "a .prom artifact is NOT valid Prometheus exposition "
         "(the evidence law — a capture that cannot have come off a real "
         "scrape is fabrication):\n" + "\n".join(violations)
     )
