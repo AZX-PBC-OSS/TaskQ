@@ -50,8 +50,13 @@ class Report(BaseModel):
     published: list[str]
 
 
-async def ingest_body(ctx: StepContext, params: Batch) -> list[str]:
-    return params.doc_ids or ["doc-1", "doc-2", "doc-3"]
+async def ingest_body(ctx: StepContext) -> list[str]:
+    # THE RUN INPUT'S DOOR: `run(input=…)` seeds ctx.input ONLY — it does
+    # NOT seed any body's wired params. The body re-hydrates the run's
+    # input through the declared model's own validator (the tenant
+    # pattern at THE BODY'S THREE INPUT CHANNELS below).
+    batch = Batch.model_validate(ctx.input)
+    return batch.doc_ids
 
 
 async def enrich_item(ctx: StepContext, doc_id: str) -> Enriched:
@@ -67,7 +72,7 @@ app = WorkflowApp()
 
 @app.workflow("doc_pipeline")
 def doc_pipeline() -> Promise[object]:
-    ingested = step(ingest_body, Batch(), key="ingest")
+    ingested = step(ingest_body, key="ingest")  # no wired source: the body reads ctx.input
     enriched = map_source(ingested, enrich_item)  # the join: ingest.join
     return build(step(publish_body, enriched, key="publish"))
 
@@ -79,13 +84,22 @@ async def main() -> None:
     await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
     pool = await asyncpg.create_pool(dsn)
 
+    the_corpus = ["doc-1", "doc-2", "doc-3", "doc-4"]
     outcome = await run(
         app.get("doc_pipeline"),
         pool,
         schema,
-        input=Batch(doc_ids=["doc-1", "doc-2", "doc-3"]),
+        input=Batch(doc_ids=the_corpus),
     )
     print(f"claim={outcome.claim.kind} outcome={outcome.outcome} result={outcome.result}")
+    # THE INPUT FLOWED (the fence's own assertion): the published list is
+    # the run input's list — a shape where `run(input=…)` does nothing
+    # (a body reading a wired seed instead of ctx.input) cannot pass
+    # here, because the output tracks the input exactly.
+    report = Report.model_validate(outcome.result)
+    assert report.published == the_corpus, (
+        f"the run input never reached the body: {report.published!r} != {the_corpus!r}"
+    )
 
 
 asyncio.run(main())
@@ -94,8 +108,19 @@ asyncio.run(main())
 Verified output (this guide's capture, on a fresh schema):
 
 ```
-claim=created outcome=terminal result={'published': ['doc-1', 'doc-2', 'doc-3']}
+claim=created outcome=terminal result={'published': ['doc-1', 'doc-2', 'doc-3', 'doc-4']}
 ```
+
+THE FENCE'S ONE LESSON, STATED WHERE THE FENCE IS (the full table is
+[THE BODY'S THREE INPUT CHANNELS](#the-bodys-three-input-channels-one-table-one-place)
+below): `run(flow, input=…)` seeds `ctx.input` only — the RUN's input,
+the same value for every node of the run. It does NOT seed any body's
+wired params: a body that declared a wired `Batch` param and ignored
+`ctx.input` would run on the EMPTY seed forever (the wired param is the
+node's OWN payload — a producer's decoded result, never the run input).
+The fence's `ingest_body` reads `ctx.input` — the tenant pattern — and
+its assertion makes the inert shape impossible: change the input, the
+published list changes with it.
 
 That is the whole loop: typed payloads in, a typed result out, every
 step a row you can inspect. Where to go next, by the question you're

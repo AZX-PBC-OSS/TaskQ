@@ -1,6 +1,8 @@
 """The body's DURABLE TIMER (T28) — the hold whose RESOLVER IS THE
 CLOCK: ``ctx.wait_until(when)`` mints a hold row whose deadline-pass is
-THE WAKE, never the fail-close.
+THE WAKE, never the fail-close. (The wake's replay/consume runs the
+wait machinery's PER-SITE cursor — the timer counts its own
+consumptions under its own key.)
 
 THE TIMER'S FACE INVERTS THE EXPIRY'S (the design law this module
 implements; the guide's §4b carries the same text): the HITL wait's
@@ -28,7 +30,7 @@ THE RESUME CONTRACT is the wait machinery's own (documented on
 ``wait_signal``): the body re-executes FROM THE TOP on resume — make
 it idempotent; pre-timer side effects are ``ctx.substep``-ledgered and
 replay cheap. On the resume pass the wait site finds the DELIVERED
-timer row (the answer queue's replay/consume, the per-attempt cursor —
+timer row (the answer queue's replay/consume, the PER-SITE cursor —
 the same stale-payload dragon's kill sites) and RETURNS the typed
 :class:`TimerWake`.
 
@@ -163,9 +165,14 @@ class CtxTimerOps(WaitHost):
         you said; a naive one is accepted for continuity and READS AS
         UTC.
 
-        *key* names the timer (the wake's ``key``; timers and signals
-        of one node share the answer queue's cursor — the loop's
-        ONE-wait-per-iteration shape law reads both the same way). A
+        *key* names the timer (the wake's ``key``; the timer's queue is
+        THIS site's own — the reserved name filters it — and the
+        timer's cursor counts its own consumptions under its own
+        per-site key, never a key shared with the body's signal waits:
+        a body may wait on the clock AND then on a human, and the
+        human's delivered answer reaches ITS site). The LOOP kind keeps
+        the iteration counter as THE cursor — the loop's
+        ONE-wait-per-iteration shape law reads both the same way. A
         key beginning with the reserved ``__timer__`` prefix is the
         typed E17 refusal (the reserved namespace is the clock's own —
         no caller names a timer inside it).
@@ -211,9 +218,16 @@ class CtxTimerOps(WaitHost):
 
         async with self._pool.acquire() as conn:
             # The cursor/kind read — the wait machinery's own shape (the
-            # answer queue + the per-attempt cursor are SHARED with
-            # wait_signal: one node, one queue, one cursor; the loop's
-            # counter is the ADVANCE statement's own write).
+            # answer queue is THIS SITE'S OWN — the timer's reserved
+            # name filters the queue; the loop's counter is the ADVANCE
+            # statement's own write). THE PER-SITE CURSOR (the I5c cure
+            # — E13's discipline generalized to the plain kind): the
+            # timer counts ITS OWN consumptions under ITS OWN key, never
+            # a per-attempt key shared with the body's signal sites —
+            # the shared cursor let the timer's documented re-consume
+            # inflate the counter past a signal site's own queue (the
+            # delivered answer stranded; the run terminal-succeeded with
+            # the operator's decision a dead letter).
             row_meta = await conn.fetchrow(
                 render_sql(
                     "SELECT (metadata ->> $2)::int AS cursor, "
@@ -223,7 +237,7 @@ class CtxTimerOps(WaitHost):
                     self._wsql.schema,
                 ),
                 self.job_id,
-                f"hold_cursor_{self.attempt}",
+                f"hold_cursor_{self.attempt}_{signal_name}",
             )
             is_loop_kind = row_meta is not None and row_meta["kind"] == "loop"
             row_cursor = (
@@ -281,7 +295,7 @@ class CtxTimerOps(WaitHost):
                             self._wsql.schema,
                         ),
                         self.job_id,
-                        dumps_jsonb_str({f"hold_cursor_{self.attempt}": cursor + 1}),
+                        dumps_jsonb_str({f"hold_cursor_{self.attempt}_{signal_name}": cursor + 1}),
                     )
                 self._runtime["hold_epoch"] = int(wake_row["hold_epoch"])
                 return TimerWake.model_validate(payload)

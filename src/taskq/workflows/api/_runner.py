@@ -55,6 +55,7 @@ import structlog
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.obs import get_logger
@@ -66,7 +67,11 @@ from taskq.workflows._progress import (
     project_auto_event,
 )
 from taskq.workflows._sql import WorkflowSql
-from taskq.workflows._sql_finalize import FANIN_FAILURES_BYTE_CAP, NODE_INSERT_SQL
+from taskq.workflows._sql_finalize import (
+    COLLECT_TRUNCATION_RECEIPT_SQL,
+    FANIN_FAILURES_BYTE_CAP,
+    NODE_INSERT_SQL,
+)
 from taskq.workflows._types import (
     ChildSpec,
     FinalizeResult,
@@ -88,6 +93,7 @@ from taskq.workflows.api._runner_codec import (
     encode_data_arg,
     encode_result,
     next_data,
+    result_truncation,
 )
 from taskq.workflows.api._runner_errors import VanishedNodeError, WorkflowRunError
 from taskq.workflows.api._runner_exit import ExitOps
@@ -1285,12 +1291,46 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             rows = await conn.fetch(
                 render_sql(PARENT_RESULTS_BY_KEY_SQL_TEMPLATE, self.schema), node_id
             )
-        ordered: list[tuple[str, object]] = []
-        for r in rows:
-            result: object = decode_result(r["result"])  # pyright: ignore[reportUnknownVariableType]  # Why: the asyncpg Record's members are Unknown; the statement's SELECT names the columns.
-            key: str = r["step_key"]  # pyright: ignore[reportUnknownVariableType]  # Why: same walk.
-            ordered.append((key, result))
+            ordered: list[tuple[str, object]] = []
+            for r in rows:
+                key: str = r["step_key"]  # pyright: ignore[reportUnknownVariableType]  # Why: the asyncpg Record's members are Unknown; the statement's SELECT names the columns.
+                ordered.append(
+                    (key, await self._decode_with_detail(conn, key, r["id"], r["result"]))  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                )
         return ordered, dict(ordered)
+
+    async def _decode_with_detail(
+        self, conn: ConnLike, step_key: str, node_id: Any, raw: object
+    ) -> object:
+        """THE BOUNDED COLLECT'S DETAIL RE-READ (the F4 cure's read-side
+        reconciliation): a parent whose result row is the TRUNCATED
+        envelope (the bounded summary — the cap kept the row honest)
+        re-reads the FULL collect from the detail_home face the marker
+        names — the children's own result rows, through the SAME
+        ordered parent read the join packed (edge order, map children
+        distinct). The consumer's typed decode sees the declared
+        ``list[...]`` with EVERY item — the summary row bounded, the
+        detail never lost. Non-truncated rows decode directly (the
+        common case pays one marker check)."""
+        decoded = decode_result(raw)
+        if result_truncation(raw) is None:
+            return decoded
+        rows = await conn.fetch(
+            render_sql(PARENT_RESULTS_BY_KEY_SQL_TEMPLATE, self.schema), node_id
+        )
+        values: list[object] = [decode_result(r["result"]) for r in rows]  # pyright: ignore[reportUnknownVariableType,reportUnknownArgumentType]  # Why: the Record walk's boundary.
+        node = self.compiled.nodes.get(step_key)
+        if (
+            node is not None
+            and node.kind == "gather"
+            and values
+            and all(isinstance(v, list) for v in values)
+        ):
+            # THE GATHER'S FLATTEN, mirrored (the identity packer's own
+            # rule — the join row's pre-truncation value was the FLAT
+            # list; the re-read must hand the body the SAME shape).
+            values = [item for v in values for item in cast("list[object]", v)]
+        return values
 
     def _resolve_args(
         self,
@@ -1429,6 +1469,20 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # blindness to the progress substrate). The LEDGER owns the
         # state; the projection only publishes it to the stream.
         if final.applied:
+            # THE TRUNCATION'S RECEIPT (the F4 cure's read-side
+            # reconciliation): a bounded collect's envelope unwraps at
+            # the consumer's typed boundary (decode_result's key-set
+            # door), so the ``__truncated__`` count surfaces HERE — the
+            # join row's metadata — for the reads that decide, never
+            # swallowed by the unwrap. The hit path's cached envelope
+            # (byte-equal to the producing run's) carries the same face.
+            if result is not None and "__truncated__" in result:
+                await self._write_collect_receipt(
+                    JobId(row["id"]),
+                    row["step_key"],
+                    flow_id,
+                    int(result["__truncated__"]),  # pyright: ignore[reportAny,reportArgumentType]  # Why: the envelope's own marker (the bounded collect's write) — the int is the marker's contract.
+                )
             await self._project_auto(
                 flow_id,
                 JobId(row["id"]),
@@ -1507,6 +1561,39 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 "step-cache-receipt-lost",
                 run_id=str(flow_id),
                 node=node_key,
+                error=str(exc)[:200],
+            )
+
+    async def _write_collect_receipt(
+        self, job_id: JobId, node_key: str, flow_id: JobId, truncated: int
+    ) -> None:
+        """THE TRUNCATION'S RECEIPT (the F4 cure's read-side
+        reconciliation): the bounded collect's ``__truncated__`` count
+        rides the join row's METADATA (``wf_collect_truncated`` — the
+        wf_cache_hit receipt's own shape), because the decode's
+        key-set door hands the consumer the declared ``list[...]`` and
+        can never hand it the markers too. The raw row keeps the
+        markers (the detail_home pointer included); the receipt is the
+        READ face's own copy. Best-effort (the projection's asymmetry —
+        a lost receipt is a logged freshness loss, never a node
+        failure; the LEDGER owns the state)."""
+        try:
+            async with self.pool.acquire() as conn:
+                # S608: the schema identifier is the settings boundary
+                # the runner validated at build; the values are $-bound.
+                await conn.execute(
+                    render_sql(COLLECT_TRUNCATION_RECEIPT_SQL, self.schema),
+                    job_id,
+                    dumps_jsonb_str({"wf_collect_truncated": {"count": truncated}}),
+                )
+        except (
+            Exception
+        ) as exc:  # Why: the asymmetry — a lost receipt degrades the audit, never correctness.
+            logger.warning(
+                "collect-truncation-receipt-lost",
+                run_id=str(flow_id),
+                node=node_key,
+                truncated=truncated,
                 error=str(exc)[:200],
             )
 
@@ -1771,10 +1858,22 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 "wire one (wf.build(p)) to read a result"
             )
         async with self.pool.acquire() as conn:
-            raw = await conn.fetchval(
+            row = await conn.fetchrow(
                 render_sql(TERMINAL_RESULT_SQL_TEMPLATE, self.schema), terminal, flow_id
             )
-        return decode_result(raw)
+            if row is None:
+                return None
+            # THE BOUNDED COLLECT'S DETAIL RE-READ (the F4 read-side
+            # reconciliation): a truncating JOIN as the terminal node
+            # reads the full collect off the children's rows — the
+            # decoded answer is the declared shape, never the bounded
+            # summary's envelope.
+            return await self._decode_with_detail(
+                conn,
+                str(row["step_key"]),  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the Record walk's boundary.
+                row["id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                row["result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+            )
 
     async def _failure_verdict(self, flow_id: JobId) -> WorkflowRunError:
         """The failed run's typed verdict (the error the read raises):

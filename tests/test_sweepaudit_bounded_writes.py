@@ -296,6 +296,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "UPDATE — the HIT run's own node row (jobs.id = $1), the "
         "metadata provenance write; never a scan, never the backlog",
     ),
+    "COLLECT_TRUNCATION_RECEIPT_SQL": (
+        "WHERE id = $1",
+        "the bounded collect's truncation receipt (the F4 read-side "
+        "cure): a keyed single-row UPDATE — the JOIN's own node row "
+        "(jobs.id = $1), the metadata count write; never a scan, never "
+        "the backlog",
+    ),
     "STEP_CACHE_STORE_SQL": (
         "ON CONFLICT (content_address)",
         "the cross-run cache's store (T25): an INSERT of exactly ONE row "

@@ -266,7 +266,8 @@ class CtxWaitOps(WaitHost):
         # THE STALE-PAYLOAD DRAGON'S KILL SITES (two, both structural):
         # (1) THE ANSWER QUEUE — the delivered holds are the node's
         # durable answers, consumed IN EPOCH ORDER by each attempt's wait
-        # sequence (the per-attempt CURSOR): a RETRY replays the answers
+        # sequence (the PER-SITE cursor — keyed to the wait site's own
+        # signal name, beneath the attempt): a RETRY replays the answers
         # (they are the attempt's inputs — the operator never
         # re-answers, the retry is deterministic); a wait past the
         # queue's end registers a NEW hold (a NEW epoch — multi-hold).
@@ -286,8 +287,11 @@ class CtxWaitOps(WaitHost):
         # answer — a hold-resume continues, a retry of a failed
         # iteration replays ITS OWN answer (the same k-th), both laws
         # one mechanism. A loop body declares ONE wait per iteration
-        # (the loop's shape); the plain steps keep the per-attempt
-        # cursor.
+        # (the loop's shape); the plain steps keep the per-site,
+        # per-attempt cursor (the I5c cure — a body's timer site and its
+        # signal site count their own consumptions, so a timer's
+        # re-consume can never inflate a signal site's queue position:
+        # the delivered answer the operator sent reaches ITS wait site).
         async with self._pool.acquire() as conn:
             row_meta = await conn.fetchrow(
                 render_sql(
@@ -298,7 +302,18 @@ class CtxWaitOps(WaitHost):
                     self._wsql.schema,
                 ),
                 self.job_id,
-                f"hold_cursor_{self.attempt}",
+                # THE PER-SITE CURSOR (the I5c cure — E13's discipline
+                # generalized to the plain kind): the cursor is keyed to
+                # the WAIT SITE (its own signal name), never bare to the
+                # attempt — one body's TWO wait sites (a timer THEN a
+                # signal; disjoint queues) must each count THEIR OWN
+                # consumptions. The shared per-attempt cursor let the
+                # timer site's re-consume inflate the counter past the
+                # signal site's own queue: the delivered answer fell
+                # behind forever, the wait re-held silently, the
+                # operator's decision dead-lettered while the run
+                # terminal-succeeded.
+                f"hold_cursor_{self.attempt}_{signal_name}",
             )
             is_loop_kind = row_meta is not None and row_meta["kind"] == "loop"
             row_cursor = (
@@ -373,7 +388,7 @@ class CtxWaitOps(WaitHost):
                             self._wsql.schema,
                         ),
                         self.job_id,
-                        dumps_jsonb_str({f"hold_cursor_{self.attempt}": cursor + 1}),
+                        dumps_jsonb_str({f"hold_cursor_{self.attempt}_{signal_name}": cursor + 1}),
                     )
                 # THE CONTEXT CONTRACT: the resumed body's answer
                 # identity — the epoch of the hold THIS wait consumed
@@ -425,7 +440,13 @@ class CtxWaitOps(WaitHost):
                 self._map_index,
             )
             if abandoned_row is not None:
-                face_key = f"timeout_face_{self.attempt}"
+                # THE FACE MARKER IS PER-SITE TOO (the I5c cure's same
+                # discipline): one body's second wait site must surface
+                # ITS OWN abandoned row's face — a shared per-attempt
+                # key would let the first site's marker suppress the
+                # second site's Expired return (the same epoch minted
+                # per node, both sites' rows can carry it).
+                face_key = f"timeout_face_{self.attempt}_{signal_name}"
                 face_seen = await conn.fetchval(
                     render_sql(
                         "SELECT (metadata ->> $2)::int FROM {schema}.jobs WHERE id = $1",

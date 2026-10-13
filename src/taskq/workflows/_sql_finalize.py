@@ -17,6 +17,18 @@ from typing import Final
 #: normal collect's items never compact.
 FANIN_FAILURES_BYTE_CAP: Final[int] = 64 * 1024
 
+#: THE TRUNCATION'S RECEIPT (the F4 cure's read-side reconciliation): the
+#: bounded collect's join row carries the ``__truncated__`` count in its
+#: METADATA (``wf_collect_truncated``) alongside the envelope's own
+#: markers — the decode unwraps the envelope at the consumer's typed
+#: boundary (the declared ``list[...]`` arrives), so the count must
+#: surface where the READS decide, never be swallowed by the unwrap.
+COLLECT_TRUNCATION_RECEIPT_SQL = """\
+UPDATE {schema}.jobs
+SET metadata = metadata || $2::jsonb
+WHERE id = $1
+"""
+
 TERMINAL_MARK_SQL = """\
 WITH upd AS (
     UPDATE {schema}.jobs

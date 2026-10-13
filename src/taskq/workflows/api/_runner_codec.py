@@ -152,11 +152,32 @@ def encode_result(value: object) -> dict[str, object] | None:
     return {"value": encode_data_arg(value)}
 
 
+#: The runner's envelope key set (the F4 read-side reconciliation): the
+#: NON-truncated envelope is ONE key (``{"value": …}``); the
+#: ``_bounded_collect``'s TRUNCATED envelope adds exactly the TWO honest
+#: markers (the ``__truncated__`` count + the ``detail_home`` pointer).
+#: A body's bare dict return never collides with either shape —
+#: ``encode_result`` wraps it, so the decode sees the body's dict INSIDE
+#: the envelope's ``value``, never AT the envelope's own key set.
+_RESULT_ENVELOPE_KEYS: frozenset[str] = frozenset({"value", "__truncated__", "detail_home"})
+
+
 def decode_result(raw: object) -> object:
     """jsonb decoded ONCE (cut #14): asyncpg returns ``str`` on un-coded
     connections — parse through the estate's seam, never per call site.
-    The runner's own envelope (a bare ``{"value": …}``) unwraps — a body's
-    dict return never collides with the envelope keys."""
+    The runner's own envelope unwraps BY ITS KNOWN KEY SET — ``value``
+    alone (the pre-cure envelope) or ``value`` + the F4 markers
+    (``__truncated__``, ``detail_home``; the bounded collect's shape) —
+    NOT by ``len(decoded) == 1``: the truncated envelope is THREE keys,
+    and the consumer's typed decode must see the declared ``list[...]``
+    either way (the pre-cure tree unwrapped the one-key form only, and
+    every consumer wired past a truncating collect received the envelope
+    dict where its param declared a list — the merge regression this
+    key-set door closes). The truncation face stays honest on the row:
+    the markers ride the RAW jsonb, and the finalize's metadata receipt
+    (``wf_collect_truncated``) carries the count for the reads that
+    decide. A body's dict return never collides with the envelope keys
+    (the wrap is unconditional)."""
     if raw is None:
         return None
     # The Any-contract walk (the _json seam's parse contract — the same
@@ -165,9 +186,31 @@ def decode_result(raw: object) -> object:
     # the targeted ignore with the Why.
     decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
     assert isinstance(decoded, dict)
-    if "value" in decoded and len(decoded) == 1:  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk.
-        return cast(object, decoded["value"])  # pyright: ignore[reportUnknownArgumentType]  # Why: the walk's boundary — the cast IS the declared laundering (the envelope's single key is the runner's own).
+    if "value" in decoded:  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk.
+        keys = set(decoded)  # pyright: ignore[reportUnknownArgumentType,reportUnknownVariableType]  # Why: the same walk — set() over an Any dict is partially unknown by construction.
+        if keys <= _RESULT_ENVELOPE_KEYS:
+            # THE RUNNER'S OWN ENVELOPE (either face): unwrap to the
+            # declared value — the consumer's typed decode never sees
+            # the wrapper.
+            return cast(object, decoded["value"])  # pyright: ignore[reportUnknownArgumentType]  # Why: the walk's boundary — the cast IS the declared laundering (the envelope's key set is the runner's own).
     return cast(object, decoded)  # pyright: ignore[reportUnknownArgumentType]  # Why: the same boundary.
+
+
+def result_truncation(raw: object) -> int | None:
+    """The RAW row's truncation face (the F4 marker's read): the count
+    when the envelope is the bounded collect's TRUNCATED shape, ``None``
+    otherwise (a None raw, a plain envelope, a body's own dict). The
+    decode's unwrap drops the markers from the consumer's value — THIS
+    seam is how the reads recover the count (the runner's detail
+    re-read keys on it: ``detail_home`` says the full collect lives on
+    the children's own result rows)."""
+    if raw is None:
+        return None
+    decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
+    if not isinstance(decoded, dict):  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk.
+        return None
+    count = decoded.get("__truncated__")  # pyright: ignore[reportUnknownMemberType,reportAttributeTypeIssue,reportUnknownVariableType]  # Why: the same walk.
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
 
 
 # ── THE TYPED BOUNDARY IS COMPLETE (the phase-4 cure): a param's

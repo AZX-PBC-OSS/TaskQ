@@ -13,6 +13,7 @@ the unfenced variants kept in this file forever as the convicted shapes.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import asyncpg
@@ -656,3 +657,97 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
         "payload-bloat finding; the cure is the failures' own compaction "
         "mechanism mirrored to the collect)"
     )
+
+
+class _F4FatOut(BaseModel):
+    i: int
+    fat: str
+
+
+async def _f4_consumer(ctx: Any, items: list[_F4FatOut]) -> dict[str, int]:
+    """The CONSUMER's seat (the read-side pin's body): the declared
+    param says ``list[...]`` — the join's collect is this body's input,
+    truncated or not."""
+    return {"kept": len(items)}
+
+
+@pytest.mark.integration
+async def test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode(
+    wf_pool: asyncpg.Pool,
+    wf_schema: str,
+) -> None:
+    """THE F4 CURE'S READ SIDE (the envelope-cap cure's own regression,
+    convicted by the recertifier): the bounded collect's envelope is
+    THREE keys over the cap — ``{"value": […], "__truncated__": N,
+    "detail_home": …}`` — and the pre-cure decode unwrapped by
+    ``len(decoded) == 1``: the truncated envelope NEVER unwrapped, and
+    every consumer wired past a truncating collect received the
+    ENVELOPE DICT where its declared param says ``list[...]`` — the
+    typed decode died ``Input should be a valid list, input_type=dict``
+    and the run failed (the LedgerWatch chaos feed's live face:
+    ``__truncated__: 272``; the SAME tests PASS at the pre-cure
+    baseline 57d38c7e6).
+
+    THE CURE'S SHAPE: ``decode_result`` unwraps the runner's envelope
+    BY ITS KNOWN KEY SET — ``value`` alone OR ``value`` + the F4
+    markers — so BOTH faces reach the consumer's typed decode as the
+    declared list; and the truncated face's ``detail_home`` contract is
+    HONORED: the runner re-reads the FULL collect off the children's
+    own result rows (the same ordered parent read the join packed), so
+    the consumer's decoded param is the WHOLE collect, never a silent
+    kept-prefix (the LedgerWatch drill's own demand — a 272-item
+    silent loss is the C7 family's dead letter wearing the cap's hat).
+    THE TRUNCATION FACE STAYS HONEST: the raw row keeps the bounded
+    markers, and the finalize's metadata receipt
+    (``wf_collect_truncated``) carries the count where the reads
+    decide — this pin reads BOTH (the receipt's count names exactly
+    the items the ROW no longer spells)."""
+    import taskq.workflows as wf
+    from taskq.workflows import Promise, WorkflowApp, build, map_source, step
+
+    app = WorkflowApp()
+
+    @app.workflow("f4_readside")
+    def f4_readside() -> Promise[object]:
+        items = map_source(step(_f4_emit, _F4ItemsIn(), key="src"), _f4_fat_item)
+        return build(step(_f4_consumer, items, key="consume"))
+
+    result = await wf.run(app.get("f4_readside"), wf_pool, wf_schema)
+    assert result.outcome == "terminal", (
+        f"the consumer wired past a truncating collect failed at its "
+        f"typed decode (the envelope leaked as the param's value): {result}"
+    )
+    decoded = result.result
+    assert isinstance(decoded, dict) and set(decoded) == {"kept"}, (
+        f"the consumer's dict return survived the round-trip: {decoded!r}"
+    )
+    kept = decoded["kept"]
+    assert kept == 700, (
+        f"the consumer's decoded param must be the FULL collect (the "
+        f"detail re-read off the child rows — the detail_home contract): "
+        f"got {kept!r} of 700"
+    )
+    async with wf_pool.acquire() as conn:
+        # S608 is per-file-ignored for this pack (the schema identifier is
+        # the fixture's own settings-validated identifier; values $-bound
+        # or the step key's literal).
+        row = await conn.fetchrow(
+            f"SELECT result, metadata FROM \"{wf_schema}\".jobs WHERE step_key = 'src.join'"
+        )
+    assert row is not None, "the join row did not terminalize"
+    raw = row["result"]
+    raw_doc: Any = json.loads(raw) if isinstance(raw, str) else raw
+    assert isinstance(raw_doc, dict) and "__truncated__" in raw_doc, (
+        f"the join row's RAW envelope lost the honest markers: {raw_doc!r}"
+    )
+    spelled = len(raw_doc["value"])
+    assert int(raw_doc["__truncated__"]) == 700 - spelled > 0, raw_doc
+    meta_raw = row["metadata"]
+    meta_doc: Any = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+    receipt = meta_doc.get("wf_collect_truncated") if isinstance(meta_doc, dict) else None
+    assert receipt is not None, (
+        "the join row's metadata carries no truncation receipt — the count "
+        "must surface where the reads decide (wf_collect_truncated), never "
+        "swallowed by the decode's unwrap"
+    )
+    assert int(receipt["count"]) == 700 - spelled, receipt

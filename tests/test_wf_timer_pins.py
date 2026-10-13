@@ -47,6 +47,10 @@ class Nudge(BaseModel):
     note: str = "the clock's knock"
 
 
+class SecondSay(BaseModel):
+    word: str
+
+
 async def _hold_row(wf_conn: asyncpg.Connection, wf_schema: str, flow_id: JobId) -> Any:
     return await wf_conn.fetchrow(
         f'SELECT id, status, signal_name, expires_at FROM "{wf_schema}".wf_signals '  # noqa: S608
@@ -360,3 +364,160 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
     assert outcome == "terminal"
     verdict = await runner.result(flow_id)
     assert verdict == "woken:forged:timer", verdict
+
+
+# ── pin 7: THE TIMER-THEN-SIGNAL STRAND (the I5c cure) ──────────────────
+# One PLAIN step, the timer wait BEFORE the signal wait, disjoint names:
+# the timer's documented re-consume ("a replay/retry re-consumes it from
+# the answer queue") ran on the SHARED per-attempt cursor — it inflated
+# the cursor past the signal site's own queue, the DELIVERED answer fell
+# behind forever, the wait re-held silently (the plain kind has no E13
+# teeth), the deadline swept the row to 'abandoned', the body returned
+# the fail-close arm, and THE RUN TERMINALIZED `succeeded` with the
+# operator's decision a dead letter (the C7 family's face on an
+# unwritten boundary). THE CURE — E13's per-site discipline generalized:
+# the answer queue's cursor is keyed to the WAIT SITE (its own signal
+# name, beneath the attempt), so every site counts ITS OWN
+# consumptions; the loop kind keeps the iteration counter (the ADVANCE
+# statement's own write) untouched.
+
+
+async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE STRAND'S EXACT REPRO: the timer, then the signal, the
+    resolve, the wake — the body receives THE DELIVERED VERDICT (never
+    the ``Expired`` fail-close; the delivered answer's row is CONSUMED,
+    never abandoned). Red x2 at the shared-cursor head (the timer's
+    re-consume inflated the shared cursor past the signal site's own
+    queue; the wait re-held; the run terminal-succeeded with the
+    operator's decision a dead letter); green at the per-site
+    cursor."""
+    import json
+
+    async def mixed(ctx: StepContext) -> str:
+        _wake = await ctx.wait_until(0.05, key="tick")  # site 1: the clock
+        say = await ctx.wait_signal((SecondSay,), timeout_s=30.0)  # site 2: the human
+        if isinstance(say, Expired):
+            return "expired"
+        return f"say:{say.word}"
+
+    app = WorkflowApp()
+
+    @app.workflow("timer_then_signal")
+    def timer_flow() -> Promise[object]:
+        return build(step(mixed, key="t"))
+
+    runner = FlowRunner(app.get("timer_then_signal"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+
+    # 1. The first pass: the body mints the TIMER hold.
+    assert await runner.drive(flow_id, until="held") == "held"
+    # 2. THE CLOCK FIRES (the sweep's timer arm — the leader's leg; the
+    # dev drive's `until="held"` check parks before the tick, so the pin
+    # calls the arm the way the leader's sweep does).
+    await asyncio.sleep(0.15)  # the deadline passes
+    assert await sweep_due_timers(wf_pool, schema=wf_schema, drain=True) == 1
+    # 3. The body consumes the wake and mints the SIGNAL hold.
+    assert await runner.drive(flow_id, until="held") == "held"
+    # 4. THE OPERATOR DELIVERS (the CAS: delivered).
+    held = await wf_conn.fetchrow(
+        f'SELECT id, signal_name FROM "{wf_schema}".wf_signals '  # noqa: S608
+        "WHERE workflow_id = $1 AND status = 'held' ORDER BY id LIMIT 1",
+        flow_id,
+    )
+    assert held is not None and held["signal_name"] == "SecondSay", held
+    delivered = await deliver_payload(
+        wf_pool,
+        schema=wf_schema,
+        workflow_id=flow_id,
+        hold_id=JobId(held["id"]),
+        payload={"word": "second"},
+        payload_json=json.dumps({"word": "second"}),
+    )
+    assert delivered.status == "delivered", delivered
+    # 5. THE RESUME: the body re-executes from the top — the timer site
+    # re-consumes its wake, and the SIGNAL SITE must consume ITS OWN
+    # delivered answer.
+    out = await runner.drive(flow_id, until="terminal")
+    assert out == "terminal"
+    verdict = await runner.result(flow_id)
+    assert verdict == "say:second", (
+        f"THE STRAND: the delivered answer never reached the body (the "
+        f"timer's re-consume inflated the shared cursor past this site's "
+        f"queue; the wait re-held; the deadline fail-closed; the run "
+        f"succeeded with the operator's decision a dead letter): {verdict!r}"
+    )
+    rows = await wf_conn.fetch(
+        f'SELECT signal_name, status, hold_epoch FROM "{wf_schema}".wf_signals '  # noqa: S608
+        "WHERE workflow_id = $1 ORDER BY id",
+        flow_id,
+    )
+    abandoned = [dict(r) for r in rows if r["status"] == "abandoned"]
+    assert abandoned == [], (
+        f"the signal hold was abandoned — the delivered answer stranded: {abandoned}"
+    )
+    # THE ANSWER'S ROW: delivered AND consumed — the operator's decision
+    # reached its site (never a dead letter on the rows).
+    answer = [dict(r) for r in rows if r["signal_name"] == "SecondSay"]
+    assert answer and answer[-1]["status"] == "delivered", answer
+
+
+async def test_two_signal_sites_one_plain_step_stays_green(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE CONTROL (the I5b face — the shape that was NEVER broken): one
+    plain step, TWO signal waits, disjoint names. The per-site cursor
+    keeps each site's own count exactly as the old shared cursor did
+    when the sites each consume once per resume — the two delivered
+    answers reach their own sites, in order, no strand."""
+    import json
+
+    async def two_gates(ctx: StepContext) -> str:
+        first = await ctx.wait_signal((SecondSay,), timeout_s=30.0)
+        second = await ctx.wait_signal((Nudge,), timeout_s=30.0)
+        if isinstance(first, Expired) or isinstance(second, Expired):
+            return "expired"
+        return f"{first.word}:{second.note}"
+
+    app = WorkflowApp()
+
+    @app.workflow("two_signal_sites")
+    def timer_flow() -> Promise[object]:
+        return build(step(two_gates, key="t"))
+
+    runner = FlowRunner(app.get("two_signal_sites"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    for _ in range(4):
+        out = await runner.drive(flow_id, until="held")
+        if out != "held":
+            break
+        held = await wf_conn.fetchrow(
+            f'SELECT id, signal_name FROM "{wf_schema}".wf_signals '  # noqa: S608
+            "WHERE workflow_id = $1 AND status = 'held' ORDER BY id LIMIT 1",
+            flow_id,
+        )
+        if held is None:
+            break
+        payload = {"word": "second"} if held["signal_name"] == "SecondSay" else {"note": "nudge"}
+        delivered = await deliver_payload(
+            wf_pool,
+            schema=wf_schema,
+            workflow_id=flow_id,
+            hold_id=JobId(held["id"]),
+            payload=payload,
+            payload_json=json.dumps(payload),
+        )
+        assert delivered.status == "delivered", delivered
+
+    out = await runner.drive(flow_id, until="terminal")
+    assert out == "terminal"
+    verdict = await runner.result(flow_id)
+    assert verdict == "second:nudge", verdict
+    rows = await wf_conn.fetch(
+        f'SELECT signal_name, status FROM "{wf_schema}".wf_signals '  # noqa: S608
+        "WHERE workflow_id = $1",
+        flow_id,
+    )
+    abandoned = [dict(r) for r in rows if r["status"] == "abandoned"]
+    assert abandoned == [], abandoned

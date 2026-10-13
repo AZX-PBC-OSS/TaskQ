@@ -111,7 +111,7 @@ RETURNING id
 """
 
 PARENT_RESULTS_BY_KEY_SQL_TEMPLATE = """
-SELECT p.step_key, p.result
+SELECT p.id, p.step_key, p.result
 FROM {schema}.wf_edge e
 JOIN {schema}.jobs p ON p.id = e.parent_id
 WHERE e.child_id = $1
@@ -272,7 +272,7 @@ SELECT count(*) FROM flipped
 """
 
 TERMINAL_RESULT_SQL_TEMPLATE = """
-SELECT result FROM {schema}.jobs WHERE step_key = $1
+SELECT id, step_key, result FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
 """
 
