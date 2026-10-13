@@ -1,0 +1,14 @@
+head: 8ae1991ed24e05d99cecf532456c6cf6c23478fb
+== mkdocs --strict
+  - guides/agent-loops.md
+INFO    -  Documentation built in 16.00 seconds
+rc=0
+== ruff check
+All checks passed!
+rc=0
+== ruff format --check
+1802 files already formatted
+rc=0
+== typeprobe gate
+the type gate holds: every MUST_ERROR marker (46) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+rc=0

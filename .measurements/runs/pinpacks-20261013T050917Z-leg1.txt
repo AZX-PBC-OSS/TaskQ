@@ -1,0 +1,4 @@
+head: 8ae1991ed24e05d99cecf532456c6cf6c23478fb — the pin packs' GREEN leg 1 at the cure head
+..........                                                               [100%]
+514 passed in 35.09s
+rc=0

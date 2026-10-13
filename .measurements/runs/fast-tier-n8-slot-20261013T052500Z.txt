@@ -1,0 +1,2 @@
+# fast-tier-n8's slot staged at head 8ae1991ed24e05d99cecf532456c6cf6c23478fb — captured 2026-10-12T22:25:00-07:00
+the fast tier's slot — the green run's output fills this file in place; no verdict is recorded yet — the content door's typed warning is this slot's honest state until the fill.

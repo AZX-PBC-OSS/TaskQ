@@ -1,0 +1,68 @@
+# wf-scoped coverage gate at head 8ae1991ed24e05d99cecf532456c6cf6c23478fb — 2026-10-13T05:05:32Z
+src/taskq/workflows/definitions.py               66      1     14      1    98%
+src/taskq/workflows/engine.py                   109      0     34      1    99%
+src/taskq/workflows/ledger.py                    80      1     16      2    97%
+-------------------------------------------------------------------------------
+TOTAL                                          4810    242   1472    173    93%
+=========================== short test summary info ============================
+FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+1 failed, 734 passed, 1 warning in 94.56s (0:01:34)
+Name                                          Stmts   Miss Branch BrPart  Cover
+-------------------------------------------------------------------------------
+src/taskq/workflows/__init__.py                  15      0      0      0   100%
+src/taskq/workflows/_cache.py                    52      1      4      1    96%
+src/taskq/workflows/_capture.py                  75      4     36      5    92%
+src/taskq/workflows/_childflow.py               140      6     26      7    92%
+src/taskq/workflows/_cli.py                     198     14     82     10    91%
+src/taskq/workflows/_emit.py                     45      0     10      0   100%
+src/taskq/workflows/_fork.py                     33      1     12      1    96%
+src/taskq/workflows/_progress.py                145     13     30      2    91%
+src/taskq/workflows/_progress_read.py           151      4     54      8    94%
+src/taskq/workflows/_reducers.py                 24      0      6      0   100%
+src/taskq/workflows/_sql.py                      83      0      2      0   100%
+src/taskq/workflows/_sql_finalize.py             24      0      0      0   100%
+src/taskq/workflows/_sql_ledger.py                9      0      0      0   100%
+src/taskq/workflows/_sql_progress.py             12      0      0      0   100%
+src/taskq/workflows/_sql_status.py                8      0      0      0   100%
+src/taskq/workflows/_sql_sweep.py                12      0      0      0   100%
+src/taskq/workflows/_status.py                   54      0     16      0   100%
+src/taskq/workflows/_sweep.py                   112      3     24      4    95%
+src/taskq/workflows/_types.py                   107      3      6      2    96%
+src/taskq/workflows/_version.py                  10      0      0      0   100%
+src/taskq/workflows/_worker_execution.py        136      4     50      4    95%
+src/taskq/workflows/api/__init__.py               4      0      0      0   100%
+src/taskq/workflows/api/_app.py                 146      3     40      3    97%
+src/taskq/workflows/api/_ctx.py                  67      0      4      0   100%
+src/taskq/workflows/api/_ctx_timer.py            63      7     16      7    82%
+src/taskq/workflows/api/_ctx_wait.py             49      0      4      0   100%
+src/taskq/workflows/api/_deps.py                 12      3      2      1    71%
+src/taskq/workflows/api/_graph.py               148      6     26      6    93%
+src/taskq/workflows/api/_hints.py                48      2     14      2    94%
+src/taskq/workflows/api/_hitl.py                316      8    114     10    95%
+src/taskq/workflows/api/_hitl_listen.py         225     36     72     19    79%
+src/taskq/workflows/api/_loop.py                 56      0      8      0   100%
+src/taskq/workflows/api/_mermaid.py              54      2     28      2    95%
+src/taskq/workflows/api/_progress_listen.py     220     40     64     19    76%
+src/taskq/workflows/api/_run.py                  33      1      2      0    97%
+src/taskq/workflows/api/_runner.py              471     31    138     16    92%
+src/taskq/workflows/api/_runner_chain.py         26      0      0      0   100%
+src/taskq/workflows/api/_runner_codec.py         83     10     36      3    84%
+src/taskq/workflows/api/_runner_errors.py         4      0      0      0   100%
+src/taskq/workflows/api/_runner_exit.py         106      5     28      7    91%
+src/taskq/workflows/api/_runner_ladder.py        60      0     14      1    99%
+src/taskq/workflows/api/_runner_loop.py         158     13     42      9    89%
+src/taskq/workflows/api/_sql_loop.py             26      0      0      0   100%
+src/taskq/workflows/api/_sql_runner.py           40      0      0      0   100%
+src/taskq/workflows/api/_validate.py            561     15    356     17    97%
+src/taskq/workflows/chain.py                     88      2     32      1    98%
+src/taskq/workflows/context.py                   46      3     10      2    91%
+src/taskq/workflows/definitions.py               66      1     14      1    98%
+src/taskq/workflows/engine.py                   109      0     34      1    99%
+src/taskq/workflows/ledger.py                    80      1     16      2    97%
+-------------------------------------------------------------------------------
+TOTAL                                          4810    242   1472    173    93%
+
+[gate] head 8ae1991ed24e (dirty=False)
+[gate] wf-scoped branch coverage 92.95% vs floor 90.0% — green
+[gate] recorded: /tmp/opencode/wt-land/.measurements/runs/wf-scoped-coverage-20261012T220708.json
+gate-rc=0

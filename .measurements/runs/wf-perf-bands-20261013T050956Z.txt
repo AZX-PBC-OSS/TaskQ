@@ -1,0 +1,5 @@
+head: 8ae1991ed24e05d99cecf532456c6cf6c23478fb
+== the wf perf bands
+.....                                                                    [100%]
+5 passed in 14.77s
+rc=0

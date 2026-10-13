@@ -1,0 +1,5 @@
+# the estate regression slice x3 at the cure head 8ae1991ed24e05d99cecf532456c6cf6c23478fb
+41 passed in 3.30s
+41 passed in 3.40s
+41 passed in 3.30s
+rc=0
