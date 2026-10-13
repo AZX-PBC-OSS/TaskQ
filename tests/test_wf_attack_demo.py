@@ -310,7 +310,7 @@ def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
         try:
             list(text_string_to_metric_families(text))
         except Exception as exc:
-            violations.append(f"{path.relative_to(REPO_ROOT)}: parser refused: {exc}")
+            violations.append(f"{rel}: parser refused: {exc}")
     assert not violations, (
         "a .measurements .prom artifact is NOT valid Prometheus exposition "
         "(the evidence law — a capture that cannot have come off a real "
