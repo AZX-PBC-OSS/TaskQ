@@ -31,15 +31,15 @@ REPO = Path(__file__).resolve().parents[2]
 #: the runs at THIS committed tree (rv2-13 green there — the off-by-one
 #: rule carries the freshness).
 CAPTURES: list[tuple[str, str, str]] = [
-    ("lint-format", "lint-format-merged.txt", "02968a5b9129090c979c9685dbc2681a5c69429d"),
-    ("pyright-full", "pyright-full-merged.txt", "02968a5b9129090c979c9685dbc2681a5c69429d"),
-    ("typeprobe-gate", "typeprobe-gate-merged.txt", "02968a5b9129090c979c9685dbc2681a5c69429d"),
-    ("mkdocs-strict", "mkdocs-strict-merged.txt", "02968a5b9129090c979c9685dbc2681a5c69429d"),
-    ("docs-examples", "docs-examples-merged.txt", "02968a5b9129090c979c9685dbc2681a5c69429d"),
-    ("deslop-pin-packs", "pinpacks-merged-leg1.txt", "02968a5b9129090c979c9685dbc2681a5c69429d"),
-    ("estate-slice", "estate-slice-merged.txt", "02968a5b9129090c979c9685dbc2681a5c69429d"),
-    ("wf-perf-bands", "wf-perf-bands-merged.txt", "02968a5b9129090c979c9685dbc2681a5c69429d"),
-    ("wf-bands-rv4", "wf-bands-rv4-merged.txt", "02968a5b9129090c979c9685dbc2681a5c69429d"),
+    ("lint-format", "lint-format-merged.txt", "da4d52331c01cada7bacb744239306348f97806e"),
+    ("pyright-full", "pyright-full-merged.txt", "da4d52331c01cada7bacb744239306348f97806e"),
+    ("typeprobe-gate", "typeprobe-gate-merged.txt", "da4d52331c01cada7bacb744239306348f97806e"),
+    ("mkdocs-strict", "mkdocs-strict-merged.txt", "da4d52331c01cada7bacb744239306348f97806e"),
+    ("docs-examples", "docs-examples-merged.txt", "da4d52331c01cada7bacb744239306348f97806e"),
+    ("deslop-pin-packs", "pinpacks-merged-leg1.txt", "da4d52331c01cada7bacb744239306348f97806e"),
+    ("estate-slice", "estate-slice-merged.txt", "da4d52331c01cada7bacb744239306348f97806e"),
+    ("wf-perf-bands", "wf-perf-bands-merged.txt", "da4d52331c01cada7bacb744239306348f97806e"),
+    ("wf-bands-rv4", "wf-bands-rv4-merged.txt", "da4d52331c01cada7bacb744239306348f97806e"),
 ]
 
 
