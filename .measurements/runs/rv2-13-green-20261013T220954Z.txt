@@ -1,0 +1,7 @@
+# rv2-13-green at the estate re-stamp head 8a7d1ddbf2d496bdf5d37d182f142512100f9519 — the CLOSE: the head-stamp law greens on the committed tree at the estate's tip — GREEN x2
+--- run 1:
+1 passed in 8.19s
+--- run 2:
+1 passed in 8.64s
+rc=0
+head: 8a7d1ddbf2d496bdf5d37d182f142512100f9519

@@ -24120,6 +24120,12 @@
       "file": "evidence-heads-verify-20261013T215545Z.txt",
       "head_sha": "8a7d1ddbf2d496bdf5d37d182f142512100f9519",
       "captured_at": "2026-10-13T15:09:23"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-20261013T220954Z.txt",
+      "head_sha": "8a7d1ddbf2d496bdf5d37d182f142512100f9519",
+      "captured_at": "2026-10-13T15:09:58"
     }
   ]
 }
