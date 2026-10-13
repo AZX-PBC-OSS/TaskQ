@@ -96,7 +96,7 @@
       "file": "rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt",
       "head_sha": "55bb1b22f10fb0011e45eaeb158a28d70d0d02d1",
       "captured_at": "2026-10-10T13:11:04",
-      "superseded_by": "runs/wf-battery-rv4-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/wf-battery-rv4-slot-20261013T044532Z.txt"
     },
     {
       "stem": "wf-rollup-band",
@@ -115,7 +115,7 @@
       "file": "battery-wf-suite-20261008T223701.txt",
       "head_sha": "64a2cc435073a3b083f36167494eb2a288411556",
       "captured_at": "2026-10-08T22:37:01",
-      "superseded_by": "runs/wf-battery-rv4-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/wf-battery-rv4-slot-20261013T044532Z.txt"
     },
     {
       "stem": "wf-scoped-coverage",
@@ -128,7 +128,7 @@
       "file": "battery-final-wf-attacks-20261008T223824.txt",
       "head_sha": "64a2cc435073a3b083f36167494eb2a288411556",
       "captured_at": "2026-10-08T22:38:24",
-      "superseded_by": "runs/wf-battery-rv4-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/wf-battery-rv4-slot-20261013T044532Z.txt"
     },
     {
       "stem": "estate-slice",
@@ -552,7 +552,7 @@
       "file": "fixround-touched-pins-x2-20261009T054327.txt",
       "head_sha": "64a2cc435073a3b083f36167494eb2a288411556",
       "captured_at": "2026-10-09T05:43:27",
-      "superseded_by": "runs/wf-battery-rv4-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/wf-battery-rv4-slot-20261013T044532Z.txt"
     },
     {
       "stem": "fixround-migration-chain",
@@ -566,14 +566,14 @@
       "file": "fixround-migration-chain-20261009T054350.txt",
       "head_sha": "64a2cc435073a3b083f36167494eb2a288411556",
       "captured_at": "2026-10-09T05:43:50",
-      "superseded_by": "runs/wf-battery-rv4-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/wf-battery-rv4-slot-20261013T044532Z.txt"
     },
     {
       "stem": "fixround-final-pins",
       "file": "fixround-final-pins-20261009T054418.txt",
       "head_sha": "64a2cc435073a3b083f36167494eb2a288411556",
       "captured_at": "2026-10-09T05:44:18",
-      "superseded_by": "runs/wf-battery-rv4-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/wf-battery-rv4-slot-20261013T044532Z.txt"
     },
     {
       "stem": "sweep-cost-scale-curve",
@@ -5618,7 +5618,7 @@
       "file": "fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3-20261010T191709.txt",
       "head_sha": "7a587f45c17d638c0c39a24174f77ec2cb807ba3",
       "captured_at": "2026-10-10T19:17:09",
-      "superseded_by": "runs/fast-tier-n8-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/fast-tier-n8-slot-20261013T044532Z.txt"
     },
     {
       "stem": "evidence-heads-verify",
@@ -5652,7 +5652,7 @@
       "file": "rv2-pins-final-20261010T193500-precommit-red.txt",
       "head_sha": "1c17402d5d8480df09e214c90e5c16d1fee2c1b4",
       "captured_at": "2026-10-10T19:35:00",
-      "superseded_by": "runs/wf-battery-rv4-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/wf-battery-rv4-slot-20261013T044532Z.txt"
     },
     {
       "stem": "fasttier-final",
@@ -5680,14 +5680,14 @@
       "file": "docs-lane-rv2-13-cure-captures-20261010T200530.txt",
       "head_sha": "54f19915d796eae29736b9c1d7479c4d37aa8ae7",
       "captured_at": "2026-10-10T20:05:30",
-      "superseded_by": "runs/rv2-13-green-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/rv2-13-green-slot-20261013T044532Z.txt"
     },
     {
       "stem": "rv2-pins-final",
       "file": "rv2-pins-final-20261010T200818.txt",
       "head_sha": "54f19915d796eae29736b9c1d7479c4d37aa8ae7",
       "captured_at": "2026-10-10T20:08:18",
-      "superseded_by": "runs/wf-battery-rv4-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/wf-battery-rv4-slot-20261013T044532Z.txt"
     },
     {
       "stem": "lint-format",
@@ -5997,7 +5997,7 @@
       "file": "fasttier-final-20261010T133838-deslop.txt",
       "head_sha": "94a70d8986a561f3a5b62e168ec0e3f2824ca7c3",
       "captured_at": "2026-10-10T13:38:43",
-      "superseded_by": "runs/fast-tier-n8-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/fast-tier-n8-slot-20261013T044532Z.txt"
     },
     {
       "stem": "mkdocs-strict",
@@ -16787,7 +16787,7 @@
       "file": "attack-rounds-k7-20261012T10.txt",
       "head_sha": "b50f8458719fd4cc88384bc9bec54b6b06c0ac14",
       "captured_at": "2026-10-12T10:37:00",
-      "superseded_by": "runs/wf-battery-rv4-slot-20261013T023003Z.txt"
+      "superseded_by": "runs/wf-battery-rv4-slot-20261013T044532Z.txt"
     },
     {
       "stem": "estate-slice",
@@ -21690,6 +21690,360 @@
       "file": "rv2-13-green-slot-20261013T023003Z.txt",
       "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
       "captured_at": "2026-10-12T19:40:27"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T213340-f088.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:40"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T213340-ecf6.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:40"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T213340-ffcb.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:40"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T213340-06ab.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:40"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T213343-099e.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:43"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T213344-bd7b.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:44"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T213354-8e2a.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:54"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T213357-727e.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:57"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T213357-ce39.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:57"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T213357-54e7.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:33:57"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T213444-be06.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:34:44"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T213449-113c.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:34:49"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T213450-8eb1.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:34:50"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T213450-0ac6.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:34:50"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T213453-d35f.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:34:53"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261012T213457-1d9c.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:34:57"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261012T213457-632e.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:34:57"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261012T213502-7d1c.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:35:02"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T213512-f508.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:35:12"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261012T213514.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:35:14"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T213615-97ea.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:36:15"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T213627-8efc.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:36:27"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T213657-3c63.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:36:57"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T213658-1ab7.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:36:58"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T213658-1349.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:36:58"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T213658-34ba.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:36:58"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T213700-00c5.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:37:00"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T213711-ddca.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:37:11"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261012T213717-abf8.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:37:17"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261012T213717-a9ed.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:37:17"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261012T213722-14e6.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:37:22"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T213824-46be.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:38:24"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T213826-db15.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:38:26"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T213829-b783.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:38:29"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T213829-4842.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:38:29"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T213836-2ff1.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:38:36"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T213837-705b.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:38:37"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261012T213851-b278.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:38:51"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261012T213851-3f13.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:38:51"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261012T213856-a9e9.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:38:56"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261012T214009-4a2e.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:40:09"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261012T214009-1bb2.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:40:09"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261012T214014-f123.json",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:40:14"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-merged.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-merged.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-merged.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-merged.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "docs-examples",
+      "file": "docs-examples-merged.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "pinpacks-merged-leg1.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-merged.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-merged.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-bands-rv4-merged.txt",
+      "head_sha": "da4d52331c01cada7bacb744239306348f97806e",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-rv4-slot-20261013T044532Z.txt",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "wf-battery-cov",
+      "file": "wf-battery-cov-slot-20261013T044532Z.txt",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "wf-battery-leg2",
+      "file": "wf-battery-leg2-slot-20261013T044532Z.txt",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "wf-battery-leg3",
+      "file": "wf-battery-leg3-slot-20261013T044532Z.txt",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-slot-20261013T044532Z.txt",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-slot-20261013T044532Z.txt",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:45:32"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-slot-20261013T044532Z.txt",
+      "head_sha": "9d7e41791fa31889d475c7198a6e665ab97e4903",
+      "captured_at": "2026-10-12T21:45:32"
     }
   ]
 }
