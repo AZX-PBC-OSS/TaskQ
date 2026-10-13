@@ -22740,6 +22740,402 @@
       "file": "pin5-dispatch-band-20261012T222805-9ae6.json",
       "head_sha": "8ae1991ed24e05d99cecf532456c6cf6c23478fb",
       "captured_at": "2026-10-12T22:28:05"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T232056-7679.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:20:56"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261012T232110-bc0c.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:21:10"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261012T232110-a68b.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:21:10"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261012T232115-0211.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:21:15"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T232118-0534.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:21:18"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T232118-ec49.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:21:18"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T232118-d1b7.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:21:18"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T232121-05e4.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:21:21"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T232129-367d.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:21:29"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T232201-9a31.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:22:01"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T232227-db0d.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:22:27"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T232312-e8e6.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:23:12"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T232313-e866.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:23:13"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T232315-4fbf.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:23:15"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T232316-41c7.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:23:16"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T232316-373f.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:23:16"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "pinpacks-20261013T062143Z-leg1.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "rv4-pin-packs",
+      "file": "pinpacks-20261013T062143Z-leg1.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "stealth-mutant-shipped-drill",
+      "file": "pinpacks-20261013T062143Z-leg1.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-20261013T062232Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "lint-format",
+      "file": "toolchain-20261013T062232Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "toolchain-20261013T062232Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "mkdocs-strict-docslane",
+      "file": "toolchain-20261013T062232Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "toolchain-20261013T062232Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-20261013T062537Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-20261013T062232Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-perf-bands-20261013T062232Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "docs-examples",
+      "file": "pyright-and-docs-20261013T062337Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:57"
+    },
+    {
+      "stem": "attack-rounds",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "battery-final-wf-attacks",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "battery-wf-suite",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "fixround-final-pins",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "fixround-migration-chain",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "fixround-touched-pins-x2",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "rv2-pins-final",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "rv2-pins-final-20261010T193500-precommit-red.txt",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "wf-battery-leg2",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "wf-battery-leg3",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "wf-battery-cov",
+      "file": "wf-battery-rv4-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-n8-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "fasttier-final",
+      "file": "fast-tier-n8-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3",
+      "file": "fast-tier-n8-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "docs-lane-rv2-13-cure-captures",
+      "file": "rv2-13-green-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-slot-20261013T062600Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:26:58"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261012T232721-7d4e.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:27:21"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261012T232723-2d2b.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:27:23"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261012T232724-2828.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:27:24"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261012T232725-dbc6.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:27:25"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261012T232725-0edf.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:27:25"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261012T232726-fdba.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:27:26"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261012T232731-39ff.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:27:31"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261012T232732-7886.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:27:32"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261012T232753-1176.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:27:53"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261012T232813.json",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:13"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-20261013T062249Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:25"
+    },
+    {
+      "stem": "lint-format",
+      "file": "toolchain-20261013T062249Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:25"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "toolchain-20261013T062249Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:25"
+    },
+    {
+      "stem": "mkdocs-strict-docslane",
+      "file": "toolchain-20261013T062249Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:25"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "toolchain-20261013T062249Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:25"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-20261013T062615Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:25"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-20261013T062249Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:25"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-perf-bands-20261013T062249Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:25"
+    },
+    {
+      "stem": "docs-examples",
+      "file": "pyright-and-docs-20261013T062319Z.txt",
+      "head_sha": "8b8a6e76c19f1cd1c116238cb93527bd53d426d0",
+      "captured_at": "2026-10-12T23:28:25"
     }
   ]
 }

@@ -1,0 +1,8 @@
+head: 8b8a6e76c19f1cd1c116238cb93527bd53d426d0
+== pyright FULL
+/usr/bin/bash: line 1: .venv/bin/uv: No such file or directory
+rc=0
+== the docs examples x2
+107 passed, 13662 deselected, 1 warning in 83.42s (0:01:23)
+107 passed, 13662 deselected, 1 warning in 83.36s (0:01:23)
+rc=0

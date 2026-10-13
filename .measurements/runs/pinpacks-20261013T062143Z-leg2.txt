@@ -1,0 +1,3 @@
+head: 8b8a6e76c19f1cd1c116238cb93527bd53d426d0 — the pin packs' GREEN leg 2
+514 passed in 28.20s
+rc=0
