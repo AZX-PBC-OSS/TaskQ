@@ -1,0 +1,111 @@
+slow-suite	Run the slow suite	﻿2026-10-13T04:33:28.8703508Z ##[group]Run uv run --no-sync pytest -n 2 -m "slow and not load_sensitive"
+slow-suite	Run the slow suite	2026-10-13T04:33:28.8703943Z ^[[36;1muv run --no-sync pytest -n 2 -m "slow and not load_sensitive"^[[0m
+slow-suite	Run the slow suite	2026-10-13T04:33:28.8744370Z shell: /usr/bin/bash -e {0}
+slow-suite	Run the slow suite	2026-10-13T04:33:28.8744674Z env:
+slow-suite	Run the slow suite	2026-10-13T04:33:28.8744963Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+slow-suite	Run the slow suite	2026-10-13T04:33:28.8745336Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+slow-suite	Run the slow suite	2026-10-13T04:33:28.8745644Z   UV_PYTHON: 3.12
+slow-suite	Run the slow suite	2026-10-13T04:33:28.8745993Z ##[endgroup]
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7199502Z ============================= test session starts ==============================
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7201195Z platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.6.0
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7201656Z Using --randomly-seed=1917014741
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7201967Z rootdir: /home/runner/work/TaskQ/TaskQ
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7204708Z configfile: pyproject.toml
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7204958Z testpaths: tests
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7205390Z plugins: asyncio-1.4.0, randomly-5.0.0, gremlins-1.9.0, timeout-2.4.0, respx-0.23.1, hypothesis-6.168.3, cov-7.1.0, xdist-3.8.0, anyio-4.15.1
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7206423Z asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7206875Z timeout: 300.0s
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7207077Z timeout method: signal
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7207293Z timeout func_only: False
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7207497Z created: 2/2 workers
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7207692Z 2 workers [73 items]
+slow-suite	Run the slow suite	2026-10-13T04:34:01.7207825Z 
+slow-suite	Run the slow suite	2026-10-13T04:38:09.6665339Z ........................................................................ [ 98%]
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4348982Z .                                                                        [100%]
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4349575Z ==================================== ERRORS ====================================
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4350256Z ______________ ERROR collecting tests/test_wf_attack_loop_docs.py ______________
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4350727Z tests/test_wf_attack_loop_docs.py:44: in <module>
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4351147Z     else _evidence_measurements_dir()
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4351395Z          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4351681Z tests/test_wf_attack_loop_docs.py:31: in _evidence_measurements_dir
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4352030Z     return _evidence_mod.evidence_measurements_dir()
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4352302Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4352573Z tests/_evidence.py:106: in evidence_measurements_dir
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4352847Z     ref = evidence_ref()
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4353057Z           ^^^^^^^^^^^^^^
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4353267Z tests/_evidence.py:36: in evidence_ref
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4353508Z     raise AssertionError(
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4354482Z E   AssertionError: the evidence estate is unreachable: neither origin/evidence/taskqflow nor evidence/taskqflow resolves — the extraction's home is evidence/taskqflow; fetch it (git fetch origin evidence/taskqflow)
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4355314Z ______________ ERROR collecting tests/test_wf_attack_loop_docs.py ______________
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4355673Z tests/test_wf_attack_loop_docs.py:44: in <module>
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4357713Z     else _evidence_measurements_dir()
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4358027Z          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4358418Z tests/test_wf_attack_loop_docs.py:31: in _evidence_measurements_dir
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4358858Z     return _evidence_mod.evidence_measurements_dir()
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4359206Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4359872Z tests/_evidence.py:106: in evidence_measurements_dir
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4360144Z     ref = evidence_ref()
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4360346Z           ^^^^^^^^^^^^^^
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4360566Z tests/_evidence.py:36: in evidence_ref
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4360807Z     raise AssertionError(
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4361647Z E   AssertionError: the evidence estate is unreachable: neither origin/evidence/taskqflow nor evidence/taskqflow resolves — the extraction's home is evidence/taskqflow; fetch it (git fetch origin evidence/taskqflow)
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4362489Z =============================== warnings summary ===============================
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4362790Z src/taskq/testing/job_context.py:34
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4363026Z src/taskq/testing/job_context.py:34
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4363705Z   /home/runner/work/TaskQ/TaskQ/src/taskq/testing/job_context.py:34: PytestCollectionWarning: cannot collect test class 'JobContext' because it has a __init__ constructor (from: tests/test_job_context_mirror_field_parity.py)
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4364402Z     @dataclass(frozen=True, slots=True)
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4364555Z 
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4364753Z -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4365111Z =========================== short test summary info ============================
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4365622Z SKIPPED [1] tests/test_docs_examples.py:55: docs examples execute only with TASKQ_DOCS_EXAMPLES=1 (needs Docker for the PG/Redis containers)
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4366953Z ERROR tests/test_wf_attack_loop_docs.py - AssertionError: the evidence estate is unreachable: neither origin/evidence/taskqflow nor evidence/taskqflow resolves — the extraction's home is evidence/taskqflow; fetch it (git fetch origin evidence/taskqflow)
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4368394Z ERROR tests/test_wf_attack_loop_docs.py - AssertionError: the evidence estate is unreachable: neither origin/evidence/taskqflow nor evidence/taskqflow resolves — the extraction's home is evidence/taskqflow; fetch it (git fetch origin evidence/taskqflow)
+slow-suite	Run the slow suite	2026-10-13T04:38:14.4369220Z ======= 73 passed, 1 skipped, 2 warnings, 2 errors in 283.32s (0:04:43) ========
+slow-suite	Run the slow suite	2026-10-13T04:38:14.5292160Z ##[error]Process completed with exit code 1.
+load-sensitive	Run the load-sensitive suite serially	﻿2026-10-13T04:33:31.5808580Z ##[group]Run uv run --no-sync pytest -m "load_sensitive"
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:33:31.5809013Z ^[[36;1muv run --no-sync pytest -m "load_sensitive"^[[0m
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:33:31.5871962Z shell: /usr/bin/bash -e {0}
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:33:31.5872224Z env:
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:33:31.5872512Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:33:31.5872947Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:33:31.5873265Z   UV_PYTHON: 3.12
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:33:31.5873477Z ##[endgroup]
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7039385Z ============================= test session starts ==============================
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7041083Z platform linux -- Python 3.12.15, pytest-9.1.1, pluggy-1.6.0
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7042012Z Using --randomly-seed=2590658644
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7042735Z rootdir: /home/runner/work/TaskQ/TaskQ
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7043192Z configfile: pyproject.toml
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7043535Z testpaths: tests
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7044541Z plugins: asyncio-1.4.0, randomly-5.0.0, gremlins-1.9.0, timeout-2.4.0, respx-0.23.1, hypothesis-6.168.3, cov-7.1.0, xdist-3.8.0, anyio-4.15.1
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7046098Z asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=module, asyncio_default_test_loop_scope=module
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7046877Z timeout: 300.0s
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7047200Z timeout method: signal
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7047541Z timeout func_only: False
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7048157Z collected 13654 items / 1 error / 13556 deselected / 1 skipped / 98 selected
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7048599Z 
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7048934Z ==================================== ERRORS ====================================
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7049798Z ______________ ERROR collecting tests/test_wf_attack_loop_docs.py ______________
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7050470Z tests/test_wf_attack_loop_docs.py:44: in <module>
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7051214Z     else _evidence_measurements_dir()
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7051616Z          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7052188Z tests/test_wf_attack_loop_docs.py:31: in _evidence_measurements_dir
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7052800Z     return _evidence_mod.evidence_measurements_dir()
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7053269Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7053779Z tests/_evidence.py:106: in evidence_measurements_dir
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7054204Z     ref = evidence_ref()
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7054529Z           ^^^^^^^^^^^^^^
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7054905Z tests/_evidence.py:36: in evidence_ref
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7055288Z     raise AssertionError(
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7057154Z E   AssertionError: the evidence estate is unreachable: neither origin/evidence/taskqflow nor evidence/taskqflow resolves — the extraction's home is evidence/taskqflow; fetch it (git fetch origin evidence/taskqflow)
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7058983Z =============================== warnings summary ===============================
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7059518Z src/taskq/testing/job_context.py:34
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7060969Z   /home/runner/work/TaskQ/TaskQ/src/taskq/testing/job_context.py:34: PytestCollectionWarning: cannot collect test class 'JobContext' because it has a __init__ constructor (from: tests/test_job_context_mirror_field_parity.py)
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7061981Z     @dataclass(frozen=True, slots=True)
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7062174Z 
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7062476Z -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7063030Z =========================== short test summary info ============================
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7063861Z SKIPPED [1] tests/test_docs_examples.py:55: docs examples execute only with TASKQ_DOCS_EXAMPLES=1 (needs Docker for the PG/Redis containers)
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7065659Z ERROR tests/test_wf_attack_loop_docs.py - AssertionError: the evidence estate is unreachable: neither origin/evidence/taskqflow nor evidence/taskqflow resolves — the extraction's home is evidence/taskqflow; fetch it (git fetch origin evidence/taskqflow)
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7066861Z !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:13.7067685Z ========== 1 skipped, 13556 deselected, 1 warning, 1 error in 39.04s ===========
+load-sensitive	Run the load-sensitive suite serially	2026-10-13T04:34:15.4360428Z ##[error]Process completed with exit code 2.
