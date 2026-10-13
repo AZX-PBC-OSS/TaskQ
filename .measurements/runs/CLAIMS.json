@@ -23718,6 +23718,12 @@
       "file": "evidence-heads-verify-20261013T114500Z.txt",
       "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
       "captured_at": "2026-10-13T11:12:13"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-20261013T121500Z.txt",
+      "head_sha": "bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8",
+      "captured_at": "2026-10-13T11:16:10"
     }
   ]
 }

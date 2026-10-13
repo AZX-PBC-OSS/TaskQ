@@ -1,0 +1,7 @@
+# rv2-13-green at the signature-cures head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8 — the CLOSE: the head-stamp law greens on the committed tree at the estate's tip — GREEN x2
+--- run 1:
+1 passed in 7.11s
+--- run 2:
+1 passed in 6.83s
+rc=0
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8
