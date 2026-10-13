@@ -1,0 +1,8 @@
+# THE SIGNATURE-CURES LANE'S STAGED SLOT at head bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8 — captured 2026-10-13T11:04:03
+The re-stamp's staged slot (stage 2, the loop-breaker): the fill run's
+green output appends its own claim — the registry's append-order tail —
+after the estate carries this slot; no verdict is recorded here yet —
+the content door's typed warning (unparsable-capture) is this slot's
+honest state until the fill. The red-content phase-A captures below
+this entry are history (implicitly superseded by this tail).
+head: bb8a20cc6c4fbdc01c18e3b455ce88489daad6e8
