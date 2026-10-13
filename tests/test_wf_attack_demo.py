@@ -265,6 +265,8 @@ _PROM_LINE_RE = re.compile(
 
 # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-5]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: the live finding
 def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
+    from tests import _evidence as _evidence
+
     """THE EVIDENCE-LAW GUARD: every ``.prom`` artifact under
     ``.measurements`` must parse as VALID Prometheus text exposition —
     the strict name grammar (the teeth: the illegal-dots name reds
@@ -273,23 +275,32 @@ def test_every_prom_artifact_is_valid_prometheus_exposition() -> None:
     # INDEX (the claims registry), never by the directory's existence —
     # a concurrent writer's redlog-captures dir can exist locally without
     # the estate (the partial-local-dir race). No local registry → the
-    # EVIDENCE BRANCH's staged copy — the same files, one indirection.
+    # EVIDENCE BRANCH's ls-tree/show face (the tree listing's own read —
+    # the staged-copy face's sibling; this read PROVES its subject: the
+    # failure names the ref it walked).
     measurements = REPO_ROOT / ".measurements"
-    if not (measurements / "runs" / "CLAIMS.json").is_file():
+    artifacts: list[tuple[str, str]] = []  # (rel path, content)
+    if (measurements / "runs" / "CLAIMS.json").is_file():
+        for path in sorted(measurements.rglob("*.prom")):
+            artifacts.append((str(path.relative_to(REPO_ROOT)), path.read_text()))
+    else:
         from tests import _evidence as _evidence_mod
 
-        measurements = _evidence_mod.evidence_measurements_dir()
-    artifacts = sorted(measurements.rglob("*.prom"))
-    assert artifacts, "no .prom artifacts under .measurements — the guard lost its subject"
+        for rel in _evidence_mod.evidence_glob("*.prom"):
+            artifacts.append((rel, _evidence_mod.evidence_show(rel)))
+    assert artifacts, (
+        "no .prom artifacts under .measurements — the guard lost its subject "
+        f"(the local estate present: {(measurements / 'runs' / 'CLAIMS.json').is_file()}; "
+        f"the evidence ref: {_evidence.evidence_ref() if not (measurements / 'runs' / 'CLAIMS.json').is_file() else 'local'})"
+    )
     violations: list[str] = []
-    for path in artifacts:
-        text = path.read_text()
+    for rel, text in artifacts:
         for lineno, line in enumerate(text.splitlines(), 1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
             if _PROM_LINE_RE.match(stripped) is None:
-                violations.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {stripped!r}")
+                violations.append(f"{rel}:{lineno}: {stripped!r}")
         try:
             from prometheus_client.parser import (  # Why: optional-extra import inside the check.
                 text_string_to_metric_families,
