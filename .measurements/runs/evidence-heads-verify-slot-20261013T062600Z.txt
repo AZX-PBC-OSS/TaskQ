@@ -1,2 +1,2 @@
-# evidence-heads-verify's slot staged at head 8b8a6e76c19f1cd1c116238cb93527bd53d426d0 — captured 2026-10-12T23:26:00-07:00
-the verifier's receipt slot — the rc=0 receipt fills this file in place; no verdict is recorded yet — the content door's typed warning is this slot's honest state until the fill.
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/wt-land/.measurements/runs is recorded at THIS head (8b8a6e76c19f) or explicitly superseded
+rc=0

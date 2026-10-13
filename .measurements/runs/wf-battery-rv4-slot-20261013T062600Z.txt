@@ -1,2 +1,25 @@
-# wf-battery-rv4's slot staged at head 8b8a6e76c19f1cd1c116238cb93527bd53d426d0 — captured 2026-10-12T23:26:00-07:00
-the wf battery's slot (legs + cov) — the green run's output fills this file in place; no verdict is recorded yet — the content door's typed warning is this slot's honest state until the fill.
+# the wf battery's GREEN run at head 8b8a6e76c19f1cd1c116238cb93527bd53d426d0 — captured 2026-10-13T06:28:47Z — the leg + cov slot's fill
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  9%]
+........................................................................ [ 19%]
+........................................................................ [ 29%]
+........................................................................ [ 39%]
+........................................................................ [ 48%]
+........................................................................ [ 58%]
+........................................................................ [ 68%]
+........................................................................ [ 78%]
+........................................................................ [ 88%]
+........................................................................ [ 97%]
+...............                                                          [100%]
+=============================== warnings summary ===============================
+tests/test_wf_progress_emission.py::test_flush_failure_never_fails_the_body
+  /tmp/opencode/wt-land/src/taskq/workflows/_progress.py:349: RuntimeWarning: coroutine 'test_flush_failure_never_fails_the_body.<locals>.BrokenPool.acquire' was never awaited
+    async with self._pool.acquire() as conn:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+735 passed, 1 warning in 79.58s (0:01:19)
+rc=0

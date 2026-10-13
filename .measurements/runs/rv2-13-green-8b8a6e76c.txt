@@ -1,0 +1,4 @@
+# rv2-13's slot — the GREEN runs x2 at head 8b8a6e76c19f1cd1c116238cb93527bd53d426d0 — captured 2026-10-13T06:30:14Z
+1 passed in 7.50s
+1 passed in 7.10s
+rc=0
