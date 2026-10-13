@@ -1,3 +1,2 @@
-head: da4d52331c01cada7bacb744239306348f97806e — rv2-13's TWO green legs at the final estate (the sha cross-check IS the law)
-1 passed in 7.83s
-1 passed in 7.20s
+# rv2-13-green's slot staged at head da4d52331c01cada7bacb744239306348f97806e — captured 2026-10-12T19:30:03Z
+THE GRAND MERGE'S STAGED SLOT: rv2-13's receipt slot — the green rv2-13 run's output fills this file in place; no verdict is recorded yet — the content door's typed warning (unparsable-capture) is this slot's honest state until the fill.
