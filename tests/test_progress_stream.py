@@ -441,6 +441,158 @@ async def test_redis_state_change_not_deduplicated_by_seq() -> None:
     assert events[2].kind == "state_change"
 
 
+# ── Redis path: the snapshot replay at subscribe ────────────────────────
+
+
+async def test_redis_replays_running_row_snapshot_before_the_live_tail() -> None:
+    """A re-attach to a LIVE job gets the row's current snapshot as the
+    FIRST event, then the live tail: a fresh consumer (a transport cut is
+    routine) must not starve until the actor's next publish — minutes on
+    a slow actor. The parity contract is ``TaskQ.stream``'s: the first
+    event is the row as it stands when the stream is opened."""
+    settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
+    # The snapshot read: running with three published ticks while the
+    # consumer was away. The handle's row is what the consumer last
+    # knew: running, nothing published yet.
+    snapshot = _row(status="running", progress_seq=3, job_id=_JOB_ID)
+    backend = _stub_backend(rows=[snapshot])
+    row = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+
+    messages = [
+        {"type": "subscribe", "data": None, "channel": f"taskq:{_SCHEMA_LABEL}:progress:{_JOB_ID}"},
+        {
+            "type": "message",
+            "data": _progress_event_bytes(seq=4, kind="progress", status="running", step=1),
+        },
+        {
+            "type": "message",
+            "data": _progress_event_bytes(
+                seq=5, kind="state_change", status="succeeded", terminal=True
+            ),
+        },
+    ]
+    pubsub = _make_pubsub_mock(messages)
+
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+
+    handle = _handle_from_backend(backend, row=row, redis_client=redis_client, settings=settings)
+
+    events: list[ProgressEvent] = []
+    async for event in handle.progress_stream():
+        events.append(event)
+
+    assert len(events) == 3
+    # The FIRST event is the row's current snapshot, a plain progress
+    # event, terminal False — then the live tail flows.
+    assert (events[0].kind, events[0].seq, events[0].terminal) == ("progress", 3, False)
+    assert events[0].status == "running"
+    assert events[1].seq == 4
+    assert events[1].step == 1
+    assert events[2].kind == "state_change"
+    assert events[2].terminal is True
+
+
+async def test_redis_replays_snapshot_when_only_the_status_moved() -> None:
+    """A job that moved pending → running while the consumer was away,
+    before its first progress tick (``progress_seq == 0``), still
+    replays: the status moved past the row the handle holds."""
+    settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
+    snapshot = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+    backend = _stub_backend(rows=[snapshot])
+    row = _row(status="pending", progress_seq=0, job_id=_JOB_ID)
+
+    messages = [
+        {"type": "subscribe", "data": None, "channel": f"taskq:{_SCHEMA_LABEL}:progress:{_JOB_ID}"},
+        {
+            "type": "message",
+            "data": _progress_event_bytes(seq=1, kind="progress", status="running"),
+        },
+        {
+            "type": "message",
+            "data": _progress_event_bytes(
+                seq=2, kind="state_change", status="succeeded", terminal=True
+            ),
+        },
+    ]
+    pubsub = _make_pubsub_mock(messages)
+
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+
+    handle = _handle_from_backend(backend, row=row, redis_client=redis_client, settings=settings)
+
+    events: list[ProgressEvent] = []
+    async for event in handle.progress_stream():
+        events.append(event)
+
+    assert len(events) == 3
+    assert (events[0].kind, events[0].seq, events[0].status) == ("progress", 0, "running")
+    assert events[0].terminal is False
+    assert events[2].terminal is True
+
+
+async def test_redis_terminal_row_still_yields_and_returns() -> None:
+    """An already-terminal job yields exactly its terminal event and
+    returns — today's behavior, unchanged by the snapshot replay (the
+    subscription is never opened)."""
+    settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
+    backend = _stub_backend(rows=[_row(status="succeeded", progress_seq=3, job_id=_JOB_ID)])
+    row = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+
+    pubsub = _make_pubsub_mock([])  # never reached: the terminal return precedes the subscribe
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+
+    handle = _handle_from_backend(backend, row=row, redis_client=redis_client, settings=settings)
+
+    events: list[ProgressEvent] = []
+    async for event in handle.progress_stream():
+        events.append(event)
+
+    assert len(events) == 1
+    assert events[0].terminal is True
+    assert events[0].status == "succeeded"
+    assert events[0].kind == "state_change"
+
+
+async def test_redis_no_phantom_snapshot_for_a_contentless_row() -> None:
+    """A non-terminal row with nothing to replay — ``progress_seq == 0``
+    and no status change from the row the handle holds — yields nothing
+    extra: the first event is the live tail, never a phantom duplicate
+    of state the consumer already holds."""
+    settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
+    snapshot = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+    backend = _stub_backend(rows=[snapshot])
+    row = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+
+    messages = [
+        {"type": "subscribe", "data": None, "channel": f"taskq:{_SCHEMA_LABEL}:progress:{_JOB_ID}"},
+        {
+            "type": "message",
+            "data": _progress_event_bytes(seq=1, kind="progress", status="running"),
+        },
+        {
+            "type": "message",
+            "data": _progress_event_bytes(
+                seq=2, kind="state_change", status="succeeded", terminal=True
+            ),
+        },
+    ]
+    pubsub = _make_pubsub_mock(messages)
+
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+
+    handle = _handle_from_backend(backend, row=row, redis_client=redis_client, settings=settings)
+
+    events: list[ProgressEvent] = []
+    async for event in handle.progress_stream():
+        events.append(event)
+
+    assert [event.seq for event in events] == [1, 2]
+
+
 # ── JobsClient lifecycle ────────────────────────────────────────────────
 
 

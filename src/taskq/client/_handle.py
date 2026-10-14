@@ -384,10 +384,19 @@ class JobHandle[R: BaseModel | None]:
         pub/sub), and :class:`~taskq.exceptions.StreamUnavailable` when
         the Postgres poll could not re-read the row for 30 s straight.
 
-        The stream terminates: on the Redis path the job's current row is
-        read once before subscribing (an already-terminal job yields its
-        terminal event and returns instead of waiting on a channel that
-        will never speak again), every poll timeout re-reads the row as a
+        The first event on the Redis path is the row as it stands when
+        the stream is opened — the same contract :meth:`TaskQ.stream`
+        documents: an already-terminal job yields its terminal event and
+        returns instead of waiting on a channel that will never speak
+        again, and a non-terminal row carrying content (progress has
+        moved, or the status moved past the row the handle was
+        constructed with) is replayed as the first event, so a fresh
+        consumer — a re-attach after a transport cut — does not starve
+        until the actor's next publish. A row with nothing to replay
+        (``progress_seq == 0`` and no status change) yields nothing
+        extra.
+
+        The stream terminates: every poll timeout re-reads the row as a
         safety net (a terminal write whose pub/sub message was dropped —
         Redis pub/sub is fire-and-forget — still ends the stream), and a
         ``terminal=True`` event ends it as on the PG path. The one case
@@ -427,6 +436,23 @@ class JobHandle[R: BaseModel | None]:
             if current is not None and current.status in TERMINAL_STATUSES:
                 yield self._row_to_progress_event(current, status_changed=True)
                 return
+            # Native replay for a fresh consumer: a non-terminal row that
+            # carries content — progress has moved (progress_seq > 0), or
+            # the status moved past the row the handle was constructed
+            # with — is yielded as the FIRST event, the same "the row as
+            # it stands when the stream is opened" contract TaskQ.stream
+            # documents. Without it a re-attach after a transport cut
+            # starved until the actor's NEXT publish, minutes on a slow
+            # actor. A seq-0 row unchanged from the handle's row yields
+            # nothing: the consumer already holds that state, and a
+            # phantom first event would double-deliver it. Overlap with
+            # the live tail is deduped downstream (decode drops
+            # seq <= last_seq below, the on-timeout re-fetch drops
+            # unchanged rows).
+            if current is not None and (
+                current.progress_seq > 0 or current.status != self._row.status
+            ):
+                yield self._row_to_progress_event(current, status_changed=False)
             # aclosing: closed FROM UPSTREAM on every exit that is not the
             # transport's own exhaustion - a consumer's ``break`` on the
             # terminal event closes it via GeneratorExit inside the
