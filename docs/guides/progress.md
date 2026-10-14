@@ -400,7 +400,7 @@ between polls.
 | Environment variable | Default | Description |
 |---|---|---|
 | `TASKQ_REDIS_URL` | `None` | Redis connection URL. Required for real-time progress delivery. |
-| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `16384` (16 KiB) | Maximum serialised size of the `data` dict passed to `ctx.progress()`. Range: 1 KiB to 1 MiB. Exceeding this raises `ProgressTooLarge`. |
+| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `16384` (16 KiB) | Maximum serialised size of the `data` dict passed to `ctx.progress()`. Range: 1 KiB to 1 MiB. Exceeding this raises `ProgressTooLarge`. Snapshot-style publishers — actors that send the full document as `data` on every tick — must size the cap at or above their payload bound: `data` only grows, so once one snapshot exceeds the cap every later snapshot raises too, and the durable row freezes at the last accepted state until the job reaches a terminal status. |
 | `TASKQ_PROGRESS_COALESCE_INTERVAL` | `0.5` | Seconds between periodic flush ticks that write coalesced state to Postgres. Minimum: 0.1 s. |
 | `TASKQ_PROGRESS_PUBLISH_GLOBAL` | `true` | When `true`, every event is also published to a schema-wide fanout channel in addition to the per-job channel. Disable in high-throughput deployments without a global subscriber. |
 
