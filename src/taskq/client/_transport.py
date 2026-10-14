@@ -97,6 +97,10 @@ async def redis_event_stream[EventT](
     poll_timeout: float,
     decode_message: Callable[[str], Awaitable[EventT | None]],
     on_timeout: Callable[[], Awaitable[EventT | None]] | None = None,
+    *,
+    job_id: JobId,
+    failure_budget: float = POLL_FAILURE_BUDGET_SECS,
+    clock: Callable[[], float] = time.monotonic,
 ) -> AsyncGenerator[EventT, None]:
     """Subscribe to a Redis channel and yield decoded events.
 
@@ -105,12 +109,26 @@ async def redis_event_stream[EventT](
     valid message; *on_timeout* is called when get_message returns None
     (poll timeout). Both may return None to skip yielding.
 
+    An infrastructure error out of *on_timeout* (a Postgres pool or
+    connection failure, an OSError, a timeout) does not end the stream:
+    one warning per failed re-read (``stream-poll-error``, the job id and
+    the exception type only - never the message, which can carry
+    server-side text) and the next poll timeout is the retry, the same
+    survive-and-retry the PG poll transport gives its fetches. Failures
+    spanning more than *failure_budget* seconds (measured on *clock*)
+    end the stream with :class:`~taskq.exceptions.StreamUnavailable`,
+    logged as ``stream-poll-abandoned``; a successful on_timeout read
+    resets the run. Any non-infra error propagates untouched - KeyError
+    among them, ``TaskQ.stream``'s vanished-row contract.
+
     The return type is the async-generator type, not the iterator protocol:
     consumers close this generator FROM UPSTREAM (contextlib.aclosing) on
     every exit that is not exhaustion, and aclosing needs the aclose
     surface.
     """
     pubsub = redis_client.pubsub()
+    failures_since: float | None = None  # clock reading of the first failure in the current run
+    consecutive_failures = 0
     try:
         await pubsub.subscribe(channel)
         while True:
@@ -120,7 +138,51 @@ async def redis_event_stream[EventT](
             )
             if raw_msg is None:
                 if on_timeout is not None:
-                    event = await on_timeout()
+                    try:
+                        event = await on_timeout()
+                    except Exception as exc:
+                        if not _is_infra_error(exc):
+                            raise
+                        now = clock()
+                        if failures_since is None:
+                            failures_since = now
+                        consecutive_failures += 1
+                        elapsed = now - failures_since
+                        if elapsed >= failure_budget:
+                            logger.error(
+                                "stream-poll-abandoned",
+                                job_id=str(job_id),
+                                channel=channel,
+                                error_type=type(exc).__name__,
+                                consecutive_failures=consecutive_failures,
+                                elapsed_secs=round(elapsed, 3),
+                                failure_budget_secs=failure_budget,
+                            )
+                            raise StreamUnavailable(
+                                job_id,
+                                consecutive_failures=consecutive_failures,
+                                elapsed=elapsed,
+                                last_error=exc,
+                            ) from exc
+                        # One warning per failed re-read, named for the
+                        # job and the exception type: enough to trace an
+                        # outage, without the message text (server errors
+                        # can quote data). The next poll timeout is the
+                        # retry; a blip that clears is invisible beyond
+                        # this line.
+                        logger.warning(
+                            "stream-poll-error",
+                            job_id=str(job_id),
+                            error_type=type(exc).__name__,
+                            consecutive_failures=consecutive_failures,
+                            elapsed_secs=round(elapsed, 3),
+                        )
+                        continue
+                    # A successful re-read ends the failure run, even
+                    # when it returns None (the row is unchanged - a
+                    # healthy read either way).
+                    failures_since = None
+                    consecutive_failures = 0
                     if event is not None:
                         yield event
                         if _is_terminal(event):

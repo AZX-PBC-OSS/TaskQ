@@ -382,7 +382,11 @@ class JobHandle[R: BaseModel | None]:
         support progress streaming (the in-memory backend sets its
         ``supports_progress_stream`` capability to False, it has no
         pub/sub), and :class:`~taskq.exceptions.StreamUnavailable` when
-        the Postgres poll could not re-read the row for 30 s straight.
+        the row could not be re-read for 30 s straight — the Postgres
+        poll's own reads, and on the Redis path the safety-net re-reads
+        behind the subscription (an infra error out of a re-read is
+        retried inside a 30 s budget, one warning per failure; a
+        non-infra error propagates untouched).
 
         The first event on the Redis path is the row as it stands when
         the stream is opened — the same contract :meth:`TaskQ.stream`
@@ -557,6 +561,7 @@ class JobHandle[R: BaseModel | None]:
                 poll_timeout=30.0,
                 decode_message=decode,
                 on_timeout=_refetch,
+                job_id=self.job_id,
             )
         ) as stream:
             async for event in stream:

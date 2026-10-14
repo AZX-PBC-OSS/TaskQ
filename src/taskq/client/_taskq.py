@@ -1633,6 +1633,7 @@ async def _stream_redis(
             poll_timeout=poll_timeout,
             decode_message=decode,
             on_timeout=_refetch,
+            job_id=job_id,
         )
     ) as feed:
         async for event in feed:
