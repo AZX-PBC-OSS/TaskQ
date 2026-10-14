@@ -161,6 +161,7 @@ else:
 
 __all__ = [
     "RUN_TOKEN_ENV_VAR",
+    "TEST_REDIS_CONNECT_TIMEOUT_SECS",
     "ActorRunnerCallable",
     "JobsApp",
     "ModulePgSchema",
