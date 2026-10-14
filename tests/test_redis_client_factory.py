@@ -76,6 +76,20 @@ def test_build_redis_client_pins_socket_timeout() -> None:
     assert kwargs["socket_timeout"] == 5.0
 
 
+def test_build_redis_client_pins_socket_connect_timeout() -> None:
+    # The connect phase's bound, pinned for the same reason as
+    # socket_timeout above: redis-py 8.x defaults socket_connect_timeout
+    # to 5s independently of socket_timeout, the fail-closed bounded wall
+    # includes it (a black-holed broker burns this budget per attempt),
+    # and a redis-py minor that moved the default would silently move
+    # that wall. Behavior is byte-identical today. The TEST broker
+    # fixtures dial with a deliberately different budget —
+    # taskq.testing.fixtures.TEST_REDIS_CONNECT_TIMEOUT_SECS — because a
+    # loaded runner's container DNS is setup weather, not unavailability.
+    kwargs = build_redis_client("redis://localhost:6379/0").connection_pool.connection_kwargs
+    assert kwargs["socket_connect_timeout"] == 5.0
+
+
 def test_build_redis_client_returns_fresh_retry_per_call() -> None:
     # Retry/backoff objects carry per-attempt state; two clients must never
     # share one Retry instance.
