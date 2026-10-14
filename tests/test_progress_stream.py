@@ -501,7 +501,9 @@ async def test_redis_replays_running_row_snapshot_before_the_live_tail() -> None
 async def test_redis_replays_snapshot_when_only_the_status_moved() -> None:
     """A job that moved pending → running while the consumer was away,
     before its first progress tick (``progress_seq == 0``), still
-    replays: the status moved past the row the handle holds."""
+    replays: the status moved past the row the handle holds. The replay
+    is labeled state_change — the status moved — matching the PG
+    fallback's first event for the same transition."""
     settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
     snapshot = _row(status="running", progress_seq=0, job_id=_JOB_ID)
     backend = _stub_backend(rows=[snapshot])
@@ -532,7 +534,7 @@ async def test_redis_replays_snapshot_when_only_the_status_moved() -> None:
         events.append(event)
 
     assert len(events) == 3
-    assert (events[0].kind, events[0].seq, events[0].status) == ("progress", 0, "running")
+    assert (events[0].kind, events[0].seq, events[0].status) == ("state_change", 0, "running")
     assert events[0].terminal is False
     assert events[2].terminal is True
 

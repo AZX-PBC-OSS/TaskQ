@@ -2135,7 +2135,10 @@ class WorkerSettings(TaskQSettings):
         le=1048576,
         description="TASKQ_PROGRESS_DATA_MAX_BYTES. Maximum serialised byte "
         "length of the ``data`` dict in a single progress call. Payloads "
-        "exceeding this limit raise ProgressTooLarge . "
+        "exceeding this limit raise ProgressTooLarge. Snapshot-style "
+        "publishers (full-document snapshots as ``data``) must size the "
+        "cap at or above their payload bound: once one snapshot exceeds "
+        "it, every later snapshot raises too. "
         "Range: 1 KiB - 1 MiB; default 16 KiB.",
     )
     progress_publish_global: bool = Field(

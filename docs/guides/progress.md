@@ -145,11 +145,14 @@ async for event in handle.progress_stream():
 ```
 
 `progress_stream()` yields `ProgressEvent` objects and stops automatically when a
-`terminal=True` event is received.
+`terminal=True` event is received. The first event is the row as it stands when the
+stream opens — the same contract `TaskQ.stream()` documents — so a consumer attaching
+to an already-running job does not starve until the actor's next publish.
 
-**Failure budget.** On the Postgres poll transport, a blip shorter than the transport's failure
-budget is retried silently (beyond a warning per failed poll). If every fetch fails for longer
-than the budget, the stream ends by raising `StreamUnavailable` — the caller's `async for`
+**Failure budget.** A blip shorter than the transport's failure budget is retried silently
+(beyond a warning per failed poll) — on the Postgres poll transport that is every fetch, and
+on the Redis path, the safety-net re-reads behind the subscription. If every fetch fails for
+at least the budget, the stream ends by raising `StreamUnavailable` — the caller's `async for`
 cannot wait forever on a database that is not coming back; the last failure is chained as
 `__cause__`. See the [Exceptions API reference](../api-reference/exceptions.md).
 

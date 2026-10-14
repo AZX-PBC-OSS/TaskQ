@@ -456,7 +456,15 @@ class JobHandle[R: BaseModel | None]:
             if current is not None and (
                 current.progress_seq > 0 or current.status != self._row.status
             ):
-                yield self._row_to_progress_event(current, status_changed=False)
+                # The same discriminator the admission condition above
+                # uses: a replay whose status moved past the row the
+                # handle holds is a state_change, matching the PG
+                # fallback's first event (its last_status seeds None, so
+                # its first event is always kind="state_change");
+                # progress-only movement stays kind="progress".
+                yield self._row_to_progress_event(
+                    current, status_changed=current.status != self._row.status
+                )
             # aclosing: closed FROM UPSTREAM on every exit that is not the
             # transport's own exhaustion - a consumer's ``break`` on the
             # terminal event closes it via GeneratorExit inside the

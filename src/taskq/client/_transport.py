@@ -115,7 +115,7 @@ async def redis_event_stream[EventT](
     the exception type only - never the message, which can carry
     server-side text) and the next poll timeout is the retry, the same
     survive-and-retry the PG poll transport gives its fetches. Failures
-    spanning more than *failure_budget* seconds (measured on *clock*)
+    spanning at least *failure_budget* seconds (measured on *clock*)
     end the stream with :class:`~taskq.exceptions.StreamUnavailable`,
     logged as ``stream-poll-abandoned``; a successful on_timeout read
     resets the run. Any non-infra error propagates untouched - KeyError
@@ -251,7 +251,7 @@ async def pg_poll_event_stream[EventT](
     exception type only - never the message, which can carry server-side
     text) is logged and the loop retries after the next poll interval, the
     same survive-and-retry the LISTEN transport gave connection blips.
-    Consecutive failures spanning more than *failure_budget* seconds
+    Consecutive failures spanning at least *failure_budget* seconds
     (measured on *clock*) end the stream with
     :class:`~taskq.exceptions.StreamUnavailable`, logged as
     ``stream-poll-abandoned``: a database that has not answered in that
