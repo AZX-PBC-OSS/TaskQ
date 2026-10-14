@@ -100,6 +100,22 @@ reverts the default to ``None``. Pubsub blocking reads override it with
 ``math.inf`` — this value never bounds a blocked pubsub read.
 """
 
+SOCKET_CONNECT_TIMEOUT_SECS: float = 5.0
+"""Dialing budget, pinned to redis-py 8.x's asyncio default.
+
+The connect phase's only bound otherwise: redis-py 8 defaults
+``socket_connect_timeout`` to 5s independently of ``socket_timeout``, so
+the fail-closed bounded wall already includes it (a black-holed broker
+- a peer that drops SYN - burns this budget per attempt, and the rate
+limiter's ≈42s acquire measurement assumes it). Stated explicitly for
+the same reason as ``SOCKET_TIMEOUT_SECS``: a redis-py minor that moves
+the default would silently move the wall this tree's fail-closed math
+stands on. The TEST broker fixtures dial with a different, deliberately
+generous budget — ``taskq.testing.fixtures.TEST_REDIS_CONNECT_TIMEOUT_SECS``
+— because a loaded runner's container DNS is setup weather, not
+unavailability.
+"""
+
 
 def build_redis_client(url: str, *, decode_responses: bool = False) -> Any:
     """Build the one redis client shape every TaskQ-internal surface uses.
@@ -136,6 +152,7 @@ def build_redis_client(url: str, *, decode_responses: bool = False) -> Any:
         health_check_interval=HEALTH_CHECK_INTERVAL_SECS,
         socket_keepalive=True,
         socket_timeout=SOCKET_TIMEOUT_SECS,
+        socket_connect_timeout=SOCKET_CONNECT_TIMEOUT_SECS,
         retry=Retry(
             ExponentialBackoff(cap=RETRY_BACKOFF_CAP_SECS, base=RETRY_BACKOFF_BASE_SECS),
             retries=RETRY_RETRIES,
