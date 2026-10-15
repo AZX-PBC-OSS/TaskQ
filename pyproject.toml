@@ -817,7 +817,7 @@ dev = [
     "python-multipart>=0.0.32",
     "pyyaml>=6.0.3",
     "respx>=0.23.1",
-    "ruff>=0.16.5,<0.17",
+    "ruff>=0.16.5,<0.18",
     "testcontainers[postgres,redis]>=4.14.2",
 ]
 # Containerized e2e tier (tests/e2e): container image builds for worker
