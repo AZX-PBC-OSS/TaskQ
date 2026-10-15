@@ -1,0 +1,2 @@
+# the staged slot for the fast tier — the -n 8 fill's tail lands in the CLOSE commit; stamped at the estate re-stamp head b99368e5c614e0e3623768602a78300ff699339d
+head: b99368e5c614e0e3623768602a78300ff699339d

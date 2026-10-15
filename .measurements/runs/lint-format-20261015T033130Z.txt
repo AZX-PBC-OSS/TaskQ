@@ -1,0 +1,8 @@
+# lint-format at the estate re-stamp head b99368e5c614e0e3623768602a78300ff699339d (20261015T033130Z)
+== ruff check .
+All checks passed!
+ruff check rc=0
+== ruff format --check .
+1831 files already formatted
+ruff format rc=0
+head: b99368e5c614e0e3623768602a78300ff699339d
