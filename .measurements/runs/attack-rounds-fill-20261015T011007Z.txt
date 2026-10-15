@@ -1,0 +1,4 @@
+# the attack rounds' FILL — the ZERO-FAILURE round at the estate re-stamp head a7659e35ed61d96de8531d58a06d5c3d452ddd18
+782 passed, 2 skipped, 1 xfailed, 21 warnings in 129.68s (0:02:09)
+rc=0
+head: a7659e35ed61d96de8531d58a06d5c3d452ddd18

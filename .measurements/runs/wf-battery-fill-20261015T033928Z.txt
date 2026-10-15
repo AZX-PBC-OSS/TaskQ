@@ -1,0 +1,4 @@
+# the wf battery's FILL — the ZERO-FAILURE run at the estate re-stamp head b99368e5c614e0e3623768602a78300ff699339d — every battery-family stem's fill
+1 failed, 695 passed, 1 warning in 118.44s (0:01:58)
+rc=1
+head: b99368e5c614e0e3623768602a78300ff699339d
