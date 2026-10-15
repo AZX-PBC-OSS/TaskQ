@@ -11,7 +11,6 @@ preserved without test-file changes.
 """
 
 import asyncio
-import contextlib
 import traceback
 import warnings
 from collections.abc import Awaitable, Callable, Iterable
@@ -24,6 +23,7 @@ import structlog
 from opentelemetry.trace import Span
 from pydantic import BaseModel
 
+from taskq._reaper import reap_cancelled_child
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import (
     ErrorInfo,
@@ -1206,8 +1206,7 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
         # the drain's in-flight exception (if any) intact.
         if poller is not None:
             poller.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poller
+            await reap_cancelled_child(poller)
 
 
 # ── In-memory wait_for_batch simulation ─────────────────────────────────

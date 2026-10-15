@@ -678,7 +678,30 @@ taskq job show JOB_ID
 |---|---|---|
 | `JOB_ID` | `UUID` | The job's id. A non-UUID value is rejected as a usage error before any database access. |
 
-Prints the operator-facing fields of the stored row: id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed by default, keeping a terminal read from dragging arbitrarily large blobs onto the wire; `error_traceback` and `payload` are available under the opt-in flags below. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
+Prints the operator-facing fields of the stored row: id, actor, queue, status, priority, attempt, max_attempts, retry_kind, the four timestamps, the row's `tags` (the operator's grouping/filtering surface — `(none)` when the row carries none), and (only when set) `error_class`/`error_message` and `idempotency_key`. `payload`, `result` and `error_traceback` are deliberately not printed by default, keeping a terminal read from dragging arbitrarily large blobs onto the wire; `error_traceback` and `payload` are available under the opt-in flags below. A row found in `jobs_archive` is marked `archived: yes`; see [jobs-clients.md](jobs-clients.md) for the archival lifecycle.
+
+**The lease face (live rows only).** For a non-terminal row (`pending`/`scheduled`/`running`) the command also prints the row's liveness: `locked_by_worker`, `last_heartbeat_at`, `lock_expires_at`, and the lease verdict — `lease: held (the heartbeat renews it while the holder lives)` while the lease is in the future, or, once `lock_expires_at` has passed:
+
+```
+lease: LAPSED (142s ago) — the holder is presumed DEAD: this is 'the worker
+died', not 'the work is slow'. The reclaim sweep repends the row (or crashes
+it past the attempt budget) within TASKQ_SWEEP_INTERVAL (default 30s) — but
+only while a leader is up: a lapsed lease with no live worker stays running
+until one returns. Confirm the death: taskq job events <id>
+```
+
+The distinction is the 3am question's answer: a `running` row whose lease is fresh is work in progress; a `running` row whose lease has lapsed has a dead holder. The reclaim sweep writes one `job_events` row per reclaimed job (`state_change`, `reason: lock_expired`, carrying the dead worker's id), so `taskq job events` confirms the death from the record. A terminal row prints no lease face — its lease columns are history, not liveness.
+
+**The cache-hit receipt.** A workflow node whose result came from the cross-run step cache (T25 — the body never executed; an earlier run's result was delivered) prints the receipt the row carries at `metadata.wf_cache_hit`:
+
+```
+cache_hit: the body did NOT run — an earlier run's cached result was delivered (source: the jobs row's metadata.wf_cache_hit)
+  producing run: 01a130f9-f20a-73a3-bb37-d5eac4d34b32
+  address: 57fe1e0198696eeea7ecc518b27a0bd3c68fd05698267324983ca15c4befe041
+  stored_at: 2026-10-12T16:36:28.241707+00:00
+```
+
+A step that succeeded without the line is a step that ran. The receipt is the audit trail's provenance face: the producing run's id is where the result actually came from. To poison-evict a bad cached result, delete the address's row (see the workflow diagnosis runbook's cache paragraph: `DELETE FROM taskq.wf_step_cache WHERE content_address = '<address>'`).
 
 Under `retry_kind="indefinite"` the stored `max_attempts` ceiling is inert: the retry path never consults it, so the command renders it as `(indefinite)`, the same framing the admin UI uses; a bare number would advertise a budget the job is not enforcing. See [retries.md](retries.md#2-retry-kinds).
 
@@ -697,6 +720,7 @@ created_at: 2026-01-01 00:00:00+00:00
 scheduled_at: 2026-01-01 00:00:00+00:00
 started_at: 2026-01-01 00:00:01+00:00
 finished_at: 2026-01-01 00:00:02+00:00
+tags: run:nightly, cycle:2026-01-01T00
 archived: yes
 ```
 
@@ -1290,3 +1314,43 @@ taskq workgroup start workgroup.toml
 The `taskq worker` command exits with the code returned by `worker_main()`. On clean SIGTERM, `worker_main()` returns `0`. With `--until-idle`, `worker_main()` returns `0` (all jobs succeeded), `3` (some jobs failed), or `4` (idle-max-runtime exceeded). A third SIGTERM calls `sys.exit(1)`.
 
 The `taskq workgroup start` command exits 0 on clean shutdown. It exits 1 if the config file is missing, invalid, or if the optional health-check PG pool fails to initialise.
+
+---
+
+## `taskq flows`
+
+The workflow-run surface: **one question, one command** — each verb answers exactly one of the operator's questions, and each number in the output names its evidence source. The write verbs (signal, resolve, cancel, retry) ride the engine's own audit rows ("who did this" is a row, not a log line) with the CLI's principal spelled `cli:<user>`.
+
+| Question | Command |
+|----------|---------|
+| Which runs exist? | `taskq flows list [--limit N]` |
+| What happened / where is it blocked / what happens next? | `taskq flows status <run_id>` |
+| What is this run waiting on? | `taskq flows holds <run_id>` |
+| Deliver a typed signal (by run + node)? | `taskq flows signal <run_id> <node> '<json>' --app myapp.workflows:app` |
+| Reply to a hold BY ID? | `taskq flows resolve <hold_id> '<json>' --app myapp.workflows:app` |
+| Stop the run? | `taskq flows cancel <run_id> [--reason TEXT]` |
+| Re-run a failed node (the manual resume)? | `taskq flows retry <run_id> <node> [--reason TEXT]` |
+
+**The typed door.** `resolve` and `signal` validate the shell's JSON against the bound gate's declared pydantic models BEFORE any row moves: a wrong payload answers the named pydantic error (`pydantic refused the payload: verdict: Input should be 'approve' or 'reject'`) with exit 1, and the hold SURVIVES — nothing is delivered. The `--app` option names the module:attr of the `WorkflowApp` (the bound gates' source); without it the verbs refuse rather than deliver untyped.
+
+**The output contract.** Every report renders an honest degraded state: an unknown run id is `no run <id>` + the remedy (exit 1); a run with no holds prints the healthy-zero line (a blank section never reads as a healthy zero); a stuck finding always names its remedy. Exit codes: 0 = the answer rendered (a no-op resolve is 0 — the idempotence), 1 = the refusal or the failure.
+
+**Read-only.** `list`, `status`, `holds` issue only reads (pinned by a test that walks the fetchers' source) — safe to run against production mid-incident.
+
+**The running face.** A node whose body hangs (a long wait inside the step's own code) is never a stuck finding — the row is `running`, which no why-stuck arm names. So `flows status` gives running rows their own face: every running row older than a minute prints its running AGE (since `started_at`, source-named) and the lease-check remedy that CAN distinguish stuck from slow:
+
+```
+  hang: RUNNING for 00:05:31 (since 16:24:50 UTC · source: the jobs row's started_at) — this face cannot tell stuck from slow; the lease check names the holder: taskq job show <job_id> + taskq job events <job_id>
+```
+
+The face states the age and hands you the check; it renders no verdict — a slow body and a hung body look identical until the lease says whether the holder still breathes (see `job show`'s lease face above).
+
+**The reclaim-requires-a-leader marker.** When the lease check has already answered — a `running` row whose `lock_expires_at` has passed — the face renders the verdict, not the age:
+
+```
+  hang: RECLAIMABLE, awaiting a leader — the lease lapsed 00:02:00 ago (source: the jobs row's lock_expires_at): the holder is presumed DEAD — this is 'the fleet is dead', not 'the work is slow'. The reclaim sweep repends (or crashes) the row within TASKQ_SWEEP_INTERVAL (default 30s) once a leader is up; with no leader the row waits
+       remedy: bring a worker up — the leader's reclaim sweep repends it within TASKQ_SWEEP_INTERVAL; the death's record: taskq job events <job_id>
+```
+
+This is the 3am question's row-visible answer: a lapsed lease with a dead fleet waits forever — the reclaim sweep runs only under a leader, so with no leader up nothing ever stamps the row and the row keeps saying `running` to the end of time. The marker is derived from the row's own lease column at read time (never a stamp the absent sweep would have to write), so the surfaces say "reclaimable, awaiting a leader" for exactly the rows a returning leader will repend.
+

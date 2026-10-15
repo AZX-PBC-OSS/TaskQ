@@ -59,6 +59,7 @@ from taskq._ids import new_job_id, new_uuid
 from taskq.backend._claim_cursor import ClaimCursor
 from taskq.backend._dispatch_sql import (
     _STRICT_FIFO_CANDIDATES_LATERAL,
+    _WF_EXEC_CAPABLE_CTE,
 )
 from taskq.backend._dispatch_sql import (
     dispatch_batch as _claim_statement,
@@ -132,6 +133,23 @@ def _probe_sql(cursor: bool, schema: str) -> str:
     sql = sql.replace("sq.queue_name", "$2")
     sql = sql.replace("$2::int", "$3::int")
     sql = sql.replace("$5::int", "$4::int")
+    # THE CAPABILITY CTE (the fence's own dependency): the shipped fence
+    # references wf_exec_capable — the standalone probe carries the
+    # statement's CTE definition with the params probe REBOUND (the
+    # harness has no params CTE and no worker identity; a NULL worker id
+    # reads capable = false, and the harness's rows are all vanilla — the
+    # fence's step_key short-circuit never evaluates the subplan, so the
+    # measured surface is the vanilla path's, which is the point).
+    # Mechanically rebound from the SHIPPED constant — never hand-copied.
+    cte = (
+        _WF_EXEC_CAPABLE_CTE.replace(
+            "(SELECT worker_id FROM params)",
+            "NULL::uuid",
+        )
+        .rstrip()
+        .rstrip(",")
+    )  # the constant is a mid-chain fragment (trailing comma); a prepend drops it
+    sql = "WITH " + cte + " " + sql
     if cursor:
         sql = sql.replace("__CLAIM_CURSOR_BOUND_J2__", "\n          AND j2.id >= $5::uuid")
         sql = sql.replace("__RESIDUAL__", "$6::int")

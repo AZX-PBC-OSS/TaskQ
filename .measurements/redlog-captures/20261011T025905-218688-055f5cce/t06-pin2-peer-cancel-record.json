@@ -1,0 +1,11 @@
+{
+  "mutation": "the peers arm's record stamp dropped \u2014 the peer cancels anonymously",
+  "observed": {
+    "error_class": "CancelledByPeerFailure",
+    "metadata": "{\"flow_id\": \"01a12a66-d96f-7af3-9fd9-8cbb71fad570\", \"peer_cancel\": {\"by\": \"peer_failure\", \"cascade_from\": \"01a12a66-d977-7382-84b0-1ec01a386cdf\"}}",
+    "status": "cancelled"
+  },
+  "pin": "t06-pin2-peer-cancel-record",
+  "run": "20261011T025905-218688-055f5cce",
+  "ts": "2026-10-11T02:59:05"
+}

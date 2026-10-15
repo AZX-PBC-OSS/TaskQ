@@ -21,6 +21,19 @@ Async-native, Postgres-backed background job library for Python 3.12+.
 
 ## Features
 
+- **Durable workflows (the DAG engine)**: wire typed steps, maps, typed
+  routes, and loops into one graph — the promise arguments ARE the
+  edges; the compile validates the wiring (`E1–E20`) before a single
+  row exists. Bodies park on typed holds (`wait_signal`) or durable
+  timers (`wait_until` — the clock is the resolver, the hold row is the
+  truth) while the worker's slot is released; `ctx.spawn_flow` runs
+  typed sub-flows; `step(..., cache=True)` dedups unchanged work across
+  runs; a redeploy's in-flight runs are named by the versioning
+  contract. See [Workflows](docs/guides/workflows.md) and the
+  [production checklist](docs/guides/production-checklist.md). The
+  measurement estate (the evidence corpus — the claims registry, the
+  capture files, the runs) lives on the `evidence/taskqflow` branch,
+  not in this tree.
 - **Actors**: decorate plain `async def` (or sync) functions with `@actor`;
   payloads are validated with Pydantic models and dispatched as typed
   `ActorRef` handles.
@@ -81,6 +94,7 @@ Optional extras:
 
 | Extra          | Adds                                                                |
 | -------------- | ------------------------------------------------------------------- |
+| `[flows]`      | Nothing — the core-deps-only opt-in marker for the workflows engine (`import taskq.workflows`) |
 | `[redis]`      | Redis client for real-time progress fanout and Redis rate limiters  |
 | `[fastapi]`    | FastAPI, Jinja2, sse-starlette, uvicorn for the admin UI and SSE    |
 | `[otel]`       | OpenTelemetry SDK + OTLP exporter + instrumentation for provider setup, export, and testing |
@@ -217,6 +231,16 @@ The worker elects a leader via Postgres advisory locks and consumes jobs with
 `TASKQ_MIGRATE_ON_START` is honoured only by `taskq ui serve`, and the worker
 warns if you set it. Run migrations from a pre-deploy job or init container
 (`taskq migrate up`) so replicas cannot race.
+
+### The flagship demo
+
+**The fleet demo** (`examples/fleet_demo/`) is the end-to-end showcase —
+seven acts (enqueue, rate limiting, operator cancel, cron catch-up,
+SIGTERM, `taskq doctor`, `taskq insights`) on real containers, one
+command: `uv run python -m examples.fleet_demo.run_demo`. It manages its
+OWN isolated stack (compose project `taskq-fleet-demo`, Postgres on
+:5433, Redis on :6380) — **none of the quick-start steps above are
+prerequisites for it**. See `examples/fleet_demo/README.md`.
 
 ## Layout
 

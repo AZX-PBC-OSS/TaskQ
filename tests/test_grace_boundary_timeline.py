@@ -229,6 +229,7 @@ def _spawn_grace_worker(
             "TASKQ_WATCHDOG_DUMP_INTERVAL": "1.0",
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "2.0",
             "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
+            "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
             "TASKQ_MAX_CONCURRENCY": "2",
         }
     )
@@ -306,6 +307,7 @@ def _successor_settings(
         "heartbeat_command_timeout": "0.1",
         "watchdog_loop_lag_budget": "2.0",
         "watchdog_loop_lag_warn_budget": "0.5",
+        "watchdog_check_interval": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
         "watchdog_dump_interval": "1.0",
         "max_concurrency": "2",
         "queues": [_QUEUE],

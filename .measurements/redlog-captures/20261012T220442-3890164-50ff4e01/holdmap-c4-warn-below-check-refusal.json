@@ -1,0 +1,12 @@
+{
+  "mutation": "the pre-cure variant (warn 0.4 < check 0.5 validated, then 295 warn+dump pairs starved the heartbeat)",
+  "observed": {
+    "budget": 1.0,
+    "check": 0.5,
+    "conviction": "the cured lattice refuses the config at boot",
+    "warn": 0.4
+  },
+  "pin": "holdmap-c4-warn-below-check-refusal",
+  "run": "20261012T220442-3890164-50ff4e01",
+  "ts": "2026-10-12T22:04:42"
+}

@@ -1,0 +1,21 @@
+{
+  "mutation": "the maybe child's failure SILENTLY DROPPED (an un-surfaced absence \u2014 the collect succeeds and the envelope says NOTHING)",
+  "observed": {
+    "failures": [
+      {
+        "attempts": [],
+        "error": {
+          "error_class": "ValueError",
+          "error_message": "the maybe child's terminal error",
+          "error_traceback": null
+        },
+        "map_index": null,
+        "node_key": "c1",
+        "policy": "maybe"
+      }
+    ]
+  },
+  "pin": "join-failure-policy-maybe-silent",
+  "run": "20261010T095903-3214162-03c51e54",
+  "ts": "2026-10-10T09:59:03"
+}

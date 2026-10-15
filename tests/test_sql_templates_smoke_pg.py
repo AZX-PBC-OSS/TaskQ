@@ -309,12 +309,63 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "a correlated lateral fragment, never a standalone statement; "
         "interpolated verbatim into the round-robin dispatch variant",
     ),
+    "taskq.backend._dispatch_sql:_WF_DISPATCH_FENCE_TEMPLATE": (
+        (
+            "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
+            "taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",
+        ),
+        "-- THE DISPATCH FENCE (P3 rule 4's second leg, T04, + the worker",
+        "a token template (the __WF_ALIAS__/__WF_TERMINAL__ holes are "
+        "substituted by _wf_dispatch_fence per alias, never .format), never "
+        "a standalone statement; its rendered text rides the two dispatch "
+        "variants' laterals/lock steps — B2's own fence + the execution "
+        "fence's capability leg, so the guard must see it (a guard that "
+        "doesn't see the fence is a window with no bars)",
+    ),
+    "taskq.backend._dispatch_sql:_WF_PROBE_FENCE_TEMPLATE": (
+        (
+            "taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_SQL",
+            "taskq.backend._dispatch_sql:DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL",
+        ),
+        "-- THE DISPATCH FENCE, P3 leg only",
+        "the claimable probe's P3-only fence (the probe statement carries "
+        "no worker identity, so the execution leg has nothing to read), a "
+        "token template substituted by _wf_probe_fence per alias, never a "
+        "standalone statement; its rendered text rides BOTH probes' "
+        "EXISTS arms — the plain render AND the cursor-bounded arbiter "
+        "(the window-expansion loop's probe): the two fences may not "
+        "disagree, a cursor probe that misses the fence would answer "
+        "'routable row remains' for rows the claim fence refuses — the "
+        "bounded-stranding inflation the arbiter exists to bound",
+    ),
     "taskq.backend._sweeps:_SWEEP_1_BODY": (
         ("taskq.backend._sweeps:_SWEEP_1_SQL",),
         "-- Leader-only reclaim sweep",
         "an intermediate carrying the {has_budget}/{reclaim_delay} and "
         "{worker_crashed_class} holes; _SWEEP_1_SQL is the rendered statement "
         "production sends",
+    ),
+    "taskq.backend._sweeps:_SWEEP_RESULT_TTL_GUARD_SQL": (
+        ("taskq.backend._sweeps:_SWEEP_RESULT_TTL_SQL",),
+        None,
+        "the T18 expiry-eats-children guard fragment (a NOT-EXISTS conjunct "
+        "carrying {schema} holes), never a standalone statement; spliced at "
+        "the window's LIMIT into _SWEEP_RESULT_TTL_BASE_SQL to make "
+        "_SWEEP_RESULT_TTL_SQL — the rolling-deploy tolerance's fallback runs "
+        "the unguarded base — so the composed product's prepare validates the "
+        "guard's text (the containment needle is the fragment body itself: "
+        "marker None, the strongest tripwire this table has)",
+    ),
+    "taskq.worker._leader_shared:_WORKFLOW_LIVENESS_GUARD_SQL": (
+        (
+            "taskq.worker._leader_shared:_ARCHIVE_CANDIDATE_SQL",
+            "taskq.worker._leader_shared:_ARCHIVE_CANDIDATE_ACTOR_SQL",
+        ),
+        'JOIN "{schema}".jobs fl ON fl.id = e.flow_id',
+        "a NOT-EXISTS guard fragment, never a standalone statement; "
+        "composed onto the archive candidate windows (the prune + the "
+        "per-actor variant) — T18's parent-prune hold; the guard's "
+        "rendered text is validated through the products' prepare",
     ),
     "taskq.backend._sweeps:_SWEEP_IDLE_KEYED_BUCKETS_BODY": (
         ("taskq.backend._sweeps:_SWEEP_IDLE_KEYED_BUCKETS_SQL",),
@@ -335,6 +386,19 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         "verbatim into the five multi-arm terminal arbiters, so their rendered "
         "bundle fields (resolved through the prepared inventory, the arbiters "
         "are built inside render()) carry and validate its text",
+    ),
+    "taskq.backend._dispatch_sql:_WF_EXEC_CAPABLE_CTE": (
+        (
+            "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
+            "taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",
+        ),
+        None,
+        "the execution fence's capability CTE (a WITH-list fragment keyed on "
+        "params.worker_id), never a standalone statement; composed verbatim "
+        "into both dispatch variants after params (the token "
+        "__WF_EXEC_CAPABLE_CTE__ in _render_dispatch_sql) and into the EXPLAIN "
+        "pins' wrappers verbatim (test_sweepaudit_dispatch_bound), so the "
+        "rendered products validate its text",
     ),
     "taskq.backend._sql_fragments:PROGRESS_MERGE_SQL": (
         (

@@ -66,7 +66,9 @@ def _worker_settings(schema_name: str = "taskq") -> WorkerSettings:
             # Tier 1 must be able to fire before the terminal tier, and both
             # must sit inside lock_lease (the settings validator's coupling).
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
-            "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
+            # The lag lattice's order: check < warn < budget.
+            "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",
+            "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.6",
         },
     )
 

@@ -1,0 +1,9 @@
+{
+  "mutation": "the derivation's row-1 liveness (running/crashed/abandoned) reading the terminal-crash class: the corpse derives 'running' forever \u2014 G7 green on a dead run, retention held forever",
+  "observed": {
+    "reconstructed": "failed"
+  },
+  "pin": "t20-wedged-corpse-derivation",
+  "run": "20261010T135507-1692823-280bfd17",
+  "ts": "2026-10-10T13:55:07"
+}

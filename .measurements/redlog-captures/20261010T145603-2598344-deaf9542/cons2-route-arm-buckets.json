@@ -1,0 +1,14 @@
+{
+  "mutation": "RouteArm accepts no rate_limits= \u2014 the per-arm admission terms cannot be declared",
+  "observed": {
+    "arm_fields": [
+      "actor",
+      "body",
+      "queue",
+      "rate_limits"
+    ]
+  },
+  "pin": "cons2-route-arm-buckets",
+  "run": "20261010T145603-2598344-deaf9542",
+  "ts": "2026-10-10T14:56:03"
+}

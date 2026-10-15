@@ -59,7 +59,10 @@ _SEAM = os.environ.get("TASKQ_KILL9_SEAM", "")
 _orig_dispatch_batch = PostgresBackend.dispatch_batch
 _orig_mark_succeeded = PostgresBackend.mark_succeeded
 _orig_mark_succeeded_with_conn = PostgresBackend.mark_succeeded_with_conn
-_orig_parse_rowcount = _heartbeat_module.parse_rowcount
+# The runtime patch target is heartbeat's OWN module global (its tick
+# reads the name on every renewal tick) — pyright's private-import flag
+# is the cross-module read being deliberate.
+_orig_parse_rowcount = _heartbeat_module.parse_rowcount  # pyright: ignore[reportPrivateImportUsage]
 
 _killed = False
 
@@ -131,7 +134,7 @@ elif _SEAM == "after_heartbeat":
     # ``parse_rowcount`` as a module global on each successful tick, so
     # patching the name here intercepts exactly the post-commit renewal
     # observation point.
-    _heartbeat_module.parse_rowcount = _parse_rowcount_then_sigkill
+    _heartbeat_module.parse_rowcount = _parse_rowcount_then_sigkill  # pyright: ignore[reportPrivateImportUsage]
 
 if __name__ == "__main__":
     settings = WorkerSettings.load()

@@ -1,0 +1,9 @@
+{
+  "mutation": "step/RouteArm/map_source accept no rate_limits= at 37ab05b8 \u2014 the pin file's import fails (ImportError: cannot import name '_rate_limit_names'); step(rate_limits=...) is a TypeError",
+  "observed": {
+    "error": "ImportError: cannot import name '_rate_limit_names' from 'taskq.workflows.api._graph'"
+  },
+  "pin": "cons2-authoring-face",
+  "run": "20261010T145337-2533100-1a4548a9",
+  "ts": "2026-10-10T14:53:37"
+}

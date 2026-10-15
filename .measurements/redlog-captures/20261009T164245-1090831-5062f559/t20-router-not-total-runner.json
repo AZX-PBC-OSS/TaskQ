@@ -1,0 +1,10 @@
+{
+  "mutation": "the foreign outcome silently dropped by the runner's chain path \u2014 the run 'succeeds' minus a record; the row must terminal-FAIL with error_class='RouterNotTotal'",
+  "observed": {
+    "error_class": "RouterNotTotal",
+    "status": "failed"
+  },
+  "pin": "t20-router-not-total-runner",
+  "run": "20261009T164245-1090831-5062f559",
+  "ts": "2026-10-09T16:42:45"
+}

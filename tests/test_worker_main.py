@@ -181,7 +181,7 @@ def _use_test_harness(
 
     # ── Fake sibling functions (closures over h) ────────────────────────
 
-    async def _fake_register(pool: object, s: WorkerSettings) -> UUID:
+    async def _fake_register(pool: object, s: WorkerSettings, **kwargs: object) -> UUID:
         h.register_count += 1
         return h.worker_id
 
@@ -367,7 +367,7 @@ async def test_wiring_shape_backend_instance_identity(settings: WorkerSettings) 
         if "backend" in kwargs:
             captured_backends.append(kwargs["backend"])  # type: ignore[arg-type]
 
-    async def _fake_register(pool: object, s: WorkerSettings) -> UUID:
+    async def _fake_register(pool: object, s: WorkerSettings, **kwargs: object) -> UUID:
         return worker_id_val
 
     async def _fake_leader_run(shutdown: asyncio.Event) -> None:
@@ -470,7 +470,7 @@ async def test_install_signal_handlers_called_after_deps_and_backend(
 
     with _use_test_harness(settings) as h:
 
-        def _probe_register(pool: object, s: WorkerSettings) -> UUID:
+        def _probe_register(pool: object, s: WorkerSettings, **kwargs: object) -> UUID:
             h.probe.append("register")
             return h.worker_id
 
@@ -571,6 +571,32 @@ async def test_register_worker_metadata_carries_binding_concurrency(
         f"sizes local_queue and bounds every dispatch; wrote {metadata}"
     )
     assert "notify_enabled" in metadata
+    # THE EXECUTION CAPABILITY STAMP (the dispatch fence's data leg): the
+    # metadata carries `workflow_execution` — the VALUE read (`::boolean`),
+    # never a key-existence probe: the key is stamped on EVERY worker's
+    # row, the value is the capability.
+    assert metadata["workflow_execution"] is False
+
+
+async def test_register_worker_metadata_carries_workflow_execution_stamp(
+    settings: WorkerSettings,
+) -> None:
+    """The capable boot's stamp: `workflow_execution=True` rides the
+    workers row's metadata — the claim fence's execution leg reads it as
+    data (one pkey probe per round), so a flow row is claimable ONLY by a
+    worker whose boot ran the F3 projection (the definitions imported)."""
+    mock_conn = AsyncMock()
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    await register_worker(mock_pool, settings, workflow_execution=True)
+
+    params = mock_conn.execute.call_args[0][1:]
+    metadata: dict[str, object] = json.loads(params[6])
+    assert metadata["workflow_execution"] is True, (
+        f"the capable boot must stamp workflow_execution=True; wrote {metadata}"
+    )
 
 
 async def test_register_worker_mocked_timeout_raises(settings: WorkerSettings) -> None:

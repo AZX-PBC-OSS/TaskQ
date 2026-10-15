@@ -67,6 +67,18 @@ _NARROWER_BY_DESIGN: Final[dict[tuple[str, str], str]] = {
     "argument and no kwargs, so the double covers the whole surface the command "
     "under test can reach.",
     (
+        "test_wf_3am_pins.py",
+        "taskq.cli.asyncpg.connect",
+    ): "Why: as the test_cli_doctor entry — the CLI call site under test builds its "
+    "connection as connect(str) with that single positional argument and no kwargs; "
+    "the double covers the whole surface the flows/job commands can reach.",
+    (
+        "test_wf_enginefaces_pins.py",
+        "taskq.cli.asyncpg.connect",
+    ): "Why: as the test_cli_doctor entry — the CLI call site under test builds its "
+    "connection as connect(str) with that single positional argument and no kwargs; "
+    "the double covers the whole surface the flows status command can reach.",
+    (
         "test_heartbeat_isolate.py",
         "asyncpg.connect",
     ): "Why: asyncpg.connect declares 23 parameters. Modelling them to silence this "
