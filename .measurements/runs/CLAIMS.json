@@ -693,31 +693,31 @@
     },
     {
       "stem": "fast-tier-n8",
-      "file": "fast-tier-slot-20261015T035116Z.txt",
+      "file": "fast-tier-n8-20261015T040606Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T04:05:00"
     },
     {
       "stem": "fasttier-final",
-      "file": "fast-tier-slot-20261015T035116Z.txt",
+      "file": "fast-tier-n8-20261015T040606Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T04:05:00"
     },
     {
       "stem": "fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3",
-      "file": "fast-tier-slot-20261015T035116Z.txt",
+      "file": "fast-tier-n8-20261015T040606Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T04:05:00"
     },
     {
       "stem": "evidence-heads-verify",
-      "file": "evidence-heads-verify-slot-20261015T035116Z.txt",
+      "file": "evidence-heads-verify-20261015T041936Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T04:05:00"
     },
     {
       "stem": "rv2-13-green",
-      "file": "rv2-13-green-slot-20261015T035116Z.txt",
+      "file": "rv2-13-green-20261015T041936Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T04:05:00"
     },
@@ -1143,31 +1143,31 @@
     },
     {
       "stem": "fast-tier-n8",
-      "file": "fast-tier-n8-residual.txt",
+      "file": "fast-tier-n8-20261015T040606Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T05:40:00"
     },
     {
       "stem": "fasttier-final",
-      "file": "fast-tier-n8-residual.txt",
+      "file": "fast-tier-n8-20261015T040606Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T05:40:00"
     },
     {
       "stem": "fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3",
-      "file": "fast-tier-n8-residual.txt",
+      "file": "fast-tier-n8-20261015T040606Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T05:40:00"
     },
     {
       "stem": "evidence-heads-verify",
-      "file": "evidence-heads-verify-residual-transition.txt",
+      "file": "evidence-heads-verify-20261015T041936Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T05:40:00"
     },
     {
       "stem": "rv2-13-green",
-      "file": "rv2-13-green-residual.txt",
+      "file": "rv2-13-green-20261015T041936Z.txt",
       "head_sha": "fa76681d891bef84334b39f4e54aa9c03b8bb5f0",
       "captured_at": "2026-10-15T05:40:00"
     }
