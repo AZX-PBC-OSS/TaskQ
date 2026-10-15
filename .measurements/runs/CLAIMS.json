@@ -24372,6 +24372,252 @@
       "file": "rv2-13-green-slot-20261015T010731Z.txt",
       "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
       "captured_at": "2026-10-15T01:15:00"
+    },
+    {
+      "stem": "battery-final-wf-attacks",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "battery-wf-suite",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "docs-lane-rv2-13-cure-captures",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "fixround-final-pins",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "fixround-migration-chain",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "fixround-touched-pins-x2",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "rv2-pins-final",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "rv2-pins-final-20261010T193500-precommit-red.txt",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "rv4-pin-packs",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "stealth-mutant-shipped-drill",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "wf-battery-cov",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "wf-battery-leg2",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "wf-battery-leg3",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "attack-rounds",
+      "file": "attack-rounds-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "fasttier-final",
+      "file": "fast-tier-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3",
+      "file": "fast-tier-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-slot-20261015T033611Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "docs-examples",
+      "file": "docs-examples-20261015T033315Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-20261015T033130Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-20261015T033130Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-20261015T033130Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "mkdocs-strict-docslane",
+      "file": "mkdocs-strict-20261015T033130Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-20261015T033315Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-20261015T033130Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-perf-bands-20261015T033130Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-20261015T033130Z.txt",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261014T203216-5f6a.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261014T203212-f5c4.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261014T203212-39d8.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261014T203736-cdec.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261014T203736-056a.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261014T203751-2fb2.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261014T203213-dc7e.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261014T203212-a3d4.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261014T203233-4cc8.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261014T203853.json",
+      "head_sha": "b99368e5c614e0e3623768602a78300ff699339d",
+      "captured_at": "2026-10-15T03:50:00"
     }
   ]
 }
