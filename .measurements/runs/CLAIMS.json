@@ -24126,6 +24126,120 @@
       "file": "rv2-13-green-20261013T220954Z.txt",
       "head_sha": "8a7d1ddbf2d496bdf5d37d182f142512100f9519",
       "captured_at": "2026-10-13T15:09:58"
+    },
+    {
+      "stem": "docs-examples",
+      "file": "docs-examples-20261015T005939Z.txt",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-20261015T005236Z.txt",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-20261015T005236Z.txt",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-20261015T005236Z.txt",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "mkdocs-strict-docslane",
+      "file": "mkdocs-strict-20261015T005236Z.txt",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-20261015T005939Z.txt",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-20261015T005203Z.txt",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261014T174816-56e5.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261014T174812-9414.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261014T174812-3e77.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261014T174754-fcb0.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261014T174755-8ce3.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261014T174754-5b49.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261014T174812-c50a.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261014T174811-b5b7.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-perf-bands-20261015T010343Z.txt",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-20261015T010343Z.txt",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261014T174739-b8b3.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261014T174718.json",
+      "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18",
+      "captured_at": "2026-10-15T01:04:43"
     }
   ]
 }

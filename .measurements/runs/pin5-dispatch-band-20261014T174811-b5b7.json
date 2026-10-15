@@ -1,0 +1,18 @@
+{
+  "pin": "dispatch-claim-band",
+  "exclusion_clause": "AND deps_pending = 0",
+  "p50_us": 11560,
+  "p99_us": 25728,
+  "budget_us": 50000,
+  "samples": 60,
+  "loaded_bar": {
+    "ambient_load_per_core": 0.777,
+    "quiet_bar": 0.5
+  },
+  "absolute_band_asserted": false,
+  "red_drill": {
+    "plan": "seq-scan-forced",
+    "p50_us": 2724253
+  },
+  "head_sha": "a7659e35ed61d96de8531d58a06d5c3d452ddd18"
+}
