@@ -121,15 +121,17 @@ class EventRetentionGapError(TaskQError):
 
 
 class StreamUnavailable(TaskQError):
-    """A job stream could not re-read its job row for longer than its failure budget.
+    """A job stream could not re-read its job row for at least its failure budget.
 
-    Raised by the Postgres poll transport behind :meth:`TaskQ.stream` and
-    :meth:`JobHandle.progress_stream` when every fetch has failed with a
-    pool or connection error for ``elapsed`` seconds (the transport's
-    failure budget). A blip shorter than the budget is retried silently
-    beyond a warning per failed poll; this is the end of the stream, so
-    the caller's ``async for`` cannot wait forever on a database that is
-    not coming back. The last failure is chained as ``__cause__``.
+    Raised by either transport behind :meth:`TaskQ.stream` and
+    :meth:`JobHandle.progress_stream` — the Postgres poll transport's
+    fetches, and on the Redis path, the safety-net re-reads behind the
+    subscription — when every fetch has failed with a pool or connection
+    error for ``elapsed`` seconds (the transport's failure budget). A
+    blip shorter than the budget is retried silently beyond a warning
+    per failed poll; this is the end of the stream, so the caller's
+    ``async for`` cannot wait forever on a database that is not coming
+    back. The last failure is chained as ``__cause__``.
     """
 
     def __init__(

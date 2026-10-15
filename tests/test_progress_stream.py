@@ -5,6 +5,11 @@ Covers:
 - PG fallback path: yields progress and state_change events, stops on terminal
 - Redis pub/sub path: yields events from channel, skips subscribe confirmations,
   discards malformed messages, stops on terminal
+- Redis path snapshot replay: a live row's current state is the FIRST event
+- redis_event_stream's on_timeout failure budget: infra errors are retried
+  inside a 30 s budget, non-infra errors propagate untouched
+- the same failure budget on the decode_message leg (one shared run:
+  either leg's infra failures spend it, either leg's success resets it)
 - JobsClient lifecycle: _open_redis, close, redis_client passthrough to JobHandle
 """
 
@@ -15,12 +20,14 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
+import asyncpg
 import pytest
 import structlog.testing
 from pydantic import TypeAdapter
 
 from taskq.backend._protocol import Backend, JobId, JobRow, JobStatus
 from taskq.client._handle import JobHandle
+from taskq.exceptions import StreamUnavailable
 from taskq.progress._events import ProgressEvent
 from taskq.settings import TaskQSettings
 from taskq.testing.clock import FakeClock
@@ -441,6 +448,160 @@ async def test_redis_state_change_not_deduplicated_by_seq() -> None:
     assert events[2].kind == "state_change"
 
 
+# ── Redis path: the snapshot replay at subscribe ────────────────────────
+
+
+async def test_redis_replays_running_row_snapshot_before_the_live_tail() -> None:
+    """A re-attach to a LIVE job gets the row's current snapshot as the
+    FIRST event, then the live tail: a fresh consumer (a transport cut is
+    routine) must not starve until the actor's next publish — minutes on
+    a slow actor. The parity contract is ``TaskQ.stream``'s: the first
+    event is the row as it stands when the stream is opened."""
+    settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
+    # The snapshot read: running with three published ticks while the
+    # consumer was away. The handle's row is what the consumer last
+    # knew: running, nothing published yet.
+    snapshot = _row(status="running", progress_seq=3, job_id=_JOB_ID)
+    backend = _stub_backend(rows=[snapshot])
+    row = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+
+    messages = [
+        {"type": "subscribe", "data": None, "channel": f"taskq:{_SCHEMA_LABEL}:progress:{_JOB_ID}"},
+        {
+            "type": "message",
+            "data": _progress_event_bytes(seq=4, kind="progress", status="running", step=1),
+        },
+        {
+            "type": "message",
+            "data": _progress_event_bytes(
+                seq=5, kind="state_change", status="succeeded", terminal=True
+            ),
+        },
+    ]
+    pubsub = _make_pubsub_mock(messages)
+
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+
+    handle = _handle_from_backend(backend, row=row, redis_client=redis_client, settings=settings)
+
+    events: list[ProgressEvent] = []
+    async for event in handle.progress_stream():
+        events.append(event)
+
+    assert len(events) == 3
+    # The FIRST event is the row's current snapshot, a plain progress
+    # event, terminal False — then the live tail flows.
+    assert (events[0].kind, events[0].seq, events[0].terminal) == ("progress", 3, False)
+    assert events[0].status == "running"
+    assert events[1].seq == 4
+    assert events[1].step == 1
+    assert events[2].kind == "state_change"
+    assert events[2].terminal is True
+
+
+async def test_redis_replays_snapshot_when_only_the_status_moved() -> None:
+    """A job that moved pending → running while the consumer was away,
+    before its first progress tick (``progress_seq == 0``), still
+    replays: the status moved past the row the handle holds. The replay
+    is labeled state_change — the status moved — matching the PG
+    fallback's first event for the same transition."""
+    settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
+    snapshot = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+    backend = _stub_backend(rows=[snapshot])
+    row = _row(status="pending", progress_seq=0, job_id=_JOB_ID)
+
+    messages = [
+        {"type": "subscribe", "data": None, "channel": f"taskq:{_SCHEMA_LABEL}:progress:{_JOB_ID}"},
+        {
+            "type": "message",
+            "data": _progress_event_bytes(seq=1, kind="progress", status="running"),
+        },
+        {
+            "type": "message",
+            "data": _progress_event_bytes(
+                seq=2, kind="state_change", status="succeeded", terminal=True
+            ),
+        },
+    ]
+    pubsub = _make_pubsub_mock(messages)
+
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+
+    handle = _handle_from_backend(backend, row=row, redis_client=redis_client, settings=settings)
+
+    events: list[ProgressEvent] = []
+    async for event in handle.progress_stream():
+        events.append(event)
+
+    assert len(events) == 3
+    assert (events[0].kind, events[0].seq, events[0].status) == ("state_change", 0, "running")
+    assert events[0].terminal is False
+    assert events[2].terminal is True
+
+
+async def test_redis_terminal_row_still_yields_and_returns() -> None:
+    """An already-terminal job yields exactly its terminal event and
+    returns — today's behavior, unchanged by the snapshot replay (the
+    subscription is never opened)."""
+    settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
+    backend = _stub_backend(rows=[_row(status="succeeded", progress_seq=3, job_id=_JOB_ID)])
+    row = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+
+    pubsub = _make_pubsub_mock([])  # never reached: the terminal return precedes the subscribe
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+
+    handle = _handle_from_backend(backend, row=row, redis_client=redis_client, settings=settings)
+
+    events: list[ProgressEvent] = []
+    async for event in handle.progress_stream():
+        events.append(event)
+
+    assert len(events) == 1
+    assert events[0].terminal is True
+    assert events[0].status == "succeeded"
+    assert events[0].kind == "state_change"
+
+
+async def test_redis_no_phantom_snapshot_for_a_contentless_row() -> None:
+    """A non-terminal row with nothing to replay — ``progress_seq == 0``
+    and no status change from the row the handle holds — yields nothing
+    extra: the first event is the live tail, never a phantom duplicate
+    of state the consumer already holds."""
+    settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
+    snapshot = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+    backend = _stub_backend(rows=[snapshot])
+    row = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+
+    messages = [
+        {"type": "subscribe", "data": None, "channel": f"taskq:{_SCHEMA_LABEL}:progress:{_JOB_ID}"},
+        {
+            "type": "message",
+            "data": _progress_event_bytes(seq=1, kind="progress", status="running"),
+        },
+        {
+            "type": "message",
+            "data": _progress_event_bytes(
+                seq=2, kind="state_change", status="succeeded", terminal=True
+            ),
+        },
+    ]
+    pubsub = _make_pubsub_mock(messages)
+
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+
+    handle = _handle_from_backend(backend, row=row, redis_client=redis_client, settings=settings)
+
+    events: list[ProgressEvent] = []
+    async for event in handle.progress_stream():
+        events.append(event)
+
+    assert [event.seq for event in events] == [1, 2]
+
+
 # ── JobsClient lifecycle ────────────────────────────────────────────────
 
 
@@ -557,7 +718,9 @@ async def test_transport_bounds_hung_pubsub_close(monkeypatch: pytest.MonkeyPatc
     # unbounded, so the RED state wedges here instead of failing fast.
     with structlog.testing.capture_logs() as captured:
         async with asyncio.timeout(5):
-            async for _ in redis_event_stream(redis_client, "chan", 0.01, _decode, _on_timeout):
+            async for _ in redis_event_stream(
+                redis_client, "chan", 0.01, _decode, _on_timeout, job_id=cast(JobId, _JOB_ID)
+            ):
                 pass
 
     assert pubsub.unsubscribed is True  # suppress kept on unsubscribe
@@ -567,3 +730,478 @@ async def test_transport_bounds_hung_pubsub_close(monkeypatch: pytest.MonkeyPatc
     assert timeout_events[0].get("label") == "client-transport", (
         f"expected label=client-transport on the timeout event, got {timeout_events[0]!r}"
     )
+
+
+# ── The on_timeout failure budget in redis_event_stream ───────────────
+
+
+class _SilentPubSub:
+    """Fake redis PubSub whose channel never speaks (every get_message
+    times out), with a benign aclose - the stream lives entirely on its
+    on_timeout callback, the shape of a silent phase."""
+
+    def __init__(self) -> None:
+        self.unsubscribed = False
+
+    async def subscribe(self, channel: str) -> None:
+        pass
+
+    async def get_message(
+        self,
+        *,
+        ignore_subscribe_messages: bool = True,
+        timeout: float = 0,  # noqa: ASYNC109  # Why: mirrors redis-py PubSub.get_message signature.
+    ) -> None:
+        # Yield to the loop the way a real socket read does; a bare
+        # ``return None`` would busy-spin the loop.
+        await asyncio.sleep(0.01)
+        return None
+
+    async def unsubscribe(self, channel: str) -> None:
+        self.unsubscribed = True
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _silent_redis_client() -> MagicMock:
+    pubsub = _SilentPubSub()
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = pubsub
+    return redis_client
+
+
+def _terminal_event() -> ProgressEvent:
+    return ProgressEvent(
+        kind="state_change",
+        job_id=_JOB_ID,
+        actor=_ACTOR,
+        ts=datetime.now(UTC),
+        seq=1,
+        status="succeeded",
+        terminal=True,
+    )
+
+
+async def test_progress_stream_survives_a_transient_blip_on_the_timeout_refetch() -> None:
+    """One transient DB blip during a silent phase does not kill the
+    stream: the on-timeout re-read fails once (warned), the next one
+    succeeds and the terminal event still ends the stream.
+
+    Confusion prevented: an unguarded ``await on_timeout()`` propagated a
+    single pool/connection error straight into the consumer's ``async
+    for`` — the stream died mid-run on a blip that clears in seconds.
+    Red-proven: on the unguarded transport this test ends with the raw
+    InterfaceError instead of the terminal event.
+    """
+    settings = TaskQSettings.load_from_dict({"TASKQ_SCHEMA_NAME": _SCHEMA_LABEL})
+    row = _row(status="running", progress_seq=0, job_id=_JOB_ID)
+    backend = AsyncMock(spec=Backend)
+
+    calls: list[int] = []
+
+    async def _get(job_id: JobId) -> JobRow | None:
+        calls.append(1)
+        if len(calls) == 1:
+            return row  # the snapshot read: running, nothing to replay
+        if len(calls) == 2:
+            raise asyncpg.InterfaceError("connection closed")  # the blip
+        return _row(status="succeeded", progress_seq=1, job_id=_JOB_ID)  # the DB is back
+
+    backend.get = _get
+    handle = _handle_from_backend(
+        backend, row=row, redis_client=_silent_redis_client(), settings=settings
+    )
+
+    events: list[ProgressEvent] = []
+    with structlog.testing.capture_logs() as captured:
+        async for event in handle.progress_stream():
+            events.append(event)
+
+    assert len(events) == 1
+    assert events[0].terminal is True
+    assert events[0].status == "succeeded"
+    warnings = [e for e in captured if e["event"] == "stream-poll-error"]
+    assert len(warnings) == 1
+    assert warnings[0]["error_type"] == "InterfaceError"
+    assert warnings[0]["log_level"] == "warning"
+
+
+async def test_redis_on_timeout_infra_error_within_budget_keeps_the_stream_alive() -> None:
+    """An infra error out of on_timeout inside the failure budget is
+    warned once and retried on the next poll timeout - the stream
+    continues to its terminal event."""
+    from taskq.client._transport import redis_event_stream
+
+    readings = iter([0.0])
+    calls: list[int] = []
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        return None
+
+    async def _on_timeout() -> ProgressEvent | None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise asyncpg.InterfaceError("connection closed")
+        return _terminal_event()
+
+    with structlog.testing.capture_logs() as captured:
+        events = [
+            event
+            async for event in redis_event_stream(
+                _silent_redis_client(),
+                "chan",
+                0.01,
+                _decode,
+                _on_timeout,
+                job_id=cast(JobId, _JOB_ID),
+                clock=lambda: next(readings),
+            )
+        ]
+
+    assert len(events) == 1
+    assert events[0].terminal is True
+    failures = [e for e in captured if e["event"] == "stream-poll-error"]
+    assert len(failures) == 1
+    assert failures[0]["error_type"] == "InterfaceError"
+    assert failures[0]["log_level"] == "warning"
+
+
+async def test_redis_on_timeout_infra_errors_past_the_budget_raise_stream_unavailable() -> None:
+    """Consecutive infra failures spanning the budget end the stream with
+    StreamUnavailable - the documented degradation signal - after one
+    warning per failure, the PG poll transport's exact contract."""
+    from taskq.client._transport import redis_event_stream
+
+    readings = iter([0.0, 12.0, 24.0, 31.0])
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        return None
+
+    async def _on_timeout() -> ProgressEvent | None:
+        raise asyncpg.InterfaceError("connection closed")
+
+    with (
+        structlog.testing.capture_logs() as captured,
+        pytest.raises(StreamUnavailable) as info,
+    ):
+        async for _ in redis_event_stream(
+            _silent_redis_client(),
+            "chan",
+            0.01,
+            _decode,
+            _on_timeout,
+            job_id=cast(JobId, _JOB_ID),
+            clock=lambda: next(readings),
+        ):
+            pytest.fail("no event can be produced by a refetch that always fails")
+
+    exc = info.value
+    assert exc.job_id == _JOB_ID
+    assert exc.consecutive_failures == 4
+    assert exc.elapsed == 31.0
+    assert isinstance(exc.__cause__, asyncpg.InterfaceError)
+    assert "InterfaceError" in str(exc)
+    assert [e["event"] for e in captured] == ["stream-poll-error"] * 3 + ["stream-poll-abandoned"]
+    abandoned = captured[-1]
+    assert abandoned["job_id"] == str(_JOB_ID)
+    assert abandoned["consecutive_failures"] == 4
+    assert abandoned["elapsed_secs"] == 31.0
+    # The message text (server errors can quote data) never reaches the log.
+    assert "error" not in abandoned
+
+
+async def test_redis_on_timeout_key_error_propagates_untouched() -> None:
+    """A KeyError out of on_timeout is not an infra error and is never
+    budgeted: it propagates immediately - TaskQ.stream's _refetch
+    deliberately raises it for a vanished row (its vanished-row
+    contract, pinned at test_taskq_client.py)."""
+    from taskq.client._transport import redis_event_stream
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        return None
+
+    async def _on_timeout() -> ProgressEvent | None:
+        raise KeyError(_JOB_ID)
+
+    with (
+        structlog.testing.capture_logs() as captured,
+        pytest.raises(KeyError),
+    ):
+        async for _ in redis_event_stream(
+            _silent_redis_client(),
+            "chan",
+            0.01,
+            _decode,
+            _on_timeout,
+            job_id=cast(JobId, _JOB_ID),
+        ):
+            pytest.fail("no event can be produced by a refetch that always fails")
+
+    assert not [
+        e for e in captured if e["event"] in ("stream-poll-error", "stream-poll-abandoned")
+    ], "a KeyError is a contract signal, not an infra failure - it must not be budgeted"
+
+
+async def test_redis_on_timeout_successful_read_resets_the_failure_run() -> None:
+    """A successful on_timeout read ends the failure run: two runs each
+    shorter than the budget never add up to it, even when their total
+    does. (Without the reset, the second run's clock reading - 100 s
+    after the first failure - would abandon the stream.)"""
+    from taskq.client._transport import redis_event_stream
+
+    readings = iter([0.0, 100.0])
+    calls: list[int] = []
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        return None
+
+    async def _on_timeout() -> ProgressEvent | None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("reset")
+        if len(calls) == 2:
+            return None  # a healthy re-read: the row is unchanged
+        if len(calls) == 3:
+            raise OSError("again")
+        return _terminal_event()
+
+    with structlog.testing.capture_logs() as captured:
+        events = [
+            event
+            async for event in redis_event_stream(
+                _silent_redis_client(),
+                "chan",
+                0.01,
+                _decode,
+                _on_timeout,
+                job_id=cast(JobId, _JOB_ID),
+                clock=lambda: next(readings),
+            )
+        ]
+
+    assert len(events) == 1
+    assert events[0].terminal is True
+    failures = [e for e in captured if e["event"] == "stream-poll-error"]
+    assert len(failures) == 2
+    assert not [e for e in captured if e["event"] == "stream-poll-abandoned"]
+
+
+# ── The decode_message failure budget in redis_event_stream ────────────
+#
+# ``TaskQ.stream``'s decode callback re-reads the row through the backend
+# (``decode → _refetch → backend.get``), so it fails with the same class
+# of infra errors the on_timeout re-read fails with. The budget is the
+# stream's, not a leg's: failures on either leg spend the same run, a
+# success on either leg resets it, and a non-infra error (KeyError, the
+# vanished-row contract) propagates untouched from either.
+
+
+def _message_client(messages: list[dict[str, object]]) -> MagicMock:
+    """A redis client whose pubsub delivers *messages*, then goes silent."""
+    redis_client = MagicMock(spec=["pubsub"])
+    redis_client.pubsub.return_value = _make_pubsub_mock(messages)
+    return redis_client
+
+
+def _message(data: bytes) -> dict[str, object]:
+    return {"type": "message", "data": data}
+
+
+async def test_redis_decode_infra_error_within_budget_keeps_the_stream_alive() -> None:
+    """An infra error out of decode_message inside the failure budget is
+    warned once and the stream continues to the next message - the
+    on_timeout leg's exact contract, on the message leg."""
+    from taskq.client._transport import redis_event_stream
+
+    readings = iter([0.0])
+    calls: list[int] = []
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise asyncpg.InterfaceError("connection closed")
+        return _terminal_event()
+
+    client = _message_client(
+        [_message(b"{"), _message(_terminal_event().model_dump_json().encode())]
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        events = [
+            event
+            async for event in redis_event_stream(
+                client,
+                "chan",
+                0.01,
+                _decode,
+                None,
+                job_id=cast(JobId, _JOB_ID),
+                clock=lambda: next(readings),
+            )
+        ]
+
+    assert len(events) == 1
+    assert events[0].terminal is True
+    failures = [e for e in captured if e["event"] == "stream-poll-error"]
+    assert len(failures) == 1
+    assert failures[0]["error_type"] == "InterfaceError"
+    assert failures[0]["log_level"] == "warning"
+
+
+async def test_redis_decode_infra_errors_past_the_budget_raise_stream_unavailable() -> None:
+    """Consecutive decode_message failures spanning the budget end the
+    stream with StreamUnavailable - the documented degradation signal -
+    after one warning per failure. Unbudgeted, a decode leg that reads
+    through the backend dies on its first pool blip: the raw
+    InterfaceError propagates into the consumer's ``async for`` and the
+    30 s survive-and-retry the refetch leg enjoys never happens."""
+    from taskq.client._transport import redis_event_stream
+
+    readings = iter([0.0, 12.0, 24.0, 31.0])
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        raise asyncpg.InterfaceError("connection closed")
+
+    client = _message_client([_message(b"{")] * 4)
+
+    with (
+        structlog.testing.capture_logs() as captured,
+        pytest.raises(StreamUnavailable) as info,
+    ):
+        async for _ in redis_event_stream(
+            client,
+            "chan",
+            0.01,
+            _decode,
+            None,
+            job_id=cast(JobId, _JOB_ID),
+            clock=lambda: next(readings),
+        ):
+            pytest.fail("no event can be produced by a decode that always fails")
+
+    exc = info.value
+    assert exc.job_id == _JOB_ID
+    assert exc.consecutive_failures == 4
+    assert exc.elapsed == 31.0
+    assert isinstance(exc.__cause__, asyncpg.InterfaceError)
+    assert "InterfaceError" in str(exc)
+    assert [e["event"] for e in captured] == ["stream-poll-error"] * 3 + ["stream-poll-abandoned"]
+    abandoned = captured[-1]
+    assert abandoned["job_id"] == str(_JOB_ID)
+    assert abandoned["consecutive_failures"] == 4
+    assert abandoned["elapsed_secs"] == 31.0
+    # The message text (server errors can quote data) never reaches the log.
+    assert "error" not in abandoned
+
+
+async def test_redis_decode_key_error_propagates_untouched() -> None:
+    """A KeyError out of decode_message is not an infra error and is
+    never budgeted: it propagates immediately - ``TaskQ.stream``'s decode
+    re-reads the row through _refetch, whose vanished-row contract
+    deliberately raises it."""
+    from taskq.client._transport import redis_event_stream
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        raise KeyError(_JOB_ID)
+
+    client = _message_client([_message(b"{")])
+
+    with (
+        structlog.testing.capture_logs() as captured,
+        pytest.raises(KeyError),
+    ):
+        async for _ in redis_event_stream(
+            client,
+            "chan",
+            0.01,
+            _decode,
+            None,
+            job_id=cast(JobId, _JOB_ID),
+        ):
+            pytest.fail("no event can be produced by a decode that always fails")
+
+    assert not [
+        e for e in captured if e["event"] in ("stream-poll-error", "stream-poll-abandoned")
+    ], "a KeyError is a contract signal, not an infra failure - it must not be budgeted"
+
+
+async def test_redis_decode_success_resets_the_failure_run() -> None:
+    """A decoded message ends the failure run: two runs each shorter than
+    the budget never add up to it, even when their total does. (Without
+    the reset, the second run's clock reading - 100 s after the first
+    failure - would abandon the stream.)"""
+    from taskq.client._transport import redis_event_stream
+
+    readings = iter([0.0, 100.0])
+    calls: list[int] = []
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("reset")
+        if len(calls) == 2:
+            return None  # a healthy read of a message that is not one of ours
+        if len(calls) == 3:
+            raise OSError("again")
+        return _terminal_event()
+
+    client = _message_client([_message(b"{")] * 4)
+
+    with structlog.testing.capture_logs() as captured:
+        events = [
+            event
+            async for event in redis_event_stream(
+                client,
+                "chan",
+                0.01,
+                _decode,
+                None,
+                job_id=cast(JobId, _JOB_ID),
+                clock=lambda: next(readings),
+            )
+        ]
+
+    assert len(events) == 1
+    assert events[0].terminal is True
+    failures = [e for e in captured if e["event"] == "stream-poll-error"]
+    assert len(failures) == 2
+    assert not [e for e in captured if e["event"] == "stream-poll-abandoned"]
+
+
+async def test_redis_message_and_timeout_legs_share_one_failure_budget() -> None:
+    """Failures alternate across the two legs and still exhaust the one
+    budget: a decode failure and an on_timeout failure are the same
+    stream's failures against the same backing store, so neither leg's
+    failures can hide from the budget the other leg is spending."""
+    from taskq.client._transport import redis_event_stream
+
+    readings = iter([0.0, 12.0, 24.0, 31.0])
+
+    async def _decode(raw: str) -> ProgressEvent | None:
+        raise asyncpg.InterfaceError("decode leg down")
+
+    async def _on_timeout() -> ProgressEvent | None:
+        raise asyncpg.InterfaceError("timeout leg down")
+
+    client = _message_client([_message(b"{")] * 2)
+
+    with (
+        structlog.testing.capture_logs() as captured,
+        pytest.raises(StreamUnavailable) as info,
+    ):
+        async for _ in redis_event_stream(
+            client,
+            "chan",
+            0.01,
+            _decode,
+            _on_timeout,
+            job_id=cast(JobId, _JOB_ID),
+            clock=lambda: next(readings),
+        ):
+            pytest.fail("no event can be produced by a transport that always fails")
+
+    exc = info.value
+    assert exc.consecutive_failures == 4
+    assert exc.elapsed == 31.0
+    assert [e["event"] for e in captured] == ["stream-poll-error"] * 3 + ["stream-poll-abandoned"]

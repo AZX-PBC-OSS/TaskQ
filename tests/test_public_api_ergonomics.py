@@ -267,9 +267,15 @@ async def test_progress_stream_redis_missed_terminal_message_is_bounded() -> Non
     async with asyncio.timeout(10):
         async for event in handle.progress_stream():
             events.append(event)
-    assert len(events) == 1
-    assert events[0].terminal is True
-    assert events[0].status == "succeeded"
+    # Native replay (see tests/test_progress_stream.py): the snapshot row
+    # (running, seq 1) is now the FIRST event, then the on-timeout
+    # re-fetch delivers the terminal event the wire lost. The contract
+    # under test — bounded termination on a missed terminal message —
+    # is unchanged.
+    assert len(events) == 2
+    assert (events[0].kind, events[0].seq, events[0].terminal) == ("progress", 1, False)
+    assert events[1].terminal is True
+    assert events[1].status == "succeeded"
 
 
 # ── The import surface: every __all__ name survives `from taskq import X` ─

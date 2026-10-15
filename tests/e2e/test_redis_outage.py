@@ -600,10 +600,13 @@ async def test_stream_survives_pubsub_connection_kill(
 
         consume_task = asyncio.create_task(_consume())
         try:
-            # The redis arm emits no event until something publishes (the
-            # snapshot read happens first but is only yielded for an
-            # already-terminal row), so the pubsub connection appearing on
-            # the broker is the readiness gate for the kill.
+            # The redis arm is not trusted to deliver anything until the
+            # pubsub subscription exists on the broker (the snapshot read
+            # may replay the current row first — a terminal row or one
+            # carrying progress content — but nothing on the wire is
+            # guaranteed until the subscription is live), so the pubsub
+            # connection appearing on the broker is the readiness gate
+            # for the kill.
             await poll_until(
                 _client_conn_established,
                 timeout=30.0,

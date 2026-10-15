@@ -161,6 +161,7 @@ else:
 
 __all__ = [
     "RUN_TOKEN_ENV_VAR",
+    "TEST_REDIS_CONNECT_TIMEOUT_SECS",
     "ActorRunnerCallable",
     "JobsApp",
     "ModulePgSchema",
@@ -998,6 +999,21 @@ async def module_pg_schema(
 
 # ── Module-scoped Redis DB ──────────────────────────────────────────────
 
+TEST_REDIS_CONNECT_TIMEOUT_SECS: float = 30.0
+"""Connect budget for every fixture client that dials a test broker.
+
+redis-py 8 defaults ``socket_connect_timeout`` to 5s. On a loaded runner
+that budget is a red band, not a safety net: the testcontainer's address
+resolution (``getaddrinfo``, in the loop's executor) can out-run 5s and
+the first command dies with ``Timeout connecting to server`` — the
+rotating one-test-in-~12.7k red (PR #682's 3.13 leg). The connect phase
+is setup weather, never a pin's subject — the pins' own bounds are the
+tests' ``overall_timeout``s and the suite-wide pytest-timeout — so every
+fixture client dials with this budget instead: the tree's outside-system
+bound (:data:`~taskq.client._transport.POLL_FAILURE_BUDGET_SECS`, the
+reload factory timeout, the notify reconnect ceiling — all 30).
+"""
+
 
 @pytest.fixture(scope="module")
 def module_redis_url(
@@ -1018,12 +1034,29 @@ def module_redis_url(
     # the HELLO handshake race on a co-tenanted runner (the EEE setup-error
     # class on the cross legs). A wedged connection is the suite-wide
     # pytest-timeout's job, not a fixture budget.
-    with redis_sync.from_url(url, decode_responses=False, socket_timeout=None) as client:
+    # socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS: redis-py 8's
+    # 5s CONNECT default is its own band - on a loaded runner the
+    # testcontainer's address resolution (getaddrinfo in the loop's
+    # executor) can out-run 5s and the first command dies with
+    # ``Timeout connecting to server`` (the red 3.13 leg of PR #682, one
+    # test in ~12.7k). The connect phase is setup weather, not a pin's
+    # subject: bound it at the tree's outside-system budget.
+    with redis_sync.from_url(
+        url,
+        decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    ) as client:
         client.flushdb()
     yield url
 
     # Teardown: FLUSHDB the module's DB via sync client (safe in any context).
-    with redis_sync.from_url(url, decode_responses=False, socket_timeout=None) as client:
+    with redis_sync.from_url(
+        url,
+        decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    ) as client:
         client.flushdb()
 
 
@@ -1197,7 +1230,13 @@ def clean_redis_url(module_redis_url: str) -> str:
     # socket_timeout=None: same fresh-connection HELLO race as
     # module_redis_url above; the per-test flush must not inherit the 5s
     # read budget on a co-tenanted runner.
-    client = redis_sync.from_url(module_redis_url, decode_responses=False, socket_timeout=None)
+    # socket_connect_timeout: the DNS/connect band (see module_redis_url).
+    client = redis_sync.from_url(
+        module_redis_url,
+        decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
     try:
         client.flushdb()
     finally:
@@ -1218,7 +1257,13 @@ async def clean_redis_client(clean_redis_url: str) -> AsyncIterator[object]:
     # rides the shared co-tenanted broker for the test's whole life; the
     # suite-wide pytest-timeout owns wedged connections, not a 5s read
     # budget redis-py 8 started defaulting (the pre-8 behaviour).
-    client = redis_from_url(clean_redis_url, decode_responses=False, socket_timeout=None)
+    # socket_connect_timeout: the DNS/connect band (see module_redis_url).
+    client = redis_from_url(
+        clean_redis_url,
+        decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
     try:
         yield client
     finally:

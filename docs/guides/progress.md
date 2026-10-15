@@ -156,11 +156,14 @@ async for event in handle.progress_stream():
 ```
 
 `progress_stream()` yields `ProgressEvent` objects and stops automatically when a
-`terminal=True` event is received.
+`terminal=True` event is received. The first event is the row as it stands when the
+stream opens — the same contract `TaskQ.stream()` documents — so a consumer attaching
+to an already-running job does not starve until the actor's next publish.
 
-**Failure budget.** On the Postgres poll transport, a blip shorter than the transport's failure
-budget is retried silently (beyond a warning per failed poll). If every fetch fails for longer
-than the budget, the stream ends by raising `StreamUnavailable` — the caller's `async for`
+**Failure budget.** A blip shorter than the transport's failure budget is retried silently
+(beyond a warning per failed poll) — on the Postgres poll transport that is every fetch, and
+on the Redis path, the safety-net re-reads behind the subscription. If every fetch fails for
+at least the budget, the stream ends by raising `StreamUnavailable` — the caller's `async for`
 cannot wait forever on a database that is not coming back; the last failure is chained as
 `__cause__`. See the [Exceptions API reference](../api-reference/exceptions.md).
 
@@ -411,7 +414,7 @@ between polls.
 | Environment variable | Default | Description |
 |---|---|---|
 | `TASKQ_REDIS_URL` | `None` | Redis connection URL. Required for real-time progress delivery. |
-| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `16384` (16 KiB) | Maximum serialised size of the `data` dict passed to `ctx.progress()`. Range: 1 KiB to 1 MiB. Exceeding this raises `ProgressTooLarge`. |
+| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `16384` (16 KiB) | Maximum serialised size of the `data` dict passed to `ctx.progress()`. Range: 1 KiB to 1 MiB. Exceeding this raises `ProgressTooLarge`. Snapshot-style publishers — actors that send the full document as `data` on every tick — must size the cap at or above their payload bound: `data` only grows, so once one snapshot exceeds the cap every later snapshot raises too, and the durable row freezes at the last accepted state until the job reaches a terminal status. |
 | `TASKQ_PROGRESS_COALESCE_INTERVAL` | `0.5` | Seconds between periodic flush ticks that write coalesced state to Postgres. Minimum: 0.1 s. |
 | `TASKQ_PROGRESS_PUBLISH_GLOBAL` | `true` | When `true`, every event is also published to a schema-wide fanout channel in addition to the per-job channel. Disable in high-throughput deployments without a global subscriber. |
 

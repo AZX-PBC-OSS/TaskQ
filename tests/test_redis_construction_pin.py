@@ -100,3 +100,48 @@ def test_construction_sites_use_build_redis_client(module: str) -> None:
     assert "build_redis_client" in calls, (
         f"{module} builds a redis client without build_redis_client"
     )
+
+
+# ── the testing layer's connect budget ────────────────────────────────────
+#
+# redis-py 8 defaults socket_connect_timeout to 5s; on a loaded runner the
+# testcontainer's address resolution out-runs it and the first command dies
+# with ``Timeout connecting to server`` — the rotating one-test-in-~12.7k
+# red (PR #682's 3.13 leg, test_full_round_trip). The testing layer owns a
+# 30s connect budget (the tree's outside-system bound) that every fixture
+# client dials with; the connect phase is setup weather, never a pin's
+# subject.
+
+
+def test_testing_fixture_connect_budget_is_the_outside_system_bound() -> None:
+    """The testing layer's connect budget is 30s — the bound this tree
+    applies to every other wait on an outside system
+    (``POLL_FAILURE_BUDGET_SECS``, the reload factory timeout, the notify
+    reconnect ceiling) — so all the bounds move together or the drift is
+    a deliberate edit."""
+    from taskq.client._transport import POLL_FAILURE_BUDGET_SECS
+    from taskq.testing.fixtures import TEST_REDIS_CONNECT_TIMEOUT_SECS
+
+    assert TEST_REDIS_CONNECT_TIMEOUT_SECS == 30.0
+    assert TEST_REDIS_CONNECT_TIMEOUT_SECS == POLL_FAILURE_BUDGET_SECS
+
+
+def test_connect_budget_reaches_the_connection_kwargs() -> None:
+    """``from_url`` forwards the budget into the pool's connection kwargs
+    (the seam the failing connect actually reads), including the shape the
+    fixtures dial with — ``socket_timeout=None`` must not drag the connect
+    budget back to redis-py's default."""
+    pytest.importorskip("redis")
+
+    import redis.asyncio as aioredis
+
+    from taskq.testing.fixtures import TEST_REDIS_CONNECT_TIMEOUT_SECS
+
+    client = aioredis.from_url(
+        "redis://localhost:6379/0",
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
+    kwargs = client.connection_pool.connection_kwargs
+    assert kwargs["socket_connect_timeout"] == 30.0
+    assert kwargs["socket_timeout"] is None

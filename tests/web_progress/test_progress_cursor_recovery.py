@@ -51,6 +51,7 @@ from taskq._ids import new_base62, new_job_id, new_uuid
 from taskq.constants import progress_channel
 from taskq.migrate import apply_pending
 from taskq.progress._events import ProgressEvent
+from taskq.testing.fixtures import TEST_REDIS_CONNECT_TIMEOUT_SECS
 from taskq.web.progress import create_router
 
 pytestmark = [pytest.mark.integration, pytest.mark.redis]
@@ -92,7 +93,13 @@ async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
     # asserts pub/sub fanout timing (the SSE stream's delivery windows), the
     # exact surface a shared-broker co-tenancy stall band reds without any
     # code defect - see web_progress/test_integration.py's redis_client note.
-    client = aioredis.from_url(private_redis_url, socket_timeout=None)
+    # socket_connect_timeout: the DNS/connect band (see
+    # TEST_REDIS_CONNECT_TIMEOUT_SECS).
+    client = aioredis.from_url(
+        private_redis_url,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
     try:
         yield client
     finally:

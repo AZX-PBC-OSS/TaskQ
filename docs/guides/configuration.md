@@ -480,7 +480,7 @@ These settings only apply when the worker is started with `--until-idle` (run un
 | Env Var | Type | Default | Description | Constraints |
 |---|---|---|---|---|
 | `TASKQ_PROGRESS_COALESCE_INTERVAL` | `float` (seconds) | `0.5` | Seconds between periodic flush ticks that write coalesced progress state to Postgres. Lower values shrink the window a hot loop's intermediate values can vanish in. | Min: 0.1 |
-| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `int` | `16384` | Maximum serialised byte length of the `data` dict in a single progress call. Exceeding this raises `ProgressTooLarge`. | Range: 1024-1048576 |
+| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `int` | `16384` | Maximum serialised byte length of the `data` dict in a single progress call. Exceeding this raises `ProgressTooLarge`. Snapshot-style publishers (full-document progress snapshots) must size the cap at or above their payload bound: `data` only grows, so once one snapshot exceeds the cap every later snapshot raises too, and the durable row freezes at the last accepted state until the job reaches a terminal status. | Range: 1024-1048576 |
 | `TASKQ_PROGRESS_PUBLISH_GLOBAL` | `bool` | `true` | When `true`, progress updates are published to the global fanout channel (e.g. Redis). When `false`, progress updates are only written to Postgres. | n/a |
 
 See [progress.md](progress.md) for progress tracking details.
