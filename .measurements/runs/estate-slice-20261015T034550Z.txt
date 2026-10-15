@@ -1,0 +1,8 @@
+# the estate regression slice x3 (tests/test_actor_config_sync.py + tests/test_wf_runner_pins.py, serial) at the estate re-stamp head fa76681d891bef84334b39f4e54aa9c03b8bb5f0
+41 passed in 8.59s
+slice1 rc=0
+41 passed in 9.49s
+slice2 rc=0
+41 passed in 9.13s
+slice3 rc=0
+head: fa76681d891bef84334b39f4e54aa9c03b8bb5f0

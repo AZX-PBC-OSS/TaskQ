@@ -1,0 +1,2 @@
+# the staged slot for the attack rounds — the round's zero-failure tail lands in the CLOSE commit; stamped at the estate re-stamp head fa76681d891bef84334b39f4e54aa9c03b8bb5f0
+head: fa76681d891bef84334b39f4e54aa9c03b8bb5f0
