@@ -160,6 +160,7 @@ cannot wait forever on a database that is not coming back; the last failure is c
 
 | Field | Type | Description |
 |---|---|---|
+| `kind` | `"progress" \| "state_change"` | Event class: `"progress"` is an incremental progress update, `"state_change"` a status transition or terminal exit. |
 | `job_id` | `UUID` | Job this event belongs to. |
 | `actor` | `str` | Actor name. |
 | `ts` | `datetime` | Server-side timestamp. |
