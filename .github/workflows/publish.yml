@@ -81,7 +81,7 @@ jobs:
         run: docker build -t taskq-worker:${{ github.sha }} .
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: release-dist
           path: dist/
