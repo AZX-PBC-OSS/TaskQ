@@ -89,6 +89,7 @@ from taskq.testing._shared_containers import (
     creator_labels,
     skip_test_without_docker,
 )
+from taskq.testing.fixtures import TEST_REDIS_CONNECT_TIMEOUT_SECS
 from taskq.timescale import enable_hypertables
 from taskq.web.admin import create_router, setup_admin_state
 
@@ -424,7 +425,9 @@ async def lab(ts_dsn: str, redis_broker: Any) -> AsyncIterator[_Lab]:
             f"redis://{redis_broker.get_container_host_ip()}:"
             f"{redis_broker.get_exposed_port(6379)}/0"
         )
-        redis_client = redis_asyncio.from_url(redis_url)
+        redis_client = redis_asyncio.from_url(
+            redis_url, socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS
+        )
         try:
             lab = _Lab(
                 dsn=ts_dsn,
@@ -1632,7 +1635,9 @@ async def test_the_progress_stream_is_engine_identical(lab: _Lab) -> None:
     stop = asyncio.Event()
     import redis.asyncio as redis_asyncio
 
-    publisher = redis_asyncio.from_url(lab.redis_url)
+    publisher = redis_asyncio.from_url(
+        lab.redis_url, socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS
+    )
 
     async def _publish(engine_schema: str) -> None:
         while not stop.is_set():

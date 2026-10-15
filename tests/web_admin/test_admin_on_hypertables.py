@@ -126,6 +126,7 @@ from taskq.testing._shared_containers import (
     creator_labels,
     skip_test_without_docker,
 )
+from taskq.testing.fixtures import TEST_REDIS_CONNECT_TIMEOUT_SECS
 from taskq.timescale import TimescaleDBUnavailableError, enable_hypertables
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin.auth import IdentityClaims
@@ -628,7 +629,8 @@ async def lab(ts_dsn: str, redis_broker: Any) -> AsyncIterator[_Lab]:
 
         redis_client = redis_asyncio.from_url(
             f"redis://{redis_broker.get_container_host_ip()}:"
-            f"{redis_broker.get_exposed_port(6379)}/0"
+            f"{redis_broker.get_exposed_port(6379)}/0",
+            socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
         )
         lab = _Lab(
             dsn=ts_dsn,
@@ -1641,7 +1643,9 @@ async def test_progress_sse_bridge_streams_on_converted_schema(lab: _Lab) -> Non
     running = lab.plan.census["running"]
     import redis.asyncio as redis_asyncio
 
-    publisher = redis_asyncio.from_url(lab.redis_url)
+    publisher = redis_asyncio.from_url(
+        lab.redis_url, socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS
+    )
     url = f"/admin/jobs/api/job/{running}/progress/stream"
     envelope = json.dumps(
         {
