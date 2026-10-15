@@ -1390,7 +1390,47 @@ class HitlClient:
             return delivery_refused(refusal)
         # THE RESOLVE TX: the CAS is the transition's only grant; the
         # audit + the knock ride the WINNING tx (exactly-once).
+        #
+        # THE NODE PRE-LOCK (the deadlock cure — the resolve/cancel
+        # race pin's conviction at true concurrency): the cancel tx
+        # takes jobs (the root flip, then the nodes) → wf_signals (the
+        # held signals); this tx took wf_signals (the CAS) → jobs (the
+        # resume) — the opposite order, and the two verbs' overlap
+        # deadlocked (the pin landed in DeadlockDetectedError, an
+        # UNNAMED state — the exact dragon it hunts). The node's job
+        # row is locked FIRST, FOR UPDATE — a lock the loser holds
+        # without writing (the loser's law is intact: it matches no
+        # rows and writes NOTHING) — and the CAS stays the
+        # linearization point. Both verbs now take jobs → wf_signals;
+        # there is no opposite pair left.
         async with self._pool.acquire() as conn, conn.transaction():
+            held = await conn.fetchrow(
+                _render(
+                    "SELECT workflow_id, node_key, status FROM {schema}.wf_signals WHERE id = $1",
+                    self._schema,
+                ),
+                _as_hold_id(hold_id),
+            )
+            if held is None or held["status"] != "held":
+                return DeliveryResult(
+                    status="no-op"
+                    if held is not None and held["status"] == "delivered"
+                    else "refused",
+                    reason=f"hold {hold_id} is {None if held is None else held['status']!r}",
+                )
+            node_id: str | None = None
+            if held["node_key"] is not None:
+                node_id = await conn.fetchval(
+                    _render(
+                        "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
+                        "AND (metadata->>'flow_id')::uuid = $2 "
+                        "AND metadata->>'hold' = $3 FOR UPDATE",
+                        self._schema,
+                    ),
+                    held["node_key"],
+                    held["workflow_id"],
+                    str(hold_id),
+                )
             cas = await conn.fetchrow(
                 _render(_RESOLVE_CAS_SQL, self._schema),
                 _as_hold_id(hold_id),
@@ -1442,21 +1482,12 @@ class HitlClient:
                 },
             )
             resumed = None
-            if cas["node_key"]:
+            if cas["node_key"] and node_id is not None:
                 # THE HELD NODE'S ADDRESS (the F2 cure): by the hold id —
-                # one hold, one node, one resume (the pre-cure lookup
-                # matched every holding sibling and woke an arbitrary
-                # one).
-                node_id = await conn.fetchval(
-                    _render(_HELD_NODE_BY_HOLD_SQL, self._schema),
-                    cas["node_key"],
-                    cas["workflow_id"],
-                    str(hold_id),
-                )
-                if node_id is not None:
-                    resumed = await conn.fetchval(
-                        _render(_DELIVER_RESUME_SQL, self._schema), node_id
-                    )
+                # one hold, one node, one resume — already locked above
+                # (the deadlock cure's pre-lock); the resume's UPDATE
+                # rides the lock this tx holds.
+                resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, self._schema), node_id)
             if resumed is None:
                 # The CAS won but the node is gone (a cancelled flow
                 # killed the held representation): the ROW is the truth

@@ -808,6 +808,12 @@ class TimerNote(BaseModel):
     index: int
 
 
+# Why load_sensitive: the pin's window ("the timer expired inside the
+# pin's window") holds when the wait-site's resume lands inside it —
+# under -n 8 the resume's scheduling delay crossed the window once;
+# solo and serial it holds. The identity law the pin exists for (the
+# map sibling's own hold identity) is a serial-lane fact.
+@pytest.mark.load_sensitive
 async def test_a_timer_hold_in_a_map_sibling_context_gets_its_own_identity(
     wf_pool: Any, wf_schema: str, wf_conn: Any, timer_cures_redlog: Any
 ) -> None:
