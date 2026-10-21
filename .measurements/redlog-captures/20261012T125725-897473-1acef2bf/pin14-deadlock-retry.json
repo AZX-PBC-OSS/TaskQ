@@ -1,0 +1,10 @@
+{
+  "mutation": "no retry (the single-shot operator under storm contention)",
+  "observed": {
+    "aborted_with_DeadlockDetectedError": true,
+    "retries": 0
+  },
+  "pin": "pin14-deadlock-retry",
+  "run": "20261012T125725-897473-1acef2bf",
+  "ts": "2026-10-12T12:57:26"
+}

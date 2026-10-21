@@ -103,7 +103,7 @@ TaskQ consumer** — recorded so the next sweep doesn't re-walk them):
 | Event detail / progress jsonb (`_json.py`, `progress/`) | orjson dumps + the reserved NUL guard | `json_is_valid` | SKIP (a pre-gate double-parses in front of orjson) |
 | Retry payloads / batch arg normalization | exact-key SQL dedup (`idempotency`/`unique_for`); no content hashing, no similarity anywhere | `simhash64/128`, `minhash_signature`, `is_grounded`, `get_close_matches` | SKIP (no near-dup consumer exists; `difflib`/`SequenceMatcher` appear nowhere in `src/`) |
 | Migration ledger / event streams (`migrate.py`) | per-file SHA-256 checksums, drift flagged at runner start | `merkle_root`/`merkle_diff`, `chunk_cdc` | SKIP (chunk-level verification maps to no real need: the ledger verifies schema files once at boot, not byte streams at runtime) |
-| Payload canonical hashing | — none; idempotency keys are caller-supplied strings, never derived from payload content | `content_hash` | SKIP (no canonical-hash call site) |
+| Payload canonical hashing | **ADOPTED — the `code_version` record (T03/T04: the claim path's per-attempt stamp, `taskq/workflows/_version.py`; the tors canonical content hash is the record's hash)** | `content_hash` | ADOPT (T03's landing CREATED the call site — the earlier SKIP's "no canonical-hash call site" premise is void; the case is the canonicalization contract, never speed — a 1.05x wash) |
 | Document chunking | — none; TaskQ is a queue, not a document pipeline | the `chunk_*` family, `documents` extraction | SKIP (no consumer) |
 | Id/scope charset validation | length-only (no charset restriction by design) | `first_invalid_charset` | SKIP (no allow-list contract to port) |
 

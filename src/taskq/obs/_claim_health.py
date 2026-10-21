@@ -36,6 +36,7 @@ cold-start worker yields no RATIO (never a fabricated 1.0).
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
@@ -105,6 +106,20 @@ class ClaimQueueHealth:
 
 # ── the bounded stores ─────────────────────────────────────────────────
 
+# THE STORES' LOCK (finding 11's cure — the gauge racing itself): the
+# record path runs on the EVENT-LOOP thread; the observable-gauge
+# callbacks run on the OTel SDK's COLLECTION thread. Both walk
+# ``_window`` (a deque — cross-thread mutation during iteration raises
+# ``RuntimeError: deque mutated during iteration``) and both roll/read
+# ``_baseline`` (the same race, deque and dict). The convicted shape:
+# 287 RuntimeErrors in 3 s of hot load — every raise kills the
+# callback's observation batch, so the alert's operand (the degradation
+# ratio, the p99s) VANISHED exactly when the queue was hottest. The read
+# is ATOMIC: every store touch holds ``_store_lock``; the percentiles'
+# math runs on the COPY taken under it. Zero is a NUMBER, not an error —
+# a raced read never trades a number for a raise.
+_store_lock = threading.Lock()
+
 # (monotonic_ts, queue, seconds), oldest first; trimmed by time and count.
 _window: deque[tuple[float, str, float]] = deque()
 # Minute bucket -> latencies of the bucket currently being filled; on the
@@ -119,9 +134,10 @@ _clock: Callable[[], float] = time.monotonic
 def reset_claim_health_state() -> None:
     """Drop every recorded latency (test isolation)."""
     global _clock
-    _window.clear()
-    _current_bucket.clear()
-    _baseline.clear()
+    with _store_lock:
+        _window.clear()
+        _current_bucket.clear()
+        _baseline.clear()
     _clock = time.monotonic
 
 
@@ -138,17 +154,20 @@ def record_claim_latency(queue: str, seconds: float, *, now: float | None = None
         return
     ts = now if now is not None else _clock()
     q = bounded_queue_label(queue)
-    _window.append((ts, q, seconds))
-    # The count cap trims oldest-first; the time trim happens at read.
-    while len(_window) > CLAIM_WINDOW_CAP_ENTRIES:
-        _window.popleft()
-    # Baseline bucket fill: minute buckets keyed on the recording clock.
-    bucket = int(ts // 60.0)
-    lat = _current_bucket.get((bucket, q))
-    if lat is None:
-        _roll_baseline_buckets(bucket)
-        lat = _current_bucket.setdefault((bucket, q), [])
-    lat.append(seconds)
+    # The store lock (the record path's O(1) critical section — the
+    # collection thread's snapshot holds it only for its own copy).
+    with _store_lock:
+        _window.append((ts, q, seconds))
+        # The count cap trims oldest-first; the time trim happens at read.
+        while len(_window) > CLAIM_WINDOW_CAP_ENTRIES:
+            _window.popleft()
+        # Baseline bucket fill: minute buckets keyed on the recording clock.
+        bucket = int(ts // 60.0)
+        lat = _current_bucket.get((bucket, q))
+        if lat is None:
+            _roll_baseline_buckets(bucket)
+            lat = _current_bucket.setdefault((bucket, q), [])
+        lat.append(seconds)
 
 
 def _roll_baseline_buckets(up_to_bucket: int) -> None:
@@ -200,24 +219,39 @@ def claim_health_snapshot(*, now: float | None = None) -> dict[str, ClaimQueueHe
     Pure read: trims nothing the next record wouldn't, yields NOTHING for
     a queue with no window entries (the empty-not-zero discipline - a
     scrape of an idle worker produces no data points, never zeros).
+
+    THE ATOMIC READ (finding 11's cure): the window walk, the baseline
+    roll, and the baseline read all hold ``_store_lock`` — the OTel
+    collection thread's scrape can no longer interleave with the event
+    loop's records inside a deque/dict iteration (the 287-RuntimeErrors-
+    in-3s race, dead). The math on the copied latencies runs outside the
+    lock.
     """
     ts = now if now is not None else _clock()
     cutoff = ts - CLAIM_WINDOW_SECONDS
     by_queue: dict[str, list[float]] = {}
     oldest: dict[str, float] = {}
     newest: dict[str, float] = {}
-    for entry_ts, q, seconds in _window:
-        if entry_ts < cutoff:
-            continue
-        by_queue.setdefault(q, []).append(seconds)
-        if q not in oldest or entry_ts < oldest[q]:
-            oldest[q] = entry_ts
-        if q not in newest or entry_ts > newest[q]:
-            newest[q] = entry_ts
+    with _store_lock:
+        for entry_ts, q, seconds in _window:
+            if entry_ts < cutoff:
+                continue
+            by_queue.setdefault(q, []).append(seconds)
+            if q not in oldest or entry_ts < oldest[q]:
+                oldest[q] = entry_ts
+            if q not in newest or entry_ts > newest[q]:
+                newest[q] = entry_ts
 
-    # Freeze any baseline buckets the read's clock has completed (a
-    # quiet worker's last bucket rolls on the read, not the next write).
-    _roll_baseline_buckets(int(ts // 60.0))
+        # Freeze any baseline buckets the read's clock has completed (a
+        # quiet worker's last bucket rolls on the read, not the next
+        # write) — the roll MUTATES the baseline stores, so it holds the
+        # same lock the walkers hold.
+        _roll_baseline_buckets(int(ts // 60.0))
+
+        ratio_inputs: dict[str, float | None] = {}
+        for q, lat in by_queue.items():
+            p99 = _percentile(lat, 99.0)
+            ratio_inputs[q] = _degradation_ratio(q, p99, ts)
 
     out: dict[str, ClaimQueueHealth] = {}
     for q, lat in by_queue.items():
@@ -230,7 +264,7 @@ def claim_health_snapshot(*, now: float | None = None) -> dict[str, ClaimQueueHe
             p95_seconds=p95,
             p99_seconds=p99,
             claims_per_second=len(lat) / span,
-            degradation_ratio=_degradation_ratio(q, p99, ts),
+            degradation_ratio=ratio_inputs[q],
         )
     return out
 

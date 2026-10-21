@@ -443,12 +443,17 @@ def test_jitter_zero_keeps_exact_retry_after_compliance() -> None:
 #: The tracemalloc noise floor, from MEASURED bands: batch-to-batch
 #: bookkeeping jitter observed on CI runners is tens of bytes over 10k
 #: calls (32B in red run 37263479699; 0B in 10 consecutive local runs) —
-#: noise, not signal. A genuine accumulating per-call allocation costs
-#: ≥ 32B/call ≈ 320KB/10k. The floor sits at one 4KiB page: 128x the
-#: observed CI noise ceiling and 80x below the smallest real signal, so
-#: a real per-call allocation still reds while bookkeeping jitter cannot
-#: (teeth drilled by ``test_allocation_pin_has_teeth`` below).
-TRACEMALLOC_NOISE_FLOOR_BYTES = 4 * 1024
+#: noise, not signal. The d24f17b9 CI conviction re-measured the ceiling
+#: under the coverage leg's tracer on a co-tenant runner: 7007B over the
+#: second batch (0.7B/call — arithmetic no real allocation can produce;
+#: Python's smallest meaningful per-call object is ≥ 32B) against the
+#: 4096B floor that had never seen a traced run. A genuine accumulating
+#: per-call allocation costs ≥ 32B/call ≈ 320KB/10k. The floor sits at
+#: 64KiB: ~9x the now-measured traced-noise ceiling and ~5x below the
+#: smallest real signal, so a real per-call allocation still reds while
+#: tracer bookkeeping cannot (teeth drilled by
+#: ``test_allocation_pin_has_teeth`` below).
+TRACEMALLOC_NOISE_FLOOR_BYTES = 64 * 1024
 
 
 def _traced_batch_growth(classifier: RetryClassifierHook, exc: BaseException) -> tuple[int, int]:

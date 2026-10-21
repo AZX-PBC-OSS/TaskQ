@@ -307,6 +307,10 @@ _BREAKING_SECTION_ENTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
         "0.3.0",
         ("rate_limit_blocked_count",),
     ),
+    "`map_source` no longer takes `key=`": (
+        "0.3.0",
+        ("map_source",),
+    ),
     "Snoozing and denials no longer raise `max_attempts`; both refund the claim's attempt": (
         "0.3.0",
         ("no longer raise jobs.max_attempts",),

@@ -1,0 +1,10 @@
+{
+  "mutation": "the cap guard removed from the advance statement (the mutation drill)",
+  "observed": {
+    "flow_status": "failed",
+    "spawns": 5
+  },
+  "pin": "pin4-iteration-cap",
+  "run": "20261009T234726-1036269-38dbcd57",
+  "ts": "2026-10-09T23:47:27"
+}

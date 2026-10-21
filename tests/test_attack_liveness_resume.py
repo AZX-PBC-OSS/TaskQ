@@ -309,7 +309,11 @@ async def _immediate_sleep(shutdown: asyncio.Event, seconds: float) -> None:
 
 
 async def _fast_fire_sleep(
-    shutdown: asyncio.Event, next_fire: object, retry_backoff: float | None
+    shutdown: asyncio.Event,
+    next_fire: object,
+    retry_backoff: float | None,
+    *,
+    tick_period_secs: float | None = None,
 ) -> bool:
     await asyncio.sleep(0.01)
     return retry_backoff is not None

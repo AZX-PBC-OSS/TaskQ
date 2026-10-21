@@ -75,6 +75,14 @@ TEMPLATES_AND_FIELDS_PLAIN: list[tuple[str, str, frozenset[str]]] = [
     ("_SWEEP_3_SQL", _SWEEP_3_SQL, frozenset({"schema"})),
     ("_SWEEP_4_SQL", _SWEEP_4_SQL, frozenset({"schema"})),
     ("_SWEEP_RESULT_TTL_SQL", _SWEEP_RESULT_TTL_SQL, frozenset({"schema"})),
+    # The guarded statement's UNGUARDED base (the rolling-deploy
+    # tolerance's fallback template — the same (template, schema) key
+    # shape, the same single field).
+    (
+        "_SWEEP_RESULT_TTL_BASE_SQL",
+        sweeps._SWEEP_RESULT_TTL_BASE_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the census pins the module's own template constants by name.
+        frozenset({"schema"}),
+    ),
     ("_SWEEP_IDLE_KEYED_BUCKETS_SQL", _SWEEP_IDLE_KEYED_BUCKETS_SQL, frozenset({"schema"})),
     ("_SWEEP_IDLE_KEYED_SLOTS_SQL", _SWEEP_IDLE_KEYED_SLOTS_SQL, frozenset({"schema"})),
     ("INSERT_EVENTS_DETAIL_BATCH_SQL", INSERT_EVENTS_DETAIL_BATCH_SQL, frozenset({"schema"})),
@@ -398,9 +406,11 @@ def test_call_sites_pass_module_constants_not_composed_templates() -> None:
             f"line {call.lineno}: helper sql_template argument is composed "
             f"({type(arg).__name__}), the (template, schema) key would grow per call"
         )
-        assert arg.id in {"_SWEEP_4_SQL", "_SWEEP_RESULT_TTL_SQL"}, (
-            f"line {call.lineno}: helper sql_template is {arg.id}, not a pinned module constant"
-        )
+        assert arg.id in {
+            "_SWEEP_4_SQL",
+            "_SWEEP_RESULT_TTL_SQL",
+            "_SWEEP_RESULT_TTL_BASE_SQL",
+        }, f"line {call.lineno}: helper sql_template is {arg.id}, not a pinned module constant"
 
 
 # ── Races ────────────────────────────────────────────────────────────

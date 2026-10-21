@@ -1,0 +1,12 @@
+{
+  "mutation": "the smallint ceiling as the raw DataError MID-TX: the whole page rolled back \u2014 the valid page-mates died with the poison record",
+  "observed": {
+    "committed_mates": [
+      0,
+      1
+    ]
+  },
+  "pin": "t20-poison-record-mates",
+  "run": "20261010T154730-3648671-61f9fc0d",
+  "ts": "2026-10-10T15:47:30"
+}

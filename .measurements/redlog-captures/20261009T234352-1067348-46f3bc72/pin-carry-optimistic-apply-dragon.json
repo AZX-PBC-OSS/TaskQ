@@ -1,0 +1,11 @@
+{
+  "mutation": "the OPTIMISTIC APPLY variant \u2014 the carry advanced outside the advance statement's own tx (at the hold's release/retry's re-arm)",
+  "observed": {
+    "carry_double_applied_on_resume": true,
+    "conviction": "the shipped law: the carry advances EXACTLY ONCE per iteration, in the ADVANCE STATEMENT, one atomic write shared with the cap guard; the drill red is in t19-pin-reds.json",
+    "iterations_run_for_one_work_unit": 2
+  },
+  "pin": "pin-carry-optimistic-apply-dragon",
+  "run": "20261009T234352-1067348-46f3bc72",
+  "ts": "2026-10-09T23:43:52"
+}

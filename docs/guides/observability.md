@@ -627,6 +627,7 @@ Three consequences operators should know:
 | `taskq.claim.degradation_ratio` | `1` | `queue` | The live claim-latency p99 against its rolling 24h baseline (minute-bucketed p99s). THE pinned-MVCC-horizon signature: ~10x is a long transaction holding VACUUM off while the claim query's scans degenerate through dead tuples. Reports no data until the baseline has warmed (5 minutes), never a fabricated 1.0. `TaskQClaimLatencyDegraded` reads it; see [the runbook](runbooks.md#taskqclaimlatencydegraded). |
 | `taskq.ratelimit.bucket_tokens` | `1` | `bucket`, `kind` | Admission budget currently left in each rate-limit bucket: `tokens_remaining` for a token bucket, remaining admissions for a sliding window — sampled by the leader every 15 s via the same peek (`RateLimitRegistry.peek_all`) the admin rate-limits page renders, so the scrape and the page can never disagree about a bucket's level. `kind` is the page's own bounded derivation: `token_bucket` / `sliding_window_log` / `sliding_window_gcra`. Statically-registered buckets only as NAMED series (bounded by the code the user ships); keyed-materialised buckets (`base_name:key`) create NO per-key series — their tokens are summed per kind under `bucket="_other_"` (the `taskq.ratelimit.reclaim_pending` precedent: keyed values never become label cardinality). A named series pinned at 0 is an exhausted admission budget; read beside `taskq.ratelimit.denials` for the rate. Cleared to absent on demotion. |
 | `taskq.admin.sse.connections` | `1` | `topic`, `surface` | SSE streams currently open, per (topic, surface). `surface` is the closed enum `admin` (the admin UI's `/sse/{topic}` stream) or `progress` (the per-job progress stream); `topic` is the closed vocabulary the endpoints validate before the slot lookup (`queues`/`jobs`/`workers`/`history` for admin, the one constant `progress-stream` family key for progress; anything else collapses onto `_other_` at the instrument). Recorded in the process that serves the streams, so this series is exported on the admin's `/jobs/health/metrics` and never on a worker scrape. A value pinned at the configured cap with `taskq.admin.sse.rejections_total` rising is SSE saturation. |
+| `taskq.wf_progress_nodes_total` | `1` | `workflow`, `state` | Workflow node rows per DECLARED workflow and derived node state, sampled by the MAINTENANCE LEADER on the admin's health/metrics surface (the same PG-rollup-reader process class that samples `taskq.queue.depth`, at the leader's existing metrics tick — never a worker scrape, never the opt-in `TASKQ_METRICS_PORT` worker port). One grouped read (the same read class the admin's status panel uses — one query per status read), index-driven (`jobs_wf_flow_nodes_idx`, 01.00.25_02 — the index expression carries the same uuid cast the reads carry, and the partial covers the workflow rows only (`metadata ? 'flow_id'`; the flow_id linkage's one representation is the uuid STRING in `metadata.flow_id`). The dimension is the USER-DECLARED WORKFLOW REGISTRATION (the named-bucket precedent): registered workflow names keep their series; every unregistered workflow's runs collapse onto `workflow="_other_"` carrying SUMMED counts. **Never per-node labels** (the cardinality doctrine: a per-node series is the series that cannot be stored — the per-node truth is the row and the run's admin page, whose per-node rollup reads by run id, bounded by that run's own node count). `state` is the §17.5 derivation's node-state classes (running/failed/blocked/complete/cancelled/pending — the derivation table in workflows.md; the ABSORBED-failure clause is on the record: a failed node whose edge's declared policy absorbed it derives through its parent's outcome, never failed). **The alert suggestion ships with the gauge** (GAPS-ESTATE F4): `TaskQWorkflowBlockedStuck` — a run pinned `blocked` past 30 m with no transition — in BOTH rule files, evaluated through the promtool harness; the runbook row: [runbooks.md](runbooks.md#taskqworkflowblockedstuck). |
 
 ### The watchdog family
 
@@ -784,7 +785,7 @@ span does not inflate metric counts relative to a partially-sampled trace.
 The repo ships alert rules for the metrics above: import them instead of
 writing from scratch:
 
-- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml): 24 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, claim-latency degradation, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies)
+- [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml): 25 rules (queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned jobs, lock TTL, leader split-brain, dispatch latency, claim-latency degradation, progress failures, disabled cron, scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies, workflow blocked-stuck)
 - `src/taskq/contrib/kubernetes/prometheus_rule.yaml`: the same rules as a PrometheusRule CRD for Kubernetes
 
 The rules fire on the series above, so they only work where those series are
@@ -1393,3 +1394,31 @@ custom reporter is installed and failing.
 - [runbooks.md](runbooks.md): the alerts these metrics feed, with confirm/remediate steps
 - [../api-reference/testing.md](../api-reference/testing.md): test fixtures, `setup_tracer`, `setup_meter`
 - [cancellation.md](cancellation.md): cancel phases, `cancel_phase_change` log events
+
+---
+
+## The observability triad (workflows)
+
+ONE engine, three surfaces, no surface owns state:
+
+1. **The metrics** — the gauge + the counters (the promtool-gated registry): `taskq.wf_progress_nodes_total{workflow, state}` and friends. A surface that wants a number reads the gauge, never its own query.
+2. **The admin view** — the live graph page (the run explorer; see the workflows guide's "Visualizing workflows"): the rows-alone Mermaid + the SSE revisioned-snapshot feed + the node panel + the audit trail.
+3. **The CLI** — `taskq flows` (one question, one command; see the CLI guide). The status derivation is THE §17.5 derivation in all three surfaces — no mapping drift, because there is ONE source.
+
+## The marking taxonomy (the node states' one vocabulary)
+
+The node rows' statuses are the jobs table's own vocabulary (the workflow engine introduces no new enum values); the workflow-level status is the §17.5 derivation over them:
+
+| Node status | Meaning | The admin graph's fill | The CLI's why-stuck answer |
+|-------------|---------|------------------------|----------------------------|
+| `pending` (deps 0, no hold) | queued, dispatchable | grey | — (live) |
+| `pending` + `deps_pending > 0` | JOIN-WAIT: waiting on the declared parents | grey | the deps counter + the remedy |
+| `pending` + the hold marker | HELD: waiting on a human (the signal row is the truth) | **amber** | the gate + the hold id + the deadline + the remedy |
+| `scheduled` | the ladder's backoff / the retry's sleep | grey | — (live) |
+| `running` | an attempt is live | blue | — |
+| `succeeded` | the terminal good | green | — |
+| `failed` | the ladder exhausted (or `permanent`/`non_retryable`: one terminal) | red | the error + the headroom + the retry remedy |
+| `absorbed` (a failed node whose edge's policy absorbed it) | surfaced in the envelope; the barrier does NOT fail | red | the policy named |
+| `cancelled` | the cancel cascade took it | grey | — |
+
+The workflow-level statuses (the derivation's output, precedence in order): `running` → `failed` → `blocked` → `complete` → `cancelled` → `pending`.

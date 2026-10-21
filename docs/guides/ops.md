@@ -784,6 +784,27 @@ every trigger, not just one.
   Note cron fires currently do not propagate per-actor `start_to_close` (only the fleet-wide
   `TASKQ_DEFAULT_START_TO_CLOSE` applies), so the safety net above is what protects cron.
 
+### The recurring run's display identity (a recipe)
+
+TaskQ's operator identity surface is job id / actor / tags / idempotency
+key / metadata — there is no per-run grouping object. A recurring run
+whose ticks you want to see AS ONE RUN (filter, cancel, audit) stamps
+the identity onto every tick by convention:
+
+- **a run tag on every tick** — one tag naming the run namespace
+  (`run:gaugefleet-nightly`), so the admin UI's tag filter and
+  `cancel_where(tags=…)` address the whole run;
+- **a per-tick tag for the cycle** (`cycle:2026-10-11T03`), so the
+  ticks group by cycle inside the run;
+- **the run namespace in the idempotency key's dimension** (the
+  fresh-key-dimension rule, §5's dedup table) — a re-issued run gets a
+  new key dimension instead of deduping silently against the previous
+  run's `succeeded` rows.
+
+With those three, the operator's run view is the admin UI's tag
+filters plus `cancel_where` — no per-run state to store, and the
+`taskq job show` tags line reads it back per tick.
+
 ---
 
 ## 6. Classifying failures: terminal, retryable, transient
@@ -1172,11 +1193,12 @@ and bounded fan-out per job (chunk sizes in the hundreds, not the tens of thousa
 
 Ship-ready alert rules for the metrics above exist in the repo and are ready to import:
 [`src/taskq/contrib/prometheus/rules.yaml`](https://github.com/AZX-PBC-OSS/TaskQ/blob/main/src/taskq/contrib/prometheus/rules.yaml)
-(24 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
+(25 rules: queue depth, heartbeat misses, terminal-failed share, retried-failure share, abandoned
 jobs, lock TTL, leader split-brain, dispatch latency, claim-latency degradation, progress failures, disabled cron,
 scheduled-backlog growth, promotion stall, sweep timeouts, sweep unexpected errors, sweep degraded
 tier, maintenance-lock contention, rate-limit dependency outage, cron lock contention, cron budget
-deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies) and the equivalent PrometheusRule
+deferrals, cron skipped slots, unserved queue, stranded jobs, expired-lease zombies, workflow
+blocked-stuck) and the equivalent PrometheusRule
 CRD at `src/taskq/contrib/kubernetes/prometheus_rule.yaml`. Importing them is not enough; make
 sure something **scrapes the workers** (`TASKQ_METRICS_PORT`, every pod; see
 [deployment.md: Prometheus scrape](deployment.md#observability-setup)): the rules read

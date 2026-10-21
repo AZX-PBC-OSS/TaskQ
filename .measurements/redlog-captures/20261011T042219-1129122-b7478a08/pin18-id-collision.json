@@ -1,0 +1,10 @@
+{
+  "mutation": "the fork's id mint swapped for a string-shape convention (no per-fork discriminator)",
+  "observed": {
+    "convicted_distinct_ids": 10,
+    "observed": "UniqueViolationError on the second fork (the PK is the only backstop)"
+  },
+  "pin": "pin18-id-collision",
+  "run": "20261011T042219-1129122-b7478a08",
+  "ts": "2026-10-11T04:22:19"
+}

@@ -1,0 +1,10 @@
+{
+  "mutation": "split-tx fork (terminal commit, child inserts follow) killed in the window",
+  "observed": {
+    "children": 0,
+    "terminal_parent_with_fork_debt": true
+  },
+  "pin": "pin19-fork-debt",
+  "run": "20261009T224823-350094-40f0d482",
+  "ts": "2026-10-09T22:48:23"
+}

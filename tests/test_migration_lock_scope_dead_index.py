@@ -53,6 +53,7 @@ from taskq.backend._dispatch_sql import (
     _ROUND_ROBIN_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the production lateral, not a copy; a copy could drift from the SQL that actually runs.
     _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - the static shape pins read the template fragment.
     _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN,  # pyright: ignore[reportPrivateUsage]  # Why: the live-planner pins must EXPLAIN the text production dispatches (the hole resolved as the plain render resolves it), never the template's raw hole.
+    _WF_EXEC_CAPABLE_CTE,  # pyright: ignore[reportPrivateUsage]  # Why: the laterals reference the capability CTE by name — the wrapper composes the production constant verbatim (a literalized stand-in would let the pin's plan drift from the production one).
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -294,6 +295,26 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         # 01.00.23_01 (LIB-2): the fan-out ledger's partial index —
         # pending/scheduled children only, parent_id IS NOT NULL.
         "jobs_parent_pending_idx",
+        # 01.00.24 (pre): the workflow round's three jobs indexes, all
+        # partial on workflow rows (the sweep's lock-first join-wait walk;
+        # the fire arm's join-wait probe — deliberately WITHOUT
+        # deps_pending > 0: the firable row's cache was just reconciled
+        # to 0 by the rederive in the same transaction; the
+        # children-by-parent walk).
+        "jobs_wf_join_wait_idx",
+        "jobs_wf_join_fire_probe_idx",
+        "jobs_wf_children_idx",
+        # 01.00.26_02 (pre): the flow-link index REBUILT on the read shape —
+        # the expression carries the same uuid cast every flow-scoped read
+        # carries, and the partial names the index's true population
+        # (workflow rows only: metadata ? 'flow_id'). Measured at the 220k-row
+        # fleet (40 runs x 500 nodes, VACUUMed): the grouped rollup read one
+        # 500-node run in 21.2 ms on 01.00.26_01's raw-text shape (linear in
+        # the fleet table), 0.12 ms on this one — O(the run's node count).
+        # The pin's update IS the commit that changed the index estate;
+        # the lock-scope discipline itself stays proven below (the dead
+        # probe index absent, the marker predicates named, both paths).
+        "jobs_wf_flow_nodes_idx",
     }
 )
 _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(
@@ -556,11 +577,23 @@ def _params_wrapper(lateral: str, schema: str, *, rr_keys: bool) -> str:
     uncapped-pair shape this pin has always exercised): the laterals'
     scalar probes select from it, the probe yields NULL and LEAST ignores
     it, so the residual bound is untouched.
+
+    The capability CTE (``_WF_EXEC_CAPABLE_CTE``) is composed VERBATIM
+    between ``params`` and the rest: the production laterals reference
+    ``wf_exec_capable`` by name (the execution fence's data leg), so a
+    wrapper that omitted it fails to prepare (CERT2 F-CERT2-1) — and one
+    the wrapper literalized would let the pin's plan drift from the
+    production one (the constant's own comment states the law).
     """
     ctes = [
         "params AS (SELECT $1::text[] AS queues, $2::int AS limit_n, "
         "$3::uuid AS worker_id, $4::interval AS lock_lease, $5::int AS oversample)"
     ]
+    # The capability CTE's body carries the {schema} token (the
+    # schema-independent render form) and a trailing comma (the production
+    # template composes it BETWEEN ctes) — render it, then strip the
+    # trailing comma the join would double.
+    ctes.append(_WF_EXEC_CAPABLE_CTE.format(schema=schema).rstrip().rstrip(","))
     if rr_keys:
         ctes.append(
             "rr_keys (actor, queue, fkey) AS (VALUES ('unrouted_probe'::text, "

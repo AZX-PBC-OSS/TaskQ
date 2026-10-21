@@ -48,6 +48,7 @@ uv add "taskq-py[redis,fastapi]"          # full
 
 | Extra | Installs | Features enabled |
 |-------|----------|-----------------|
+| `taskq-py[flows]` | *(nothing — core-deps-only marker)* | The workflows engine opt-in marker (`import taskq.workflows`); see [Workflows](../guides/workflows.md) |
 | `taskq-py[redis]` | `redis>=8.0.1` | Real-time progress fanout via Redis pub/sub, Redis-backed rate limiters (`TokenBucket`, `SlidingWindow`) |
 | `taskq-py[otel]` | `opentelemetry-sdk`, `opentelemetry-exporter-otlp`, `opentelemetry-instrumentation` | Configuring OTel providers programmatically; in-process test utilities in `taskq.testing.otel` |
 | `taskq-py[fastapi]` | `fastapi`, `jinja2`, `sse-starlette`, `uvicorn`, `humanize`, `python-multipart` | Admin UI (`taskq ui serve`), SSE progress bridge |

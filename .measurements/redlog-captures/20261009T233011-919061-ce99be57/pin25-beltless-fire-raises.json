@@ -1,0 +1,9 @@
+{
+  "mutation": "ON CONFLICT (join_job_id) DO NOTHING dropped \u2014 the second fire path raises UniqueViolation (the belt is the graceful loss)",
+  "observed": {
+    "fire_rows_after_both": 1
+  },
+  "pin": "pin25-beltless-fire-raises",
+  "run": "20261009T233011-919061-ce99be57",
+  "ts": "2026-10-09T23:30:11"
+}

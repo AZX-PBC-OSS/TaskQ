@@ -84,7 +84,7 @@ async def _run_main_with_mocked_deps(
 
     worker_id_val = new_uuid()
 
-    async def _fake_register(pool: object, s: WorkerSettings) -> object:
+    async def _fake_register(pool: object, s: WorkerSettings, **kwargs: object) -> object:
         return worker_id_val
 
     def _fake_install(

@@ -177,6 +177,22 @@ def _job_row(
         "id": row_id,
         "actor": ("actor_a", "actor_b", "actor_c", "test_actor")[i % 4],
         "queue": "default",
+        # 01.00.24's workflow columns: the seeder's rows are VANILLA rows
+        # (no workflow graph) -- the columns' DEFAULT/NULL shapes, stated
+        # explicitly so the runtime column intersection never KeyErrors.
+        # (parent_id's VALUE is seeded below — the fan-out ledger's
+        # deterministic pointer, the one column both rounds share.)
+        "deps_pending": 0,
+        "map_index": None,
+        "step_key": None,
+        "code_version": None,
+        # 01.00.27's loop-budget columns (mirrored onto jobs_archive by
+        # 01.00.31): the seeder's rows are VANILLA rows -- the DEFAULT/NULL
+        # shapes, stated explicitly so the runtime intersection never
+        # KeyErrors.
+        "budget_deadline": None,
+        "budget_paused": False,
+        "budget_remaining_ms": None,
         "identity_key": f"ident-{i % 50}" if i % 4 == 0 else None,
         "fairness_key": f"fair-{i % 10}" if i % 7 == 0 else None,
         "payload": _payload(i),
@@ -232,7 +248,7 @@ def _job_row(
         # backfills them): both populations seeded so the column proves
         # it round-trips through COPY, not just that the DDL accepts it.
         "assignment_routed": i % 4 == 0,
-        # The fan-out ledger (01.00.23_01): a deterministic parent
+        # The fan-out ledger (01.00.24_01): a deterministic parent
         # pointer on every 10th row - dangling by construction (the
         # ledger has no FK and never joins to the parent row), so the
         # COPY column proves it round-trips, not just that the DDL

@@ -1,0 +1,10 @@
+{
+  "mutation": "crash between fire-commit and consumer-insert (no drain yet)",
+  "observed": {
+    "consumers_dispatched": 0,
+    "fired": true
+  },
+  "pin": "pin20-outbox-flush-stranded",
+  "run": "20261012T221007-3985907-b2867525",
+  "ts": "2026-10-12T22:10:07"
+}
