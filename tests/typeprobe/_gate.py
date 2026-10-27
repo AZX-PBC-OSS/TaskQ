@@ -231,7 +231,19 @@ def _ty_errors(probe_rel: str) -> dict[int, set[str]]:
     ).stdout
     assert TY_VERSION in out, f"ty must be pinned at {TY_VERSION}, got {out!r}"
     proc = subprocess.run(
-        ["ty", "check", probe_rel],
+        # --config-file: the gate's OWN (empty) config — hermetic to the
+        # box; without it ty's discovery adopts stray parent-directory
+        # ty.toml files (the 2026-10-27 conviction: a bisection leftover
+        # at /tmp/opencode/ty.toml carrying a newer ty's
+        # `return-type-inference` option crashed every probe on config
+        # parse). The flag belongs to the CHECK subcommand.
+        [
+            "ty",
+            "check",
+            "--config-file",
+            "tests/typeprobe/ty.toml",
+            probe_rel,
+        ],
         capture_output=True,
         text=True,
         check=False,  # a non-zero exit is EXPECTED (the corpus must red)
