@@ -623,6 +623,13 @@ async def test_every_action_button_lands_its_audit_row(
 # ── the panel latency under a 200-child map ─────────────────────────────
 
 
+# Why load_sensitive: the pinned 50 ms band's clean-box truth is ~3 ms
+# (the panel route's own measurement, t11-latency-band.json) — measured
+# at -n 8 under the battery's co-tenancy the p95 read once rode 177.9 ms
+# while solo and serial it holds (green x2 solo, green in the -n 8 fill
+# of 2026-10-15). The band's teeth (a broken read blows 50 ms on the
+# quiet box too) are a serial-lane fact.
+@pytest.mark.load_sensitive
 async def test_the_panel_and_page_latency_on_a_200_child_map(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
