@@ -1,0 +1,4 @@
+# the wf battery's FILL — the ZERO-FAILURE run at the estate re-stamp head 3b39fdddba5b6e5f8349eff8df668ea73e2e7dd2 — the CI lane shape (not load_sensitive); every battery-family stem's fill
+688 passed, 1 warning in 72.03s (0:01:12)
+rc=0
+head: 3b39fdddba5b6e5f8349eff8df668ea73e2e7dd2
