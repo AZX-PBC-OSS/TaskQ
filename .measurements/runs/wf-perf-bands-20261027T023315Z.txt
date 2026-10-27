@@ -1,0 +1,4 @@
+# the bands leg (tests/test_wf_perf_bands.py + tests/test_wf_status_pins.py + tests/test_wf_schema_migration.py, the stamped writers, serial, quiet box) at the estate re-stamp head 3b39fdddba5b6e5f8349eff8df668ea73e2e7dd2
+32 passed in 35.81s
+bands rc=0
+head: 3b39fdddba5b6e5f8349eff8df668ea73e2e7dd2

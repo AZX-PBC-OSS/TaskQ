@@ -1,0 +1,4 @@
+# the type gate (tests/typeprobe/_gate.py, the pinned checkers, the REPO'S OWN ty config via --config-file) at the estate re-stamp head 3b39fdddba5b6e5f8349eff8df668ea73e2e7dd2
+the type gate holds: every MUST_ERROR marker (46) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+gate rc=0
+head: 3b39fdddba5b6e5f8349eff8df668ea73e2e7dd2
