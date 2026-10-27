@@ -1,0 +1,2 @@
+# the staged slot for the rv2-13-green family — the real zero-failure tail lands in the CLOSE commit; stamped at the estate re-stamp head c5bf99a43fc03a57be5f4ee6fdf6ecf48311652a
+head: c5bf99a43fc03a57be5f4ee6fdf6ecf48311652a
