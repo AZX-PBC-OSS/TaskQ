@@ -142,6 +142,26 @@ groups:
             ceiling. Investigate PG load, index health on jobs_dispatch_idx,
             and batch size configuration.
 
+      - alert: TaskQClaimLatencyDegraded
+        expr: taskq_claim_degradation_ratio > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TaskQ claim latency degraded {{ $labels.queue }} (ratio > 10x baseline)"
+          description: >-
+            The claim query's latency p99 is more than 10x its rolling 24h
+            baseline on this worker (taskq_claim_degradation_ratio), the
+            signature of a pinned MVCC horizon: a long or overlapping
+            transaction is holding VACUUM off and the claim query's B-tree
+            scans are degenerating through the dead tuples the queue's own
+            churn leaves behind. This ratio sees the degradation an absolute
+            threshold cannot (a slow fleet is its own new normal). Find the
+            pinning transaction and let VACUUM drain; the claim cursor
+            (TASKQ_CLAIM_CURSOR_RESET_SECONDS) is the bounded mitigation on
+            the candidate-probe surface. Runbook:
+            docs/guides/runbooks.md#taskqclaimlatencydegraded.
+
       - alert: TaskQProgressPublishFailures
         expr: rate(taskq_progress_publish_failures_total[5m]) > 0
         for: 5m
@@ -421,6 +441,35 @@ groups:
             has no live worker subscribed). Neither dispatch nor the deadline
             sweep will ever touch these rows; the leader's detector is the
             only signal. Runbook: docs/guides/runbooks.md#taskqstrandedjobs.
+
+      - alert: TaskQWorkflowBlockedStuck
+        expr: taskq_wf_progress_nodes_total{state="blocked"} > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: >-
+            Workflow {{ $labels.workflow }} has {{ $value }} nodes pinned
+            blocked for 30m with no transition
+          description: >-
+            A workflow run has nodes sitting in a BLOCKED representation
+            (join-wait, a blocked-with-reason stamp, or held) for 30
+            minutes with no transition — the join that never fires, the
+            hold nobody released, or the fail-closed block nobody
+            cleaned up. The gauge is sampled by the maintenance leader on
+            the admin's surface (taskq.wf_progress_nodes_total,
+            dimensioned by the DECLARED workflow — `_other_` carries the
+            unregistered collapse). The per-run truth: the admin's run
+            page reads the per-node rollup (blocked-by, join-latency SQL
+            in docs/guides/insights.md); the node rows name the blocking
+            reason (metadata.blocking_reason: 'join' waiting on parents,
+            'orphan_parent' a misnamed child, 'failed_parent' a failed
+            parent's fail-closed cascade, 'body_unavailable' a fired join
+            whose body never resolved — that one is a deployment defect:
+            the workflow's definitions are not imported in every worker
+            process). Operators should override the threshold in their
+            own rule configuration. Runbook:
+            docs/guides/runbooks.md#taskqworkflowblockedstuck.
 
       - alert: TaskQRunningLeaseExpired
         expr: taskq_jobs_running_lease_expired > 0

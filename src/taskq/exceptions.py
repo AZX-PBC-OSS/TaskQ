@@ -5,6 +5,7 @@ RetryAfter are not errors, they are signals the consumer translates into
 state transitions.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
@@ -120,15 +121,17 @@ class EventRetentionGapError(TaskQError):
 
 
 class StreamUnavailable(TaskQError):
-    """A job stream could not re-read its job row for longer than its failure budget.
+    """A job stream could not re-read its job row for at least its failure budget.
 
-    Raised by the Postgres poll transport behind :meth:`TaskQ.stream` and
-    :meth:`JobHandle.progress_stream` when every fetch has failed with a
-    pool or connection error for ``elapsed`` seconds (the transport's
-    failure budget). A blip shorter than the budget is retried silently
-    beyond a warning per failed poll; this is the end of the stream, so
-    the caller's ``async for`` cannot wait forever on a database that is
-    not coming back. The last failure is chained as ``__cause__``.
+    Raised by either transport behind :meth:`TaskQ.stream` and
+    :meth:`JobHandle.progress_stream` — the Postgres poll transport's
+    fetches, and on the Redis path, the safety-net re-reads behind the
+    subscription — when every fetch has failed with a pool or connection
+    error for ``elapsed`` seconds (the transport's failure budget). A
+    blip shorter than the budget is retried silently beyond a warning
+    per failed poll; this is the end of the stream, so the caller's
+    ``async for`` cannot wait forever on a database that is not coming
+    back. The last failure is chained as ``__cause__``.
     """
 
     def __init__(
@@ -1291,3 +1294,190 @@ class BatchIdExistsError(TaskQError):
                 f"batch_id {batch_id} already exists; use a different batch_id "
                 f"or omit it to auto-generate one"
             )
+
+
+class UnknownQueueError(TaskQError):
+    """Raised when strict queue-name validation refuses a queue name.
+
+    With ``TASKQ_QUEUES_STRICT=true`` the enqueue-time unserved-queue
+    check (``ActorCapacityCache.maybe_warn_unserved_queue`` — the same
+    zero-I/O TTL-snapshot verdict every enqueue arm already consults)
+    becomes HARD: a queue no registered actor's assignment routes to
+    raises HERE, before any backend write, instead of storing an
+    orphaned row on a queue no worker claims. Silent data non-delivery
+    is the worst failure class a queueing library has, and a
+    one-character typo used to be enough to cause it.
+
+    Two raising sites, one class, both naming the offending queue AND
+    the set it was judged against (the unserved-queue note's quality
+    bar: the fix is obvious from the message alone):
+
+    * **At submit** (``source="submit"``): the judged sets are TWO —
+      the registered queue assignments (``actor_config`` rows,
+      fleet-wide DB truth the client can read without actor
+      registration — the split-deployment constraint) and, when the
+      process's settings carry one, its own declared set
+      (``TASKQ_QUEUES``). A refusal requires the queue to miss BOTH:
+      an env-declared but snapshot-absent queue is a new queue
+      mid-deploy and is allowed through the registration lag; an EMPTY
+      snapshot (no worker ever started, the first deploy) carries zero
+      evidence of stranding and never refuses; an UNAVAILABLE snapshot
+      (read failure, capability-less backend) never refuses — a
+      database blip or migration window must not become a submit
+      outage, and the check re-arms on the next refresh. Every
+      ambiguous state resolves to ALLOW + the advisory note;
+      over-rejection is strictly worse than over-permission. The
+      snapshot is TTL-bounded, so a queue registered seconds ago may
+      not be in it yet; when the process declares no queue set the
+      snapshot is the only source and the message says so — deploy
+      workers before clients for new queues, that deploy order is the
+      operator's protection for the first submits. Nothing was stored
+      when this raises — the refusal is at the door.
+    * **At worker boot** (``source="worker_boot"``): the judged set is
+      the worker's own configured consume set (``TASKQ_QUEUES``), and
+      the coverage is the fleet's stored assignments read back after
+      ``sync_actor_config``. A configured queue nothing routes to is
+      config drift between deploy and code; the worker refuses to boot.
+      Deliberately worker-only: actors register only in the worker
+      process, so a client-side boot check of this shape would brick
+      split deployments (web submits, worker consumes).
+    """
+
+    def __init__(
+        self,
+        queues: Sequence[str],
+        known_queues: Sequence[str],
+        *,
+        actor: str | None = None,
+        source: Literal["submit", "worker_boot"] = "submit",
+        snapshot_is_ttl_bounded: bool = False,
+        env_queues: Sequence[str] | None = None,
+    ) -> None:
+        self.queues = tuple(queues)
+        self.known_queues = tuple(known_queues)
+        self.env_queues = tuple(env_queues) if env_queues is not None else None
+        self.actor = actor
+        self.source = source
+        self.snapshot_is_ttl_bounded = snapshot_is_ttl_bounded
+        offending = ", ".join(repr(q) for q in self.queues)
+        known_list = ", ".join(repr(q) for q in self.known_queues)
+        where = f" (actor {actor!r})" if actor is not None else ""
+        noun = "queue name" if len(self.queues) == 1 else "queue names"
+        verb = "is" if len(self.queues) == 1 else "are"
+        if source == "submit":
+            ttl_note = (
+                " (the snapshot is TTL-bounded: a queue registered seconds "
+                "ago may not be in it yet)"
+                if snapshot_is_ttl_bounded
+                else ""
+            )
+            # The asymmetry doctrine's two-source statement, in the
+            # message itself: the verdict refused only because BOTH
+            # sources missed, and the message says which two, including
+            # the web-without-env corner (no declared set -> the snapshot
+            # was the only source -> the deploy order is the operator's
+            # protection for new queues).
+            if self.env_queues is not None:
+                env_list = ", ".join(repr(q) for q in self.env_queues)
+                two_source = (
+                    f"it {verb} not in this process's declared queue set "
+                    f"(TASKQ_QUEUES: [{env_list}]) either"
+                )
+            else:
+                two_source = (
+                    "this process declares no TASKQ_QUEUES set, so the "
+                    "registered snapshot was the only source — for new "
+                    "queues, deploy workers before clients (the registration "
+                    "snapshot is TTL-bounded: a queue registered seconds ago "
+                    "may not be in it yet)"
+                )
+            super().__init__(
+                f"{noun} {offending} {verb} not served: no registered actor's "
+                f"queue assignment routes to it (registered routes: "
+                f"[{known_list}]{ttl_note}) and {two_source} — and "
+                f"TASKQ_QUEUES_STRICT is enabled{where}: nothing was stored. "
+                f"Fix the queue name, register an actor whose queue is "
+                f"{offending}, pass allow_unregistered=True for a genuinely "
+                f"dynamic queue, or disable TASKQ_QUEUES_STRICT."
+            )
+        else:
+            # The worker-boot branch pluralizes with the SAME noun/verb the
+            # submit branch computes: the boot gate refuses every unrouted
+            # queue in one raise, so the message must read right at both
+            # lengths.
+            has_verb = "has" if len(self.queues) == 1 else "have"
+            them_it = "it" if len(self.queues) == 1 else "them"
+            boot_noun = "configured queue" if len(self.queues) == 1 else "configured queues"
+            super().__init__(
+                f"{boot_noun} {offending} {has_verb} no registered actor routing "
+                f"to {them_it} (configured: [{known_list}]) and "
+                f"TASKQ_QUEUES_STRICT is enabled: the worker refuses to boot, "
+                f"jobs on {them_it} would never be dispatched. Remove "
+                f"{offending} from TASKQ_QUEUES, or deploy/register an actor "
+                f"whose queue is {offending}."
+            )
+
+
+class SignalTimeoutError(TaskQError):
+    """A held signal's deadline passed under ``on_timeout="fail"`` — the
+    dedicated typed failure (GAPS-ESTATE F9's glossary shape: the
+    ``Signal`` prefix, the :class:`TaskQError` base; NOT
+    ``TaskQSignalTimeout``, which would break the exceptions glossary's
+    one-prefix rule). The named state's ledger record: the hold row's
+    ``abandoned`` + the node's typed failure — never a silent orphan.
+
+    THE MACHINERY NEVER RAISES THIS (T26's amendment — the expiry is a
+    VALUE): the wait site RETURNS the closed union's ``Expired`` member
+    and the body MATCHES the fail-close arm; a body that WANTS the
+    failure raises THIS exception ITSELF off the member (the escalation
+    ladder's own use — the raised error is a body exception exactly
+    like any other).
+
+    See also :class:`SignalAbandonedError` (the operator-abandon shape —
+    the same defined state, a different door)."""
+
+
+class SignalAbandonedError(TaskQError):
+    """A held signal was abandoned by policy (the operator-abandon / the
+    sweep's escalation arm): the same DEFINED state as
+    :class:`SignalTimeoutError` — a named ledger record, never a silent
+    orphan. The distinction is the DOOR (the timeout sweep vs the
+    operator's action), not the state."""
+
+
+class SignalPayloadError(TaskQError):
+    """A delivered payload validated against NONE of the wait's declared
+    models (the typed door's runtime boundary — attack-3 B2/H2's cure):
+    the refusal happens BEFORE the deliver CAS consumes the hold, so the
+    hold SURVIVES and the operator sees WHY. Never a silent drop into the
+    body's re-validation (the convicted shape: the payload consumed, then
+    the body's laddering ``ValidationError`` kills the flow).
+
+    See also :class:`SignalPayloadAmbiguousError` — the same refusal when
+    the payload fits MORE than one declared model and the gate declared
+    no discriminator."""
+
+
+class SignalPayloadAmbiguousError(SignalPayloadError):
+    """A delivered payload fit MORE than one of the wait's declared
+    models and the gate declared no discriminator: which member the body
+    receives would be decided by DECLARATION ORDER (the convicted
+    first-fit mis-narrowing — attack-3 B2), so the delivery is refused
+    instead. The gate's escape is the explicit ``discriminator=`` on the
+    wait site; the operator's escape is a payload whose shape names one
+    model unambiguously."""
+
+
+class ReservedTimerNamespaceError(TaskQError):
+    """E17 — THE RESERVED TIMER NAMESPACE (the timer-cures lane's cure
+    1): a HAND-facing mint named its hold inside the durable timer's
+    reserved ``__timer__`` signal prefix — a payload model named
+    ``__timer__Approval``, or a ``wait_until`` key beginning with the
+    prefix. The minted row is one every reader mis-identifies as the
+    CLOCK's: invisible to ``HitlClient.list()``, unanswerable (the
+    boundary refuses every hand delivery as a timer forgery), never
+    fail-closing (the expiry arm never abandons the prefix), and fired
+    at the deadline into a ``SignalPayloadError`` death (the wake cannot
+    fit a human payload model). The refusal is at the MINT — no row is
+    written; the fix is named in the message (rename the payload model /
+    choose a key outside the reserved namespace)."""

@@ -266,6 +266,7 @@ async def _open_split(
     pooled_dsn: str,
     pg_is_pooled: bool,
     max_concurrency: str = "8",
+    setting_overrides: dict[str, str] | None = None,
 ) -> AsyncGenerator[tuple[WorkerDeps, PostgresBackend]]:
     """Open the documented topology through TaskQ's own factories.
 
@@ -276,6 +277,9 @@ async def _open_split(
     ``max_concurrency`` sizes the worker pool (``int(max_concurrency * 1.5)``
     client conns) — the hot-path legs widen it so the hammer can fan wider
     than the pooler's server pool and force the connection rotation.
+    ``setting_overrides`` rides ``make_integration_settings_dict`` verbatim
+    for the legs whose pin needs a different budget than the chaos-tier
+    defaults (see the heartbeat-headroom note on the topology test).
     """
     raw = make_integration_settings_dict(
         stack.direct_dsn,
@@ -284,6 +288,7 @@ async def _open_split(
         TASKQ_PG_DSN_POOLED=pooled_dsn,
         TASKQ_PG_IS_POOLED="true" if pg_is_pooled else "false",
         TASKQ_MAX_CONCURRENCY=max_concurrency,
+        **(setting_overrides or {}),
     )
     settings = WorkerSettings.load_from_dict(raw)
     async with open_worker_deps(settings) as deps:
@@ -522,22 +527,31 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
 ) -> None:
     """The full role split, live at once, on the naive pooler + the knob.
 
-    Load-sensitive, deliberately: the integration settings this test rides
-    give the heartbeat pool a 0.1s command budget
-    (``make_integration_settings_dict``'s ``TASKQ_HEARTBEAT_COMMAND_TIMEOUT=0.1``,
-    sized for the chaos tiers' lease-cascade arithmetic, not for wall-clock
-    headroom), and the topology pins read ``pg_stat_activity`` through that
-    same pool. Under parallel-lane neighbors a descheduled loop or a
-    co-tenanted runner lets a healthy ~1ms round trip outlive the 0.1s
-    budget, and asyncpg's protocol timer fires the bare TimeoutError
-    (``protocol.pyx`` ``_on_timeout``) on a healthy run - observed on the
-    coverage/test lanes (run 36768177771: the red landed in
-    ``heartbeat_jobs`` itself). The pin belongs on the quiet serial lane
-    where a budget firing means a real hang and nothing else - the
-    ``test_full_fleet_geometry_saturates_without_livelock`` doctrine. Its
+    Load-sensitive, deliberately: the concurrency this leg proves is real —
+    admin reads querying the same rows while pooled/direct traffic churns —
+    so it stays on the quiet serial lane (the
+    ``test_full_fleet_geometry_saturates_without_livelock`` doctrine). Its
     own 45s budget probe stays out of the coverage lane with the same
     ``interpreter_is_traced`` guard the fleet pins use: under tracing, a
     timing pin measures the tracer, not the code.
+
+    The heartbeat pool, though, runs at the SDK's PRODUCTION command budget
+    (2.0s), not the integration defaults' 0.1s, with ``TASKQ_LOCK_LEASE``
+    raised to that budget's cascade floor (12.0 = max(0.5, 2.0) + 4 * 2.5).
+    The 0.1s budget is the chaos tiers' lease-cascade arithmetic — sized so
+    lease-expiry waits stay in the seconds range — and this test pins
+    TOPOLOGY and renewal correctness, not that arithmetic. Its two prior
+    reds were the budget firing on a healthy run: asyncpg's protocol timer
+    (``protocol.pyx`` ``_on_timeout``) throws the bare TimeoutError when a
+    co-tenanted runner lets a ~1ms round trip outlive 0.1s — observed on the
+    coverage/test lanes (run 36768177771, the red in ``heartbeat_jobs``
+    itself), then AGAIN on this serial lane post-move (run 37583577754, same
+    statement, same function). One budget firing in 90 tests on a quiet lane
+    is the signature of a timer with no headroom, not a hung pool — the
+    dispatch (24 direct-pool claims) succeeded immediately before it. So the
+    production default is the honest budget here; the pin assertion on
+    ``heartbeat_command_timeout`` below reds if the override wiring is
+    ever dropped, re-exposing the lane to the timer.
 
     One ``open_worker_deps`` under the documented env split: jobs enqueued
     and completed through the pooler, claims + heartbeat renewals through
@@ -565,8 +579,26 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
     admin_reads = 0
     try:
         async with _open_split(
-            stack, probe_schema, pooled_dsn=stack.naive_pooled_dsn, pg_is_pooled=True
+            stack,
+            probe_schema,
+            pooled_dsn=stack.naive_pooled_dsn,
+            pg_is_pooled=True,
+            # The heartbeat headroom (see the docstring): the SDK's
+            # production budget, and the lease raised to the cascade
+            # floor that budget demands (max(0.5, 2.0) + 4 * (0.5 + 2.0)
+            # = 12.0, with the default max_heartbeat_failures of 3).
+            setting_overrides={
+                "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "2.0",
+                "TASKQ_LOCK_LEASE": "12.0",
+            },
         ) as (deps, backend):
+            # The pin that reds if the headroom wiring is dropped: without
+            # the override this rides the chaos-tier 0.1s budget, and the
+            # lane re-exposes the protocol-timer flake (two prior reds).
+            assert deps.settings.heartbeat_command_timeout == 2.0, (
+                "the heartbeat pool must run the production 2.0s budget here, "
+                f"got {deps.settings.heartbeat_command_timeout!r}"
+            )
             # ── Topology pins: who is behind the pooler, who is not ──
             worker_addr = await _client_addr_of(deps.worker_pool)
             dispatcher_addr = await _client_addr_of(deps.dispatcher_pool)

@@ -103,6 +103,12 @@ nav:
       - Sweeps: guides/sweeps.md
       - Rate Limiting: guides/rate-limiting.md
       - Retries: guides/retries.md
+      - Workflows (DAG Engine): guides/workflows.md
+      - Agent Fleets (LLM-gated): guides/agent-fleet.md
+      - Event-Intel Pipelines: guides/event-pipeline.md
+      - Task Stacks: guides/task-stacks.md
+      - DocShelf (the Adoption Story): guides/docshelf.md
+      - Pattern Catalog: guides/patterns.md
       - Cancellation: guides/cancellation.md
       - Progress Tracking: guides/progress.md
       - Workgroups: guides/workgroups.md
@@ -119,7 +125,11 @@ nav:
       - Managed Identities & BYO Connections: guides/managed-identities.md
       - CLI: guides/cli.md
       - Troubleshooting: guides/troubleshooting.md
+      - Migrating Graph-Checkpoint Workflows: guides/migrating-graph-checkpoints.md
+      - Migrating from LangGraph: guides/migrating-from-langgraph.md
+      - The LedgerWatch Adoption Story: guides/ledgerwatch-adoption.md
       - Upgrading: guides/upgrading.md
+      - The Production Checklist: guides/production-checklist.md
       - Production Deployment: guides/deployment.md
       - Scaling: guides/scaling.md
       - Operations & Adoption: guides/ops.md
@@ -128,6 +138,7 @@ nav:
       - Package Overview: api-reference/taskq.md
       - Actor: api-reference/actor.md
       - Client: api-reference/client.md
+      - Workflows (Flow API): api-reference/workflows.md
       - Exceptions: api-reference/exceptions.md
       - Retry: api-reference/retry.md
       - Worker: api-reference/worker.md
@@ -145,11 +156,15 @@ nav:
       - HashiCorp Vault: api-reference/vault.md
       - CLI: api-reference/cli.md
   - Architecture: architecture.md
+  - Examples:
+      - The Doc-Ingest Pipeline: examples/doc-ingest.md
   - Design:
       - SQL Hot-Path Follow-Ups: design/sql-hotpath-followups.md
       - Debugging Playbook: design/debugging-playbook.md
       - The Landing Doctrine: design/landing-doctrine.md
       - The System-E2E Tier: design/system-e2e-tier.md
+      - The Workflows Spec: design/workflows-spec.md
+  - The Shipped-Capability Matrix: taskqflow-coverage.md
   - Changelog: changelog.md
 
 extra:

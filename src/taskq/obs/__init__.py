@@ -53,6 +53,11 @@ consistent behavior. No runtime conditional branching on this env var is
 needed, the attribute values are correct by construction.
 """
 
+from taskq.obs._claim_health import (
+    claim_health_snapshot,
+    record_claim_latency,
+    reset_claim_health_state,
+)
 from taskq.obs._exporter import (
     ExporterWiring,
     OtelExporterConfigurationError,
@@ -61,6 +66,7 @@ from taskq.obs._exporter import (
 from taskq.obs._otel import (
     INSTRUMENTATION_NAME,
     ConsumedOutcome,
+    SseSurface,
     StrandedReason,
     TimeoutKind,
     get_meter,
@@ -149,6 +155,7 @@ from taskq.obs._otel import (
     update_scheduled_horizon_cache,
     update_stranded_jobs_cache,
     update_sweep_batch_size_cache,
+    update_wf_progress_cache,
 )
 from taskq.obs._redact_exc import (
     ExceptionText,
@@ -187,9 +194,11 @@ __all__ = [
     "NullErrorReporter",
     "OtelExporterConfigurationError",
     "ScrubbedText",
+    "SseSurface",
     "StrandedReason",
     "TimeoutKind",
     "bind_job_context",
+    "claim_health_snapshot",
     "configure_exporters",
     "get_logger",
     "get_meter",
@@ -205,6 +214,7 @@ __all__ = [
     "record_cancel_actored",
     "record_cancel_requested",
     "record_capacity_refresh_failure",
+    "record_claim_latency",
     "record_consumed_message",
     "record_corrupt_dispatch_row",
     "record_cron_budget_deferral",
@@ -257,6 +267,7 @@ __all__ = [
     "record_sweep_unexpected_error",
     "redact_payload",
     "render_exception",
+    "reset_claim_health_state",
     "safe_exception_message",
     "safe_repr",
     "safe_start_span",
@@ -291,4 +302,5 @@ __all__ = [
     "update_scheduled_horizon_cache",
     "update_stranded_jobs_cache",
     "update_sweep_batch_size_cache",
+    "update_wf_progress_cache",
 ]

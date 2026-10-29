@@ -63,6 +63,7 @@ from taskq.backend._batch_sql import (
     reset_batch_failures as _reset_batch_failures,
 )
 from taskq.backend._cancel_bulk import _cancel_where
+from taskq.backend._claim_cursor import ClaimCursor
 from taskq.backend._dispatch import (
     QueueModeCache,
     _resolve_queue_modes,
@@ -107,7 +108,9 @@ from taskq.backend._protocol import (
 from taskq.backend._reads import (
     _check_reclaim_visibility_risk,
     _count_active_jobs,
+    _count_pending_children_by_queue,
     _count_pending_jobs,
+    _count_pending_jobs_by_queue,
     _get,
     _get_actor_max_pending,
     _get_actor_queues,
@@ -241,6 +244,33 @@ def _cancel_notify_channels(schema: str, worker_id: UUID) -> list[str]:
     return [events_channel(schema), worker_channel(schema, str(worker_id))]
 
 
+#: The client-side bound on the cancel paths' NOTIFY transport executes
+#: (``write_cancel_request`` and ``cancel_where``). The NOTIFY rides AFTER
+#: the owning write has committed — the row IS the request, the heartbeat
+#: poll remains authoritative for signal delivery, and both call sites'
+#: swallow-and-warn already declare that a transport failure must not
+#: surface to the caller. A transport that never ANSWERS (a silently-dead
+#: socket: packets accepted, never delivered — the CI runner's weather
+#: class, convicted by the system-e2e (17) leg at f7155214, run
+#: 38053606389) is the one failure shape that swallow never saw: the
+#: execute hung forever and held the operator's own call past its every
+#: budget. The bound converts that hang into the documented
+#: swallow-and-warn, at-least-once (the missed knock costs one poll
+#: interval, the same recovery the NOTIFY failure path already accepts).
+#: One pg_notify round trip is single-digit milliseconds on any healthy
+#: socket; 5s is two orders of margin.
+_NOTIFY_TRANSPORT_TIMEOUT_S = 5.0
+
+
+async def _fire_cancel_notify(conn: "ConnLike", sql: str, *params: object) -> None:
+    """One NOTIFY transport execute under the transport bound. Raises
+    ``TimeoutError`` past the bound — the caller's swallow-and-warn is
+    the designed handler (the row is the truth; the NOTIFY is
+    transport)."""
+    async with asyncio.timeout(_NOTIFY_TRANSPORT_TIMEOUT_S):
+        await conn.execute(sql, *params)
+
+
 class PostgresBackend:
     """Production backend backed by Postgres.
 
@@ -276,6 +306,17 @@ class PostgresBackend:
     """
 
     BACKEND_PROTOCOL_VERSION: ClassVar[int] = BACKEND_PROTOCOL_VERSION
+
+    #: The workflow healing arms' admission marker — the ``_SweepSpec``
+    #: tick table's hasattr gate probes it (``gated_on``). The arms live
+    #: in ``taskq.workflows._sweep`` (the §16.1 import law keeps them out
+    #: of this package's module scope); their admission is THIS class's
+    #: own capability declaration, the same seam every maintenance sweep
+    #: uses (each capability its own marker — the arms never borrow
+    #: another sweep's method name, so a backend declares exactly the
+    #: capabilities it implements, and a double/stand-in that implements
+    #: only the legacy maintenance surface keeps the arms off).
+    workflow_sweeps_capable: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -343,6 +384,15 @@ class PostgresBackend:
         # the backend's own clock, so tests drive expiry through
         # FakeClock exactly like every other clocked seam.
         self._queue_mode_cache = QueueModeCache(clock=self._clock.monotonic)
+
+        # The claim cursor: this backend's per-queue high-water mark of
+        # successfully-claimed ids (backend/_claim_cursor.py). One per
+        # backend = one per worker's dispatch loop, the per-worker memory
+        # the design specifies. The clock is the backend's own so tests
+        # drive the jitter reset like every other clocked seam; the knob
+        # (claim_cursor_reset_seconds) is re-read from settings on every
+        # dispatch round, so a settings change applies without rebuilding.
+        self._claim_cursor = ClaimCursor(clock=self._clock.monotonic)
 
     # ── Pool accessors (dynamic via self._deps for hot-reload) ────────
 
@@ -467,6 +517,15 @@ class PostgresBackend:
         assert self._dispatcher_pool is not None, (
             "dispatcher_pool must be set before dispatch_batch"
         )
+        # The knob is re-read per round (the oversample plumbing pattern):
+        # a settings change applies without rebuilding the backend, and 0
+        # (the documented OFF switch) hands the round no cursor at all -
+        # the plain renders run and the cursor neither bounds nor
+        # advances.
+        claim_cursor: ClaimCursor | None = self._claim_cursor
+        claim_cursor.reset_seconds = self._deps.settings.claim_cursor_reset_seconds
+        if claim_cursor.reset_seconds <= 0:
+            claim_cursor = None
         return await _dispatch(
             self._dispatcher_pool,
             self._sql,
@@ -478,6 +537,7 @@ class PostgresBackend:
             limit,
             lock_lease,
             queue_mode_cache=self._queue_mode_cache,
+            claim_cursor=claim_cursor,
         )
 
     @staticmethod
@@ -895,7 +955,8 @@ class PostgresBackend:
                     async with _bounded_checkout(
                         self._worker_pool, "write_cancel_request_notify"
                     ) as notify_conn:
-                        await notify_conn.execute(
+                        await _fire_cancel_notify(
+                            notify_conn,
                             "SELECT pg_notify($1, $2), pg_notify($3, $4)",
                             fleet_ch,
                             payload,
@@ -966,7 +1027,8 @@ class PostgresBackend:
                 async with _bounded_checkout(
                     self._worker_pool, "cancel_where_notify"
                 ) as notify_conn:
-                    await notify_conn.execute(
+                    await _fire_cancel_notify(
+                        notify_conn,
                         "SELECT pg_notify(channel, payload) "
                         "FROM unnest($1::text[], $2::text[]) AS t(channel, payload)",
                         channels,
@@ -1262,6 +1324,12 @@ class PostgresBackend:
 
     async def count_active_jobs(self, queues: list[str]) -> int:
         return await _count_active_jobs(self._worker_pool, self._sql, queues)
+
+    async def count_pending_jobs_by_queue(self, queues: list[str]) -> dict[str, int]:
+        return await _count_pending_jobs_by_queue(self._worker_pool, self._sql, queues)
+
+    async def count_pending_children_by_queue(self, parent_id: JobId) -> dict[str, int]:
+        return await _count_pending_children_by_queue(self._worker_pool, self._sql, parent_id)
 
     async def get_actor_max_pending(self) -> dict[str, int | None]:
         return await _get_actor_max_pending(self._worker_pool, self._sql)

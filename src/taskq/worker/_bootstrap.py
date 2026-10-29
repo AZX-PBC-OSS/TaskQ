@@ -36,9 +36,10 @@ from taskq._di import ProviderRegistry, Scope
 from taskq._di.scopes import LoopScope, ProcessScope, ThreadScope, make_resolver
 from taskq._dsn import dsn_host as _dsn_host
 from taskq._forkguard import guarded_connection_class, install_fork_guard
+from taskq._reaper import reap_cancelled_child
 from taskq.actor import ActorRef
 from taskq.actor_config import ActorConfig
-from taskq.actor_config_ops import list_actor_configs
+from taskq.actor_config_ops import ActorConfigRow, list_actor_configs
 from taskq.auth import (
     PgCredentialProvider,
     ReloadSchedule,
@@ -65,7 +66,7 @@ from taskq.cron import (
     CronScheduleSpec,
     compute_next_fire_after,
 )
-from taskq.exceptions import DIError, MissingProvider
+from taskq.exceptions import DIError, MissingProvider, UnknownQueueError
 from taskq.obs import (
     ErrorReporter,
     get_meter,
@@ -870,6 +871,119 @@ def _emit_unconsumed_queue_startup_warnings(
             "routed queue appears. Intended when another worker in the "
             "fleet consumes the queue; if none does, those jobs never run "
             ", add the queue to some worker's TASKQ_QUEUES / --queues."
+        ),
+    )
+
+
+def _fail_fast_on_unrouted_configured_queues(
+    settings: WorkerSettings,
+    actor_registry: Mapping[str, ActorRef[Any, Any]],
+    stored_rows: Mapping[str, ActorConfigRow],
+) -> None:
+    """Strict mode's worker-side boot gate: a configured queue nothing
+    routes to refuses the boot.
+
+    THE split-deployment rule, and why this check lives HERE and only
+    here: actors register ONLY in the worker process, so any startup
+    check shaped like "configured queue with no registered actor" can
+    run in the worker alone — the client process (web/admin submits,
+    worker consumes) gets the submit-time gate
+    (``ActorCapacityCache.maybe_warn_unserved_queue``'s strict branch)
+    and NO boot check, advisory or otherwise; a client-side boot check
+    of this shape would brick every split deployment.
+
+    Runs AFTER ``sync_actor_config`` and the fleet-wide read-back, so
+    the coverage set is the STORED assignments (every ``actor_config``
+    row in the table, this worker's registry seeded them and sibling
+    workers' rows persist) — the operator-owned routing truth that
+    cron fires and re-pended rows follow. A rolling deploy where the
+    sibling image registered the actor therefore boots this worker even
+    when its own registry never imported that actor: the stored row is
+    the coverage. The corner that still refuses: a first-ever boot
+    where the actor's image has not registered anywhere yet — the exact
+    deploy/code drift strict exists to catch.
+
+    Raises :class:`~taskq.exceptions.UnknownQueueError` (``source=
+    "worker_boot"``) naming every unrouted queue, the configured set,
+    and the escapes. Only fires when ``settings.queues_strict`` is True
+    (the knob is opt-in; the existing aggregated WARNING above keeps
+    owning the non-strict signal). No wildcard: there is no ``*``
+    queue — the escape at boot is fixing the configured set or
+    registering the actor.
+    """
+    if not getattr(settings, "queues_strict", False):
+        return
+    configured = list(settings.queues)
+    if not configured:
+        # A worker consuming nothing is its own failure (the
+        # worker-consumes-no-queues warning above owns it); nothing
+        # routed-vs-configured is decidable, do not double-signal.
+        return
+    # Coverage: the stored assignments (fleet-wide, post-sync) plus the
+    # registry literals (defensive: an actor whose sync was refused
+    # cannot have a stored row, but its literal is still this process's
+    # declared route).
+    routed = {row.queue for row in stored_rows.values()} | {
+        ref.queue for ref in actor_registry.values()
+    }
+    unrouted = [q for q in configured if q not in routed]
+    if not unrouted:
+        return
+    raise UnknownQueueError(unrouted, configured, source="worker_boot")
+
+
+def _emit_retired_queue_assignments_advisory(
+    settings: WorkerSettings,
+    actor_registry: Mapping[str, ActorRef[Any, Any]],
+    stored_rows: Mapping[str, ActorConfigRow],
+    log: structlog.stdlib.BoundLogger,
+) -> None:
+    """THE RETIREMENT HALF, the boot gate's inverse visibility: stored
+    assignments for actors this worker neither serves nor consumes —
+    retired-actor drift, a queue the fleet's stored config still routes
+    after the actor left the code — surface as ONE aggregated ADVISORY,
+    never a refusal.
+
+    The asymmetry this respects: the configured-but-unrouted gate above
+    refuses (the strict knob's one hard edge), because a configured
+    queue nothing routes to provably dispatches nothing; a stored row
+    for an absent actor proves nothing on its own — a sibling worker may
+    still serve or consume it, and refusing here would strand its live
+    jobs. So: advisory only, aggregated once per boot, the sibling
+    caveat in the note, the remedy (delete the stored row via
+    ``taskq actor-config``) named. Nothing lingers silently.
+
+    Runs in the same post-sync block as the gate (the same fleet-wide
+    read), for strict and non-strict boots alike — an advisory has no
+    knob; it is the note's sibling on the worker side.
+    """
+    if not stored_rows:
+        return
+    consumed = set(settings.queues)
+    served = {ref.queue for ref in actor_registry.values()}
+    # Rows for actors NOT in this registry: the full-registry fleet
+    # (every worker imports the whole registry) makes these exactly the
+    # retired-from-code actors the DB still routes; split-registry
+    # fleets read the sibling caveat.
+    unclaimed = sorted(
+        (row.actor, row.queue)
+        for row in stored_rows.values()
+        if row.actor not in actor_registry and row.queue not in consumed and row.queue not in served
+    )
+    if not unclaimed:
+        return
+    log.warning(
+        "retired-queue-assignments",
+        actors=[actor for actor, _queue in unclaimed],
+        queues=sorted({queue for _actor, queue in unclaimed}),
+        note=(
+            "stored actor_config assignments route these queues, but no "
+            "actor registered here serves them and this worker does not "
+            "consume them: a sibling worker may legitimately serve or "
+            "consume each one, but if the actor was retired from the code "
+            "the stored row is drift — delete it (taskq actor-config) so "
+            "this queue stops being routed. Advisory only; nothing was "
+            "refused."
         ),
     )
 
@@ -1845,6 +1959,14 @@ async def _main(
             loop_scope_resolved=loop_scope.resolved_cache(),
             worker_pool=deps.worker_pool,
             backend=backend,
+            # Strict queue-name validation rides the enqueuer's capacity
+            # cache into every fan-out arm (and the per-job enqueuer the
+            # dispatch path builds shares THIS cache, so it inherits the
+            # knobs rather than re-deriving them). env_queues is the
+            # two-source rule's second source: this worker's own declared
+            # set.
+            queues_strict=settings.queues_strict,
+            env_queues=settings.queues,
         )
 
         if actor_registry is not None:
@@ -1855,7 +1977,60 @@ async def _main(
                 _startup_log,
             )
 
-        worker_id = await register_worker(deps.dispatcher_pool, settings)
+        # THE WORKFLOW EXECUTION PROJECTION (the F3 law's call site + the
+        # dispatch fence's capability): resolved BEFORE register_worker —
+        # the workers row's metadata carries the capability the dispatch
+        # fence reads as data. The lazy import keeps the §16.1 import law
+        # (a worker that never installed taskq[flows] pays nothing, and
+        # is not capable — the fence never hands it a workflow row).
+        # The PROJECTION runs here too (compiling every imported app's
+        # workflows): its side effect is the D1 definition registry's
+        # population in THIS process — the dispatch intercept's body
+        # resolution answers from it. A cohort conflict (one actor name,
+        # two queues) REFUSES the boot — the drift-guard precedent, the
+        # cure named in the error. The cohort rows' SYNC rides after the
+        # plain actors' sync below (the startup-warnings ordering pin:
+        # the observability emits precede every config-sync round trip).
+        _wf_execution = None
+        try:
+            from taskq.workflows import _worker_execution as _wf_execution_mod
+
+            _wf_execution = _wf_execution_mod
+        except ImportError:  # pragma: no cover - the extra-less deployment
+            _wf_execution = None
+        wf_execution_capable = False
+        _wf_cohort_configs: list[ActorConfig] = []
+        if _wf_execution is not None:
+            wf_execution_capable = _wf_execution.workflow_execution_capable()
+            if wf_execution_capable:
+                _wf_cohort_configs = _wf_execution.project_workflow_actor_configs()
+                # THE WORKFLOW-DECLARED RATE LIMITS' COLLECTION (CURE 2):
+                # the authoring face's bucket instances register into the
+                # SAME resolved registry the vanilla actors' collection
+                # pass fills (ONE registry, ONE acquire path); a str name
+                # nothing registers is the WARNING (W2's register —
+                # probably a typo, never a refusal; the claim path's
+                # fail-closed arm is the teeth).
+                _wf_rl_registered, _wf_rl_unknown = _wf_execution.collect_workflow_rate_limits(
+                    resolved_rl_registry
+                )
+                if _wf_rl_registered:
+                    _startup_log.info(
+                        "ratelimit-workflow-primitives-registered",
+                        rate_limit_names=_wf_rl_registered,
+                    )
+                if _wf_rl_unknown:
+                    _startup_log.warning(
+                        "workflow-rate-limit-name-unregistered",
+                        names=_wf_rl_unknown,
+                        remedy="register the bucket on the worker's rate-limit "
+                        "registry or fix the declared name; until then the "
+                        "rows naming it park fail-closed at claim",
+                    )
+
+        worker_id = await register_worker(
+            deps.dispatcher_pool, settings, workflow_execution=wf_execution_capable
+        )
 
         structlog.contextvars.bind_contextvars(worker_id=str(worker_id))
 
@@ -2001,6 +2176,19 @@ async def _main(
                         error=repr(exc),
                     )
                 else:
+                    # Strict's boot gate runs HERE, on the fleet-wide
+                    # post-sync read: stored_rows is the coverage set (see
+                    # the gate's docstring), and a read failure above
+                    # means the gate silently skips — fail-open on an
+                    # unavailable read, the check never runs on data it
+                    # cannot trust (that boot already carries the
+                    # resolved-capacity-read-failed warning). The
+                    # retirement advisory rides the same read (its
+                    # inverse: routed-but-unclaimed, advisory only).
+                    _fail_fast_on_unrouted_configured_queues(settings, actor_registry, stored_rows)
+                    _emit_retired_queue_assignments_advisory(
+                        settings, actor_registry, stored_rows, _startup_log
+                    )
                     _emit_resolved_capacity_startup_lines(
                         settings,
                         actor_registry,
@@ -2010,6 +2198,29 @@ async def _main(
                     )
 
             await _ensure_own_reservation_slots(deps, own_reservations)
+
+        if _wf_execution is not None and _wf_cohort_configs:
+            # THE WORKFLOW COHORTS' SYNC (the F3 projection's write half —
+            # the same `sync_actor_config` surface, the same drift guards
+            # the plain actors' sync just rode). AFTER the plain sync
+            # block: the startup-warnings ordering pin holds (the
+            # observability emits precede every config-sync round trip),
+            # and the capability is already stamped on the workers row —
+            # the fence's data leg never waits on this write.
+            async with deps.dispatcher_pool.acquire(
+                timeout=settings.dispatcher_command_timeout
+            ) as conn:
+                await sync_actor_config(
+                    conn,
+                    _wf_cohort_configs,
+                    force=settings.force_update_actor_config,
+                    schema=settings.schema_name,
+                )
+            _startup_log.info(
+                "workflow-actor-configs-synced",
+                count=len(_wf_cohort_configs),
+                cohorts=sorted(c.actor for c in _wf_cohort_configs),
+            )
 
         # Fleet-wide per-queue concurrency caps (DB-driven): query the
         # queues table for queues this worker consumes that have a
@@ -2459,6 +2670,31 @@ async def _main(
                 # earlier would make the detector dead code on the only path
                 # that matters. Both calls swallow their own errors.
                 #
+                # ── THE GROUP'S OWN QUIT-CUT, CONSUMED (the d24f17b9 CI
+                # conviction) ──
+                # A failing sibling's completion handler cancels THIS task
+                # (the TaskGroup's abort: "stop the body, the group is
+                # quitting"). When that handler loses its race with this
+                # finally — the sibling's _guarded already raised the
+                # shutdown_event, so the body exits CLEANLY (et=None) and
+                # __aexit__'s uncancel-at-entry guard reads the flag FALSE
+                # before the handler sets it — the abort's cancel is left
+                # UNCONSUMED on this task's count. The disarm's reaper then
+                # reads cancelling() > 0, believes a shutdown cut belongs to
+                # it, re-raises, and the finally DIES before deregister_worker
+                # — the exact statement this block's own law (every statement
+                # non-raising so the ones after it still run) exists to keep
+                # alive. The body has quit; the quit-cut's purpose is served;
+                # the in-flight ExceptionGroup still propagates after this
+                # finally; and a REAL external cut raised the body through its
+                # own delivery already (its exception is the one in flight,
+                # not this count). So the count is consumed to zero: the
+                # disarm's reaper reads the truth — no cut belongs to it —
+                # and the teardown runs to its end on the crash path.
+                _quit_task = asyncio.current_task()
+                while _quit_task is not None and _quit_task.cancelling():
+                    _quit_task.uncancel()
+                #
                 # ── The tracked-actor reap gate (the exit bound) ───
                 # Disarming now (the pre-existing shape) is only safe
                 # when no actor can outlive the TaskGroup. A sync actor's
@@ -2780,11 +3016,29 @@ async def _reload_coordinator_loop(
         try:
             await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            for task in waiters:
-                if not task.done():
-                    task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure — the
+            # same shape the reload schedule's, the watchdog's, and the
+            # producer's loops carry): CANCEL ALL the pending waiters
+            # first, THEN reap each through the reaper helper. The
+            # one-per-lap cancel + bare suppress(await) let the reaper's
+            # OWN concurrent cancellation die inside the suppress (the
+            # F-DEMO-2 conviction's exact shape) and orphan the remaining
+            # waiters — the two leaked Event.wait tasks the guard
+            # convicted. Our own cancel propagates: after the bounded
+            # reap completes, never swallowed.
+            pending = [t for t in waiters if not t.done()]
+            for task in pending:
+                task.cancel()
+            own: asyncio.CancelledError | None = None
+            for task in pending:
+                try:
+                    await reap_cancelled_child(task)
+                except asyncio.CancelledError as exc:
+                    # the reaper re-raised OUR cancel: noted — the
+                    # remaining children are reaped first.
+                    own = exc
+            if own is not None:
+                raise own
 
         if shutdown.is_set():
             return

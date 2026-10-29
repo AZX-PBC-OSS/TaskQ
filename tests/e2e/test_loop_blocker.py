@@ -122,6 +122,11 @@ def _watchdog_env() -> dict[str, str]:
         "TASKQ_WATCHDOG_ENABLED": "true",
         "TASKQ_LOCK_LEASE": "8.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "5.0",
+        # THE CHECK INTERVAL EXPLICIT (the holdmap-cures lane's validation
+        # cure: warn must be > check — the warning-storm lattice; 0.5
+        # keeps the detector clear of its own cadence and the ladder
+        # warn(1.0) < budget stays the tier-1-before-tier-2 shape)
+        "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.5",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "1.0",
     }
 

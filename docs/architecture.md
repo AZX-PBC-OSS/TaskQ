@@ -1359,7 +1359,8 @@ disarmed the watchdog and then joined the detached thread in
 `asyncio.Runner.close()` (`THREAD_JOIN_TIMEOUT`, 300s): a released row became
 claimable while its actor still ran. The alternative closure (a hard
 `os._exit(0)` on every clean exit) is rejected because TaskQ is a library:
-embedders run the worker in-process (cennan's CLI, TAStack's `ta_worker`), and
+embedders run the worker in-process (the host's own CLI and worker
+entrypoints), and
 a hard exit on the clean path would kill the host's own cleanup. In-process
 embedders with the watchdog enabled get the closure for free: the watchdog is
 TaskQ's own task on the embedder's loop, and the trip semantics are unchanged.
@@ -1392,7 +1393,7 @@ and three properties hold that a bare `wait_for` does not give. First, the
 machinery's expiry raises its own marker (a private `TimeoutError` subclass),
 so an actor that raises its own `TimeoutError` (a nested wait, a socket
 read) is classified as the actor's failure, never as a deadline hit
-(dramatiq #791's conflation). Second, the deadline wins over the body: a
+(the queue-library conflation the private marker exists to prevent). Second, the deadline wins over the body: a
 body that catches the expiry's cancellation and returns does not succeed
 past its own time limit, the result is discarded and the attempt is a
 timeout. Third, the deadline is not deferrable: a body whose `finally`
@@ -1838,6 +1839,7 @@ values and their transitions are in [State Machine](#state-machine).
 | `rate_limit_blocked_count` | `int NOT NULL DEFAULT 0` (migration `01.00.08`) | "Coalesced count of admission denials (reservation/rate-limit) since enqueue." |
 | `interrupt_count` | `int NOT NULL DEFAULT 0` (migration `01.00.12_02`) | "Times a running attempt of this job was released back to the queue by a worker shutdown, with the claim's attempt increment refunded." |
 | `assignment_routed` | `boolean NOT NULL DEFAULT false` (migration `01.00.12_05`) | Workgroup assignment-routing marker. |
+| `parent_id` | `uuid` (migration `01.00.23_01`) | The fan-out ledger: the enqueuing parent's job id, stamped by every child enqueue made under a parent's context (the sibling of tag inheritance, set at worker entry). **Plain column, deliberately no foreign key**: an FK would key-share-lock the parent row per child insert and block a retention purge of a parent while children pend; a dangling `parent_id` (parent purged, children pending) is a defined, harmless state — the pending-children count never joins to the parent row. Served by the partial index `jobs_parent_pending_idx` (`WHERE status IN ('pending','scheduled') AND parent_id IS NOT NULL`), the predicate the client's `backpressure()` count repeats verbatim. Mirrored into `jobs_archive`. |
 
 ### `job_attempts` (per-attempt history)
 
@@ -1936,6 +1938,11 @@ an identical row into `jobs_archive` plus two extra columns:
 - `expire_at` (`timestamptz`): when the row becomes eligible for hard-deletion
   by Sweep 6. Computed as `archived_at + archive_retention_period` (default
   1 year).
+
+"An identical row" includes every later `jobs` column — the archive INSERT
+builds both sides of its column list from the same explicit tuple
+(`COPY_FROM_COLUMNS`), so `parent_id` (migration `01.00.23_01`) rides along
+and a fan-out child's lineage survives its archive.
 
 `job_attempts_archive` mirrors `job_attempts` with the same schema and an FK to
 `jobs_archive(id) ON DELETE CASCADE`. Sweeps 5 and 6 are both batched atomic

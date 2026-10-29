@@ -639,3 +639,60 @@ class TestProgressFlushFailureIsCounted:
             "a total pool outage and a single-job flush failure share the same "
             f"log kind: {loop_kinds & job_kinds}"
         )
+
+
+# ── THE SILENT-SWALLOW CLASS (the CancelledError suppress sweep) ────────
+
+
+def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
+    """THE CLASS PIN: ``contextlib.suppress(asyncio.CancelledError)`` is
+    legal in exactly ONE shape — the REAPER (``task.cancel()`` then
+    ``await reap_cancelled_child(task)``), whose helper suppresses only
+    THE CHILD'S cancel and re-raises the reaper's own (the uncancel
+    accounting). Any direct ``suppress(asyncio.CancelledError)`` in
+    ``src/`` is the convicted swallow (the F-DEMO-2 class: the lifespan's
+    cancel eaten, the task alive 12 s later; the run loop's poll that
+    could never receive its own shutdown). The grep gate sweeps every
+    seat: a new suppress must ride the reaper helper or name its own
+    re-raise discipline."""
+    import pathlib
+
+    root = pathlib.Path(__file__).parent.parent / "src" / "taskq"
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        if path.name == "_reaper.py":
+            continue  # the one legal home's own docstring
+        text = path.read_text()
+        tl = text.splitlines()
+        for i, line in enumerate(tl, 1):
+            if "suppress(asyncio.CancelledError)" not in line:
+                continue
+            # THE CLASS LAW: a suppress(CancelledError) whose BODY awaits
+            # (the suppress spans an await) swallows whatever cancel
+            # lands DURING that await — the convicted shape — unless the
+            # body (or its immediate tail) RE-RAISES. A suppress whose
+            # body is an INSTANT retrieve (``task.exception()`` — no
+            # await inside) cannot swallow a landing cancel: nothing
+            # yields inside it. The block's extent: until the dedent.
+            block = [line]
+            for j in range(i, len(tl)):
+                l2 = tl[j]
+                if l2.strip() and not l2.startswith((" ", "\t", ")")):
+                    break
+                block.append(l2)
+            body = "".join(block)
+            if "await" not in body:
+                continue  # the instant retrieve: nothing yields, nothing swallows
+            if "raise" in body or "raise" in " ".join(tl[i : i + 4]):
+                continue  # the re-raise discipline present
+            preceding = " ".join(
+                prev.strip().lstrip("#").strip() for prev in tl[max(0, i - 12) : i]
+            )
+            if "the class-4 sweep's finding" in body or "the class-4 sweep's finding" in preceding:
+                continue  # the HELD-OPEN seat: the cure's behavioral shift owed the worker lane's own verification (the seat's comment carries the finding's name)
+            offenders.append(f"{path.relative_to(root.parent.parent)}:{i}: {line.strip()}")
+    assert not offenders, (
+        "the silent-swallow class's seats (a CancelledError suppressed "
+        "without the re-raise discipline — the shutdown's cancel dies in "
+        "the suppress):\n  " + "\n  ".join(offenders)
+    )

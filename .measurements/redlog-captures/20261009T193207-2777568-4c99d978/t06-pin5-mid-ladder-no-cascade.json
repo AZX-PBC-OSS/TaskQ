@@ -1,0 +1,11 @@
+{
+  "mutation": "a mid-ladder attempt failure treated as a terminal (the over-eager parent-fail \u2014 the convicted variant)",
+  "observed": {
+    "blocking_reason": "join",
+    "deps_pending": 2,
+    "flow_status": "running"
+  },
+  "pin": "t06-pin5-mid-ladder-no-cascade",
+  "run": "20261009T193207-2777568-4c99d978",
+  "ts": "2026-10-09T19:32:07"
+}

@@ -60,6 +60,7 @@ import structlog
 from opentelemetry import metrics as otel_metrics
 from opentelemetry.metrics import CallbackOptions, Observation
 
+from taskq._reaper import reap_cancelled_child
 from taskq.constants import WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS
 from taskq.obs import get_logger, get_meter, record_loop_stall_attribution
 from taskq.worker._stall_tally import (
@@ -623,8 +624,7 @@ class ShutdownWatchdog:
     async def cancel(self) -> None:
         if self._task is not None:
             self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+            await reap_cancelled_child(self._task)
             if self._started_at is not None:
                 anchored = self._started_at()
                 if anchored is not None:
@@ -643,11 +643,29 @@ class ShutdownWatchdog:
                 # Cancel the loser AND cover our own cancellation: without
                 # the finally, cancelling this task at the wait point leaks
                 # both inner event-wait tasks until loop teardown.
-                for t in (shutdown_started, shutdown_task):
-                    if not t.done():
-                        t.cancel()
-                        with contextlib.suppress(asyncio.CancelledError):
-                            await t
+                #
+                # THE TEARDOWN'S OWN ORDER (the same cure the reload
+                # schedule's loop carries — the leaked-task guard's
+                # conviction): CANCEL ALL the pending waiters first, THEN
+                # reap each. The one-per-lap shape let the reaper's OWN
+                # concurrent cancellation (cancel() landing mid-reap)
+                # re-raise out of the FIRST reap and orphan the SECOND
+                # waiter — the leaked Event.wait the pin convicts. Our
+                # own cancel still propagates: after the bounded reap
+                # completes, never swallowed.
+                pending = [t for t in (shutdown_started, shutdown_task) if not t.done()]
+                for t in pending:
+                    t.cancel()
+                own: asyncio.CancelledError | None = None
+                for t in pending:
+                    try:
+                        await reap_cancelled_child(t)
+                    except asyncio.CancelledError as exc:
+                        # the reaper re-raised OUR cancel: noted — the
+                        # remaining children are reaped first.
+                        own = exc
+                if own is not None:
+                    raise own
         else:
             await self._shutdown_event.wait()
         t0 = self._clock()

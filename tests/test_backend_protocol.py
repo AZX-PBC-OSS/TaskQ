@@ -511,7 +511,10 @@ class TestEnqueueArgsRoundTrip:
         # +2 jsonb memos (payload_jsonb_memo/metadata_jsonb_memo): lazy
         # encoding caches the PG binding reuses across statement retries,
         # never constructor input, compare/repr excluded (see the fields).
-        expected = 31
+        # +1 fan-out ledger (parent_id, LIB-2 issue #670): the caller
+        # arm reads the ambient parent context and passes it here, the
+        # builder stays pure.
+        expected = 32
         assert len(fields(EnqueueArgs)) == expected
 
     def test_frozen(self) -> None:
@@ -650,8 +653,10 @@ class TestJobRowRoundTrip:
         # the reclaim sweep's policy source) + the assignment-routed
         # marker (re-pend routing by the actor's stored assignment) +
         # the archive-tier marker (archived, issue #314's jobs-then-
-        # archive read fallback).
-        expected = 48
+        # archive read fallback) + the fan-out ledger (parent_id, LIB-2
+        # issue #670: the enqueuing parent's job id, a plain column, no
+        # FK — see 01.00.23_01_pre_jobs_parent_id.sql).
+        expected = 49
         assert len(fields(JobRow)) == expected
 
     def test_frozen(self) -> None:

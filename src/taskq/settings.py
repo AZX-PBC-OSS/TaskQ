@@ -343,6 +343,20 @@ class TaskQSettings(DotEnvConfig):
         validator=_schema_name_validator,
         description="Postgres schema for all TaskQ tables.",
     )
+    queues_strict: bool = Field(
+        default=False,
+        description="TASKQ_QUEUES_STRICT. When True, the enqueue-time "
+        "unserved-queue check becomes HARD: a submit whose queue no "
+        "registered actor's assignment routes to raises UnknownQueueError "
+        "before any backend write (covering direct enqueues, every batch "
+        "arm, and sub-job fan-out), instead of storing an orphaned row on "
+        "a queue no worker claims. The worker-side twin fails the boot "
+        "when a configured queue (TASKQ_QUEUES) has no registered actor "
+        "routing to it — worker-only, because actors register only there. "
+        "Default False: the unserved-queue NOTE stays the only signal. "
+        "Per-submit escape: allow_unregistered=True for genuinely dynamic "
+        "queue names.",
+    )
     redis_url: RedisDsn | None = Field(
         default=None,
         description="Optional Redis URL. Required for real-time progress fanout.",
@@ -1107,6 +1121,33 @@ class WorkerSettings(TaskQSettings):
         "geometrically (up to 8x) while claimable rows remain, which covers "
         "transient oversubscription, the setting governs the steady state "
         "so the common case never pays the expansion round trip.",
+    )
+    claim_cursor_reset_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=86400.0,
+        validator=_finite_float,
+        description="TASKQ_CLAIM_CURSOR_RESET_SECONDS. OPT-IN (default 0 = disabled): the "
+        "claim cursor's jitter reset interval, in seconds - the MVCC-horizon hygiene pair's "
+        "worker-side half (backend/_claim_cursor.py). When enabled, each worker's dispatch "
+        "keeps a per-queue high-water mark of successfully-claimed job ids (UUIDv7, "
+        "time-ordered) and bounds the claim query's candidate predicate at it, so the B-tree "
+        "seek can land on live tuples instead of degenerating through the dead tuples a "
+        "pinned MVCC horizon leaves behind. The bound is a selection predicate: any pending "
+        "row whose id falls below it (a skewed producer's clock, a row the round's window "
+        "never reached) is invisible to the claim query until the reset forgets the cursor - "
+        "the reset is this interval, jittered +/-50% per entry so a fleet's resets never "
+        "synchronize, armed at the entry's creating claim and never extended by later "
+        "claims. Round-robin queues are exempt (cohort fairness is id-order-blind by "
+        "design). Disabled by default on measured evidence: on this codebase's multi-surface "
+        "claim CTE the bound's full-path win is plan-dependent (the spiral's planner "
+        "blindness - dead rows are invisible to every fresh snapshot, so ANALYZE's estimates "
+        "stay healthy while the index rots - keeps the probes on index choices the bound "
+        "cannot position), so the bounded-stranding trade buys no robust end-to-end "
+        "improvement; see tests/perf/test_mvcc_claim_degradation.py for the curves and the "
+        "TaskQClaimLatencyDegraded runbook for the primary cure. Enable it for fleets whose "
+        "shape matches the isolated-surface measurement (single-queue, monotone claim "
+        "streams, fresh statistics).",
     )
     dispatch_scope_by_home_queue: bool = Field(
         default=False,
@@ -1949,6 +1990,42 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_PRUNE_BATCH_SIZE. Rows to delete per batch.",
     )
 
+    # -- Workflow outbox retention ----------------------------------
+    workflow_outbox_retention_period: timedelta = Field(
+        default=timedelta(hours=24),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_OUTBOX_RETENTION_PERIOD. The age at "
+        "which a DELIVERED wf_outbox row is deleted. A delivered outbox "
+        "row is narration — the drain's arbiter already inserted the "
+        "consumer rows and wf_join_fire is the exactly-once ledger — and "
+        "without this TTL the delivered population grows monotonically "
+        "forever (the D2 soak's finding: 5.9k at close, monotone, no "
+        "pruner). One bounded committed batch per leader tick; "
+        "UNDELIVERED rows are never touched (the drain owns them — a "
+        "deleted undelivered row is a lost delivery). timedelta(0) "
+        "DISABLES the sweep, the deletion-sweep family's zero-means-off "
+        "sentinel (a brand-new deletion loop's safe misconfiguration is "
+        "off), deliberately opposite to the prune family's "
+        "zero-means-now. Negative values raise at settings load.",
+    )
+
+    # -- Workflow step-cache retention (T25) --------------------------
+    workflow_step_cache_sweep_period: timedelta = Field(
+        default=timedelta(hours=1),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD. How often "
+        "the leader's retention arm prunes the cross-run step cache's "
+        "EXPIRED rows (T25: the in-DB TTL's corpses — the lookup's "
+        "freshness leg already refuses them; this arm deletes the dead "
+        "weight so the expired population never grows monotone-forever). "
+        "One bounded committed batch per pass; FRESH rows are never "
+        "touched (a deleted fresh row is a re-execution the next run "
+        "would have skipped). timedelta(0) DISABLES the sweep, the "
+        "deletion-sweep family's zero-means-off sentinel (a brand-new "
+        "deletion loop's safe misconfiguration is off). Negative values "
+        "raise at settings load.",
+    )
+
     # -- Per-status prune retention --------------------------------
     prune_retention_period: timedelta = Field(
         default=DEFAULT_PRUNE_RETENTION,
@@ -2094,7 +2171,10 @@ class WorkerSettings(TaskQSettings):
         le=1048576,
         description="TASKQ_PROGRESS_DATA_MAX_BYTES. Maximum serialised byte "
         "length of the ``data`` dict in a single progress call. Payloads "
-        "exceeding this limit raise ProgressTooLarge . "
+        "exceeding this limit raise ProgressTooLarge. Snapshot-style "
+        "publishers (full-document snapshots as ``data``) must size the "
+        "cap at or above their payload bound: once one snapshot exceeds "
+        "it, every later snapshot raises too. "
         "Range: 1 KiB - 1 MiB; default 16 KiB.",
     )
     progress_publish_global: bool = Field(
@@ -2534,6 +2614,46 @@ class WorkerSettings(TaskQSettings):
         # cannot distinguish from a healthy one is a misconfiguration the
         # operator only meets at the os._exit. Same watchdog gating as
         # the lease invariant above.
+        #
+        # THE WARN BUDGET VS THE CHECK CADENCE (the LedgerWatch F6 cure —
+        # the warning storm's config cannot boot): the tier-1 warn's
+        # healthy baseline IS the sampling period — the detector polls
+        # once per watchdog_check_interval and schedules the beat it
+        # measures from the same poll, so a healthy loop's observed lag
+        # is ~check_interval by construction. A warn budget at or below
+        # the check interval therefore warns on EVERY healthy poll — and
+        # each warn dumps every live asyncio task, the dump blocks the
+        # loop, the block triggers the next warn: a self-sustaining
+        # storm (the adoption team's measured shape: warn 0.4 / check
+        # 0.5 passed this lattice's pre-cure legs, then 295 warn+dump
+        # pairs starved the worker's heartbeat past the fleet's
+        # readiness timeout). Same watchdog gating as the lease
+        # invariant above; the remedy is taught (raise the warn budget —
+        # comfortably above the check interval, below the terminal
+        # budget).
+        if self.watchdog_enabled and (
+            self.watchdog_loop_lag_warn_budget <= self.watchdog_check_interval
+        ):
+            errors.append(
+                ValidationError(
+                    field_name="watchdog_loop_lag_warn_budget",
+                    value=self.watchdog_loop_lag_warn_budget,
+                    error_msg=(
+                        f"watchdog_loop_lag_warn_budget "
+                        f"({self.watchdog_loop_lag_warn_budget}) must be > "
+                        f"watchdog_check_interval ({self.watchdog_check_interval}): "
+                        "the lag detector samples the loop once per check interval, "
+                        "so a healthy loop's observed lag is ~the full check "
+                        "interval — a warn budget at or below it warns and dumps "
+                        "every live task on EVERY healthy poll, the dump blocks "
+                        "the loop, and the block fires the next warn (a "
+                        "self-sustaining warning storm that starves the "
+                        "heartbeat). Raise the warn budget comfortably above the "
+                        "check interval (it must stay below "
+                        "watchdog_loop_lag_budget)."
+                    ),
+                )
+            )
         if self.watchdog_enabled and (
             self.watchdog_loop_lag_warn_budget >= self.watchdog_loop_lag_budget
         ):

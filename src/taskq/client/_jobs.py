@@ -63,11 +63,13 @@ from taskq.client._args import (
     enqueue_span,
     validate_idempotency,
 )
+from taskq.client._backpressure import read_backpressure
 from taskq.client._capacity import (
     DEFAULT_CAPACITY_CACHE_TTL,
     DEFAULT_CAPACITY_READ_TIMEOUT,
     ActorCapacityCache,
 )
+from taskq.client._enqueuer import current_parent_id
 from taskq.client._handle import JobHandle
 from taskq.constants import DEFAULT_CHUNK_SIZE, MAX_IDEMPOTENCY_KEY_BYTES
 from taskq.exceptions import (
@@ -76,7 +78,7 @@ from taskq.exceptions import (
     PayloadValidationError,
     SchemaNotMigratedError,
 )
-from taskq.types import BulkCancelResult, CancelResult
+from taskq.types import BackpressureSnapshot, BulkCancelResult, CancelResult
 
 if TYPE_CHECKING:
     import asyncpg
@@ -349,7 +351,21 @@ class JobsClient:
         self._redis_client: "redis_async.Redis | None" = None  # type: ignore[type-arg]  # noqa: UP037  # Why: redis_async is under TYPE_CHECKING; string annotation avoids runtime import. type-arg: redis-py stubs expose Redis as an unparameterised generic.
         self._exit_stack: AsyncExitStack = AsyncExitStack()
         self._unique_for_warner = UniqueForNoIdentityWarner()
-        self._capacity_cache = ActorCapacityCache(backend, ttl=capacity_cache_ttl)
+        self._capacity_cache = ActorCapacityCache(
+            backend,
+            ttl=capacity_cache_ttl,
+            # A bare construction (no settings) invents no knob: strict
+            # off, the fail-open posture the note's own tests pin.
+            # getattr-with-default: the client-layer tests drive bare
+            # stand-in namespaces for settings (the notify_enabled
+            # convention), strict defaults False there. env_queues is the
+            # two-source rule's second source — this process's own
+            # declared set, when it has one (a base-settings client has
+            # none; the snapshot is then the only source, the
+            # documented web-without-env corner).
+            queues_strict=bool(getattr(settings, "queues_strict", False)),
+            env_queues=getattr(settings, "queues", None),
+        )
         # Why resolved here: every enqueue path in this client validates
         # against one number, and a client built without settings still gets
         # the shipped default rather than a second literal.
@@ -480,6 +496,7 @@ class JobsClient:
         payload: P,
         *,
         queue: QueueName | None = None,
+        allow_unregistered: bool = False,
         scheduled_at: datetime | None = None,
         priority: int | None = None,
         schedule_to_close: datetime | None = None,
@@ -626,6 +643,21 @@ class JobsClient:
           ``JobHandle.was_existing`` is ``True``. This field replaces the
           need for callers to inspect the row's ``created_at`` to detect a
           dedup return.
+
+        **allow_unregistered:**
+
+        - The per-submit escape from ``TASKQ_QUEUES_STRICT``: with strict
+          on, a queue no registered actor's assignment routes to raises
+          :class:`~taskq.exceptions.UnknownQueueError` before any write;
+          ``allow_unregistered=True`` skips that verdict for THIS call —
+          for genuinely dynamic queue names (tenant-prefixed, sharded at
+          runtime) that no registration can predict. The unserved-queue
+          NOTE still fires (the diagnostic sits below the gate), so a
+          typo'd name stays visible even on an escaped call. With strict
+          off the flag changes nothing. The batch arms carry no per-item
+          flag: their queues are the items' actors' own declared routes,
+          the thing registration populates; use single enqueues for
+          dynamic names.
         """
         resolved_queue = queue if queue is not None else ref.queue
         identity_key_str = str(identity_key) if identity_key is not None else ""
@@ -641,8 +673,15 @@ class JobsClient:
             # Zero-I/O verdict from the snapshot the resolve just refreshed:
             # a queue no stored assignment routes to strands the row
             # silently (pending forever), the note is the enqueue-time
-            # signal, warn-once per queue per TTL.
-            self._capacity_cache.maybe_warn_unserved_queue(resolved_queue, actor=ref.name)
+            # signal, warn-once per queue per TTL. Under
+            # TASKQ_QUEUES_STRICT this same verdict REFUSES
+            # (UnknownQueueError) instead of warning — unless
+            # allow_unregistered=True, the per-submit escape for a
+            # genuinely dynamic queue name (the note still fires on an
+            # escaped call, so a typo stays visible).
+            self._capacity_cache.maybe_warn_unserved_queue(
+                resolved_queue, actor=ref.name, allow_unregistered=allow_unregistered
+            )
             # An explicit trace_id/span_id overrides the ambient span, per
             # docs/guides/jobs-clients.md: "pass explicitly to override or
             # to propagate an external trace context". Explicit values
@@ -658,6 +697,7 @@ class JobsClient:
                 priority=priority,
                 fairness_key=fairness_key,
                 metadata=metadata,
+                parent_id=current_parent_id(),
                 identity_key=identity_key,
                 idempotency_key=idempotency_key,
                 idempotency_scope=idempotency_scope,
@@ -850,6 +890,13 @@ class JobsClient:
         # informed than the backend's, so it was removed rather than
         # duplicated.
         effective_mp: dict[str, int | None] = {}
+        # Why memoized by ACTOR NAME and verdict-check per new name only:
+        # this assumes name -> queue is a FUNCTION (two refs sharing a
+        # name always share a queue). That invariant is enforced at the
+        # registry boundary (worker/_bootstrap refuses registry keys that
+        # disagree with ref.name, and sync_actor_config would
+        # CardinalityViolation on a duplicate name), so per-name
+        # memoization cannot hide a second queue behind one actor.
         for item in items:
             ref = item.actor_ref
             if ref.name not in effective_mp:
@@ -862,8 +909,15 @@ class JobsClient:
                 self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
 
         # Build per-item EnqueueArgs carrying the resolved limits for the
-        # backend's per-actor admission check.
-        args_list = build_batch_args(items, resolved_batch_id, max_pending_by_actor=effective_mp)
+        # backend's per-actor admission check. The ambient parent context
+        # is read ONCE per call (LIB-2): every item is a child of the
+        # same parent when one is set.
+        args_list = build_batch_args(
+            items,
+            resolved_batch_id,
+            max_pending_by_actor=effective_mp,
+            parent_id=current_parent_id(),
+        )
 
         queue = items[0].actor_ref.queue
         has_batch_extras = failure_policy is not None or finalizer is not None
@@ -871,6 +925,20 @@ class JobsClient:
         # Build finalizer EnqueueArgs (without batch_id stamping, deadlock prevention).
         finalizer_args: EnqueueArgs | None = None
         if finalizer is not None:
+            # The finalizer rides the SAME strict verdict as the items: the
+            # per-item loop above iterates items only, and the finalizer's
+            # args write through BOTH sub-paths below (the atomic arm and
+            # the caller-connection arm), so without this the finalizer
+            # was the strict bypass — the exact orphan class strict exists
+            # to kill (its row stored on an unregistered queue, no
+            # refusal, no note). The snapshot is warm here — the awaited
+            # cap resolution in the loop spent the one refresh — so the
+            # verdict is a pure snapshot lookup, zero extra I/O. One
+            # verdict covers both write sites: the args are built once,
+            # after it.
+            self._capacity_cache.maybe_warn_unserved_queue(
+                finalizer.actor_ref.queue, actor=finalizer.actor_ref.name
+            )
             finalizer_args = build_enqueue_args(
                 finalizer.actor_ref,
                 finalizer.payload,
@@ -884,6 +952,7 @@ class JobsClient:
                 start_to_close=finalizer.start_to_close,
                 tags=finalizer.tags,
                 idempotency_max_bytes=self._idempotency_max_bytes,
+                parent_id=current_parent_id(),
             )
 
         # Build BatchRow when failure_policy OR finalizer is set (C3:
@@ -1104,6 +1173,7 @@ class JobsClient:
                 start_to_close=finalizer.start_to_close,
                 tags=finalizer.tags,
                 idempotency_max_bytes=self._idempotency_max_bytes,
+                parent_id=current_parent_id(),
             )
 
         # Build a lazy generator of EnqueueArgs. The payload is validated
@@ -1122,6 +1192,11 @@ class JobsClient:
         # batches would get wrong deserialization).
         item_meta: list[tuple[ActorRef[Any, Any], JobId]] = []
 
+        # The ambient parent context, read ONCE per call (LIB-2): the
+        # generator is consumed lazily, possibly mid-transaction, so the
+        # contextvar is read at arm entry, never inside the generator.
+        ambient_parent_id = current_parent_id()
+
         # Effective per-actor caps, memoized as actors appear (same
         # resolution as :meth:`enqueue` / :meth:`enqueue_batch`): without
         # it, an operator-stored ``actor_config.max_pending`` on a
@@ -1134,6 +1209,12 @@ class JobsClient:
         effective_mp: dict[str, int | None] = {}
 
         def _lazy_args(stream: Iterable[EnqueueItem]) -> Iterable[EnqueueArgs]:
+            # Why memoized by ACTOR NAME (verdict per new name only): the
+            # name -> queue function assumption — enforced at the registry
+            # boundary (worker/_bootstrap refuses keys that disagree with
+            # ref.name; sync_actor_config CardinalityViolations on
+            # duplicates) — so per-name memoization cannot hide a second
+            # queue behind one actor.
             for idx, item in enumerate(stream):
                 ref = item.actor_ref
                 if ref.name not in effective_mp:
@@ -1169,6 +1250,7 @@ class JobsClient:
                         # backend consumes this generator mid-transaction
                         # where no await is possible.
                         max_pending=effective_mp[ref.name],
+                        parent_id=ambient_parent_id,
                     )
                 except ValidationError as exc:
                     raise _item_payload_error(idx, ref.name, exc) from exc
@@ -1227,6 +1309,17 @@ class JobsClient:
                 first_ref.name, first_ref.max_pending
             )
             self._capacity_cache.maybe_warn_unserved_queue(first_ref.queue, actor=first_ref.name)
+            if finalizer is not None:
+                # The finalizer rides the SAME strict verdict (the
+                # per-item verdicts run inside the sync generator, which
+                # never sees the finalizer — its args ride the atomic
+                # call below): the exact strict bypass the batch arm's
+                # fix documents. The snapshot is warm here — the awaited
+                # resolution above spent the one refresh — so the verdict
+                # is a pure snapshot lookup, zero extra I/O.
+                self._capacity_cache.maybe_warn_unserved_queue(
+                    finalizer.actor_ref.queue, actor=finalizer.actor_ref.name
+                )
             all_rows = await self._backend.enqueue_batch_atomic(
                 _lazy_args(_chain()),
                 batch_id=resolved_batch_id,
@@ -1266,6 +1359,23 @@ class JobsClient:
             finalizer_row = None
             if finalizer is not None:
                 assert finalizer_args is not None
+                # The finalizer writes FIRST here (M4), BEFORE the chunk
+                # loop's first awaited refresh — so this path's strict
+                # verdict needs the refresh spent on it explicitly (free
+                # when warm, the single-refresh-per-TTL budget; a failed
+                # refresh fails the verdict open, the same posture as
+                # every other arm). Without the awaited resolution the
+                # verdict below would read a possibly-cold snapshot and
+                # fail open on a genuinely stranded finalizer.
+                await self._capacity_cache.effective_max_pending(
+                    finalizer.actor_ref.name, finalizer.actor_ref.max_pending
+                )
+                # The finalizer's strict verdict — the chunk loop's
+                # per-item verdicts never see it, and this is the write
+                # the caller-connection shape performs.
+                self._capacity_cache.maybe_warn_unserved_queue(
+                    finalizer.actor_ref.queue, actor=finalizer.actor_ref.name
+                )
                 finalizer_row = await self._backend.enqueue_with_conn(connection, finalizer_args)  # type: ignore[arg-type]  # Why: guarded by has_batch_extras; when connection is provided it is runtime-compatible
 
             # Consume chunks. The payload is validated exactly ONCE per item
@@ -1287,6 +1397,11 @@ class JobsClient:
                 # cache makes this a lookup after the first) before the
                 # args are built, so a stored override on a literal-less
                 # actor is enforced exactly as enqueue_batch enforces it.
+                # Memoizing by actor name assumes name -> queue is a
+                # function — enforced at the registry boundary
+                # (worker/_bootstrap refuses keys that disagree with
+                # ref.name; sync_actor_config CardinalityViolations on
+                # duplicates).
                 for ci in chunk_items:
                     if ci.actor_ref.name not in effective_mp:
                         effective_mp[
@@ -1311,7 +1426,10 @@ class JobsClient:
                 # errors, crosses untouched.
                 try:
                     chunk_args = build_batch_args(
-                        chunk_items, resolved_batch_id, max_pending_by_actor=effective_mp
+                        chunk_items,
+                        resolved_batch_id,
+                        max_pending_by_actor=effective_mp,
+                        parent_id=ambient_parent_id,
                     )
                     chunk_rows = await self._backend.enqueue_batch(
                         chunk_args, connection=connection
@@ -1525,8 +1643,15 @@ class JobsClient:
                 )
                 self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
 
-        # Phase 2: Build per-item EnqueueArgs
-        args_list = build_batch_args(items, resolved_batch_id, max_pending_by_actor=effective_mp)
+        # Phase 2: Build per-item EnqueueArgs. The ambient parent context
+        # is read ONCE per call (LIB-2): every item is a child of the
+        # same parent when one is set.
+        args_list = build_batch_args(
+            items,
+            resolved_batch_id,
+            max_pending_by_actor=effective_mp,
+            parent_id=current_parent_id(),
+        )
 
         # Phase 3: COPY FROM via backend
         count = await self._backend.enqueue_batch_fast(args_list, connection=connection)
@@ -1596,6 +1721,83 @@ class JobsClient:
         """
         with self._translate_schema_errors():
             return await self._backend.get(job_id)
+
+    async def backpressure(
+        self,
+        queues: Sequence[str],
+        *,
+        parent_id: JobId | None = None,
+    ) -> BackpressureSnapshot:
+        """Read the submit path's backpressure state for *queues*.
+
+        A read-only typed read (the LIB-2 design, mirroring the
+        reader-method precedent of :meth:`get_row` / :meth:`list`) —
+        deliberately NOT an ``enqueue`` kwarg: ``enqueue`` is generic
+        ``JobHandle[R]`` and no flag may flip the reply type.
+
+        Per queue (see :class:`~taskq.types.QueueBackpressure`):
+
+        * ``depth`` — jobs holding a pending slot IN THIS QUEUE
+          (pending + scheduled), the queue-local ops view, ONE indexed
+          aggregate for the whole call
+          (``count_pending_jobs_by_queue``, the ``count_active_jobs``
+          pattern). The worker-side leader sampler's cache is
+          in-process on the worker and not readable cross-process; the
+          depth here is a real count, not a pretense. REPORTED, not
+          verdict-bearing — the admission cap is per-ACTOR and governs
+          the actor's count across ALL queues, so a queue-local count
+          against an actor cap would false-OK exactly when an actor's
+          traffic splits across queues.
+        * ``binding_actor`` / ``admission_load`` /
+          ``effective_max_pending`` — the VERDICT's basis: the routing
+          actor with the smallest headroom (its OWN pending+scheduled
+          count, ALL queues, from ``count_pending_jobs`` — the
+          ``enqueue_max_pending_count`` grouping — against its stored
+          cap from the ``ActorCapacityCache`` TTL snapshot). The data
+          model has no per-queue depth threshold; the boundary is the
+          actor's.
+        * ``children_depth`` — when a fan-out parent is in play
+          (*parent_id*, or the ambient worker context
+          ``current_parent_id()``), the parent's pending children
+          OUTSIDE the queue, exact via the ``parent_id`` ledger stamp
+          (01.00.23_01). REPORTED, not verdict-bearing: every pending
+          child already counts toward its OWN actor's cap (wherever it
+          sits), which is the number admission enforces — the fan-out
+          pressure reaches the verdict through the routing actors'
+          admission loads, and this field is the parent-attributed
+          ledger view of the same rows. Children already in the queue
+          are in its ``depth`` and never counted twice.
+        * ``state`` — ``over`` when any routing actor's OWN count is at
+          or over its cap (the next enqueue for that actor is likely
+          refused with ``MaxPendingExceededError``), ``ok`` only when
+          every routing actor resolves and none is over (an
+          unresolvable actor may be over — claiming ok would be the
+          false-ok), ``unknown`` when the verdict could not be computed
+          (sick database, the actor-count read missing, no capacity
+          snapshot, a cap that lives only in the ``@actor`` literal).
+          ``reason`` names the absent half. Fail-open, never a
+          fabricated verdict.
+
+        ADVISORY semantics: the race between this check and the later
+        enqueue is acceptable (the signal predicts admission, it does
+        not reserve it); the snapshot carries ``as_of`` and
+        ``cap_age_seconds`` so its own staleness travels with it (the
+        cap age is bounded by the TTL, default 5s, and reports the last
+        SUCCESS, not the last attempt). Cost: one depth aggregate + one
+        actor-count aggregate per call, plus one more only when a
+        parent is in play; ``unknown`` on backend trouble — the read
+        never raises except for a missing schema
+        (:class:`SchemaNotMigratedError`, the actionable setup defect).
+        """
+        with self._translate_schema_errors():
+            await self._capacity_cache.refresh()
+            return await read_backpressure(
+                self._backend,
+                self._capacity_cache,
+                list(dict.fromkeys(queues)),
+                parent_id=parent_id if parent_id is not None else current_parent_id(),
+                read_timeout=DEFAULT_CAPACITY_READ_TIMEOUT,
+            )
 
     async def list(self, filter: JobFilter) -> JobPage:
         """List jobs matching *filter*, returning a :class:`JobPage`.

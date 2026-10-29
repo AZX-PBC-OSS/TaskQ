@@ -73,3 +73,24 @@ def test_every_documented_extra_exists_in_pyproject() -> None:
         assert not phantom, (
             f"{page.name} names extra(s) {sorted(phantom)} that pyproject does not have"
         )
+
+
+def test_flows_extra_is_an_optional_dependency_not_a_project_key() -> None:
+    """The docs' install law is ``uv sync --extra flows`` (the taskq[flows] opt-in).
+
+    The ``flows`` key once sat directly under ``[project]`` — it parsed as the
+    unknown ``project.flows`` key, the extra did not exist, and
+    ``uv sync --extra flows`` failed with ``Extra `flows` is not defined in the
+    `optional-dependencies` table``. Pin the table placement: the key must be
+    an extra, and must not shadow a top-level project key.
+    """
+    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    assert "flows" in data["project"]["optional-dependencies"], (
+        "the `flows` extra is missing from [project.optional-dependencies] — "
+        "`taskq[flows]` / `uv sync --extra flows` is the docs' sanctioned "
+        "workflows opt-in and must resolve"
+    )
+    assert "flows" not in data["project"], (
+        "`flows` sits directly under [project] where it parses as an unknown "
+        "project key, not an extra — move it under [project.optional-dependencies]"
+    )

@@ -136,6 +136,7 @@ def _settings(max_heartbeat_failures: int = 3) -> WorkerSettings:
             # knobs must sit inside the lock lease (settings validation).
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
             "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
+            "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
             "TASKQ_LOCK_LEASE": "18.0",
             "TASKQ_MAX_HEARTBEAT_FAILURES": str(max_heartbeat_failures),
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",

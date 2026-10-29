@@ -1,0 +1,23 @@
+{
+  "mutation": "the shared-counter variant (2 holds + max_attempts=3 \u2192 terminal with zero retries) \u2014 red forever",
+  "observed": {
+    "ledger": [
+      [
+        1,
+        "awaited"
+      ],
+      [
+        2,
+        "awaited"
+      ],
+      [
+        3,
+        "failed"
+      ]
+    ],
+    "retries_taken": 0
+  },
+  "pin": "pin7-shared-attempt-counter",
+  "run": "20261010T040317-25336-88448e3a",
+  "ts": "2026-10-10T04:03:17"
+}

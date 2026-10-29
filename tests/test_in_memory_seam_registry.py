@@ -182,6 +182,8 @@ _NO_STORED_STATE_ESCAPES: dict[str, str] = {
     "count_active_jobs": "returns a count",
     "count_batch_non_terminal": "returns a count",
     "count_pending_jobs": "returns a freshly aggregated dict of counts",
+    "count_pending_jobs_by_queue": "returns a freshly aggregated dict of counts",
+    "count_pending_children_by_queue": "returns a freshly aggregated dict of counts",
     "create_batch": "returns None; builds its own metadata dict, scalar arguments",
     "deadline_sweep": "returns a count",
     "delete_schedule": "returns None",

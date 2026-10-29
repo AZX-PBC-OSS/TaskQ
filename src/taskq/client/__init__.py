@@ -15,15 +15,22 @@ from taskq.client._enqueuer import SubJobEnqueuer
 from taskq.client._handle import JobHandle
 from taskq.client._jobs import JobsClient
 from taskq.client._taskq import JobEvent, TaskQ
-from taskq.types import BulkCancelResult, CancelResult
+from taskq.types import (
+    BackpressureSnapshot,
+    BulkCancelResult,
+    CancelResult,
+    QueueBackpressure,
+)
 
 __all__ = [
     "ActorsClient",
+    "BackpressureSnapshot",
     "BulkCancelResult",
     "CancelResult",
     "JobEvent",
     "JobHandle",
     "JobsClient",
+    "QueueBackpressure",
     "SubJobEnqueuer",
     "TaskQ",
 ]

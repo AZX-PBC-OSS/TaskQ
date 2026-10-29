@@ -857,6 +857,7 @@ async def test_leader_sweep_calls_evict_idle_keyed_reservations(
         "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
+        "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
     }
@@ -914,6 +915,7 @@ async def test_leader_sweep_skips_eviction_when_no_keyed_reservations(
         "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
+        "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
     }
@@ -971,6 +973,7 @@ async def test_leader_sweep_calls_evict_idle_keyed_rate_limits(
         "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
+        "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
     }
@@ -1028,6 +1031,7 @@ async def test_leader_sweep_skips_eviction_when_no_keyed_rate_limits(
         "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
+        "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
         "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
         "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
     }

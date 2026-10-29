@@ -161,6 +161,7 @@ else:
 
 __all__ = [
     "RUN_TOKEN_ENV_VAR",
+    "TEST_REDIS_CONNECT_TIMEOUT_SECS",
     "ActorRunnerCallable",
     "JobsApp",
     "ModulePgSchema",
@@ -867,15 +868,21 @@ RUN_TOKEN_ENV_VAR = "TASKQ_TEST_RUN_TOKEN"  # noqa: S105 # Why: env-var NAME, no
 
 def run_isolation_token() -> str:
     """The token mixed into every hashed per-module/per-test database and schema
-    name: the xdist worker id under xdist, the conftest-published per-invocation
-    token in serial runs, ``master`` as a last-resort fallback (direct library
-    use outside this repo's conftest).
+    name: the conftest-published per-invocation token (the invocation-unique
+    basetemp PATH - the numbered invocation dir plus the xdist worker's own
+    subdirectory, so it is invocation-unique AND worker-distinct AND distinct
+    from any subprocess pytest's own fresh numbered dir), ``master`` as a
+    last-resort fallback (direct library use outside this repo's conftest).
 
     The token's essential job is WITHIN one invocation: the shared pair
     serves every xdist worker of it, and two workers hashing the same module
     or node id must not land the same database or schema on that one pair ,
     each worker's ``DROP DATABASE ... WITH (FORCE)`` / ``DROP SCHEMA ... CASCADE``
-    would kill the other's live pools mid-test.
+    would kill the other's live pools mid-test. AND ACROSS sessions sharing
+    one cluster: a parent session and its own subprocess pytest (the scratch
+    drills) both publish a token, and the basetemp path keeps the child's
+    names off the parent's (the mutual-drop class's root cure - see
+    tests/conftest.py::_publish_run_isolation_token).
 
     Invocation-uniqueness of the token (the conftest publishes the
     invocation-unique basetemp dir name, e.g. ``pytest-41``) and the
@@ -971,7 +978,19 @@ async def module_pg_schema(
 
     yield ModulePgSchema(schema_name=schema_name, pg_dsn=pg_dsn)
 
-    conn = await asyncpg.connect(pg_dsn)
+    # THE TEARDOWN TOLERANCE (the split-drop class's residue): the module
+    # database's lifecycle belongs to ``pg_dsn`` (tests/conftest.py), whose
+    # teardown may already have dropped it when this finalizer runs —
+    # pytest-asyncio defers async-module-fixture finalization to the module
+    # loop's teardown, which can land AFTER the sync pg_dsn teardown. A
+    # vanished database means the cleanup is already COMPLETE (the schema
+    # lived in the database); re-raising would only stain the worker's
+    # summary with an error that names no defect. Connect failures of any
+    # OTHER shape (the cluster is down, credentials rotated) still raise.
+    try:
+        conn = await asyncpg.connect(pg_dsn)
+    except asyncpg.InvalidCatalogNameError:
+        return
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE')
     finally:
@@ -979,6 +998,21 @@ async def module_pg_schema(
 
 
 # ── Module-scoped Redis DB ──────────────────────────────────────────────
+
+TEST_REDIS_CONNECT_TIMEOUT_SECS: float = 30.0
+"""Connect budget for every fixture client that dials a test broker.
+
+redis-py 8 defaults ``socket_connect_timeout`` to 5s. On a loaded runner
+that budget is a red band, not a safety net: the testcontainer's address
+resolution (``getaddrinfo``, in the loop's executor) can out-run 5s and
+the first command dies with ``Timeout connecting to server`` — the
+rotating one-test-in-~12.7k red (PR #682's 3.13 leg). The connect phase
+is setup weather, never a pin's subject — the pins' own bounds are the
+tests' ``overall_timeout``s and the suite-wide pytest-timeout — so every
+fixture client dials with this budget instead: the tree's outside-system
+bound (:data:`~taskq.client._transport.POLL_FAILURE_BUDGET_SECS`, the
+reload factory timeout, the notify reconnect ceiling — all 30).
+"""
 
 
 @pytest.fixture(scope="module")
@@ -1000,12 +1034,29 @@ def module_redis_url(
     # the HELLO handshake race on a co-tenanted runner (the EEE setup-error
     # class on the cross legs). A wedged connection is the suite-wide
     # pytest-timeout's job, not a fixture budget.
-    with redis_sync.from_url(url, decode_responses=False, socket_timeout=None) as client:
+    # socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS: redis-py 8's
+    # 5s CONNECT default is its own band - on a loaded runner the
+    # testcontainer's address resolution (getaddrinfo in the loop's
+    # executor) can out-run 5s and the first command dies with
+    # ``Timeout connecting to server`` (the red 3.13 leg of PR #682, one
+    # test in ~12.7k). The connect phase is setup weather, not a pin's
+    # subject: bound it at the tree's outside-system budget.
+    with redis_sync.from_url(
+        url,
+        decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    ) as client:
         client.flushdb()
     yield url
 
     # Teardown: FLUSHDB the module's DB via sync client (safe in any context).
-    with redis_sync.from_url(url, decode_responses=False, socket_timeout=None) as client:
+    with redis_sync.from_url(
+        url,
+        decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    ) as client:
         client.flushdb()
 
 
@@ -1179,7 +1230,13 @@ def clean_redis_url(module_redis_url: str) -> str:
     # socket_timeout=None: same fresh-connection HELLO race as
     # module_redis_url above; the per-test flush must not inherit the 5s
     # read budget on a co-tenanted runner.
-    client = redis_sync.from_url(module_redis_url, decode_responses=False, socket_timeout=None)
+    # socket_connect_timeout: the DNS/connect band (see module_redis_url).
+    client = redis_sync.from_url(
+        module_redis_url,
+        decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
     try:
         client.flushdb()
     finally:
@@ -1200,7 +1257,13 @@ async def clean_redis_client(clean_redis_url: str) -> AsyncIterator[object]:
     # rides the shared co-tenanted broker for the test's whole life; the
     # suite-wide pytest-timeout owns wedged connections, not a 5s read
     # budget redis-py 8 started defaulting (the pre-8 behaviour).
-    client = redis_from_url(clean_redis_url, decode_responses=False, socket_timeout=None)
+    # socket_connect_timeout: the DNS/connect band (see module_redis_url).
+    client = redis_from_url(
+        clean_redis_url,
+        decode_responses=False,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
     try:
         yield client
     finally:

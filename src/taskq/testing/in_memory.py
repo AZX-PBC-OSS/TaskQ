@@ -66,6 +66,7 @@ from pydantic import BaseModel
 from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str, loads
 from taskq.actor_config import ActorConfig
+from taskq.backend._claim_cursor import ClaimCursor
 from taskq.backend._cursor import (
     decode_batch_cursor,
     decode_cursor,
@@ -299,9 +300,22 @@ class InMemoryBackend:
         # reschedule delay at min(row cap, this ceiling), mirroring the
         # PG sweep's bound parameter.
         self._max_retry_backoff = max_retry_backoff
+        # The claim cursor's knob, carried like the knobs above: the
+        # dispatch twin reads it per round (0 disables the cursor - the
+        # naive shape). The default mirrors WorkerSettings'
+        # claim_cursor_reset_seconds' OPT-IN default (0 = disabled, the
+        # A/B-measured posture), NOT the mechanism's 60s cadence constant
+        # (backend/_claim_cursor.py CLAIM_CURSOR_RESET_SECONDS) - the
+        # posture and the cadence are deliberately different numbers.
+        self._claim_cursor_reset_seconds: float = 0.0
         self._worker_id: UUID = new_uuid()
 
         self._jobs: _JobStore = _JobStore(clock)
+        # The claim cursor: this backend's per-queue high-water mark of
+        # successfully-claimed ids, the twin of PostgresBackend's (see
+        # backend/_claim_cursor.py). Clocked by the backend's own clock so
+        # tests drive the jitter reset like every other clocked seam.
+        self._claim_cursor = ClaimCursor(clock=clock.monotonic)
         self._attempts: dict[JobId, list[AttemptRow]] = {}
         self._events: list[EventRow] = []
         # The event-prune watermark twin (PG: job_events_prune_state,
@@ -1010,6 +1024,38 @@ class InMemoryBackend:
         return sum(
             1 for r in self._jobs.values() if r.queue in queue_set and r.status in ACTIVE_STATUSES
         )
+
+    async def count_pending_jobs_by_queue(self, queues: list[str]) -> dict[str, int]:
+        """Grouped pending+scheduled counts per queue, the admission count the
+        max_pending cap governs (the LIB-2 backpressure read's DEPTH half).
+
+        The in-memory twin of ``sql.count_pending_jobs_by_queue``: same
+        statuses (pending + scheduled, exactly what
+        ``enqueue_max_pending_count`` counts), grouped per queue, absent
+        queues read 0 client-side.
+        """
+        if not queues:
+            return {}
+        queue_set = set(queues)
+        counts: dict[str, int] = {}
+        for r in self._jobs.values():
+            if r.queue in queue_set and r.status in ("pending", "scheduled"):
+                counts[r.queue] = counts.get(r.queue, 0) + 1
+        return counts
+
+    async def count_pending_children_by_queue(self, parent_id: JobId) -> dict[str, int]:
+        """The parent's pending children, exact and grouped by queue (the LIB-2
+        backpressure read's FAN-OUT half), the in-memory twin of
+        ``sql.count_pending_children_by_queue``.
+
+        ``parent_id`` is a plain column, no FK: a purged or never-existed
+        parent is the same defined-empty result.
+        """
+        counts: dict[str, int] = {}
+        for r in self._jobs.values():
+            if r.parent_id == parent_id and r.status in ("pending", "scheduled"):
+                counts[r.queue] = counts.get(r.queue, 0) + 1
+        return counts
 
     async def get_actor_max_pending(self) -> dict[str, int | None]:
         return await _get_actor_max_pending(self)

@@ -72,6 +72,8 @@ _SEMANTIC_SEAMS: dict[str, str] = {
     "cancel_where": "tests/test_in_memory_dispatch_parity.py",
     "heartbeat_jobs": "tests/test_heartbeat_seam_parity.py",
     "extend_reservation_leases": "tests/test_heartbeat_seam_parity.py",
+    "count_pending_jobs_by_queue": "tests/test_children_count_parity.py",
+    "count_pending_children_by_queue": "tests/test_children_count_parity.py",
 }
 
 #: Seams that SELECT or ORDER rows and are NOT yet pinned by a parity test.

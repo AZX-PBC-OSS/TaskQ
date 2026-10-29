@@ -98,7 +98,7 @@ async def _start_leader_and_wait_for_win(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_leader")
 async def test_tc1_kill_leader_pod_mid_sweep(pg_dsn: str) -> None:
     """Kill leader pod mid-sweep: the survivor promotes on the lease horizon.
 
@@ -211,7 +211,7 @@ async def test_tc1_kill_leader_pod_mid_sweep(pg_dsn: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_leader")
 async def test_tc2_partition_leader_via_monitor_conn(pg_dsn: str) -> None:
     """Partition leader via pg_terminate_backend(leader_monitor_conn_pid).
 
@@ -354,7 +354,7 @@ async def _off_loop_container(
 
 @pytest.mark.slow
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_leader")
 async def test_tc3_pg_primary_failover() -> None:
     """PG primary failover via container stop + restart.
 
@@ -537,7 +537,7 @@ async def test_tc3_pg_primary_failover() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_leader")
 async def test_tc4_advisory_lock_release_on_graceful_shutdown(
     pg_dsn: str,
 ) -> None:
@@ -616,7 +616,7 @@ async def test_tc4_advisory_lock_release_on_graceful_shutdown(
 
 
 @pytest.mark.asyncio
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_leader")
 async def test_tc5_lock_name_collision_never_blocks_election(pg_dsn: str) -> None:
     """Lock-name collision - an external holder never blocks election.
 

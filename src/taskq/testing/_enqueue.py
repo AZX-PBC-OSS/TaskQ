@@ -277,6 +277,10 @@ async def _enqueue(self: "InMemoryBackend", args: EnqueueArgs) -> JobRow:
         retry_cap=args.retry_cap,
         retry_backoff=args.retry_backoff,
         retry_jitter=args.retry_jitter,
+        # LIB-2: the fan-out ledger stamp, the in-memory mirror of the
+        # parent_id column (a plain column on both; the twin counts
+        # pending children by it exactly like PG's partial-index walk).
+        parent_id=args.parent_id,
     )
 
     # The single arm's terminal-batch guard, GUARD parity with the PG

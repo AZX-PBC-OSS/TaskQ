@@ -285,6 +285,55 @@ Do not scale dispatchers out to fix this: more concurrent claim rounds multiply 
 
 ---
 
+## TaskQClaimLatencyDegraded
+
+**What fired.** `taskq_claim_degradation_ratio > 10` for 5 minutes, by `queue`: this worker's claim-query latency p99 is more than ten times its own rolling 24-hour baseline (minute-bucketed p99s, kept for a day). The ratio is the PREDICTOR of the MVCC death spiral: a long or overlapping transaction pins the MVCC horizon, VACUUM cannot reclaim, and the claim query's B-tree scans degenerate through the dead tuples the queue's own churn leaves behind - brandur.org/postgres-queues measured 15x lock-time degradation this way, and PlanetScale's 2026 re-run confirmed SKIP LOCKED only "lifts the floor, not the ceiling" (identical dead-tuple scans under both). The ratio exists because an absolute threshold cannot see this failure: a fleet that degrades slowly makes each new latency its own normal (and [TaskQDispatchLatencyHigh](#taskqdispatchlatencyhigh), the absolute twin, stays silent).
+
+**How to confirm.**
+
+- Metric: `taskq_claim_degradation_ratio{queue="..."}` climbing past 10 while `taskq_claim_claims_per_second{queue="..."}` falls is the spiral's last visible stage (the claim path slowing until throughput collapses). The percentiles (`taskq_claim_latency_p50_seconds` and its p95/p99 siblings) show the distribution moving as a whole: p50 moving with p99 is the whole scan degrading, not one straggler.
+- SQL: find the transaction pinning the horizon - the one thing every dead tuple needs gone before VACUUM can touch it:
+
+  ```sql
+  SELECT pid, state,
+         now() - xact_start AS xact_age,
+         now() - state_change AS idle_age,
+         left(query, 120) AS query_head
+  FROM pg_stat_activity
+  WHERE xact_start IS NOT NULL
+    AND now() - xact_start > interval '5 minutes'
+  ORDER BY xact_start;
+  ```
+
+  A long-running transaction of any shape is the pin: an idle-in-transaction app session holding a connection mid-transaction, a long migration, a `pg_dump` with a snapshot, a stuck `LISTEN`/event-loop transaction.
+- Confirm the dead-tuple pressure it causes:
+
+  ```sql
+  SELECT n_dead_tup, n_live_tup, last_autovacuum
+  FROM pg_stat_user_tables
+  WHERE relname = 'jobs' AND schemaname = 'taskq';
+  ```
+
+  `n_dead_tup` climbing while `last_autovacuum` stalls in the past is the horizon pinned; the claim scans pay for every one of those rows.
+
+**Why the timeouts do not save you.** Postgres ships three relevant knobs, and none of them catches this failure:
+
+- `idle_in_transaction_session_timeout` (default 0 = off) fires only when a session sits IDLE inside a transaction - an *actively working* long transaction (a batch migration, a COPY) never trips it;
+- `transaction_timeout` (Postgres 17+, default 0 = off) caps a transaction's total lifetime, but the pinning transactions in production are usually *legitimate* - a 20-minute migration is not a leak - so operators leave the knob off, and an app pool's idle-in-transaction session may not be the one pinning anything anyway;
+- `statement_timeout` bounds ONE statement, not the transaction: a transaction that runs a million short statements never trips it while pinning the horizon for its whole life.
+
+And even when a timeout fires, it fixes the future, not the present: the dead tuples accumulated while the horizon was pinned stay until VACUUM reaches them.
+
+**How to remediate.**
+
+1. Kill or complete the pinning transaction: `SELECT pg_terminate_backend(<pid>);` for an app-held one (the app retries; that is what retries are for), or let the migration finish. The horizon unpins the moment the last snapshot that can see the dead tuples ends.
+2. Confirm VACUUM drains: `n_dead_tup` falls and `taskq_claim_degradation_ratio` returns toward 1. The ratio falls within a claim-window of the vacuum, which is the confirmation the incident is over - do not re-page on the absolute gauge's slow decay.
+3. Check what held the horizon: an application session left `idle in transaction` needs `idle_in_transaction_session_timeout` set on THAT role (`ALTER ROLE app SET idle_in_transaction_session_timeout = '5min'`), which is a targeted fix that cannot break legitimate long migrations.
+
+**Mitigation, bounded and measured:** the claim cursor (`TASKQ_CLAIM_CURSOR_RESET_SECONDS`, opt-in - default off) bounds the claim query's candidates at the worker's per-queue high-water mark of claimed ids, so the candidate probe's seek lands on live tuples instead of walking the dead zone. It is a selection predicate (a below-cursor row strands until the jitter reset forgets the cursor - the knob's interval, ±50%), round-robin queues are exempt, and its end-to-end win on this codebase's claim CTE is plan-dependent (the spiral's planner-blindness keeps some probes on index choices the bound cannot position) - measured in `perf-evidence-mvcc-horizon.md` and gated in `tests/perf/test_mvcc_claim_degradation.py`. The gauges are the part that works everywhere; the cursor is the bounded experiment for fleets whose shape matches the isolated measurement.
+
+---
+
 ## TaskQLeaderLockContention
 
 **What fired.** `sum(rate(taskq_leader_lock_contention_total[10m])) > 0 and sum(taskq_maintenance_leader_is_leader) < 1` sustained for 10 minutes: maintenance-lock acquisitions are being lost AND no worker holds leadership. The counter is recorded by the *losing* side at every maintenance acquisition point, labeled by `lock`.
@@ -786,6 +835,106 @@ The warning's `frame` field is `file:line:function` of the deepest non-taskq fra
 
 ---
 
+## TaskQWorkflowBlockedStuck
+
+**What fired.** `taskq_wf_progress_nodes_total{state="blocked"} > 0` for 30 minutes: workflow node rows are sitting in a BLOCKED representation — join-wait (`pending` + `deps_pending > 0`), a blocked-with-reason stamp (`metadata.blocking_reason` set), or held (a future `scheduled_at` deadline + an unresolved signal row) — with no transition for half an hour. The gauge is sampled by the maintenance leader on the admin's surface, dimensioned by the DECLARED workflow (`_other_` carries the unregistered collapse; never per-node labels).
+
+**How to confirm.**
+
+- Metric: `taskq_wf_progress_nodes_total{state="blocked"}` per workflow. A healthy fleet reads 0 or a number that moves; a pinned count with the run's other states frozen is a wedged run.
+- SQL: the blocked nodes and their reasons (the run id from the workflow's run key / the admin's runs page):
+
+  ```sql
+  SELECT id, step_key, status, deps_pending,
+         metadata->>'blocking_reason' AS blocking_reason,
+         metadata->>'failed_parent'   AS failed_parent
+  FROM taskq.jobs
+  WHERE (metadata->>'flow_id')::uuid = $1
+  ORDER BY id;
+  ```
+
+- Read `metadata.blocking_reason`:
+  - `'join'` — the join is waiting on its parents: check the parents' states (the per-node rollup query, `docs/guides/insights.md`'s blocked-by recipe). A parent stuck mid-ladder is normal; a parent gone (pruned, never inserted) wedges the join — the sweep stamps it `'orphan_parent'`.
+  - `'orphan_parent'` — an edge points at a parent row that does not exist (a misnamed child): the join can never fire; fix the definition and re-run.
+  - `'failed_parent'` — the fail-closed cascade resolved this join because a parent TERMINALLY failed (the record names the parent). The workflow is failed; this is the record, not a wedge.
+  - `'body_unavailable'` — the join FIRED but its reducer body resolved NOWHERE: the delivery continued, the record is loud. **This is a deployment defect**: the workflow's definitions are not imported in every worker process — the fire arm resolves bodies from the REGISTERED definition (D1); make every worker carry the same definitions.
+- If a run's rows are blocked but its flow root is `running` with NO live nodes, the sweep's maintenance leg will resolve the root at its next tick; a root still `running` past a tick or two is the sweep's own health (see [TaskQPromotionStalled](#taskqpromotionstalled) — the same signature, different sweep).
+
+**What not to do.** Do not hand-flip `deps_pending` to 0: the counter is a CACHE of the edge ledger's truth, and a hand-zeroed join fires over a partial record. Resolve the parents (or cancel the run) and let the re-derivation do the write.
+
+**The stuck-run drill** (the run-level face of the same alert — a run whose nodes are blocked is what this alert measures):
+
+- CLI: `taskq flows status <run_id>` — every stuck node names its waiting-on state + its remedy (the held rows name the gate + the hold id + the deadline; the join-waits name the deps counter; the failures name the ladder headroom).
+- CLI: `taskq flows holds <run_id>` — the pending HITL holds. A hold past its `expires_at` is the expiry sweep's input (the sweep resolves it `expired` per the gate's `on_timeout`).
+- Admin: the run page (`/taskq/workflows/<id>`) renders the same derivation + the audit trail (who resolved what, when).
+
+**How to remediate.**
+
+1. The run holds on a human: `taskq flows resolve <hold_id> '<decision json>' --app myapp.workflows:app` (the typed door — a wrong payload is refused with the named error and the hold survives).
+2. A node failed with ladder headroom: `taskq flows retry <run_id> <node>` (the ledger is kept; the ceiling raises; the blocked closure re-opens).
+3. A join waiting on the fence's record (`failed_parent`/`orphan_parent`/`flow_dead`): the parent's retry re-opens it; a `flow_dead` join is the flow's own death — the run is terminal, start a new run.
+4. The run should never finish: `taskq flows cancel <run_id> --reason ...` (the cascade resolves the held signals in the same snapshot; the audit row carries the reason).
+
+**The hold-expiry face** (a resolved-loud `expired` under the same alert's held arm): the signals' expiry sweep resolved hold rows past their deadline — a human did not answer in the gate's window, and the gate's `on_timeout` policy took over (`fail` → the node fails through the ladder; the sweep-enforced cap). Confirm with `taskq flows holds <run_id>` (the pending set) vs the run's `wf_signals` rows with `status='expired'`; the node panel's attempt ledger shows the expiry's terminal. Remediate by re-running the node (`taskq flows retry <run_id> <node>`) — the re-run registers a NEW hold (a NEW epoch; the stale payload cannot answer it — the epoch is the fence). If the deadline was too tight for the humans, declare a longer `timeout_s=` at the gate (or accept the W1 warning and wait forever — deliberately, with the warning read).
+
+Nothing is lost by waiting: a held run's budget is PAUSED (the hold counts for nothing on wake), and the rows are the truth — the driver picks the work up when the resolve lands.
+
+---
+
+## A workflow run's mid-run hard crash (the operator's page)
+
+The executing process died mid-attempt (SIGKILL, OOM, the box went
+away). The run's rows stay `running` with a lock lease owned by a dead
+worker. THIS is the runbook the guides' resume sections assume; work
+top to bottom.
+
+1. **Do NOT re-drive in-process and wait.** `FlowRunner.drive(flow_id,
+   execute=True)` on a fresh runner runs NO lock-reclaim sweep — it
+   ticks to its `max_ticks` budget (~110 s at the 5000-tick default),
+   returns the string `"max_ticks"` (a bounded give-up, not a status —
+   CHECK the return), and changes nothing. The in-process driver is the
+   dev-loop door for LIVE runs, not a recovery tool.
+2. **The reclaim is the WORKER-hosted sweep's job, and it costs the
+   lease arithmetic.** The maintenance leader's expired-lock sweep
+   waits out the dead claim's lock lease (`TASKQ_LOCK_LEASE`, 60 s at
+   the default) plus the sweep cadence and the failed-beat cascade
+   margin the lease must cover. MEASURED WALL: ~2 minutes from the
+   kill to the killed child re-pending (122 s for a 40-site fan at the
+   defaults) — a "stuck" run for the first two minutes after a crash
+   is the mechanism working, not wedged. Confirm takeover: the
+   `maintenance_leader` row names a LIVE worker, then the expired
+   sweep's counters move.
+3. **What the reclaim does with the killed child**: the row re-pends
+   (`running→scheduled→pending`) while retry budget remains — the
+   attempt ladder continues, the ledger's idempotency absorbs any
+   partially-written effects of the killed attempt (safe by the step
+   ledger). Budget exhausted (`attempt >= max_attempts`) → the row
+   terminalizes `crashed` (the FAILED class — see the workflow guide's
+   collect-contract note for what a crash-class child means to a
+   `collect` join).
+4. **Resume through the fleet door**: `drive(flow_id, execute=False)`
+   on a runner (the orchestration-only drive — the tick runs the sweep
+   arms, the fleet's workers execute the re-pended work), or simply
+   keep a worker running; the re-pended rows dispatch like any work.
+   The kill-retry cycle is bounded by the child's ladder — budget
+   `max_attempts=` for the crashes you expect.
+5. **The manual verbs refuse live rows — by design**: `taskq flows
+   retry <run_id> <node>` refuses a node that is not terminal-FAILED
+   ("is live … or spent past the attempt ceiling"), and `taskq job
+   retry` refuses a running job. A `running` row under a dead lease is
+   step 2's patient, not a retry target. A terminal-FAILED child (the
+   ladder spent) is the retry verbs' customer.
+6. **When the re-drive is not wanted — cancel + re-issue**: `taskq
+   flows cancel <run_id> --reason ...` (the cascade resolves the live
+   rows in the same snapshot), then re-issue the run under a NEW
+   `run_key` (a terminal run's key is never re-used). The re-issue's
+   re-execution is absorbed by the workflow's idempotent design (the
+   step ledger replays `ctx.substep` records; idempotent upserts in
+   the bodies make data effects exact) — this is the drill-proven path
+   when the fleet is down and the driver is your only instrument.
+
+---
+
 ## Related documentation
 
 - [Observability](observability.md): the metrics these alerts evaluate,
@@ -793,3 +942,16 @@ The warning's `frame` field is `file:line:function` of the deepest non-taskq fra
 - [Configuration](configuration.md): `TASKQ_EVENT_WRITER_*`,
   `TASKQ_SWEEP_*` and `TASKQ_CRON_TICK_LIMIT` knobs referenced above.
 - [Troubleshooting](troubleshooting.md): symptom-first diagnosis paths.
+
+---
+
+*The workflow rows' alert anchoring (the F-R3 discipline): every
+`## TaskQ…` heading in this file's alert rows names a rule SHIPPED in
+BOTH `src/taskq/contrib/prometheus/rules.yaml` and
+`src/taskq/contrib/kubernetes/prometheus_rule.yaml` — a runbook row an
+alert cannot fire is a page that lies (the pinned cross-check:
+`tests/test_prometheus_metrics_review.py`'s runbook-anchor pin). The
+former `TaskQWfRunStuck` / `TaskQWfHoldExpired` rows had no shipped
+rule to fire — their operational content (the stuck-run drill, the
+hold-expiry face) lives in `TaskQWorkflowBlockedStuck`'s row, the alert
+that actually measures the blocked/held shape.*

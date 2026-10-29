@@ -97,6 +97,10 @@ async def redis_event_stream[EventT](
     poll_timeout: float,
     decode_message: Callable[[str], Awaitable[EventT | None]],
     on_timeout: Callable[[], Awaitable[EventT | None]] | None = None,
+    *,
+    job_id: JobId,
+    failure_budget: float = POLL_FAILURE_BUDGET_SECS,
+    clock: Callable[[], float] = time.monotonic,
 ) -> AsyncGenerator[EventT, None]:
     """Subscribe to a Redis channel and yield decoded events.
 
@@ -105,12 +109,83 @@ async def redis_event_stream[EventT](
     valid message; *on_timeout* is called when get_message returns None
     (poll timeout). Both may return None to skip yielding.
 
+    An infrastructure error out of *on_timeout* or *decode_message* (a
+    Postgres pool or connection failure, an OSError, a timeout) does not
+    end the stream: one warning per failed call (``stream-poll-error``,
+    the job id and the exception type only - never the message, which can
+    carry server-side text) and the next poll timeout or message is the
+    retry, the same survive-and-retry the PG poll transport gives its
+    fetches. The budget is the stream's, not a leg's: ``TaskQ.stream``'s
+    decode re-reads the row through the backend, so both legs fail with
+    the same class of error against the same backing store and their
+    failures spend one shared run. Failures spanning at least
+    *failure_budget* seconds (measured on *clock*) end the stream with
+    :class:`~taskq.exceptions.StreamUnavailable`, logged as
+    ``stream-poll-abandoned``; a successful call on either leg resets the
+    run. Any non-infra error propagates untouched - KeyError among them,
+    ``TaskQ.stream``'s vanished-row contract.
+
     The return type is the async-generator type, not the iterator protocol:
     consumers close this generator FROM UPSTREAM (contextlib.aclosing) on
     every exit that is not exhaustion, and aclosing needs the aclose
     surface.
     """
     pubsub = redis_client.pubsub()
+    failures_since: float | None = None  # clock reading of the first failure in the current run
+    consecutive_failures = 0
+
+    def _budget_reset() -> None:
+        """A healthy read on either leg ends the failure run."""
+        nonlocal failures_since, consecutive_failures
+        failures_since = None
+        consecutive_failures = 0
+
+    def _budget_failure(exc: Exception) -> None:
+        """Feed one infra failure to the stream's failure budget.
+
+        Both legs of the loop - the on_timeout re-read and decode_message
+        (which re-reads the row through the backend on ``TaskQ.stream``'s
+        transport) - funnel through here so the budget is the stream's,
+        not a leg's: either leg's failures spend the same run and neither
+        can hide from it. Warns once per failure and raises
+        :class:`~taskq.exceptions.StreamUnavailable` when failures span
+        the budget; the caller retries its leg when this returns.
+        """
+        nonlocal failures_since, consecutive_failures
+        now = clock()
+        if failures_since is None:
+            failures_since = now
+        consecutive_failures += 1
+        elapsed = now - failures_since
+        if elapsed >= failure_budget:
+            logger.error(
+                "stream-poll-abandoned",
+                job_id=str(job_id),
+                channel=channel,
+                error_type=type(exc).__name__,
+                consecutive_failures=consecutive_failures,
+                elapsed_secs=round(elapsed, 3),
+                failure_budget_secs=failure_budget,
+            )
+            raise StreamUnavailable(
+                job_id,
+                consecutive_failures=consecutive_failures,
+                elapsed=elapsed,
+                last_error=exc,
+            ) from exc
+        # One warning per failed call, named for the job and the
+        # exception type: enough to trace an outage, without the
+        # message text (server errors can quote data). The next poll
+        # timeout or message is the retry; a blip that clears is
+        # invisible beyond this line.
+        logger.warning(
+            "stream-poll-error",
+            job_id=str(job_id),
+            error_type=type(exc).__name__,
+            consecutive_failures=consecutive_failures,
+            elapsed_secs=round(elapsed, 3),
+        )
+
     try:
         await pubsub.subscribe(channel)
         while True:
@@ -120,7 +195,17 @@ async def redis_event_stream[EventT](
             )
             if raw_msg is None:
                 if on_timeout is not None:
-                    event = await on_timeout()
+                    try:
+                        event = await on_timeout()
+                    except Exception as exc:
+                        if not _is_infra_error(exc):
+                            raise
+                        _budget_failure(exc)
+                        continue
+                    # A successful re-read ends the failure run, even
+                    # when it returns None (the row is unchanged - a
+                    # healthy read either way).
+                    _budget_reset()
                     if event is not None:
                         yield event
                         if _is_terminal(event):
@@ -145,7 +230,17 @@ async def redis_event_stream[EventT](
                 )
                 continue
 
-            event = await decode_message(raw_str)
+            try:
+                event = await decode_message(raw_str)
+            except Exception as exc:
+                if not _is_infra_error(exc):
+                    raise
+                _budget_failure(exc)
+                continue
+            # A successful decode ends the failure run, even when it
+            # returns None (a message that is not one of ours - a
+            # healthy read of the channel either way).
+            _budget_reset()
             if event is not None:
                 yield event
                 if _is_terminal(event):
@@ -189,7 +284,7 @@ async def pg_poll_event_stream[EventT](
     exception type only - never the message, which can carry server-side
     text) is logged and the loop retries after the next poll interval, the
     same survive-and-retry the LISTEN transport gave connection blips.
-    Consecutive failures spanning more than *failure_budget* seconds
+    Consecutive failures spanning at least *failure_budget* seconds
     (measured on *clock*) end the stream with
     :class:`~taskq.exceptions.StreamUnavailable`, logged as
     ``stream-poll-abandoned``: a database that has not answered in that

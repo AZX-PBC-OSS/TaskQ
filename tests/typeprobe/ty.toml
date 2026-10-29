@@ -1,0 +1,9 @@
+# The type gate's OWN ty config — sourced explicitly via --config-file so
+# the pinned checker's behavior is hermetic to the box it runs on. Without
+# it, ty's config discovery walks UP out of the repo and adopts whatever
+# stray ty.toml sits in a parent directory (convicted 2026-10-27: a
+# bisection leftover at /tmp/opencode/ty.toml carrying a newer ty's
+# `return-type-inference` option crashed every probe with a TOML parse
+# error — the gate's verdict was an environment artifact, not a type
+# finding). Deliberately EMPTY: the gate wants the pinned 0.0.85's
+# defaults; the file exists to be EXPLICIT, not to override.

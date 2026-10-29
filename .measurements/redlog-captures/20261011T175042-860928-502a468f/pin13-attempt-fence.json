@@ -1,0 +1,11 @@
+{
+  "mutation": "finalize CAS with row status only (no attempt/epoch conjunct)",
+  "observed": {
+    "row_attempt": 2,
+    "status": "succeeded",
+    "zombie_attempt": 1
+  },
+  "pin": "pin13-attempt-fence",
+  "run": "20261011T175042-860928-502a468f",
+  "ts": "2026-10-11T17:50:42"
+}

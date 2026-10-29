@@ -127,6 +127,17 @@ async def transcode_video(payload: TranscodePayload, ctx: JobContext[TranscodePa
 See [`ctx.progress()` in the Actor API](actors.md#progress-reporting) for the full
 parameter reference.
 
+!!! note "Fast jobs coalesce — the stream is as dense as the flush interval"
+    The transcode above sleeps between segments, so each call lands in its own
+    flush window and the consumer sees one event per step. A **fast** actor that
+    calls `ctx.progress()` once per item and finishes inside
+    `TASKQ_PROGRESS_COALESCE_INTERVAL` (default 0.5 s) collapses to roughly one
+    snapshot per flush: a 30-item loop can leave only the final
+    `step=30 / percent=100` state on the row. That is the design — the durable
+    row and every stream carry the *latest* state, not the event count — so
+    push step counters, not per-item events, if you want a dense stream; do not
+    read a thin stream on a sub-second job as progress reporting failing.
+
 ---
 
 ## Consuming progress in Python
@@ -145,11 +156,14 @@ async for event in handle.progress_stream():
 ```
 
 `progress_stream()` yields `ProgressEvent` objects and stops automatically when a
-`terminal=True` event is received.
+`terminal=True` event is received. The first event is the row as it stands when the
+stream opens — the same contract `TaskQ.stream()` documents — so a consumer attaching
+to an already-running job does not starve until the actor's next publish.
 
-**Failure budget.** On the Postgres poll transport, a blip shorter than the transport's failure
-budget is retried silently (beyond a warning per failed poll). If every fetch fails for longer
-than the budget, the stream ends by raising `StreamUnavailable` — the caller's `async for`
+**Failure budget.** A blip shorter than the transport's failure budget is retried silently
+(beyond a warning per failed poll) — on the Postgres poll transport that is every fetch, and
+on the Redis path, the safety-net re-reads behind the subscription. If every fetch fails for
+at least the budget, the stream ends by raising `StreamUnavailable` — the caller's `async for`
 cannot wait forever on a database that is not coming back; the last failure is chained as
 `__cause__`. See the [Exceptions API reference](../api-reference/exceptions.md).
 
@@ -157,6 +171,7 @@ cannot wait forever on a database that is not coming back; the last failure is c
 
 | Field | Type | Description |
 |---|---|---|
+| `kind` | `"progress" \| "state_change"` | Event class: `"progress"` is an incremental progress update, `"state_change"` a status transition or terminal exit. |
 | `job_id` | `UUID` | Job this event belongs to. |
 | `actor` | `str` | Actor name. |
 | `ts` | `datetime` | Server-side timestamp. |
@@ -400,7 +415,7 @@ between polls.
 | Environment variable | Default | Description |
 |---|---|---|
 | `TASKQ_REDIS_URL` | `None` | Redis connection URL. Required for real-time progress delivery. |
-| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `16384` (16 KiB) | Maximum serialised size of the `data` dict passed to `ctx.progress()`. Range: 1 KiB to 1 MiB. Exceeding this raises `ProgressTooLarge`. |
+| `TASKQ_PROGRESS_DATA_MAX_BYTES` | `16384` (16 KiB) | Maximum serialised size of the `data` dict passed to `ctx.progress()`. Range: 1 KiB to 1 MiB. Exceeding this raises `ProgressTooLarge`. Snapshot-style publishers — actors that send the full document as `data` on every tick — must size the cap at or above their payload bound: `data` only grows, so once one snapshot exceeds the cap every later snapshot raises too, and the durable row freezes at the last accepted state until the job reaches a terminal status. |
 | `TASKQ_PROGRESS_COALESCE_INTERVAL` | `0.5` | Seconds between periodic flush ticks that write coalesced state to Postgres. Minimum: 0.1 s. |
 | `TASKQ_PROGRESS_PUBLISH_GLOBAL` | `true` | When `true`, every event is also published to a schema-wide fanout channel in addition to the per-job channel. Disable in high-throughput deployments without a global subscriber. |
 
@@ -414,3 +429,183 @@ Without the `redis` extra:
 - `ctx.progress()` still coalesces and flushes to Postgres but does **not** publish to Redis.
 - `JobHandle.progress_stream()` falls back to 500 ms Postgres polling.
 - The HTTP SSE endpoint returns HTTP 503.
+
+---
+
+## Workflow node progress (T21)
+
+ACTOR progress (above) is the JOB's surface. WORKFLOW nodes have their
+own, per-NODE — the two-channel persistence:
+
+- **the STATE channel** (`wf_node_progress`): one row per
+  `(node_id, channel)`, upserted latest-wins + the occurrence counter —
+  the row count is nodes × channels, CONSTANT whatever the emission
+  rate. Keeps NO history: the "at 14:32" question is answered by the
+  STREAM channel only where the author streams to it.
+- **the STREAM channel** (`wf_node_stream`): append rows in a bounded
+  per-node ring (64, drop-oldest, the dropped count on the record; the
+  retention sweep's prune arm is the backstop). THE seq is the ONE
+  cursor space: the body's emissions (`class='user'`) and the engine's
+  node-start/terminal projections (`class='auto'`) interleave in one
+  range — one cursor serves both classes.
+
+The body calls `await ctx.progress(pct, message, data)` (the emission
+op — typed, bounded, best-effort; the coalesce + the asymmetry are the
+workflows guide's §5). The faces: the admin's
+`/api/flow/{flow_id}/progress/stream` SSE (the seq-cursor replay + the
+named partial mode on a pruned window), and
+`taskq.workflows.run_display` (the ledger-derived display — the progress
+is ADVISORY: a node that reported 99% and failed shows **failed with
+pct=99 inside**, never 99%-running).
+
+### The display's identity + the keyed view
+
+Every entry of the display carries the node's OWN identity — `step_key`
++ `map_index` read off the LEDGER, not the row UUID. The uuid-keyed
+shape is unchanged (the run explorer's fold needs it); the CONSUMER's
+render is the KEYED VIEW — the step_key'd dict, no out-of-band join.
+This fence runs as-is under the docs-example harness:
+
+```python
+import asyncio
+import os
+
+import asyncpg
+from pydantic import BaseModel
+
+import taskq.migrate
+from taskq.workflows import (
+    FlowRunner,
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    map_source,
+    step,
+)
+from taskq.workflows import keyed_display, run_display
+
+
+class Ingest(BaseModel):
+    doc_id: str = "d1"
+
+
+async def fetch(ctx: StepContext, params: Ingest) -> list[int]:
+    return [0, 1, 2]
+
+
+async def ocr_item(ctx: StepContext, value: int) -> dict:
+    await ctx.progress(((value + 1) * 100) // 3, f"ocr {value}")
+    return {"page": value}
+
+
+app = WorkflowApp()
+
+
+@app.workflow("progress_identity_demo")
+def demo() -> Promise[object]:
+    source = step(fetch, Ingest(), key="ocr_source")
+    return build(map_source(source, ocr_item))
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+    runner = FlowRunner(app.get("progress_identity_demo"), pool, schema)
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id, until="terminal")
+    display = await run_display(pool, runner.wsql, flow_id)
+    keyed = keyed_display(display)
+    # keyed["ocr_source"]["status"] == "succeeded" — the node BY NAME;
+    # the map's children render as "ocr_source.item[0]", "ocr_source.item[1]", ...
+    print(sorted(keyed))
+    print(keyed["ocr_source"]["status"], keyed["ocr_source.item[0]"]["pct"])
+    await pool.close()
+
+
+asyncio.run(main())
+```
+
+Two laws to know:
+
+- **A map's children share one `step_key`** (`<source>.item`), so a
+  child's keyed entry carries its `map_index`:
+  `ocr_item[3]`. Keying bare would silently collapse the siblings
+  last-wins — the keyed view never does that.
+- **An entry the ledger has not named yet** (a state-channel ghost) is
+  omitted from the keyed view, never invented — and the LEDGER-WINS
+  pass stamps its identity the moment the ledger row lands.
+
+### The push transport (the SSE stream's primary leg)
+
+The workflow progress SSE is a PUSH stream: the write's own
+`pg_notify` (the `taskq_wf_progress` channel — the SAME LISTEN/NOTIFY
+transport the approval broadcast rides) wakes the seq-cursor replay,
+and the frames flow at write latency, not at the poll's round trip.
+The knock is the POINTER only — schema, flow, node, seq — the ROW is
+the truth (a consumer that misses every knock still converges by the
+`Last-Event-ID` replay; the push buys latency, never correctness).
+The 1s poll stays as the FALLBACK BELT: a missed knock (a PgBouncer
+transaction-pooling port silently breaking LISTEN — the approval
+guide's landmine #1) costs one poll interval, never correctness.
+
+The listener is the approval listener's sibling — same discipline, same
+four operational landmines (a DIRECT connection bypassing PgBouncer,
+one pool slot for the stream's life, fork safety, and the run-scoped
+backfill's bound):
+
+```python no-exec — not executed: a long-running LISTEN listener, the shape the SSE route itself holds
+from taskq.workflows import ProgressListener, ProgressUpdated
+
+listener = ProgressListener(pool, schema, flow_id=flow_id)
+async with listener:
+    async for event in listener.updates():
+        match event:
+            case ProgressUpdated():
+                # the pointer: flow_id, node_id, last_seq — read the
+                # state/stream rows for the payload
+                ...
+            case ProgressBackfilled():
+                # the reconcile snapshot: node → last_seq as the rows
+                # witness them NOW; drop cards it has moved past
+                ...
+```
+
+The zero-window construction is inherited from the approval listener:
+LISTEN first, THEN the backfill snapshot — an emission written before
+the listener started is announced by the BACKFILL
+(`source="backfill"`), and its own queued knock is deduped against the
+snapshot (one emission, ONE event). The fan-out is per-subscriber
+queues (two consumers each see every event), and the coalesce order is
+the backpressure law: the bounded queues drop the OLDEST event on
+overflow — the writer never blocks, the newest survives, observability
+degrades FIRST, correctness never.
+
+**THE PUSH IS A POINTER, NOT A PAYLOAD — both event models, one law.**
+`ProgressUpdated` (the workflow listener's push) and the vanilla
+`ProgressEvent` push (§"the wire vs the rows", above) carry the
+event's IDENTITY, never its content: on every NOTIFY-arm push `pct`
+and `message` arrive `None` — the knock is the pointer, a consumer
+that reads the fields reads nothing. The one exception is the
+listener's BACKFILL arm (`source="backfill"`): those events already
+paid the row read and DO carry the `pct`/`message` they witnessed
+(match on `source` if the distinction matters). The payload's home is
+the DURABLE rows: the state-channel snapshot / the per-node
+`wf_node_progress` rows (the snapshot-join face). The model invites
+exactly one reader: "something moved at seq N — fetch the rows". A
+consumer that wants content wires the row read into the handler; the
+`None`-on-notify fields are shape parity with the backfill arm, not a
+promise of content.
+
+**The migration shims** (the fleet's two SSE vocabularies → the ONE
+vocabulary): each old vocabulary is a documented MAPPING over the one
+stream's rows — vocabulary A
+(`{"type": "progress", "job", "pct", "note"}`) reads the
+`class='user'/kind='progress'` rows; vocabulary B
+(`{"event": "update"|"lifecycle", "id", "percent", "detail", "phase"}`)
+reads the same rows for updates and the auto-terminal rows for
+lifecycles. The mapping is a pure function per old vocabulary — the shim
+is a MAPPING, not a state conversion; no old stream is re-state'd.

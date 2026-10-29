@@ -272,6 +272,7 @@ async def test_backend_instances_cache_independently() -> None:
     conn_b = _FakeDispatchConn({"default": "strict_fifo"})
     settings = Mock()
     settings.dispatch_oversample = 2
+    settings.claim_cursor_reset_seconds = 0.0
     settings.dispatcher_command_timeout = 5.0
     settings.schema_name = "taskq"
 

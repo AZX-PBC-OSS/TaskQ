@@ -1,0 +1,10 @@
+{
+  "mutation": "the resume NOT resuming from the cursor \u2014 a re-emitted page (the duplicates) or a skipped one (the lost children)",
+  "observed": {
+    "distinct_keys": 6,
+    "total_after_resume": 6
+  },
+  "pin": "t20-emit-between-pages-kill",
+  "run": "20261009T193132-2777591-d9dc2cc8",
+  "ts": "2026-10-09T19:31:34"
+}

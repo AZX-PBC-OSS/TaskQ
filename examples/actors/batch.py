@@ -51,7 +51,15 @@ async def batch_counter(payload: BatchCounterPayload, ctx: JobContext[BatchCount
     await ctx.jobs.enqueue(
         batch_finalizer,
         BatchFinalizerPayload(batch_id=batch_id, expected=payload.n),
-        metadata={"batch_id": str(batch_id), "role": "finalizer"},
+        # "role" marks the finalizer for admin filtering. Deliberately NO
+        # "batch_id" key: batch_id is a reserved metadata key the library
+        # strips from every caller-supplied metadata dict (a single-job
+        # enqueue cannot self-assert membership in a batch), and the
+        # docs' law agrees - if the finalizer were stamped, wait_for_batch
+        # would count it as a child and it would wait for itself: a
+        # deadlock. The finalizer's link to the batch rides its PAYLOAD
+        # (BatchFinalizerPayload.batch_id), not its metadata.
+        metadata={"role": "finalizer"},
     )
     ctx.log.info("batch-enqueued", batch_id=str(batch_id), size=payload.n)
 

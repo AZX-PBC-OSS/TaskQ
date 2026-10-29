@@ -153,6 +153,112 @@ async def _make_in_memory(
 # ── Divergence 1: an empty ``queues`` list ────────────────────────────
 
 
+async def test_claim_cursor_bounds_selection_identically_on_both_backends(
+    module_pg_schema: ModulePgSchema,
+    clean_jobs_app: JobsApp,
+) -> None:
+    """The claim cursor (backend/_claim_cursor.py) is a SELECTION change to
+    the dispatch seam on both backends, so it owes the registry the same
+    answer: a below-cursor row strands on BOTH (the bounded-stranding
+    state), and the round-robin exemption un-strands on BOTH.
+
+    This is the parity pin the cursor's default-on posture rides: the
+    twin must mirror the bound exactly, or the differential tests would
+    see one backend reach a row the other defers to a jitter reset.
+    """
+    import uuid_utils
+
+    from taskq.backend._dispatch import invalidate_queue_mode_caches
+
+    schema = module_pg_schema.schema_name
+    pg_backend = clean_jobs_app.backend
+    actor = "parity_claim_cursor"
+
+    async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]
+        await conn.execute(
+            f'INSERT INTO "{schema}".actor_config (actor, max_concurrent, queue, metadata) '
+            "VALUES ($1, NULL, $2, '{}') ON CONFLICT (actor) DO UPDATE SET max_concurrent = NULL",
+            actor,
+            "default",
+        )
+
+    # Round 1: three monotone rows; both backends claim all three and
+    # arm their cursors at the newest id. The cursor is OPT-IN (the
+    # settings default is 0): the pin enables it on BOTH backends - the
+    # twin's knob mirrors the setting's.
+    args_list = [_args(job_id=new_job_id(), actor=actor, queue="default") for _ in range(3)]
+    for args in args_list:
+        await pg_backend.enqueue(args)
+    mem_backend = await _make_in_memory(args_list)
+    clean_jobs_app.deps.settings.claim_cursor_reset_seconds = 3600.0
+    mem_backend._claim_cursor_reset_seconds = 3600.0
+
+    pg_rows = await pg_backend.dispatch_batch(new_uuid(), ["default"], 10, _LEASE)
+    mem_rows = await mem_backend.dispatch_batch(new_uuid(), ["default"], 10, _LEASE)
+    assert len(pg_rows) == 3 and len(mem_rows) == 3
+
+    # The skewed insert: one row per backend whose uuid7 mints BELOW the
+    # cursors the rounds just armed.
+    from datetime import datetime as _dt
+
+    def _skewed() -> EnqueueArgs:
+        from uuid import UUID as _UUID
+
+        minted = uuid_utils.uuid7(  # noqa: TID251  # Why: the skewed-mint NEEDS the explicit-timestamp uuid7 form (a behind-the-worker clock); new_job_id() is the now-minting seam.
+            nanoseconds=int(_dt.now(UTC).timestamp() * 1e9) - 60_000_000_000
+        )
+        return EnqueueArgs(
+            id=_UUID(bytes=minted.bytes),
+            actor=actor,
+            queue="default",
+            payload={},
+            max_attempts=3,
+            retry_kind="transient",
+            scheduled_at=_SCHEDULED_AT,
+        )
+
+    pg_skew = _skewed()
+    mem_skew = _skewed()
+    await pg_backend.enqueue(pg_skew)
+    await mem_backend.enqueue(mem_skew)
+
+    # Round 2, cursors live: BOTH backends must strand the below-cursor
+    # row (claim nothing) - the bounded state the jitter reset heals.
+    pg_round2 = await pg_backend.dispatch_batch(new_uuid(), ["default"], 10, _LEASE)
+    mem_round2 = await mem_backend.dispatch_batch(new_uuid(), ["default"], 10, _LEASE)
+    assert pg_round2 == [] and mem_round2 == [], (
+        "the backends diverged on the claim cursor's bounded-stranding "
+        f"state: PG claimed {len(pg_round2)} row(s), InMemory claimed "
+        f"{len(mem_round2)} row(s); both must defer the below-cursor row "
+        "to the jitter reset"
+    )
+
+    # The RR exemption un-strands on BOTH: flip the mode on each backend
+    # the way each backend's writers do (the queues table + the seam
+    # invalidation for PG; set_queue_mode for the twin), and the
+    # below-cursor row claims on both.
+    async with clean_jobs_app.deps.worker_pool.acquire() as conn:  # type: ignore[union-attr]
+        await conn.execute(
+            f'INSERT INTO "{schema}".queues (name, mode) VALUES ($1, $2) '
+            "ON CONFLICT (name) DO UPDATE SET mode = $2",
+            "default",
+            "round_robin",
+        )
+    invalidate_queue_mode_caches()
+    set_queue_mode(mem_backend, "default", "round_robin")
+
+    pg_round3 = await pg_backend.dispatch_batch(new_uuid(), ["default"], 10, _LEASE)
+    mem_round3 = await mem_backend.dispatch_batch(new_uuid(), ["default"], 10, _LEASE)
+    assert len(pg_round3) == 1 and len(mem_round3) == 1, (
+        "the backends diverged on the round-robin exemption: PG claimed "
+        f"{len(pg_round3)} row(s), InMemory claimed {len(mem_round3)} "
+        "row(s); the below-cursor row must claim on both under RR rounds"
+    )
+
+
+# ── Divergence 1: an empty ``queues`` list ────────────────────────────
+
+
 async def test_empty_queues_list_dispatches_identically_in_both_backends(
     module_pg_schema: ModulePgSchema,
     clean_jobs_app: JobsApp,

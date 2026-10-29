@@ -58,6 +58,7 @@ import uvicorn
 
 from taskq.constants import progress_channel
 from taskq.migrate import apply_pending
+from taskq.testing.fixtures import TEST_REDIS_CONNECT_TIMEOUT_SECS
 from tests.web_progress.test_integration import (  # pyright: ignore[reportPrivateUsage]  # Why: the conservation attacks reuse the integration suite's app/seed scaffolding verbatim rather than forking it.
     SCHEMA_LABEL,  # pyright: ignore[reportPrivateUsage]
     _make_app,  # pyright: ignore[reportPrivateUsage]
@@ -113,7 +114,14 @@ async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
     # the tests' own (the stream reader's overall_timeout, the explicit
     # asyncio.timeout around the paused-broker publish), so the client
     # here waits as long as those bounds allow, the pre-8 default.
-    client = aioredis.from_url(private_redis_url, socket_timeout=None)
+    # socket_connect_timeout: the DNS/connect band (see
+    # TEST_REDIS_CONNECT_TIMEOUT_SECS) - the connect phase is setup
+    # weather, not this scenario's subject.
+    client = aioredis.from_url(
+        private_redis_url,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
     try:
         yield client
     finally:
@@ -307,7 +315,13 @@ async def test_paused_broker_drops_the_fanout_and_recovery_restores_exactly_once
     # (redis-py 8's 5s default socket_timeout is a handshake-read
     # timeout, not part of this scenario's contract; the publish inside
     # the pause is bounded by its own asyncio.timeout below).
-    admin = aioredis.from_url(private_redis_url, socket_timeout=None)
+    # socket_connect_timeout: the DNS/connect band (see
+    # TEST_REDIS_CONNECT_TIMEOUT_SECS).
+    admin = aioredis.from_url(
+        private_redis_url,
+        socket_timeout=None,
+        socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS,
+    )
     try:
         # Healthy start: the snapshot (seq 3), then one delta whose flush
         # lands. Once that delta is OBSERVED as delivered, the broker

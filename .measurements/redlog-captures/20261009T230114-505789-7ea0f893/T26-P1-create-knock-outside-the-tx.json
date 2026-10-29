@@ -1,0 +1,10 @@
+{
+  "mutation": "the broadcast sent OUTSIDE the hold's transaction (autocommit): the knock outlives its rolled-back row \u2014 the broadcast LIES about a hold the rows disown",
+  "observed": {
+    "knocks_without_row": 1,
+    "row_committed": false
+  },
+  "pin": "T26-P1-create-knock-outside-the-tx",
+  "run": "20261009T230114-505789-7ea0f893",
+  "ts": "2026-10-09T23:01:14"
+}

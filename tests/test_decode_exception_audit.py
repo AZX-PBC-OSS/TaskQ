@@ -104,6 +104,7 @@ _COLUMNS = [
     "retry_jitter",
     "assignment_routed",
     "claim_epoch",
+    "parent_id",
 ]
 
 
@@ -157,6 +158,7 @@ def _record(**overrides: object) -> dict[str, object]:
         "retry_jitter": "full",
         "assignment_routed": False,
         "claim_epoch": 7,
+        "parent_id": None,
     }
     base.update(overrides)
     return base

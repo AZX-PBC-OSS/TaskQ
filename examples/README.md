@@ -50,7 +50,7 @@ Submitting any form enqueues a job and redirects to the admin job-detail page wh
 | File | What it demonstrates |
 |---|---|
 | `actors/` | The toy actor fleet, organized by feature domain (one module per domain: basic, failure, ratelimit, chained, DI, batch, advanced, cron, progress, tags, sync, real-world). See the [actors package README](actors/README.md). |
-| `admin_app.py` | The admin UI as a **separate process** (the decoupled deployment shape from Deployment Shapes below). Run with `TASKQ_PG_DSN=... TASKQ_ENVIRONMENT=dev uv run uvicorn examples.admin_app:app --host 0.0.0.0 --port 8001` (`TASKQ_PG_DSN` at the stack's Postgres; without the dev label the admin UI fails closed on the missing auth dependency) — the compose stack's `admin` service does exactly this; the sidecar then serves `/admin` on port 8001. |
+| `admin_app.py` | The admin UI as a **separate process** (the decoupled deployment shape from Deployment Shapes below). Run with `TASKQ_PG_DSN=... TASKQ_ENVIRONMENT=dev uv run uvicorn examples.admin_app:app --host 0.0.0.0 --port 8001` (`TASKQ_PG_DSN` at the stack's Postgres; without the dev label the admin UI fails closed on the missing auth dependency) — the compose stack's `admin` service does exactly this; the sidecar then serves `/admin` on port 8001. The demo's workflow definitions mount in the sidecar (`workflow_app=...`) so the run page's Resolve form delivers the typed payload here too — without a mounted WorkflowApp the resolve endpoints answer `501` (the typed door refuses to deliver untyped). |
 | `client_script.py` | Standalone CLI script for enqueuing jobs, backfills, cancellation, and job listing outside a web app. Run with `uv run python -m examples.client_script [--backfill N \| --cancel ID \| --list \| --realworld]` (module form: the script imports `examples.actors`, which needs the repo root on the import path). |
 | `test_example.py` | Unit tests using `InMemoryBackend` + `FakeClock` — no Postgres or Redis required. Run with `uv run pytest examples/test_example.py -v`. |
 | `workgroup.toml` | Workgroup supervisor config for multi-queue worker management. Run with `uv run taskq workgroup start examples/workgroup.toml` (or `taskq workgroup validate examples/workgroup.toml` to check the config without starting). Serves the DI-free actor subset — workgroup children are plain `taskq worker` subprocesses and cannot register DI providers. |
@@ -112,3 +112,110 @@ mounts nothing else.
 ## Snooze-Loop Pattern
 
 When `batch_finalizer` runs while child jobs are still in-flight, `wait_for_batch` raises `Snooze(snooze_interval)`. The worker catches this and transitions the finalizer from `running` to `scheduled`, rescheduling it after the snooze interval without consuming retry budget. When children are slow, the `batch_finalizer` job's attempt history in the admin UI shows multiple attempts, each separated by the `snooze_interval` — this is the fan-out-then-finalize snooze-loop pattern in action. Once all children reach a terminal state, the finalizer succeeds on its next attempt and logs the completion summary.
+
+---
+
+## Workflow Demo: the doc-ingest pipeline
+
+`examples/workflows.py` wires the **doc-ingest pipeline** (the same abstract
+graph the docs example teaches — see `docs/examples/doc-ingest.md`) LIVE
+behind HTTP, with the admin's run explorer attached.
+
+The HITL broadcast's worked example lives beside it:
+`examples/deep_research.py` — the **deep-research loop** (T26): three free
+research passes, then the typed `ContinueApproval` gate broadcast over PG
+LISTEN/NOTIFY (watch it live on the admin's `/sse/holds` topic); the typed
+expiry is the FAIL-CLOSE — nobody watching and the run still succeeds,
+carrying the `finished_with_what_you_have` result.
+
+The typed route's worked example lives beside that:
+`examples/doc_mime_route.py` (T27) — the **document sync pipeline**: the
+mime-type router (the text formats to the chunker's arm on the cpu queue,
+the image formats to the OCR's arm on the gpu queue, the unsupported mime
+to the dead-letter's arm — the envelope recorded, the flow lives), and
+the arms FAN BACK IN at the chunk step (the sync barrier: the chunk fires
+once, after the last element's text lands). Run with
+`TASKQ_PG_DSN=… uv run python examples/doc_mime_route.py`.
+
+The **embedding demo's web half** lives beside that:
+`examples/deep_research_web.py` (C10) — the hosting app's OWN approval
+board: the FastAPI app-lifespan listener (ONE backend `HitlListener`),
+the per-user SSE endpoint authz-scoped by the run, the `HoldCreated`
+handler reading the ROW for the reason/deadline display, the resolve
+POST through the same typed door, and the broadcast (plus the
+`Backfilled` reconcile) clearing the card. Run it with
+`TASKQ_HITL_DEMO=1 uv run uvicorn examples.deep_research_web:app`; the
+admin's `/sse/holds` topic stays the OPS surface — this is the user face.
+
+### Run it
+
+```bash
+cd examples
+docker compose up -d --build        # or just `docker compose up -d` — the
+                                    # default pull policy is `build`, so a
+                                    # cold start always rebuilds THIS tree
+                                    # (a stale image from another checkout
+                                    # can never serve silently)
+```
+
+Every taskq-example service also runs pre-built, content-hashed: set
+`TASKQ_EXAMPLE_IMAGE` to the hash tag and `TASKQ_EXAMPLE_PULL_POLICY=missing`
+(see `benchmarks/example_image_spec.py` — the fast path above).
+
+Without compose, run the app directly (the env vars it needs: `TASKQ_PG_DSN`
+at the stack's Postgres, `TASKQ_SCHEMA_NAME` (fresh is fine — the app
+migrates on start), `TASKQ_MIGRATE_ON_START=true`, and
+`TASKQ_ADMIN_ACTIONS_ENABLED=true` — **must be `true` for the demo's
+Resolve**, the destructive-action opt-in; `TASKQ_ENVIRONMENT=dev` for the
+local demo). The compose `app` service sets exactly these.
+
+| Surface | URL | The prefix |
+|---|---|---|
+| the trigger UI + the run page (the Resolve form lives here) | <http://localhost:8000> | `/taskq/...` — the trigger's 202 envelope's url resolves HERE |
+| the admin sidecar (the decoupled shape) | <http://localhost:8001/admin> | `/admin/...` — its own run page resolves too (the demo's workflow definitions mount in the sidecar for the typed door) |
+
+The two prefixes are each surface's OWN base path — the run page's
+Resolve form posts a RELATIVE url, so it works on either surface; the
+trigger's envelope names the app's `/taskq/...` path.
+
+### Trigger + watch
+
+```bash
+curl -X POST http://localhost:8000/workflows/doc_ingest/run
+# → 202 {"run_id": "...", "url": "/taskq/workflows/..."}   (the F3 envelope)
+```
+
+Open the returned URL ON THE APP (:8000) — the run page renders the
+run's graph and patches it LIVE over SSE.
+
+### The three demonstrable properties
+
+1. **A map with a failing child + collect** — `doc-doomed`'s first
+   enrichment fails through its ladder; the run NEVER re-runs the
+   succeeded siblings; the failure surfaces in the typed report (the
+   demo's report carries `failed: []` because the ladder HEALS the armed
+   child — watch the item's attempt go 1 → 2 in the node panel: the
+   map's children are addressed by (step, `map_index`), so the doomed
+   child is `GET /taskq/api/runs/{run_id}/nodes/ingest.item?map_index=6`
+   (`ingest.item` #6 IS `doc-doomed`, the demo corpus's last id; its
+   attempt ledger shows both attempts, and the bare read carries the
+   whole children census to click through).
+2. **The budget-capped loop with the held approval** — the run HOLDS at
+   the review (the held node renders AMBER with its countdown); the
+   Resolve form (on the run page) delivers the typed `ReviewDecision`;
+   the loop resumes toward publish. A `reject` refines the loop (the
+   budget was PAUSED while the hold waited — the hold counts for
+   nothing on wake); three rejects exhaust the cap into the NAMED
+   escalation.
+3. **The admin graph view live** — the collapsed map hexagon (the
+   done/total counter), the taken paths, the failure badge, the SSE
+   patches: all demonstrated on a real run.
+
+### The four demonstrations (the capabilities, live)
+
+| Leg | What shows | How to run |
+|-----|-----------|------------|
+| **Cancellation** | a run cancelled mid-flight: the named states + the audit row in the explorer | `taskq flows cancel <run_id> --reason ...` while the run is mid-flight; watch the run page |
+| **Resumability** | a worker SIGKILLed mid-node; a fresh worker re-claims; the run COMPLETES | start `taskq worker --actors examples.workflows:ACTORS --queues demo-screen,demo-cpu,demo-io,demo-classify,demo-publish,demo-enrich,default`, trigger, `kill -9` the worker mid-run, start a fresh one |
+| **Observability** | the wf gauge's LIVE scrape off the real `/metrics` endpoint (`taskq.wf_progress_nodes_total{workflow,state}` — rendered by the Prometheus bridge as `taskq_wf_progress_nodes_total`; the maintenance leader's sampler feeds it) | the capture: `.measurements/demo-legs/leg3-wf-gauge-scrape.prom` (the endpoint's byte-verbatim response, never a hand-rendered transcript) |
+| **The conditional router** | the T20 chain's conditional edges LIVE: READABLE → index, UNREADABLE → dead-letter; the totals are the fence | trigger `POST /workflows/doc_screen_router/run` (the router's own workflow — the route serves it; 202 + the run url) |

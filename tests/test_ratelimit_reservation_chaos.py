@@ -51,7 +51,7 @@ async def _count_held_slots(pool: asyncpg.Pool, schema: str, bucket: str) -> int
 # ── Worker dies mid-job ──────────────────────────────────────────
 
 
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_ratelimit")
 async def test_worker_death_sweep_reclaim(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
@@ -101,7 +101,7 @@ async def test_worker_death_sweep_reclaim(
 # ── 100 concurrent acquires for 8 slots ──────────────────────────
 
 
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_ratelimit")
 async def test_concurrent_100_for_8_slots(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
@@ -137,7 +137,7 @@ async def test_concurrent_100_for_8_slots(
 # ── Connection loss mid-acquire ──────────────────────────────────
 
 
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_ratelimit")
 async def test_connection_loss_mid_acquire(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
@@ -203,7 +203,7 @@ def _chaos_pg() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedF
 
 
 @pytest.mark.slow
-@pytest.mark.xdist_group(name="chaos")
+@pytest.mark.xdist_group(name="chaos_ratelimit")
 async def test_pg_dies_during_acquire(_chaos_pg: PostgresContainer) -> None:
     """PG dies during acquire - stop the PG container mid-acquire;
     asyncpg.PostgresConnectionError raised; no slot is held (transaction

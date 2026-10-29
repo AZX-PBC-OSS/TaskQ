@@ -16,6 +16,13 @@ import signal
 import sys
 from typing import Any
 
+# THE WORKFLOW DEFINITIONS ride the worker's process (the demo's cohorts'
+# subscription is only real if the worker can RESOLVE the bodies): the
+# import registers the app (the boot projection's cohort read) and
+# populates the D1 registry the fleet-claimed execution door resolves
+# step bodies from. Without it, a queue-routed claim of a workflow node
+# is a foreign step key.
+import examples.workflows  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the import IS the registration (D1 + the cohorts' projection); nothing here calls it — a queue-routed claim must resolve its body.
 from examples.actors import (
     batch_counter,
     batch_finalizer,

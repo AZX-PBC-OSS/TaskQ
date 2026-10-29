@@ -160,6 +160,7 @@ def spawn_worker(
     tag: str = "sys",
     extra_env: dict[str, str] | None = None,
     log_sink: str | None = None,
+    entry: str = _WORKER_ENTRY,
 ) -> WorkerProc:
     """One worker subprocess: a real OS process running the real bootstrap.
 
@@ -201,7 +202,7 @@ def spawn_worker(
         stdout = log_file
         stderr = log_file
     proc = subprocess.Popen(  # noqa: S603  # Why: fixed argv, no shell, binary is this interpreter, module is project-owned; no untrusted input.
-        [sys.executable, "-m", _WORKER_ENTRY],
+        [sys.executable, "-m", entry],
         env=env,
         cwd=os.environ.get("TASKQ_REPO_ROOT", os.getcwd()),
         stderr=stderr,
@@ -242,6 +243,8 @@ async def spawn_joined_worker(
     schema: str,
     tag: str,
     extra_env: dict[str, str] | None = None,
+    entry: str = _WORKER_ENTRY,
+    log_sink: str | None = None,
 ) -> WorkerProc:
     """One fleet replica, held to the operator's own deployment standard.
 
@@ -265,7 +268,9 @@ async def spawn_joined_worker(
 
     last_error = ""
     for _attempt in range(3):
-        worker = spawn_worker(dsn, schema, tag=tag, extra_env=extra_env)
+        worker = spawn_worker(
+            dsn, schema, tag=tag, extra_env=extra_env, entry=entry, log_sink=log_sink
+        )
         wait_worker_ready(worker)
         pid = worker.proc.pid
 
