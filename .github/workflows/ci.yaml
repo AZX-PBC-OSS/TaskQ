@@ -83,7 +83,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+      # FULL history: the head-stamp verifier's teeth (merge-base
+      # --is-ancestor + the diff against each claim's recorded head)
+      # need the claims' heads resolvable in this checkout — a depth-1
+      # fetch would convict every PR on unresolvable heads.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-uv-env
 
@@ -92,6 +98,17 @@ jobs:
 
       - name: Check formatting
         run: uv run --no-sync ruff format --check .
+
+      # THE HEAD-STAMP LAW, IN CI (in seconds, at review time — not as a
+      # pytest pin buried in a 13k-test fill lane): every live claim on
+      # evidence/taskqflow must name THIS checkout's HEAD, or an
+      # ancestor of it whose diff touches nothing outside
+      # .measurements/. A change that stalifies the estate's claims
+      # reds HERE, with the verifier's own named verdicts.
+      - name: The head-stamp law (the evidence verifier)
+        run: |
+          git fetch --depth=1 origin evidence/taskqflow
+          uv run --no-sync python scripts/verify_evidence_heads.py
 
   typecheck:
     runs-on: ubuntu-latest
