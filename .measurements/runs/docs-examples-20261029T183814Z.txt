@@ -1,0 +1,4 @@
+# the docs examples (TASKQ_DOCS_EXAMPLES=1, pytest -m docs_examples) at the estate re-stamp head 31a60848ce88c99a7aebe24ae618cf918caa56ad
+107 passed, 13682 deselected, 1 warning in 104.47s (0:01:44)
+docs-examples rc=0
+head: 31a60848ce88c99a7aebe24ae618cf918caa56ad

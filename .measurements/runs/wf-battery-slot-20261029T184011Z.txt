@@ -1,0 +1,2 @@
+# the staged slot for the wf-battery family — the real zero-failure tail lands in the CLOSE commit; stamped at the estate re-stamp head 31a60848ce88c99a7aebe24ae618cf918caa56ad
+head: 31a60848ce88c99a7aebe24ae618cf918caa56ad
