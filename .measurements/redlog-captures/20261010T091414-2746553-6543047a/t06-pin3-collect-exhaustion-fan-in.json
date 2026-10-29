@@ -1,0 +1,32 @@
+{
+  "mutation": "the fan-in's append dropped \u2014 the join fires with the failure item missing (the convicted silent partial)",
+  "observed": {
+    "failures_on_row": [
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error_class": "ValueError",
+            "error_message": "boom-1"
+          },
+          {
+            "attempt": 2,
+            "error_class": "ValueError",
+            "error_message": "boom-2"
+          }
+        ],
+        "error": {
+          "error_class": "ValueError",
+          "error_message": "boom-2",
+          "error_traceback": null
+        },
+        "map_index": null,
+        "node_key": "c2",
+        "policy": "collect"
+      }
+    ]
+  },
+  "pin": "t06-pin3-collect-exhaustion-fan-in",
+  "run": "20261010T091414-2746553-6543047a",
+  "ts": "2026-10-10T09:14:14"
+}

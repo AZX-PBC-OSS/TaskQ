@@ -1,0 +1,11 @@
+{
+  "mutation": "the PRE-VALIDATION dict stored (the lax gate's answer thrown away): the string landed where the int is declared",
+  "observed": {
+    "stored": {
+      "page": 42
+    }
+  },
+  "pin": "t21-validated-dump",
+  "run": "20261010T013401-2776003-6bfbe212",
+  "ts": "2026-10-10T01:34:01"
+}

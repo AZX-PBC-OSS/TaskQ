@@ -1,0 +1,11 @@
+{
+  "mutation": "the bound declared NOWHERE (the unpinned decision \u2014 the broken window): every emit materializes unbounded; the dragon's door stands open",
+  "observed": {
+    "declared_max_in_flight": 3,
+    "emit_calls": 7,
+    "stalls": 4
+  },
+  "pin": "t20-backpressure-declared",
+  "run": "20261010T132436-1336866-34ab5c21",
+  "ts": "2026-10-10T13:24:40"
+}

@@ -1,0 +1,10 @@
+{
+  "mutation": "the per-child-label counterfactual: one series per child (12 series for this map)",
+  "observed": {
+    "built_series": 1,
+    "counterfactual_series": 12
+  },
+  "pin": "gauge_cardinality_stays_workflow_dimensioned",
+  "run": "20261010T012830-2690819-9ce8c020",
+  "ts": "2026-10-10T01:28:31"
+}

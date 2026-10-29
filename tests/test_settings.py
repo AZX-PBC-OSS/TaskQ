@@ -8,6 +8,7 @@ import pytest
 from dotenvmodel import (
     ConstraintViolationError,
     DotEnvModelError,
+    MultipleValidationErrors,
     TypeCoercionError,
     ValidationError,
 )
@@ -246,16 +247,18 @@ def test_lag_budget_at_or_below_check_interval_raises() -> None:
     (measured: budget 1.0 against the 1.0s default check interval killed
     an idle worker on its first armed poll).
     """
-    with pytest.raises(ValidationError, match=r"watchdog_loop_lag_budget.*must be >"):
+    # THE LATTICE'S SHAPE (the warn-vs-check refusal included): with
+    # budget <= check the warn budget cannot fit BETWEEN check and
+    # budget, so the budget-vs-check violation never fires alone — the
+    # load collects BOTH refusals and raises the aggregate. The match
+    # is against the aggregate's text; the budget error is in it.
+    with pytest.raises(MultipleValidationErrors, match=r"watchdog_loop_lag_budget.*must be >"):
         _load(
             TASKQ_LOCK_LEASE="60.0",
             TASKQ_HEARTBEAT_INTERVAL="10.0",
             TASKQ_CANCELLATION_GRACE_PERIOD="15.0",
             TASKQ_CLEANUP_GRACE_PERIOD="5.0",
             TASKQ_WATCHDOG_LOOP_LAG_BUDGET="1.0",
-            # Pinned below the 1.0s budget so the check-interval violation
-            # is the ONLY one - the warn-vs-budget invariant stays quiet
-            # and the raised error is the one this test matches on.
             TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET="0.5",
         )
 
@@ -645,8 +648,9 @@ def test_lock_lease_violation_before_connections() -> None:
             TASKQ_CANCELLATION_GRACE_PERIOD="0.1",
             TASKQ_CLEANUP_GRACE_PERIOD="0.1",
             TASKQ_WATCHDOG_LOOP_LAG_BUDGET="5.0",
-            # Pinned below the 5.0s budget so the warn-vs-budget invariant
-            # stays quiet and the raise is the 4x invariant's alone.
+            # The lag lattice's full order (check < warn < budget) kept
+            # quiet so the raise is the lease invariant's alone.
+            TASKQ_WATCHDOG_CHECK_INTERVAL="0.5",
             TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET="1.0",
         )
 
@@ -690,9 +694,11 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
         "TASKQ_CANCELLATION_GRACE_PERIOD": str(grace_each),
         "TASKQ_CLEANUP_GRACE_PERIOD": str(grace_each),
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": str(lock_lease * 0.7),
-        # Half the derived budget, so the warn-vs-budget invariant stays
-        # quiet wherever the draw lands and the cascade boundary stays the
-        # only one under test.
+        # The lag lattice's full order rides the lease's scale (check <
+        # warn < budget), so the warn invariants stay quiet wherever the
+        # draw lands and the cascade boundary stays the only one under
+        # test.
+        "TASKQ_WATCHDOG_CHECK_INTERVAL": str(lock_lease * 0.1),
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": str(lock_lease * 0.35),
     }
     should_raise = lock_lease < _cascade_floor(heartbeat_interval)

@@ -1,0 +1,13 @@
+{
+  "mutation": "the capability CTE's safe default COALESCE(false)\u2192true \u2014 an UNREGISTERED worker claims the pending flow row (F-R2's damage)",
+  "observed": {
+    "claimed": [
+      "01a13122-1764-72f0-a513-6bdc80301be6",
+      "01a13122-1778-70d1-b246-205b38bc5c99"
+    ],
+    "leaked_flow_row": "01a13122-1764-72f0-a513-6bdc80301be6"
+  },
+  "pin": "pin2-exec-capable-leg-dropped",
+  "run": "20261012T102120-2720556-1936caa1",
+  "ts": "2026-10-12T10:21:20"
+}

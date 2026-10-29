@@ -66,6 +66,7 @@ from taskq.obs._exporter import (
 from taskq.obs._otel import (
     INSTRUMENTATION_NAME,
     ConsumedOutcome,
+    SseSurface,
     StrandedReason,
     TimeoutKind,
     get_meter,
@@ -154,6 +155,7 @@ from taskq.obs._otel import (
     update_scheduled_horizon_cache,
     update_stranded_jobs_cache,
     update_sweep_batch_size_cache,
+    update_wf_progress_cache,
 )
 from taskq.obs._redact_exc import (
     ExceptionText,
@@ -192,6 +194,7 @@ __all__ = [
     "NullErrorReporter",
     "OtelExporterConfigurationError",
     "ScrubbedText",
+    "SseSurface",
     "StrandedReason",
     "TimeoutKind",
     "bind_job_context",
@@ -299,4 +302,5 @@ __all__ = [
     "update_scheduled_horizon_cache",
     "update_stranded_jobs_cache",
     "update_sweep_batch_size_cache",
+    "update_wf_progress_cache",
 ]

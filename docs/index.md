@@ -244,6 +244,7 @@ async def main() -> None:
 
 ## Next Steps
 
+- [:material-rocket-launch-outline: The Fleet Demo](https://github.com/AZX-PBC-OSS/taskq/blob/main/examples/fleet_demo/README.md): **the flagship end-to-end demo** — one command, seven acts (enqueue, rate limits, cancel, cron catch-up, SIGTERM, doctor, insights) on its own containers; see `examples/fleet_demo/README.md` in this repo
 - [:material-download: Installation](getting-started/installation.md): Set up TaskQ in your project
 - [:material-rocket-launch: Quick Start](getting-started/quick-start.md): Go from zero to running worker in minutes
 - [:material-atom: Actors](guides/actors.md): `@actor` decorator, retry policies, concurrency caps, DI

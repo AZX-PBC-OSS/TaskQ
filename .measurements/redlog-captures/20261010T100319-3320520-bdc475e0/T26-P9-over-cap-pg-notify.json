@@ -1,0 +1,9 @@
+{
+  "mutation": "the over-cap knock reaches pg_notify UNGUARDED: PG refuses it mid-tx and the caller's whole transaction dies with the opaque server error \u2014 the pointer-law creep must die at the code seam instead, loudly, named",
+  "observed": {
+    "observed": "InvalidParameterValueError: payload string too long"
+  },
+  "pin": "T26-P9-over-cap-pg-notify",
+  "run": "20261010T100319-3320520-bdc475e0",
+  "ts": "2026-10-10T10:03:19"
+}

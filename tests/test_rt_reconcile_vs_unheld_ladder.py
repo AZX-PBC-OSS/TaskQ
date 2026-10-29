@@ -231,6 +231,7 @@ def _heartbeat_settings(pg_dsn: str, schema: str) -> WorkerSettings:
             "lock_lease": str(_LEASE.total_seconds()),
             "watchdog_loop_lag_budget": "1.2",
             "watchdog_loop_lag_warn_budget": "0.5",
+            "watchdog_check_interval": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
             "cancellation_grace_period": "0.0",
             "cleanup_grace_period": "0.0",
         }

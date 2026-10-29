@@ -67,33 +67,25 @@ def _get_semaphore(topic: str, max_connections: int) -> asyncio.Semaphore:
     return _TOPIC_SEMAPHORES[scoped]
 
 
-async def _sse_generator(
-    semaphore: asyncio.Semaphore,
-    resolve_pool: Callable[[], asyncpg.Pool | None],
+def _session_gate(
+    session_verifier: Callable[[], Awaitable[bool]] | None,
     schema: str | None,
-    session_verifier: Callable[[], Awaitable[bool]] | None = None,
-    topic: str = "",
-) -> AsyncGenerator[str, None]:
-    """Stream admin state_change events (or keepalives) as SSE strings.
-
-    ``session_verifier`` is the request-scoped re-check for post-revocation
-    auth (#316): it runs before the first frame and once per loop iteration --
-    before every yielded event and at every keepalive tick -- and a failure
-    ends the stream, the finally releasing the topic's semaphore slot. Any
-    exception out of the verifier is treated as revocation (fail closed), and
-    so is a check that outlives ``SESSION_RECHECK_TIMEOUT_SECS``: a hung
-    host verifier must not freeze the generator inside its own keepalive
-    path.
-    """
-
-    _recheck_count = {"n": 0}
+) -> Callable[[], Awaitable[bool]]:
+    """The #316 mid-stream re-check, built once per stream: runs before
+    the first frame and once per loop iteration — before every yielded
+    event and at every keepalive tick. A failure ends the stream (fail
+    closed); a verifier exception is revocation; a check that outlives
+    ``SESSION_RECHECK_TIMEOUT_SECS`` is unknown state, also revocation
+    (a hung host verifier must not freeze the stream inside its own
+    keepalive path)."""
+    recheck_count = {"n": 0}
 
     async def _session_still_valid() -> bool:
         if session_verifier is None:
             return True
-        first_check = _recheck_count["n"] == 0
+        first_check = recheck_count["n"] == 0
         try:
-            _recheck_count["n"] += 1
+            recheck_count["n"] += 1
             return bool(
                 await asyncio.wait_for(
                     session_verifier(),
@@ -116,6 +108,30 @@ async def _sse_generator(
             # Fail closed: an unknown session state must not keep an
             # admin stream open.
             return False
+
+    return _session_still_valid
+
+
+async def _sse_generator(
+    semaphore: asyncio.Semaphore,
+    resolve_pool: Callable[[], asyncpg.Pool | None],
+    schema: str | None,
+    session_verifier: Callable[[], Awaitable[bool]] | None = None,
+    topic: str = "",
+) -> AsyncGenerator[str, None]:
+    """Stream admin state_change events (or keepalives) as SSE strings.
+
+    ``session_verifier`` is the request-scoped re-check for post-revocation
+    auth (#316): it runs before the first frame and once per loop iteration --
+    before every yielded event and at every keepalive tick -- and a failure
+    ends the stream, the finally releasing the topic's semaphore slot. Any
+    exception out of the verifier is treated as revocation (fail closed), and
+    so is a check that outlives ``SESSION_RECHECK_TIMEOUT_SECS``: a hung
+    host verifier must not freeze the generator inside its own keepalive
+    path.
+    """
+
+    _session_still_valid = _session_gate(session_verifier, schema)
 
     try:
         if not await _session_still_valid():
@@ -236,6 +252,89 @@ async def _sse_generator(
         record_sse_connection_closed("admin", topic)
 
 
+async def _holds_generator(
+    semaphore: asyncio.Semaphore,
+    resolve_pool: Callable[[], asyncpg.Pool | None],
+    schema: str | None,
+    session_verifier: Callable[[], Awaitable[bool]] | None = None,
+    topic: str = "holds",
+) -> AsyncGenerator[str, None]:
+    """Stream the HITL broadcast (T26) as SSE ``hold`` frames — the
+    TYPED listener's events (``HoldCreated`` / ``HoldResolved`` /
+    ``HoldExpired`` / ``Backfilled``) straight to the browser, the open
+    holds BACKFILLED at subscribe (a page render sees the pending
+    approvals without a poll). The ``Backfilled`` reconcile snapshot
+    rides every (re)backfill: a hold resolved or expired during an
+    outage never announces its own death — the browser board drops any
+    card the snapshot disowns. The resolve/deliver door is UNCHANGED —
+    this is the read face only. The #316 session re-check gates every
+    frame exactly as the state_change feed's does; the bounded shielded
+    close is the same shape (a client disconnect closes THIS generator;
+    the listener's pump and its dedicated LISTEN connection must
+    release deterministically)."""
+    from taskq.workflows.api._hitl_listen import (
+        HitlListener,  # the import law (§16.1): lazy, never at module scope
+    )
+
+    _session_still_valid = _session_gate(session_verifier, schema)
+    try:
+        if not await _session_still_valid():
+            logger.warning("admin-sse-session-revoked", topic=schema, stream_phase="initial")
+            return
+        pool = resolve_pool()
+        if pool is None or schema is None:
+            # The polling-degraded mode: keepalives only (the state feed's
+            # own shape — a page that rendered degraded upgrades on
+            # reload).
+            while True:
+                if not await _session_still_valid():
+                    logger.warning(
+                        "admin-sse-session-revoked", topic=schema, stream_phase="streaming"
+                    )
+                    return
+                await asyncio.sleep(_KEEPALIVE_INTERVAL)
+                yield ": keepalive\n\n"
+            return
+        listener = HitlListener(pool, schema=schema, keepalive_interval=_KEEPALIVE_INTERVAL)
+        frames = listener.frames()
+        try:
+            await listener.start()
+            async for frame in frames:
+                if not await _session_still_valid():
+                    logger.warning(
+                        "admin-sse-session-revoked", topic=schema, stream_phase="streaming"
+                    )
+                    return
+                if frame is None:
+                    yield ": keepalive\n\n"
+                else:
+                    yield f"event: hold\ndata: {frame.model_dump_json()}\n\n"
+        finally:
+            # The pump is NOT the frames iterator: closing the iterator
+            # abandons the consumer's queue, never the pump task or its
+            # dedicated LISTEN connection. Both teardowns are bounded
+            # and shielded (the state feed's close, twice over).
+            try:
+                await shield_with_retrieval(
+                    asyncio.wait_for(frames.aclose(), timeout=CLOSE_TIMEOUT_SECS)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "admin-sse-holds-close-failed",
+                    topic=schema,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+            await shield_with_retrieval(
+                asyncio.wait_for(listener.stop(), timeout=CLOSE_TIMEOUT_SECS)
+            )
+    finally:
+        semaphore.release()
+        record_sse_connection_closed("admin", topic)
+
+
 def register(router: APIRouter) -> None:
     """Attach the ``GET /sse/mode`` probe and the ``GET /sse/{topic}`` SSE endpoint.
 
@@ -270,7 +369,7 @@ def register(router: APIRouter) -> None:
             get_session_verifier
         ),
     ) -> StreamingResponse:
-        _valid_topics = frozenset({"queues", "jobs", "workers", "history"})
+        _valid_topics = frozenset({"queues", "jobs", "workers", "history", "holds"})
         if topic not in _valid_topics:
             raise HTTPException(status_code=400, detail=f"unknown SSE topic: {topic!r}")
         semaphore = _get_semaphore(topic, settings.admin_max_sse_connections)
@@ -295,13 +394,24 @@ def register(router: APIRouter) -> None:
         _session_verifier: Callable[[], Awaitable[bool]] | None = (
             (lambda: session_verifier(request)) if session_verifier is not None else None
         )
-        gen = _sse_generator(
-            semaphore,
-            lambda: get_pg_pool(request),
-            schema,
-            _session_verifier,
-            topic=topic,
-        )
+        if topic == "holds":
+            # THE HITL BROADCAST FACE (T26): the typed listener's events
+            # — backfilled at subscribe, then the live NOTIFYs.
+            gen = _holds_generator(
+                semaphore,
+                lambda: get_pg_pool(request),
+                schema,
+                _session_verifier,
+                topic=topic,
+            )
+        else:
+            gen = _sse_generator(
+                semaphore,
+                lambda: get_pg_pool(request),
+                schema,
+                _session_verifier,
+                topic=topic,
+            )
         return StreamingResponse(
             content=gen,
             media_type="text/event-stream; charset=utf-8",

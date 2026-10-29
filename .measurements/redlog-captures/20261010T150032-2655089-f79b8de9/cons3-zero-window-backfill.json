@@ -1,0 +1,11 @@
+{
+  "mutation": "the listener's backfill announced nothing for the pre-listen emissions \u2014 the zero-window construction is absent",
+  "observed": {
+    "kinds": [
+      "ProgressBackfilled"
+    ]
+  },
+  "pin": "cons3-zero-window-backfill",
+  "run": "20261010T150032-2655089-f79b8de9",
+  "ts": "2026-10-10T15:00:32"
+}

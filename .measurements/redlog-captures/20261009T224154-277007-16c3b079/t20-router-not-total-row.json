@@ -1,0 +1,10 @@
+{
+  "mutation": "the foreign outcome SILENTLY DROPPED (no arm matched, nothing refused) \u2014 the run 'succeeds' minus a record; the row's error_class must NAME the defect",
+  "observed": {
+    "error_class": "RouterNotTotal",
+    "status": "failed"
+  },
+  "pin": "t20-router-not-total-row",
+  "run": "20261009T224154-277007-16c3b079",
+  "ts": "2026-10-09T22:41:54"
+}

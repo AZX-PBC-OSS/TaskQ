@@ -1,0 +1,9 @@
+{
+  "mutation": "the progress flush carries no pg_notify \u2014 the SSE face's only freshness is the 1s poll (the deploy matrix's PARTIAL)",
+  "observed": {
+    "knocks": []
+  },
+  "pin": "cons3-flush-notify",
+  "run": "20261010T150033-2655089-8b9a89ff",
+  "ts": "2026-10-10T15:00:38"
+}

@@ -34,7 +34,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Coroutine
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -53,7 +54,7 @@ from tests.system_e2e._harness import (
 from tests.system_e2e._invariants import (
     assert_balanced,
     assert_effects_balance,
-    delete_tagged,
+    delete_tagged_resilient,
 )
 from tests.system_e2e.actors import SysPayload, sys_slow
 
@@ -67,20 +68,51 @@ pytestmark = [pytest.mark.integration, pytest.mark.system]
 
 _TAG = "sys-req"
 
+#: The client-side bound on ONE ledger read. The tier's reads are plain
+#: polls and primary-key selects — never a legitimately-long query — and
+#: the server-side ``statement_timeout`` the ``sys_ledger`` fixture
+#: carries bounds the slow-server class. This bound is the dead-socket
+#: half (the server never sees the statement at all): the convicted
+#: shape (the system-e2e (17) leg, run 38053606389 — a scenario hung
+#: past its own 240s budget on ONE unbounded fetch) must end at a bound
+#: the HELPER owns, so the cap's DESIGNED assertion is the failure the
+#: report carries, never a pytest-timeout.
+_LEDGER_READ_TIMEOUT_S = 10.0
+
+
+async def _ledger_read[T](coro: Coroutine[Any, Any, T]) -> T:
+    """One bounded ledger read (``fetch``/``fetchrow``/``fetchval``): the
+    read runs under the read bound; a transport that never answers
+    raises ``TimeoutError`` instead of hanging the scenario's budget
+    away."""
+    async with asyncio.timeout(_LEDGER_READ_TIMEOUT_S):
+        return await coro
+
 
 async def _wait_running(
     conn: asyncpg.Connection, schema: str, tag: str, want: int, cap_secs: float
 ) -> set[str]:
-    """Block until ``want`` tagged jobs are running; return their ids."""
+    """Block until ``want`` tagged jobs are running; return their ids.
+
+    Each poll's fetch is bounded (``_ledger_read``): a ledger whose
+    socket dies mid-poll surfaces as a per-read ``TimeoutError``, the
+    poll continues to its own cap, and the DESIGNED assertion — never
+    the scenario's pytest-timeout — is the failure."""
     deadline = time.monotonic() + cap_secs
     while time.monotonic() < deadline:
-        rows = await conn.fetch(
-            f'SELECT id::text FROM "{schema}".jobs '
-            "WHERE tags @> ARRAY[$1::text] AND status = 'running'",
-            tag,
-        )
-        if len(rows) >= want:
-            return {str(r["id"]) for r in rows}
+        try:
+            rows = await _ledger_read(
+                conn.fetch(
+                    f'SELECT id::text FROM "{schema}".jobs '
+                    "WHERE tags @> ARRAY[$1::text] AND status = 'running'",
+                    tag,
+                )
+            )
+        except TimeoutError:
+            pass
+        else:
+            if len(rows) >= want:
+                return {str(r["id"]) for r in rows}
         await asyncio.sleep(0.05)
     raise AssertionError(f"fewer than {want} jobs claimed within {cap_secs}s")
 
@@ -125,17 +157,21 @@ async def test_sigterm_mid_body_interrupts_and_the_successor_completes(
             f"the successor must complete every interrupted job: {counts}"
         )
         for job_id in in_flight:
-            row = await conn.fetchrow(
-                f"SELECT status::text AS status, attempt, interrupt_count "
-                f'FROM "{schema}".jobs WHERE id = $1::uuid',
-                job_id,
+            row = await _ledger_read(
+                conn.fetchrow(
+                    f"SELECT status::text AS status, attempt, interrupt_count "
+                    f'FROM "{schema}".jobs WHERE id = $1::uuid',
+                    job_id,
+                )
             )
             archived = row is None
             if archived:
-                row = await conn.fetchrow(
-                    f"SELECT status::text AS status, attempt, interrupt_count "
-                    f'FROM "{schema}".jobs_archive WHERE id = $1::uuid',
-                    job_id,
+                row = await _ledger_read(
+                    conn.fetchrow(
+                        f"SELECT status::text AS status, attempt, interrupt_count "
+                        f'FROM "{schema}".jobs_archive WHERE id = $1::uuid',
+                        job_id,
+                    )
                 )
             assert row is not None, f"job {job_id} vanished from both tables"
             assert row["status"] == "succeeded", (
@@ -168,11 +204,13 @@ async def test_sigterm_mid_body_interrupts_and_the_successor_completes(
         # Exactly-once effects: one body run per job, at the attempt that
         # completed it; the interrupted attempts wrote no effect and no
         # ledger row (an interruption is not an execution outcome).
-        dones = await conn.fetch(
-            f'SELECT job_id::text, attempt FROM "{schema}".sys_effects '
-            f'WHERE job_id IN (SELECT id FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text] '
-            f'UNION ALL SELECT id FROM "{schema}".jobs_archive WHERE tags @> ARRAY[$1::text])',
-            _TAG,
+        dones = await _ledger_read(
+            conn.fetch(
+                f'SELECT job_id::text, attempt FROM "{schema}".sys_effects '
+                f'WHERE job_id IN (SELECT id FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text] '
+                f'UNION ALL SELECT id FROM "{schema}".jobs_archive WHERE tags @> ARRAY[$1::text])',
+                _TAG,
+            )
         )
         assert len(dones) == len(handles), (
             f"each job's body must have run exactly once, got {len(dones)} effect rows"
@@ -183,7 +221,7 @@ async def test_sigterm_mid_body_interrupts_and_the_successor_completes(
             reap(worker_a)
         if worker_b is not None:
             reap(worker_b)
-        await delete_tagged(conn, schema, _TAG)
+        await delete_tagged_resilient(conn, pg_dsn, schema, _TAG)
 
 
 @pytest.mark.timeout(240)
@@ -243,10 +281,15 @@ async def test_operator_cancel_racing_the_sigterm_owns_the_exit(
         )
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
-            phases = await conn.fetch(
-                f'SELECT cancel_phase FROM "{schema}".jobs WHERE id::text = ANY($1::text[])',
-                sorted(in_flight),
-            )
+            try:
+                phases = await _ledger_read(
+                    conn.fetch(
+                        f'SELECT cancel_phase FROM "{schema}".jobs WHERE id::text = ANY($1::text[])',
+                        sorted(in_flight),
+                    )
+                )
+            except TimeoutError:
+                phases = []
             if len(phases) == len(in_flight) and all(int(r["cancel_phase"]) >= 1 for r in phases):
                 break
             await asyncio.sleep(0.05)
@@ -271,11 +314,13 @@ async def test_operator_cancel_racing_the_sigterm_owns_the_exit(
             _TAG,
         )
         assert requeued == 0, f"{requeued} row(s) re-entered the fleet after the cancel"
-        dones = await conn.fetchval(
-            f'SELECT count(*)::int FROM "{schema}".sys_effects '
-            f'WHERE job_id IN (SELECT id FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text] '
-            f'UNION ALL SELECT id FROM "{schema}".jobs_archive WHERE tags @> ARRAY[$1::text])',
-            _TAG,
+        dones = await _ledger_read(
+            conn.fetchval(
+                f'SELECT count(*)::int FROM "{schema}".sys_effects '
+                f'WHERE job_id IN (SELECT id FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text] '
+                f'UNION ALL SELECT id FROM "{schema}".jobs_archive WHERE tags @> ARRAY[$1::text])',
+                _TAG,
+            )
         )
         assert dones == 0, (
             f"{dones} body run(s) recorded for cancelled jobs - the bodies "
@@ -285,4 +330,4 @@ async def test_operator_cancel_racing_the_sigterm_owns_the_exit(
     finally:
         if worker_a is not None:
             reap(worker_a)
-        await delete_tagged(conn, schema, _TAG)
+        await delete_tagged_resilient(conn, pg_dsn, schema, _TAG)

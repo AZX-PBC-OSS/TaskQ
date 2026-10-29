@@ -51,7 +51,7 @@ crash-vs-shutdown accounting.
 
 **Archival lifecycle.** After a terminal job's per-status retention period elapses (default: 30-90 days depending on status), the maintenance leader's prune sweep moves it from `jobs` to `jobs_archive`. After the archive retention period elapses (default: 1 year), the archive expiry sweep hard-deletes the row. The admin UI job-detail page follows this chain automatically. See [Configuration](configuration.md) for retention settings.
 
-**Deferred jobs.** Pass a timezone-aware `scheduled_at` datetime to delay execution. The job is stored with `status="scheduled"` and is not dispatched until `scheduled_at` is reached. The elected maintenance leader runs a `scheduled_to_pending` sweep every **1 second**, promoting any job whose `scheduled_at <= now` from `scheduled` to `pending`. After promotion the leader sends a `pg_notify` wake signal so idle workers pick up work immediately.
+**Deferred jobs.** Pass a timezone-aware `scheduled_at` datetime to delay execution. The job is stored with `status="scheduled"` and is not dispatched until `scheduled_at` is reached. The elected maintenance leader runs a `scheduled_to_pending` sweep every **1 second**, promoting any job whose `scheduled_at <= now` from `scheduled` to `pending`. After promotion the leader sends a `pg_notify` wake signal so idle workers pick up work immediately. **The ~1 s promotion needs a LIVE leader** — after a leader dies, takeover waits out its lease (`TASKQ_LEADER_LEASE`, 40 s at the default; see [Configuration: timing and liveness](configuration.md#timing-and-liveness) and [maintenance-sweeps.md's leader failover](maintenance-sweeps.md#leader-failover-after-a-leader-death)), so a `scheduled_at` job can sit unpromoted for up to the lease plus the sweep cadence before the new leader's first pass. Size deadline-critical `scheduled_at` windows against the LEASE, not the 1 s sweep.
 
 **Timing precision.** The sweep fires roughly once per second, so a job may be promoted up to ~1 second after its `scheduled_at`. Always pass UTC-aware datetimes (`datetime.now(UTC)`); naive datetimes are not accepted at the backend boundary.
 
@@ -117,6 +117,15 @@ this table consolidates the constructor surface in one place.
 `TaskQ` is also the actor-management surface: `tq.actors` (an `ActorsClient`)
 exposes `list()` / `get()` / `set_capacity()` / `deregister()`; see
 [Actor deregistration](actors.md#actor-deregistration).
+
+**Method parity with `JobsClient`:** `TaskQ` implements every `JobsClient`
+method except one — `invalidate_actor_capacity_cache()`, a knob for
+long-lived raw clients, is reachable only on `JobsClient` — and adds what
+the raw client does not carry: the lifecycle (`open()` / `close()`),
+`stream()` and `retry_job()`, `watch_reclaims()`,
+`reload_credentials()`, and the `tq.actors` surface. When this guide
+shows `tq.some_method(...)`, the call works on both faces unless it is
+one of those.
 
 ---
 
@@ -271,7 +280,7 @@ Serialises the payload through `ref.payload_type`, enqueues the job, and returns
 | `idempotency_scope` | `str \| None` | `None` | Namespacing scope for `idempotency_key`. `None` or `""` means the global/default scope (preserves prior global-dedupe behavior). An explicit scope (e.g. a run/batch/epoch id) allows the same business key in different scopes to both succeed. ≤ `idempotency_key_max_bytes` (default 1024 UTF-8 bytes). |
 | `trace_id` | `str \| None` | extracted from OTel span | Trace ID for distributed tracing. Automatically extracted from the active OTel span when one is valid; pass explicitly to override. |
 | `span_id` | `str \| None` | extracted from OTel span | Span ID for distributed tracing. See `trace_id`. |
-| `metadata` | `dict[str, object] \| None` | `{}` | Per-job metadata stored in the `jobs.metadata` JSONB column. Merged with the library-injected `singleton` key when applicable. The caller's dict is never mutated. |
+| `metadata` | `dict[str, object] \| None` | `{}` | Per-job metadata stored in the `jobs.metadata` JSONB column. Merged with the library-injected `singleton` key when applicable. The caller's dict is never mutated. **Reserved keys are stripped, not rejected**: a `batch_id` or `cron_schedule_id` in a caller-supplied metadata dict is silently removed on the way to the row (a single-job enqueue cannot self-assert batch membership or cron provenance) — every other key lands as written. |
 | `tags` | `list[str] \| None` | `[]` | Per-job tags stored in `jobs.tags text[]`. Must match `\A\w(?:[\w\-]*\w)?\Z` (1-255 chars). Used for filtering and categorization in queries and the admin UI. See [Tags](#tags). |
 
 ### Queue overrides: first placement only
@@ -349,7 +358,10 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
     queueing
     behavior), matching Postgres' own `lock_timeout = 0` convention.
 3. **Singleton pre-flight**: if `ref.singleton` is `True`, checks for an existing active job for
-   this actor. Raises `SingletonCollisionError` on collision. Cron fires now carry the same
+   this actor. Raises `SingletonCollisionError` on collision — **including the actor's own
+   self-enqueued successor** (a singleton tick that enqueues its own next round collides with
+   itself; the working shapes are in [actors.md's singleton section](actors.md#singleton-actors)).
+   Cron fires now carry the same
    `metadata["singleton"]` stamp and pre-flight: previously the flag was client-enqueue-only
    (see [Cron Scheduling: singleton and `max_pending` interaction](cron.md#singleton-and-max_pending-interaction)).
  4. **`max_pending` count check**: if `ref.max_pending` is set, counts `pending + scheduled` jobs
@@ -679,6 +691,14 @@ else:
     print(f"{status.pending}/{status.total} jobs still running")
 ```
 
+**Writing your own status SQL?** The `status` column is the `taskq.job_status`
+Postgres **enum**, not text — a literal comparison in raw SQL fails with
+``operator does not exist: taskq.job_status = text``. Cast it:
+`WHERE status::text = 'succeeded'` (or compare against a cast literal). This
+is invisible through `BatchHandle.status()` and the client faces, which
+bind the column natively; it surfaces the moment an operator script writes
+its own queue-depth query.
+
 **`BatchHandle.status()` vs `wait_for_batch()`.** `BatchHandle.status()` is a one-shot poll:
 call it from client-side code (a request handler, a script, a poll loop) whenever you want a
 snapshot of a batch's completion. `taskq.batch.wait_for_batch(db, batch_id)` is a different,
@@ -841,6 +861,13 @@ a child, and the finalizer would wait for itself: a deadlock. The batch row's
 `finalizer_job_id` column records the link instead, and `wait_for_batch`
 automatically excludes that job from counts.
 
+The enforcement is mechanical, not advisory: `batch_id` is a **reserved
+metadata key** and every enqueue strips a caller-supplied value (see
+[the `enqueue()` metadata row](#enqueue)), so a finalizer enqueued with
+`metadata={"batch_id": ...}` lands unstamped — the deadlock is unreachable
+through the public API. Link the finalizer to the batch through its
+payload, as the committed example does.
+
 ### `wait_for_batch` snooze pattern
 
 Inside the finalizer actor, call `wait_for_batch()` to block until all child
@@ -922,8 +949,8 @@ async def enqueue_from_generator(client: JobsClient, doc_ids: Iterable[str]) -> 
 | `items` | `Iterable[EnqueueItem]` | required | Lazy iterable of items. Must not be empty. |
 | `batch_id` | `UUID \| None` | auto-generated UUIDv7 | Shared identifier for all jobs. |
 | `connection` | `asyncpg.Connection \| None` | `None` | Caller-owned connection for transactional enqueue. |
-| `failure_policy` | `BatchFailurePolicy \| None` | `None` | Failure policy for the batch. |
-| `finalizer` | `EnqueueItem \| None` | `None` | Finalizer job to enqueue alongside the batch. |
+| `failure_policy` | `BatchFailurePolicy \| None` | `None` | Failure policy for the batch. **Setting it (with no `connection`) flips the call to the atomic path**: the whole stream commits in one transaction, nothing lands until the iterable drains — chunk-by-chunk incremental commits are gone. |
+| `finalizer` | `EnqueueItem \| None` | `None` | Finalizer job to enqueue alongside the batch. **Setting it (with no `connection`) flips the call to the atomic path**: the whole stream commits in one transaction, nothing lands until the iterable drains — the eager handoff the streaming API was chosen for is silently undone. |
 | `chunk_size` | `int` | `1000` | Items per INSERT (1-1000). |
 
 When `failure_policy` or `finalizer` is set and `connection` is `None`, the
@@ -1615,8 +1642,8 @@ failed retry; bounded by the TTL, default 5s; `None` when no snapshot
 exists, then every cap half reads `unknown` with its reason). The depth
 half was **exact at `as_of`** and advisory from it on; a caller surfacing
 the number to users can show the staleness story honestly instead of
-guessing (prefect's "Late" state taught this the hard way: a stale verdict
-presented as fresh).
+guessing (the stale-state lesson every cache-and-refresh design learns
+the hard way: a stale verdict presented as fresh).
 
 ### Dangling parents: first-class states, never errors
 

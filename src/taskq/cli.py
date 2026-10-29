@@ -33,6 +33,15 @@ from uuid import UUID
 import asyncpg
 import structlog
 import typer
+from asyncpg.exceptions import InvalidPasswordError
+
+# Why: typer >=0.27 vendors click under typer._click and its group classes
+# raise/annotate against the vendored module, not any site-packages click.
+# _WorkerCommandGroup overrides resolve_command, so it must use the SAME
+# Context/Command/UsageError objects the base class does.
+from typer._click.core import Command, Context
+from typer._click.exceptions import UsageError
+from typer.core import TyperGroup
 
 from taskq import migrate as migrate_mod
 from taskq._advisory import DEADLINE_ERRORS
@@ -52,6 +61,7 @@ from taskq._doctor import (
 from taskq._forkguard import guarded_connection_class
 from taskq._humantime import humanize_age
 from taskq._json import loads as json_loads
+from taskq._reaper import reap_cancelled_child
 from taskq.actor import ActorRef
 from taskq.actor_config_ops import (
     UNSET,
@@ -159,10 +169,41 @@ app = typer.Typer(
     no_args_is_help=True,
     help="TaskQ, async Postgres-backed background jobs.",
 )
+
+
+class _WorkerCommandGroup(TyperGroup):
+    """Teach the ``--queues`` contract when a bare token reaches command
+    resolution.
+
+    ``taskq worker`` declares no subcommands, so any bare token left after
+    option parsing is a mis-parsed option value — overwhelmingly the
+    space-separated queue list a fresh dev writes first
+    (``--queues ingest review``). The default click error ("No such
+    command 'review'") points at subcommands that do not exist; the
+    replacement names the flag's real contract, repeat the flag once per
+    queue, the same contract ``--queues``' own help and the CLI guide
+    state.
+    """
+
+    def resolve_command(
+        self,
+        ctx: Context,  # Why: matches TyperGroup.resolve_command's vendored-click signature
+        args: list[str],
+    ) -> tuple[str | None, Command | None, list[str]]:
+        stray = next((a for a in args if not a.startswith("-")), None)
+        if stray is not None:
+            raise UsageError(
+                f"unexpected argument {stray!r} — `taskq worker` takes no subcommands."
+                " Queue names go on the repeatable --queues flag, once per queue:"
+                " --queues=ingest --queues=review (or TASKQ_QUEUES=ingest,review)."
+            )
+        return super().resolve_command(ctx, args)
+
+
 migrate_app = typer.Typer(no_args_is_help=True, help="Apply or inspect schema migrations.")
 app.add_typer(migrate_app, name="migrate")
 
-worker_app = typer.Typer(help="Run a TaskQ worker.")
+worker_app = typer.Typer(help="Run a TaskQ worker.", cls=_WorkerCommandGroup)
 app.add_typer(worker_app, name="worker")
 
 health_app = typer.Typer(no_args_is_help=True, help="Probe the worker's health endpoints.")
@@ -204,6 +245,17 @@ job_app = typer.Typer(
     help="Inspect individual jobs and operate on them (cancel, retry, bulk cancel).",
 )
 app.add_typer(job_app, name="job")
+
+# The workflow-run surface (T12): one question, one command — stuck →
+# status, deliver → signal, reply → resolve, stop → cancel, retry-a-
+# failed-node → retry, inventory → list. The analysis lives in
+# taskq.workflows._cli (the _doctor seam); the write verbs call the
+# engine's module-level run-operator functions (one engine, two surfaces).
+flows_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and operate on workflow runs (status, holds, resolve, cancel, retry).",
+)
+app.add_typer(flows_app, name="flows")
 
 
 def _import_ref(ref: str, *, example: str) -> Any:
@@ -326,6 +378,19 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
         )
         raise typer.Exit(code=1)
     return registry
+
+
+_DSN_PASSWORD_RE = re.compile(r"(://[^:/@\s]+):([^@\s]+)@")
+
+
+def _redacted_dsn(settings: WorkerSettings) -> str:
+    """The resolved Postgres DSN with the password masked, for error faces.
+
+    ``postgres://user:password@host:port/db`` renders as
+    ``postgres://user:***@host:port/db``. A DSN without a password passes
+    through unchanged.
+    """
+    return _DSN_PASSWORD_RE.sub(r"\1:***@", str(settings.pg_dsn))
 
 
 _PROVIDER_EXAMPLE: Final[str] = "myapp.auth:make_provider"
@@ -611,6 +676,20 @@ def worker(
         # Why: the remedy hint is folded into ActorConfigDriftList.__str__
         # itself (see exceptions.py), don't print it a second time here.
         typer.echo(str(e), err=True)
+        raise typer.Exit(code=1) from None
+    except InvalidPasswordError as e:
+        # The default DSN points at localhost:5432 (quick-start.md); a
+        # worker that forgot TASKQ_PG_DSN on a machine where something
+        # else (or nothing) listens there crashes with asyncpg's
+        # "password authentication failed" — which teaches "wrong
+        # password", not "wrong server". Name the resolved DSN (password
+        # redacted) and the env var that fixes it.
+        typer.echo(
+            f"{e}\nThe worker connected to the resolved DSN: {_redacted_dsn(settings)}."
+            " If that host/port is not your TaskQ database, set TASKQ_PG_DSN"
+            " (default postgresql://taskq:taskq@localhost:5432/taskq).",
+            err=True,
+        )
         raise typer.Exit(code=1) from None
     # The loop is closed (asyncio restored SIG_DFL on close), but the
     # process is not gone yet: the exit path, interpreter teardown, atexit
@@ -2145,8 +2224,7 @@ async def _ui_credential_rotation(
         if sighup_registered:
             loop.remove_signal_handler(signal.SIGHUP)
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        await reap_cancelled_child(task)
 
 
 def _ui_serve(
@@ -2660,10 +2738,6 @@ def workgroup_validate(
             f"  {w.name}: queues={w.queues} "
             f"poll={w.poll_interval}s concurrency={w.max_concurrency} {health}"
         )
-
-
-if __name__ == "__main__":
-    main()
 
 
 # ── queues ─────────────────────────────────────────────────────────────
@@ -3299,6 +3373,18 @@ _JOB_SHOW_COLUMNS: Final = (
     "error_class",
     "error_message",
     "idempotency_key",
+    "tags",
+    # THE 3AM FACES (the observability lane's cure): the lease columns
+    # (the lost-worker drill's "the worker died" vs "the work is slow"
+    # distinction — the reclaim sweep's input is lock_expires_at) + the
+    # metadata jsonb (the cross-run cache hit's receipt lives at
+    # metadata.wf_cache_hit; the audit drill's provenance face). The
+    # RENDER stays conditional: a terminal row's lease face is history,
+    # not liveness, and only the receipt is ever printed from metadata.
+    "locked_by_worker",
+    "last_heartbeat_at",
+    "lock_expires_at",
+    "metadata",
 )
 """The operator-facing columns ``taskq job show`` prints by default.
 
@@ -3406,17 +3492,126 @@ async def _job_show(
     typer.echo(f"scheduled_at: {row['scheduled_at']}")
     typer.echo(f"started_at: {row['started_at']}")
     typer.echo(f"finished_at: {row['finished_at']}")
+    _render_lease_face(row)
+    _render_cache_hit(row)
     if row["error_class"] is not None:
-        typer.echo(f"error_class: {row['error_class']}")
-        typer.echo(f"error_message: {row['error_message']}")
+        # THE DB-SOURCED TEXT'S DISCIPLINE (finding 14's cure — the
+        # job-show seat's own face): error_class is written by the
+        # ladder/reaper paths as a class name, but the COLUMN is text —
+        # a hand-crafted or legacy row's value flows to the tty here
+        # RAW (multi-line, ANSI-carrying, unbounded). The same
+        # `_bounded_line` law the wf CLI's error-class seat carries
+        # (collapse + the 60-class bound — one home, never a second
+        # implementation).
+        from taskq.workflows._cli import (
+            _bounded_line,  # pyright: ignore[reportPrivateUsage]  # Why: the bound's ONE home is the wf CLI's own private — the discipline is imported, never duplicated.
+        )
+
+        typer.echo(f"error_class: {_bounded_line(row['error_class'], 60)}")
+        # THE DB-SOURCED TEXT'S DISCIPLINE (the class seat: the job-show's
+        # own face) — the collapse + the bound, never a raw multi-line or
+        # escape-carrying blob in a line-oriented shell surface.
+        typer.echo(f"error_message: {_format_event_detail(row['error_message'])}")
     if row["idempotency_key"] is not None:
         typer.echo(f"idempotency_key: {row['idempotency_key']}")
+    # THE TAGS LINE (the recurring-run's display identity): tags are the
+    # operator's grouping/filtering surface everywhere else (the
+    # cancel-where/GIN-index face), so the pointed read names them too —
+    # an absent set prints `(none)`, distinguishable from silence.
+    # The text[] column's decode shape is annotated at the row read (the
+    # Any-contract walk's boundary: asyncpg's accessor hands back Any;
+    # the annotation + the isinstance guard below bound the walk's input).
+    tags_row: list[object] | None = row["tags"]
+    tags: list[str] = [str(member) for member in tags_row] if isinstance(tags_row, list) else []
+    typer.echo("tags: " + (", ".join(tags) if tags else "(none)"))
     if show_traceback:
         _print_blob_field("error_traceback", row["error_traceback"])
     if show_payload:
         _print_blob_field("payload", row["payload"])
     if archived:
         typer.echo("archived: yes")
+
+
+def _as_aware_dt(value: Any) -> datetime | None:
+    """A timestamptz column's value as an AWARE datetime (asyncpg returns
+    aware datetimes; a test double may hand a string) — None for NULL,
+    naive values read as UTC (the DB clock's own zone)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    parsed = datetime.fromisoformat(str(value))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+_LEASE_LIVE_STATUSES: Final[frozenset[str]] = frozenset({"pending", "scheduled", "running"})
+
+
+def _render_lease_face(row: Any) -> None:
+    """THE LEASE FACE (the lost-worker drill's cure — ``job show``'s
+    liveness section): who holds the row, when the holder last breathed,
+    when the lease lapses — and, past the lapse, the LAPSED verdict: the
+    holder is presumed dead and the reclaim sweep repends the row within
+    ``TASKQ_SWEEP_INTERVAL`` (default 30 s) once a leader is up. This is
+    the operator's "the worker died" vs "the work is slow" distinction,
+    which the row has always carried and the CLI never printed.
+
+    A terminal row's lease columns are HISTORY (the lease lapsed because
+    the work finished) — the face renders for the live statuses only."""
+    if str(row["status"]) not in _LEASE_LIVE_STATUSES:
+        return
+    holder = row.get("locked_by_worker") if hasattr(row, "get") else None
+    heartbeat = _as_aware_dt(row.get("last_heartbeat_at") if hasattr(row, "get") else None)
+    expires = _as_aware_dt(row.get("lock_expires_at") if hasattr(row, "get") else None)
+    if holder is not None:
+        typer.echo(f"locked_by_worker: {holder}")
+    if heartbeat is not None:
+        typer.echo(f"last_heartbeat_at: {heartbeat}")
+    if expires is not None:
+        typer.echo(f"lock_expires_at: {expires}")
+        if expires < datetime.now(UTC):
+            lapsed_s = int((datetime.now(UTC) - expires).total_seconds())
+            typer.echo(
+                f"lease: LAPSED ({lapsed_s}s ago) — the holder is presumed DEAD: this is "
+                "'the worker died', not 'the work is slow'. The reclaim sweep repends "
+                "the row (or crashes it past the attempt budget) within "
+                "TASKQ_SWEEP_INTERVAL (default 30s) — but only while a leader is up: "
+                "a lapsed lease with no live worker stays running until one returns. "
+                "Confirm the death: taskq job events " + str(row["id"])
+            )
+        else:
+            typer.echo("lease: held (the heartbeat renews it while the holder lives)")
+
+
+def _render_cache_hit(row: Any) -> None:
+    """THE CACHE-HIT RECEIPT (the audit drill's cure — the provenance
+    face): the cross-run step cache's hit stamp (metadata.wf_cache_hit:
+    the address + the producing run's id + the store instant) printed
+    when present. A step that never executed must not read like one that
+    did: this line is the difference between 'the body ran' and 'an
+    earlier run's result was delivered'. Only the receipt is ever
+    printed from metadata (the rest of the jsonb stays row-only)."""
+    meta: object = row.get("metadata") if hasattr(row, "get") else None
+    if isinstance(meta, str):
+        try:
+            meta = json_loads(meta)
+        except ValueError:
+            return
+    if not isinstance(meta, dict):
+        return
+    # The jsonb boundary's declared contract (RFC 8259: the wire's object
+    # keys are strings) — the decode's shape, never an inferred Unknown.
+    fields = cast("dict[str, object]", meta)
+    receipt: object = fields.get("wf_cache_hit")
+    if isinstance(receipt, dict):
+        rec = cast("dict[str, object]", receipt)
+        typer.echo(
+            "cache_hit: the body did NOT run — an earlier run's cached result was "
+            "delivered (source: the jobs row's metadata.wf_cache_hit)"
+        )
+        typer.echo(f"  producing run: {rec.get('run_id')}")
+        typer.echo(f"  address: {rec.get('address')}")
+        typer.echo(f"  stored_at: {rec.get('stored_at')}")
 
 
 def _print_blob_field(name: str, value: Any) -> None:
@@ -3880,3 +4075,1082 @@ def _format_event_detail(detail: Any) -> str:
     remaining = len(text) - _EVENT_DETAIL_LINE_LIMIT
     suffix = f"... (+{remaining} characters)"
     return text[: _EVENT_DETAIL_LINE_LIMIT - len(suffix)] + suffix
+
+
+# ── flows: the workflow-run surface (T12) ───────────────────────────────
+#
+# One question, one command: stuck → status, deliver → signal, reply →
+# resolve, stop → cancel, retry-a-failed-node → retry, inventory → list.
+# The analysis lives in taskq.workflows._cli (the _doctor seam); the
+# write verbs call the engine's module-level run-operator functions — the
+# same functions the FlowRunner methods delegate to, never a second write
+# path. Every write rides its engine-owned audit row (the same-tx
+# guarantee); the CLI names its principal explicitly (``cli:<user>``) —
+# "who did this" is a ROW for every surface, the shell included.
+
+_FLOWS_LIST_LIMIT: Final[int] = 20
+
+
+def _cli_principal() -> str:
+    """The CLI's audit subject: THE KERNEL'S WORD (F-CLI-3's cure) —
+    ``os.getuid()`` through ``pwd``, never the environment. ``getpass.
+    getuser()`` reads ``LOGNAME``/``USER`` first, so
+    ``LOGNAME=postgres taskq flows resolve …`` wrote the mutation as
+    ``cli:postgres`` — the audit row's principal was spoofable by any
+    env var the calling shell already controls. The uid is the one
+    fact the kernel attests; an unresolvable uid (a container without
+    the passwd entry) names the NUMBER, never a borrowed name."""
+    import os
+
+    try:
+        import pwd
+
+        name = pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, KeyError):
+        name = f"uid{os.getuid()}"
+    return f"cli:{name}"
+
+
+def _flows_guard(settings: TaskQSettings) -> None:
+    """The shared pre-flight: the schema identifier re-checked at the
+    interpolation site (the job-show convention). Prints the reason and
+    exits 1 — never a traceback."""
+    if not _IDENT_RE.match(settings.schema_name):
+        typer.echo(f"invalid schema name: {settings.schema_name!r}", err=True)
+        raise typer.Exit(code=1)
+
+
+def _parse_run_id(run_id: str) -> UUID:
+    """The run id's parse (the guard's other half): a non-UUID is the
+    named error + exit 1."""
+    try:
+        return UUID(run_id)
+    except ValueError:
+        typer.echo(f"invalid run id (expected a UUID): {run_id!r}", err=True)
+        raise typer.Exit(code=1) from None
+
+
+@contextlib.asynccontextmanager
+async def _flows_pool(settings: TaskQSettings) -> AsyncGenerator[asyncpg.Pool, None]:
+    """A short-lived pool for one flows command (the job write path's
+    lifecycle convention — the engine's operators are pool-shaped)."""
+    _flows_guard(settings)
+    pool = await asyncpg.create_pool(str(settings.pg_dsn), min_size=1, max_size=2)
+    try:
+        yield pool
+    finally:
+        await close_pool_bounded(pool, "flows", CLOSE_TIMEOUT_SECS)
+
+
+# The cross-run step cache's operator surface (T25 — the cache-cures
+# round's CURE 5, THE POISON PILL DOOR): a well-shaped lie at a known
+# address serves every future run until TTL — with no verb, no endpoint,
+# and no hit log, the operator's only face was the lie itself. This is
+# the door: `taskq wf cache list` shows the rows AND the hits' receipts
+# (the observability), `taskq wf cache evict` takes rows out (DRY-RUN by
+# default — the operator sees what WOULD go before it goes).
+wf_app = typer.Typer(
+    no_args_is_help=True,
+    help="Operate on the workflow engine's cross-run state (the step cache).",
+)
+cache_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect and evict the cross-run step cache (the T25 surface).",
+)
+wf_app.add_typer(cache_app, name="cache")
+app.add_typer(wf_app, name="wf")
+
+
+def _cache_row_select_sql(where: str) -> str:
+    """The cache rows' SELECT with the caller's WHERE arm (the schema is
+    the identifier-validated settings boundary; every value is $-bound)."""
+    return f"""
+        SELECT content_address, result, run_id, created_at, expires_at,
+               expires_at > clock_timestamp() AS fresh
+        FROM "{{schema}}".wf_step_cache
+        {where}
+        ORDER BY created_at DESC
+        LIMIT ${{limit}}
+    """  # noqa: S608
+
+
+async def _cache_matching_addresses(
+    conn: asyncpg.Connection, schema: str, *, step_key: str | None, flow: str | None
+) -> list[str]:
+    """The addresses the filters name: --step reads the step's OWN
+    wf_cache_hit receipts (the node rows' metadata — the only place the
+    address ↔ step-key pairing exists), --flow the producing run's rows
+    (the cache row's run_id IS the producing run's id)."""
+    if step_key is not None:
+        rows = await conn.fetch(
+            f"""
+            SELECT DISTINCT metadata->'wf_cache_hit'->>'address' AS address
+            FROM "{schema}".jobs
+            WHERE metadata ? 'wf_cache_hit'
+              AND step_key = $1
+              AND metadata->'wf_cache_hit'->>'address' IS NOT NULL
+            """,  # noqa: S608
+            step_key,
+        )
+        return [str(r["address"]) for r in rows]
+    if flow is not None:
+        rows = await conn.fetch(
+            # S608: the schema identifier is the settings boundary the
+            # guard re-checked; the value is $-bound.
+            f'SELECT content_address FROM "{schema}".wf_step_cache WHERE run_id = $1::uuid',  # noqa: S608
+            flow,
+        )
+        return [str(r["content_address"]) for r in rows]
+    return []
+
+
+@cache_app.command("list")
+def cache_list(
+    address_prefix: Annotated[
+        str,
+        typer.Option("--address-prefix", help="Only rows whose address starts with this prefix."),
+    ] = "",
+    limit: Annotated[int, typer.Option("--limit", help="How many rows to show.")] = 50,
+) -> None:
+    """The step cache's rows AND the hits' receipts — the cache's
+    observability face (the poison-pill door's first half)."""
+    if limit < 1:
+        typer.echo(f"invalid --limit {limit}: the limit counts rows and must be >= 1", err=True)
+        raise typer.Exit(code=1)
+    settings = TaskQSettings.load()
+    _flows_guard(settings)
+    schema = settings.schema_name
+    asyncio.run(_cache_list(str(settings.pg_dsn), schema, address_prefix, limit))
+
+
+async def _cache_list(dsn: str, schema: str, address_prefix: str, limit: int) -> None:
+    conn = await asyncpg.connect(dsn)
+    try:
+        where = ""
+        params: list[Any] = []
+        if address_prefix:
+            where = f"WHERE content_address LIKE ${len(params) + 1}"
+            params.append(address_prefix + "%")
+        rows = await conn.fetch(
+            _cache_row_select_sql(where).format(schema=schema, limit=len(params) + 1),
+            *params,
+            limit,
+        )
+        receipts = await conn.fetch(
+            f"""
+            SELECT id, step_key, metadata->'wf_cache_hit'->>'address' AS address,
+                   metadata->'wf_cache_hit'->>'run_id' AS produced_by,
+                   metadata->'wf_cache_hit'->>'stored_at' AS stored_at
+            FROM "{schema}".jobs
+            WHERE metadata ? 'wf_cache_hit'
+              AND ($1::text = '' OR metadata->'wf_cache_hit'->>'address' LIKE $1)
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,  # noqa: S608
+            address_prefix + "%" if address_prefix else "",
+            limit,
+        )
+    except asyncpg.exceptions.UndefinedTableError:
+        typer.echo(
+            f"the schema {schema!r} has no workflow tables yet — "
+            "the surface needs the migrations: run `taskq migrate` against this "
+            "database, then retry",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    finally:
+        await close_conn_bounded(conn, "wf-cache-list", CLOSE_TIMEOUT_SECS)
+
+    if not rows and not receipts:
+        typer.echo("(no cache rows, no hit receipts)")
+        return
+    typer.echo(f"cache rows ({len(rows)}):")
+    for row in rows:
+        state = "fresh" if row["fresh"] else "EXPIRED"
+        typer.echo(
+            f"  {row['content_address']}  {state}  produced_by={row['run_id']}  "
+            f"stored_at={row['created_at']}  expires_at={row['expires_at']}"
+        )
+    typer.echo(f"hit receipts ({len(receipts)}):")
+    for row in receipts:
+        typer.echo(
+            f"  run {row['id']}  step {row['step_key']}  address={row['address']}  "
+            f"produced_by={row['produced_by']}  stored_at={row['stored_at']}"
+        )
+
+
+@cache_app.command("evict")
+def cache_evict(
+    address_prefix: Annotated[
+        str,
+        typer.Option("--address-prefix", help="Evict rows whose address starts with this prefix."),
+    ] = "",
+    flow: Annotated[
+        str | None,
+        typer.Option("--flow", help="Evict the rows the producing run (its id) filled."),
+    ] = None,
+    step_key: Annotated[
+        str | None,
+        typer.Option(
+            "--step",
+            help="Evict the addresses the step's wf_cache_hit receipts name.",
+        ),
+    ] = None,
+    all_rows: Annotated[
+        bool, typer.Option("--all", help="Evict EVERY row (fresh and expired).")
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Delete. Without this flag the command is a DRY RUN."),
+    ] = False,
+) -> None:
+    """Evict cache rows — DRY-RUN by default: the command prints what
+    WOULD go and touches nothing; pass --yes to delete. The poison-pill
+    door: a well-shaped lie at a known address serves every future run
+    until TTL — this is the way it comes out early."""
+    settings = TaskQSettings.load()
+    _flows_guard(settings)
+    if not (address_prefix or flow or step_key or all_rows):
+        typer.echo(
+            "refusing to evict with no selector: pass --address-prefix, --flow, "
+            "--step, or --all (a bare evict that deletes everything is a footgun)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if flow is not None:
+        _parse_run_id(flow)
+    asyncio.run(
+        _cache_evict(
+            str(settings.pg_dsn),
+            settings.schema_name,
+            address_prefix,
+            flow,
+            step_key,
+            all_rows,
+            yes,
+        )
+    )
+
+
+async def _cache_evict(
+    dsn: str,
+    schema: str,
+    address_prefix: str,
+    flow: str | None,
+    step_key: str | None,
+    all_rows: bool,
+    yes: bool,
+) -> None:
+    conn = await asyncpg.connect(dsn)
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    def bind(clause: str, value: Any) -> str:
+        params.append(value)
+        return clause.replace("$N", f"${len(params)}")
+
+    try:
+        if all_rows:
+            pass
+        else:
+            if address_prefix:
+                clauses.append(bind("content_address LIKE $N", address_prefix + "%"))
+            if step_key is not None:
+                addresses = await _cache_matching_addresses(
+                    conn, schema, step_key=step_key, flow=None
+                )
+                if not addresses:
+                    typer.echo(
+                        f"no wf_cache_hit receipts name step {step_key!r} — nothing "
+                        "known to evict for it (the receipts are the only address "
+                        "↔ step pairing); use --address-prefix for a manual target",
+                        err=True,
+                    )
+                    raise typer.Exit(code=1)
+                placeholders = ", ".join(f"${len(params) + 1 + i}" for i in range(len(addresses)))
+                params.extend(addresses)
+                clauses.append(f"content_address IN ({placeholders})")
+            if flow is not None:
+                clauses.append(bind("run_id = $N::uuid", flow))
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        count_rows = await conn.fetch(
+            f"""
+            SELECT content_address, expires_at > clock_timestamp() AS fresh, run_id
+            FROM "{schema}".wf_step_cache
+            {where}
+            ORDER BY content_address
+            """,  # noqa: S608
+            *params,
+        )
+        if not count_rows:
+            typer.echo("(nothing matches — no rows would be evicted)")
+            return
+        for row in count_rows:
+            state = "fresh" if row["fresh"] else "expired"
+            typer.echo(f"  {row['content_address']}  {state}  produced_by={row['run_id']}")
+        if not yes:
+            typer.echo(
+                f"DRY RUN — {len(count_rows)} row(s) WOULD be evicted; pass --yes to evict them"
+            )
+            return
+        deleted = await conn.execute(
+            # S608: the schema identifier is the settings boundary the
+            # guard re-checked; the WHERE's values are $-bound.
+            f'DELETE FROM "{schema}".wf_step_cache {where}',  # noqa: S608
+            *params,
+        )
+        typer.echo(f"evicted: {deleted.split('=')[-1]} row(s)")
+    except asyncpg.exceptions.UndefinedTableError:
+        typer.echo(
+            f"the schema {schema!r} has no workflow tables yet — "
+            "the surface needs the migrations: run `taskq migrate` against this "
+            "database, then retry",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    finally:
+        await close_conn_bounded(conn, "wf-cache-evict", CLOSE_TIMEOUT_SECS)
+
+
+@flows_app.command("list")
+def flows_list(
+    limit: Annotated[
+        int, typer.Option("--limit", help="How many recent runs to show.")
+    ] = _FLOWS_LIST_LIMIT,
+) -> None:
+    """Which runs exist, newest first, with their derived statuses."""
+    if limit < 1:
+        # TRIO-3: a negative/zero limit is a NAMED refusal (the SQL's
+        # LIMIT clause rejects it as a bare InvalidRowCountInLimitClauseError
+        # traceback otherwise).
+        typer.echo(f"invalid --limit {limit}: the limit counts runs and must be >= 1", err=True)
+        raise typer.Exit(code=1)
+    settings = TaskQSettings.load()
+    asyncio.run(_flows_list(settings, limit))
+
+
+async def _flows_list(settings: TaskQSettings, limit: int) -> None:
+    from taskq.workflows._cli import (
+        FLOW_ROOT_STEP_KEY,
+        FlowListRow,
+        FlowNodeRow,
+        derive_flow_status,
+        format_flow_list,
+    )
+
+    conn = await asyncpg.connect(_dsn_of(settings))
+    try:
+        rows = await conn.fetch(
+            f"""
+            WITH runs AS (
+                SELECT id, actor, status, created_at, metadata->>'workflow' AS workflow
+                FROM "{settings.schema_name}".jobs
+                WHERE step_key = '{FLOW_ROOT_STEP_KEY}'
+                ORDER BY created_at DESC
+                LIMIT $1
+            )
+            SELECT r.id, r.workflow, r.status AS root_status, r.created_at,
+                   n.status AS node_status, n.deps_pending,
+                   n.metadata->>'blocking_reason' AS blocking_reason,
+                   n.step_key,
+                   EXISTS (
+                       SELECT 1
+                       FROM "{settings.schema_name}".wf_edge e
+                       JOIN "{settings.schema_name}".jobs j2 ON j2.id = e.child_id
+                       WHERE e.parent_id = n.id
+                         AND e.failure_policy IN ('collect', 'maybe')
+                         AND NOT (j2.status = 'pending' AND j2.metadata->>'blocking_reason' IN ('failed_parent', 'orphan_parent', 'flow_dead'))
+                   ) AS absorbed,
+                   s.id AS hold_id, s.signal_name, s.map_index AS hold_map_index,
+                   s.expires_at AS hold_expires_at
+            FROM runs r
+            LEFT JOIN "{settings.schema_name}".jobs n
+              ON (n.metadata->>'flow_id')::uuid = r.id
+             AND n.metadata ? 'flow_id'
+             AND n.step_key <> '{FLOW_ROOT_STEP_KEY}'
+            LEFT JOIN "{settings.schema_name}".wf_signals s
+              ON s.workflow_id = r.id AND s.status = 'held' AND s.node_key = n.step_key
+            ORDER BY r.created_at DESC, r.id, n.id
+            """,  # noqa: S608  # Why: only the identifier-validated schema and the constant root key interpolate; the limit is a bound parameter.
+            limit,
+        )
+    except asyncpg.exceptions.UndefinedTableError:
+        # TRIO-1: the schema was never migrated — the named remedy, never
+        # a traceback.
+        typer.echo(
+            f"the schema {settings.schema_name!r} has no workflow tables yet — "
+            "the surface needs the migrations: run `taskq migrate` against this "
+            "database, then retry",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    finally:
+        await close_conn_bounded(conn, "flows-list", CLOSE_TIMEOUT_SECS)
+
+    by_run: dict[Any, dict[str, Any]] = {}
+    for row in rows:
+        entry = by_run.setdefault(
+            row["id"],
+            {
+                "workflow": row["workflow"] or row["actor"],
+                "root_status": row["root_status"],
+                "created_at": row["created_at"],
+                "nodes": [],
+            },
+        )
+        if row["node_status"] is not None:
+            hold = None
+            if row["hold_id"] is not None:
+                from taskq.workflows.api._hitl import HoldContext
+
+                hold = HoldContext(
+                    hold_id=str(row["hold_id"]),
+                    run_id=str(row["id"]),
+                    node_key=row["step_key"],
+                    signal_name=row["signal_name"],
+                    hold_epoch=0,
+                    map_index=row["hold_map_index"],
+                    call_id="",
+                    payload={},
+                    payload_schema=None,
+                    reason=None,
+                    created_at=None,
+                    expires_at=row["hold_expires_at"],
+                    status="held",
+                )
+            entry["nodes"].append(
+                FlowNodeRow(
+                    step_key="",
+                    status=row["node_status"],
+                    deps_pending=row["deps_pending"],
+                    blocking_reason=row["blocking_reason"],
+                    absorbed=row["absorbed"] or False,
+                    hold=hold,
+                )
+            )
+    list_rows = [
+        FlowListRow(
+            run_id=str(run_id),
+            workflow=entry["workflow"],
+            root_status=entry["root_status"],
+            derived=derive_flow_status(entry["nodes"]),
+            nodes_total=len(entry["nodes"]),
+            created_at=entry["created_at"],
+        )
+        for run_id, entry in by_run.items()
+    ]
+    for line in format_flow_list(list_rows):
+        typer.echo(line)
+
+
+def _dsn_of(settings: TaskQSettings) -> str:
+    """The read verbs' DSN, after the schema guard (the job-show
+    convention)."""
+    _flows_guard(settings)
+    return str(settings.pg_dsn)
+
+
+@flows_app.command("status")
+def flows_status(
+    run_id: Annotated[str, typer.Argument(help="The workflow run's id (UUID).")],
+    app_ref: Annotated[
+        str | None,
+        typer.Option(
+            "--app",
+            help="The WorkflowApp module (module:attr) to check the run's "
+            "nodes against — the current registry's graph; without it no "
+            "versioning-drift line renders.",
+        ),
+    ] = None,
+) -> None:
+    """What happened / where is it blocked / what happens next."""
+    settings = TaskQSettings.load()
+    asyncio.run(_flows_status(settings, run_id, app_ref=app_ref))
+
+
+async def _flows_status(
+    settings: TaskQSettings, run_id: str, *, app_ref: str | None = None
+) -> None:
+    from taskq.workflows._cli import FlowNodeRow, format_flow_status
+    from taskq.workflows._sql import WorkflowSql
+    from taskq.workflows.api._validate import WorkflowValidationError
+
+    _flows_guard(settings)
+    parsed = _parse_run_id(run_id)
+    wsql = WorkflowSql.build(settings.schema_name)
+    conn = await asyncpg.connect(_dsn_of(settings))
+    try:
+        root = await conn.fetchrow(
+            f"SELECT status, actor, metadata->>'workflow' AS workflow, "  # noqa: S608  # Why: schema identifier-validated above.
+            "cancel_requested_at FROM "
+            f"\"{settings.schema_name}\".jobs WHERE id = $1 AND step_key = '__flow__'",
+            parsed,
+        )
+        if root is None:
+            typer.echo(f"no run {parsed} (source: jobs where step_key = '__flow__')", err=True)
+            typer.echo("Action: taskq flows list shows the recent runs.", err=True)
+            raise typer.Exit(code=1)
+        node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
+        # THE ONE-READ LAW (the engine-faces lane's cure): the 3am
+        # columns ride the ENGINE query — WORKFLOW_NODES_SQL selects
+        # started_at + the failed_parent stamp + the lease face's columns
+        # at the source. The supplement read this seat used to carry (a
+        # second, CLI-owned jobs fetch keyed by the row id) is RETIRED:
+        # two reads where one suffices was the engine query's missing
+        # columns forcing the workaround.
+        # THE §22.1 STAMPS (rv5-t5's cure — the drift face's data) ride
+        # THE SAME READ: WORKFLOW_NODES_SQL carries j.code_version, so
+        # the drift face derives from the node rows themselves (a run
+        # redeployed mid-flight carries >1 DISTINCT stamp on its rows —
+        # the stamps are the record, the rows are the truth, ONE read).
+        stamps = [
+            (str(r["step_key"]), r["code_version"])
+            for r in node_rows
+            if r["code_version"] is not None
+        ]
+        held = await conn.fetch(
+            f"SELECT id, node_key, signal_name, hold_epoch, map_index, payload, payload_schema, "  # noqa: S608  # Why: schema identifier-validated above.
+            "created_at, expires_at FROM "
+            f'"{settings.schema_name}".wf_signals '
+            "WHERE workflow_id = $1 AND status = 'held'",
+            parsed,
+        )
+    finally:
+        await close_conn_bounded(conn, "flows-status", CLOSE_TIMEOUT_SECS)
+
+    holds_by_key = {row["node_key"]: row for row in held}
+    nodes = [
+        FlowNodeRow(
+            step_key=row["step_key"],
+            status=row["status"],
+            deps_pending=row["deps_pending"],
+            blocking_reason=row["blocking_reason"],
+            absorbed=row["absorbed"],
+            error_class=row["error_class"],
+            error_message=row["error_message"],
+            # THE ATTEMPT COUNTERS RIDE THE READ (attack-4
+            # F-P4-WHYSTUCK-LADDER-LIE's cure): the dataclass defaults
+            # (0 / 3) made every failed row report "ladder headroom 3" —
+            # the read must carry the row's own counters.
+            max_attempts=row["max_attempts"],
+            attempt=row["attempt"],
+            # THE 3AM FIELDS (the ENGINE query's own columns — the one
+            # read): the row id + started_at + the failed_parent stamp +
+            # the lease face's columns.
+            job_id=str(row["id"]),
+            started_at=row["started_at"],
+            failed_parent=row["failed_parent"],
+            lock_expires_at=row["lock_expires_at"],
+            last_heartbeat_at=row["last_heartbeat_at"],
+            hold=(
+                _held_context(run_id, holds_by_key[row["step_key"]])
+                if row["step_key"] in holds_by_key
+                else None
+            ),
+        )
+        for row in node_rows
+    ]
+    # THE VERSIONING-WEDGE SURFACE (the timer-cures lane's cure 5): with
+    # --app, the run's node inventory is checked against the CURRENT
+    # registry's compiled graph — a node the current code no longer
+    # declares is a zombie's home, and the status NAMES it (the drift
+    # the docs' §6 wedge paragraph teaches). Without --app, no drift
+    # check runs (the honest absence: nothing to compare against).
+    registry_node_keys: list[str] | None = None
+    if app_ref is not None and root["workflow"]:
+        app_obj = _load_flows_app(app_ref)
+        try:
+            compiled = app_obj.get(str(root["workflow"]))
+        except KeyError:
+            typer.echo(
+                f"versioning drift: the run's workflow {str(root['workflow'])!r} "
+                "is not declared on this app at all (the --app module predates "
+                "or postdates the run — every node of this run is stranded on "
+                "THIS app; pass the module that declares the run's workflow, "
+                "or cancel + re-run)",
+                err=True,
+            )
+            compiled = None
+        except WorkflowValidationError as exc:
+            typer.echo(
+                f"the run's workflow {str(root['workflow'])!r} does not validate on "
+                f"this app — {exc} (fix the definition and redeploy; the drift "
+                "check cannot run on an invalid graph)",
+                err=True,
+            )
+            compiled = None
+        if compiled is not None:
+            registry_node_keys = list(compiled.nodes)
+    for line in format_flow_status(
+        run_id=run_id,
+        workflow=root["workflow"] or root["actor"],
+        root_status=root["status"],
+        nodes=nodes,
+        cancel_in_flight=root["cancel_requested_at"] is not None,
+        registry_node_keys=registry_node_keys,
+        # THE STAMPS' DRIFT FACE (rv5-t5's cure): the run's OWN rows'
+        # §22.1 stamps — one coherent drift section with the stranded
+        # face above.
+        code_version_stamps=stamps,
+    ):
+        typer.echo(line)
+
+
+def _held_context(run_id: str, signal_row: Any) -> Any:
+    """The held node's context from the JOINED signal row (the status
+    read is one round trip; the context's fields are the HoldContext
+    contract's — the payload's reason/tool/args ride the row)."""
+    from taskq.workflows.api._hitl import HoldContext
+
+    payload: object = signal_row["payload"]
+    if isinstance(payload, str):
+        payload = json_loads(payload)
+    # The row's jsonb decodes to a json dict; the reason/tool/args keys
+    # ride INSIDE it until the deliver overwrites the payload (T10's
+    # deliver-no-drop shape).
+    doc = cast(dict[str, object], payload) if isinstance(payload, dict) else {}
+    raw_reason = doc.get("reason")
+    reason = raw_reason if isinstance(raw_reason, str) else None
+    return HoldContext(
+        hold_id=str(signal_row["id"]),
+        run_id=run_id,
+        node_key=signal_row["node_key"],
+        signal_name=signal_row["signal_name"],
+        hold_epoch=signal_row["hold_epoch"],
+        map_index=signal_row["map_index"],
+        call_id="",
+        payload=payload,
+        payload_schema=signal_row["payload_schema"],
+        reason=reason,
+        created_at=signal_row["created_at"],
+        expires_at=signal_row["expires_at"],
+        status="held",
+    )
+
+
+@flows_app.command("holds")
+def flows_holds(
+    run_id: Annotated[str, typer.Argument(help="The workflow run's id (UUID).")],
+) -> None:
+    """What is this run waiting on (the pending HITL holds)."""
+    from taskq.workflows._cli import format_holds
+    from taskq.workflows.api._hitl import HitlClient
+
+    settings = TaskQSettings.load()
+    _flows_guard(settings)
+    parsed = _parse_run_id(run_id)
+
+    async def run() -> None:
+        async with _flows_pool(settings) as pool:
+            try:
+                holds = await HitlClient(pool, schema=settings.schema_name).list(str(parsed))
+            except asyncpg.exceptions.UndefinedTableError:
+                # TRIO-2: the schema never grew the workflow tables — the
+                # named remedy, never the traceback.
+                typer.echo(
+                    f"the schema {settings.schema_name!r} has no wf_signals table yet — "
+                    "the holds surface needs the migrations: run `taskq migrate` "
+                    "against this database, then retry",
+                    err=True,
+                )
+                raise typer.Exit(code=1) from None
+            for line in format_holds(holds, run_id=run_id):
+                typer.echo(line)
+
+    asyncio.run(run())
+
+
+def _load_flows_app(app_ref: str) -> Any:
+    """The typed door's source: the operator's WorkflowApp module
+    (``--app myapp.workflows:app``), loaded through the shared
+    ``module:attr`` resolver."""
+    app_obj = _import_ref(app_ref, example="myapp.workflows:app")
+    if not hasattr(app_obj, "get"):
+        typer.echo(
+            f"--app must name a WorkflowApp (a module:attr whose object has "
+            f"`.get(workflow)`); {app_ref} does not",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return app_obj
+
+
+def _validate_through_gate(
+    app_obj: Any,
+    workflow: str,
+    node_key: str,
+    signal_name: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """THE TYPED DOOR (T09's bound gates; the hitl-proof's send
+    boundary): the shell's JSON payload re-validates against the gate's
+    declared models BEFORE any row moves. A wrong payload answers the
+    NAMED pydantic error and nothing is delivered — no untyped deliver
+    surface ships."""
+    from pydantic import ValidationError
+
+    from taskq.workflows._cli import gate_models_for
+    from taskq.workflows.api._validate import WorkflowValidationError
+
+    try:
+        models = gate_models_for(app_obj, workflow, node_key)
+    except KeyError as exc:
+        # THE NAMED REFUSAL (attack-4 F-P4-CLI-KEYERROR-TRACEBACK's cure):
+        # the stale-deploy world — the run's workflow is not declared on
+        # THIS app (the --app module predates the run, or the node key
+        # does not exist on the declared workflow). The admin's twin
+        # catches KeyError; the CLI's contract is the same: the NAMED
+        # error + exit 1, never a rich traceback.
+        typer.echo(
+            f"{exc.args[0] if exc.args else exc!r} — the typed door cannot "
+            f"validate signal {signal_name!r} against this app; pass the "
+            "--app module that declares the run's workflow (the stale-"
+            "deploy shape: the app moved since the run started)",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    except WorkflowValidationError as exc:
+        # THE DOOR'S OWN REPORT IS THE REFUSAL (the registration door's
+        # CLI face — found by THIS lane's attack round: app.get() validates
+        # since the F-LOOP-7 cure, so an INVALID graph's compile error
+        # escaped the typed door as a rich traceback — the diagnostics-
+        # first law's own violation). The validation report NAMES the rule
+        # + the fix; the operator's terminal carries it, exit 1.
+        typer.echo(
+            f"the run's workflow {workflow!r} does not validate on this "
+            f"app — {exc} (fix the definition and redeploy; the typed "
+            "door cannot resolve its gates on an invalid graph)",
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+    if not models:
+        typer.echo(
+            f"node {node_key!r} of workflow {workflow!r} declares no gate — "
+            f"signal {signal_name!r} cannot be delivered through it",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    members = signal_name.split("|")
+    candidates = [m for m in models if m.__name__ in members]
+    if not candidates:
+        typer.echo(
+            f"the hold declares signal {signal_name!r} but the node's bound gates are "
+            f"{[m.__name__ for m in models]} — the shapes cannot match",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    errors: list[str] = []
+    for model in candidates:
+        try:
+            validated = model.model_validate(payload)
+        except ValidationError as exc:
+            errors.append(
+                f"{model.__name__}: "
+                + "; ".join(
+                    f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()
+                )
+            )
+            continue
+        dumped = validated.model_dump(mode="json")
+        return dict(dumped)  # type: ignore[arg-type]  # Why: model_dump(mode='json') returns dict[str, Any]; the gate's models are object-valued pydantics and the delivered payload is the row's jsonb.
+    typer.echo(
+        f"pydantic refused the payload for signal {signal_name!r}: " + " | ".join(errors),
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+async def _workflow_name_of(pool: asyncpg.Pool, schema: str, run_id: UUID) -> tuple[str, str, str]:
+    """The run's (workflow name, node_key-source, root status) — the
+    minimal root read the write verbs need to address the typed door."""
+    root = await pool.fetchval(
+        f"SELECT COALESCE(metadata->>'workflow', actor) FROM \"{schema}\".jobs "  # noqa: S608  # Why: schema identifier-validated by the caller's guard.
+        "WHERE id = $1 AND step_key = '__flow__'",
+        run_id,
+    )
+    if root is None:
+        typer.echo(f"no run {run_id} (source: jobs where step_key = '__flow__')", err=True)
+        typer.echo("Action: taskq flows list shows the recent runs.", err=True)
+        raise typer.Exit(code=1)
+    return str(root), "", ""
+
+
+@flows_app.command("signal")
+def flows_signal(
+    run_id: Annotated[str, typer.Argument(help="The workflow run's id (UUID).")],
+    node: Annotated[str, typer.Argument(help="The node key that holds.")],
+    payload: Annotated[str, typer.Argument(help="The payload, as a JSON object.")],
+    app_ref: Annotated[
+        str,
+        typer.Option(
+            "--app",
+            help="Module:attr reference to the WorkflowApp (e.g. myapp.workflows:app) — "
+            "the bound gates' source; the payload validates through them.",
+        ),
+    ],
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why — recorded on the audit row.")
+    ] = None,
+) -> None:
+    """Deliver a typed signal to a held node (by run + node)."""
+    from taskq.workflows._cli import parse_decision
+
+    settings = TaskQSettings.load()
+    _flows_guard(settings)
+    parsed = _parse_run_id(run_id)
+    try:
+        decision = parse_decision(payload)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    app_obj = _load_flows_app(app_ref)
+    asyncio.run(_flows_signal(settings, parsed, node, decision, app_obj, reason))
+
+
+async def _flows_signal(
+    settings: TaskQSettings,
+    run_id: UUID,
+    node: str,
+    decision: dict[str, object],
+    app_obj: Any,
+    reason: str | None,
+) -> None:
+    from taskq.workflows.api._hitl import HitlClient
+
+    async with _flows_pool(settings) as pool:
+        client = HitlClient(pool, schema=settings.schema_name)
+        held = [h for h in await client.list(str(run_id)) if h.node_key == node]
+        if not held:
+            typer.echo(
+                f"node {node!r} of run {run_id} holds nothing "
+                "(source: wf_signals rows with status = 'held')",
+                err=True,
+            )
+            typer.echo("Action: taskq flows holds shows what IS pending.", err=True)
+            raise typer.Exit(code=1)
+        if len(held) > 1:
+            typer.echo(
+                f"node {node!r} holds {len(held)} signals "
+                f"({', '.join(h.signal_name for h in held)}) — address one BY ID: "
+                "taskq flows resolve <hold_id> <decision>",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        hold = held[0]
+        workflow = (await _workflow_name_of(pool, settings.schema_name, run_id))[0]
+        validated = _validate_through_gate(app_obj, workflow, node, hold.signal_name, decision)
+        result = await client.resolve(
+            hold.hold_id, validated, reason=reason, principal=_cli_principal()
+        )
+        _echo_delivery(result, hold.hold_id)
+
+
+def _echo_delivery(result: Any, hold_id: str) -> None:
+    """The DeliveryResult's one rendering (the exit-code contract:
+    delivered → 0, no-op → 0 with the note, refused → 1)."""
+    from taskq.workflows.api._hitl import DeliveryResult
+
+    assert isinstance(result, DeliveryResult)
+    if result.status == "delivered":
+        typer.echo(f"delivered: hold {hold_id} — the node resumes on its next drive")
+    elif result.status == "no-op":
+        typer.echo(f"no-op: hold {hold_id} — {result.reason}")
+    else:
+        typer.echo(f"refused: {result.reason}", err=True)
+        raise typer.Exit(code=1)
+
+
+@flows_app.command("resolve")
+def flows_resolve(
+    hold_id: Annotated[str, typer.Argument(help="The hold's id (the reply handle).")],
+    decision: Annotated[str, typer.Argument(help="The decision, as a JSON object.")],
+    app_ref: Annotated[
+        str,
+        typer.Option(
+            "--app",
+            help="Module:attr reference to the WorkflowApp (e.g. myapp.workflows:app) — "
+            "the bound gates' source; the decision validates through them.",
+        ),
+    ],
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why — recorded on the audit row.")
+    ] = None,
+) -> None:
+    """Reply to a hold BY ID (the reply handle every surface shows)."""
+    from taskq.workflows._cli import parse_decision
+
+    settings = TaskQSettings.load()
+    try:
+        parsed = UUID(hold_id)
+    except ValueError:
+        typer.echo(f"invalid hold id (expected a UUID): {hold_id!r}", err=True)
+        raise typer.Exit(code=1) from None
+    try:
+        decision_dict = parse_decision(decision)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    app_obj = _load_flows_app(app_ref)
+    asyncio.run(_flows_resolve(settings, parsed, decision_dict, app_obj, reason))
+
+
+async def _flows_resolve(
+    settings: TaskQSettings,
+    hold_id: UUID,
+    decision: dict[str, object],
+    app_obj: Any,
+    reason: str | None,
+) -> None:
+    from taskq.workflows.api._hitl import HitlClient
+
+    async with _flows_pool(settings) as pool:
+        client = HitlClient(pool, schema=settings.schema_name)
+        hold = await client.get(str(hold_id))
+        if hold is None:
+            typer.echo(
+                f"no hold {hold_id} (source: wf_signals by id) — the reply handle is "
+                "on every surface that shows the hold",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        root_name = (await _workflow_name_of(pool, settings.schema_name, UUID(hold.run_id)))[0]
+        validated = _validate_through_gate(
+            app_obj, root_name, hold.node_key, hold.signal_name, decision
+        )
+        try:
+            result = await client.resolve(
+                str(hold_id), validated, reason=reason, principal=_cli_principal()
+            )
+        except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
+            # THE RACE'S HONEST LOSER (the same deadlock-refusal the cancel
+            # verb carries — the two verbs' cascades can deadlock; PG kills
+            # one writer; the CLI's answer is the NAMED refusal with the
+            # remedy, never a rich traceback — the diagnostics-first law).
+            typer.echo(
+                f"the hold {hold_id}'s writers raced and PG resolved the "
+                "deadlock in another writer's favour — the hold is being "
+                "resolved OR the run cancelled by the winner; re-run this "
+                "verb (or `taskq flows status`) to see the settled state",
+                err=True,
+            )
+            raise typer.Exit(code=1) from None
+        _echo_delivery(result, str(hold_id))
+
+
+@flows_app.command("cancel")
+def flows_cancel(
+    run_id: Annotated[str, typer.Argument(help="The workflow run's id (UUID).")],
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why — recorded on the audit row.")
+    ] = None,
+) -> None:
+    """Stop a workflow run (the engine's cancel cascade)."""
+    from taskq.workflows import cancel_workflow_run
+
+    settings = TaskQSettings.load()
+    _flows_guard(settings)
+    parsed = _parse_run_id(run_id)
+
+    async def run() -> None:
+        async with _flows_pool(settings) as pool:
+            # F-CLI-2: the GHOST distinguished from the terminal — a run id
+            # that exists in NO table is the honest rc=1 refusal (the same
+            # answer `flows status` gives), never a silent "no-op" with
+            # rc=0 over an id that names nothing.
+            exists = await pool.fetchval(
+                f'SELECT 1 FROM "{settings.schema_name}".jobs '  # noqa: S608  # Why: schema identifier-validated above.
+                "WHERE id = $1 AND step_key = '__flow__'",
+                parsed,
+            )
+            if exists is None:
+                typer.echo(
+                    f"no run {parsed} (source: jobs where step_key = '__flow__') — "
+                    "nothing to cancel",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            stopped = None
+            try:
+                stopped = await cancel_workflow_run(
+                    pool,
+                    schema=settings.schema_name,
+                    flow_id=JobId(parsed),
+                    reason=reason,
+                    principal=_cli_principal(),
+                )
+            except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
+                # THE RACE'S HONEST LOSER (the resolve/cancel race pin's
+                # conviction — the two verbs' cascades can deadlock: PG
+                # kills one writer, and the CLI's answer must be the NAMED
+                # refusal with the remedy, never a rich traceback — the
+                # diagnostics-first law). The winner's own voice is honest;
+                # the loser retries by re-running the verb.
+                typer.echo(
+                    f"the run {parsed}'s writers raced and PG resolved the "
+                    "deadlock in another writer's favour — the run is being "
+                    "cancelled OR resolved by the winner; re-run this verb "
+                    "to see the settled state",
+                    err=True,
+                )
+                raise typer.Exit(code=1) from None
+            if stopped:
+                typer.echo(
+                    f"cancelled: run {parsed} (the cascade landed; "
+                    f"{stopped - 1} held signal(s) resolved)"
+                )
+            else:
+                typer.echo(f"no-op: run {parsed} is already terminal — nothing cancelled")
+
+    asyncio.run(run())
+
+
+@flows_app.command("retry")
+def flows_retry(
+    run_id: Annotated[str, typer.Argument(help="The workflow run's id (UUID).")],
+    node: Annotated[str, typer.Argument(help="The node key to re-run.")],
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why — recorded on the audit row.")
+    ] = None,
+) -> None:
+    """Re-run a failed node and re-open its blocked closure."""
+    from taskq.workflows import retry_workflow_node
+
+    settings = TaskQSettings.load()
+    _flows_guard(settings)
+    parsed = _parse_run_id(run_id)
+
+    async def run() -> None:
+        from taskq.workflows import WorkflowRunError
+
+        try:
+            async with _flows_pool(settings) as pool:
+                reopened = await retry_workflow_node(
+                    pool,
+                    schema=settings.schema_name,
+                    flow_id=JobId(parsed),
+                    node_key=node,
+                    reason=reason,
+                    principal=_cli_principal(),
+                )
+        except WorkflowRunError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+        if reopened:
+            typer.echo(
+                f"re-opened {reopened} row(s): node {node!r} re-pends, its blocked "
+                "closure clears — the run resumes on its next drive"
+            )
+        else:
+            typer.echo(
+                f"nothing re-opened: node {node!r} is live, unknown to run {parsed}, "
+                "or spent past the attempt ceiling",
+                err=True,
+            )
+            typer.echo("Action: taskq flows status shows the node's current state.", err=True)
+            raise typer.Exit(code=1)
+
+    asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()

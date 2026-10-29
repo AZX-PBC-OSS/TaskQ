@@ -1,0 +1,10 @@
+{
+  "mutation": "the emit NOT stamping map_index per child \u2014 all records' children of one step collide onto one row / one idempotency key (the spike's 198 UniqueViolations), one ledger claim for siblings that must be independent",
+  "observed": {
+    "distinct_keys": 2,
+    "rows": 2
+  },
+  "pin": "t20-emit-map-index",
+  "run": "20261010T013903-2774450-113275b9",
+  "ts": "2026-10-10T01:39:03"
+}

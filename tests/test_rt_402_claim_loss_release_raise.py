@@ -176,6 +176,7 @@ def _settings(pg_dsn: str, schema: str) -> WorkerSettings:
             "heartbeat_command_timeout": "0.1",
             "watchdog_loop_lag_budget": "1.2",
             "watchdog_loop_lag_warn_budget": "0.5",
+            "watchdog_check_interval": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
             "max_concurrency": "4",
             "queues": [_QUEUE],
             "health_socket_path": unique_health_sock_path("issue402"),

@@ -1,0 +1,14 @@
+{
+  "mutation": "the pre-cure variant (one hold row for two siblings; the second sibling wedged 'running' forever; a resolve woke one arbitrary sibling and the other stole the first's answer)",
+  "observed": {
+    "conviction": "the cured tree lists BOTH siblings distinctly",
+    "holds_listed": 2,
+    "map_indexes": [
+      0,
+      1
+    ]
+  },
+  "pin": "holdmap-c1-map-sibling-holds",
+  "run": "20261012T122413-622117-017857bf",
+  "ts": "2026-10-12T12:24:13"
+}

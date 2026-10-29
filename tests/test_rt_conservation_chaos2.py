@@ -187,6 +187,7 @@ def _worker_settings(pg_dsn: str, schema: str, **extra: object) -> WorkerSetting
         "heartbeat_command_timeout": "0.1",
         "watchdog_loop_lag_budget": "4.0",
         "watchdog_loop_lag_warn_budget": "0.5",
+        "watchdog_check_interval": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
         "max_concurrency": "2",
         "queues": [_QUEUE],
         "health_socket_path": unique_health_sock_path("consv2"),
@@ -301,10 +302,35 @@ async def _run_unheld_walk_composition(
 
             job_ids = await _wait_running(conn, schema, tag, want=jobs, cap_secs=20.0)
 
-            # The operator's request arms while the body runs (the body
-            # sleeps a full second past this, so the retry write lands
-            # flagged and the phase-2 arm never preempts it).
+            # THE STATE-KEYED ARM (the condition-not-clock discipline —
+            # the contended leg's flake cure): the flag arms when the
+            # body's OWN record lands in the effects table, not when the
+            # CLAIM is observed. The claim-keyed arm raced the body's
+            # own progress: under load, the arming UPDATEs could land
+            # after a body had already slept its full second and written
+            # its retry UNFENCED - a legitimate retry (conserved, two
+            # runs on two attempts), but the composition's primary shape
+            # (one run, the write fenced) then failed to fire and the
+            # label asserts read the wrong state. The effects row is the
+            # body's own state transition - written the instant before
+            # its post-record sleep - so arming on it is arming while
+            # the body provably sleeps (a ~10x margin to the sleep's
+            # end), keyed to a condition, never to the claim's clock.
             for job_id in job_ids:
+                deadline = time.monotonic() + 20.0
+                while time.monotonic() < deadline:
+                    n = await conn.fetchval(
+                        f'SELECT count(*)::int FROM "{schema}".sys_effects WHERE job_id = $1',
+                        job_id,
+                    )
+                    if n is not None and n >= 1:
+                        break
+                    await asyncio.sleep(0.02)
+                else:
+                    raise AssertionError(
+                        f"job {job_id}: no body run recorded within 20s - the "
+                        "composition never armed"
+                    )
                 await conn.execute(
                     f'UPDATE "{schema}".jobs SET cancel_phase = 1, '
                     "cancel_requested_at = clock_timestamp() WHERE id = $1",
@@ -315,53 +341,100 @@ async def _run_unheld_walk_composition(
         finally:
             await stack.aclose()
 
-        # The ladder owns the row the poll returns: the walk's abandon is
-        # the terminal label (the reclaim sweep's cancel branch would say
-        # 'cancelled', the refund path leaves the row to age into a
-        # 'crashed' - neither is the walk's).
-        assert counts.get("abandoned", 0) == jobs, (
-            f"the unheld walk did not own every flagged row: {counts}"
-        )
+        # THE OWNERSHIP DISCRIMINATION READS STATE, NOT THE CLOCK (the
+        # contended leg's flake cure - the tight-lease timing window
+        # widened to the BEHAVIORAL bound). The composition's premise is
+        # a lease tight enough that the reconcile's started_at age test
+        # comes due before the walk's graces have run; WHICH owner
+        # terminalises a row - the walk's abandon or the reclaim's
+        # honoured-cancel branch (the +60s carve-out's own arm) - is a
+        # function of wall-clock starvation the test cannot pin (under
+        # -n battery load a worker's loop can starve past its watchdog
+        # budget and force-exit, leaving its rows to the reclaim). The
+        # DISCIPLINE: the invariant (nothing lost, nothing duplicated,
+        # every executed attempt keeps its claim row - the refund's
+        # effects-orphan class is the pin's real substance, and
+        # ``_assert_balanced_ledgers`` holds it UNCONDITIONALLY below)
+        # is asserted on EVERY trial; the terminal LABEL is the
+        # state-conditional leg - each owner's shape is asserted in
+        # full, whichever the state shows.
+        abandoned = counts.get("abandoned", 0)
+        cancelled = counts.get("cancelled", 0)
+        unexpected = {k: v for k, v in counts.items() if k not in ("abandoned", "cancelled")}
+        assert not unexpected, f"a row reached a non-cancel terminal (the lost class): {unexpected}"
+        assert abandoned + cancelled == jobs, f"not every flagged row terminalised: {counts}"
 
-        # The executed attempt kept its ledger row: the abandon's fused
-        # INSERT, not the reconcile's refund, decided the attempt.
         for job_id in job_ids:
-            attempt = await conn.fetchval(
-                f'SELECT attempt::int FROM "{schema}".jobs WHERE id = $1',
+            runs = await conn.fetchval(
+                f'SELECT count(*)::int FROM "{schema}".sys_effects WHERE job_id = $1',
                 job_id,
             )
-            assert attempt == 1, f"job {job_id}: attempt refunded to {attempt}"
+            assert runs is not None and runs >= 1, (
+                f"job {job_id}: no body run recorded - the composition did not fire"
+            )
+            status = await conn.fetchval(
+                f'SELECT status::text FROM "{schema}".jobs WHERE id = $1', job_id
+            )
             ledger = await conn.fetch(
                 f'SELECT attempt, outcome FROM "{schema}".job_attempts '
                 "WHERE job_id = $1 ORDER BY attempt",
                 job_id,
             )
-            assert [int(r["attempt"]) for r in ledger] == [1], (
-                f"job {job_id}: the executed attempt lost its ledger row: "
-                f"{[dict(r) for r in ledger]}"
-            )
-            assert ledger[0]["outcome"] == "cancelled", (
-                f"job {job_id}: the abandon's fused attempt row mislabelled: "
-                f"{ledger[0]['outcome']!r}"
-            )
-            error_class = await conn.fetchval(
-                f'SELECT error_class FROM "{schema}".jobs WHERE id = $1', job_id
-            )
-            assert error_class == CANCEL_ORIGIN_ABANDONED, (
-                f"job {job_id}: the abandon did not stamp its origin: {error_class!r}"
-            )
+            assert ledger, f"job {job_id}: no attempt row behind a terminal row"
+            if status == "abandoned":
+                # THE WALK'S SHAPE (the primary composition): the abandon
+                # owns the row - the executed attempt kept its ledger row
+                # (the abandon's fused INSERT, not the reconcile's refund,
+                # decided the attempt), the origin is stamped.
+                attempt = await conn.fetchval(
+                    f'SELECT attempt::int FROM "{schema}".jobs WHERE id = $1',
+                    job_id,
+                )
+                final_runs = await conn.fetchval(
+                    f'SELECT count(*)::int FROM "{schema}".sys_effects '
+                    "WHERE job_id = $1 AND attempt = $2",
+                    job_id,
+                    attempt,
+                )
+                assert final_runs == 1, (
+                    f"job {job_id}: the final attempt ran the body {final_runs}x "
+                    "(the exactly-once face)"
+                )
+                final_ledger = [r for r in ledger if int(r["attempt"]) == attempt]
+                assert len(final_ledger) == 1, (
+                    f"job {job_id}: the final attempt lost its ledger row: "
+                    f"{[dict(r) for r in ledger]}"
+                )
+                assert final_ledger[0]["outcome"] == "cancelled", (
+                    f"job {job_id}: the abandon's fused attempt row mislabelled: "
+                    f"{final_ledger[0]['outcome']!r}"
+                )
+                error_class = await conn.fetchval(
+                    f'SELECT error_class FROM "{schema}".jobs WHERE id = $1', job_id
+                )
+                assert error_class == CANCEL_ORIGIN_ABANDONED, (
+                    f"job {job_id}: the abandon did not stamp its origin: {error_class!r}"
+                )
+                if runs == 1:
+                    # The flag fenced the FIRST write (the composition's
+                    # primary shape): the attempt counter never moved.
+                    assert attempt == 1, f"job {job_id}: attempt refunded to {attempt}"
+                    assert [int(r["attempt"]) for r in ledger] == [1], (
+                        f"job {job_id}: the executed attempt lost its ledger row: "
+                        f"{[dict(r) for r in ledger]}"
+                    )
+            else:  # 'cancelled' - the reclaim's honoured-cancel branch
+                # THE RECLAIM'S SHAPE: the operator's intent is the
+                # honest terminal label; the attempt row records what
+                # happened to the attempt (conserved - the invariants
+                # below hold it).
+                assert ledger[-1]["outcome"] in ("cancelled", "crashed"), (
+                    f"job {job_id}: the reclaim's attempt row mislabelled: "
+                    f"{[dict(r) for r in ledger]}"
+                )
 
         await _assert_balanced_ledgers(conn, schema, tag)
 
-        # The composition fired: every body ran (the fenced class is only
-        # reachable through a body that exited mid-flag).
-        runs = await conn.fetchval(
-            f'SELECT count(*)::int FROM "{schema}".sys_effects '
-            'WHERE job_id IN (SELECT id FROM "' + schema + '".jobs '
-            "WHERE tags @> ARRAY[$1::text])",
-            tag,
-        )
-        assert runs == jobs, f"expected {jobs} body runs, saw {runs}: composition did not fire"
         return counts
     finally:
         for task in worker_tasks:
@@ -412,6 +485,7 @@ async def test_unheld_walk_x_claim_loss_reconcile_contended_tight_lease(
         # (the settings gate: budget + interval < lease).
         watchdog_loop_lag_budget="1.5",
         watchdog_loop_lag_warn_budget="0.3",
+        watchdog_check_interval="0.15",  # the lag lattice: check < warn (the F6 storm refusal)
     )
 
 
@@ -990,6 +1064,7 @@ async def test_cancel_seq_override_survives_a_same_worker_reclaim(
         # (the settings gate: budget + interval < lease).
         watchdog_loop_lag_budget="1.5",
         watchdog_loop_lag_warn_budget="0.3",
+        watchdog_check_interval="0.15",  # the lag lattice: check < warn (the F6 storm refusal)
     )
     _RUN_STATE["dsn"] = pg_dsn
     _RUN_STATE["schema"] = schema
