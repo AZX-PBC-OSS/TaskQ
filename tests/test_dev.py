@@ -40,6 +40,31 @@ _VALID_MODULE_ATTR = "taskq.testing.fixtures:actor_runner"
 _TMP_MODULE_NAME = "tmp_actor_module"
 
 
+@pytest.fixture(autouse=True)
+def _taskq_exe_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put THIS environment's own ``taskq`` console script on PATH.
+
+    THE AMBIENT-PATH CLASS (named and cured 2026-10-08): the watch-loop
+    tests drive the REAL ``_start_worker``, which resolves the worker
+    command with ``shutil.which("taskq")`` — an ambient-environment read.
+    Invoked as ``.venv/bin/pytest`` (how make runs it, how CI runs it,
+    how an xdist worker inherits it), PATH does not name the venv's bin
+    directory, ``which`` answers None, and the three watch-loop tests
+    die in the startup RuntimeError before their own logic runs — green
+    only in environments where a ``taskq`` install happens to precede
+    them on PATH. The hermetic form: prepend the RUNNING interpreter's
+    bin directory (where this repo's own ``uv sync`` installs the
+    console script) to PATH for the whole module. The not-found pin
+    (test_start_worker_raises_when_taskq_missing) patches ``shutil.which``
+    itself and is unaffected; the other tests patch ``_start_worker``
+    entirely and never read PATH.
+    """
+    import os
+
+    exe_dir = str(Path(sys.executable).parent)
+    monkeypatch.setenv("PATH", exe_dir + os.pathsep + os.environ.get("PATH", ""))
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────────
 
 

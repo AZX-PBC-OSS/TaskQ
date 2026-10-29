@@ -1,0 +1,10 @@
+{
+  "mutation": "the DECREMENT's flow-status EXISTS leg dropped (the dead flow's join decrements + fires)",
+  "observed": {
+    "deps_pending_fingerprint": 0,
+    "fired_on_cancelled_flow": true
+  },
+  "pin": "pin24-flow-status-leg",
+  "run": "20261010T154709-3687065-41bf1945",
+  "ts": "2026-10-10T15:47:10"
+}

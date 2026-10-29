@@ -1,0 +1,10 @@
+{
+  "mutation": "the silent fire (no stamp, no warn) \u2014 the pre-cure shipped shape",
+  "observed": {
+    "blocking_reason": "body_unavailable",
+    "warn_emitted": true
+  },
+  "pin": "r2-2-body-unavailable",
+  "run": "20261009T142543-3533179-6263b013",
+  "ts": "2026-10-09T14:25:43"
+}

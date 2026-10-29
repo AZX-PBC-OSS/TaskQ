@@ -97,10 +97,30 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "retry_backoff",
     "retry_jitter",
     "assignment_routed",
-    # LIB-2: the fan-out ledger. Trailing position, mirrored into
-    # jobs_archive by the explicit archive CSVs (_leader_shared.py builds
-    # both sides from this tuple). Plain column, no FK — see
-    # 01.00.23_01_pre_jobs_parent_id.sql.
+    "deps_pending",
+    "map_index",
+    "step_key",
+    "code_version",
+    # 01.00.27 (the loop-budget round) / 01.00.31 (its archive mirror):
+    # the loop node's budget state. The same mirror parity as the block
+    # above — the archive sweep cannot archive a column it doesn't name.
+    "budget_deadline",
+    "budget_paused",
+    "budget_remaining_ms",
+    # THE WORKFLOW ROUND (01.00.24): the archive-mirror columns, THE
+    # MERGED LINES' ONE parent_id (the workflow edge's wiring parent AND
+    # the LIB-2 fan-out ledger — the same nullable column, two writers:
+    # the engine's node inserts stamp the wiring parent, the enqueue
+    # contextvar stamps the fan-out parent; plain column, no FK — see
+    # 01.00.23_01_pre_jobs_parent_id.sql). The archive sweep's INSERT
+    # names every column explicitly (the positional `SELECT j.*` doctrine
+    # died with 01.00.03), so the mirror parity the pin enforces
+    # (test_copy_from_columns_match_jobs_table_exactly) needs them here;
+    # the workflow-aware pruner (T18) defines their retention.
+    # THE TRAILING LAW (93b255ff's restoration, carried): parent_id is
+    # the LIST'S LAST member — the record builder writes it last (the
+    # ARITY pin's coherence: 40-wide records against 40 columns), the
+    # pin test_copy_from_columns_carries_parent_id holds the position.
     "parent_id",
 )
 
@@ -126,6 +146,22 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
         "rate_limit_blocked_count",
         "interrupt_count",
         "claim_epoch",
+        # The workflow columns (01.00.24): vanilla enqueues never set them
+        # (the DDL defaults apply -- deps_pending DEFAULT 0, the rest NULL);
+        # the workflow-row INSERT path is the engine's own statements.
+        # parent_id is NOT omitted: the LIB-2 fan-out ledger's trailing
+        # member rides the COPY (the enqueue contextvar stamps it; the
+        # merge's ONE parent_id — two writers, one column).
+        "deps_pending",
+        "map_index",
+        "step_key",
+        "code_version",
+        # The loop-budget trio (01.00.27/01.00.31): vanilla enqueues never
+        # set them either (the DDL defaults: NULL / False / NULL; only the
+        # loop driver's INIT statement writes them).
+        "budget_deadline",
+        "budget_paused",
+        "budget_remaining_ms",
     }
 )
 COPY_ENQUEUE_COLUMNS: Final[tuple[str, ...]] = tuple(

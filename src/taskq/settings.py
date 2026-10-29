@@ -1990,6 +1990,42 @@ class WorkerSettings(TaskQSettings):
         description="TASKQ_PRUNE_BATCH_SIZE. Rows to delete per batch.",
     )
 
+    # -- Workflow outbox retention ----------------------------------
+    workflow_outbox_retention_period: timedelta = Field(
+        default=timedelta(hours=24),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_OUTBOX_RETENTION_PERIOD. The age at "
+        "which a DELIVERED wf_outbox row is deleted. A delivered outbox "
+        "row is narration — the drain's arbiter already inserted the "
+        "consumer rows and wf_join_fire is the exactly-once ledger — and "
+        "without this TTL the delivered population grows monotonically "
+        "forever (the D2 soak's finding: 5.9k at close, monotone, no "
+        "pruner). One bounded committed batch per leader tick; "
+        "UNDELIVERED rows are never touched (the drain owns them — a "
+        "deleted undelivered row is a lost delivery). timedelta(0) "
+        "DISABLES the sweep, the deletion-sweep family's zero-means-off "
+        "sentinel (a brand-new deletion loop's safe misconfiguration is "
+        "off), deliberately opposite to the prune family's "
+        "zero-means-now. Negative values raise at settings load.",
+    )
+
+    # -- Workflow step-cache retention (T25) --------------------------
+    workflow_step_cache_sweep_period: timedelta = Field(
+        default=timedelta(hours=1),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD. How often "
+        "the leader's retention arm prunes the cross-run step cache's "
+        "EXPIRED rows (T25: the in-DB TTL's corpses — the lookup's "
+        "freshness leg already refuses them; this arm deletes the dead "
+        "weight so the expired population never grows monotone-forever). "
+        "One bounded committed batch per pass; FRESH rows are never "
+        "touched (a deleted fresh row is a re-execution the next run "
+        "would have skipped). timedelta(0) DISABLES the sweep, the "
+        "deletion-sweep family's zero-means-off sentinel (a brand-new "
+        "deletion loop's safe misconfiguration is off). Negative values "
+        "raise at settings load.",
+    )
+
     # -- Per-status prune retention --------------------------------
     prune_retention_period: timedelta = Field(
         default=DEFAULT_PRUNE_RETENTION,
@@ -2578,6 +2614,46 @@ class WorkerSettings(TaskQSettings):
         # cannot distinguish from a healthy one is a misconfiguration the
         # operator only meets at the os._exit. Same watchdog gating as
         # the lease invariant above.
+        #
+        # THE WARN BUDGET VS THE CHECK CADENCE (the LedgerWatch F6 cure —
+        # the warning storm's config cannot boot): the tier-1 warn's
+        # healthy baseline IS the sampling period — the detector polls
+        # once per watchdog_check_interval and schedules the beat it
+        # measures from the same poll, so a healthy loop's observed lag
+        # is ~check_interval by construction. A warn budget at or below
+        # the check interval therefore warns on EVERY healthy poll — and
+        # each warn dumps every live asyncio task, the dump blocks the
+        # loop, the block triggers the next warn: a self-sustaining
+        # storm (the adoption team's measured shape: warn 0.4 / check
+        # 0.5 passed this lattice's pre-cure legs, then 295 warn+dump
+        # pairs starved the worker's heartbeat past the fleet's
+        # readiness timeout). Same watchdog gating as the lease
+        # invariant above; the remedy is taught (raise the warn budget —
+        # comfortably above the check interval, below the terminal
+        # budget).
+        if self.watchdog_enabled and (
+            self.watchdog_loop_lag_warn_budget <= self.watchdog_check_interval
+        ):
+            errors.append(
+                ValidationError(
+                    field_name="watchdog_loop_lag_warn_budget",
+                    value=self.watchdog_loop_lag_warn_budget,
+                    error_msg=(
+                        f"watchdog_loop_lag_warn_budget "
+                        f"({self.watchdog_loop_lag_warn_budget}) must be > "
+                        f"watchdog_check_interval ({self.watchdog_check_interval}): "
+                        "the lag detector samples the loop once per check interval, "
+                        "so a healthy loop's observed lag is ~the full check "
+                        "interval — a warn budget at or below it warns and dumps "
+                        "every live task on EVERY healthy poll, the dump blocks "
+                        "the loop, and the block fires the next warn (a "
+                        "self-sustaining warning storm that starves the "
+                        "heartbeat). Raise the warn budget comfortably above the "
+                        "check interval (it must stay below "
+                        "watchdog_loop_lag_budget)."
+                    ),
+                )
+            )
         if self.watchdog_enabled and (
             self.watchdog_loop_lag_warn_budget >= self.watchdog_loop_lag_budget
         ):

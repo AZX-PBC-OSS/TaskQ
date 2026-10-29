@@ -17,6 +17,7 @@ __all__ = [
     "CANCEL_ORIGIN_ABANDONED",
     "CANCEL_ORIGIN_COOPERATIVE",
     "CANCEL_ORIGIN_FORCED",
+    "CANCEL_ORIGIN_PEER_FAILURE",
     "CANCEL_ORIGIN_PENDING",
     "CANCEL_ORIGIN_UNREQUESTED",
     "DEFAULT_CHUNK_SIZE",
@@ -60,6 +61,7 @@ __all__ = [
     "TERMINAL_WRITE_BUDGET_SECS",
     "WAKE_CHANNEL_FMT",
     "WATCHDOG_METRICS_FLUSH_TIMEOUT_SECS",
+    "WF_LOOP_ESCALATION_STEP_KEY",
     "WORKER_CHANNEL_FMT",
     "base_name_collides_with_reserved_prefix",
     "check_max_attempts_domain",
@@ -260,6 +262,18 @@ enum change would break every consumer of the eight-value union for a
 distinction that is not a different state. The cancel is recorded
 durably on the row itself: a row whose cancel timestamp is set is
 cancelled, never re-available.
+"""
+
+CANCEL_ORIGIN_PEER_FAILURE: Final[str] = "CancelledByPeerFailure"
+"""``error_class`` the workflow fail-closed peer-cascade stamps (T06).
+
+A running peer was cancelled because a SIBLING's terminal failure failed
+their shared join closed — the cancel nobody requested and no hook ran
+for. The structured record rides the row's ``metadata.peer_cancel``
+(``{"by": "peer_failure", "cascade_from": <the failed node's id>}``); the
+error_class marker is the `by` leg, so the admin's cancel-origin reads
+and the cancelled-jobs dashboards read the peer-cancel the same way they
+read every other cancel origin (the same-outcome-same-record doctrine).
 """
 
 ERROR_CLASS_DEADLINE_EXCEEDED: Final[str] = "DeadlineExceeded"
@@ -954,6 +968,22 @@ _MAX_KEYED_KEY_LEN = 255
 
 Bounds storage growth from attacker-controlled keys and base names, the
 same rationale as the character regex above.
+"""
+
+WF_LOOP_ESCALATION_STEP_KEY: Final[str] = "loop.escalation"
+"""The workflow LOOP's registered ESCALATION step key (the outbox's
+``consumer_step_key`` for every ``on_exhausted="escalate"`` loop).
+
+Lives HERE — the cross-cutting constants home — because TWO layers read
+it and neither may import the other: the workflow loop machinery
+(``taskq.workflows.api._loop``, which registers the step's body and
+addresses the outbox row) and the BACKEND's dispatch-fence templates
+(``taskq.backend._dispatch_sql``), whose terminal-flow leg carries the
+ESCALATION-KIND exemption — the one workflow row a TERMINAL flow's
+dispatch fence still admits (a flow's death must not orphan its
+pages-a-human duty). Backend must not import workflows (the §16.1
+import law), so the fence substitutes this constant as a token; the two
+faces cannot drift.
 """
 
 QUEUE_CONCURRENCY_PREFIX: Final[str] = "taskq:global:queue:"

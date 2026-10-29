@@ -1,0 +1,11 @@
+{
+  "mutation": "the cascade's block arm dropped (the pre-T06 shipped shape: the join stays join-wait or fires over the failed parent)",
+  "observed": {
+    "blocking_reason": "failed_parent",
+    "deps_pending": 2,
+    "status": "pending"
+  },
+  "pin": "t06-pin1-stranded-join",
+  "run": "20261011T002007-2224263-fb11f4a8",
+  "ts": "2026-10-11T00:20:07"
+}

@@ -196,6 +196,12 @@ async def test_reset_on_a_zero_counter_active_batch_neither_locks_nor_probes(
 # ── the cost pin ─────────────────────────────────────────────────────
 
 
+# Why load_sensitive: the ratio's own design ("runner noise inflates both
+# together") holds only where the two arms' round trips starve equally —
+# measured at -n 8 the multi-statement hook arm inflates past the bare
+# UPDATE's (4.18x/4.73x vs the 4x budget) while solo and serial it rides
+# ~2-3x. The band's teeth (the unguarded 24x) are a serial-lane fact.
+@pytest.mark.load_sensitive
 async def test_hook_per_job_wall_is_terminal_update_class_under_contention(
     pg_dsn: str,
 ) -> None:

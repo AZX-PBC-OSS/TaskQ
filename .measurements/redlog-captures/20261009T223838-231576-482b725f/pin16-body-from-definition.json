@@ -1,0 +1,10 @@
+{
+  "mutation": "per-call body map (the D1 hazard: the CAS loser runs the wrong body)",
+  "observed": {
+    "loser_body": "MUTATED",
+    "shipped": "the registered definition's body"
+  },
+  "pin": "pin16-body-from-definition",
+  "run": "20261009T223838-231576-482b725f",
+  "ts": "2026-10-09T22:38:38"
+}

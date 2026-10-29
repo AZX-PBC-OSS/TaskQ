@@ -146,6 +146,7 @@ def _deps(pool: ChaosPool, *, max_heartbeat_failures: int) -> WorkerDeps:
             "TASKQ_LOCK_LEASE": "3.0",
             "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
             "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.5",
+            "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",  # the lag lattice: check < warn (the F6 storm refusal)
             "TASKQ_MAX_HEARTBEAT_FAILURES": str(max_heartbeat_failures),
             "TASKQ_CANCELLATION_GRACE_PERIOD": "0.0",
             "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",

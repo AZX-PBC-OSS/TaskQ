@@ -64,6 +64,7 @@ import structlog
 from taskq._close import CLOSE_TIMEOUT_SECS, close_pool_bounded
 from taskq._forkguard import guarded_connection_class
 from taskq._ids import new_uuid
+from taskq._reaper import reap_cancelled_child
 from taskq.connections import statement_cache_kwargs
 from taskq.constants import (
     _IDENT_RE as _SCHEMA_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining; same pattern as run.py.
@@ -1019,8 +1020,7 @@ async def _delay_then_respawn(
     )
     for _t in _pending:
         _t.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await _t
+        await reap_cancelled_child(_t)
     if shutting_down.is_set():
         return
     async with child.restart_lock:
@@ -1262,8 +1262,7 @@ async def run_forever(config_path: Path) -> None:
                         for t in (child.stdout_task, child.stderr_task):
                             if t is not None and not t.done():
                                 t.cancel()
-                                with contextlib.suppress(asyncio.CancelledError):
-                                    await t
+                                await reap_cancelled_child(t)
                         child.stdout_task = None
                         child.stderr_task = None
                         delay = await _handle_child_exit(
@@ -1350,8 +1349,7 @@ async def run_forever(config_path: Path) -> None:
             task.cancel()
         for task in wait_tasks:
             if not task.done():
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                await reap_cancelled_child(task)
 
     # Force-kill any survivors.
     for child in children.values():
@@ -1370,8 +1368,7 @@ async def run_forever(config_path: Path) -> None:
         for t in (child.stdout_task, child.stderr_task):
             if t is not None and not t.done():
                 t.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await t
+                await reap_cancelled_child(t)
 
     if pg_pool:
         # Why bounded: the supervisor's health-pool close is the same

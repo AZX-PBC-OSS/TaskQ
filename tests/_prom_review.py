@@ -29,6 +29,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -42,16 +43,39 @@ PROMTOOL_IMAGE = "prom/prometheus:v3.7.2"
 _SCRUBBED_ENV_PREFIXES = ("OTEL_", "TASKQ_")
 
 
+#: The per-xdist-worker port partition: each worker's probes draw from
+#: its own 100-port band (gw0 -> 30000-30099, gw7 -> 30700-30799) —
+#: deterministic, collision-free by construction, clear of the ephemeral
+#: range and the well-known metrics ports.
+_PROM_PORT_BASE = 30000
+_PROM_PORT_STRIDE = 100
+
+
 def _free_tcp_port() -> int:
     """Reserve an ephemeral port by binding once and closing; the probe
     subprocess re-binds it moments later. The old hard-coded 19464/19465
     collided whenever pytest-xdist split the review module across two
     workers - both workers' probes raced the same fixed port and the
     loser died in OTEL exporter init (EADDRINUSE) - so every probe now
-    allocates its own port."""
+    allocates its own port.
+
+    The bind-and-close reservation is itself a race under heavy xdist
+    fan-out (-n 8: eight workers' probes allocating near-simultaneously
+    — two workers' bind-close windows handed out the SAME port, one
+    probe's exporter bound it first, the other's boot died EADDRINUSE
+    and its port fetches refused). The cure is the deterministic
+    partition: each xdist worker's probes draw from ITS OWN range
+    (``gw<N>`` -> base + N * stride), so no two workers' probes can
+    collide regardless of timing; the bind-close still dodges the
+    host's unrelated listeners within the range."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+        port = int(sock.getsockname()[1])
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "")
+    if worker.startswith("gw"):
+        offset = int(worker[2:])
+        port = (_PROM_PORT_BASE + offset * _PROM_PORT_STRIDE) + (port % _PROM_PORT_STRIDE)
+    return port
 
 
 def probe_env(**extra: str) -> dict[str, str]:
@@ -363,27 +387,35 @@ async def _scrape_port() -> str:
     return await _fetch_port(METRICS_PORT)
 
 
+async def _poll_fetch_port(port: int, *, deadline_s: float = 45.0) -> str:
+    """POLL, don't knock once: the worker's boot (interpreter start, PG
+    connect, the first election attempt) has outrun any fixed wait under
+    co-tenancy — the follower arm's own conviction (3.14 leg, run
+    36629891786: the lone connect got Errno 111 and the missing file
+    failed three otherwise-green tests as PROBE_TASK_FAILED). The
+    LIVE arm raced the SAME boot the same way (the -n 8 consolidated
+    proof: the worker's PG connects queued behind eight workers' storm,
+    the port unbound at the LIVE knock, the one-shot refused). The port
+    answers under the poll or the boot genuinely died."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + deadline_s
+    while True:
+        try:
+            return await _fetch_port(port)
+        except (urllib.error.URLError, OSError):
+            if loop.time() >= deadline:
+                raise
+            await asyncio.sleep(0.5)
+
+
 async def _dump(tag: str) -> None:
     if tag == "FOLLOWER":
         # The follower mounts no bridge router: its exposition is its
         # own TASKQ_METRICS_PORT pull listener (the port the parent
-        # probe allocated for it). POLL, don't knock once: the fixed
-        # 10s post-spawn sleep raced the follower's own boot (3.14 leg,
-        # run 36629891786 - interpreter start, PG connect and the first
-        # election attempt exceeded the sleep under co-tenancy, the
-        # lone connect got Errno 111, and the missing FOLLOWER file
-        # failed three otherwise-green tests as PROBE_TASK_FAILED).
-        # The follower is terminated only AFTER this dump returns, so
-        # the port answers under the poll or the boot genuinely died.
-        deadline = asyncio.get_running_loop().time() + 45.0
-        while True:
-            try:
-                text = await _fetch_port(int(os.environ["PROBE_FOLLOWER_METRICS_PORT"]))
-                break
-            except (urllib.error.URLError, OSError):
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise
-                await asyncio.sleep(0.5)
+        # probe allocated for it). The follower is terminated only
+        # AFTER this dump returns, so the port answers under the poll
+        # or the boot genuinely died.
+        text = await _poll_fetch_port(int(os.environ["PROBE_FOLLOWER_METRICS_PORT"]))
         with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.port", "w") as fh:
             fh.write(text)
         print(f"SCRAPED:{tag}:port={len(text)}", flush=True)
@@ -391,7 +423,11 @@ async def _dump(tag: str) -> None:
     bridge = await _scrape_bridge()
     with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.bridge", "w") as fh:
         fh.write(bridge)
-    port = await _scrape_port()
+    # The LIVE arm polls too: the worker's boot races the scrape under
+    # co-tenancy (the same storm the follower's poll cures). FINAL keeps
+    # the one-shot: the worker is already exiting, the poll would stall
+    # on a port that is legitimately going away.
+    port = await _poll_fetch_port(METRICS_PORT) if tag == "LIVE" else await _scrape_port()
     with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.port", "w") as fh:
         fh.write(port)
     print(f"SCRAPED:{tag}:bridge={len(bridge)}:port={len(port)}", flush=True)
@@ -773,6 +809,55 @@ def _migrate_schema(pg_dsn: str, schema: str) -> None:
     assert result.returncode == 0, f"migration failed: {result.stderr}"
 
 
+def once_per_invocation(
+    name: str,
+    state_dir: Path,
+    producer: Callable[[], dict[str, str]],
+) -> dict[str, str]:
+    """Run ONE probe per pytest INVOCATION, not one per xdist worker.
+
+    The probe harness is a real worker + a follower + migrations — ~130s
+    of machine. The review module's fixtures are module-scoped, and a
+    module scope is PER WORKER: at ``-n 8`` up to eight probes ran
+    concurrently, sixteen worker processes drowned the box, and the
+    follower's boot outran every poll (the consolidated proof's
+    PROBE_TASK_FAILED wall). The container pair already solved this
+    shape (``shared_service_pair``'s per-invocation state dir + the
+    holder lock); this is the same discipline for the probes: the
+    FIRST worker takes the flock, runs the producer, and writes the
+    result + the done marker into the invocation's own state dir; every
+    other worker of the SAME invocation waits on the marker and reads
+    the same result. A different invocation (a fresh basetemp) gets a
+    fresh dir — no cross-invocation sharing, ever.
+    """
+    import fcntl
+    import json as _json
+
+    probe_dir = state_dir / f"prom-probe-{name}"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    done_marker = probe_dir / "done.json"
+    lock_path = probe_dir / "probe.lock"
+    lock_fh = open(lock_path, "w")  # noqa: SIM115  # held for the whole call
+    try:
+        # The blocking flock: the first taker runs the probe; the rest
+        # block here until the marker exists (the producer releases the
+        # lock only after writing it). The wait is bounded by the probe
+        # itself (the follower poll's deadline is inside the producer),
+        # not by us — a crashed producer leaves no marker and the
+        # waiter's own probe-budget timeout below fires.
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        if done_marker.exists():
+            return dict(_json.loads(done_marker.read_text()))
+        result = producer()
+        tmp_marker = probe_dir / f"done.json.tmp.{os.getpid()}"
+        tmp_marker.write_text(_json.dumps(result))
+        tmp_marker.replace(done_marker)
+        return result
+    finally:
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+        lock_fh.close()
+
+
 def run_worker_probe(
     pg_dsn: str,
     schema: str,
@@ -907,12 +992,16 @@ def run_hostile_probe(
 _DOCKER = shutil.which("docker")
 
 _EMITTER_PROBE = '''
-"""Emitter probe: drives the real cannot-stage-live counter emitters -
-the sweep-abort pair (Postgres aborting a bounded prune batch collides
-with the worker's own retry ladder) and the cron skipped-slots counter
+"""Emitter probe: drives the real cannot-stage-live emitters - the
+sweep-abort pair (Postgres aborting a bounded prune batch collides
+with the worker's own retry ladder), the cron skipped-slots counter
 (no live run reaches it: the 1-hour default catch-up window swallows the
-probes' staged 2-minute backlog) - families whose emission paths are real
-public API - and dumps the exposition their series actually serve."""
+probes' staged 2-minute backlog), and the wf-progress gauge (an
+observable gauge the MAINTENANCE LEADER samples on the admin's surface -
+the worker probes scrape the worker exposition, which never carries it;
+the emission path is the real public update_wf_progress_cache API the
+leader's sampler calls) - families whose emission paths are real public
+API - and dumps the exposition their series actually serve."""
 
 import asyncio
 import os
@@ -935,6 +1024,7 @@ from taskq.obs import (  # noqa: E402
     record_cron_skipped_slots,
     record_sweep_timeout,
     record_sweep_unexpected_error,
+    update_wf_progress_cache,
 )
 from taskq.obs import _otel as otel_mod  # noqa: E402
 
@@ -943,6 +1033,16 @@ otel_mod.set_otel_enabled(True)
 record_sweep_timeout("scheduled_to_pending")
 record_sweep_unexpected_error("scheduled_to_pending")
 record_cron_skipped_slots("probe_fail_actor", 1)
+# THE WF-PROGRESS GAUGE (T08): the leader's sampler's own write - the
+# (workflow, state)-keyed cache the observable gauge reads out. The fed
+# values are the promtool cases' fed label values' source of truth.
+update_wf_progress_cache(
+    {
+        ("probe_wf", "blocked"): 3,
+        ("probe_wf", "running"): 7,
+        ("_other_", "pending"): 11,
+    }
+)
 
 # The claim-health family: the degradation ratio's 5-minute baseline
 # warm-up cannot be staged in a live worker probe (a probe run is

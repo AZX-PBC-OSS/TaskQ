@@ -3676,3 +3676,65 @@ def record_sse_rejection(surface: SseSurface, topic: str) -> None:
             "the configured cap beside a rising rejection rate."
         ),
     ).add(1, {"topic": _bounded_sse_topic(topic), "surface": surface})
+
+
+# ── The workflow progress rollup (T08) ────────────────────────────────
+#
+# taskq.wf_progress_nodes_total{workflow, state}: per-workflow node-state
+# counts, dimensioned by the USER-DECLARED WORKFLOW REGISTRATION (the
+# named-bucket precedent, docs/guides/observability.md's dimension
+# doctrine) — runs of a workflow whose name is NOT registered collapse
+# onto the `_other_` bucket carrying SUMMED counts. NEVER per-node
+# labels: the cardinality doctrine (observability.md) — a per-node series
+# is the series that cannot be stored, and the per-node truth is the row
+# and the admin's per-run page (the rollup read by run id), never the
+# fleet gauge.
+#
+# THE SAMPLER (GAPS-ESTATE F5, named): the MAINTENANCE LEADER (the
+# PG-rollup reader — the same process class that samples queue depth) on
+# the ADMIN's health/metrics surface, at the leader's existing metrics
+# tick (the vanilla pattern — never a worker scrape, never the opt-in
+# TASKQ_METRICS_PORT worker port). One grouped read (the same read the
+# admin's status panel uses — the query-count pin), index-driven
+# (jobs_wf_flow_nodes_idx, 01.00.26_02 — the uuid-cast expression, the
+# workflow-rows-only partial `metadata ? 'flow_id'`).
+#
+# THE ALERT SUGGESTION SHIPS WITH THE GAUGE (GAPS-ESTATE F4 — a metric
+# nobody alerts on is a decoration): TaskQWorkflowBlockedStuck (a run
+# pinned `blocked` past the bound) in BOTH rule files, evaluated through
+# the promtool harness; the runbook row in docs/guides/runbooks.md.
+
+_wf_progress_cache: dict[tuple[str, str], int] = {}
+
+
+def update_wf_progress_cache(data: dict[tuple[str, str], int]) -> None:
+    """Replace the per-(workflow, state) node-count cache with fresh data.
+
+    Called by the maintenance leader's wf-progress sampler. The KEY is the
+    (workflow, state) pair — the typed dict shape IS the cardinality
+    contract: the sampler collapses every unregistered workflow onto
+    `_other_` and never emits a node-dimensioned series (a node label
+    cannot enter a (workflow, state)-keyed cache).
+    """
+    global _wf_progress_cache
+    _wf_progress_cache = dict(data)
+
+
+def _observe_wf_progress(options: CallbackOptions) -> Iterable[Observation]:
+    for (workflow, state), count in _wf_progress_cache.items():
+        yield Observation(count, {"workflow": workflow, "state": state})
+
+
+_wf_progress_gauge = get_meter().create_observable_gauge(
+    name="taskq.wf_progress_nodes_total",
+    description=(
+        "Workflow node rows per declared workflow and derived node state, "
+        "sampled by the maintenance leader on the admin surface. "
+        "Unregistered workflows collapse onto the _other_ bucket (summed); "
+        "never per-node labels — the per-node truth is the row and the "
+        "run's admin page. The alert: TaskQWorkflowBlockedStuck (a run "
+        "pinned blocked past the bound, no transition)."
+    ),
+    unit="1",
+    callbacks=[_observe_wf_progress],
+)

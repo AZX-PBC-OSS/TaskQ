@@ -144,13 +144,19 @@ _TIMESCALE_IMAGE = (
 # same one Dragonfly (the suite's shared broker) implements.
 _REDIS_IMAGE = "redis:8.10.2"
 
-# Every seeded timestamp derives from this FIXED instant (not now()): the
-# differential requires both engines to seed byte-identical rows, and the
-# absolute expectations (orders, counts, windows) must hold for the whole
-# module run. The instant is days in the past at authoring time — old
-# enough for the 24h stats window to be empty, recent enough for the
-# relative-time rendering to stay stable across a module run.
-_BASE = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+# Every seeded timestamp derives from this ONE instant, computed once at
+# module import: the differential requires both engines to seed
+# byte-identical rows, and the absolute expectations (orders, counts,
+# windows) must hold for the whole module run. What must be pinned is the
+# instant's AGE, not its absolute value — the stats windows (30d, 24h)
+# are computed from now() at request time, so a fixed authoring-time
+# instant silently slides out of them as real time advances (the time
+# bomb that detonated 2026-10-19: the 30d window stopped covering the
+# ~6-day-old seeds and every CI run on every branch red). now() - 6 days
+# keeps the seeds ~6 days old on every run — inside the 30d window,
+# outside the 24h one, stable enough for the relative-time rendering to
+# hold across a module run.
+_BASE = datetime.now(UTC) - timedelta(days=6)
 _FAR_PAST = _BASE - timedelta(days=31)  # an aged event chunk on the converted table
 _FAR_FUTURE = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
 

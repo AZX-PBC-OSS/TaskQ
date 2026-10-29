@@ -116,6 +116,12 @@ async def _run_example(example: DocsExample, schema: str, pg_dsn: str, redis_url
             "TASKQ_PG_DSN": pg_dsn,
             "TASKQ_SCHEMA_NAME": schema,
             "TASKQ_REDIS_URL": redis_url,
+            # The adoption guides' fences import the repo's OWN examples
+            # (examples/docshelf/*) — the adopter's checkout IS the
+            # environment the fence teaches from; the drills' worker
+            # spawn carries the same discipline (the tests/conftest's
+            # PYTHONPATH: REPO_ROOT).
+            "PYTHONPATH": str(REPO_ROOT),
             # Hermetic: the developer's .env must not satisfy an example.
             "DOTENV_DIR": tmp,
         }

@@ -18,15 +18,16 @@ application code never pulls in test-only helpers.
 ## Contents
 
 1. [InMemoryBackend](#inmemorybackend)
-2. [FakeClock](#fakeclock)
-3. [run_until_drained](#run_until_drained)
-4. [Testing cancellation](#testing-cancellation)
-5. [Pytest fixtures](#pytest-fixtures)
-6. [OTel test utilities](#otel-test-utilities)
-7. [Assertions](#assertions)
-8. [Chaos testing](#chaos-testing)
-9. [Property-based testing](#property-based-testing)
-10. [Integration tests](#integration-tests)
+2. [Testing workflows (the real-PG face)](#testing-workflows-the-real-pg-face)
+3. [FakeClock](#fakeclock)
+4. [run_until_drained](#run_until_drained)
+5. [Testing cancellation](#testing-cancellation)
+6. [Pytest fixtures](#pytest-fixtures)
+7. [OTel test utilities](#otel-test-utilities)
+8. [Assertions](#assertions)
+9. [Chaos testing](#chaos-testing)
+10. [Property-based testing](#property-based-testing)
+11. [Integration tests](#integration-tests)
 
 ---
 
@@ -249,6 +250,99 @@ await backend.run_until_drained(cancel_polling=True)
     `failure_policy=AbortBatchAfter(...)` will have its consecutive-failure
     counter incremented, threshold checked, and remaining jobs cancelled on
     abort, all within the in-memory runner, no Postgres required.
+
+---
+
+## Testing workflows (the real-PG face)
+
+The workflow engine has **no `InMemoryBackend` surface** — the DAG's
+claim/CAS/hold machinery IS the Postgres rows' semantics (the ledger's
+arbiters, the hold identity, the sweep's clocks), so a fake backend
+would fake the very thing under test. That is a recorded-not-built row,
+deliberate: workflow tests run against **real Postgres** — a fresh
+schema, the migrations, a `FlowRunner`, and `drive()`'s bounded loop.
+The recipe, end to end (the fence executes under the docs-example
+harness):
+
+```python
+import asyncio
+import os
+
+import asyncpg
+import taskq.migrate
+from pydantic import BaseModel
+from taskq.workflows import (
+    FlowRunner,
+    Promise,
+    StepContext,
+    WorkflowApp,
+    build,
+    step,
+)
+
+
+class Quote(BaseModel):
+    n: int
+    doubled: int
+
+
+async def double_body(ctx: StepContext, n: int) -> Quote:
+    return Quote(n=n, doubled=n * 2)
+
+
+app = WorkflowApp()
+
+
+@app.workflow("t_doubler")
+def doubler() -> Promise[object]:
+    return build(step(double_body, 21, key="double"))
+
+
+async def main() -> None:
+    dsn = os.environ["TASKQ_PG_DSN"]
+    schema = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="pre")
+    await taskq.migrate.apply_pending_locked(dsn, schema=schema, phase="post")
+    pool = await asyncpg.create_pool(dsn)
+    runner = FlowRunner(app.get("t_doubler"), pool, schema)
+    flow_id = (await runner.create_flow()).flow_id
+    final = await runner.drive(flow_id)  # ticks to terminal, bounded
+    print(f"{final}: {await runner.result(flow_id)}")
+    await pool.close()
+
+
+asyncio.run(main())
+```
+
+Verified output (this guide's capture, on a fresh schema):
+
+```
+terminal: {'n': 21, 'doubled': 42}
+```
+
+The faces a workflow test drives, and the seam each one owns:
+
+* **the tick drive** — `runner.drive(flow_id)` dispatches + sweeps
+  until the flow's row is terminal (bounded by `max_ticks`; a hang is a
+  defect with a named verdict, `max_ticks`). `drive(flow_id,
+  until="held")` stops at the first hold — the seat for a human-gate or
+  timer test to take over.
+* **the hold face** — a body parked on `wait_signal` leaves a HELD ROW
+  (never a held worker slot); the test resolves it through
+  `HitlClient(pool, schema=schema)` — `.list(run=...)` to find it,
+  `.resolve(hold_id, payload)` to wake exactly its own node.
+* **the timer face** — a body parked on `wait_until` fires when
+  `sweep_due_timers(pool, schema=schema)` first passes its row's
+  `expires_at` (the DB clock decides; the test drives the sweep, never
+  a wall-clock sleep).
+* **the expiry face** — `sweep_expired_signals(pool, schema=...)` moves
+  a WAIT-site hold (a `timeout_s` was declared) to `abandoned`; the
+  body's resume returns the `Expired` member — the fail-close arm a
+  test asserts as a VALUE.
+* **the rows are the assertions** — a workflow test reads
+  `jobs` / `wf_step_ledger` / `wf_signals` directly (per-step attempt
+  counts, the hold's status vocabulary: `held` / `delivered` /
+  `abandoned`), the same rows-alone discipline the ops runbook teaches.
 
 ---
 

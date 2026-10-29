@@ -83,7 +83,13 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
+      # FULL history: the head-stamp verifier's teeth (merge-base
+      # --is-ancestor + the diff against each claim's recorded head)
+      # need the claims' heads resolvable in this checkout — a depth-1
+      # fetch would convict every PR on unresolvable heads.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-uv-env
 
@@ -92,6 +98,17 @@ jobs:
 
       - name: Check formatting
         run: uv run --no-sync ruff format --check .
+
+      # THE HEAD-STAMP LAW, IN CI (in seconds, at review time — not as a
+      # pytest pin buried in a 13k-test fill lane): every live claim on
+      # evidence/taskqflow must name THIS checkout's HEAD, or an
+      # ancestor of it whose diff touches nothing outside
+      # .measurements/. A change that stalifies the estate's claims
+      # reds HERE, with the verifier's own named verdicts.
+      - name: The head-stamp law (the evidence verifier)
+        run: |
+          git fetch --depth=1 origin evidence/taskqflow
+          uv run --no-sync python scripts/verify_evidence_heads.py
 
   typecheck:
     runs-on: ubuntu-latest
@@ -107,6 +124,33 @@ jobs:
 
       - name: Type check with pyright
         run: uv run --no-sync pyright src/taskq tests
+
+  type-probes:
+    # T01's negative type-probe corpus: the workflows API's wrong-shape
+    # calls MUST red on BOTH pinned checkers (pyright 1.1.414 + ty 0.0.85
+    # — the `typeprobe` group, pinned exactly; the exclude-newer
+    # quarantine is waived for ty because the pin IS the review). The
+    # corpus is checked under tests/typeprobe's own pyrightconfig.json —
+    # the root config's `tests` environment sets reportArgumentType=false,
+    # which would mute exactly the violations the probes assert. The gate
+    # script asserts per-marker coverage and CAN fail (drilled: an
+    # `entry: Any` door reverts the gate to red — recorded
+    # .measurements/attack/F9-red-type-gate.txt).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-uv-env
+        with:
+          # --locked is NOT repeated here: the shared action always adds it
+          # itself (its documented contract), and passing it again dies on
+          # uv's "the argument '--locked' cannot be used multiple times"
+          # before a single probe runs (the d24f17b9 CI conviction).
+          sync-args: --group typeprobe
+
+      - name: The MUST_ERROR corpus reds on both pinned checkers
+        run: uv run --no-sync python tests/typeprobe/_gate.py
 
   test:
     # The per-interpreter suite: ALL extras installed, the whole test suite
@@ -157,9 +201,24 @@ jobs:
     # +32.8% (per-worker setup duplication), and the coverage leg's tracer
     # taxes density-starved workers +22-55% wall (2026-09-22, below).
     # -n 4 is a win only with a dedicated core per worker.
+    # timeout 55: the suite's honest -n 2 runtime measured 39-41 min
+    # (2026-10-10: 39:16, 40:39, 41:33 across the runs) — the 45-min cap's
+    # 5-minute margin lost to runner variance twice (the runs
+    # 38049228451/38072348161: both test 3.12/3.14 legs cancelled at
+    # ~45:00 mid-suite, no failure inside them). The cap exists to catch
+    # HANGS (faulthandler 300s is the per-test net) — a 15-minute margin
+    # over the honest runtime still catches the hang class without
+    # racing the weather.
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
+    # fail-fast off: the matrix exists to answer "which interpreters still
+    # pass" in one run — cancelling the surviving legs on the first red
+    # hides exactly that (the 2026-10-10 run 38024700612: one leg's red
+    # orphan-terminated the 3.13/3.14 suites mid-run at 39m50, three
+    # "failures" none of which were interpreter defects). Same discipline
+    # as the PG deploy matrix below.
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
@@ -361,7 +420,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      # fetch-depth 0: the evidence-estate read face (tests/_evidence.py).
+      # The docs-honesty pins resolve MEASUREMENTS at COLLECTION time from
+      # origin/evidence/taskqflow when no local registry exists; a default
+      # shallow PR checkout fetches only the merge ref, the ref does not
+      # resolve, and the lane dies in collection before a single test runs
+      # (run 38346989984: slow-suite + load-sensitive, both legs, exit 1/2).
+      # Every leg that collects tests/ with fetch-depth 0 collected the
+      # same module GREEN in the same run — the depth is the cure, not a
+      # test change.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Defaults are exactly this family's environment: --all-extras --group
       # dev (redis included — the fleet and chaos tests are redis-marked, and
@@ -384,7 +454,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      # fetch-depth 0: the evidence-estate read face (tests/_evidence.py) —
+      # same reason as the slow-suite lane above: the docs-honesty pins'
+      # collection resolves origin/evidence/taskqflow, which a shallow
+      # checkout never provides (run 38346989984, exit 2 in collection).
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # The workflow-level pin (test_ci_workflow.py) requires Node on every
       # job whose pytest can reach tests/web_admin; keep it unconditional.
