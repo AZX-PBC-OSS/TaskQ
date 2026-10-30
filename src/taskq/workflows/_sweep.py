@@ -300,7 +300,11 @@ async def drain_outbox(
     crash between fire-commit and consumer-insert re-drains: the drain
     completes the dispatch EXACTLY ONCE (pin 20). The consumer's placement
     (actor/queue/payload) rides the outbox row's ``bindings`` — declared
-    on the JoinSpec, stamped at fork, resolved at fire.
+    on the JoinSpec, stamped at fork, resolved at fire. The consumer's
+    PRIORITY is the flow root's stamped per-call override (the wf-priority
+    cure — the fetch's SQL resolves the stamp with the fleet door's own
+    arithmetic, degrade-on-malformed, COALESCE to the column default): the
+    loop escalation's consumer materializes at the RUN's priority.
     """
     async with pool.acquire() as conn, conn.transaction():
         rows = await conn.fetch(wsql.outbox_fetch_undelivered, batch_size)
@@ -345,6 +349,14 @@ async def drain_outbox(
                 + (f":{r['map_index']}" if r["map_index"] is not None else "")
                 for r in rows
             ],
+            # THE RUN-PRIORITY STAMP'S RESOLUTION (the wf-priority cure's
+            # drain leg): the fetch's SQL resolved the flow root's stamped
+            # override with the fleet door's own arithmetic (parse +
+            # degrade-on-malformed/out-of-domain) and COALESCEd it to the
+            # column default — the consumer row materializes at the RUN's
+            # priority (the loop escalation's interactive follow-up), the
+            # unset case at the column default's own value (0).
+            [r["priority"] for r in rows],
         )
         await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
     return len(rows)

@@ -657,3 +657,329 @@ def test_the_vanilla_per_call_priority_law_is_untouched() -> None:
     assert declared.priority == 2, declared.priority
     overridden = build_enqueue_args(vanilla_body, Ingest(doc_id="d"), priority=9)
     assert overridden.priority == 9, overridden.priority
+
+
+# ── (h) the review's cures — the drain, the arm-body handles, the ────────
+#        adoption door, the post-parse domain clamp
+
+
+@pytest.mark.integration
+async def test_the_loop_escalation_materializes_at_the_run_priority(
+    wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
+) -> None:
+    """CURE 1 (review 3a-ii — the reviewer's preferred remedy): the
+    root's ``wf_priority`` stamp threads through the OUTBOX DRAIN —
+    ``run(priority=10)`` whose loop exhausts enqueues the escalation
+    through the outbox, and the drain's consumer INSERT lands the
+    escalation row's ``jobs.priority`` at 10 (the run's interactive
+    follow-up jumps the backlog with the run). The convicted variant:
+    the drain's insert omitted the priority column — the escalation, an
+    interactive run's most latency-sensitive follow-up, materialized at
+    the column default while the pin's own invariant ("the per-call face
+    governs rows materialized AFTER create too") held everywhere else."""
+    from taskq.workflows import Refine, loop
+    from taskq.workflows.api._loop import ESCALATION_STEP_KEY
+    from taskq.workflows.api._runner_errors import WorkflowRunError
+
+    async def never_done(ctx: StepContext, carry: object) -> object:
+        return Refine(1)
+
+    app = WorkflowApp()
+
+    @app.workflow("escalation-prio-flow")
+    def escalation_prio_flow() -> Promise[object]:
+        return build(loop("wall", never_done, max_iterations=2, initial=0))
+
+    # THE RUN FACE: the exhausted loop terminal-FAILS the flow, so the
+    # run's result face raises the failure's own error — AFTER the drive
+    # (the exhaust tx committed the escalation's outbox row, the tick's
+    # drain materialized the consumer). The per-call stamp rode the
+    # create; the escalation row is the subject.
+    with pytest.raises(WorkflowRunError, match="IterationLimitExhausted"):
+        await run(app.get("escalation-prio-flow"), wf_pool, wf_schema, priority=10)
+    escalation_row = await wf_conn.fetchrow(
+        f'SELECT priority FROM "{wf_schema}".jobs '  # noqa: S608
+        "WHERE step_key = $1 AND metadata ? 'flow_id' AND "
+        "(metadata->>'flow_id')::uuid IN ("
+        f"   SELECT (metadata->>'flow_id')::uuid FROM \"{wf_schema}\".jobs "
+        "   WHERE step_key = 'wall')",
+        ESCALATION_STEP_KEY,
+    )
+    assert escalation_row is not None, (
+        "the exhaust enqueued no escalation consumer row — the pin never "
+        "manifested the drain's subject"
+    )
+    assert int(escalation_row["priority"]) == 10, escalation_row["priority"]
+
+
+@pytest.mark.integration
+async def test_the_drain_materializes_consumers_at_the_stamped_priority(
+    wf_schema: str,
+    wf_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: Any,
+) -> None:
+    """CURE 1's direct drain face: an outbox row whose flow root stamps
+    ``wf_priority`` 7 — the drain's consumer INSERT lands the consumer's
+    ``jobs.priority`` at 7 (the stamp's own arithmetic, mirrored in the
+    drain's SQL: one join to the root's metadata + COALESCE to the column
+    default)."""
+    from tests._wf_fixtures import seed_flow
+
+    flow_id = await seed_flow(wf_conn, wf_schema)
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET metadata = metadata || $2::jsonb WHERE id = $1',  # noqa: S608
+        flow_id,
+        json.dumps({"wf_priority": 7}),
+    )
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".wf_outbox '  # noqa: S608
+        "(id, join_job_id, flow_id, consumer_step_key, bindings) "
+        "VALUES ($1, $2, $3, 'drained_consumer', $4::jsonb)",
+        new_uuid(),
+        new_uuid(),
+        flow_id,
+        json.dumps({"actor": "wf", "queue": "default", "payload": {}}),
+    )
+    from taskq.workflows._sweep import drain_outbox
+
+    delivered = await drain_outbox(module_pg_pool, wf_sql)
+    assert delivered == 1, delivered
+    consumer = await wf_conn.fetchrow(
+        f'SELECT priority FROM "{wf_schema}".jobs '  # noqa: S608
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'drained_consumer'",
+        flow_id,
+    )
+    assert consumer is not None, "the drain inserted no consumer row"
+    assert int(consumer["priority"]) == 7, consumer["priority"]
+
+
+@pytest.mark.integration
+async def test_the_drain_degrades_a_malformed_stamp_to_the_default(
+    wf_schema: str,
+    wf_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    wf_sql: Any,
+) -> None:
+    """CURE 1's degrade arm (the fleet door's own semantics, mirrored):
+    a stamp a hand-crafted row rendered unparseable ("abc") or
+    out-of-domain-but-parseable ("99999" — the smallint wedge) degrades
+    to the COLUMN DEFAULT (0) — the drain delivers, never wedges. A
+    priority is an ordering hint, never a correctness input worth
+    crashing the sweep on."""
+    from taskq.workflows._sweep import drain_outbox
+    from tests._wf_fixtures import seed_flow
+
+    for stamp in ("abc", "99999"):
+        flow_id = await seed_flow(wf_conn, wf_schema)
+        await wf_conn.execute(
+            f'UPDATE "{wf_schema}".jobs SET metadata = metadata || $2::jsonb WHERE id = $1',  # noqa: S608
+            flow_id,
+            json.dumps({"wf_priority": stamp}),
+        )
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".wf_outbox '  # noqa: S608
+            "(id, join_job_id, flow_id, consumer_step_key, bindings) "
+            "VALUES ($1, $2, $3, 'degraded_consumer', $4::jsonb)",
+            new_uuid(),
+            new_uuid(),
+            flow_id,
+            json.dumps({"actor": "wf", "queue": "default", "payload": {}}),
+        )
+        delivered = await drain_outbox(module_pg_pool, wf_sql)
+        assert delivered == 1, (stamp, delivered)
+        consumer = await wf_conn.fetchrow(
+            f'SELECT priority FROM "{wf_schema}".jobs '  # noqa: S608
+            "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'degraded_consumer'",
+            flow_id,
+        )
+        assert consumer is not None, (stamp, "the drain inserted no consumer row")
+        assert int(consumer["priority"]) == 0, (stamp, consumer["priority"])
+
+
+@pytest.mark.integration
+async def test_map_body_handle_priority_reaches_the_children(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """CURE 2 (review F3 — the map's face): a map body that is an
+    ``@app.actor(priority=5)`` HANDLE — the arm children resolve the
+    handle's declared 5 (the actor level of the law). The convicted
+    variant: the runner's only priority readers were the four
+    ``_resolve_priority`` sites — a handle body's declaration dropped
+    SILENTLY (the identical shape fails CLOSED for capacity terms —
+    H-A4's never-a-silent-drop law). The handle's value NEVER folds into
+    the source node: the source's own row and the JOIN stay at the
+    source's resolution."""
+    app = WorkflowApp()
+
+    @app.actor(priority=5)
+    async def prio_item_body(ctx: StepContext, item: str) -> str:
+        return item  # pragma: no cover - the runner drives real bodies
+
+    @app.workflow("map-handle-prio-flow")
+    def map_handle_prio_flow() -> Promise[object]:
+        source = step(_list_source, Ingest(doc_id="d"), key="src")
+        mapped = map_source(source, prio_item_body)
+        return build(mapped)
+
+    runner = FlowRunner(app.get("map-handle-prio-flow"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    state = await runner.drive(flow_id, until="terminal", max_ticks=500)
+    assert state == "terminal", state
+
+    rows = _rows_priority(await _flow_rows(wf_pool, wf_schema, flow_id))
+    item_rows = {k: v for k, v in rows.items() if k.startswith("src.item")}
+    assert item_rows and all(v == 5 for v in item_rows.values()), rows
+    assert rows["src.join"] == 0, rows
+    assert rows["src"] == 0, rows
+
+
+@pytest.mark.integration
+async def test_route_arm_body_handle_priority_reaches_that_arms_children(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """CURE 2 (review F3 — the route's face): ``RouteArm(body=handle)``
+    where the handle declares 5 — THAT arm's children resolve 5 (the
+    actor level), the OTHER arm's children stay at the source's declared
+    2, and the JOIN stays the source's 2 (the per-arm level is per-ARM —
+    never folded into the source node, which would cross-contaminate the
+    other arms and the join)."""
+    app = WorkflowApp()
+
+    @app.actor(priority=5)
+    async def prio_image_arm(ctx: StepContext, item: Image) -> Report:
+        return Report(ref=item.uri)  # pragma: no cover - the runner drives real bodies
+
+    @app.workflow("arm-handle-prio-flow")
+    def arm_handle_prio_flow() -> Promise[object]:
+        src = step(_source_body, Ingest(doc_id="d"), key="src", priority=2)
+        routed = map_source(
+            src,
+            {Image: RouteArm(body=prio_image_arm), Audio: RouteArm(body=_audio_arm)},
+        )
+        return build(routed)
+
+    runner = FlowRunner(app.get("arm-handle-prio-flow"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    state = await runner.drive(flow_id, until="terminal", max_ticks=500)
+    assert state == "terminal", state
+
+    rows = await _flow_rows(wf_pool, wf_schema, flow_id)
+    by_key = {row["step_key"]: int(row["priority"]) for row in rows}
+    image_rows = {k: v for k, v in by_key.items() if k.startswith("src.item:") and "Image" in k}
+    audio_rows = {k: v for k, v in by_key.items() if k.startswith("src.item:") and "Audio" in k}
+    assert image_rows and all(v == 5 for v in image_rows.values()), by_key
+    assert audio_rows and all(v == 2 for v in audio_rows.values()), by_key
+    assert by_key["src.join"] == 2, by_key
+
+
+@pytest.mark.integration
+async def test_the_adoption_drive_resolves_the_run_priority_from_the_row(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """CURE 3 (review F2 — the dev door's arbiter-adoption path): the
+    first create crashes (the echo died with the process); the re-drive's
+    FRESH runner adopts the existing run — the per-call level resolves
+    from the ROOT'S STAMP (one bounded PK read — the fleet door's own
+    SELECT shape), so the fork's children land at 6. The re-drive passes
+    NO kwarg: the row is the law, never the echo. The convicted variant:
+    the echo was set only inside ``if complete:`` — the adoption drove
+    with ``_run_priority = None`` and forked the children at the
+    declarations while the root's stamp said 6 (one run, split cohort)."""
+    app = WorkflowApp()
+
+    @app.workflow("adopt-prio-flow")
+    def adopt_prio_flow() -> Promise[object]:
+        source = step(_list_source, Ingest(doc_id="d"), key="src")
+        mapped = map_source(source, _item_body)
+        return build(mapped)
+
+    compiled = app.get("adopt-prio-flow")
+    first = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (
+        await first.create_flow(input=Ingest(doc_id="d"), run_key="adopt:prio", priority=6)
+    ).flow_id
+
+    # THE MID-RUN ADOPTION: a fresh runner (the crashed process's echo is
+    # gone) adopts the existing run and drives it.
+    second = FlowRunner(compiled, wf_pool, wf_schema)
+    claim = await second.create_flow(input=Ingest(doc_id="d"), run_key="adopt:prio")
+    assert not claim.created, claim
+    assert claim.flow_id == flow_id, claim
+    state = await second.drive(flow_id, until="terminal", max_ticks=500)
+    assert state == "terminal", state
+
+    rows = _rows_priority(await _flow_rows(wf_pool, wf_schema, flow_id))
+    item_rows = {k: v for k, v in rows.items() if k.startswith("src.item")}
+    assert item_rows and all(v == 6 for v in item_rows.values()), rows
+    assert rows["src.join"] == 6, rows
+
+
+@pytest.mark.integration
+async def test_the_fleet_door_degrades_an_out_of_domain_stamp(
+    wf_schema: str,
+    wf_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+) -> None:
+    """CURE 4 (the review's recommended — the post-parse domain clamp):
+    a hand-crafted root stamp ``wf_priority="99999"`` — PARSEABLE, past
+    the smallint domain — degraded to NO override (the declarations — or
+    the column default — speak) and the fork PROCEEDED. The convicted
+    variant: the parse accepted 99999 and the fork's smallint bind
+    WEDGED the door (the DataError mid-finalize — the fork never landed,
+    the run parked)."""
+    app = WorkflowApp()
+
+    @app.workflow("clamp-prio-flow")
+    def clamp_prio_flow() -> Promise[object]:
+        source = step(_list_source, Ingest(doc_id="d"), key="src", priority=2)
+        mapped = map_source(source, _item_body)
+        return build(mapped)
+
+    runner = FlowRunner(app.get("clamp-prio-flow"), module_pg_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET metadata = metadata || $2::jsonb WHERE id = $1',  # noqa: S608
+        flow_id,
+        json.dumps({"wf_priority": "99999"}),
+    )
+
+    for config in project_workflow_actor_configs():
+        await wf_conn.execute(
+            f'INSERT INTO "{wf_schema}".actor_config (actor, queue) VALUES ($1, $2) '  # noqa: S608
+            "ON CONFLICT (actor) DO NOTHING",
+            config.actor,
+            config.queue,
+        )
+    worker_id = new_uuid()
+    await wf_conn.execute(
+        f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, metadata) '  # noqa: S608
+        "VALUES ($1, 'prio-clamp-pin', 1, '{default}', $2::jsonb)",
+        worker_id,
+        json.dumps({"workflow_execution": True}),
+    )
+    dispatched = await dispatch_batch(
+        wf_conn,
+        sql=DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema),
+        queues=["default"],
+        limit_n=5,
+        worker_id=worker_id,
+        lock_lease=timedelta(seconds=30),
+    )
+    assert len(dispatched) == 1, dispatched
+
+    from taskq.backend._records import _job_row_from_record
+
+    # THE DOOR PROCEEDS: no raise, the fork lands at the DECLARED 2 (the
+    # stamp degraded to no-override — the declaration speaks).
+    await execute_flow_job(
+        pool=module_pg_pool,
+        schema=wf_schema,
+        worker_id=JobId(worker_id),
+        job=_job_row_from_record(dispatched[0]),
+    )
+    rows = await _flow_rows(module_pg_pool, wf_schema, flow_id)
+    by_key = {row["step_key"]: int(row["priority"]) for row in rows}
+    item_rows = {k: v for k, v in by_key.items() if k.startswith("src.item")}
+    assert item_rows and all(v == 2 for v in item_rows.values()), by_key
+    assert by_key["src.join"] == 2, by_key

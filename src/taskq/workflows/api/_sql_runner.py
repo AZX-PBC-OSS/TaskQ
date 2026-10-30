@@ -201,6 +201,19 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND step_key <> '__flow__'
 """
 
+#: THE ROOT'S PRIORITY-STAMP READ (the wf-priority cure's ADOPTION leg —
+#: review F2's cure): ONE bounded primary-key read of the root's
+#: metadata, the fleet door's own SELECT shape
+#: (``_CLAIMED_NODE_READ_SQL_TEMPLATE``'s stamp leg). The arbiter adopted
+#: an EXISTING run — its root stamp is its own truth (the row is the law,
+#: never the echo): the adopting dev door resolves the run's per-call
+#: override from HERE, so a re-drive forks its rows at the same priority
+#: the create stamped (never the declarations — one run, one cohort).
+ROOT_PRIORITY_STAMP_SQL_TEMPLATE = """
+SELECT metadata->>'wf_priority' AS wf_priority
+FROM {schema}.jobs WHERE id = $1
+"""
+
 FLOW_STATUS_SQL_TEMPLATE = """
 SELECT status FROM {schema}.jobs WHERE id = $1
 """

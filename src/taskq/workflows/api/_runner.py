@@ -118,6 +118,7 @@ from taskq.workflows.api._sql_runner import (
     NODE_BY_STEP_KEY_SQL_TEMPLATE,
     NODE_CLAIM_SQL_TEMPLATE,
     PARENT_RESULTS_BY_KEY_SQL_TEMPLATE,
+    ROOT_PRIORITY_STAMP_SQL_TEMPLATE,
     ROOT_START_SQL_TEMPLATE,
     SKIPPED_RESULT,
     SUCCEEDED_RESULTS_SQL_TEMPLATE,
@@ -381,7 +382,36 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 # never the insert's pre-start 'pending' (the envelope
                 # never lies about the state it handed back).
                 claim = replace(claim, status="running")
+            else:
+                # THE ADOPTION'S ECHO (review F2's cure — the dev door's
+                # arbiter-adoption path): the claim returned an EXISTING
+                # run — the create-time echo above never ran, so the
+                # per-call level resolves from the ROOT'S STAMP (ONE
+                # bounded PK read, the fleet door's own SELECT shape):
+                # the row is the law at BOTH doors. A re-drive of a run
+                # created with ``priority=6`` forks its rows at 6 even
+                # when the re-drive passes no kwarg — the adopted run's
+                # stamp is its own truth, and the fork's cohort never
+                # splits (the children riding the declarations while the
+                # root says 6 was the convicted shape).
+                self._run_priority = await self._adopted_run_priority(conn, claim.flow_id)
         return claim
+
+    async def _adopted_run_priority(self, conn: ConnLike, flow_id: JobId) -> int | None:
+        """THE ADOPTED RUN'S PER-CALL OVERRIDE (review F2's cure): the
+        root's stamped ``wf_priority``, resolved with the FLEET DOOR'S OWN
+        ARITHMETIC (the same parse-and-degrade — a stamp a hand-crafted
+        row rendered unparseable degrades to NO override, never a door
+        death). ``None`` = no override stamped (the declarations — or the
+        column default — speak)."""
+        read = await conn.fetchrow(
+            render_sql(ROOT_PRIORITY_STAMP_SQL_TEMPLATE, self.schema), flow_id
+        )
+        raw_priority: object | None = read["wf_priority"] if read is not None else None
+        try:
+            return int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
+        except (TypeError, ValueError):
+            return None
 
     async def _node_census(self, conn: ConnLike, flow_id: JobId) -> int:
         """The run's node-row count — the orphan's census (a nodeless
@@ -1735,7 +1765,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         cure): the children AND the join land at the RESOLVED priority —
         the override > the source node's declaration > the column
         default (the children share the source's cohort, so the source's
-        resolution is theirs)."""
+        resolution is theirs). A map body wired as an ``@app.actor``
+        HANDLE adds ITS declared priority as the CHILDREN'S actor level
+        (the review F3 cure — never folded into the source node); the
+        join stays the source's resolution."""
         from taskq.workflows._emit import MapIndexExhaustedError
         from taskq.workflows._types import MAP_INDEX_CEILING, ConsumerBinding
 
@@ -1764,7 +1797,25 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # map's children share the source's cohort — the source's
         # resolution is theirs (per-call override > the source node's
         # declaration > the column default).
-        child_priority = _resolve_priority(run_priority, node.priority)
+        # THE MAP BODY HANDLE'S OWN LEVEL (review F3's cure — the
+        # never-a-silent-drop law, the capacity terms' own H-A4 shape): a
+        # map body wired as an ``@app.actor(priority=…)`` HANDLE carries
+        # its declaration as the CHILDREN'S actor level — read here, at
+        # the fork, NEVER folded into the source node (the source's row
+        # and the join are the source's own cohort; the handle's value
+        # would cross-contaminate them).
+        from taskq.workflows.api._app import (
+            WorkflowActor,  # the cycle-break (inner_fn's own pattern)
+        )
+
+        map_body_priority = (
+            node.map_item.priority if isinstance(node.map_item, WorkflowActor) else None
+        )
+        child_priority = _resolve_priority(run_priority, map_body_priority, node.priority)
+        # THE JOIN'S LEVEL = THE SOURCE'S RESOLUTION (the map body
+        # handle's declaration governs the CHILDREN only — the join stays
+        # the source's own).
+        source_priority = _resolve_priority(run_priority, node.priority)
         bindings = tuple(
             ConsumerBinding(
                 step_key=downstream,
@@ -1823,8 +1874,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             ),
             max_attempts=node.map_max_attempts,
             # THE JOIN'S PRIORITY = THE SOURCE'S RESOLUTION (the
-            # wf-priority cure): the join is the source's own cohort.
-            priority=child_priority,
+            # wf-priority cure): the join is the source's own cohort — the
+            # map body handle's declaration governs the CHILDREN only.
+            priority=source_priority,
         )
 
     def _route_fork(
@@ -1864,6 +1916,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         ``run_priority`` is the RUN's per-call override (the wf-priority
         cure): each ARM's children resolve the law's levels — the
         override > the ARM's own ``priority=`` (the down-override) > the
+        arm body HANDLE's declaration (the actor level — review F3's
+        cure, read per arm and never folded into the source node) > the
         source node's declaration > the column default; the JOIN (the
         source's own cohort — the arm overrides never retouch it) lands
         at the SOURCE's resolution."""
@@ -1880,6 +1934,23 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # join (the join is the source's own cohort, the placement
         # fields' law).
         source_priority = _resolve_priority(run_priority, node.priority)
+        # THE PER-ARM HANDLE LEVEL (review F3's cure — the
+        # never-a-silent-drop law, the capacity terms' own H-A4 shape):
+        # an arm body wired as an ``@app.actor(priority=…)`` HANDLE
+        # carries its declaration as THAT ARM'S actor level — read per
+        # arm here, at the fork, NEVER folded into the source node (the
+        # other arms and the join would cross-contaminate).
+        from taskq.workflows.api._app import (
+            WorkflowActor,  # the cycle-break (inner_fn's own pattern)
+        )
+
+        arms_typed = cast(
+            "dict[str, Any]", node.map_arms or {}
+        )  # Why: the compiled NodeDecl is Any-typed here — the cast names the arms' dict shape the walk reads.
+        arm_handle_priorities: dict[str, int | None] = {
+            arm_tag: arm.body.priority if isinstance(arm.body, WorkflowActor) else None
+            for arm_tag, arm in arms_typed.items()
+        }
         join_key = f"{row['step_key']}.join"
         bindings = tuple(
             ConsumerBinding(
@@ -1955,11 +2026,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     ),
                     # THE CHILD'S RESOLVED PRIORITY (the wf-priority
                     # cure): the arm's DOWN-OVERRIDE — the override > the
-                    # arm's own declaration > the source node's
-                    # declaration > the column default. ``None`` on the
-                    # arm means the source's resolution applies (the arm
-                    # overrides DOWN from the source, never up).
-                    priority=_resolve_priority(run_priority, arm.priority, node.priority),
+                    # arm's own declaration > the arm body HANDLE's
+                    # declaration (the actor level — review F3's cure)
+                    # > the source node's declaration > the column
+                    # default. ``None`` on a level means it declares
+                    # nothing (the arm overrides DOWN from the source,
+                    # never up).
+                    priority=_resolve_priority(
+                        run_priority,
+                        arm.priority,
+                        arm_handle_priorities.get(tag),
+                        node.priority,
+                    ),
                 )
             )
         spec = ForkSpec(

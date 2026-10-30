@@ -93,6 +93,37 @@ shipped with; each was closed on the fixing branch before merge.
 - **Absorbed crashes**: teardown reaping that suppressed a residue task's
   real exception. Silent swallowing is a defect even in test infrastructure.
 
+## Ledgered follow-ups (the reviewed cures' known open faces)
+
+A reviewed cure's known-but-open face, itemized with the same rigor as the
+fix holes above: what the curing commit covers, what stays open, and the
+discipline the open part's future cure owes.
+
+- **The chains' priority DECLARATION face** (the wf-priority cure's
+  ledgered follow-up — the feature review's own itemization). The
+  priority surface's precedence law resolves every row it materializes —
+  except a chain link's own declaration, which has no face today:
+  `EmitChild`, `chain_start`, and `Chain.next_child` (chain.py's emit
+  child specs, the chain's fork children) accept no `priority` field, so
+  `chain_fork` always resolves the column default — a consumer declaring
+  per-chain-link priorities silently lands every link at 0, the exact
+  silent-drop shape the priority cure's other faces refuse at their
+  declaration sites. COVERED by the wf-priority cure: the rows the OUTBOX
+  DRAIN materializes (the loop escalation's consumer — an interactive
+  run's most latency-sensitive follow-up — and the fired joins' fresh
+  item-shape consumers) resolve the run's stamped `wf_priority` (the
+  drain's root-metadata join + COALESCE, the fleet door's parse-and-
+  degrade arithmetic mirrored in SQL; pinned red-first in
+  tests/test_wf_priority_pins.py: the escalation lands at the run's
+  override, a malformed or out-of-domain stamp degrades to the column
+  default, never wedges the drain). OPEN: the chains' DECLARATION face —
+  a `priority=` on the chain's links (the `EmitChild` field, the
+  `chain_start`/`next_child` plumbing, and the smallint-domain refusal at
+  the declaration site — `check_priority_domain`, the same law every
+  other priority face keeps). The future cure's red-first pin: a chain
+  declaring per-link priorities lands its emit-start and link rows at
+  the declared values (today's rows are the default-0 conviction).
+
 ## The rules the campaign operates under
 
 - A rerun is not evidence. Every red gets the chain: symptom, mechanism,

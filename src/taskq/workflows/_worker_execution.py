@@ -53,6 +53,7 @@ from uuid import UUID
 
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import JobId, JobRow
+from taskq.constants import check_priority_domain
 from taskq.obs import get_logger
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -928,11 +929,23 @@ async def execute_flow_job(
     # declarations — or the column default — speak; a priority is an
     # ordering hint, never a correctness input worth crashing the door
     # on), never a door death.
+    # THE POST-PARSE DOMAIN CLAMP (the review's recommended cure): the
+    # parse alone is not enough — a PARSEABLE stamp past the smallint
+    # column's domain ("99999") wedged the fork at the bind (the
+    # DataError mid-finalize — the run parked). ``check_priority_domain``
+    # (the same refusal every layer that accepts a priority raises, read
+    # as a PREDICATE here) demotes the out-of-domain value to the same
+    # no-override degrade.
     raw_priority: object | None = read["wf_priority"]
     try:
-        run_priority = int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
+        parsed_priority = (
+            int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
+        )
+        if parsed_priority is not None:
+            check_priority_domain(parsed_priority, what="the root's wf_priority stamp")
     except (TypeError, ValueError):
-        run_priority = None
+        parsed_priority = None
+    run_priority = parsed_priority
     row = {
         "id": job.id,
         "step_key": read["step_key"],
