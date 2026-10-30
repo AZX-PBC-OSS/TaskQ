@@ -916,6 +916,52 @@ async def test_the_adoption_drive_resolves_the_run_priority_from_the_row(
 
 
 @pytest.mark.integration
+async def test_the_adoption_drive_degrades_an_out_of_domain_stamp(
+    wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
+) -> None:
+    """THE ADOPTION DOOR'S POST-PARSE DOMAIN CLAMP (the re-review's
+    one-line residual — cure 4's own law at the adopt door): a
+    hand-crafted root stamp ``wf_priority="99999"`` — PARSEABLE, past the
+    smallint domain — degrades to NO override at the ADOPT door too, and
+    the adopted drive PROCEEDS (the children + the join at the source's
+    DECLARED 2, never parked). The convicted variant: the adopt door
+    parsed with ``int()`` alone — the 99999 rode to the fork's smallint
+    bind and WEDGED the re-drive (the same DataError mid-finalize cure 4
+    closed on the fleet door; the two doors share one arithmetic)."""
+    app = WorkflowApp()
+
+    @app.workflow("adopt-clamp-prio-flow")
+    def adopt_clamp_prio_flow() -> Promise[object]:
+        source = step(_list_source, Ingest(doc_id="d"), key="src", priority=2)
+        mapped = map_source(source, _item_body)
+        return build(mapped)
+
+    compiled = app.get("adopt-clamp-prio-flow")
+    first = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await first.create_flow(input=Ingest(doc_id="d"), run_key="adopt:clamp")).flow_id
+    # THE HAND-CRAFTED STAMP: parseable, out of the smallint domain (the
+    # create's own door refuses the kwarg — the corruption-only shape).
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".jobs SET metadata = metadata || $2::jsonb WHERE id = $1',  # noqa: S608
+        flow_id,
+        json.dumps({"wf_priority": "99999"}),
+    )
+
+    # THE ADOPTED DRIVE: a fresh runner adopts the existing run and
+    # drives it — the stamp's resolution degrades, the declarations speak.
+    second = FlowRunner(compiled, wf_pool, wf_schema)
+    claim = await second.create_flow(input=Ingest(doc_id="d"), run_key="adopt:clamp")
+    assert not claim.created, claim
+    state = await second.drive(claim.flow_id, until="terminal", max_ticks=500)
+    assert state == "terminal", state
+
+    rows = _rows_priority(await _flow_rows(wf_pool, wf_schema, claim.flow_id))
+    item_rows = {k: v for k, v in rows.items() if k.startswith("src.item")}
+    assert item_rows and all(v == 2 for v in item_rows.values()), rows
+    assert rows["src.join"] == 2, rows
+
+
+@pytest.mark.integration
 async def test_the_fleet_door_degrades_an_out_of_domain_stamp(
     wf_schema: str,
     wf_conn: asyncpg.Connection,

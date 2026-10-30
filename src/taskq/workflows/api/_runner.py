@@ -400,18 +400,27 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     async def _adopted_run_priority(self, conn: ConnLike, flow_id: JobId) -> int | None:
         """THE ADOPTED RUN'S PER-CALL OVERRIDE (review F2's cure): the
         root's stamped ``wf_priority``, resolved with the FLEET DOOR'S OWN
-        ARITHMETIC (the same parse-and-degrade — a stamp a hand-crafted
-        row rendered unparseable degrades to NO override, never a door
-        death). ``None`` = no override stamped (the declarations — or the
-        column default — speak)."""
+        ARITHMETIC — the same parse → post-parse DOMAIN CLAMP → degrade
+        (a stamp a hand-crafted row rendered unparseable OR out of the
+        smallint domain degrades to NO override, never a door death;
+        ``check_priority_domain`` is the predicate, the exception the
+        degrade). ``None`` = no override stamped (the declarations — or
+        the column default — speak)."""
+        from taskq.constants import check_priority_domain
+
         read = await conn.fetchrow(
             render_sql(ROOT_PRIORITY_STAMP_SQL_TEMPLATE, self.schema), flow_id
         )
         raw_priority: object | None = read["wf_priority"] if read is not None else None
         try:
-            return int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
+            parsed_priority = (
+                int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
+            )
+            if parsed_priority is not None:
+                check_priority_domain(parsed_priority, what="the root's wf_priority stamp")
         except (TypeError, ValueError):
-            return None
+            parsed_priority = None
+        return parsed_priority
 
     async def _node_census(self, conn: ConnLike, flow_id: JobId) -> int:
         """The run's node-row count — the orphan's census (a nodeless

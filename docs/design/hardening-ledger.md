@@ -123,6 +123,35 @@ discipline the open part's future cure owes.
   other priority face keeps). The future cure's red-first pin: a chain
   declaring per-link priorities lands its emit-start and link rows at
   the declared values (today's rows are the default-0 conviction).
+- **The drain's regex guard passes beyond-int4 digit strings to the
+  `::int` cast** (the wf-priority cure's drain residual — the
+  re-review's own ledger line). `OUTBOX_FETCH_UNDELIVERED_SQL`'s stamp
+  resolution guards the stamp text with `^[+-]?[0-9]+$` and then casts
+  `(metadata->>'wf_priority')::int` inside the smallint `BETWEEN` guard
+  (_sql_sweep.py:326-328). A digit string past int4's domain
+  ("99999999999" — the regex PASSES it) makes the CAST RAISE in
+  Postgres (`value ... is out of range for type integer`), erroring the
+  whole drain statement — where the fleet door's Python parse degrades
+  the same stamp to no-override (Python's int is arbitrary-precision;
+  `check_priority_domain` is the clamp). The two doors diverge on
+  exactly the stamp a hand-crafted row can carry. CORRUPTION-ONLY and
+  unreachable via the API: `create_flow`/`run` validate the kwarg
+  (`check_priority_domain`) before the stamp is ever written — only a
+  hand-crafted row renders the shape, and it is the review's own
+  prescribed regex-guard shape's property, not an introduced defect's.
+  Blast radius if hit: one bad root parks EVERY flow's consumer drain
+  behind it (the fetch is a shared batch — the raise kills the pass).
+  OPEN (the future hardening's shape, either arm): length-bound the
+  regex so the cast cannot see a digit string past int4 (a
+  `{1,9}`-shaped digit cap), or cast `::numeric` FIRST and put the
+  smallint `BETWEEN` on the numeric — the raise becomes the guard's own
+  false-arm, the degrade reaching the COALESCE untouched. The
+  red-first pin's design: seed a flow root with
+  `wf_priority="99999999999"` and one undelivered outbox row, run
+  `drain_outbox` — today the statement raises (the drain wedges; the
+  red), post-hardening the consumer lands at the column default 0 and
+  the outbox flips delivered (the green — the same degrade-to-default
+  law the in-domain malformed stamps already pin).
 
 ## The rules the campaign operates under
 
