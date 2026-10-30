@@ -308,7 +308,7 @@ bound, archive and truncate the table deliberately on your own schedule.
 
 ## Routes
 
-All `GET` routes are read-only HTML pages. `POST` routes (cancel, retry, schedule management, rate-limit reset) are CSRF-protected write operations. Every page is reachable from the top navigation bar (Queues, Jobs, History, Workers, Actors, Batches, Schedules, Rate Limits, Reservations, Leader); the job detail page is linked from any job ID in the lists.
+All `GET` routes are read-only HTML pages. `POST` routes (cancel, retry, schedule management, rate-limit reset) are CSRF-protected write operations. Every page is reachable from the top navigation bar (Queues, Jobs, History, Insights, Workers, Actors, Batches, Workflows, Schedules, Rate Limits, Reservations, Leader); the job detail page is linked from any job ID in the lists.
 
 Every route checks its database connection out with a bound: a checkout that does not arrive within `TASKQ_ADMIN_ACQUIRE_TIMEOUT` (default 5 s; the pool is exhausted or Postgres is not answering) is answered with `503` and `Retry-After: 2`, and logged as `pool-acquire-timeout` with the pool's occupancy. The query itself is bounded by the pool's `command_timeout` (`taskq ui serve` sets one).
 
@@ -328,7 +328,7 @@ The **Stranded** column counts pending and scheduled rows whose routing queue ca
 
 ### `GET /admin/queues/{queue}`
 
-Queue detail page. Lists jobs in the named queue filtered by `status` (query parameter; allowed values: `pending`, `scheduled`, `running`; default: `pending`). Results are paginated at 100 rows using keyset pagination on `(scheduled_at, id)`.
+Queue detail page. Lists jobs in the named queue filtered by `status` (query parameter; allowed values: `pending`, `scheduled`, `running`, `failed`, `crashed`, `abandoned`, `cancelled`, `succeeded` — anything else is `400`; default: `pending`). Results are paginated at 100 rows using keyset pagination on `(scheduled_at, id)`.
 
 **Query parameters:**
 
@@ -566,7 +566,7 @@ Deregisters an actor. Form fields:
 - `purge_queue`: checkbox; deletes the orphaned queues row
 
 Response codes:
-- `303`: success, redirects to `/actors?notice=deregistered+{actor}`
+- `303`: success, redirects to `/actors?notice=deregistered` (the notice is a fixed key rendered as "Actor deregistered successfully." — the actor's identity and the action's full scope live in the audit trail, not the URL)
 - `403`: admin actions disabled or CSRF validation failed
 - `404`: actor not found (no `actor_config` row)
 - `409`: actor has active jobs or enabled schedules (force=False)
@@ -583,7 +583,7 @@ Returns `404` if the batch id is unknown; renders the batches-not-installed noti
 
 ### `GET /admin/sse/{topic}`
 
-SSE (Server-Sent Events) endpoint over a PG `LISTEN` on the schema's events channel. `topic` is one of `jobs`, `workers`, `queues`, `history` (anything else is `400`). On connect it emits an initial `event: status` frame with `{"status": "awaiting_progress_backend"}`, then `event: state_change` frames as NOTIFY payloads arrive and `: keepalive` comments every 30 seconds. The jobs page is its only consumer today. Capped per topic by `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`; see [How pages refresh](#how-pages-refresh) below.
+SSE (Server-Sent Events) endpoint over a PG `LISTEN` on the schema's events channel. `topic` is one of `jobs`, `workers`, `queues`, `history`, `holds` (anything else is `400`). The first four are state feeds: on connect they emit an initial `event: status` frame with `{"status": "awaiting_progress_backend"}`, then `event: state_change` frames as NOTIFY payloads arrive and `: keepalive` comments every 30 seconds — the jobs page is that feed's only page consumer. `holds` is the HITL broadcast face (T26): the typed listener's events (`HoldCreated` / `HoldResolved` / `HoldExpired` / `Backfilled`) as `hold` frames, with the open holds BACKFILLED at subscribe (a page render sees the pending approvals without a poll); the `Backfilled` reconcile snapshot drops any hold card a later outage disowned. The resolve/deliver door is unchanged — this is the read face only. Capped per topic by `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`; see [How pages refresh](#how-pages-refresh) below.
 
 ### `GET /admin/sse/mode`
 
@@ -764,8 +764,8 @@ All pages remain fully functional; data is just slightly less fresh than in real
 
 `GET /admin/sse/{topic}` bounds concurrent connections per topic with an
 independent `asyncio.Semaphore` sized to `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`.
-Valid topics are `jobs`, `workers`, `queues`, and `history`; each gets its own
-semaphore. When the semaphore is full, new connections receive
+Valid topics are `jobs`, `workers`, `queues`, `history`, and `holds`; each
+gets its own semaphore. When the semaphore is full, new connections receive
 `429 Too Many Requests` immediately. The per-job progress stream is capped the
 same way by `TASKQ_PROGRESS_MAX_SSE_CONNECTIONS`. Every stream holds a Postgres
 `LISTEN` connection or a Redis pub/sub subscription and an asyncio task for as

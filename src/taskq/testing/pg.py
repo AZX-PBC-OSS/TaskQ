@@ -104,15 +104,34 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     # The workflow ledger tables (01.00.24) are FK-less by design (the
     # no-FK decision), so the CASCADE below never reaches them: they are
     # truncated explicitly, in child-first order, or a workflow-scoped
-    # suite inherits the previous test's ledger rows.
+    # suite inherits the previous test's ledger rows. wf_signals and
+    # wf_node_progress (01.00.28/01.00.29) are FK-less the same way —
+    # unlisted, their rows survive the reset as orphans (the jobs
+    # truncate strands them), and the retention arms' orphan-root leg
+    # turns last test's rows into this test's phantom deletes.
     "wf_outbox",
     "wf_join_fire",
     "wf_step_ledger",
     "wf_edge",
+    "wf_signals",
+    "wf_node_progress",
+    # wf_node_stream (01.00.29_01) is FK-less like its ledger kin — and
+    # it was MISSING from this list once (the round-2 R3's conviction):
+    # a dead node's ring survived the reset, the last test's rows
+    # leaked into the next test's counts. The STREAM channel truncates
+    # with the STATE channel or not at all.
+    "wf_node_stream",
     # The cross-run step cache (T25) is FK-less like its ledger kin (the
     # no-FK decision) — the CASCADE never reaches it; a cache-asserting
     # suite must not see the previous test's entries.
     "wf_step_cache",
+    # The rootless walks' persisted cursors (01.00.36_01) are mutable
+    # test state: a cursor advanced by one test would bias the next
+    # test's walk. The migration seeds the per-arm rows; after a
+    # truncate a walk answers NULL-cursor = from-the-start and re-seeds
+    # the row through its own UPSERT (the job_events_prune_state
+    # precedent's reset contract).
+    "wf_rootless_sweep_state",
     "reservation_slots",
     "rate_limit_window_entries",
     "rate_limit_buckets",

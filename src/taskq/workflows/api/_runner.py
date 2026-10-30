@@ -85,7 +85,12 @@ from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._ctx import StepContext, build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
-from taskq.workflows.api._graph import Exit, rate_limit_names, route_child_key
+from taskq.workflows.api._graph import (
+    Exit,
+    rate_limit_names,
+    reservation_names,
+    route_child_key,
+)
 from taskq.workflows.api._runner_chain import ChainOps
 from taskq.workflows.api._runner_codec import (
     FlowEntryShim,
@@ -383,18 +388,23 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 deps_pending=0,
                 max_attempts=node.max_attempts,
             )
-            # THE STATIC ROW'S OWN TERMS (CURE 2): a step declaring
-            # rate_limits carries the names on its metadata (the claim
-            # path's read); the no-bucket rows keep the base shape
-            # byte-identical.
+            # THE STATIC ROW'S OWN TERMS (CURE 2 + H-A1): a step
+            # declaring rate_limits carries the bucket names on its
+            # metadata, and a step declaring RESERVATIONS carries their
+            # NAMES beside them (the claim path's read — the gate
+            # resolves the names through the resolved registry); the
+            # no-terms rows keep the base shape byte-identical.
             row_meta = (
                 _row_metadata(
                     flow_id,
                     rate_limits=rate_limit_names(
                         node.rate_limits, what=f"step {key!r}'s rate_limits"
                     ),
+                    reservations=reservation_names(
+                        tuple(node.reservations), what=f"step {key!r}'s reservations"
+                    ),
                 )
-                if node.rate_limits
+                if node.rate_limits or node.reservations
                 else {"flow_id": str(flow_id)}
             )
             await conn.execute(
@@ -1681,6 +1691,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     rate_limits=rate_limit_names(
                         node.map_rate_limits, what="map_source's rate_limits"
                     ),
+                    # THE STRICT CAPACITY TERMS STAMPED (H-A1): the map's
+                    # children share the source node's cohort, so the
+                    # source's declared reservations ride their rows — the
+                    # same stamp the static row carries.
+                    reservations=reservation_names(
+                        tuple(node.reservations), what=f"map {row['step_key']!r}'s reservations"
+                    ),
                 )
                 for i, item in enumerate(items)
             ),
@@ -1772,8 +1789,41 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     payload={ITEM_KEY: encode_data_arg(element)},
                     map_index=i,
                     # THE ARM'S ADMISSION TERMS STAMPED (CURE 2): the arm's
-                    # own buckets' NAMES on ITS children's rows.
-                    rate_limits=rate_limit_names(arm.rate_limits, what="route arm's rate_limits"),
+                    # own buckets' NAMES on ITS children's rows — and the
+                    # BARE arm (no own rate_limits, no actor override)
+                    # INHERITS THE SOURCE'S rate_limits (C5's
+                    # symmetrization: the reservations' own ride-the-cohort
+                    # law, the same stamp the source's rows carry). An arm
+                    # declaring its own keeps its OWN — never a silent
+                    # merge.
+                    rate_limits=(
+                        rate_limit_names(arm.rate_limits, what="route arm's rate_limits")
+                        or (
+                            ()
+                            if (arm.actor is not None and arm.actor != node.actor)
+                            else rate_limit_names(
+                                tuple(node.rate_limits), what="the source node's rate_limits"
+                            )
+                        )
+                    ),
+                    # THE ARM'S STRICT CAPACITY TERMS STAMPED (H-A1 +
+                    # H-A4's passthrough): the arm's own declaration rides
+                    # ITS rows; an arm declaring none KEEPS the source
+                    # node's stamp (the arm rides the source's cohort) and
+                    # an arm OVERRIDING the actor stamps none (a different
+                    # cohort — inheriting the source's cap onto it would
+                    # be the silent lie; the wiring refused a capped body
+                    # whose terms that override would drop).
+                    reservations=(
+                        reservation_names(tuple(arm.reservations), what="route arm's reservations")
+                        or (
+                            ()
+                            if (arm.actor is not None and arm.actor != node.actor)
+                            else reservation_names(
+                                tuple(node.reservations), what="the source node's reservations"
+                            )
+                        )
+                    ),
                 )
             )
         spec = ForkSpec(

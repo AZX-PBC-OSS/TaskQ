@@ -95,19 +95,42 @@ def _parse_json_documents(text: str) -> list[object]:
     return docs
 
 
+def _measurements_bases() -> list[Path]:
+    """EVERY real capture corpus the law reads — the staged evidence
+    branch's estate PLUS the local tree's own overlay when one exists.
+
+    THE THREE-FACES CURE (the estate audit's conviction, live at -n 8):
+    the pool was EITHER the staged copy OR the local tree, chosen by
+    which worker resolved first — a writer creating the local
+    runs/CLAIMS.json mid-run flipped the other workers' pool to the
+    thin fresh set, and the docs' historical figures resolved to
+    nothing. The law's own words are "resolves to an artifact in
+    .measurements/" — ANY real capture counts; the pool is the UNION of
+    both corpora (the local overlaying the staged base on path
+    collisions)."""
+    bases = [_evidence_measurements_dir()]
+    local = REPO / ".measurements"
+    if local.is_dir() and local != bases[0]:
+        bases.append(local)
+    return bases
+
+
 def _artifact_pool() -> dict[str, list[float]]:
     """Every numeric value in every ``.measurements/**/*.json``
     artifact, per file (bare names, ``runs/`` run-scoped captures, and
-    the dated subdirectories)."""
+    the dated subdirectories) — across EVERY base corpus (the union
+    law: the staged estate + the local overlay)."""
     pool: dict[str, list[float]] = {}
-    for path in sorted(MEASUREMENTS.rglob("*.json")):
-        values = [
-            v
-            for doc in _parse_json_documents(path.read_text(errors="replace"))
-            for v in _walk_numbers(doc)
-        ]
-        if values:
-            pool[str(path.relative_to(MEASUREMENTS))] = values
+    for base in _measurements_bases():
+        for path in sorted(base.rglob("*.json")):
+            values = [
+                v
+                for doc in _parse_json_documents(path.read_text(errors="replace"))
+                for v in _walk_numbers(doc)
+            ]
+            if values:
+                rel = path.relative_to(base)
+                pool[f"{base.name}/{rel}"] = values
     return pool
 
 
@@ -273,7 +296,9 @@ def test_docs_the_streaming_ratio_is_the_newest_capture_or_an_honest_range() -> 
     older capture whose figure the newest refutes is the cherry-pick
     this pin convicts."""
     text = STREAMING_DOC.read_text()
-    captures = sorted(MEASUREMENTS.glob("t20-streaming-bands-*.json"))
+    captures = sorted(
+        cap for base in _measurements_bases() for cap in base.glob("t20-streaming-bands-*.json")
+    )
     assert captures, "no run-scoped streaming captures exist at all"
     ratios: dict[str, float] = {}
     for path in captures:
@@ -323,7 +348,11 @@ def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> Non
     ``applied`` class tolerates the #3b fold convention — the drifted
     classes are the conviction; the two prose homes must additionally
     agree with EACH OTHER on every class.)"""
-    ledger = (MEASUREMENTS / "t17-dispositions.md").read_text()
+    ledger = next(
+        base / "t17-dispositions.md"
+        for base in _measurements_bases()
+        if (base / "t17-dispositions.md").is_file()
+    ).read_text()
     guide = GUIDE.read_text()
     table = _t17_table_counts(ledger)
 
@@ -440,7 +469,11 @@ def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
         re.search(r"optimistic-apply dragon[\s\S]{0,200}?red\s+forever", guide, re.I)
     ) or bool(re.search(r"CARRY-OPTIMISTIC[\s\S]{0,300}?RED\s+forever", sql_loop, re.I))
     receipts: list[str] = []
-    reds_file = MEASUREMENTS / "t19-pin-reds.json"
+    reds_file = next(
+        base / "t19-pin-reds.json"
+        for base in _measurements_bases()
+        if (base / "t19-pin-reds.json").is_file()
+    )
     if reds_file.exists():
         for line in reds_file.read_text().splitlines():
             try:

@@ -386,16 +386,35 @@ def get_csrf_token(request: Request) -> str:
 
 
 async def validate_csrf(request: Request) -> None:
-    """Dependency: validates the synchronizer-token CSRF on POST requests."""
+    """Dependency: validates the synchronizer-token CSRF on POST requests.
+
+    THE 403 LOOP'S REMEDY (the round-2 conviction): a refusal names the
+    CURE — the cookie and the form token drift when the page sat while
+    the session rotated (or the cookie was lost outright), and the
+    operator's only fix is a fresh page; the detail says so, so the 403
+    self-describes its remedy instead of reading as a bug (the
+    cookie-loss 403 loop: submit → 403 → submit → 403, forever)."""
     cookie_token = request.cookies.get(_CSRF_COOKIE_NAME)
     if cookie_token is None:
-        raise HTTPException(status_code=403, detail="CSRF token missing from cookies")
+        raise HTTPException(
+            status_code=403,
+            detail="CSRF token missing from cookies — the page's token is "
+            "stale or the cookie was lost — reload the page and submit again",
+        )
     form = await request.form()
     form_token = form.get("csrf_token")
     if not isinstance(form_token, str):
-        raise HTTPException(status_code=403, detail="CSRF token missing from form")
+        raise HTTPException(
+            status_code=403,
+            detail="CSRF token missing from form — the page's token is stale "
+            "— reload the page and submit again",
+        )
     if not hmac.compare_digest(cookie_token, form_token):
-        raise HTTPException(status_code=403, detail="CSRF token mismatch")
+        raise HTTPException(
+            status_code=403,
+            detail="CSRF token mismatch — the page's token is stale — reload "
+            "the page and submit again",
+        )
 
 
 # The refusal detail every disabled mutation route answers with: it names

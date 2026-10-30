@@ -88,7 +88,10 @@ async def require_logout_csrf(request: Request, session_manager: "SessionManager
     Both SSO backends call this from their ``POST /logout`` handler. Fails
     closed with 403: no session cookie (there is nothing to end, and serving
     a success shape to an unauthenticated probe teaches nothing), or a
-    missing/mismatched token.
+    missing/mismatched token. The token 403 names the remedy the action
+    doors' CSRF refusals carry (the round-3 cure — the 403 loop's other
+    carrier: submit → 403 → submit → 403, forever, read as a bug) — the
+    page's token is stale; a fresh page fixes it.
     """
     cookie = request.cookies.get(session_manager.cookie_name)
     if not cookie:
@@ -97,7 +100,11 @@ async def require_logout_csrf(request: Request, session_manager: "SessionManager
     submitted = form.get("csrf_token")
     expected = logout_csrf_token(session_manager.secret, cookie)
     if not isinstance(submitted, str) or not compare_digest(submitted, expected):
-        raise HTTPException(status_code=403, detail="logout CSRF token missing or mismatched")
+        raise HTTPException(
+            status_code=403,
+            detail="logout CSRF token missing or mismatched — the page's token "
+            "is stale — reload the page and submit again",
+        )
 
 
 def warn_if_no_group_allowlist(backend: str, allowed_groups: frozenset[str]) -> None:

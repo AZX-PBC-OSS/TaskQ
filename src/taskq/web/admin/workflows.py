@@ -38,13 +38,20 @@ from taskq.web._pool import BoundedPool
 from taskq.web.admin._constants import reject_unknown_query_params
 from taskq.web.admin._factory import (
     get_admin_pool,
+    get_base_path,
     get_csrf_token,
     get_realtime_ctx,
     get_schema,
     get_settings,
     get_templates,
 )
-from taskq.web.admin._wf_actions import register_actions
+from taskq.web.admin._wf_actions import (
+    RERUN_NOT_APPLIED_BANNER,
+    RERUN_PARTIAL_BANNER,
+    RERUN_RACED_BANNER,
+    RERUN_REFUSED_BANNER,
+    register_actions,
+)
 from taskq.web.admin._wf_rows import (
     NOT_INSTALLED,
     RunView,
@@ -106,25 +113,84 @@ def _field_of(payload: object, field_name: str) -> str | int | float | bool | No
 #: routes carry — the operator lands on the DEFINED refused-op state,
 #: never a 400 wall: the extra conviction — a refusal redirect that the
 #: page's own reject_unknown_query_params 400s is the teach-them-to-
-#: retry mutation trap).
+#: retry mutation trap). The KEYS live on the action routes
+#: (``_wf_actions``) so a route and its copy cannot drift apart.
+#: THE COPY HONESTY (H-C9): the not-applied refusal names only causes
+#: the CAS can actually hit — the attempt ceiling is NOT one (the
+#: ordinal CONTINUES; no ceiling is consulted), and the impossible
+#: cause is off the record. The ROOT KEY's own line (H-C1): the run's
+#: root is not a node — its re-run is the RUN-rerun's concern.
 REFUSAL_BANNERS: Final[dict[str, str]] = {
     "cancel-not-applied": (
         "Cancel not applied — the run was already terminal (or a cancel "
         "is in flight); nothing changed."
     ),
+    RERUN_NOT_APPLIED_BANNER: (
+        "Rerun not applied — nothing was resumable (the node is live, "
+        "unknown, not terminal-failed, or the run's own root key — a run "
+        "is not its own node; re-run its failed nodes, or start a new run)."
+    ),
+    RERUN_REFUSED_BANNER: (
+        "Rerun refused — the run is cancelled; re-opening it is a second "
+        "decision (create a new run, or un-cancel deliberately)."
+    ),
+    # THE DEADLOCK'S NAMED REFUSAL (the round-2 conviction): the race's
+    # honest loser — the retry's writers raced, PG killed this one; the
+    # winner's own voice is honest and the operator re-checks the settled
+    # state. Never a 500 wall.
+    RERUN_RACED_BANNER: (
+        "Rerun refused — the run's writers raced and PG resolved the "
+        "deadlock in another writer's favour; the retry may have landed "
+        "OR the run was cancelled by the winner. Reload the page to see "
+        "the settled state, then re-run this action if it is still needed."
+    ),
 }
 _REFUSAL_PARAM: Final[str] = "error"
+
+#: THE PARTIAL BANNER'S PREFIX (H-C5): ``rerun-partial:<rows>:<keys>:<total>``
+#: — the half-rerun's counts ride the closed vocabulary's key.
+_RERUN_PARTIAL_PREFIX: Final[str] = RERUN_PARTIAL_BANNER + ":"
+
+
+def _rerun_partial_copy(value: str) -> str | None:
+    """The partial rerun's banner text (the counts parsed back out of the
+    redirect key); None when the shape is not the route's own (a hostile
+    or malformed param falls through to the generic refusal line). The
+    key's shape is ``rerun-partial:<rows>:<keys>:<total>`` — the copy
+    speaks ROWS-WHERE-HONEST (the round-2 conviction): when the row and
+    key counts agree the plain "N of M" stands; when a map key's grant
+    moved several rows the copy names the rows."""
+    parts = value.split(":")
+    if len(parts) != 4 or not all(p.isdigit() for p in parts[1:]):
+        return None
+    rows, keys, total = int(parts[1]), int(parts[2]), int(parts[3])
+    if rows == keys:
+        return (
+            f"Rerun partially applied — {rows} of {total} re-opened before the "
+            "refusal; the rest is still failed (rerun again to continue, or cancel "
+            "the run). The audit trail carries the counts."
+        )
+    return (
+        f"Rerun partially applied — {rows} node rows re-opened across {keys} of "
+        f"{total} failed keys before the refusal; the rest is still failed (rerun "
+        "again to continue, or cancel the run). The audit trail carries the counts."
+    )
 
 
 def _refusal_banner(request: Request) -> str | None:
     """The refused-op banner's text for the redirect's ``?error=``
     param (None when absent). The VALUE is closed-vocabulary: a known
-    key renders its named refusal; an unknown value still renders the
+    key renders its named refusal (the partial rerun's counts parsed
+    back out of its key); an unknown value still renders the
     defined refusal line naming the key (autoescaped) — the redirect
     must never dead-end on a 400 wall."""
     value = request.query_params.get(_REFUSAL_PARAM)
     if value is None:
         return None
+    if value.startswith(_RERUN_PARTIAL_PREFIX):
+        partial = _rerun_partial_copy(value)
+        if partial is not None:
+            return partial
     known = REFUSAL_BANNERS.get(value)
     if known is not None:
         return known
@@ -185,6 +251,7 @@ def register(router: APIRouter) -> None:
         realtime_ctx: tuple[str, str] = Depends(get_realtime_ctx),
         csrf_token: str = Depends(get_csrf_token),
         settings: Any = Depends(get_settings),
+        base_path: str = Depends(get_base_path),
     ) -> HTMLResponse:
         # The refusal banner's param is DECLARED (the cancel route's 303
         # carries it — the operator lands on the refused-op banner, the
@@ -289,9 +356,15 @@ def register(router: APIRouter) -> None:
         ]
         boot = {
             "runId": view.run_id,
+            # THE BASE_PATH LAW (the relative-URL 404 bug's conviction):
+            # every URL the JS builds rides the mounted prefix — the
+            # stream URL is server-built absolute-with-base-path, and the
+            # basePath rides the boot for the JS's own fetches (the node
+            # panel's drill-down, the Resolve door).
+            "basePath": base_path,
             "mermaid": rows_mermaid(view),
             "state": run_state_json(view, seq=0),
-            "streamUrl": f"api/runs/{view.run_id}/stream",
+            "streamUrl": f"{base_path}/api/runs/{view.run_id}/stream",
         }
         realtime_mode, mode_label = realtime_ctx
         html = tmpl.get_template("workflow_detail.html").render(
