@@ -386,6 +386,18 @@ def _run_view_from_rows(
     )
 
 
+def _mermaid_label(text: str) -> str:
+    """THE LABEL ESCAPE (H-C8's rows-side defense): a ROW-sourced key
+    (pre-dating the compile's key charset law, or written by a hostile
+    hand) can carry a raw ``"`` — inside the quoted Mermaid label that
+    KILLS the render — or a raw NEWLINE — which injects a phantom line
+    into the graph's text. The escape is byte-stable and touchless for
+    clean keys (only the hostile bytes rewrite). The compile law (the
+    key charset) is the build-side half; this is the rows-side half —
+    the rows are the law, and the render must survive them."""
+    return text.replace("\\", "\\\\").replace('"', "&quot;").replace("\r", " ").replace("\n", " ")
+
+
 def rows_mermaid(view: RunView) -> str:
     """The run graph's Mermaid text FROM THE ROWS — the compile's shape
     vocabulary, the run's live edge set. Byte-stable for identical rows
@@ -404,11 +416,13 @@ def rows_mermaid(view: RunView) -> str:
             continue
         collapsed = node.map_children > 0
         open_, close = ("{{", "}}") if collapsed else ("[", "]")
-        label = node.key
+        label = _mermaid_label(node.key)
         if node.hold is not None:
             label += " ⏳"
         if collapsed:
             label += f" {node.map_done}/{node.map_children}"
+        # THE LABEL IS ESCAPED (H-C8): the quote/newline-bearing hostile
+        # row's label cannot kill the render or inject a line.
         lines.append(f'    {node.key}{open_}"{label}"{close}')
     edges: list[str] = []
     for node in sorted(view.nodes, key=lambda n: n.key):
@@ -446,6 +460,12 @@ def run_state_json(view: RunView, *, seq: int) -> dict[str, Any]:
             {
                 "key": n.key,
                 "status": n.status,
+                # THE ERROR COLUMN'S CLASS (H-C9): the bounded error
+                # class rides the frame — a node that fails while you
+                # watch shows its class without a reload (the Error
+                # column patches live, the same snapshot the chips
+                # patch from).
+                "error_class": n.error_class,
                 "hold": n.hold is not None,
                 "map_done": n.map_done,
                 "map_children": n.map_children,

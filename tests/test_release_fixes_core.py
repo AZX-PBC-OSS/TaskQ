@@ -144,8 +144,11 @@ def test_register_conflicting_token_bucket_raises_naming_both() -> None:
 
     message = str(excinfo.value)
     assert "dup" in message
-    assert repr(a) in message
-    assert repr(b) in message
+    # THE FIELD-DIFF LAW (the C3 cure): the refusal names the differing
+    # fields with both sides' values — never the repr (an address, not a
+    # diagnosis).
+    assert "capacity: 10 vs 20" in message
+    assert "object at 0x" not in message
 
 
 # ── Finding 6: terminal-write failure must not mislabel the actor error ──

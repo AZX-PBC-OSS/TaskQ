@@ -442,6 +442,15 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "descendant keys bound as an array (the graph's transitive "
         "closure of the retried node), failed_parent-stamped rows only",
     ),
+    "RETRY_SKIP_REARM_SQL_TEMPLATE": (
+        "AND result @> '{\"skipped\": true}'::jsonb",
+        "the skip envelope's re-arm (H-C4): its write set is ONE run's "
+        "exit-skipped rows (flow_id-bound, the engine's own "
+        "SKIPPED_RESULT containment predicate — the round-2 conviction "
+        'replaced bare key-existence so a foreign writer\'s {"skipped": '
+        "false} is never matched or destroyed; the root excluded) — "
+        "cannot grow with the backlog, only with the run's own fan-out",
+    ),
     "NODE_REPEND_SQL_TEMPLATE": (
         "WHERE id = $1",
         "keyed single node row (the ladder's repend CAS)",

@@ -60,7 +60,7 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from time import monotonic
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Final, TypeVar
 
 import structlog
 from pydantic import BaseModel, ValidationError
@@ -241,10 +241,61 @@ def _same_config(
             and a.ttl == b.ttl
         )
     if isinstance(a, ConcurrencyReservation) and isinstance(b, ConcurrencyReservation):
+        # THE DUPLICATE-NAME LAW (C3): the identity that SURVIVES the
+        # rebind — ``(name, slots, lease, keyed, lock_lease)``. The
+        # schema is EXCLUDED: a reservation is declared at module import
+        # (the settings' schema unknowable there) and the worker's
+        # registration REBINDS the live entry to the deployment's schema
+        # (the H-A2 doctrine) — a same-config differing-schema
+        # re-register is ONE reservation meeting its own rebind, never a
+        # conflict. A differing ``keyed``/``lock_lease`` IS materially
+        # different (the fleet-reclaim mark, the heartbeat's extension).
         return (
-            a.name == b.name and a.slots == b.slots and a.lease == b.lease and a.schema == b.schema
+            a.name == b.name
+            and a.slots == b.slots
+            and a.lease == b.lease
+            and a.keyed == b.keyed
+            and a.lock_lease == b.lock_lease
         )
     return False
+
+
+#: The reservation-config fields the duplicate-name law compares (the
+#: schema deliberately absent — the rebind owns it; see
+#: :func:`_same_config`).
+_RESERVATION_CONFIG_FIELDS: Final[tuple[str, ...]] = ("slots", "lease", "keyed", "lock_lease")
+
+
+def _reservation_config_diff(a: ConcurrencyReservation, b: ConcurrencyReservation) -> list[str]:
+    """The FIELD NAMES (with their values) the two reservations differ on
+    (C3 — the refusal names the field, never a values-only repr dump —
+    the default ``__slots__`` repr is an address, not a diagnosis)."""
+    differing: list[str] = []
+    for field_name in _RESERVATION_CONFIG_FIELDS:
+        a_val = getattr(a, field_name)
+        b_val = getattr(b, field_name)
+        if a_val != b_val:
+            differing.append(f"{field_name}: {a_val!r} vs {b_val!r}")
+    return differing
+
+
+def _rate_limit_config_diff(
+    a: "TokenBucket | SlidingWindow", b: "TokenBucket | SlidingWindow"
+) -> list[str]:
+    """The FIELD NAMES (with their values) the two rate-limit primitives
+    differ on — the reservation face's own law (C3's cure, mirrored):
+    the refusal names the field, never a values-only repr dump (the
+    default repr is an address, not a diagnosis)."""
+    differing: list[str] = []
+    if type(a) is not type(b):
+        differing.append(f"type: {type(a).__name__} vs {type(b).__name__}")
+        return differing
+    for field_name in ("capacity", "refill_per_sec", "window", "burst", "schema"):
+        a_val = getattr(a, field_name, None)
+        b_val = getattr(b, field_name, None)
+        if a_val is not None and b_val is not None and a_val != b_val:
+            differing.append(f"{field_name}: {a_val!r} vs {b_val!r}")
+    return differing or ["config fields are identical (a state or identity difference)"]
 
 
 def _preserves_fixed_quota_state(prim: TokenBucket | SlidingWindow) -> bool:
@@ -462,7 +513,7 @@ class RateLimitRegistry:
                 return
             raise ValueError(
                 f"rate-limit name already registered with a different config: "
-                f"{name!r}, existing={existing!r}, new={primitive!r}"
+                f"{name!r} ({'; '.join(_rate_limit_config_diff(existing, primitive))}), "
             )
         self._rate_limits[name] = primitive
         logger.debug(
@@ -480,21 +531,45 @@ class RateLimitRegistry:
         Called by both :meth:`register` (after the reserved-prefix rejection
         check) and :meth:`register_queue_cap_reservation` (after the
         reserved-prefix assertion). Duplicate-name-with-different-config →
-        ``ValueError``; duplicate-name-with-same-config → idempotent no-op.
-        """
+        ``ValueError`` (the differing fields NAMED); duplicate-name-with
+        -same-config → idempotent no-op — and a same-config registration
+        whose SCHEMA differs (a pre-registered RAW declaration meeting the
+        worker's settings-bound copy) REBINDS the stored entry to the
+        incoming copy, so the resolved registry's entries are ALWAYS
+        settings-schema-bound (the C2 doctrine — the rebind at the
+        REGISTER step, whichever pass encounters the raw instance)."""
         name = primitive.name
         existing = self._reservations.get(name)
         if existing is not None:
             if _same_config(existing, primitive):
-                logger.debug(
-                    "registry-register-idempotent-noop",
-                    kind="reservation",
-                    name=name,
-                )
+                if existing.schema != primitive.schema:
+                    # THE REBIND AT THE REGISTER STEP (C2): the stored
+                    # entry's schema binding moves to the incoming copy —
+                    # the caller's own settings-bound instance (the
+                    # bootstrap rebinds BEFORE register; the raw
+                    # declaration object is never mutated). The acquire
+                    # SQL interpolates THIS deployment's schema, never
+                    # the declaration's import-time default.
+                    self._reservations[name] = primitive
+                    logger.info(
+                        "registry-reservation-schema-rebound",
+                        name=name,
+                        prior_schema=existing.schema,
+                        schema=primitive.schema,
+                    )
+                else:
+                    logger.debug(
+                        "registry-register-idempotent-noop",
+                        kind="reservation",
+                        name=name,
+                    )
                 return
             raise ValueError(
                 f"reservation name already registered with a different config: "
-                f"{name!r}, existing={existing!r}, new={primitive!r}"
+                f"{name!r} ({'; '.join(_reservation_config_diff(existing, primitive))}), "
+                f"the schema is the rebind's own decision (never a config "
+                f"field) — one reservation per name; give the differing "
+                f"declaration its own name"
             )
         self._reservations[name] = primitive
         logger.debug(

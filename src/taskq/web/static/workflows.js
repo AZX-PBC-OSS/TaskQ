@@ -1,8 +1,9 @@
 /* The workflow-run page's live machinery (T11): render-once SVG +
  * data-node-key patches + the SSE revisioned-snapshot feed + the node
- * panel + the Resolve form. The conventions are the admin's own: no
- * bundler, no React, no CDN — mermaid is vendored beside
- * alpine/htmx/lucide for the same air-gapped-ops reason.
+ * panel (with the node I/O) + the Resolve form + the rerun forms'
+ * confirm dialogs + the node table's live patch. The conventions are
+ * the admin's own: no bundler, no React, no CDN — mermaid is vendored
+ * beside alpine/htmx/lucide for the same air-gapped-ops reason.
  *
  * The state contract (pinned by the tests):
  * - every frame is a revisioned FULL snapshot; a frame with seq <= the
@@ -20,6 +21,16 @@
   var graphHost = document.getElementById("wf-graph-host");
   if (!bootEl || !graphHost) return;
   var boot = JSON.parse(bootEl.textContent);
+  // THE BASE_PATH LAW (the relative-URL 404 bug's conviction): every
+  // URL this script builds rides the mounted prefix the server stamped
+  // into the boot JSON — a relative "api/runs/…" from a page at
+  // {base_path}/workflows/{id} resolves to
+  // {base_path}/workflows/api/runs/… and 404s.
+  var BASE = boot.basePath || "";
+
+  // ── the status chips' source (the ONE map — _base.html emits it; the
+  // node table's live patch derives its classes from the same blob) ──
+  var statusClasses = window.__taskqStatusClasses || null;
 
   // ── the state classes (the legend declares them; the CSS fills them) ──
   var STATUS_CLASSES = [
@@ -66,6 +77,7 @@
   }
 
   function paintNode(key, node) {
+    paintRow(key, node);
     // THE ESCAPED SELECTOR (the poisoned-row defense, nit 1 of 2): the
     // row's step key is ATTACKER-CONTROLLED (a poisoned row key with a
     // quote or backslash in it made this querySelector THROW — a
@@ -94,6 +106,117 @@
     } else if (counter) {
       counter.remove();
     }
+  }
+
+  // ── the retry affordance's LIVE form (H-C9: the affordance tracks the
+  // row's state, never the page load — a node that ARRIVES at failed
+  // while you watch gains the form; one that leaves it loses the form).
+  // The form mirrors the server-rendered one exactly: native POST, the
+  // stamped CSRF field, the reason, the confirm guard. ─────────────────
+  function retryForm(key) {
+    var table = document.querySelector("[data-wf-node-table]");
+    var token = table ? table.getAttribute("data-csrf") || "" : "";
+    var runId = boot.state ? boot.state.run_id : boot.runId;
+    var form = document.createElement("form");
+    form.method = "post";
+    form.className = "m-0";
+    form.setAttribute("data-wf-form", "rerun-node");
+    form.setAttribute(
+      "data-confirm",
+      "Retry node " + key +
+        "? Its failed attempt re-opens (the attempt ordinal continues) and its blocked downstream clears; the audit trail records the retry."
+    );
+    form.action =
+      BASE + "/api/runs/" + runId + "/nodes/" + encodeURIComponent(key) + "/retry";
+    var csrf = document.createElement("input");
+    csrf.type = "hidden";
+    csrf.name = "csrf_token";
+    csrf.value = token;
+    var reason = document.createElement("input");
+    reason.type = "hidden";
+    reason.name = "reason";
+    reason.value = "node retry from the admin run page";
+    var btn = document.createElement("button");
+    btn.type = "submit";
+    btn.className = "px-2 py-1 rounded bg-blue-600 text-white text-xs hover:bg-blue-700";
+    btn.textContent = "Retry";
+    form.appendChild(csrf);
+    form.appendChild(reason);
+    form.appendChild(btn);
+    // THE CONFIRM GUARD (the same contract the load-time forms carry —
+    // the submit stays NATIVE, the 303 redirect + the refusal banner
+    // land the defined state with or without this script).
+    form.addEventListener("submit", function (ev) {
+      if (!window.confirm(form.getAttribute("data-confirm"))) ev.preventDefault();
+    });
+    return form;
+  }
+
+  // ── the node table's live patch (the graph's second renderer — the
+  // same snapshot patches both, so they cannot disagree) ────────────────
+  function paintRow(key, node) {
+    // THE ESCAPED SELECTOR (the same poisoned-row defense as the
+    // graph's): the row key is attacker-controlled — CSS.escape before
+    // it touches a selector.
+    var row = document.querySelector('[data-wf-node-row="' + CSS.escape(key) + '"]');
+    if (!row || !node) return;
+    var chip = row.querySelector('[data-wf-node-chip]');
+    if (chip && statusClasses) {
+      // THE CLOSED VOCABULARY: an unknown status paints as pending —
+      // the server's own status_class default (and the chip map's).
+      var cls = statusClasses.chip[node.status] || statusClasses.chip.pending;
+      chip.className = statusClasses.badgeBase + cls;
+      chip.textContent = node.status;
+    }
+    var mapCell = row.querySelector('[data-wf-node-map]');
+    if (mapCell && typeof node.map_children === "number") {
+      mapCell.textContent = node.map_children > 0 ? (node.map_done || 0) + "/" + node.map_children : "—";
+    }
+    var holdCell = row.querySelector('[data-wf-node-hold]');
+    if (holdCell) {
+      if (node.hold) {
+        holdCell.textContent = "⏳ held";
+        holdCell.setAttribute("data-wf-held", "1");
+      } else if (holdCell.getAttribute("data-wf-held") === "1") {
+        // A hold we painted clearing: back to the plain dash. A static
+        // join-wait text is NEVER overwritten (the frame carries no
+        // join-wait fact — the snapshot's row said it already).
+        holdCell.textContent = "—";
+        holdCell.removeAttribute("data-wf-held");
+      }
+    }
+    // THE ERROR COLUMN (H-C9): the frame carries the row's bounded
+    // error class — the cell patches live (the red: a node that failed
+    // while you watched showed its class only after a reload).
+    var errCell = row.querySelector('[data-wf-node-error]');
+    if (errCell) {
+      if (node.error_class) {
+        errCell.textContent = node.error_class;
+        errCell.classList.add("text-red-600", "dark:text-red-400");
+      } else {
+        errCell.textContent = "—";
+        errCell.classList.remove("text-red-600", "dark:text-red-400");
+      }
+    }
+    // THE RETRY AFFORDANCE'S LIVE ADD/REMOVE (H-C9): a failed row
+    // carries the retry form; a row that leaves failed reverts to the
+    // dash. Only rows the ACTIONS column renders participate (the
+    // cell hook exists only on an actions-enabled deployment).
+    var actionsCell = row.querySelector('[data-wf-node-actions]');
+    if (actionsCell) {
+      var staleForm = actionsCell.querySelector('[data-wf-form="rerun-node"]');
+      if (node.status === "failed" && !staleForm && tableHasCsrf()) {
+        actionsCell.textContent = "";
+        actionsCell.appendChild(retryForm(key));
+      } else if (node.status !== "failed" && staleForm) {
+        actionsCell.textContent = "—";
+      }
+    }
+  }
+
+  function tableHasCsrf() {
+    var table = document.querySelector("[data-wf-node-table]");
+    return !!(table && table.getAttribute("data-csrf"));
   }
 
   // ── the SSE feed ──────────────────────────────────────────────────────
@@ -160,6 +283,8 @@
     panelLoading.classList.remove("hidden");
     panelError.classList.add("hidden");
     panelBody.classList.add("hidden");
+    var ioHost = panel.querySelector('[data-panel="io"]');
+    if (ioHost) ioHost.classList.add("hidden");
     var state = keyState(key);
     if (state === null) {
       // THE EMPTY STATE: a node the rows do not carry (e.g. a fired map
@@ -191,6 +316,7 @@
   function renderPanel(data) {
     panelLoading.classList.add("hidden");
     panelBody.classList.remove("hidden");
+    renderIo(data.io);
     panelBody.querySelector('[data-panel="key"]').textContent =
       data.key + (data.map_index !== null && data.map_index !== undefined ? " #" + data.map_index : "");
     var lines = [
@@ -215,9 +341,12 @@
       // THE MAP'S CHILDREN CENSUS: one clickable row per child, in map
       // order — the operator watches ONE child's story (its attempt
       // ladder) by (step, map_index), never a step-key-arbitrary read.
+      // THE BOUNDED RENDER (H-C9): the server caps the rows and carries
+      // the total — the "N more" arm names the rest, never a 10k DOM.
       var h = document.createElement("div");
       h.className = "font-semibold mt-2";
-      h.textContent = "map children (" + children.length + ")";
+      var total = typeof data.children_total === "number" ? data.children_total : children.length;
+      h.textContent = "map children (" + total + ")";
       panelBody.appendChild(h);
       children.forEach(function (c) {
         var div = document.createElement("div");
@@ -226,6 +355,14 @@
         div.addEventListener("click", function () { openPanel(data.key, c.map_index); });
         panelBody.appendChild(div);
       });
+      var more = total - children.length;
+      if (more > 0) {
+        var moreDiv = document.createElement("div");
+        moreDiv.className = "text-xs text-slate-500 dark:text-slate-400 mt-1";
+        moreDiv.textContent = "… " + more + " more children not shown (total " + total +
+          ") — open a child by its map index: ?map_index=<n>";
+        panelBody.appendChild(moreDiv);
+      }
     }
     var timeline = (data.timeline || []).map(function (t) {
       return t.created_at + "  " + t.status + (t.error_class ? "  " + t.error_class : "");
@@ -249,6 +386,66 @@
     panelBody.classList.add("hidden");
     panelError.textContent = text;
     panelError.classList.remove("hidden");
+  }
+
+  // ── the node I/O section (the wired input + the decoded output —
+  // every value lands via textContent: the escaping law's DOM form) ────
+  function renderIo(io) {
+    var host = panel ? panel.querySelector('[data-panel="io"]') : null;
+    if (!host) return;
+    host.innerHTML = "";
+    var blocks = [];
+    io = io || {};
+    var input = io.input;
+    if (input && Object.keys(input).length) {
+      blocks.push(["input — the wired args (display-redacted through the engine's own pipeline)", JSON.stringify(input, null, 2)]);
+    } else {
+      blocks.push(["input — the wired args", "none recorded on the row (the entry input and the wiring's data args ride the node's payload; a parent-result arg resolves at run time)"]);
+    }
+    var capture = io.capture;
+    if (capture) {
+      var captureText = JSON.stringify(capture, null, 2);
+      if (capture.__truncated__ !== undefined) {
+        captureText += "\n(the engine cut " + capture.__truncated__ + " characters at the write — the __truncated__ marker)";
+      }
+      // THE CAPTURE'S LABEL (H-C6): WHICH attempt's capture this is —
+      // the read prefers the LATEST FAILED attempt, so a later
+      // success's NULL capture never hides the failure's.
+      var which = io.capture_attempt !== undefined && io.capture_attempt !== null
+        ? " — attempt " + io.capture_attempt + " (" + (io.capture_status || "failed") + ")"
+        : "";
+      blocks.push(["failure capture" + which + " — as the engine wrote it (redacted + truncated at persistence)", captureText]);
+    } else if (io.capture_pruned) {
+      // THE PRUNED ARM (H-C7): the run's step history was deleted by
+      // the retention arms — the honest state, never the suppression
+      // lie (the capture was not policy-suppressed; it is GONE).
+      blocks.push(["failure capture", "the flow history was pruned by retention — this run's step ledger (and its failure captures) is gone; the capture was not policy-suppressed"]);
+    } else if (io.capture_suppressed) {
+      blocks.push(["failure capture", "captured nothing — the workflow's capture policy suppressed it (this panel never substitutes raw rows for a suppressed capture)"]);
+    }
+    var result = io.result;
+    if (result && result.text) {
+      blocks.push(["output — the decoded result (display-redacted)" + (result.truncated ? " — TRUNCATED for display; the full value stays in the row" : ""), result.text]);
+      // THE WALK-BUDGET ARM (the bounded walk's honesty): the server
+      // pre-trims a huge result BEFORE its redaction walk and NAMES the
+      // cut — the arm rides beside the text, never a silent discard.
+      if (result.walk_note) {
+        blocks.push(["output — walk budget", result.walk_note]);
+      }
+    } else if (!capture && !io.capture_suppressed) {
+      blocks.push(["output — the decoded result", "no result captured yet"]);
+    }
+    blocks.forEach(function (pair) {
+      var h = document.createElement("div");
+      h.className = "font-semibold mt-2";
+      h.textContent = pair[0];
+      host.appendChild(h);
+      var pre = document.createElement("pre");
+      pre.className = "text-xs bg-slate-50 dark:bg-slate-800 p-2 rounded overflow-x-auto";
+      pre.textContent = pair[1];
+      host.appendChild(pre);
+    });
+    host.classList.remove("hidden");
   }
 
   if (panel) {
@@ -283,7 +480,7 @@
       fd.set("decision", decisionEl.value);
       fd.set("reason", "resolved from the admin workflow page");
       fd.set("csrf_token", form.querySelector('[name="csrf_token"]').value);
-      fetch("api/runs/" + (boot.state ? boot.state.run_id : boot.runId) + "/resolve", {
+      fetch(BASE + "/api/runs/" + (boot.state ? boot.state.run_id : boot.runId) + "/resolve", {
         method: "POST",
         body: fd
       })
@@ -304,6 +501,16 @@
           note.textContent = "the resolve failed: " + err.message;
           form.appendChild(note);
         });
+    });
+  });
+
+  // ── the confirm dialogs (the rerun forms' native-POST guard): a form
+  // that declares data-confirm asks once before the browser submits —
+  // the submit stays NATIVE (no fetch), so the 303 redirect + the
+  // refusal banner land the defined state with or without this script. ──
+  document.querySelectorAll("form[data-confirm]").forEach(function (form) {
+    form.addEventListener("submit", function (ev) {
+      if (!window.confirm(form.getAttribute("data-confirm"))) ev.preventDefault();
     });
   });
 

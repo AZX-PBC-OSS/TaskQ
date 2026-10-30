@@ -2026,6 +2026,126 @@ class WorkerSettings(TaskQSettings):
         "raise at settings load.",
     )
 
+    # -- Workflow flow-history retention (the TAStack P1's cure) -------
+    # FIVE arms for the SIX tables that grow monotone-forever with no
+    # retention arm and no FK for the job prune to cascade: wf_edge,
+    # wf_step_ledger, wf_join_fire, wf_signals, wf_node_progress — and
+    # wf_node_stream, which rides the node_progress arm's statement (the
+    # round-2 R3's fold: one pass, two batch-bounded deletes — the
+    # doomed flows' progress rows AND their stream rings; a dead node's
+    # ring, nodes x 64 rows, never had a pruner of its own). Each arm is
+    # TWO-PASS (H-B1's law): the flows-side pass selects the
+    # TERMINAL-AGED ROOTS first (a tiny jobs-side set via
+    # jobs_finished_at_idx — step_key '__flow__', a terminal status, the
+    # root's finished_at past the period) and deletes each selected
+    # flow's rows via the table's flow_id index; the rootless pass (the
+    # orphan class — the row's pointee absent or not a flow root) rides
+    # a separate batch-bounded walk on a coarser cadence, SEEKING
+    # strictly past its arm's persisted cursor (wf_rootless_sweep_state,
+    # 01.00.36_01 — the round-2 R1's cure: a live PK front's rows are
+    # visited once and the walk moves past them, never re-reading the
+    # same first batch forever). The batch is the prune family's own
+    # knob (prune_batch_size — H-B2: the arms never borrowed
+    # event_writer_batch_size). The defaults are timedelta(0) — ZERO =
+    # OFF — DELIBERATELY OPPOSITE to the outbox/step-cache precedents
+    # (which default ON): those prune DERIVED data (a delivered outbox
+    # row's narration, an expired cache corpse — deleting them loses
+    # nothing re-derivable); these prune the FLOW HISTORY itself (the
+    # attempt ledger, the fire ledger, the signals). Default-off keeps
+    # the upgrade safe — no surprise deletes on an existing estate — the
+    # operator opts in.
+    workflow_edge_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_EDGE_RETENTION_PERIOD. The age past "
+        "which a TERMINAL flow's wf_edge rows delete. wf_edge has no "
+        "timestamp column of its own, so the age clock is the flow root's "
+        "finished_at (the prune family's terminal-age column). A "
+        "NULL-stamped terminal root (the stamp never landed) is SKIPPED — "
+        "never doomed: no history is removed that has no honest age — "
+        "and the arm's rate-limited warning "
+        "(wf_retention_null_finished_at) fires when a pass OBSERVES one: "
+        "fix the stamp or backfill it, the rows stay until they carry an "
+        "honest age (the round-2 R2's conservative shape). The edges are "
+        "pure flow-structure narration on a terminal flow (the join "
+        "counter's truth dies with the flow). timedelta(0) DISABLES the "
+        "arm — zero-means-off, the deletion-sweep family's sentinel; "
+        "default OFF because this prunes FLOW HISTORY (not derived "
+        "data): the upgrade is safe by default, the operator opts in. "
+        "Negative values raise at settings load.",
+    )
+    workflow_step_ledger_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_STEP_LEDGER_RETENTION_PERIOD. The age "
+        "past which a TERMINAL flow's wf_step_ledger rows delete (one row "
+        "per attempt — the hot table's fastest grower; a terminal flow's "
+        "running row is the phantom class the reap arm fences first, and "
+        "outright deletion reconstructs the same). The flows-side pass "
+        "ages by the flow root's finished_at; the rootless orphan class "
+        "(the pointee not a flow root) ages by the row's own created_at "
+        "on its coarser-cadence pass. timedelta(0) DISABLES "
+        "the arm — zero-means-off, the deletion-sweep family's sentinel; "
+        "default OFF because this prunes FLOW HISTORY (not derived data): "
+        "the upgrade is safe by default, the operator opts in. Negative "
+        "values raise at settings load.",
+    )
+    workflow_join_fire_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_JOIN_FIRE_RETENTION_PERIOD. The age "
+        "past which a TERMINAL flow's wf_join_fire rows delete (the "
+        "exactly-once ledger is dead weight on a terminal flow — a "
+        "terminal flow never re-fires). The flows-side pass ages by the "
+        "flow root's finished_at; the rootless orphan class (the pointee "
+        "not a flow root) ages by the row's own fired_at on its "
+        "coarser-cadence pass. timedelta(0) DISABLES the arm — "
+        "zero-means-off, the deletion-sweep family's sentinel; default "
+        "OFF because this prunes FLOW HISTORY (not derived data): the "
+        "upgrade is safe by default, the operator opts in. Negative "
+        "values raise at settings load.",
+    )
+    workflow_signals_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_SIGNALS_RETENTION_PERIOD. The age "
+        "past which a TERMINAL flow's wf_signals rows delete — INCLUDING "
+        "a terminal flow's HELD signals, which are exactly the "
+        "abandoned-hold class (nothing will ever deliver them: the wait "
+        "site is terminal). A LIVE flow's holds are never touched. The "
+        "flows-side pass ages by the flow root's finished_at; the "
+        "rootless orphan class (the pointee not a flow root) ages by the "
+        "row's own created_at on its coarser-cadence pass. timedelta(0) "
+        "DISABLES the arm — zero-means-off, the deletion-sweep family's "
+        "sentinel; default OFF because this prunes FLOW HISTORY (not "
+        "derived data): the upgrade is safe by default, the operator "
+        "opts in. Negative values raise at settings load.",
+    )
+    workflow_node_progress_retention_period: timedelta = Field(
+        default=timedelta(0),
+        validator=_non_negative_timedelta,
+        description="TASKQ_WORKFLOW_NODE_PROGRESS_RETENTION_PERIOD. The "
+        "age past which a TERMINAL flow's wf_node_progress rows delete "
+        "(the state channel outlives its flows forever; the flow is "
+        "reached through the node's jobs row — wf_node_progress has no "
+        "flow column). The flows-side pass joins the terminal-aged "
+        "flows' node rows (the flow-nodes expression index) and deletes "
+        "their progress rows by the PK probe; the rootless orphan "
+        "classes (the node gone, the node without the flow_id stamp, "
+        "the pointee not a flow root) age by the row's own updated_at on "
+        "the coarser-cadence pass. THE SAME ARM CARRIES THE SIXTH TABLE "
+        "(the round-2 R3's fold): the terminal-aged flows' "
+        "wf_node_stream rows (the STREAM channel — a dead node's ring, "
+        "nodes x 64 rows, had no pruner) delete in the same pass, and "
+        "the rootless pass runs the stream's own orphan walk (the node "
+        "gone, or the carried flow link not a root, aged by emitted_at). "
+        "timedelta(0) DISABLES the arm — zero-means-off, the "
+        "deletion-sweep family's sentinel; default OFF because this "
+        "prunes FLOW HISTORY (not derived data): the upgrade is safe by "
+        "default, the operator opts in. Negative values raise at "
+        "settings load.",
+    )
+
     # -- Per-status prune retention --------------------------------
     prune_retention_period: timedelta = Field(
         default=DEFAULT_PRUNE_RETENTION,

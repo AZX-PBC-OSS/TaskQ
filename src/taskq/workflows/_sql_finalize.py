@@ -38,7 +38,22 @@ WITH upd AS (
         result_size_bytes = $4,
         error_class = $5,
         error_message = $6,
-        error_traceback = $7
+        error_traceback = $7,
+        -- THE RESULT'S EXPIRY (H-A5 — the vanilla mark_succeeded's
+        -- lateral equivalent): the SUCCEEDED terminal stamps
+        -- result_expires_at from the ROW'S OWN COHORT's stored
+        -- actor_config.result_ttl (the projection seeded it — the
+        -- operator owns the row thereafter), priced from the completion
+        -- instant (clock_timestamp()), so a long-queued step does not
+        -- complete already expired. A FAILED terminal stamps NO expiry
+        -- (the vanilla mark_failed's parity — there is no result to
+        -- expire), and a cohort with no TTL writes NULL (the COALESCE's
+        -- fallback keeps the row's own value).
+        result_expires_at = CASE WHEN $2::text = 'succeeded' THEN COALESCE(
+            (SELECT clock_timestamp() + ac.result_ttl * interval '1 second'
+             FROM {schema}.actor_config ac WHERE ac.actor = {schema}.jobs.actor),
+            result_expires_at
+        ) ELSE result_expires_at END
     WHERE id = $1
       -- THE TERMINAL-MARK FENCE (P3 rule 6: the CAS IS the shape guard) —
       -- status + worker + ATTEMPT + claim_epoch. The attempt is the fencing

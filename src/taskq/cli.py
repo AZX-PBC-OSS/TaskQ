@@ -5135,6 +5135,22 @@ def flows_retry(
         except WorkflowRunError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None
+        except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
+            # THE RACE'S HONEST LOSER (the same named pair the cancel and
+            # resolve verbs carry — the retry's own writers can deadlock a
+            # laggard's exactly the same way, and PG kills one writer; the
+            # CLI's answer is the NAMED refusal with the remedy, never a
+            # rich traceback — the diagnostics-first law). The winner's own
+            # voice is honest; the loser re-runs this verb (or `taskq flows
+            # status`) to see the settled state.
+            typer.echo(
+                f"the run {parsed}'s writers raced and PG resolved the "
+                "deadlock in another writer's favour — the node is being "
+                "re-opened OR the run cancelled by the winner; re-run this "
+                "verb (or `taskq flows status`) to see the settled state",
+                err=True,
+            )
+            raise typer.Exit(code=1) from None
         if reopened:
             typer.echo(
                 f"re-opened {reopened} row(s): node {node!r} re-pends, its blocked "
@@ -5142,8 +5158,9 @@ def flows_retry(
             )
         else:
             typer.echo(
-                f"nothing re-opened: node {node!r} is live, unknown to run {parsed}, "
-                "or spent past the attempt ceiling",
+                f"nothing re-opened: node {node!r} is live (not terminal-failed), "
+                f"unknown to run {parsed}, or is the run's own root — the root key "
+                "'__flow__' is refused; re-run the flow instead of the root node",
                 err=True,
             )
             typer.echo("Action: taskq flows status shows the node's current state.", err=True)

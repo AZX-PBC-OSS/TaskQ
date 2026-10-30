@@ -27,6 +27,7 @@ from taskq.workflows.api._sql_runner import (
     RETRY_FLOW_REOPEN_SQL_TEMPLATE,
     RETRY_NODE_CAS_SQL_TEMPLATE,
     RETRY_REOPEN_CLOSURE_SQL_TEMPLATE,
+    RETRY_SKIP_REARM_SQL_TEMPLATE,
     render_sql,
 )
 from taskq.workflows.engine import finalize_node
@@ -134,68 +135,28 @@ class ExitOps(_ExitHost):
         principal: Any = None,
         reason: str | None = None,
     ) -> bool:
-        """THE MANUAL RESUME (§17.2, the §22.6 redispatch row 3 — "the
-        ladder then manual"; attack-audit's Missing #1): the operator's
-        audited, CAS-guarded re-arm of a TERMINAL-FAILED node's ladder.
+        """THE COMPILED FACE'S DELEGATE (the round-2 conviction 5a): the
+        id-addressed verb ``retry_workflow_node`` is the ONE manual-resume
+        implementation — this module's own parallel re-derivation (a
+        second CAS + closure + audit walk) was dead in production AND
+        STALE (it lacked the H-C3 FOR-UPDATE serialization, the H-C4
+        skip re-arm, and the cancelled-run refusal the verb carries —
+        the exact drift a copy invites). The runner's historical call
+        shape stays (the phase-3 pins compose it), riding the verb's
+        law. The import is the LAZY PUBLIC-SEAM form (the routes' own
+        shape) so every caller patches ONE name. Returns ``True`` when
+        the CAS granted the re-arm (the verb's row count > 0)."""
+        from taskq.workflows import retry_workflow_node
 
-        * THE ATTEMPT ORDINAL CONTINUES — never resets: the claim's
-          counter is untouched, the ladder's 'failed' ledger rows are the
-          count, so each manual retry buys EXACTLY ONE more attempt (a
-          failure re-fails the node; the operator retries again — the
-          manual arm is the ladder's continuation, not a fresh budget).
-        * SAFE BY THE STEP LEDGER (T05): the re-run's ``ctx.step`` calls
-          return the recorded results — the replay is the ledger's own
-          contract.
-        * THE BLOCKED CLOSURE RE-OPENS: the failed node's downstream
-          rows the cascade BLOCKED (``blocking_reason='failed_parent'``)
-          return to join-wait (``'join'``) — the sweep's re-derive
-          re-derives them from the edge ledger on the next pass (the
-          counter-as-cache law; a stamp is the cache, never the truth).
-        * THE FLOW RE-OPENS: a terminal-FAILED flow root returns to
-          ``running`` (the manual resume's own linearization — a
-          cancelled flow stays closed: the operator's cancel is
-          deliberate, the resume does not second-guess it).
-        * THE AUDIT (G4): "who retried this" is a ROW.
-
-        Returns ``True`` when the CAS granted the re-arm. Surfaced as
-        the ``taskq flows retry`` verb (T12's ticket)."""
-        from taskq.audit import record_admin_action
-
-        descendants = sorted(self._descendants_of(node_key))
-        async with self.pool.acquire() as conn, conn.transaction():
-            # THE NODE'S CAS (one grant): terminal-FAILED → pending; the
-            # attempt ordinal untouched (CONTINUES — the ladder's own
-            # count is the budget).
-            node_id = await conn.fetchval(
-                render_sql(RETRY_NODE_CAS_SQL_TEMPLATE, self.schema),
-                flow_id,
-                node_key,
-            )
-            if node_id is None:
-                return False
-            # THE CLOSURE RE-OPENS: the blocked downstream rows return
-            # to join-wait (the re-derive re-derives them — a stamp is
-            # the cache).
-            if descendants:
-                await conn.execute(
-                    render_sql(RETRY_REOPEN_CLOSURE_SQL_TEMPLATE, self.schema),
-                    flow_id,
-                    descendants,
-                )
-            # THE FLOW RE-OPENS: a terminal-FAILED root → running (the
-            # maintenance leg owns the verdict from the rows again).
-            await conn.execute(render_sql(RETRY_FLOW_REOPEN_SQL_TEMPLATE, self.schema), flow_id)
-            await record_admin_action(
-                conn,
-                schema=self.schema,
-                principal=principal,
-                action="workflow.retry_node",
-                target_type="workflow_node",
-                target_id=f"{flow_id}:{node_key}",
-                reason=reason,
-                detail={"node_key": node_key, "closure_reopened": len(descendants)},
-            )
-        return True
+        granted = await retry_workflow_node(
+            self.pool,
+            schema=self.schema,
+            flow_id=flow_id,
+            node_key=node_key,
+            reason=reason,
+            principal=principal,
+        )
+        return granted > 0
 
 
 _EXIT_CANCEL_ROOT_SQL_TEMPLATE = """
@@ -388,11 +349,43 @@ async def retry_workflow_node(
     deliberate — re-opening it is a second decision, not a resume).
     THE AUDIT (G4): the row.
 
-    Returns 1 when the CAS granted the re-arm, 0 when nothing was
-    resumable (the node is live, unknown, or not terminal-failed)."""
+    * THE ROOT KEY IS NOT A NODE (H-C1): ``node_key='__flow__'`` matches
+      nothing (the CAS's own guard) — returns 0, the root's bytes stay
+      put; the run's own re-run is the RUN-rerun's concern (a fresh run,
+      or the run-rerun composition — never the per-node CAS).
+    * THE CANCEL/RETRY SERIALIZATION (H-C3): the root's status read
+      takes ``FOR UPDATE`` — a cancel committing between the read and
+      the CAS can no longer strand a PENDING node under a CANCELLED
+      root: the refusal is race-free (the read sees the cancel's flip),
+      and a retry that wins the lock serializes the cancel BEHIND its
+      own commit (the cancel's cascade then flips the re-armed node —
+      never a pending row under a cancelled root, the wedged-forever
+      shape).
+    * THE EXIT-SKIPPED BRANCHES RE-ARM (H-C4): the grant re-opens the
+      run's skip-envelope rows (``result @> '{"skipped": true}'`` — the
+      engine's own SKIPPED_RESULT contract, the typed early-exit's
+      downstream mark) — pending, the envelope CLEARED — so the resumed
+      run re-runs the cut-short work the resume promised (the count
+      rides the audit row).
+
+    Returns the number of NODE ROWS the CAS re-armed (0 when nothing
+    was resumable — the node is live, unknown, not terminal-failed, or
+    the run's own root key). THE ROW COUNT, NOT A GRANT BIT (the
+    round-2 conviction): a MAP's failed children share one step key —
+    one key's grant re-arms every failed row of the key at once, and
+    the caller's applied-count counts ROWS (the audit row carries the
+    count beside the key's)."""
+    from taskq.audit import record_admin_action
+
     async with pool.acquire() as conn, conn.transaction():
+        # THE ROOT'S STATUS READ — FOR UPDATE (H-C3): the lock is the
+        # serialization point. A cancel's root flip now either landed
+        # BEFORE this read (the refusal below sees it) or waits BEHIND
+        # this transaction's commit (the cancel's cascade then flips the
+        # re-armed node). The bare read's gap was the wedge: a pending
+        # node under a cancelled root, forever.
         root = await conn.fetchval(
-            render_sql("SELECT status FROM {schema}.jobs WHERE id = $1", schema),
+            render_sql("SELECT status FROM {schema}.jobs WHERE id = $1 FOR UPDATE", schema),
             flow_id,
         )
         if root == "cancelled":
@@ -400,19 +393,26 @@ async def retry_workflow_node(
                 f"run {flow_id} is cancelled — re-opening it is a second decision, "
                 "not a resume (create a new run, or un-cancel deliberately)"
             )
-        node_id = await conn.fetchval(
-            render_sql(RETRY_NODE_CAS_SQL_TEMPLATE, schema), flow_id, node_key
-        )
-        if node_id is None:
+        rows = await conn.fetch(render_sql(RETRY_NODE_CAS_SQL_TEMPLATE, schema), flow_id, node_key)
+        if not rows:
             return 0
         descendants = await conn.fetch(render_sql(_DESCENDANTS_SQL, schema), flow_id, [node_key])
         keys = [r["step_key"] for r in descendants]
         if keys:
             await conn.execute(render_sql(RETRY_REOPEN_CLOSURE_SQL_TEMPLATE, schema), flow_id, keys)
+        # THE SKIP ENVELOPE'S RE-ARM (H-C4): the run's exit-skipped rows
+        # (the typed early-exit's downstream mark — the engine's own
+        # SKIPPED_RESULT contract, ``{"skipped": true}`` containment)
+        # return to pending with the envelope CLEARED — the resumed run
+        # re-runs the cut-short work (a skip is not an attempt; the
+        # envelope must never outlive the resume it would lie about).
+        # Same transaction as the grant: the run cannot re-open WITHOUT
+        # its skipped branches re-arming.
+        skip_rows = await conn.fetch(render_sql(RETRY_SKIP_REARM_SQL_TEMPLATE, schema), flow_id)
+        skips_rearmed = len(skip_rows)
         await conn.execute(render_sql(RETRY_FLOW_REOPEN_SQL_TEMPLATE, schema), flow_id)
-        # THE AUDIT ROW (the caller owns the tx — the same-tx guarantee).
-        from taskq.audit import record_admin_action
-
+        # THE AUDIT ROW (the caller owns the tx — the same-tx guarantee);
+        # the ROWS count rides the detail (the map-key retry's census).
         await record_admin_action(
             conn,
             schema=schema,
@@ -421,9 +421,14 @@ async def retry_workflow_node(
             target_type="workflow_node",
             target_id=f"{flow_id}:{node_key}",
             reason=reason,
-            detail={"run_id": str(flow_id), "node_key": node_key},
+            detail={
+                "run_id": str(flow_id),
+                "node_key": node_key,
+                "rows_reopened": len(rows),
+                "skips_rearmed": skips_rearmed,
+            },
         )
-    return 1
+    return len(rows)
 
 
 _DESCENDANTS_SQL = """

@@ -71,3 +71,5 @@
 .wf-st-running-fill { background: #dbeafe; border: 1px solid #2563eb; }
 .wf-st-failed-fill { background: #fee2e2; border: 1px solid #dc2626; }
 .wf-st-pending-fill { background: #f1f5f9; border: 1px solid #94a3b8; }
+.wf-st-held-fill { background: #fef3c7; border: 1px solid #d97706; }
+.wf-st-skipped-fill { background: #f1f5f9; border: 1px solid #94a3b8; }

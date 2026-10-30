@@ -65,12 +65,14 @@ async def insert_fork(
             [c.step_key for c in chunk],
             [fork.trace_id] * len(chunk),
             # PER-CHILD metadata: a child declaring admission terms (CURE
-            # 2 — the arm's/map's bucket names) carries them on its OWN
-            # row; the no-bucket rows keep the base shape byte-identical.
+            # 2 — the arm's/map's bucket names, and the STRICT
+            # reservation names beside them — H-A1's own ride) carries
+            # them on its OWN row; the no-terms rows keep the base shape
+            # byte-identical.
             [
                 _jsonb(
-                    _row_metadata(flow_id, rate_limits=c.rate_limits)
-                    if c.rate_limits
+                    _row_metadata(flow_id, rate_limits=c.rate_limits, reservations=c.reservations)
+                    if c.rate_limits or c.reservations
                     else _metadata(flow_id, blocking_reason=None)
                 )
                 for c in chunk
