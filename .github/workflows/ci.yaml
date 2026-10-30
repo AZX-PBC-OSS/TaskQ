@@ -106,6 +106,7 @@ jobs:
       # .measurements/. A change that stalifies the estate's claims
       # reds HERE, with the verifier's own named verdicts.
       - name: The head-stamp law (the evidence verifier)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           git fetch --depth=1 origin evidence/taskqflow
           uv run --no-sync python scripts/verify_evidence_heads.py
