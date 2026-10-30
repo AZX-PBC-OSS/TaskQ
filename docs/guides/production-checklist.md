@@ -52,7 +52,10 @@ teaches it. Nothing here is new law; this page COLLECTS.
       → [docshelf.md — F2](docshelf.md)
 - [ ] **`TASKQ_QUEUES_STRICT` fail-fast** — a worker projected onto a
       queue its app cannot see refuses to boot loudly. Keep it on in
-      production.
+      production — declare it in code on the app
+      (`WorkflowApp(queues_strict=True)`) or via the env; the faces
+      OR-combine and the env can only add strictness, never silence a
+      declared contract.
       → [workers.md](workers.md), [configuration.md](configuration.md)
 - [ ] **Versioning contract (the stamp read):** a workflow definition
       carries a content stamp; a redeploy that renames or removes a

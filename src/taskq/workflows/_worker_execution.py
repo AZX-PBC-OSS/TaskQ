@@ -80,6 +80,7 @@ __all__ = [
     "WorkflowActorQueueConflictError",
     "WorkflowBodyUnresolvableError",
     "WorkflowQueueUnconsumedError",
+    "any_app_declares_strict_queues",
     "collect_workflow_rate_limits",
     "collect_workflow_reservations",
     "execute_flow_job",
@@ -296,6 +297,25 @@ def workflow_execution_capable() -> bool:
     predicate the boot stamps into the workers row's metadata — the
     dispatch fence's capability is THIS capability, as data."""
     return len(_apps) > 0
+
+
+def any_app_declares_strict_queues() -> bool:
+    """THE APP-DECLARED STRICT FACE, read off the registry the projection
+    itself walks: any still-alive imported app declaring
+    ``queues_strict=True`` makes THIS process's queue-trap gate strict —
+    the app's own definition carries the contract in code (the fleet
+    that needs this face cannot coordinate a fleet-wide env var; the
+    declaration rides the app every worker child already imports).
+    THE OR-LAW's app-side arm: the bootstrap's gate
+    (``_fail_fast_on_unconsumed_workflow_queues``) is strict if EITHER
+    this predicate or ``settings.queues_strict`` (``TASKQ_QUEUES_STRICT``)
+    is set — the env can only ADD strictness, never silence a declared
+    contract. An undeclared app (the default) changes nothing:
+    ``getattr``'s False is today's behavior byte-identically. One strict
+    app tightens the gate for the WHOLE projected cohort set — the same
+    aggregated shape the warning arm reports in (the cohorts are ONE
+    projection; the gate is its one door)."""
+    return any(getattr(app, "queues_strict", False) for app in _apps)
 
 
 # ── the boot projection (the F3 law's call site) ─────────────────────────

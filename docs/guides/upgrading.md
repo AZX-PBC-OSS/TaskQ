@@ -2339,8 +2339,9 @@ nothing was lost, the move is documented here).
 
 ### Workflow steps default to the `default` queue
 
-> **Unreleased.** Strict-mode workers (`TASKQ_QUEUES_STRICT=1`) that
-> import a WorkflowApp whose cohorts project onto queues the worker does
+> **Unreleased.** Strict-mode workers (`TASKQ_QUEUES_STRICT=1`, or the
+> app declaring `WorkflowApp(queues_strict=True)`) that import a
+> WorkflowApp whose cohorts project onto queues the worker does
 > not consume now refuse the boot (`WorkflowQueueUnconsumedError`);
 > non-strict boots warn. Deployments whose workers consume `default` are
 > unaffected. The audit: every `step(`/` map_source(`/`route(` wiring in
@@ -2365,7 +2366,8 @@ placement law — a heterogeneous placement is distinct actor names per
 queue (see
 [Workflows](workflows.md#the-split-placement-one-actor-one-queue-the-design-law)).
 
-**The boot-time loud check (gated on `TASKQ_QUEUES_STRICT`):** every
+**The boot-time loud check (the app's `queues_strict=True` declaration
+OR `TASKQ_QUEUES_STRICT`):** every
 worker that imports the app projects its cohorts, and a boot whose
 consumed set names none of a projected cohort's queues fails LOUD —
 gated on the vanilla queues' own opt-in law: strict mode
@@ -2378,7 +2380,19 @@ proceed with the ONE aggregated `workflow-cohorts-on-unconsumed-queues`
 warning (the vanilla warning's own shape, the remedy spelled: a sibling
 worker in the fleet may consume the queue — a per-queue worker
 specialization legitimately imports the shared apps module while its
-siblings run the foreign queues). The check runs before the cohorts'
+siblings run the foreign queues). The gate has a second, app-declared
+face: `WorkflowApp(queues_strict=True)` declares the strictness in
+CODE, riding the app every worker child already imports (a
+heterogeneous fleet whose children each subscribe to a queue subset
+cannot coordinate a fleet-wide env var). The faces OR-combine — the
+boot refuses when EITHER is set — and the env can only ADD strictness:
+ops tightening stays possible; silently disabling a declared contract
+is not a thing. One app's declaration tightens the gate for every
+co-resident app too: in a process importing several apps,
+`queues_strict=True` on ONE app makes the gate strict over the WHOLE
+projected cohort set — a co-resident app's sibling-served cohorts
+refuse as well (the refusal names the queues and the cure). The check
+runs before the cohorts'
 `actor_config` sync, so a refusing process writes nothing; a worker
 consuming nothing at all keeps the separate `worker-consumes-no-queues`
 warning.

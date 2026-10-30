@@ -262,9 +262,26 @@ class WorkflowApp:
     ``deps.*`` reads against the declared type) and at build (E12's
     runtime check of the binding against the declared type)."""
 
-    def __init__(self, *, actor: str = "wf", deps: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        actor: str = "wf",
+        deps: object | None = None,
+        queues_strict: bool = False,
+    ) -> None:
         self._actor = actor
         self._deps: object | None = deps
+        # THE APP-DECLARED STRICT FACE (the queue-trap door's OR-law):
+        # the app's own definition carries the strict contract in code —
+        # the fleet that needs this face cannot coordinate a fleet-wide
+        # env var (its workers each subscribe to a queue subset), but
+        # every worker child already imports THIS app. The boot gate
+        # reads it off the app registry
+        # (``any_app_declares_strict_queues``); the env
+        # (``TASKQ_QUEUES_STRICT``) can only ADD strictness, never
+        # silence this declaration. Default False: no declaration = the
+        # env's own arm, today's behavior byte-identically.
+        self.queues_strict = queues_strict
         self._workflows: dict[str, Callable[..., object]] = {}
         #: The app's declared queue universe (the workflow actors'
         #: queues — validate's W2 rule reads the compiled projection;
