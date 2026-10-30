@@ -5,7 +5,7 @@ Nothing on this ledger may be closed without a red-proven pin and a green
 run. Nothing may be removed; closed items move to the DONE section with
 their receipts.
 
-Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt)
+Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt) · IN BUILD — a distinct state on an open item: a fresh builder agent is working it on a local branch (not yet pushed, not yet reviewed); the marker stays `[ ]` until the branch or PR is named (`[~]`).
 
 ---
 
@@ -13,7 +13,7 @@ Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt)
 
 | consumer | counts | blocked on | status |
 |---|---|---|---|
-| TAStack | yes — deepest (36+ actors, reservations, tiers) | `reservations=`/`max_concurrent` on the wf surface (the PDFium guard); retention arms; priority; max_pending | [~] §B1, §B2 |
+| TAStack | yes — deepest (36+ actors, reservations, tiers) | capacity + retention LANDED (proven by their own re-review's live run). STILL BLOCKING: `priority` on wf enqueues (a shipped-surface regression); the boot refusal without `TASKQ_QUEUES_STRICT` (subset-subscribing workgroups can't set it); code-owned capacity sync (the damper); `Snooze` passthrough; `start_to_close`; wf otel spans; `max_pending` (on trial as C16 — build-or-prove). THEIR VERDICT: hold the pin at 66b8f369 until these land. | [~] §B1, §B2; blockers IN BUILD §C |
 | cennan | yes — 30 actors, 50k-deep backlogs | capacity fields (§B1); retention (§B2); priority; fairness_key; start_to_close; retry hooks; transactional run creation | [~] §B1, §B2; rest §C |
 | warden | yes — hand-rolled non-durable DAG engine (pipeline/) | capacity fields; retention; result_ttl; terminal hooks on steps; cron-triggered flows | [~] §B1, §B2; rest §C |
 | OperationsDashboard | moderate — sync actors + 11 crons | nothing hard; SSE "holds" topic budget note; the unique_for/hooks family if flows land | [x] doc note §B3 |
@@ -22,10 +22,10 @@ Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt)
 | event-intel | mid — sweep join is flow-shaped | nothing blocking; `max_concurrent` on steps | [~] §B1 |
 | SustainabilityAI | no — Prefect/dramatiq own orchestration | n/a | [x] not-a-candidate |
 
-## B. IN FLIGHT — branch `feat/wf-retention-and-actor-caps`
+## B. THE CURE — branch `feat/wf-retention-and-actor-caps` — MERGED as #693 (`f71763df1`, in origin/main). The `[~]` markers below scope ONLY the C14/C15/C16 follow-on gaps named in §C; the surfaces themselves landed.
 
 - [~] B1. The capacity surface: `@app.actor()`/`step()` gain
-      `max_concurrent`, `max_pending`, `reservations=[ConcurrencyReservation]`,
+      `max_concurrent`, `reservations=[ConcurrencyReservation]`,
       `result_ttl`; the handle's terms flow into wired nodes (the explicit
       step param overrides); the projection carries them into `actor_config`
       (the seed-only law; the operator owns the row after —
@@ -33,6 +33,11 @@ Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt)
       (`WorkflowActorCapacityConflictError`); the reservations reach the
       bootstrap's ensure-slots pass; the engine's claim arithmetic needed
       ZERO changes (it already enforces per-actor caps on wf rows).
+      CORRECTED (the consumer's re-review): this block listed
+      `max_pending` among the gained params — FALSE, it never shipped;
+      the assertion behind its absence is on trial as C16. The
+      seed-only law above stands as a GAP, not a decision: the
+      code-owned sync is C15, in build.
 - [~] B2. The retention arms: five bounded-batch sweep arms
       (`wf_edge`, `wf_step_ledger`, `wf_join_fire`, `wf_signals`,
       `wf_node_progress`), flow-terminal-scoped, one batch per pass,
@@ -45,10 +50,41 @@ Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt)
       trap.
 - [~] B4. The queue-default trap's loud door: the projected wf cohorts'
       queues ride the boot-time consumed-queues assertion — an
-      unconsumed queue fails the boot loudly, never strands silently.
+      unconsumed queue fails the boot loudly ONLY under
+      `TASKQ_QUEUES_STRICT`; the default arm is a per-child warning.
+      CORRECTED (the consumer's re-review caught the overclaim):
+      subset-subscribing fleets structurally cannot set the env var, so
+      the loud door is closed to exactly the fleets that need it — the
+      app-declared face is C14, in build.
 
 ## C. THE NEXT TIER (the consumers' ranked needs, sequenced after B)
 
+THE WORKING RANK (the consumer re-review's order — build top-down; no
+ omission lands without a red-proven impossibility pin behind it):
+C1 → C14 → C15 → C16 → C4 → C3 → C10 → C13(the click) → the rest.
+
+- [~] C14. The queue-trap's app-declared strict face: `strict_queues`
+      declared on the App (code, not env) so subset-subscribing fleets —
+      workgroup children each consuming a cohort subset — get the boot
+      REFUSAL without fleet-wide `TASKQ_QUEUES_STRICT`. The env stays
+      (strict if either is set); the remedy text names both faces.
+      IN FLIGHT: PR #695 (feat/wf-strict-queues) — built, reviewed APPROVE, the doc round landed.
+- [~] C15. Opt-in code-owned capacity sync: `sync_actor_config`'s UPSERT
+      omits the capacity columns from `SET` (the operator owns the row
+      after first boot) — so a flow actor's `max_concurrent` change
+      deploys NOTHING after the seed. Add the per-actor opt-in: for
+      code-owned actors the UPSERT carries the capacity columns; the
+      default unchanged; the reservation face unaffected (it never
+      rides `actor_config`). IN FLIGHT: PR #697 (feat/wf-capacity-sync) —
+      built, reviewed, re-reviewed APPROVE.
+- [~] C16. `max_pending` on the wf surface — BUILD OR PROVE. The H-A6
+      verdict (the engine's inserts bypass the enqueue admission; a
+      claim-side gate wedges) is an ASSERTION until it is a pin. Either
+      build the claim-side throttle (pending per cohort >= max → the
+      claim delays; a fan-out-wider-than-max run must complete —
+      pinned) or produce the impossibility pin (a minimal repro where
+      any claim-side gate deadlocks a join). No adjectives. IN FLIGHT:
+      PR #697 — IMPOSSIBLE, proven (the pins are the verdict).
 - [ ] C10. The workflows package emits ZERO otel telemetry (no spans, no
       metrics — the vanilla actors' observability doesn't extend to the
       runs/steps; the consumers run otel and their flows would be
@@ -59,8 +95,13 @@ Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt)
       rerun; the operator's CLI doesn't).
 - [ ] C13. The 0.3.0 cut: the release PR (#36) waits — the consumers pin
       revs because there is no tag to pin. The click is the release.
-- [ ] C1. `priority` on wf run/step enqueues (cennan's interactive-vs-backlog;
-      TAStack's BACKLOG stamping).
+- [~] C1. `priority` on wf run/step enqueues (cennan's interactive-vs-backlog;
+      TAStack's BACKLOG stamping). RANK 1 — the re-review calls it a
+      regression on a shipped surface: 23 `priority=` matches downstream
+      (17 in src, the rest harness/vendored), and a
+      flow step lands at the column default, so an interactive step
+      cannot jump a 100k-deep sweep backlog. IN FLIGHT: PR #698
+      (feat/wf-priority) — built, reviewed, re-reviewed APPROVE.
 - [ ] C2. `fairness_key` on wf enqueues (cennan's multi-tenant round_robin —
       without it a workflow is a starvation vector on shared queues).
 - [ ] C3. `start_to_close` per-actor backstop on the wf surface.
@@ -208,6 +249,10 @@ Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt)
       (docs/guides/workflows.md's capacity table's ``max_pending`` row +
       the validation note) still promise the knob — the DOCS OWNERS must
       strike it (the fix agent's territory excludes docs/**).
+      CORRECTION (2026-10-30): the impossibility rationale above is an
+      ASSERTION, not a pin — on trial as C16 (build-or-prove). This
+      entry's DONE marking covers the surface removal, not the
+      impossibility proof.
 - [x] H-A7 HIGH: the within-workflow capacity conflict SKIPS the
       workflow — its rows strand forever and the queue-trap door goes
       blind (the severity inversion: the common shape is the silent
@@ -1058,6 +1103,37 @@ Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt)
       race, the EXIT_SKIP/RETRY states).
 - [ ] G7. The test-estate P1s (the rv2-13 replacement's subprocess burn —
       done with the pin; the registry's divergent faces; the residue).
+
+## I. THE CONSUMER'S RE-REVIEW (2026-10-30) — THE STATUS BOARD'S LAW
+
+TAStack re-ran the proving ground end-to-end (scratch Postgres 18.6,
+isolated worktree) and convicted the ledger itself in two places. The
+receipts (their run, exit 0): the typed HITL hold; 6 bodies / 0 overlaps
+under max_concurrent=1 + the reservation; the pdf_gadget slot released;
+the terminal flow swept at a 1µs retention period (the period is
+their harness's figure, as reported) — wf_edge 15, wf_step_ledger 13,
+wf_node_progress 35 — while the LIVE run's rows stayed untouched. The
+capacity surface and the retention arms are REAL in execution.
+
+Their verdict: HOLD THE PIN at 66b8f369. Adopted as the governing
+verdict. The convictions, all adopted:
+
+1. `priority` absent — a regression on a shipped surface, not a gap (C1).
+2. The queue trap half-closed — the refusal is strict-gated; a
+   subset-subscribing fleet cannot set the env var (C14). §B4's
+   "fails the boot loudly" was an overclaim; corrected above.
+3. Seed-only capacity breaks the code-deploys doctrine for dampers
+   (C15); the reservation face keeps their doctrine, the damper loses it.
+4. No `Snooze` passthrough (429s burn attempt budget — C4), no
+   `start_to_close` (C3), zero flow telemetry (C10), no release tag (C13).
+
+THE STANDING RULE: a documented omission is a claim like any other. It
+ships only with a red-proven impossibility pin behind it. "Deliberate",
+"deferred", "accepted" — none of these is a proof. If it is buildable,
+it is built; if it is genuinely impossible, the pin says so. THIS
+LEDGER IS THE CONSUMERS' STATUS BOARD: every claim in it is checked
+against source before it ships, and the consumers' re-reviews outrank
+its verdicts.
 
 ## DONE (with receipts)
 
