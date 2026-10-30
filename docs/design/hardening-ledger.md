@@ -153,6 +153,18 @@ discipline the open part's future cure owes.
   the outbox flips delivered (the green — the same degrade-to-default
   law the in-domain malformed stamps already pin).
 
+## Follow-ups (deferred, with the judgment stated)
+
+- **The ratelimit elapsed-vs-ceiling pins** (test_ratelimit_pg_row_lock_bounded,
+  test_ratelimit_sliding_window_pg_lock; ~15 pins). Each asserts a
+  single-shot, server-bounded wait against a ceiling with 12-20x deliberate
+  headroom (a 100 ms budget under a 2.0 s ceiling), and no CI run has red
+  one receipt-class (a runner-starvation red of a timing pin). Marking the
+  family would move ~15 pins into the serial load-sensitive lane - a
+  lane-capacity decision deferred until the estate earns it. The stated
+  judgment: mark on the first receipt-class red, not on class resemblance
+  alone.
+
 ## The rules the campaign operates under
 
 - A rerun is not evidence. Every red gets the chain: symptom, mechanism,

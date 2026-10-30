@@ -261,10 +261,12 @@ jobs:
       # same 4 threads) pushes a trial off its fast regime, and a
       # pytest-timeout bound cannot fire inside a job cap that fires
       # first - the leg goes silent at 99% and cancels with zero output.
-      # The slow tier's lane below runs it at -n 2, the density its
+      # The slow tier's lane runs its remainder at -n 2, the density its
       # fast regime assumes, on one interpreter: the slow tier's value is
       # behaviour, not runtime parity (that lane's own comment). The
-      # load-sensitive tier has its own lane for the same wall-clock
+      # lost-job soak's trials are no longer among that remainder - as
+      # load_sensitive they run in the load-sensitive lane below,
+      # serially. That tier has its own lane for the same wall-clock
       # reason.
       - name: Run the suite (all extras, minus slow and load-sensitive)
         # faulthandler_timeout: DUMP-ONLY stack dumps (no exit) when a test
@@ -445,13 +447,25 @@ jobs:
 
   load-sensitive:
     # The wall-clock/timing guards (watchdog lag sampling, terminal-write
-    # budget, cron commit gates, otel overhead, bootstrap slots) assert on
-    # elapsed time, so they are load-fragile: under xdist a sibling's CPU
-    # churn shows up as flake. They run here, ONCE per CI run, serially, on
-    # a standard runner (the job is ~2 minutes: GitHub bills per second but
-    # rounds up to the minute, so a larger runner would cost more and buy
-    # nothing for a serial lane). Every other lane deselects the family via
-    # "not load_sensitive"; this lane is the one place it runs.
+    # budget, cron commit gates, otel overhead, bootstrap slots, and PR
+    # #695's convicted elapsed families: the retention scale pin, the cron
+    # hang-livelock bounds, the tx-unwind windows, the lost-job soak's
+    # three settle trials) assert on elapsed time, so they are
+    # load-fragile: under xdist a sibling's CPU churn shows up as flake.
+    # They run here, ONCE per CI run, serially, on a standard runner.
+    # Honest composition: a handful of small marked pins plus the soak's
+    # three trials (~2-5 min each healthy) - a healthy total of ~8-17 min
+    # against this job's 25-min cap. The documented trade: a runner so
+    # starved that a settle outlives the cap cancels this lane silently
+    # instead of reding at the test's own cap; the serial regime is the
+    # bet that this stays rare (the marker comment in
+    # tests/test_rt_lost_job_soak.py). Lane selection: the test,
+    # slow-suite, and coverage lanes deselect the family with the literal
+    # "not load_sensitive" filter; the extras, cross, timescale, e2e, and
+    # system-e2e lanes deselect it de facto - their selections are extra-,
+    # marker-, or directory-scoped and collect the family only if a marked
+    # pin also carried the lane's own extra marker, which none does. This
+    # lane is the one place the family runs.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

@@ -287,6 +287,18 @@ async def test_reclaim_fence_stands_against_the_zombie(transactional: bool) -> N
 
 
 @pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
+# load_sensitive (PR #695's ruling): this file's elapsed-measuring family.
+# The load-bearing teeth are the two tx-unwind window pins below — elapsed
+# must land inside [_TX_UNWIND_WAIT_BUDGET, _TX_UNWIND_WAIT_BUDGET + 3.0) —
+# and a window that tight measures the packing before it measures the code
+# on a starved runner. The family runs in the serial load-sensitive lane;
+# the asserts are untouched, so the windows still separate "cut by the
+# machinery" from "cut by the test's own net". The FakeClock wedge
+# tripwires in the family (this pin's elapsed < 5.0 and the fleet pin's
+# elapsed < 10.0 — 50x+ slack by design, "not a measurement" per their own
+# comments) ride along: harmless serially, and they drive the same
+# scenario.
+@pytest.mark.load_sensitive
 async def test_hostile_finally_cannot_defer_the_deadline(transactional: bool) -> None:
     """A body whose finally does its own long (shielded) cleanup must not
     defer the hard limit: the soft cancel lands at the deadline, the
@@ -679,6 +691,7 @@ async def test_time_limit_smaller_than_the_heartbeat_tick_is_safe() -> None:
 # ── Attack 5: the fleet shape ─────────────────────────────────────────
 
 
+@pytest.mark.load_sensitive
 async def test_fleet_of_deadline_hits_keeps_capacity_and_slots() -> None:
     """100 bodies all hitting their limits at once, every one of them
     hostile (a shielded 3600s cleanup in its finally): every attempt still
@@ -805,6 +818,7 @@ async def test_tx_rollback_waits_out_the_unwind_before_touching_the_conn(
     assert "ROLLBACK" in tx_conn.log, "the tx ROLLBACK completed, never blocked by the guard"
 
 
+@pytest.mark.load_sensitive
 async def test_tx_hostile_finally_past_the_budget_still_ends_at_the_deadline() -> None:
     """The deferrable-deadline win survives the bound unwind wait on the
     transactional path: a hostile ``finally`` that awaits PAST the
@@ -857,6 +871,7 @@ async def test_tx_hostile_finally_past_the_budget_still_ends_at_the_deadline() -
     await asyncio.gather(*zombies, *cleanups, return_exceptions=True)
 
 
+@pytest.mark.load_sensitive
 async def test_tx_hostile_finally_holding_the_conn_past_the_budget_records_the_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
