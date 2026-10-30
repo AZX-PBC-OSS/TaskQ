@@ -1,0 +1,5 @@
+# evidence-heads-verify at the estate re-stamp head b40d189190d7d7b609fb6815d2c26532f77de993 — the verifier's own rc=0
+  WARNING (unparsable-capture): wf-battery-leg3: the capture wf-battery-slot-20261030T172947Z.txt records NO verdict shape the content door parses (the capture carries no rc=, no passed/failed summary) — judged on the head-stamp law alone. If this family's verdict shape is new, TEACH THE DOOR; never teach the capture to be silent.
+  WARNING (unparsable-capture): wf-battery-rv4: the capture wf-battery-slot-20261030T172947Z.txt records NO verdict shape the content door parses (the capture carries no rc=, no passed/failed summary) — judged on the head-stamp law alone. If this family's verdict shape is new, TEACH THE DOOR; never teach the capture to be silent.
+verifier rc=0
+head: b40d189190d7d7b609fb6815d2c26532f77de993
