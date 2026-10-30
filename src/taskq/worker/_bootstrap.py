@@ -271,6 +271,30 @@ def _served_redis_rate_limits(
     return sorted(offending)
 
 
+def _warn_unregistered_workflow_reservations(
+    log: structlog.stdlib.BoundLogger,
+    unknown_names: list[str],
+    rl_registry: RateLimitRegistry,
+) -> None:
+    """THE STR-NAME RESERVATIONS' BOOT WARNING (C4 — the
+    ``workflow-rate-limit-name-unregistered`` twin's own shape): a
+    workflow-declared plain-``str`` reservation name that NO registry
+    entry backs (a vanilla actor's registration included) is the
+    WARNING's subject — probably a typo, may be declared on another app
+    the fleet serves; never a refusal. The row still stamps the name:
+    the claim-time fail-closed park (the flow gate's unknown-reservation
+    arm) remains the enforcer for the fleet the warning cannot reach."""
+    unbacked = [n for n in unknown_names if not rl_registry.has_reservation(n)]
+    if unbacked:
+        log.warning(
+            "workflow-reservation-name-unregistered",
+            names=unbacked,
+            remedy="register the reservation on the worker's rate-limit "
+            "registry or fix the declared name; until then the rows "
+            "naming it park fail-closed at claim",
+        )
+
+
 def _emit_sub_enqueue_startup_warnings(
     loop_scope: LoopScope,
     settings: WorkerSettings,
@@ -930,6 +954,90 @@ def _fail_fast_on_unrouted_configured_queues(
     if not unrouted:
         return
     raise UnknownQueueError(unrouted, configured, source="worker_boot")
+
+
+def _fail_fast_on_unconsumed_workflow_queues(
+    settings: WorkerSettings,
+    wf_configs: list[ActorConfig],
+) -> None:
+    """THE QUEUE-TRAP DOOR (the wf cohorts' face of the unconsumed-queue
+    check): a projected workflow cohort whose queue is not in this
+    worker's consumed set (``settings.queues``) — the STRICT gate
+    refuses the boot; NON-strict, the aggregated WARNING fires and the
+    boot proceeds (H-A8: the vanilla twin's own opt-in law).
+
+    Why a raise HERE under strict, where the vanilla actors' same shape
+    is only the aggregated warning: a workflow step's queue is a DEFAULT
+    it inherits (``queue="default"``) — never spelled at most wiring
+    sites — so the strand is silent by construction: the rows enqueue
+    fine, sit pending forever, and the only trace is a workflow that
+    never advances. The cohorts are also projected by EVERY worker that
+    imported the app (the projection is process-global), so the refusal
+    fires exactly where the trap is knowable: the boot that would claim
+    those rows does not consume their queue.
+
+    THE STRICT GATE (H-A8 — the heterogeneous fleet's own opt-in): the
+    vanilla twin (``_fail_fast_on_unrouted_configured_queues``) fires
+    ONLY on ``settings.queues_strict`` because a per-queue worker
+    specialization legitimately imports the shared apps module while a
+    SIBLING worker consumes the foreign queues. The wf cohorts' refusal
+    obeys the same law: NON-strict, the boot proceeds with the ONE
+    aggregated warning (``workflow-cohorts-on-unconsumed-queues`` — the
+    vanilla warning's own shape, the remedy named); strict, the refusal.
+
+    Runs BEFORE the cohorts' sync (a refusing process writes nothing; a
+    healthy sibling projects the same cohorts). The consumed-set-is-empty
+    corner belongs to the ``worker-consumes-no-queues`` warning — nothing
+    cohort-vs-consumed is decidable there, no double-signal.
+    """
+    if not settings.queues:
+        return
+    consumed = set(settings.queues)
+    unconsumed = sorted({config.queue for config in wf_configs} - consumed)
+    if not unconsumed:
+        return
+    if not getattr(settings, "queues_strict", False):
+        # THE NON-STRICT WARNING ARM (H-A8): the heterogeneous fleet's
+        # own shape — a sibling worker may consume the queue; the boot
+        # proceeds, the foreign cohorts named once, the remedy spelled.
+        _startup_log.warning(
+            "workflow-cohorts-on-unconsumed-queues",
+            cohorts=dict(
+                sorted(
+                    (config.actor, config.queue)
+                    for config in wf_configs
+                    if config.queue in unconsumed
+                )
+            ),
+            queues=unconsumed,
+            worker_queues=list(settings.queues),
+            remedy=(
+                "this worker serves these workflow cohorts but never "
+                "dispatches their rows: the dispatch claim matches only "
+                "the worker's own queues, so the rows sit pending until a "
+                "worker consuming each queue appears. Intended when a "
+                "sibling worker in the fleet consumes the queue; if none "
+                "does, add the queue to some worker's TASKQ_QUEUES / "
+                "--queues, or route the step elsewhere. Set "
+                "TASKQ_QUEUES_STRICT=1 to refuse the boot instead."
+            ),
+        )
+        return
+    from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
+
+    raise WorkflowQueueUnconsumedError(
+        f"workflow actor cohorts are projected onto queues this worker "
+        f"does not consume: {unconsumed} (this worker consumes "
+        f"{sorted(consumed)}). The dispatch claim matches only the "
+        "worker's own queues, so those steps' rows would sit pending "
+        "forever — no error, no log, anywhere. THE GATE: "
+        "TASKQ_QUEUES_STRICT (the vanilla queues' own opt-in law — this "
+        "refusal is its strict arm). THE REMEDY: add each "
+        "queue to a worker's TASKQ_QUEUES / --queues, or route the step "
+        "elsewhere (step(..., queue=...) / @app.actor(queue=...)); a "
+        "heterogeneous fleet that imports the app without executing its "
+        "workflows boots non-strict (the warning arm)."
+    )
 
 
 def _emit_retired_queue_assignments_advisory(
@@ -1618,7 +1726,23 @@ def _bootstrap_guards_and_registries(
                     collected_rl_names.append(rl_entry.name)
             for res_entry in actor_ref.reservations:
                 if isinstance(res_entry, ConcurrencyReservation):
-                    resolved_rl_registry.register(res_entry)
+                    # THE ONE REBIND DOCTRINE (H-A2 + C2's register-step
+                    # law): the declaration is constructed at module
+                    # import — before settings exist — so its schema is
+                    # the declaration's default, not this deployment's.
+                    # The registration rebinds a COPY (the declaration
+                    # object is never mutated), the SAME rebind at the
+                    # SAME phase the wf pass applies to the
+                    # workflow-declared reservations below. The registry's
+                    # own register step completes the doctrine (C2): a
+                    # PRE-REGISTERED raw instance (the docs' explicit-
+                    # registry pattern — the raw declaration registered on
+                    # an owned RateLimitRegistry) is REBOUND to the
+                    # incoming settings-bound copy at whichever pass
+                    # encounters it — the resolved registry's entries are
+                    # ALWAYS settings-schema-bound, and _same_config
+                    # (schema EXCLUDED) compares identical configs.
+                    resolved_rl_registry.register(res_entry.rebind_schema(settings.schema_name))
                     collected_res_names.append(res_entry.name)
         _startup_log.info(
             "ratelimit-actor-primitives-registered",
@@ -2027,6 +2151,44 @@ async def _main(
                         "registry or fix the declared name; until then the "
                         "rows naming it park fail-closed at claim",
                     )
+                # THE WORKFLOW-DECLARED RESERVATIONS' COLLECTION (the
+                # vanilla actors' collection loop's sibling, over the
+                # projected graphs): the nodes' declared
+                # ConcurrencyReservation instances register into the SAME
+                # resolved registry (ONE registry, ONE acquire path) and
+                # ride the SAME ensure-slots pass below (their slot rows
+                # materialize at boot exactly like the vanilla ones').
+                # The registration REBINDS to this deployment's schema —
+                # the C2 doctrine (the registry's register step rebinds
+                # any pre-registered raw instance to the same copy).
+                _wf_reservations, _wf_res_unknown = _wf_execution.collect_workflow_reservations()
+                for wf_res in _wf_reservations:
+                    # THE SCHEMA REBIND (the flows demo's conviction): a
+                    # workflow-declared reservation is constructed at module
+                    # import — before settings exist — so its schema is the
+                    # declaration's default, not this deployment's. The
+                    # registration rebinds a COPY (the declaration object is
+                    # never mutated); a silent schema-filter skip here was
+                    # the guard failing closed invisibly — the reservation
+                    # registered, its slots never materialized, every
+                    # acquire denied forever.
+                    live_res = wf_res.rebind_schema(settings.schema_name)
+                    resolved_rl_registry.register(live_res)
+                    own_reservations.append(live_res)
+                if _wf_reservations:
+                    _startup_log.info(
+                        "workflow-reservations-registered",
+                        reservation_names=sorted(res.name for res in _wf_reservations),
+                    )
+                # THE STR-NAME WARNING (C4 — the rate-limit twin's own
+                # shape): a plain name NO registry entry backs (a vanilla
+                # actor's registration included) is probably a typo —
+                # the WARNING is the primary face, the claim-time
+                # fail-closed park the defense in depth (the row still
+                # stamps the name).
+                _warn_unregistered_workflow_reservations(
+                    _startup_log, _wf_res_unknown, resolved_rl_registry
+                )
 
         worker_id = await register_worker(
             deps.dispatcher_pool, settings, workflow_execution=wf_execution_capable
@@ -2197,9 +2359,24 @@ async def _main(
                         log=_startup_log,
                     )
 
-            await _ensure_own_reservation_slots(deps, own_reservations)
+        # THE ENSURE-SLOTS PASS (deliberately OUTSIDE the actor_registry
+        # gate): every reservation this process resolved — the vanilla
+        # actors' declarations AND the workflow nodes' collected ones (the
+        # projection block above extends own_reservations) — gets its slot
+        # rows materialized here. A pure-workflow worker (no vanilla
+        # actors, an imported app) must ensure its own declared slots:
+        # gating this pass on the vanilla registry would leave the wf
+        # reservations registered but UNSLOTTED — every acquire denying
+        # (ReservationUnavailable), the guarded steps parked forever.
+        await _ensure_own_reservation_slots(deps, own_reservations)
 
         if _wf_execution is not None and _wf_cohort_configs:
+            # THE QUEUE-TRAP DOOR (the loud check): an unconsumed
+            # projected wf queue REFUSES the boot — the vanilla queues'
+            # own fail-fast shape, before the sync writes the cohorts (a
+            # refusing process writes nothing; the healthy fleet members
+            # project the same cohorts).
+            _fail_fast_on_unconsumed_workflow_queues(settings, _wf_cohort_configs)
             # THE WORKFLOW COHORTS' SYNC (the F3 projection's write half —
             # the same `sync_actor_config` surface, the same drift guards
             # the plain actors' sync just rode). AFTER the plain sync

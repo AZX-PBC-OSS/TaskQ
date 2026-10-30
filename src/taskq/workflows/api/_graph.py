@@ -23,11 +23,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast, get_args, get_origin, overload
+from typing import TYPE_CHECKING, Any, Final, cast, get_args, get_origin, overload
 
 from pydantic import BaseModel
 
 from taskq.ratelimit.refs import KeyedRateLimitRef
+from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
 from taskq.workflows._types import EdgeFailurePolicy
@@ -36,6 +37,11 @@ from taskq.workflows.chain import Chain
 
 if TYPE_CHECKING:
     from typing import Never
+
+    # THE CYCLE-BREAK'S STATIC FACE: the handle's type for the
+    # capacity-wiring helpers' annotations (the runtime import stays
+    # function-local — the app module imports THIS module).
+    from taskq.workflows.api._app import WorkflowActor
 
     # THE LOOP ATTACHMENT'S TYPE (the validator's door — no object-typed
     # poke crosses modules): _loop imports _graph's wiring verbs at
@@ -57,6 +63,7 @@ __all__ = [
     "gather",
     "map_source",
     "rate_limit_names",
+    "reservation_names",
     "route",
     "route_child_key",
     "sink",
@@ -136,6 +143,125 @@ def rate_limit_names(
     return tuple(names)
 
 
+def reservation_names(decls: tuple[object, ...], *, what: str = "reservations") -> tuple[str, ...]:
+    """The CAPACITY DECLARATION's concrete reservation NAMES (H-A10's
+    loud door — ``rate_limit_names``' own pattern): a
+    :class:`ConcurrencyReservation` instance contributes its ``.name``, a
+    plain name (``str`` — the vanilla face's registry-name shape) passes
+    through, and ANYTHING ELSE — a :class:`KeyedReservationRef` above
+    all — is the REFUSED shape: its concrete bucket materializes per
+    payload, and a workflow row's strict cap is stamped as NAMES at the
+    fork — a declaration that cannot name what it stamps would be the
+    silently-dropped cap (the admitted-never-limited lie). The wiring
+    verbs call this helper, so the refusal lands at the wiring site,
+    before any row exists."""
+    names: list[str] = []
+    for entry in decls:
+        if isinstance(entry, ConcurrencyReservation):
+            names.append(entry.name)
+        elif isinstance(entry, str):
+            names.append(entry)
+        else:
+            raise WorkflowBuildError(
+                f"{what}: a {type(entry).__name__} names no concrete "
+                "reservation — its bucket materializes PER PAYLOAD, and a "
+                "workflow row's strict cap is stamped as NAMES at the fork; "
+                "the keyed shape would be silently dropped here (the "
+                "admitted-never-limited lie). Declare the static "
+                "reservations (ConcurrencyReservation instances or their "
+                "registered names) or route the keyed shape through a "
+                "vanilla @actor."
+            )
+    return tuple(names)
+
+
+#: THE HANDLE'S TERM FIELDS (the capacity surface the ``@app.actor``
+#: handle carries — H-A6's removal leaves these three).
+_HANDLE_TERM_FIELDS: Final = ("max_concurrent", "reservations", "result_ttl")
+
+
+def _capped_handle_of(body: object) -> WorkflowActor | None:
+    """The wired body's ``WorkflowActor`` handle WHEN it carries capacity
+    terms (H-A4's subject — "a capped body"); ``None`` when the body is
+    bare or the handle declares no terms."""
+    from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
+
+    if not isinstance(body, WorkflowActor):
+        return None
+    if body.max_concurrent is not None or body.reservations or body.result_ttl is not None:
+        return body
+    return None
+
+
+def _same_reservation_names(a: tuple[object, ...], b: tuple[object, ...]) -> bool:
+    """Whether two reservation DECLARATIONS name the same buckets (the
+    collect's name-keyed identity — never instance identity, H-A3's own
+    law: equal configs on different instances are ONE bucket)."""
+    names_a = reservation_names(tuple(a), what="reservations")
+    names_b = reservation_names(tuple(b), what="reservations")
+    return names_a == names_b
+
+
+def _wire_handle_terms_into_node(node: NodeDecl, handle: WorkflowActor, *, what: str) -> None:
+    """THE HANDLE'S TERMS FLOW at the map/route attachment (the same law
+    ``step()`` keeps): a capped handle wired where the placement KEEPS
+    the node's actor fills the node's UNSET term slots — the children
+    share the node's cohort and ``actor_config`` is keyed by actor (one
+    capacity per actor, the estate's own law). A term the node ALREADY
+    declares at a DIFFERENT value is the capacity conflict, named at the
+    wiring — never a silent drop, never a silent overwrite."""
+    conflicts: list[str] = []
+    if handle.max_concurrent is not None:
+        if node.max_concurrent is None:
+            node.max_concurrent = handle.max_concurrent
+        elif node.max_concurrent != handle.max_concurrent:
+            conflicts.append(
+                f"max_concurrent: {node.max_concurrent!r} vs the handle's {handle.max_concurrent!r}"
+            )
+    if handle.reservations:
+        if not node.reservations:
+            node.reservations = tuple(handle.reservations)
+        elif not _same_reservation_names(node.reservations, tuple(handle.reservations)):
+            # THE MESSAGE SPEAKS THE NAME LAW (the dump finding): the
+            # reservation instances have no __repr__ — rendering them
+            # raw gives the operator two pointers and no bucket. The
+            # conflict's terms are the NAMES (the same identity the
+            # comparison itself keys on).
+            conflicts.append(
+                f"reservations: {reservation_names(node.reservations, what='reservations')!r} "
+                "vs the handle's "
+                f"{reservation_names(tuple(handle.reservations), what='reservations')!r}"
+            )
+    if handle.result_ttl is not None:
+        if node.result_ttl is None:
+            node.result_ttl = handle.result_ttl
+        elif node.result_ttl != handle.result_ttl:
+            conflicts.append(
+                f"result_ttl: {node.result_ttl!r} vs the handle's {handle.result_ttl!r}"
+            )
+    if conflicts:
+        raise WorkflowBuildError(
+            f"{what}: the wired handle's capacity terms conflict with the "
+            f"node's own declaration ({'; '.join(conflicts)}) — actor_config "
+            "is keyed by actor (one capacity per actor, the estate's own "
+            "law): give the differing placement its own actor name."
+        )
+
+
+def _uncovered_handle_terms(arm: RouteArm[object], handle: WorkflowActor) -> list[str]:
+    """The capped handle's terms the arm's OWN declaration does not
+    re-declare (H-A4's refusal list — the terms the placement override
+    would drop)."""
+    uncovered: list[str] = []
+    if handle.max_concurrent is not None and arm.max_concurrent is None:
+        uncovered.append(f"max_concurrent={handle.max_concurrent!r}")
+    if handle.reservations and not arm.reservations:
+        uncovered.append("reservations")
+    if handle.result_ttl is not None and arm.result_ttl is None:
+        uncovered.append(f"result_ttl={handle.result_ttl!r}")
+    return uncovered
+
+
 class WorkflowBuildError(TypeError):
     """The wiring itself is malformed — refused at compile, before any
     row exists."""
@@ -199,6 +325,16 @@ class RouteArm[R]:
     #: the queue-concurrency fence rides (one mechanism, the authoring
     #: face added). ``()`` = the arm declares no bucket.
     rate_limits: tuple[RateLimitDecl, ...] = ()
+    #: THE ARM'S OWN CAPACITY DECLARATION (H-A4's passthrough — the
+    #: never-a-silent-fail-open law): a capped handle wired under an
+    #: actor override must have its terms re-declared HERE — the arm's
+    #: cohort projects the arm's own terms, never the handle's. The
+    #: fields are the node surface's own (``max_concurrent`` /
+    #: ``reservations`` / ``result_ttl``; ``max_pending`` is off the wf
+    #: surface, H-A6).
+    max_concurrent: int | None = None
+    reservations: tuple[object, ...] = ()
+    result_ttl: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +407,21 @@ class NodeDecl:
     #: the SAME denial-snooze path. The fork's children carry the MAP's
     #: (``map_rate_limits``) / the ARM's (``RouteArm.rate_limits``).
     rate_limits: tuple[RateLimitDecl, ...] = ()
+    #: THE NODE'S CAPACITY TERMS (the vanilla ``@actor``'s own fields —
+    #: ``max_concurrent`` is the per-round admission damper, NOT a hard
+    #: fleet-wide cap; ``reservations`` are the STRICT slots
+    #: (ConcurrencyReservation) — the dispatch-admission gate the vanilla
+    #: path enforces via reservation_slots; ``result_ttl`` seeds the
+    #: cohort's result expiry). The projection carries them into the
+    #: cohort's ``ActorConfig`` (seed-only, operator-owned thereafter);
+    #: the fork's children inherit the source's terms unless the arm
+    #: overrides. NB: ``max_pending`` is deliberately NOT on this
+    #: surface (H-A6 — the engine's inserts bypass the enqueue admission
+    #: and the claim SQL cannot bound a backlog without wedging it, so
+    #: the knob was dead; removal is the honest scope).
+    max_concurrent: int | None = None
+    reservations: tuple[object, ...] = ()
+    result_ttl: float | None = None
     kind: str = "step"  # "step" | "map_source" | "gather" | "map_join"
     # THE PROGRESS SCHEMA DECLARATION (T21 decision a — the TypedGate-door
     # pattern): a pydantic model the node's ``ctx.progress`` data
@@ -400,6 +551,15 @@ class BuildGraph:
         #: promise wired under a colliding key builds a silently WRONG
         #: edge to this app's own same-named node.
         self.smuggles: tuple[tuple[str, str], ...] = ()
+        #: THE WORKFLOWDEF'S OWN PLACEMENT (C6): the ``@app.workflow``
+        #: decorator's declared (actor, queue) — set at compile BEFORE
+        #: the build fn runs, so the LOOP's fallback placement (the
+        #: wiring verbs read it mid-build) resolves the same cohort the
+        #: definition's own rows (the escalation consumer rows) stamp.
+        #: ``None`` = no placement declared — every fallback keeps its
+        #: current default.
+        self.declared_actor: str | None = None
+        self.declared_queue: str | None = None
 
     def record_smuggle(self, consumer_key: str, parent_key: str) -> None:
         """One foreign-promise wiring recorded (the validate report's
@@ -498,6 +658,9 @@ def step[R](
     gates: tuple[GateDecl, ...] = (),
     progress_schema: type[BaseModel] | None = None,
     rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
+    max_concurrent: int | None = None,
+    reservations: tuple[object, ...] | list[object] = (),
+    result_ttl: float | None = None,
     cache: bool = False,
     cache_ttl: float | None = None,
 ) -> Promise[R]:
@@ -575,6 +738,24 @@ def step[R](
     graph = active_graph()
     keys, _data = _promise_args(args)
     node_key = key or graph.auto_key(getattr(body, "__name__", "step"))
+    # THE HANDLE'S TERMS FLOW (the capacity cure's declaration half): an
+    # ``@app.actor(max_concurrent=…, reservations=…)``-wrapped body wired
+    # here carries ITS terms as the node's ADMISSION defaults — the
+    # explicit step params override, never the reverse. Placement
+    # (``actor=``/``queue=``) stays the step's own decision (the handle's
+    # name is NOT the node's actor: the wiring's placement law is
+    # unchanged).
+    from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
+
+    handle = body if isinstance(body, WorkflowActor) else None
+    if handle is not None:
+        if max_concurrent is None:
+            max_concurrent = getattr(handle, "max_concurrent", None)
+        if not reservations:
+            handle_res = getattr(handle, "reservations", ())
+            reservations = tuple(handle_res) if handle_res else ()
+        if result_ttl is None:
+            result_ttl = getattr(handle, "result_ttl", None)
     # THE NAMING RULE (cut #6's API-compile face): a DOTTED wiring key is
     # refused — the fork's derived namespace (``<key>.item``,
     # ``<key>.join``, ``<key>.iter<i>``) owns the dot; a wiring key
@@ -585,6 +766,34 @@ def step[R](
             f"node key {node_key!r} carries a dot — the dot is the engine's "
             "derived namespace (the map's <key>.item / <key>.join, the "
             "loop's <key>.iter<i>); a wiring key may not collide with it"
+        )
+    # THE KEY CHARSET LAW (H-C8, the dot precedent's own shape): the key
+    # is a URL PATH SEGMENT (the admin's affordances address nodes by
+    # key — /nodes/<key>) and a Mermaid label; these characters 404 the
+    # affordances or kill the graph render, so they never compile:
+    # /, ?, #, % (the URL's own syntax), both quotes (the Mermaid label's
+    # delimiter), and control characters (incl. newlines — the label's
+    # injected-structure door). Edge whitespace refuses too (a key the
+    # operator cannot address exactly).
+    _forbidden = next(
+        (ch for ch in node_key if ch in "/?#%\"'" or ord(ch) < 0x20 or ch == "\x7f"),
+        None,
+    )
+    if _forbidden is not None:
+        raise WorkflowBuildError(
+            f"node key {node_key!r} carries {_forbidden!r} "
+            f"(U+{ord(_forbidden):04X}) — the key is a URL path segment (the "
+            "admin affordances address nodes by key) and a Mermaid label: "
+            "/, ?, #, %, quotes and control characters 404 the affordances "
+            "or break the graph render; rename the node (letters, digits, "
+            "'-', '_', and — within the derived namespace's law — no dot)"
+        )
+    if node_key != node_key.strip():
+        raise WorkflowBuildError(
+            f"node key {node_key!r} carries leading/trailing whitespace — the "
+            "key is a URL path segment (the admin affordances address nodes "
+            "by key): an unaddressable key 404s its own panel; rename the "
+            "node without the edge whitespace"
         )
     # THE CACHE OPT-IN'S OWN REFUSALS (T25): the mechanically-impossible
     # at the wiring site (the dotted-key precedent). A TTL on a
@@ -701,6 +910,10 @@ def step[R](
     # any row exists); the DECLS ride the node (the boot's collect pass
     # registers the instances, the fork stamps the names).
     rate_limit_names(tuple(rate_limits), what=f"step {node_key!r}'s rate_limits")
+    # THE CAPACITY DOOR (H-A10 — the same keyed-ref refusal on the
+    # strict-cap face): a KeyedReservationRef in reservations= is the
+    # refused shape — never a silently-dropped cap.
+    reservation_names(tuple(reservations), what=f"step {node_key!r}'s reservations")
     graph.add(
         NodeDecl(
             key=node_key,
@@ -716,6 +929,9 @@ def step[R](
             gates=gates,
             progress_schema=progress_schema,
             rate_limits=tuple(rate_limits),
+            max_concurrent=max_concurrent,
+            reservations=tuple(reservations),
+            result_ttl=result_ttl,
             cache=cache,
             cache_ttl=cache_ttl,
             kind="gather" if len(keys) > 1 else "step",
@@ -857,6 +1073,14 @@ def map_source[S, R](
     source_node.map_aggregate = aggregate
     source_node.map_child_driven = child_driven
     source_node.map_rate_limits = tuple(rate_limits)
+    # THE CAPPED HANDLE'S SAME-ACTOR LAW (H-A4 — the map arm): the map's
+    # body carries capacity terms and the placement keeps the node's
+    # actor (the map has no actor override — ``map_queue`` only): the
+    # terms FLOW into the node's unset slots (the children share the
+    # node's cohort), never silently dropped.
+    map_handle = _capped_handle_of(body)
+    if map_handle is not None:
+        _wire_handle_terms_into_node(source_node, map_handle, what=f"map {source.key!r}")
     join_key = f"{source.key}.join"
     graph.add(
         NodeDecl(
@@ -1085,6 +1309,29 @@ def _attach_route[S](
     source_node.map_on_failure = on_failure
     source_node.map_aggregate = aggregate
     source_node.map_child_driven = child_driven
+    # THE CAPPED HANDLE'S PLACEMENT LAW (H-A4 — never a silent fail-open):
+    # an arm body carrying capacity terms is either carried (the arm's
+    # own declaration — the passthrough above) or the wiring refuses.
+    for arm_tag, arm in normalized.items():
+        handle = _capped_handle_of(arm.body)
+        if handle is None:
+            continue
+        overrides = arm.actor is not None and arm.actor != source_node.actor
+        if overrides:
+            uncovered = _uncovered_handle_terms(arm, handle)
+            if uncovered:
+                raise WorkflowBuildError(
+                    f"route arm {arm_tag!r}'s body carries capacity terms "
+                    f"({', '.join(uncovered)}) — the handle's capacity "
+                    "terms would be dropped by the placement override "
+                    f"(actor={arm.actor!r}): the arm's cohort projects no "
+                    "capacity and the guard fails open by rename. Declare "
+                    "the terms on the override (RouteArm(max_concurrent=…,"
+                    "reservations=…, result_ttl=…)) or keep the handle's "
+                    "actor."
+                )
+        else:
+            _wire_handle_terms_into_node(source_node, handle, what=f"route arm {arm_tag!r}")
     join_key = f"{source.key}.join"
     graph.add(
         NodeDecl(
@@ -1251,6 +1498,23 @@ def chain_source(
     step key that collides with a wired node or another chain's step is
     refused at declaration (a coding error)."""
     graph = active_graph()
+    # THE CAPPED HANDLE'S PLACEMENT LAW (H-A4 — the chain arm): the
+    # chain's rows ride the CHAIN's own actor (its own placement
+    # override) and the chain surface has no capacity passthrough — a
+    # capped handle wired as a chain step body would have its terms
+    # dropped silently. The wiring refuses.
+    for step_key, chain_step in chain.steps.items():
+        chain_handle = _capped_handle_of(chain_step.body)
+        if chain_handle is not None:
+            raise WorkflowBuildError(
+                f"chain {chain.name!r}'s step {step_key!r} wires a capped "
+                "actor handle — the chain's rows ride the CHAIN's own "
+                f"actor (actor={chain.actor!r}) and the chain surface has "
+                "no capacity passthrough: the handle's capacity terms "
+                "would be dropped by the placement override (the guard "
+                "failing open by rename). Wire the capped body as a graph "
+                "step (its own cohort), or strip its terms."
+            )
     step_keys = set(chain.steps)
     clashes = (step_keys & set(graph.nodes)) | (
         step_keys & {k for c in graph.chains for k in c.steps}  # type: ignore[attr-defined]

@@ -85,8 +85,11 @@ from taskq.workflows._sql_status import (
     WORKFLOW_ROOT_MAINTAIN_SQL,
 )
 from taskq.workflows._sql_sweep import (
+    EDGE_RETENTION_SQL,
     HOLD_STAMP_RECONCILE_SQL,
     JOIN_BODY_UNAVAILABLE_SQL,
+    JOIN_FIRE_RETENTION_SQL,
+    NODE_PROGRESS_RETENTION_SQL,
     NODELESS_ROOT_REAP_SQL,
     OUTBOX_DRAIN_CONSUMERS_SQL,
     OUTBOX_DRAIN_FLIP_SQL,
@@ -94,7 +97,9 @@ from taskq.workflows._sql_sweep import (
     OUTBOX_RETENTION_SQL,
     PHANTOM_REAP_SQL,
     REDERIVE_SWEEP_SQL,
+    SIGNALS_RETENTION_SQL,
     STEP_CACHE_RETENTION_SQL,
+    STEP_LEDGER_RETENTION_SQL,
     SWEEP_FIRE_SQL,
 )
 
@@ -165,6 +170,11 @@ class WorkflowSql:
     hold_stamp_reconcile: str
     outbox_retention: str
     step_cache_retention: str
+    edge_retention: str
+    join_fire_retention: str
+    step_ledger_retention: str
+    signals_retention: str
+    node_progress_retention: str
     ledger_claim: str
     ledger_memoized: str
     ledger_terminal: str
@@ -248,6 +258,11 @@ class WorkflowSql:
             hold_stamp_reconcile=render(HOLD_STAMP_RECONCILE_SQL),
             outbox_retention=render(OUTBOX_RETENTION_SQL),
             step_cache_retention=render(STEP_CACHE_RETENTION_SQL),
+            edge_retention=render(EDGE_RETENTION_SQL),
+            join_fire_retention=render(JOIN_FIRE_RETENTION_SQL),
+            step_ledger_retention=render(STEP_LEDGER_RETENTION_SQL),
+            signals_retention=render(SIGNALS_RETENTION_SQL),
+            node_progress_retention=render(NODE_PROGRESS_RETENTION_SQL),
             ledger_claim=render(LEDGER_CLAIM_SQL),
             ledger_memoized=render(LEDGER_MEMOIZED_SQL),
             ledger_terminal=render(LEDGER_TERMINAL_SQL),

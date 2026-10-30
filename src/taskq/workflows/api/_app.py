@@ -30,6 +30,7 @@ from typing import Literal, cast, overload
 
 from pydantic import BaseModel
 
+from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows._emit import EMIT_MAX_IN_FLIGHT_DEFAULT
 from taskq.workflows.api._graph import (
     BuildGraph,
@@ -65,6 +66,9 @@ class WorkflowActor:
         retry_kind: str,
         capture_policy: str,
         redact: Callable[[dict[str, object]], dict[str, object]] | None,
+        max_concurrent: int | None = None,
+        reservations: list[ConcurrencyReservation] | None = None,
+        result_ttl: float | None = None,
     ) -> None:
         self._fn = fn
         self.name = name
@@ -73,6 +77,17 @@ class WorkflowActor:
         self.retry_kind = retry_kind
         self.capture_policy = capture_policy
         self.redact = redact
+        # THE CAPACITY TERMS (the vanilla actor surface's own fields — the
+        # engine's enforcement is ALREADY built: workflow steps are jobs
+        # rows in the same pa_actors-claimed registry, and the claim SQL's
+        # per-actor arithmetic reads actor_config.max_concurrent for EVERY
+        # actor, wf or not). The projection carries these into the cohort's
+        # ActorConfig — the same seed-only capacity law as vanilla actors:
+        # the declaration seeds the row; the operator owns it thereafter
+        # (ActorsClient.set_capacity).
+        self.max_concurrent = max_concurrent
+        self.reservations = list(reservations) if reservations else []
+        self.result_ttl = result_ttl
 
     @property
     def fn(self) -> Callable[..., Awaitable[object]]:
@@ -88,18 +103,24 @@ class WorkflowActor:
     def __getattr__(self, attr: str) -> object:
         return getattr(self._fn, attr)
 
-    def actor_config(self, workflow_name: str) -> dict[str, object]:
-        """The F3 projection: the ``ActorConfig``-compatible carrier the
-        estate's config-sync and guards consume (the same shape
-        ``ActorRef`` produces at worker startup). A workflow actor is
-        VISIBLE to every existing guard by construction — the drift
-        machinery, the deregistration guards, the admin page,
-        ``TASKQ_QUEUES_STRICT`` (pin 9)."""
+    def actor_config(self) -> dict[str, object]:
+        """THE F3 CARRIER, IN THE REAL PROJECTION'S ONE VOCABULARY (H-A12
+        — never two name schemes): the ``ActorConfig`` field set the
+        estate's config-sync and guards consume, keyed exactly as
+        ``project_workflow_actor_configs`` keys the rows. The handle's
+        declared name + queue are its placement face; the CAPACITY TERMS
+        ride the row (the reservations do NOT — no field on
+        ``ActorConfig``; the ensure-slots pass owns their
+        materialization). The pre-fix carrier spoke a SECOND vocabulary
+        (a workflow-namespaced actor name, the ``ActorRef``'s
+        max_attempts/retry_kind fields, a ``workflow_name`` parameter) —
+        a tests-only divergence from the projection it mirrored."""
         return {
-            "actor": f"{workflow_name}.{self.name}",
+            "actor": self.name,
             "queue": self.queue,
-            "max_attempts": self.max_attempts,
-            "retry_kind": self.retry_kind,
+            "max_concurrent": self.max_concurrent,
+            "result_ttl": self.result_ttl,
+            "metadata": {"workflow_actor": True},
         }
 
 
@@ -180,6 +201,12 @@ class CompiledWorkflow:
     # default past this point — the declaration is the only source).
     capture: Literal["none", "errors-only", "all"] = "errors-only"
     redact: Callable[[dict[str, object]], dict[str, object]] | None = None
+    #: THE WORKFLOWDEF'S OWN PLACEMENT (C6 — the definition's own rows'
+    #: face): the escalation consumer rows' address (D1) and the loop
+    #: node's fallback placement. The CURRENT defaults ("workflow"/
+    #: "default") for non-adopters — no behavior change.
+    def_actor: str = "workflow"
+    def_queue: str = "default"
 
     def node_keys(self) -> list[str]:
         """The compiled node keys (the wiring's census)."""
@@ -256,6 +283,9 @@ class WorkflowApp:
         retry_kind: str = "transient",
         capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
+        max_concurrent: int | None = None,
+        reservations: list[ConcurrencyReservation] | None = None,
+        result_ttl: float | None = None,
     ) -> WorkflowActor: ...
 
     @overload
@@ -270,6 +300,9 @@ class WorkflowApp:
         retry_kind: str = "transient",
         capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
+        max_concurrent: int | None = None,
+        reservations: list[ConcurrencyReservation] | None = None,
+        result_ttl: float | None = None,
     ) -> Callable[[Callable[..., Awaitable[object]]], WorkflowActor]: ...
 
     def actor(
@@ -283,6 +316,9 @@ class WorkflowApp:
         retry_kind: str = "transient",
         capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
+        max_concurrent: int | None = None,
+        reservations: list[ConcurrencyReservation] | None = None,
+        result_ttl: float | None = None,
     ) -> WorkflowActor | Callable[[Callable[..., Awaitable[object]]], WorkflowActor]:
         """``@app.actor`` — the workflow step decorator: registers the
         body into the workflow definition registry (D1) and projects the
@@ -290,7 +326,26 @@ class WorkflowApp:
         (chain → hook, never a replacement — pin 11's composed-anyway)."""
 
         def decorate(body: Callable[..., Awaitable[object]]) -> WorkflowActor:
+            from taskq.workflows.api._graph import reservation_names
+
             actor_name = name or body.__name__
+            # THE CAPACITY VALIDATION (the vanilla actor's own law —
+            # actor.py's non-negative-int-or-None): the refusal at the
+            # declaration site, before anything is registered.
+            for field, value in (("max_concurrent", max_concurrent),):
+                if value is not None and (
+                    not isinstance(value, int) or isinstance(value, bool) or value < 0  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: runtime guard against callers that bypass the type checker (actor.py's own law); the bool arm refuses True/False passing as 1/0.
+                ):
+                    raise ValueError(
+                        f"the workflow actor {actor_name!r}'s {field} must be a "
+                        f"non-negative int or None, got {value!r}"
+                    )
+            # THE CAPACITY DOOR (H-A10): a KeyedReservationRef (or any
+            # other unnamed shape) in reservations= is the LOUD refusal
+            # at the declaration site — never a silently-dropped cap.
+            reservation_names(
+                tuple(reservations or ()), what=f"the workflow actor {actor_name!r}'s reservations"
+            )
             handle = WorkflowActor(
                 body,
                 name=actor_name,
@@ -299,6 +354,9 @@ class WorkflowApp:
                 retry_kind=retry_kind,
                 capture_policy=capture_policy,
                 redact=redact,
+                max_concurrent=max_concurrent,
+                reservations=reservations,
+                result_ttl=result_ttl,
             )
             self._actor_queues.add(queue)
             return handle
@@ -311,15 +369,31 @@ class WorkflowApp:
         self,
         name: str,
         *,
+        actor: str | None = None,
+        queue: str | None = None,
         capture: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT,
     ) -> Callable[[Callable[[], Promise[R]]], Callable[[], Promise[R]]]:
-        """``@app.workflow(name, capture=…, redact=…, max_in_flight=…)``
-        — the per-workflow declaration (§10.3's policies). The
-        declaration is what T04's capture writer and every export surface
-        consume; ``redact=fn`` POST-COMPOSES on the default chain's
-        output (it can only redact more, never less — TORS-REV-0.16 §G1).
+        """``@app.workflow(name, actor=…, queue=…, capture=…, redact=…,
+        max_in_flight=…)`` — the per-workflow declaration (§10.3's
+        policies). The declaration is what T04's capture writer and every
+        export surface consume; ``redact=fn`` POST-COMPOSES on the
+        default chain's output (it can only redact more, never less —
+        TORS-REV-0.16 §G1).
+
+        THE PLACEMENT FACE (C6 — the definition's own rows):
+        ``actor=``/``queue=`` declare the WORKFLOWDEF's own (actor,
+        queue) pair — the address of the rows addressed by the
+        DEFINITION rather than by a node decl: the loop's ESCALATION
+        consumer rows (D1: ``escalation_bindings`` reads the definition)
+        and the LOOP NODE's fallback placement (the loop's own rows fall
+        back to the workflow's declared cohort instead of the hardcoded
+        ``("wf", "default")``). The values ride the SAME one-queue law
+        the node cohorts keep (the projection's conflict refusal — one
+        actor name, one queue; the split placement is expressed with
+        DISTINCT actor names). Unset = the CURRENT values
+        ("workflow"/"default") — no behavior change for non-adopters.
 
         THE SIGNATURE TELLS THE TRUTH (the type-mechanism round, then the
         TYPED-DOOR round): the build function is SYNC and PURE
@@ -351,6 +425,17 @@ class WorkflowApp:
         signature. The signal channel is the app's own method:
         :meth:`channel` (the declared gates' registry) — ONE name, one
         surface (the glossary law)."""
+        # THE PLACEMENT'S DECLARATION-SITE GUARD (C6): the placement
+        # names a real actor and a real queue — a non-str (or empty)
+        # value is the refused declaration, never a silent anything.
+        for field_name, value in (("actor", actor), ("queue", queue)):
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: runtime guard against callers that bypass the type checker (the app.actor decorator's own law).
+            ):
+                raise ValueError(
+                    f"the workflow {name!r}'s {field_name}= must be a "
+                    f"non-empty string or None (the current default), got {value!r}"
+                )
         if name in self._workflows:
             raise DuplicateWorkflowError(f"workflow {name!r} is already declared on this app")
 
@@ -360,6 +445,8 @@ class WorkflowApp:
             build_fn.__wf_capture__ = capture  # type: ignore[attr-defined]
             build_fn.__wf_redact__ = redact  # type: ignore[attr-defined]
             build_fn.__wf_max_in_flight__ = max_in_flight  # type: ignore[attr-defined]  # Why: the declaration rides the function — the compile reads it.
+            build_fn.__wf_actor__ = actor  # type: ignore[attr-defined]
+            build_fn.__wf_queue__ = queue  # type: ignore[attr-defined]
             return build_fn
 
         return decorate
@@ -427,6 +514,12 @@ class WorkflowApp:
         if build_fn is None:
             raise KeyError(f"workflow {name!r} is not declared on this app")
         graph = BuildGraph()
+        # THE WORKFLOWDEF'S OWN PLACEMENT (C6): the decorator's
+        # declaration rides the build fn; the recorder carries it so the
+        # LOOP's fallback placement (the wiring verbs run HERE) resolves
+        # the same cohort the definition's own rows will stamp.
+        graph.declared_actor = getattr(build_fn, "__wf_actor__", None)
+        graph.declared_queue = getattr(build_fn, "__wf_queue__", None)
         returned = record_under(graph, build_fn)
         if graph.terminal is None:
             if isinstance(returned, Promise):
@@ -451,6 +544,10 @@ class WorkflowApp:
             max_in_flight=getattr(build_fn, "__wf_max_in_flight__", EMIT_MAX_IN_FLIGHT_DEFAULT),
             capture=getattr(build_fn, "__wf_capture__", "errors-only"),
             redact=getattr(build_fn, "__wf_redact__", None),
+            # THE WORKFLOWDEF'S OWN PLACEMENT (C6): the declared face,
+            # defaulted to the CURRENT values for the non-adopter.
+            def_actor=graph.declared_actor or "workflow",
+            def_queue=graph.declared_queue or "default",
         )
 
     def _known_queues(self) -> frozenset[str]:
@@ -558,6 +655,12 @@ def _register_bodies(
             WorkflowDef(
                 name=compiled.name,
                 bodies=bodies,
+                # THE WORKFLOWDEF'S OWN PLACEMENT (C6): the decorator's
+                # declared (actor, queue) — the escalation consumer rows'
+                # address (D1: escalation_bindings reads THIS), defaulted
+                # to the CURRENT values for the non-adopter.
+                actor=compiled.def_actor,
+                queue=compiled.def_queue,
                 capture_policy="errors-only",
                 redact=redact,  # type: ignore[arg-type]  # Why: the app's redact declaration rides the registered definition — the hold-context chain's hook (the same callable the capture path composes).
                 loop_policies=loop_policies,

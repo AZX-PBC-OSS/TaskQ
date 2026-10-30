@@ -142,6 +142,45 @@ _PRUNE_TIMEOUT_FRACTION: Final[float] = 0.8
 _PRUNE_RETRY_BACKOFF_INITIAL_SECS: float = 60.0
 _PRUNE_RETRY_BACKOFF_CAP_SECS: float = 1800.0
 
+#: The flow-history arms' ROOTLESS-pass cadence (H-B1's two-pass law):
+#: each arm's flows-side pass runs EVERY call; the rootless pass — the
+#: orphan class (the row's pointee absent or not a flow root), a
+#: PK-ordered walk that visits AT MOST the batch per pass and seeks
+#: strictly past its arm's persisted cursor (``wf_rootless_sweep_state``,
+#: 01.00.36_01 — the round-2 R1's cure: the walk ADVANCES at a live PK
+#: front instead of re-reading the same first batch forever) — runs
+#: every Nth call of that arm. Coarser cadence by design: the walk is
+#: batch-bounded (O(batch) visited, one jobs PK probe per visited row)
+#: but its steady-state cost still stays off the every-tick path, and
+#: the orphan class is rare by construction (the jobs prune deletes the
+#: root, the wf rows await) — it drains over passes.
+#: THE PHASES (the round-2 R4's cure): the five arms' gates are OFFSET —
+#: ``turns % N == arm_index % N`` — because five counters in lockstep
+#: put all five walks + all five flows-side passes in ONE tick (the
+#: convicted tick-8 spike); the offsets spread them, at most one
+#: rootless pass per tick.
+_WF_ROOTLESS_PASS_EVERY: Final[int] = 8
+
+
+def _wf_rootless_gate(arm: str, phase: int) -> Callable[[], bool]:
+    """The every-Nth-call gate for one flow-history arm's rootless pass
+    (see ``_WF_ROOTLESS_PASS_EVERY``), OFFSET by the arm's index (the
+    round-2 R4's cure: lockstep counters spiked one tick with five walks
+    at once — ``turns % N == phase % N`` puts each arm's fire on its own
+    turn, never two in one tick). The counter is the gate's own closure
+    state — one per arm, advancing once per arm call (the retention
+    specs run once per tick, never drained), so the cadence is the
+    arm's own calls, not the tick clock's."""
+    turns = 0
+
+    def gate() -> bool:
+        nonlocal turns
+        turns += 1
+        return turns % _WF_ROOTLESS_PASS_EVERY == phase % _WF_ROOTLESS_PASS_EVERY
+
+    gate.__name__ = f"_wf_rootless_gate({arm!r}, {phase})"
+    return gate
+
 
 def _prune_statement_timeout_ms(command_timeout_secs: float) -> int:
     """The prune family's per-batch server-side bound under the pool it
@@ -653,7 +692,10 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # rows are the drain's. The period gate is the settings-level
         # disable sentinel (timedelta(0) → the spec's period gate skips
         # the arm — a brand-new deletion loop's safe misconfiguration is
-        # off). The lazy import keeps the §16.1 import law.
+        # off). THE BATCH is the prune family's own knob
+        # (prune_batch_size — H-B2's conviction class: the borrowed
+        # event_writer_batch_size(100) drains a monotone population 100
+        # rows per pass). The lazy import keeps the §16.1 import law.
         from taskq.workflows._sweep import prune_delivered_outbox
         from taskq.workflows.engine import render_workflow_sql
 
@@ -661,7 +703,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             ctx.deps.dispatcher_pool,
             render_workflow_sql(ctx.deps.settings.schema_name),
             retention=ctx.deps.settings.workflow_outbox_retention_period,
-            batch_size=ctx.deps.settings.event_writer_batch_size,
+            batch_size=ctx.deps.settings.prune_batch_size,
         )
 
     async def wf_step_cache_retention_call() -> int:
@@ -678,15 +720,182 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # pattern): a rolling deploy runs this code against a schema
         # whose wf_step_cache has not landed yet, which is a per-tick
         # warn until migration 01.00.33 applies, not the arm's death.
-        # The lazy import keeps the §16.1 import law.
+        # THE BATCH is the prune family's own knob (prune_batch_size —
+        # H-B2's conviction class, the outbox arm's own mirror). The
+        # lazy import keeps the §16.1 import law.
         from taskq.workflows._sweep import prune_expired_step_cache
         from taskq.workflows.engine import render_workflow_sql
 
         return await prune_expired_step_cache(
             ctx.deps.dispatcher_pool,
             render_workflow_sql(ctx.deps.settings.schema_name),
-            batch_size=ctx.deps.settings.event_writer_batch_size,
+            batch_size=ctx.deps.settings.prune_batch_size,
         )
+
+    # THE ROOTLESS LEGS' GATES (H-B1's two-pass law): one per arm, the
+    # coarser cadence the orphan class rides (every Nth arm call — see
+    # _WF_ROOTLESS_PASS_EVERY), OFFSET per arm (the round-2 R4's cure:
+    # the phase spreads the five walks across the ticks — never two in
+    # one tick).
+    edge_rootless_gate = _wf_rootless_gate("wf_edge", 0)
+    join_fire_rootless_gate = _wf_rootless_gate("wf_join_fire", 1)
+    step_ledger_rootless_gate = _wf_rootless_gate("wf_step_ledger", 2)
+    signals_rootless_gate = _wf_rootless_gate("wf_signals", 3)
+    node_progress_rootless_gate = _wf_rootless_gate("wf_node_progress", 4)
+
+    async def wf_edge_retention_call() -> int:
+        # THE EDGE LEDGER'S RETENTION ARM (the TAStack P1's cure): the
+        # flow-history tables (wf_edge, wf_step_ledger, wf_join_fire,
+        # wf_signals, wf_node_progress + the stream's fold into the
+        # node_progress arm) grew monotone-forever — no retention arm,
+        # no FK for the job prune to cascade. THE TWO-PASS LAW
+        # (H-B1): the flows-side pass selects the TERMINAL-AGED ROOTS
+        # first (a tiny jobs-side set via jobs_finished_at_idx) and
+        # deletes each selected flow's rows via the table's flow_id
+        # index — the zero-doomed steady state is O(terminal flows),
+        # never the full-table walk with 2 jobs-probes per row the old
+        # shape was (TimeoutError at 3M rows); the rootless leg (the
+        # pointee absent or not a flow root — H-B3's identity) rides the
+        # batch-bounded walk on the coarser cadence above, SEEKING
+        # strictly past its arm's persisted cursor (01.00.36_01 — the
+        # round-2 R1's cure: a live PK front's rows are visited once and
+        # the walk moves past them; the convicted shape re-read the
+        # same first batch forever, the orphans stranded). The period
+        # gate is the settings-level disable sentinel (timedelta(0) →
+        # the spec's period gate skips the arm), and the arms DEFAULT
+        # OFF — they prune the FLOW HISTORY, not derived data (the
+        # operator opts in; the upgrade deletes nothing by surprise).
+        # THE BATCH is the prune family's own knob (prune_batch_size —
+        # H-B2: the borrowed event_writer_batch_size(100) would drain a
+        # 10M backlog in ~35 days per table). The lazy import keeps the
+        # §16.1 import law.
+        from taskq.workflows._sweep import prune_wf_edge, prune_wf_edge_rootless
+        from taskq.workflows.engine import render_workflow_sql
+
+        deleted = await prune_wf_edge(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            retention=ctx.deps.settings.workflow_edge_retention_period,
+            batch_size=ctx.deps.settings.prune_batch_size,
+        )
+        if edge_rootless_gate():
+            deleted += await prune_wf_edge_rootless(
+                ctx.deps.dispatcher_pool,
+                render_workflow_sql(ctx.deps.settings.schema_name),
+                batch_size=ctx.deps.settings.prune_batch_size,
+            )
+        return deleted
+
+    async def wf_join_fire_retention_call() -> int:
+        # THE FIRE LEDGER'S RETENTION ARM (the five flow-history arms):
+        # the exactly-once ledger is dead weight on a terminal flow (a
+        # terminal flow never re-fires). Two-pass law, prune-family
+        # batch knob, rootless cadence: see wf_edge_retention_call's
+        # note. The lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import prune_wf_join_fire, prune_wf_join_fire_rootless
+        from taskq.workflows.engine import render_workflow_sql
+
+        deleted = await prune_wf_join_fire(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            retention=ctx.deps.settings.workflow_join_fire_retention_period,
+            batch_size=ctx.deps.settings.prune_batch_size,
+        )
+        if join_fire_rootless_gate():
+            deleted += await prune_wf_join_fire_rootless(
+                ctx.deps.dispatcher_pool,
+                render_workflow_sql(ctx.deps.settings.schema_name),
+                retention=ctx.deps.settings.workflow_join_fire_retention_period,
+                batch_size=ctx.deps.settings.prune_batch_size,
+            )
+        return deleted
+
+    async def wf_step_ledger_retention_call() -> int:
+        # THE STEP LEDGER'S RETENTION ARM (the five flow-history arms):
+        # one row per attempt — the hot table's fastest grower. Two-pass
+        # law, prune-family batch knob, rootless cadence: see
+        # wf_edge_retention_call's note. The lazy import keeps the §16.1
+        # import law.
+        from taskq.workflows._sweep import prune_wf_step_ledger, prune_wf_step_ledger_rootless
+        from taskq.workflows.engine import render_workflow_sql
+
+        deleted = await prune_wf_step_ledger(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            retention=ctx.deps.settings.workflow_step_ledger_retention_period,
+            batch_size=ctx.deps.settings.prune_batch_size,
+        )
+        if step_ledger_rootless_gate():
+            deleted += await prune_wf_step_ledger_rootless(
+                ctx.deps.dispatcher_pool,
+                render_workflow_sql(ctx.deps.settings.schema_name),
+                retention=ctx.deps.settings.workflow_step_ledger_retention_period,
+                batch_size=ctx.deps.settings.prune_batch_size,
+            )
+        return deleted
+
+    async def wf_signals_retention_call() -> int:
+        # THE SIGNAL LEDGER'S RETENTION ARM (the five flow-history
+        # arms): a terminal flow's HELD signals are exactly the
+        # abandoned-hold class — they delete with the flow; a LIVE
+        # flow's holds are never touched. Two-pass law, prune-family
+        # batch knob, rootless cadence: see wf_edge_retention_call's
+        # note. The lazy import keeps the §16.1 import law.
+        from taskq.workflows._sweep import prune_wf_signals, prune_wf_signals_rootless
+        from taskq.workflows.engine import render_workflow_sql
+
+        deleted = await prune_wf_signals(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            retention=ctx.deps.settings.workflow_signals_retention_period,
+            batch_size=ctx.deps.settings.prune_batch_size,
+        )
+        if signals_rootless_gate():
+            deleted += await prune_wf_signals_rootless(
+                ctx.deps.dispatcher_pool,
+                render_workflow_sql(ctx.deps.settings.schema_name),
+                retention=ctx.deps.settings.workflow_signals_retention_period,
+                batch_size=ctx.deps.settings.prune_batch_size,
+            )
+        return deleted
+
+    async def wf_node_progress_retention_call() -> int:
+        # THE PROGRESS STATE'S RETENTION ARM (the flow-history arms):
+        # the state channel outlives its flows forever; the flow is
+        # reached through the node's jobs row. Two-pass law (the
+        # flows-side join through the node rows; the node-gone /
+        # no-flow_id / non-root-pointee legs on the rootless cadence),
+        # prune-family batch knob: see wf_edge_retention_call's note.
+        # THE SIXTH TABLE'S FOLD (the round-2 R3's documented call): the
+        # same arm's statement ALSO deletes the doomed flows'
+        # wf_node_stream rows (a dead node's ring — nodes x 64 — never
+        # had a pruner; the stream rows carry flow_id directly, its own
+        # LIMIT bounds the second delete), and the arm's rootless pass
+        # runs the stream's orphan walk off the stream's own cursor
+        # (wf_rootless_sweep_state). One pass, two batch-bounded
+        # deletes/walks — the family's one-batch-per-pass law's
+        # documented allowance. The lazy import keeps the §16.1 import
+        # law.
+        from taskq.workflows._sweep import (
+            prune_wf_node_progress,
+            prune_wf_node_progress_rootless,
+        )
+        from taskq.workflows.engine import render_workflow_sql
+
+        deleted = await prune_wf_node_progress(
+            ctx.deps.dispatcher_pool,
+            render_workflow_sql(ctx.deps.settings.schema_name),
+            retention=ctx.deps.settings.workflow_node_progress_retention_period,
+            batch_size=ctx.deps.settings.prune_batch_size,
+        )
+        if node_progress_rootless_gate():
+            deleted += await prune_wf_node_progress_rootless(
+                ctx.deps.dispatcher_pool,
+                render_workflow_sql(ctx.deps.settings.schema_name),
+                retention=ctx.deps.settings.workflow_node_progress_retention_period,
+                batch_size=ctx.deps.settings.prune_batch_size,
+            )
+        return deleted
 
     async def wf_loop_budget_call() -> int:
         # THE LOOP'S WALL ARM (T19): the budget sweep — the budget wall +
@@ -1091,6 +1300,90 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             period_setting="workflow_step_cache_sweep_period",
             extra_except=(asyncpg.exceptions.UndefinedTableError,),
             dbg_tick=_dbg_tick("wf_step_cache_retention_tick"),
+        ),
+        _SweepSpec(
+            # wf_edge_retention — THE EDGE LEDGER'S FLOW-HISTORY ARM (the
+            # TAStack P1's cure): the five flow-history tables (wf_edge,
+            # wf_step_ledger, wf_join_fire, wf_signals, wf_node_progress)
+            # grew monotone-forever — no retention arm, no FK for the job
+            # prune to cascade. THE TWO-PASS LAW (H-B1): the flows-side
+            # pass selects the TERMINAL-AGED ROOTS first (a tiny
+            # jobs-side set) and deletes each selected flow's rows via
+            # the flow_id indexes — O(terminal flows + batch), never the
+            # full-table walk; the rootless leg (the pointee absent or
+            # not a flow root) rides the batch-bounded walk on the
+            # coarser cadence _WF_ROOTLESS_PASS_EVERY gives. NOT a drain
+            # (the retention family's one-batch-per-pass discipline).
+            # The period gate is the zero-means-off sentinel, and all
+            # five DEFAULT OFF — they prune the FLOW HISTORY, not
+            # derived data (the operator opts in; the upgrade deletes
+            # nothing by surprise).
+            name="wf_edge_retention",
+            call=wf_edge_retention_call,
+            warn_event="sweep-wf-edge-retention-failed",
+            warn_kind="sweep_wf_edge_retention_failed",
+            gated_on=("workflow_sweeps_capable",),
+            period_setting="workflow_edge_retention_period",
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_edge_retention_tick"),
+        ),
+        _SweepSpec(
+            # wf_join_fire_retention — the fire ledger's flow-history
+            # arm (the exactly-once ledger is dead weight on a terminal
+            # flow). Same family discipline as wf_edge_retention's.
+            name="wf_join_fire_retention",
+            call=wf_join_fire_retention_call,
+            warn_event="sweep-wf-join-fire-retention-failed",
+            warn_kind="sweep_wf_join_fire_retention_failed",
+            gated_on=("workflow_sweeps_capable",),
+            period_setting="workflow_join_fire_retention_period",
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_join_fire_retention_tick"),
+        ),
+        _SweepSpec(
+            # wf_step_ledger_retention — the step ledger's flow-history
+            # arm (one row per attempt, the hot table's fastest
+            # grower). Same family discipline as wf_edge_retention's.
+            name="wf_step_ledger_retention",
+            call=wf_step_ledger_retention_call,
+            warn_event="sweep-wf-step-ledger-retention-failed",
+            warn_kind="sweep_wf_step_ledger_retention_failed",
+            gated_on=("workflow_sweeps_capable",),
+            period_setting="workflow_step_ledger_retention_period",
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_step_ledger_retention_tick"),
+        ),
+        _SweepSpec(
+            # wf_signals_retention — the signal ledger's flow-history
+            # arm (a terminal flow's HELD signals are exactly the
+            # abandoned-hold class; a LIVE flow's holds are never
+            # touched). Same family discipline as wf_edge_retention's.
+            name="wf_signals_retention",
+            call=wf_signals_retention_call,
+            warn_event="sweep-wf-signals-retention-failed",
+            warn_kind="sweep_wf_signals_retention_failed",
+            gated_on=("workflow_sweeps_capable",),
+            period_setting="workflow_signals_retention_period",
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_signals_retention_tick"),
+        ),
+        _SweepSpec(
+            # wf_node_progress_retention — the progress state's
+            # flow-history arm (the state channel outlives its flows;
+            # the flow is reached through the node's jobs row). The
+            # stream's fold (R3): this arm's statement deletes the doomed
+            # flows' wf_node_stream rows too, and its rootless pass runs
+            # the stream's orphan walk off the stream's own cursor —
+            # one pass, two batch-bounded deletes/walks (documented).
+            # Same family discipline as wf_edge_retention's.
+            name="wf_node_progress_retention",
+            call=wf_node_progress_retention_call,
+            warn_event="sweep-wf-node-progress-retention-failed",
+            warn_kind="sweep_wf_node_progress_retention_failed",
+            gated_on=("workflow_sweeps_capable",),
+            period_setting="workflow_node_progress_retention_period",
+            extra_except=(asyncpg.exceptions.UndefinedTableError,),
+            dbg_tick=_dbg_tick("wf_node_progress_retention_tick"),
         ),
     )
 

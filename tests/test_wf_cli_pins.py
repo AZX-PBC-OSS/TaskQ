@@ -276,6 +276,50 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     assert outcome == "terminal"
 
 
+async def test_retry_not_applied_copy_drops_the_impossible_cause_and_names_the_root_law(
+    cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
+) -> None:
+    """H-C9's copy honesty, the CLI's face: the not-applied remedy names
+    only causes the CAS can actually hit — the attempt ceiling is NOT
+    one (the ordinal continues; no ceiling is consulted) — and the
+    ROOT-KEY law is on the record (the run's root is not a node; H-C1's
+    verb-level guard)."""
+    compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
+    flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await flow_runner.create_flow()).flow_id
+    await flow_runner.drive(flow_id)  # the run is terminal-FAILED at 'doomed'
+
+    # An UNKNOWN node key: the CAS matches nothing → the not-applied arm.
+    unknown = await to_thread(runner.invoke, app, ["flows", "retry", str(flow_id), "no-such-node"])
+    assert unknown.exit_code == 1, unknown.output
+    copy = plain_cli_output(unknown.output)
+    assert "nothing re-opened" in copy
+    assert "attempt ceiling" not in copy, (
+        f"CONTRACT: the impossible cause is off the record, got: {copy}"
+    )
+    assert "live" in copy and "unknown" in copy, copy
+
+    # The RUN'S OWN ROOT key: refused by the verb-level guard's CAS leg —
+    # the copy names the root-key law and the cure.
+    root = await to_thread(runner.invoke, app, ["flows", "retry", str(flow_id), "__flow__"])
+    assert root.exit_code == 1, root.output
+    root_copy = plain_cli_output(root.output)
+    assert "root" in root_copy and "'__flow__'" in root_copy, root_copy
+    assert "attempt ceiling" not in root_copy
+
+    # Nothing moved: the failed node is still failed, no audit row.
+    node_row = await wf_conn.fetchrow(
+        f'SELECT status FROM "{wf_schema}".jobs '
+        "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'doomed'",
+        flow_id,
+    )
+    assert node_row is not None and node_row["status"] == "failed"
+    audit = await wf_conn.fetchval(
+        f"SELECT count(*) FROM \"{wf_schema}\".admin_audit WHERE action = 'workflow.retry_node'",
+    )
+    assert audit == 0
+
+
 # ── the analysis unit tier (the pure module, no DB) ─────────────────────
 
 

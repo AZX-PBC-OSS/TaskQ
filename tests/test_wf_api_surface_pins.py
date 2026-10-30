@@ -48,18 +48,26 @@ def test_actor_projects_the_estate_carrier() -> None:
     """Pin 9's composition assertion (the registry-omits variant reds):
     the workflow actor projects the ``ActorConfig``-compatible carrier —
     the same shape the config sync + the guards + ``TASKQ_QUEUES_STRICT``
-    consume. The projection carries the placement + the retry contract;
-    the actor NAME is workflow-namespaced (one registry, no shadows)."""
+    consume, IN THE REAL PROJECTION'S ONE VOCABULARY (H-A12 — the
+    ``ActorConfig`` field set, the ``workflow_actor`` metadata mark; the
+    pre-fix carrier's workflow-namespaced actor name and the
+    ``ActorRef``-shaped max_attempts/retry_kind fields were a second,
+    divergent scheme). The capacity terms declared ride the row; the
+    reservations do NOT (no field — the ensure-slots pass owns their
+    materialization) and ``max_pending`` is off the wf surface (H-A6 —
+    the row seeds it UNSET)."""
     app = WorkflowApp()
     decorate = app.actor(queue="gpu", max_attempts=5, retry_kind="permanent")
     handle = decorate(_body)
-    config = handle.actor_config("doc_ingest")
+    config = handle.actor_config()
     assert config == {
-        "actor": "doc_ingest._body",
+        "actor": "_body",
         "queue": "gpu",
-        "max_attempts": 5,
-        "retry_kind": "permanent",
+        "max_concurrent": None,
+        "result_ttl": None,
+        "metadata": {"workflow_actor": True},
     }
+    assert handle.max_attempts == 5 and handle.retry_kind == "permanent"
 
 
 def test_actor_preserves_the_function_identity() -> None:

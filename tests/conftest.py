@@ -453,10 +453,12 @@ def _reset_warn_once_stamps_reset() -> None:
     import taskq.progress._publish as publish_mod
     import taskq.worker._consumer as consumer_mod
     import taskq.worker.dispatch as dispatch_mod
+    import taskq.workflows._sweep as wf_sweep_mod
 
     dispatch_mod._reporter_defect_warned.clear()  # pyright: ignore[reportPrivateUsage]  # Why: test isolation seam for module-global log-once stamps with no other reset surface.
     consumer_mod._dependency_failure_warned.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
     publish_mod._publish_failure_warned.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above.
+    wf_sweep_mod._null_stamp_last_warned.clear()  # pyright: ignore[reportPrivateUsage]  # Why: same seam as above (the retention arms' NULL-stamp re-warn stamps).
 
 
 def _leaked_pending_task_report(

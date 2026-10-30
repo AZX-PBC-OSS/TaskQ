@@ -124,6 +124,12 @@ class ChildSpec:
     #: path acquires them through the same registry + the same denial
     #: path the queue-concurrency fence rides. ``()`` = no bucket.
     rate_limits: tuple[str, ...] = ()
+    #: The child's STRICT CAPACITY TERMS (H-A1 — the reservations' own
+    #: ride): the reservation NAMES stamped onto the child row's metadata
+    #: beside ``rate_limits`` — the claim path resolves them through the
+    #: resolved registry (the instances live there) and acquires them
+    #: with the same denial discipline. ``()`` = no reservation.
+    reservations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,15 +380,19 @@ def _row_metadata(
     flow_id: JobId,
     *,
     rate_limits: tuple[str, ...] = (),
+    reservations: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """The node row's metadata WITH admission terms (CURE 2): the base
-    flow link plus the ``rate_limits`` names when the node declares
-    buckets — the row its own admission terms, the claim path's read.
-    ``rate_limits`` empty = the base metadata, byte-identical (the
-    no-buckets rows never change shape)."""
+    flow link plus the ``rate_limits`` names and the STRICT reservation
+    NAMES (H-A1 — the reservations' own ride) when the node declares
+    them — the row its own admission terms, the claim path's read.
+    Both empty = the base metadata, byte-identical (the no-terms rows
+    never change shape)."""
     meta = _metadata(flow_id, blocking_reason=None)
     if rate_limits:
         meta["rate_limits"] = list(rate_limits)
+    if reservations:
+        meta["reservations"] = list(reservations)
     return meta
 
 
