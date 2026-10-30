@@ -727,3 +727,46 @@ def test_the_code_owned_statement_set_clause_is_frozen() -> None:
         "retry_kind=EXCLUDED.retry_kind",
         "updated_at=clock_timestamp()",
     ], "the code-owned statement's SET clause moved — the opt-in's own freeze"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_code_owned_uncapping_deploys_null_and_warns(
+    pg_conn: asyncpg.Connection,
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """THE NULL-OUT (the re-review's residual 2): a code-owned actor
+    whose literal UNCAPS (a numeric cap → ``None``) deploys the NULL —
+    the code-owned SET assigns unconditionally (the declaration-of-
+    record-wins law) — AND the deploy announces itself: the
+    ``actor-config-capacity-code-change`` warning carrying
+    ``registered=None`` against the STORED old value, one event per
+    field. The pre-cure shape left the stored cap at its
+    first-registration value forever: un-capping by code silently did
+    nothing."""
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    boot_one = [_make_config("uncap", max_concurrent=2, result_ttl=60.0, capacity_owner="code")]
+    await sync_actor_config(pg_conn, boot_one, schema=schema)
+    seeded = await _read_row(pg_conn, schema, "uncap")
+    assert seeded["max_concurrent"] == 2
+    assert seeded["result_ttl"] == 60.0
+
+    boot_two = [_make_config("uncap", max_concurrent=None, result_ttl=None, capacity_owner="code")]
+    await sync_actor_config(pg_conn, boot_two, schema=schema)
+    uncapped = await _read_row(pg_conn, schema, "uncap")
+    assert uncapped["max_concurrent"] is None, (
+        "the code-owned un-cap deploys: the SET clause assigns the NULL "
+        "unconditionally — the declaration of record wins"
+    )
+    assert uncapped["result_ttl"] is None
+
+    change_events = [
+        e for e in structlog_capture if e["event"] == "actor-config-capacity-code-change"
+    ]
+    announced = {e["field"]: (e["registered"], e["stored"]) for e in change_events}
+    assert announced == {
+        "max_concurrent": (None, 2),
+        "result_ttl": (None, 60.0),
+    }, "each un-capped field's deploy announces registered=None against the stored old value"

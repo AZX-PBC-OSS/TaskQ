@@ -2063,7 +2063,7 @@ def test_the_code_only_handle_is_never_silent() -> None:
     def code_only_chain_flow() -> Promise[object]:
         return build(chain_source(code_only_chain, Ingest(doc_id="d"), key="chain"))
 
-    with pytest.raises(WorkflowBuildError, match="capped actor handle"):
+    with pytest.raises(WorkflowBuildError, match=r"capped actor handle.*capacity_owner"):
         app_three.get("code-only-chain-flow")
 
 

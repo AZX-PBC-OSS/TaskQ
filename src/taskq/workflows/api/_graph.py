@@ -1648,7 +1648,8 @@ def chain_source(
                 f"actor (actor={chain.actor!r}) and the chain surface has "
                 "no capacity passthrough: the handle's capacity terms "
                 "would be dropped by the placement override (the guard "
-                "failing open by rename). Wire the capped body as a graph "
+                "failing open by rename), the handle's capacity_owner "
+                "declaration included. Wire the capped body as a graph "
                 "step (its own cohort), or strip its terms."
             )
     step_keys = set(chain.steps)

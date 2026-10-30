@@ -159,9 +159,10 @@ class _CapacityTerms(NamedTuple):
     the stored capacity operator-owned; "code" projects into the
     ``ActorConfig`` the config sync consumes, whose upsert rewrites the
     cohort's max_concurrent/result_ttl from the literal on every boot.
-    The route arms carry no owner field — an arm's cohort fails closed
-    to "operator" (the safe default: the arm's own capacity law never
-    silently inherits the source's code ownership)."""
+    The route arms declare their OWN owner (``RouteArm.capacity_owner``,
+    default "operator"): an overriding arm's declaration threads
+    per-arm onto the arm's effective cohort, and its owner participates
+    in the one-cap law's comparison below."""
 
     max_concurrent: int | None
     result_ttl: float | None
