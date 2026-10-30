@@ -989,6 +989,19 @@ def _fail_fast_on_unconsumed_workflow_queues(
     healthy sibling projects the same cohorts). The consumed-set-is-empty
     corner belongs to the ``worker-consumes-no-queues`` warning — nothing
     cohort-vs-consumed is decidable there, no double-signal.
+
+    THE OR-LAW (the strict gate's SECOND FACE — the app-declared
+    strictness): the gate is strict if EITHER face is set — the app's
+    own declaration (``WorkflowApp(queues_strict=True)``, read off the
+    app registry the projection itself walks:
+    ``any_app_declares_strict_queues``) or the env
+    (``settings.queues_strict``, ``TASKQ_QUEUES_STRICT``). The env can
+    only ADD strictness — ops tightening a fleet via env stays
+    possible; silently DISABLING a declared contract is not a thing (no
+    face un-strictes the gate: a fleet's app declaration IS its
+    contract, carried in code, riding every worker child that already
+    imports the app — the fleets that cannot coordinate a fleet-wide
+    env var).
     """
     if not settings.queues:
         return
@@ -996,7 +1009,22 @@ def _fail_fast_on_unconsumed_workflow_queues(
     unconsumed = sorted({config.queue for config in wf_configs} - consumed)
     if not unconsumed:
         return
-    if not getattr(settings, "queues_strict", False):
+    # THE OR-LAW: strict if EITHER face is set — the app's own
+    # declaration (WorkflowApp(queues_strict=True), read off the app
+    # registry the projection itself walks) or the env
+    # (TASKQ_QUEUES_STRICT via settings.queues_strict). The env can only
+    # ADD strictness — ops tightening a fleet via env stays possible;
+    # silently DISABLING a declared contract is not a thing (no face
+    # un-strictes the gate). The lazy import keeps the wf seam's module
+    # graph out of the bootstrap's own import time (the raise path's
+    # import below is the same seam).
+    from taskq.workflows._worker_execution import (
+        WorkflowQueueUnconsumedError,
+        any_app_declares_strict_queues,
+    )
+
+    strict = bool(getattr(settings, "queues_strict", False)) or any_app_declares_strict_queues()
+    if not strict:
         # THE NON-STRICT WARNING ARM (H-A8): the heterogeneous fleet's
         # own shape — a sibling worker may consume the queue; the boot
         # proceeds, the foreign cohorts named once, the remedy spelled.
@@ -1018,21 +1046,25 @@ def _fail_fast_on_unconsumed_workflow_queues(
                 "worker consuming each queue appears. Intended when a "
                 "sibling worker in the fleet consumes the queue; if none "
                 "does, add the queue to some worker's TASKQ_QUEUES / "
-                "--queues, or route the step elsewhere. Set "
-                "TASKQ_QUEUES_STRICT=1 to refuse the boot instead."
+                "--queues, or route the step elsewhere. Declare the "
+                "strictness in code on the app "
+                "(WorkflowApp(queues_strict=True) — the app's own "
+                "contract) or set TASKQ_QUEUES_STRICT=1 to refuse the "
+                "boot instead."
             ),
         )
         return
-    from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
-
     raise WorkflowQueueUnconsumedError(
         f"workflow actor cohorts are projected onto queues this worker "
         f"does not consume: {unconsumed} (this worker consumes "
         f"{sorted(consumed)}). The dispatch claim matches only the "
         "worker's own queues, so those steps' rows would sit pending "
-        "forever — no error, no log, anywhere. THE GATE: "
-        "TASKQ_QUEUES_STRICT (the vanilla queues' own opt-in law — this "
-        "refusal is its strict arm). THE REMEDY: add each "
+        "forever — no error, no log, anywhere. THE GATE: strictness "
+        "declared in code on the app (WorkflowApp(queues_strict=True) — "
+        "the app's own contract) OR TASKQ_QUEUES_STRICT (the vanilla "
+        "queues' own opt-in law); the faces OR-combine — the env can "
+        "only ADD strictness, never silence a declared contract. THE "
+        "REMEDY: add each "
         "queue to a worker's TASKQ_QUEUES / --queues, or route the step "
         "elsewhere (step(..., queue=...) / @app.actor(queue=...)); a "
         "heterogeneous fleet that imports the app without executing its "

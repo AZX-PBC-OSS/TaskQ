@@ -2339,8 +2339,9 @@ nothing was lost, the move is documented here).
 
 ### Workflow steps default to the `default` queue
 
-> **Unreleased.** Strict-mode workers (`TASKQ_QUEUES_STRICT=1`) that
-> import a WorkflowApp whose cohorts project onto queues the worker does
+> **Unreleased.** Strict-mode workers (`TASKQ_QUEUES_STRICT=1`, or the
+> app declaring `WorkflowApp(queues_strict=True)`) that import a
+> WorkflowApp whose cohorts project onto queues the worker does
 > not consume now refuse the boot (`WorkflowQueueUnconsumedError`);
 > non-strict boots warn. Deployments whose workers consume `default` are
 > unaffected. The audit: every `step(`/` map_source(`/`route(` wiring in
@@ -2378,7 +2379,14 @@ proceed with the ONE aggregated `workflow-cohorts-on-unconsumed-queues`
 warning (the vanilla warning's own shape, the remedy spelled: a sibling
 worker in the fleet may consume the queue — a per-queue worker
 specialization legitimately imports the shared apps module while its
-siblings run the foreign queues). The check runs before the cohorts'
+siblings run the foreign queues). The gate has a second, app-declared
+face: `WorkflowApp(queues_strict=True)` declares the strictness in
+CODE, riding the app every worker child already imports (a
+heterogeneous fleet whose children each subscribe to a queue subset
+cannot coordinate a fleet-wide env var). The faces OR-combine — the
+boot refuses when EITHER is set — and the env can only ADD strictness:
+ops tightening stays possible; silently disabling a declared contract
+is not a thing. The check runs before the cohorts'
 `actor_config` sync, so a refusing process writes nothing; a worker
 consuming nothing at all keeps the separate `worker-consumes-no-queues`
 warning.
