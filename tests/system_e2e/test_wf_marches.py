@@ -142,14 +142,12 @@ async def _resolve_review_holds(
 # drive the identical shape (each ends its spine in wait_flow_terminal),
 # so all three carry the mark; the state-based asserts inside (row shapes,
 # joins, the HITL audit, the render) ride along deterministically.
-# PLUMBING NOTE (the honest limit of this mark): the tier is
-# collection-gated by --system-e2e (root conftest), so the serial
-# load-sensitive lane cannot collect these pins until that lane's command
-# learns the flag, and the system-e2e lane (`-m system`) keeps running
-# them co-tenanted until its filter learns "and not load_sensitive" — the
-# same dual duty the partition pins' existing load_sensitive marks already
-# carry. The mark is the law's label today; the lane move is the ci.yaml
-# ruling this repo's owners owe these pins.
+# PLUMBING (landed with the routing this branch carries): the serial
+# load-sensitive lane collects the tier via --system-e2e and runs these
+# pins ONCE, serially, under the tier's --timeout=900 default; the
+# system-e2e lane's filter carries "and not load_sensitive", so the 4-leg
+# PG version matrix no longer re-runs them co-tenanted - the accepted
+# single-run trade (the load-sensitive lane's comment in ci.yaml).
 @pytest.mark.load_sensitive
 @pytest.mark.timeout(900)
 async def test_the_deep_research_march_kick_to_explorer(

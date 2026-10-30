@@ -30,7 +30,7 @@ names/labels - or that fires on a healthy fleet - fails here.
 Marks: integration (testcontainers PG), otel ([prometheus] extra); the
 lock-contention family and the two promtool binding pins carry
 load_sensitive (their verdicts are emission-window-dependent — PR #698's
-conviction), pending the routing caveat in TestFleetHandover's note.
+conviction) and run in the serial load-sensitive lane.
 """
 
 from __future__ import annotations

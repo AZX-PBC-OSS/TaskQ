@@ -165,6 +165,23 @@ discipline the open part's future cure owes.
   judgment: mark on the first receipt-class red, not on class resemblance
   alone.
 
+- **The system-e2e window family's marks** (13 files / 29 pins,
+  unmarked): test_compound_failures 3, test_kill9_pg_crash 1,
+  test_kill9_redis_broker 2, test_ladder_rolling_deploy 1,
+  test_leader_loss 1, test_operational_loop 1, test_partition_recovery
+  1, test_rolling_release_fleet 7, test_rolling_deploy 1,
+  test_shutdown_requeue_states 2, test_wf_deploy_matrix 6,
+  test_wf_operator_march 2, test_redis_outage 1 — all the convicted
+  marches' class (scenario verdicts riding monotonic settle windows).
+  The routing must land TOGETHER with these marks plus a RE-PRICED
+  lane cap from a MEASURED serial wall (the round-2 bound-derived band
+  ~65-130 min of added serial wall -> a cap in the ~180 territory,
+  priced from measurement, not from the bounds) — never flip one half
+  alone (the staged-flip doctrine: runner AND parallelism move as one,
+  ci.yaml's own law). These 13 files carry NO per-test timeout
+  markers, so their marks are only sound with --timeout=900 in the
+  load-sensitive lane's command (which the routing already carries).
+
 ## The rules the campaign operates under
 
 - A rerun is not evidence. Every red gets the chain: symptom, mechanism,
