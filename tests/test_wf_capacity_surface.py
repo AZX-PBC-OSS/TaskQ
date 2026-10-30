@@ -529,6 +529,193 @@ def test_empty_consumed_set_leaves_the_gate_silent() -> None:
     _fail_fast_on_unconsumed_workflow_queues(settings, cohorts)
 
 
+# ── the strict gate's SECOND FACE: the app-declared strictness ───────────
+
+
+def test_app_declared_strict_queues_refuse_the_boot() -> None:
+    """THE APP-DECLARED FACE of the strict gate: a WorkflowApp declaring
+    ``queues_strict=True`` carries the contract in CODE — the boot
+    REFUSES with NO env set at all. The fleet that needs this face
+    structurally cannot use the env var (its workgroup children each
+    subscribe to a queue subset; fleet-wide env coordination is
+    impossible), but every child already imports the app — the
+    declaration rides the app registry the projection itself walks
+    (the OR-law's app-side arm)."""
+    from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
+    from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
+
+    app = WorkflowApp(queues_strict=True)  # the declaration — no env anywhere
+    assert app.queues_strict is True
+    settings = WorkerSettings.load_from_dict({"TASKQ_QUEUES": "etl"})  # env face silent
+    cohorts = [
+        ActorConfig(
+            actor="wf-declared",
+            max_concurrent=1,
+            queue="remote",
+            metadata={"workflow_actor": True},
+        )
+    ]
+    with pytest.raises(WorkflowQueueUnconsumedError) as excinfo:
+        _fail_fast_on_unconsumed_workflow_queues(settings, cohorts)
+    message = str(excinfo.value)
+    assert "remote" in message, message
+    assert "queues_strict" in message, "the declaration face is named in the gate"
+    assert "TASKQ_QUEUES_STRICT" in message, "the env face is named in the gate"
+
+
+def test_app_without_declaration_keeps_the_warning_arm() -> None:
+    """THE DEFAULT ARM, unchanged (the additive-only law): a registered
+    app with NO declaration and no env keeps the ONE aggregated warning;
+    the boot proceeds. The declaration's absence is today's behavior —
+    even with an app in the registry (the getattr default's face)."""
+    import structlog.testing
+
+    from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
+
+    app = WorkflowApp()  # registered, NOT strict — the default
+    assert app.queues_strict is False
+    settings = WorkerSettings.load_from_dict({"TASKQ_QUEUES": "etl"})
+    cohorts = [
+        ActorConfig(
+            actor="wf-undeclared",
+            max_concurrent=1,
+            queue="remote",
+            metadata={"workflow_actor": True},
+        )
+    ]
+    with structlog.testing.capture_logs() as logs:
+        _fail_fast_on_unconsumed_workflow_queues(settings, cohorts)  # no raise
+    warnings = [e for e in logs if e.get("event") == "workflow-cohorts-on-unconsumed-queues"]
+    assert len(warnings) == 1, warnings
+    assert warnings[0]["log_level"] == "warning", warnings[0]
+
+
+def test_env_only_strict_still_refuses_with_an_undeclared_app() -> None:
+    """THE ENV FACE, preserved (today's behavior): ``TASKQ_QUEUES_STRICT``
+    refuses the boot even when a registered app did NOT declare strict —
+    the env can only ADD strictness, and the env-only fleet loses
+    nothing."""
+    from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
+    from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
+
+    # The ref IS the keep-alive: the app registry is a WeakSet — an
+    # unheld app drops out, and the pin stops testing its subject.
+    _app = WorkflowApp()  # registered, NOT strict
+    settings = WorkerSettings.load_from_dict({"TASKQ_QUEUES": "etl", "TASKQ_QUEUES_STRICT": "1"})
+    cohorts = [
+        ActorConfig(
+            actor="wf-env-only",
+            max_concurrent=1,
+            queue="remote",
+            metadata={"workflow_actor": True},
+        )
+    ]
+    with pytest.raises(WorkflowQueueUnconsumedError):
+        _fail_fast_on_unconsumed_workflow_queues(settings, cohorts)
+
+
+def test_env_and_declaration_together_refuse_the_boot() -> None:
+    """BOTH faces set — the OR-law's intersection is the SAME refusal
+    (strict is strict; no face can soften the other)."""
+    from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
+    from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
+
+    _app = WorkflowApp(queues_strict=True)  # keep-alive: the app registry is a WeakSet
+    settings = WorkerSettings.load_from_dict({"TASKQ_QUEUES": "etl", "TASKQ_QUEUES_STRICT": "1"})
+    cohorts = [
+        ActorConfig(
+            actor="wf-both",
+            max_concurrent=1,
+            queue="remote",
+            metadata={"workflow_actor": True},
+        )
+    ]
+    with pytest.raises(WorkflowQueueUnconsumedError):
+        _fail_fast_on_unconsumed_workflow_queues(settings, cohorts)
+
+
+def test_consumed_cohorts_boot_under_the_declaration() -> None:
+    """A worker consuming ALL its projected cohorts is unaffected — even
+    app-declared strict: the gate judges the cohort-vs-consumed delta;
+    strictness only chooses the arm when the delta is non-empty. The
+    healthy boot is SILENT (no refusal, no warning)."""
+    import structlog.testing
+
+    from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
+
+    _app = WorkflowApp(queues_strict=True)  # keep-alive: the app registry is a WeakSet
+    settings = WorkerSettings.load_from_dict({"TASKQ_QUEUES": "etl,gpu"})
+    cohorts = [
+        ActorConfig(
+            actor="wf-own", max_concurrent=1, queue="gpu", metadata={"workflow_actor": True}
+        ),
+        ActorConfig(
+            actor="wf-other", max_concurrent=1, queue="etl", metadata={"workflow_actor": True}
+        ),
+    ]
+    with structlog.testing.capture_logs() as logs:
+        _fail_fast_on_unconsumed_workflow_queues(settings, cohorts)  # no raise
+    assert logs == [], "the healthy boot is silent"
+
+
+def test_consumed_cohorts_boot_under_env_strict() -> None:
+    """The same green path under the ENV face: strict env + all cohorts
+    consumed → the boot proceeds, silent (today's behavior preserved)."""
+    import structlog.testing
+
+    from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
+
+    _app = WorkflowApp()  # no declaration — the env is the only strict face
+    settings = WorkerSettings.load_from_dict(
+        {"TASKQ_QUEUES": "etl,gpu", "TASKQ_QUEUES_STRICT": "1"}
+    )
+    cohorts = [
+        ActorConfig(
+            actor="wf-own", max_concurrent=1, queue="gpu", metadata={"workflow_actor": True}
+        ),
+        ActorConfig(
+            actor="wf-other", max_concurrent=1, queue="etl", metadata={"workflow_actor": True}
+        ),
+    ]
+    with structlog.testing.capture_logs() as logs:
+        _fail_fast_on_unconsumed_workflow_queues(settings, cohorts)  # no raise
+    assert logs == [], "the healthy boot is silent"
+
+
+def test_heterogeneous_fleet_child_keeps_the_warning_arm() -> None:
+    """THE HETEROGENEOUS FLEET's per-worker law: a child whose OWN
+    cohorts are consumed, while a SIBLING worker serves another queue,
+    stays on the WARNING arm when nothing declares strict — the check is
+    per-worker over THIS worker's projected cohorts, and the sibling's
+    consumption is the warning's own caveat, never a refusal here."""
+    import structlog.testing
+
+    from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
+
+    # The ref IS the keep-alive: the app registry is a WeakSet — an
+    # unheld app drops out, and the pin stops testing its subject.
+    _app = WorkflowApp()  # no declaration, no env — the sibling case is the warning arm's subject
+    settings = WorkerSettings.load_from_dict({"TASKQ_QUEUES": "etl"})
+    cohorts = [
+        ActorConfig(
+            actor="wf-own", max_concurrent=1, queue="etl", metadata={"workflow_actor": True}
+        ),
+        ActorConfig(
+            actor="wf-sibling",
+            max_concurrent=1,
+            queue="remote",
+            metadata={"workflow_actor": True},
+        ),
+    ]
+    with structlog.testing.capture_logs() as logs:
+        _fail_fast_on_unconsumed_workflow_queues(settings, cohorts)  # no raise
+    warnings = [e for e in logs if e.get("event") == "workflow-cohorts-on-unconsumed-queues"]
+    assert len(warnings) == 1, warnings
+    assert warnings[0]["queues"] == ["remote"], warnings[0]  # only the sibling's queue named
+    assert warnings[0]["worker_queues"] == ["etl"], warnings[0]
+    assert warnings[0]["cohorts"] == {"wf-sibling": "remote"}, warnings[0]
+
+
 # ── (f) the round-1 convictions' pins (§H-A) ────────────────────────────
 
 
