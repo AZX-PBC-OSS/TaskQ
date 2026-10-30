@@ -3564,6 +3564,330 @@
       "file": "wf-perf-bands-20261029T192007Z.txt",
       "head_sha": "a10da360d34d97ee439f482202390290ff771eea",
       "captured_at": "2026-10-29T22:29:04"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261030T102447-3f2a.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:24:47"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261030T102450-298c.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:24:50"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261030T102458-264d.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:24:58"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261030T102500-59e7.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:25:00"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261030T102503-6365.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:25:03"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261030T102504-7080.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:25:04"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261030T102504-c016.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:25:04"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261030T102516-0872.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:25:16"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261030T102516-fa1f.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:25:16"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261030T102705-890d.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:27:05"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261030T102705-4b50.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:27:05"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261030T102713-aa31.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:27:13"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261030T102748.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T10:27:48"
+    },
+    {
+      "stem": "battery-final-wf-attacks",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "battery-wf-suite",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "deslop-pin-packs",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "docs-lane-rv2-13-cure-captures",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "fixround-final-pins",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "fixround-migration-chain",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "fixround-touched-pins-x2",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "rv2-pins-final",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "rv2-pins-final-20261010T193500-precommit-red.txt",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "rv4-final-proof-64645df381b7e76c5c9c86bb69712108da6abd88.txt",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "rv4-pin-packs",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "stealth-mutant-shipped-drill",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "wf-battery-cov",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "wf-battery-leg2",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "wf-battery-leg3",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "wf-battery-rv4",
+      "file": "wf-battery-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "attack-rounds",
+      "file": "attack-rounds-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "fast-tier-n8",
+      "file": "fast-tier-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "fasttier-final",
+      "file": "fast-tier-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "fasttier-final-7a587f45c17d638c0c39a24174f77ec2cb807ba3",
+      "file": "fast-tier-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "evidence-heads-verify",
+      "file": "evidence-heads-verify-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "rv2-13-green",
+      "file": "rv2-13-green-slot-20261030T172947Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "docs-examples",
+      "file": "docs-examples-20261030T172748Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "estate-slice",
+      "file": "estate-slice-20261030T172417Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "lint-format",
+      "file": "lint-format-20261030T172417Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "mkdocs-strict",
+      "file": "mkdocs-strict-20261030T172417Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "mkdocs-strict-docslane",
+      "file": "mkdocs-strict-20261030T172417Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "pyright-full",
+      "file": "pyright-full-20261030T172417Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "typeprobe-gate",
+      "file": "typeprobe-gate-20261030T172417Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "wf-bands-rv4",
+      "file": "wf-perf-bands-20261030T172417Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "wf-perf-bands",
+      "file": "wf-perf-bands-20261030T172417Z.txt",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "edge-scale-curve",
+      "file": "edge-scale-curve-20261029T122015-f57f.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "fanout-1000-tx-band",
+      "file": "fanout-1000-tx-band-20261029T122028-0a04.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "join-fire-latency",
+      "file": "join-fire-latency-20261029T122028-c389.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "pin1-red-pad-drift",
+      "file": "pin1-red-pad-drift-20261029T122550-772c.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "pin1-row-width",
+      "file": "pin1-row-width-20261029T122550-8f94.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "pin2-partial-index",
+      "file": "pin2-partial-index-20261029T122559-0222.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "pin4-enqueue-band",
+      "file": "pin4-enqueue-band-20261029T122011-3a6f.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "pin5-dispatch-band",
+      "file": "pin5-dispatch-band-20261029T122028-d9d0.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "wf-rollup-band",
+      "file": "wf-rollup-band-20261029T122044-009d.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
+    },
+    {
+      "stem": "wf-scoped-coverage",
+      "file": "wf-scoped-coverage-20261030T102748.json",
+      "head_sha": "b40d189190d7d7b609fb6815d2c26532f77de993",
+      "captured_at": "2026-10-30T11:00:00"
     }
   ]
 }

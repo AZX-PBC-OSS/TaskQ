@@ -1,0 +1,4 @@
+# the type gate (the pinned checkers, the REPO'S OWN ty config) at the estate re-stamp head b40d189190d7d7b609fb6815d2c26532f77de993
+the type gate holds: every MUST_ERROR marker (46) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+gate rc=0
+head: b40d189190d7d7b609fb6815d2c26532f77de993
