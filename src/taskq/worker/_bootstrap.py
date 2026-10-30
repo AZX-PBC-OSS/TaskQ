@@ -981,9 +981,13 @@ def _fail_fast_on_unconsumed_workflow_queues(
     ONLY on ``settings.queues_strict`` because a per-queue worker
     specialization legitimately imports the shared apps module while a
     SIBLING worker consumes the foreign queues. The wf cohorts' refusal
-    obeys the same law: NON-strict, the boot proceeds with the ONE
-    aggregated warning (``workflow-cohorts-on-unconsumed-queues`` — the
-    vanilla warning's own shape, the remedy named); strict, the refusal.
+    keeps the vanilla twin's two arms (NON-strict: the boot proceeds
+    with the ONE aggregated warning
+    (``workflow-cohorts-on-unconsumed-queues`` — the vanilla warning's
+    own shape, the remedy named); strict: the refusal) but its gate is
+    the OR-LAW's own, NOT the env alone: strict if the env
+    (``TASKQ_QUEUES_STRICT``) is set OR any imported app declares
+    ``queues_strict=True`` (the OR-LAW paragraph below).
 
     Runs BEFORE the cohorts' sync (a refusing process writes nothing; a
     healthy sibling projects the same cohorts). The consumed-set-is-empty

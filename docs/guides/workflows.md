@@ -993,7 +993,10 @@ cannot coordinate a fleet-wide env var — it need not: the app's own
 definition carries the contract). The faces OR-combine: the boot
 refuses when EITHER is set, and the env can only ADD strictness — ops
 tightening stays possible, silently disabling a declared contract is
-not a thing. The check fires before
+not a thing. THE CROSS-APP TIGHTENING: in a process importing SEVERAL
+apps, ONE app's `queues_strict=True` tightens the gate over the WHOLE
+projected cohort set — a co-resident app's sibling-served cohorts
+refuse too (the refusal names the queues and the cure). The check fires before
 the cohorts' sync writes anything; both arms name the cures (add the
 queue to a worker's consumed set, or route the step elsewhere). The
 operator-facing entry is
