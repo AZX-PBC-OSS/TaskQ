@@ -61,6 +61,12 @@ MARCH_LOCK_LEASE_S = 15.0
 #: are sub-second each) x the co-tenancy stretch, plus one leader lease
 #: (the dispatch cadence the fleet's leader owns) plus the sweep interval
 #: — the same derivation shape the rolling-fleet file's bounds carry.
+#: KNOWN INSUFFICIENT under multi-CI co-tenancy: PR #698's run expired
+#: this bound with the march's rows still moving (4 concurrent CIs on the
+#: shared pool) — the stretch absorbs the co-tenancy it was measured
+#: against, not an arbitrary shared-pool starved runner. The marches'
+#: pins carry load_sensitive for the serial lane (the bounds stay as
+#: derived); see their marker notes for the lane plumbing still owed.
 MARCH_SETTLE_BOUND_S = (
     30.0 + MARCH_LEADER_LEASE_S + SWEEP_INTERVAL_S + MARCH_LOCK_LEASE_S
 ) * TIER_LOAD_STRETCH
