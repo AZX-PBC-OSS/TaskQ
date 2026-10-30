@@ -152,15 +152,25 @@ class _CapacityTerms(NamedTuple):
     apps). A reservation's identity is the collect's own name-keyed law
     (:func:`collect_workflow_reservations` — differing configs for one
     name are ITS ValueError). ``max_pending`` is deliberately not a
-    field (H-A6 — the knob is off the wf surface)."""
+    field (H-A6 — the knob is off the wf surface).
+
+    ``capacity_owner`` is C15's opt-in (the handle's declaration, read
+    at the wiring): "operator" (the default) seeds the row and leaves
+    the stored capacity operator-owned; "code" projects into the
+    ``ActorConfig`` the config sync consumes, whose upsert rewrites the
+    cohort's max_concurrent/result_ttl from the literal on every boot.
+    The route arms carry no owner field — an arm's cohort fails closed
+    to "operator" (the safe default: the arm's own capacity law never
+    silently inherits the source's code ownership)."""
 
     max_concurrent: int | None
     result_ttl: float | None
+    capacity_owner: str = "operator"
 
 
 #: The projection's default for an actor whose nodes declare no capacity
 #: terms — every field the seed-only ``None`` (the vanilla rows' own
-#: undeclared shape). A 2-tuple is always truthy, so the ``.get() is
+#: undeclared shape). A 3-tuple is always truthy, so the ``.get() is
 #: None`` test — never an ``or`` — picks it.
 _UNSET_CAPACITY_TERMS = _CapacityTerms(None, None)
 
@@ -171,6 +181,7 @@ def _capacity_terms_of(node: object) -> _CapacityTerms:
     return _CapacityTerms(
         getattr(node, "max_concurrent", None),
         getattr(node, "result_ttl", None),
+        getattr(node, "capacity_owner", "operator"),
     )
 
 
@@ -353,7 +364,7 @@ def _workflow_cohorts(
     for node in compiled.nodes.values():
         cohorts.add((node.actor, node.queue))
         declared = _capacity_terms_of(node)
-        if any(term is not None for term in declared):
+        if declared != _UNSET_CAPACITY_TERMS:  # the all-default terms never enter the law
             existing = caps.get(node.actor)
             if existing is not None and existing != declared:
                 differing = _capacity_conflict_fields(existing, declared)
@@ -380,8 +391,9 @@ def _workflow_cohorts(
                 arm_terms = _CapacityTerms(
                     getattr(arm, "max_concurrent", None),
                     getattr(arm, "result_ttl", None),
+                    getattr(arm, "capacity_owner", "operator"),
                 )
-                if any(term is not None for term in arm_terms):
+                if arm_terms != _UNSET_CAPACITY_TERMS:  # the all-default terms never enter the law
                     existing = caps.get(arm_actor)
                     if existing is not None and existing != arm_terms:
                         differing = _capacity_conflict_fields(existing, arm_terms)
@@ -574,6 +586,11 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
                 result_ttl=terms.result_ttl,
                 queue=queue,
                 metadata=dict(_PROJECTION_METADATA),
+                # THE CAPACITY OWNER (C15): the handle's declaration,
+                # carried through the decl's terms — "operator" (the
+                # default) is the estate's seed-only law, unchanged;
+                # "code" is the config sync's deploy-by-code opt-in.
+                capacity_owner=terms.capacity_owner,
             )
         )
     return configured

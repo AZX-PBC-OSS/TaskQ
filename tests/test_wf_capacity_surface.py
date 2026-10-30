@@ -225,7 +225,19 @@ def test_actor_carrier_carries_the_caps() -> None:
         "max_concurrent": 2,
         "result_ttl": 60.0,
         "metadata": {"workflow_actor": True},
+        "capacity_owner": "operator",
     }
+
+
+def test_actor_carrier_carries_the_code_owner() -> None:
+    """C15: the F3 carrier carries the handle's capacity-owner
+    declaration (the projection's vocabulary grew with the ActorConfig
+    field) — "code" rides the carrier the same way the caps do."""
+    app = WorkflowApp()
+    handle = app.actor(max_concurrent=2, capacity_owner="code")(_plain_body)
+    config = handle.actor_config()
+    assert config["capacity_owner"] == "code"
+    assert config["max_concurrent"] == 2
 
 
 def test_projection_rows_carry_the_declared_caps() -> None:
@@ -988,6 +1000,7 @@ def test_actor_carrier_matches_the_projection_vocabulary() -> None:
         "max_concurrent": 2,
         "result_ttl": 60.0,
         "metadata": {"workflow_actor": True},
+        "capacity_owner": "operator",
     }
 
 

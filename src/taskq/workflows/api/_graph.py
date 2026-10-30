@@ -450,6 +450,12 @@ class NodeDecl:
     #: config row either), so two steps of one actor may declare
     #: different priorities with no conflict law.
     priority: int | None = None
+    #: THE CAPACITY OWNER (C15's opt-in — the handle's declaration, read
+    #: at wiring): "operator" (the default) keeps the estate's seed-only
+    #: law; "code" makes the config sync rewrite the cohort's
+    #: max_concurrent/result_ttl from the projected literal on every
+    #: boot. The projection carries it into the cohort's ``ActorConfig``.
+    capacity_owner: str = "operator"
     kind: str = "step"  # "step" | "map_source" | "gather" | "map_join"
     # THE PROGRESS SCHEMA DECLARATION (T21 decision a — the TypedGate-door
     # pattern): a pydantic model the node's ``ctx.progress`` data
@@ -776,6 +782,9 @@ def step[R](
     # unchanged).
     from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
 
+    # THE CAPACITY OWNER (C15): "operator" unless the wired body is a
+    # code-owned handle (below) — the per-actor declaration, defaulted.
+    capacity_owner = "operator"
     handle = body if isinstance(body, WorkflowActor) else None
     if handle is not None:
         if max_concurrent is None:
@@ -787,6 +796,12 @@ def step[R](
             result_ttl = getattr(handle, "result_ttl", None)
         if priority is None:
             priority = getattr(handle, "priority", None)
+        # THE CAPACITY OWNER (C15): the handle's declaration is the
+        # node's — the projection carries it into the cohort's
+        # ActorConfig, where the config sync's code-owned upsert reads
+        # it. The wiring surface has no override kwarg of its own: the
+        # declaration is PER-ACTOR (the handle's), never per-node.
+        capacity_owner = handle.capacity_owner
     # THE PRIORITY DOMAIN (the vanilla law at every layer that accepts a
     # priority — constants.py's own statement of it): the RESOLVED
     # declaration (the step's own or the handle's folded default) is
@@ -972,6 +987,7 @@ def step[R](
             reservations=tuple(reservations),
             result_ttl=result_ttl,
             priority=priority,
+            capacity_owner=capacity_owner,
             cache=cache,
             cache_ttl=cache_ttl,
             kind="gather" if len(keys) > 1 else "step",

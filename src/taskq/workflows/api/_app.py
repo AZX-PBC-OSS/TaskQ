@@ -30,6 +30,11 @@ from typing import Literal, cast, overload
 
 from pydantic import BaseModel
 
+from taskq.actor_config import (
+    CAPACITY_OWNER_OPERATOR,
+    CapacityOwner,
+    validate_capacity_owner,
+)
 from taskq.constants import check_priority_domain
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows._emit import EMIT_MAX_IN_FLIGHT_DEFAULT
@@ -71,6 +76,7 @@ class WorkflowActor:
         reservations: list[ConcurrencyReservation] | None = None,
         result_ttl: float | None = None,
         priority: int | None = None,
+        capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
     ) -> None:
         self._fn = fn
         self.name = name
@@ -98,6 +104,15 @@ class WorkflowActor:
         # vanilla ``ActorRef.priority``, it rides the handle and the
         # enqueue, never the config row.
         self.priority = priority
+        # THE CAPACITY OWNER (C15's opt-in, the vanilla actor's own
+        # declaration): "operator" (the default) keeps the estate's
+        # seed-only law — the stored row wins every conflict after
+        # first boot. "code" hands max_concurrent/result_ttl to the
+        # declaration: the config sync's upsert rewrites them from the
+        # projected literal on every boot. The declaration rides the
+        # handle into the wiring (the decl), the projection's capacity
+        # terms, and the ActorConfig the sync consumes.
+        self.capacity_owner = capacity_owner
 
     @property
     def fn(self) -> Callable[..., Awaitable[object]]:
@@ -131,6 +146,7 @@ class WorkflowActor:
             "max_concurrent": self.max_concurrent,
             "result_ttl": self.result_ttl,
             "metadata": {"workflow_actor": True},
+            "capacity_owner": self.capacity_owner,
         }
 
 
@@ -314,6 +330,7 @@ class WorkflowApp:
         reservations: list[ConcurrencyReservation] | None = None,
         result_ttl: float | None = None,
         priority: int | None = None,
+        capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
     ) -> WorkflowActor: ...
 
     @overload
@@ -332,6 +349,7 @@ class WorkflowApp:
         reservations: list[ConcurrencyReservation] | None = None,
         result_ttl: float | None = None,
         priority: int | None = None,
+        capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
     ) -> Callable[[Callable[..., Awaitable[object]]], WorkflowActor]: ...
 
     def actor(
@@ -349,6 +367,7 @@ class WorkflowApp:
         reservations: list[ConcurrencyReservation] | None = None,
         result_ttl: float | None = None,
         priority: int | None = None,
+        capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
     ) -> WorkflowActor | Callable[[Callable[..., Awaitable[object]]], WorkflowActor]:
         """``@app.actor`` — the workflow step decorator: registers the
         body into the workflow definition registry (D1) and projects the
@@ -373,6 +392,10 @@ class WorkflowApp:
                         f"the workflow actor {actor_name!r}'s {field} must be a "
                         f"non-negative int or None, got {value!r}"
                     )
+            # THE CAPACITY OWNER'S SHAPE DOOR (C15): the declaration is
+            # exactly one of the two owner names — anything else is the
+            # refused declaration, never a silent anything.
+            validate_capacity_owner(capacity_owner, what=f"the workflow actor {actor_name!r}'s")
             # THE CAPACITY DOOR (H-A10): a KeyedReservationRef (or any
             # other unnamed shape) in reservations= is the LOUD refusal
             # at the declaration site — never a silently-dropped cap.
@@ -399,6 +422,7 @@ class WorkflowApp:
                 reservations=reservations,
                 result_ttl=result_ttl,
                 priority=priority,
+                capacity_owner=capacity_owner,
             )
             self._actor_queues.add(queue)
             return handle
