@@ -96,12 +96,15 @@ logger = get_logger(__name__)
 #: The node-row read the execution door makes: the claimed row's step
 #: identity (the dispatch decode drops ``step_key``/``map_index`` — the
 #: vanilla JobRow has no fields for them) + the flow root's stamped
-#: workflow name, ONE bounded primary-key round trip per claimed flow
-#: row (the same cost class the leader's fire arm pays for the same
-#: stamped name).
+#: workflow name + the run's stamped priority override (the wf-priority
+#: cure — ``create_flow(priority=…)`` wrote it; the door's fork builds
+#: resolve it as the precedence law's first level), ONE bounded
+#: primary-key round trip per claimed flow row (the same cost class the
+#: leader's fire arm pays for the same stamped name).
 _CLAIMED_NODE_READ_SQL_TEMPLATE = """
 SELECT j.step_key, j.map_index,
-       root.metadata->>'workflow' AS workflow
+       root.metadata->>'workflow' AS workflow,
+       root.metadata->>'wf_priority' AS wf_priority
 FROM {schema}.jobs j
 LEFT JOIN {schema}.jobs root ON root.id = (j.metadata->>'flow_id')::uuid
 WHERE j.id = $1
@@ -919,6 +922,17 @@ async def execute_flow_job(
         ) from None
 
     runner = _runner_for(workflow_name, pool, schema, worker_id)
+    # THE RUN-PRIORITY STAMP'S RESOLUTION (the wf-priority cure): the
+    # root's stamped override (an int the create wrote) — a stamp a
+    # hand-crafted row rendered unparseable degrades to NO override (the
+    # declarations — or the column default — speak; a priority is an
+    # ordering hint, never a correctness input worth crashing the door
+    # on), never a door death.
+    raw_priority: object | None = read["wf_priority"]
+    try:
+        run_priority = int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
+    except (TypeError, ValueError):
+        run_priority = None
     row = {
         "id": job.id,
         "step_key": read["step_key"],
@@ -934,6 +948,7 @@ async def execute_flow_job(
             row,
             attempt=job.attempt,
             claim_epoch=job.claim_epoch,
+            run_priority=run_priority,
         )
     except WorkflowRunError as exc:
         # THE UNRESOLVABLE STEP's parking shape (the deploy matrix's

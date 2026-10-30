@@ -86,6 +86,11 @@ async def insert_fork(
                 + (f":{c.map_index}" if c.map_index is not None else "")
                 for c in chunk
             ],
+            # THE CHILDREN'S RESOLVED PRIORITY (the wf-priority cure):
+            # each child's own resolution rides its row; the unset case
+            # coalesces to the column default's own value (the pre-cure
+            # byte-identical row).
+            [c.priority if c.priority is not None else 0 for c in chunk],
         )
         await conn.execute(
             wsql.fork_edges,
@@ -149,6 +154,13 @@ async def insert_fork(
                 ),
                 f"workflow:{flow_id}",
                 f"wf:{flow_id}:{parent_step_key}:{fork.join.step_key}",
+                # THE JOIN'S RESOLVED PRIORITY (the wf-priority cure): the
+                # SOURCE's resolution — the join is the source's own
+                # cohort (the placement fields say so); the arms'
+                # overrides apply to the arm children, never the join.
+                # The unset case coalesces to the column default's own
+                # value (the pre-cure byte-identical row).
+                fork.priority if fork.priority is not None else 0,
             )
         # The join's edges: one per child (the ledger's truth — the
         # fan-out's children feed the join).

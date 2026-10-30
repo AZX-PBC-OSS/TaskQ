@@ -174,6 +174,10 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
         else _jsonb(_metadata(spec.flow_id, blocking_reason=None)),
         spec.idempotency_scope,
         spec.idempotency_key,
+        # THE ROW'S RESOLVED PRIORITY (the wf-priority cure): the spec's
+        # own value — the column default 0 when the caller resolved none
+        # (the pre-cure byte-identical row).
+        spec.priority,
     )
     # The declared edges ride the SAME call (the exported edge writer): a
     # joined node's incoming edges are the join counter's ONLY truth — the

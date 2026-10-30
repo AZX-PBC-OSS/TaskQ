@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Final, cast, get_args, get_origin, overlo
 
 from pydantic import BaseModel
 
+from taskq.constants import check_priority_domain
 from taskq.ratelimit.refs import KeyedRateLimitRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
@@ -335,6 +336,16 @@ class RouteArm[R]:
     max_concurrent: int | None = None
     reservations: tuple[object, ...] = ()
     result_ttl: float | None = None
+    #: THE ARM'S PRIORITY OVERRIDE (the wf-priority cure — the enqueue
+    #: face the vanilla rows always had): the arm's children's rows land
+    #: at this value in the ``jobs.priority`` column — the claim SQL's
+    #: ``priority DESC`` then serves them ahead of the default-0 backlog.
+    #: ``None`` = the arm does not override: the SOURCE node's resolution
+    #: applies (the arm overrides DOWN from the source, never up — the
+    #: placement law's own arithmetic). NOT an actor_config axis (the
+    #: column is the row's own, never the cohort's), so the arm's
+    #: priority needs no one-cap-per-actor conflict law.
+    priority: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,6 +433,23 @@ class NodeDecl:
     max_concurrent: int | None = None
     reservations: tuple[object, ...] = ()
     result_ttl: float | None = None
+    #: THE NODE'S DECLARED PRIORITY (the wf-priority cure — the enqueue
+    #: face the vanilla rows always had): the node's rows land at this
+    #: value in the ``jobs.priority`` column; the dispatch claim's
+    #: ``priority DESC`` (the same ORDER BY the vanilla rows obey) then
+    #: serves them ahead of the default-0 backlog. The RESOLUTION LAW per
+    #: row, first non-None wins: the explicit per-call
+    #: (``create_flow``/``run`` ``priority=``) > this declaration > the
+    #: actor handle's (folded in at the wiring when this is None) > the
+    #: column default. The map's children + the route's arms resolve
+    #: through the SAME law (the arms override DOWN from the source).
+    #: ``None`` = nothing declared — the column default applies, the
+    #: pre-cure byte-identical shape. NOT an actor_config axis (the
+    #: column is the row's own, never the cohort's — the vanilla
+    #: ``ActorRef.priority`` rides the ref and the enqueue, never the
+    #: config row either), so two steps of one actor may declare
+    #: different priorities with no conflict law.
+    priority: int | None = None
     kind: str = "step"  # "step" | "map_source" | "gather" | "map_join"
     # THE PROGRESS SCHEMA DECLARATION (T21 decision a — the TypedGate-door
     # pattern): a pydantic model the node's ``ctx.progress`` data
@@ -661,6 +689,7 @@ def step[R](
     max_concurrent: int | None = None,
     reservations: tuple[object, ...] | list[object] = (),
     result_ttl: float | None = None,
+    priority: int | None = None,
     cache: bool = False,
     cache_ttl: float | None = None,
 ) -> Promise[R]:
@@ -756,6 +785,16 @@ def step[R](
             reservations = tuple(handle_res) if handle_res else ()
         if result_ttl is None:
             result_ttl = getattr(handle, "result_ttl", None)
+        if priority is None:
+            priority = getattr(handle, "priority", None)
+    # THE PRIORITY DOMAIN (the vanilla law at every layer that accepts a
+    # priority — constants.py's own statement of it): the RESOLVED
+    # declaration (the step's own or the handle's folded default) is
+    # checked ONCE here — a value the smallint column cannot store is
+    # refused at the wiring, before any row exists. ``None`` rides (it
+    # means "nothing declared — the column default").
+    if priority is not None:
+        check_priority_domain(priority, what=f"step {node_key!r}'s priority")
     # THE NAMING RULE (cut #6's API-compile face): a DOTTED wiring key is
     # refused — the fork's derived namespace (``<key>.item``,
     # ``<key>.join``, ``<key>.iter<i>``) owns the dot; a wiring key
@@ -932,6 +971,7 @@ def step[R](
             max_concurrent=max_concurrent,
             reservations=tuple(reservations),
             result_ttl=result_ttl,
+            priority=priority,
             cache=cache,
             cache_ttl=cache_ttl,
             kind="gather" if len(keys) > 1 else "step",
@@ -1184,6 +1224,12 @@ def _attach_route[S](
             "RouteArm[object]",
             value if isinstance(value, RouteArm) else RouteArm(body=value),
         )
+        # THE PRIORITY DOMAIN (the step()'s own law — the wiring site
+        # refuses before any row exists): the arm's override checked at
+        # the same door the arms normalize through (both map_source's
+        # dict form and route() lower HERE).
+        if arm.priority is not None:
+            check_priority_domain(arm.priority, what=f"route arm {tag!r}'s priority")
         normalized[tag] = arm
     graph = source.graph
     source_node = graph.nodes.get(source.key)

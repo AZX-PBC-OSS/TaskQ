@@ -130,6 +130,13 @@ class ChildSpec:
     #: resolved registry (the instances live there) and acquires them
     #: with the same denial discipline. ``()`` = no reservation.
     reservations: tuple[str, ...] = ()
+    #: THE CHILD'S RESOLVED PRIORITY (the wf-priority cure): the
+    #: ``jobs.priority`` column value the fork's INSERT stamps — the
+    #: builder's own resolution of the precedence law (per-call > the
+    #: arm's > the source node's > the column default). ``None`` = the
+    #: column default (the insert coalesces it to 0 — the pre-cure
+    #: byte-identical value).
+    priority: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +199,12 @@ class ForkSpec:
     trace_id: str | None = None
     max_attempts: int = 3
     retry_kind: str = "transient"
+    #: THE JOIN ROW'S PRIORITY (the wf-priority cure): the fork's JOIN is
+    #: the source's own cohort (the placement fields say so), so its row
+    #: lands at the SOURCE's resolution of the precedence law — the arms'
+    #: overrides apply to the arm children, never the join. ``None`` =
+    #: the column default (the insert coalesces it to 0).
+    priority: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +238,12 @@ class NodeSpec:
     retry_kind: str = "transient"
     idempotency_scope: str = ""
     idempotency_key: str | None = None
+    #: THE ROW'S PRIORITY (the wf-priority cure): the ``jobs.priority``
+    #: column value the insert stamps — the RESOLVED value (the caller's
+    #: own precedence arithmetic: per-call > the declaration > the
+    #: column default 0). The default is the column default's own value,
+    #: so a spec built without it stores exactly the pre-cure row.
+    priority: int = 0
 
 
 @dataclass(frozen=True, slots=True)

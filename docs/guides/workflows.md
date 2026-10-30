@@ -922,14 +922,16 @@ construction.
 ### THE CAPACITY SURFACE — the declared admission terms
 
 `@app.actor()` and `wf.step()` both accept the vanilla actor surface's
-four capacity fields, and the declaration rides the SAME projection the
-placement rides:
+capacity fields — and, beside them, the vanilla enqueue's `priority=`
+face (the rows' claim order; the table's last row) — and the declaration
+rides the SAME projection the placement rides:
 
 | the term | what it declares |
 | --- | --- |
 | `max_concurrent` | the per-round admission **damper** — NOT a hard fleet-wide cap. The dispatch claim's per-actor arithmetic reads `actor_config.max_concurrent` and admits up to the value per round per producer, so the in-flight count can exceed it under concurrent dispatchers (the over-dispatch bound is `(num_producers - 1) * max_concurrent` per round — the vanilla field's own law, [Actors](actors.md#choosing-a-concurrency-control)). **The strict instrument is `reservations`** — declare one when the bound must hold. |
 | `reservations` | the STRICT slots: a list of [`ConcurrencyReservation`](rate-limiting.md#concurrencyreservation) objects (`taskq.ratelimit.reservation`) — the dispatch-admission gate the vanilla path enforces via the leased `reservation_slots` rows (the machinery is [Rate limiting](rate-limiting.md)). The boot collects the nodes' declared instances into the worker's resolved registry and materializes their slot rows in the ensure-slots pass — the same pass the vanilla actors' reservations ride (deliberately NOT gated on the vanilla actor registry, so a pure-workflow worker slots its own). |
 | `result_ttl` | the node result's in-DB TTL in seconds — the vanilla result-expiry sweep's own knob, seeded on the stored row. |
+| `priority` | the rows' claim ORDER (the vanilla `enqueue(priority=…)` face, carried to the workflow surface): the value stamped into the `jobs.priority` column, which the dispatch claim's `priority DESC` orders by — the SAME claim SQL the vanilla rows obey, so a workflow step and a vanilla job compete on one vocabulary. THE PRECEDENCE LAW per row, first non-`None` wins: the **per-call** `run(..., priority=…)`/`create_flow(priority=…)` override > the step's declaration (`step(priority=)`, `RouteArm(priority=)` for its arm's children) > the actor's declaration (`@app.actor(priority=)`) > the column default `0`. The per-call face is the load-bearing one — an interactive run jumps a deep sweep backlog without touching its declaration. The domain is the `smallint` column's (-32768..32767), refused at the declaration site like every other layer that accepts a priority. The map's children and the route's join land at the SOURCE step's resolution (the arms override DOWN from the source, never up). |
 
 `max_pending` is deliberately NOT on the workflow surface — it stays a
 vanilla-actor parameter. The honest removal (never a dead knob): the

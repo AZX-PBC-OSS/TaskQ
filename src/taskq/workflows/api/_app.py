@@ -30,6 +30,7 @@ from typing import Literal, cast, overload
 
 from pydantic import BaseModel
 
+from taskq.constants import check_priority_domain
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows._emit import EMIT_MAX_IN_FLIGHT_DEFAULT
 from taskq.workflows.api._graph import (
@@ -69,6 +70,7 @@ class WorkflowActor:
         max_concurrent: int | None = None,
         reservations: list[ConcurrencyReservation] | None = None,
         result_ttl: float | None = None,
+        priority: int | None = None,
     ) -> None:
         self._fn = fn
         self.name = name
@@ -88,6 +90,14 @@ class WorkflowActor:
         self.max_concurrent = max_concurrent
         self.reservations = list(reservations) if reservations else []
         self.result_ttl = result_ttl
+        # THE ACTOR'S DECLARED PRIORITY (the wf-priority cure): the
+        # handle's enqueue DEFAULT for its nodes' rows — the wiring folds
+        # it into the node decl when the step declares none (the
+        # capacity-terms flow's own shape). ``None`` = nothing declared —
+        # the column default applies. NOT an actor_config axis: like the
+        # vanilla ``ActorRef.priority``, it rides the handle and the
+        # enqueue, never the config row.
+        self.priority = priority
 
     @property
     def fn(self) -> Callable[..., Awaitable[object]]:
@@ -286,6 +296,7 @@ class WorkflowApp:
         max_concurrent: int | None = None,
         reservations: list[ConcurrencyReservation] | None = None,
         result_ttl: float | None = None,
+        priority: int | None = None,
     ) -> WorkflowActor: ...
 
     @overload
@@ -303,6 +314,7 @@ class WorkflowApp:
         max_concurrent: int | None = None,
         reservations: list[ConcurrencyReservation] | None = None,
         result_ttl: float | None = None,
+        priority: int | None = None,
     ) -> Callable[[Callable[..., Awaitable[object]]], WorkflowActor]: ...
 
     def actor(
@@ -319,11 +331,15 @@ class WorkflowApp:
         max_concurrent: int | None = None,
         reservations: list[ConcurrencyReservation] | None = None,
         result_ttl: float | None = None,
+        priority: int | None = None,
     ) -> WorkflowActor | Callable[[Callable[..., Awaitable[object]]], WorkflowActor]:
         """``@app.actor`` — the workflow step decorator: registers the
         body into the workflow definition registry (D1) and projects the
         F3 carrier. The redact hook POST-COMPOSES on the capture chain
-        (chain → hook, never a replacement — pin 11's composed-anyway)."""
+        (chain → hook, never a replacement — pin 11's composed-anyway).
+        ``priority=`` is the actor's declared enqueue DEFAULT for its
+        nodes' rows (the vanilla ``@actor(priority=)`` face; the step's
+        own ``priority=`` overrides, the run's per-call overrides both)."""
 
         def decorate(body: Callable[..., Awaitable[object]]) -> WorkflowActor:
             from taskq.workflows.api._graph import reservation_names
@@ -346,6 +362,14 @@ class WorkflowApp:
             reservation_names(
                 tuple(reservations or ()), what=f"the workflow actor {actor_name!r}'s reservations"
             )
+            # THE PRIORITY DOMAIN (the vanilla actor's own law —
+            # actor.py's type+domain check, ``check_priority_domain`` at
+            # every layer that accepts a priority): the declaration-site
+            # refusal, before anything registers.
+            if priority is not None:
+                check_priority_domain(
+                    priority, what=f"the workflow actor {actor_name!r}'s priority"
+                )
             handle = WorkflowActor(
                 body,
                 name=actor_name,
@@ -357,6 +381,7 @@ class WorkflowApp:
                 max_concurrent=max_concurrent,
                 reservations=reservations,
                 result_ttl=result_ttl,
+                priority=priority,
             )
             self._actor_queues.add(queue)
             return handle

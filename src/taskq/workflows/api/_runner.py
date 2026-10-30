@@ -193,6 +193,18 @@ def _bounded_collect(values: list[object]) -> dict[str, object]:
     }
 
 
+def _resolve_priority(*levels: int | None) -> int:
+    """THE PRECEDENCE LAW'S ARITHMETIC (the wf-priority cure), stated
+    once: the first non-``None`` level wins; ``None`` everywhere = the
+    column default's own value (0). The levels, in the law's order: the
+    explicit per-call override, the step's declaration, the arm's
+    override, the actor handle's declaration."""
+    for value in levels:
+        if value is not None:
+            return value
+    return 0
+
+
 class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     """The API's runner: create, drive, read. One engine, many surfaces —
     the runner OWNS no state; every fact is a row. The concern modules
@@ -244,6 +256,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # child flow's runner resolved ONCE per drive (the root's
         # stamped workflow name → the compile registry).
         self._child_runners: dict[str, FlowRunner] = {}
+        # THE RUN-PRIORITY ECHO (the wf-priority cure): the create-time
+        # per-call override (``create_flow(priority=…)``), echoed here so
+        # the DEV door's fork builds (``_run_node``'s executions) resolve
+        # the run's own law without re-reading the root. The ROW stays
+        # the truth — the root's ``metadata.wf_priority`` stamp is the
+        # durable leg, and the FLEET door (``execute_flow_job``) reads it
+        # from the row; this echo only spares the dev loop a per-node
+        # read. ``None`` = no override declared.
+        self._run_priority: int | None = None
 
     # ── create ───────────────────────────────────────────────────────
 
@@ -253,6 +274,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         input: object = None,
         run_key: str | None = None,
         root_metadata_extra: dict[str, object] | None = None,
+        priority: int | None = None,
     ) -> RunClaim:
         """Create the run: the flow root (its payload CARRIES the input —
         cut #7) + every non-map node upfront (the join-wait rows among
@@ -300,7 +322,27 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         never a post-create UPDATE that would re-open the orphan window
         this seam closed). ``None`` (the default) = the shipped shape
         byte-identical.
+
+        THE PER-CALL PRIORITY OVERRIDE (the wf-priority cure — the
+        load-bearing face): *priority* is the run's explicit override —
+        EVERY row this create materializes (the static nodes) lands at
+        the value in the ``jobs.priority`` column, and the ROOT's
+        metadata stamps it (``wf_priority``) so the FLEET door's fork
+        builds resolve the same override for rows materialized later
+        (the map/route children a worker forks mid-run). The law's
+        precedence: this override > the step's declaration > the actor
+        handle's > the column default. ``None`` (the default) = no
+        override — the declarations (or the column default) speak, the
+        pre-cure byte-identical shape. The domain is the smallint column's
+        (``check_priority_domain`` — the same refusal at every layer that
+        accepts a priority).
         """
+        from taskq.constants import check_priority_domain
+
+        if priority is not None:
+            check_priority_domain(priority, what="the run's priority override")
+        if priority is not None:
+            root_metadata_extra = {**(root_metadata_extra or {}), "wf_priority": priority}
         async with self.pool.acquire() as conn, conn.transaction():
             claim = await self._insert_root(conn, input, run_key, root_metadata_extra)
             complete = claim.created
@@ -323,7 +365,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 # flow's own wiring half-born. A transaction bounds the
                 # dispatch's visibility to the WHOLE wiring (the fork's
                 # atomicity law, create-time face).
-                await self._insert_static_nodes(conn, claim.flow_id, input)
+                # THE CREATE-TIME ECHO (the dev door's own leg): the
+                # override the drive's fork builds resolve — set only
+                # when THIS create materialized the rows (an arbiter
+                # conflict returns an EXISTING run whose root stamp is
+                # its own truth; the row is the law, never the echo).
+                self._run_priority = priority
+                await self._insert_static_nodes(conn, claim.flow_id, input, run_priority=priority)
                 # The run is LIVE: the root flips pending → running (the
                 # maintenance leg's derivation owns the TERMINAL verdict
                 # from the rows — the root is a cache, never the decider).
@@ -358,7 +406,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             extra_metadata=root_metadata_extra,
         )
 
-    async def _insert_static_nodes(self, conn: ConnLike, flow_id: JobId, input: object) -> None:
+    async def _insert_static_nodes(
+        self, conn: ConnLike, flow_id: JobId, input: object, *, run_priority: int | None = None
+    ) -> None:
         for key in sorted(self.compiled.nodes):
             node = self.compiled.nodes[key]
             if node.kind == "map_join":
@@ -387,6 +437,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 parents=(),
                 deps_pending=0,
                 max_attempts=node.max_attempts,
+                # THE ROW'S RESOLVED PRIORITY (the wf-priority cure): the
+                # per-call override > the node's declared (the handle's
+                # folded in at the wiring) > the column default.
+                priority=_resolve_priority(run_priority, node.priority),
             )
             # THE STATIC ROW'S OWN TERMS (CURE 2 + H-A1): a step
             # declaring rate_limits carries the bucket names on its
@@ -423,6 +477,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 _jsonb(row_meta),
                 step_idempotency_scope(flow_id),
                 step_idempotency_key(spec.step_key),
+                spec.priority,
             )
         # The EDGES in a second pass (both endpoints exist).
         for key in sorted(self.compiled.nodes):
@@ -649,7 +704,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         # drivers differ only in WHO CLAIMED (this driver's own CAS
         # stamps claim_epoch 0; the fleet's dispatch claim carries the
         # row's epoch).
-        await self._execute_claimed(flow_id, row, attempt, ledger_id, node, body)
+        await self._execute_claimed(
+            flow_id, row, attempt, ledger_id, node, body, run_priority=self._run_priority
+        )
 
     async def _fail_vanished_node(
         self, flow_id: JobId, row: dict[str, Any], exc: WorkflowRunError
@@ -717,6 +774,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         attempt: int,
         claim_epoch: int,
+        run_priority: int | None = None,
     ) -> str:
         """THE WORKER-HOSTED EXECUTION DOOR (the execution verdict's gap-1
         cure): *row* is a node the FLEET's queue-routed dispatch already
@@ -733,6 +791,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         ``map_index`` / ``payload`` / ``trace_id`` — the fields the tail
         consumes (the worker's intercept reads them off the claimed row
         plus one bounded read of the step key and map index).
+
+        ``run_priority`` is the RUN's per-call override (the wf-priority
+        cure), resolved by the CALLER from the root's metadata stamp
+        (``execute_flow_job``'s bounded read — the same round trip the
+        workflow-name stamp rides): the fork builds this door performs
+        resolve it as the law's first level. ``None`` = no override (the
+        declarations — or the column default — speak).
 
         THE LEASE: the worker's heartbeat renews the fleet claim's lease
         for as long as the body runs (the row is ``running`` and locked
@@ -768,7 +833,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 attempt=attempt,
             )
         return await self._execute_claimed(
-            flow_id, row, attempt, claim.ledger_id, node, body, claim_epoch=claim_epoch
+            flow_id,
+            row,
+            attempt,
+            claim.ledger_id,
+            node,
+            body,
+            claim_epoch=claim_epoch,
+            run_priority=run_priority,
         )
 
     async def _execute_claimed(
@@ -781,6 +853,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         body: Any,
         *,
         claim_epoch: int = 0,
+        run_priority: int | None = None,
     ) -> str:
         """The shared execution tail, from the ledger claim to the
         terminal: the in-process driver (:meth:`_run_node`) and the
@@ -790,7 +863,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         is the fence epoch the finalize/emit fences carry: the runner's
         own claim stamps 0; a fleet-claimed row carries its dispatch
         claim's epoch. Returns the attempt's outcome label (the caller's
-        log line — the ROW is the truth, this is the record's echo)."""
+        log line — the ROW is the truth, this is the record's echo).
+
+        ``run_priority`` is the RUN's per-call override (the wf-priority
+        cure): the fork builds (the map's children, the route's arms)
+        resolve it as the law's FIRST level — the dev door passes the
+        create-time echo, the fleet door the root's metadata stamp's
+        resolution. ``None`` = no override declared (the declarations —
+        or the column default — speak)."""
         # THE PER-ATTEMPT CODE-VERSION RECORD (T03/§22.1 — the deploy
         # matrix's audit cure): the record is "written at claim by the
         # workflow claim path" — every claim's execution stamps the
@@ -1012,7 +1092,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     from taskq.workflows.chain import RouterNotTotal
 
                     try:
-                        route_fork = self._route_fork(row, node, outcome_value)
+                        route_fork = self._route_fork(
+                            row, node, outcome_value, run_priority=run_priority
+                        )
                     except RouterNotTotal as exc:
                         await emitter.aclose()
                         logger.warning(
@@ -1100,6 +1182,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     node,
                     cache_hit.envelope,
                     claim_epoch=claim_epoch,
+                    run_priority=run_priority,
                 )
                 if final.applied:
                     await self._write_cache_receipt(
@@ -1125,6 +1208,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     result,
                     claim_epoch=claim_epoch,
                     prebuilt_route_fork=route_fork,
+                    run_priority=run_priority,
                 )
             except FanInBoundExceededError as exc:
                 await emitter.aclose()
@@ -1444,15 +1528,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         *,
         claim_epoch: int = 0,
         prebuilt_route_fork: ForkSpec | None = None,
+        run_priority: int | None = None,
     ) -> FinalizeResult:
         """The success finalize (the fenced terminal + the ledger row +
         the fork): the FinalizeResult is RETURNED now (T25) — the
         cross-run cache's SUCCESS-ONLY store and the hit path's receipt
         merge both key on ``applied`` (a fenced write is a zombie's,
-        never a terminal-succeeded)."""
+        never a terminal-succeeded). ``run_priority`` threads the RUN's
+        per-call override into the fork build (the wf-priority cure —
+        the map's children resolve it as the law's first level)."""
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
-            fork = self._map_fork(row, node, result)
+            fork = self._map_fork(row, node, result, run_priority=run_priority)
         elif node is not None and node.map_arms is not None and prebuilt_route_fork is not None:
             # THE TYPED ROUTE'S FORK (T27) — built at the body path from
             # the LIVE elements (the arm dispatch reads the element's
@@ -1630,14 +1717,25 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
             )
 
     def _map_fork(
-        self, row: dict[str, Any], node: Any, result: dict[str, object] | None
+        self,
+        row: dict[str, Any],
+        node: Any,
+        result: dict[str, object] | None,
+        *,
+        run_priority: int | None = None,
     ) -> ForkSpec | None:
         """The map source's finalize fork: N children (the item body,
         one per list element — fresh jobs, per-item ledger identity) +
         the join whose consumers are the wiring's downstream nodes (the
         outbox carries the consumer bindings — the cascade, cut #1's
         cure). ``None`` when the body returned no list (the map over
-        nothing — the join fires empty, the collect states it)."""
+        nothing — the join fires empty, the collect states it).
+
+        ``run_priority`` is the RUN's per-call override (the wf-priority
+        cure): the children AND the join land at the RESOLVED priority —
+        the override > the source node's declaration > the column
+        default (the children share the source's cohort, so the source's
+        resolution is theirs)."""
         from taskq.workflows._emit import MapIndexExhaustedError
         from taskq.workflows._types import MAP_INDEX_CEILING, ConsumerBinding
 
@@ -1662,6 +1760,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 "MAP_INDEX_CEILING — split the source's page)"
             )
         join_key = f"{row['step_key']}.join"
+        # THE CHILDREN'S RESOLVED PRIORITY (the wf-priority cure): the
+        # map's children share the source's cohort — the source's
+        # resolution is theirs (per-call override > the source node's
+        # declaration > the column default).
+        child_priority = _resolve_priority(run_priority, node.priority)
         bindings = tuple(
             ConsumerBinding(
                 step_key=downstream,
@@ -1698,6 +1801,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                     reservations=reservation_names(
                         tuple(node.reservations), what=f"map {row['step_key']!r}'s reservations"
                     ),
+                    # THE CHILD'S RESOLVED PRIORITY (the wf-priority
+                    # cure): the source's resolution (above) rides every
+                    # child row.
+                    priority=child_priority,
                 )
                 for i, item in enumerate(items)
             ),
@@ -1715,9 +1822,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 child_driven=node.map_child_driven,
             ),
             max_attempts=node.map_max_attempts,
+            # THE JOIN'S PRIORITY = THE SOURCE'S RESOLUTION (the
+            # wf-priority cure): the join is the source's own cohort.
+            priority=child_priority,
         )
 
-    def _route_fork(self, row: dict[str, Any], node: Any, outcome_value: object) -> ForkSpec | None:
+    def _route_fork(
+        self,
+        row: dict[str, Any],
+        node: Any,
+        outcome_value: object,
+        *,
+        run_priority: int | None = None,
+    ) -> ForkSpec | None:
         """THE TYPED ROUTE'S FORK (T27 — the map fork's arm-dispatch
         sibling): the source's body returned the elements' LIST; each
         element's RUNTIME type tag picks its arm and the fork stamps the
@@ -1742,7 +1859,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         that is correct). The pre-cure ``None``-on-empty wedged the run
         (the join row never existed, the consumers' reserved deps never
         released — stuck ``running`` with zero error rows) or
-        terminalized succeeded with the lying ``result() is None``."""
+        terminalized succeeded with the lying ``result() is None``.
+
+        ``run_priority`` is the RUN's per-call override (the wf-priority
+        cure): each ARM's children resolve the law's levels — the
+        override > the ARM's own ``priority=`` (the down-override) > the
+        source node's declaration > the column default; the JOIN (the
+        source's own cohort — the arm overrides never retouch it) lands
+        at the SOURCE's resolution."""
         from taskq.workflows._types import ConsumerBinding
         from taskq.workflows.chain import RouterNotTotal, type_tag
 
@@ -1751,6 +1875,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
         items: list[object] = cast(
             "list[object]", outcome_value
         )  # Why: the isinstance narrowed the object-typed body return to list[Unknown] — the cast IS the declared laundering (the element walk below re-narrows per element; the codec's own seam shape).
+        # THE SOURCE'S RESOLUTION (the wf-priority cure): the JOIN's
+        # level — the arm overrides apply to the arm CHILDREN, never the
+        # join (the join is the source's own cohort, the placement
+        # fields' law).
+        source_priority = _resolve_priority(run_priority, node.priority)
         join_key = f"{row['step_key']}.join"
         bindings = tuple(
             ConsumerBinding(
@@ -1824,6 +1953,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                             )
                         )
                     ),
+                    # THE CHILD'S RESOLVED PRIORITY (the wf-priority
+                    # cure): the arm's DOWN-OVERRIDE — the override > the
+                    # arm's own declaration > the source node's
+                    # declaration > the column default. ``None`` on the
+                    # arm means the source's resolution applies (the arm
+                    # overrides DOWN from the source, never up).
+                    priority=_resolve_priority(run_priority, arm.priority, node.priority),
                 )
             )
         spec = ForkSpec(
@@ -1839,6 +1975,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 child_driven=node.map_child_driven,
             ),
             max_attempts=node.map_max_attempts,
+            # THE JOIN'S PRIORITY = THE SOURCE'S RESOLUTION (the
+            # wf-priority cure — the arm overrides never retouch it).
+            priority=source_priority,
         )
         # THE VALIDATED FORK (rv4 F8's cure — the raise INTO the ladder's
         # try): the fork validates HERE, at the body path — this call

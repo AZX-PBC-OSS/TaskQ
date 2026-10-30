@@ -189,28 +189,34 @@ VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 # count> and blocking_reason='join' in metadata; vanilla enqueues never set
 # it (DEFAULT 0 — a semantic no-op for them). trace_id is stamped on the
 # same insert (§18.2's cheap survivor — one field, no extra write).
+# priority is the RESOLVED value the caller computed (per-call > the
+# declaration > the column default 0) — the wf-priority cure's enqueue
+# face; the unset case binds the column default's own value, so the
+# pre-cure rows are byte-identical.
 NODE_INSERT_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
      parent_id, map_index, step_key, deps_pending, trace_id, metadata,
-     idempotency_scope, idempotency_key)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14)
+     idempotency_scope, idempotency_key, priority)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15)
 """
 
 
 # The fork's child INSERT: parallel-array binds (one statement per chunk —
 # never one round trip per child, the 1000-child fan-out tx band's shape).
 # status is omitted — every child is born 'pending' (the column DEFAULT);
-# retry_kind rides the vanilla vocabulary.
+# retry_kind rides the vanilla vocabulary. priority is the child's RESOLVED
+# value (the builder's precedence arithmetic — the wf-priority cure); the
+# unset case binds 0, the column default's own value (pre-cure identical).
 FORK_CHILDREN_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key)
+     idempotency_scope, idempotency_key, priority)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[]
+    $11::jsonb[], $12::text[], $13::text[], $14::smallint[]
 )
 """
 
@@ -297,8 +303,8 @@ FORK_JOIN_NODE_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
      parent_id, step_key, deps_pending, trace_id, metadata,
-     idempotency_scope, idempotency_key)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
+     idempotency_scope, idempotency_key, priority)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14)
 """
 
 
