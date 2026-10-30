@@ -720,6 +720,27 @@ async def stop_worker_and_reap_bootstrap(
 # test_suite_hygiene.py pins this arithmetic against drift
 # (test_soak_worst_case_fits_the_timeout_mark and
 # test_soak_stage1_stop_bound_exceeds_the_worker_exit_bound).
+#
+# load_sensitive: the soak's entire subject is wall-clock settling under
+# load — the settle-cap comment above says a still-moving population that
+# outlives the cap is "the runner being slow, not the system being stuck",
+# and PR #695's slow-lane receipt is exactly that red: the 1944s cap
+# (4s/job x 486 jobs) expired with the system still moving. The marker
+# moves the three trials to the serial load-sensitive lane, where no xdist
+# sibling starves the settle — the confound that produced the receipt
+# (healthy ~0.2s/job; -n 4 co-tenancy measured 2.7s/job; the slow lane's
+# co-tenancy blew past 4s/job). The cap is NOT scaled instead: surviving
+# that starved runner needs a cap above the observed 1944s, and no home
+# could host the scaled bound — the timeout(2700) mark below and every
+# lane's job cap in ci.yaml sit under it, so the honest "NOT SETTLED" red
+# would become a silent lane-cancel. The documented trade: a runner so
+# starved the settle outlives the load-sensitive lane's own job cap
+# cancels that lane instead of reding at the cap; the serial regime is the
+# bet that this stays rare. The teeth proof
+# (test_settle_quiescence_has_teeth) stays unmarked and in the slow lane:
+# its verdict is quiescence on an INJECTED lost job — deterministic in
+# seconds — not a settle-duration measurement.
+@pytest.mark.load_sensitive
 @pytest.mark.timeout(2700)
 @pytest.mark.parametrize("trial", range(3))
 async def test_lost_job_soak_grand_mixin(
