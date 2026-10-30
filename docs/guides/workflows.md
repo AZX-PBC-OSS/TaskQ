@@ -985,7 +985,18 @@ queues' own opt-in law, H-A8): strict — the boot REFUSES with
 ONE aggregated `workflow-cohorts-on-unconsumed-queues` warning (the
 vanilla warning's own shape, the remedy named), because a per-queue
 worker specialization legitimately imports the shared apps module while
-a sibling worker consumes the foreign queues. The check fires before
+a sibling worker consumes the foreign queues. The strictness also has a
+SECOND, app-declared face — `WorkflowApp(queues_strict=True)`: the
+contract declared in CODE, riding the app every worker child already
+imports (the fleet whose children each subscribe to a queue subset
+cannot coordinate a fleet-wide env var — it need not: the app's own
+definition carries the contract). The faces OR-combine: the boot
+refuses when EITHER is set, and the env can only ADD strictness — ops
+tightening stays possible, silently disabling a declared contract is
+not a thing. THE CROSS-APP TIGHTENING: in a process importing SEVERAL
+apps, ONE app's `queues_strict=True` tightens the gate over the WHOLE
+projected cohort set — a co-resident app's sibling-served cohorts
+refuse too (the refusal names the queues and the cure). The check fires before
 the cohorts' sync writes anything; both arms name the cures (add the
 queue to a worker's consumed set, or route the step elsewhere). The
 operator-facing entry is
