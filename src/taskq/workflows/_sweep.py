@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from time import monotonic
 from typing import Final
 
 import asyncpg
@@ -58,6 +59,14 @@ from taskq.workflows._sql import (
     BLOCKING_REASON_ORPHAN_PARENT,
     WorkflowSql,
 )
+from taskq.workflows._sql_sweep import (
+    EDGE_ROOTLESS_RETENTION_SQL,
+    JOIN_FIRE_ROOTLESS_RETENTION_SQL,
+    NODE_PROGRESS_ROOTLESS_RETENTION_SQL,
+    SIGNALS_ROOTLESS_RETENTION_SQL,
+    STEP_LEDGER_ROOTLESS_RETENTION_SQL,
+    render_rootless_retention_sql,
+)
 from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
 
 __all__ = [
@@ -66,6 +75,16 @@ __all__ = [
     "drain_outbox",
     "prune_delivered_outbox",
     "prune_expired_step_cache",
+    "prune_wf_edge",
+    "prune_wf_edge_rootless",
+    "prune_wf_join_fire",
+    "prune_wf_join_fire_rootless",
+    "prune_wf_node_progress",
+    "prune_wf_node_progress_rootless",
+    "prune_wf_signals",
+    "prune_wf_signals_rootless",
+    "prune_wf_step_ledger",
+    "prune_wf_step_ledger_rootless",
     "reap_nodeless_roots",
     "reap_phantom_ledger",
     "sweep_hold_stamps",
@@ -77,6 +96,18 @@ __all__ = [
 #: an in-flight create of a buggy shape, not debris — the belt never reaps
 #: mid-flight. The clock comparison is PG's own (the DB-clock doctrine).
 NODELESS_ROOT_REAP_GRACE_S: Final[float] = 300.0
+
+#: The NULL-stamp observe-warning's re-warn cadence (seconds): a live
+#: stamping bug is a PERSISTENT condition — re-warning every pass would
+#: flood the log (the condition outlives the fix's deployment); never
+#: re-warning made the busy shape's silence permanent. The leader's warn
+#: cadence: the stranded-actor precedent's hourly re-warn. Module-level
+#: (not settings) so tests shrink it without threading a knob, the same
+#: contract ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS`` carries.
+_NULL_STAMP_REWARN_SECS: Final[float] = 3600.0
+
+#: The cadence state: table → the monotonic time of the last warn.
+_null_stamp_last_warned: dict[str, float] = {}
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
@@ -491,6 +522,317 @@ async def prune_expired_step_cache(
     async with pool.acquire() as conn:
         rows = await conn.fetch(wsql.step_cache_retention, batch_size)
     return len(rows)
+
+
+def _warn_null_stamp(table: str, observed: int) -> None:
+    """THE STAMPING-BUG TRIPWIRE (H-B4, R2's conservative shape): the
+    pass OBSERVED NULL-stamped terminal roots — terminal roots whose
+    ``finished_at`` stamp never landed. The cure's law: the DELETE is
+    never eager (the roots are SKIPPED — no history is removed that has
+    no honest age; a seconds-old flow's history must not vanish under a
+    30-day period because its stamp never landed) and the TRIPWIRE is
+    always live — the named warning fires on the OBSERVATION, never
+    keyed on a deletion (the first cut's key starved it: the busy
+    estate's ``NULLS LAST`` tail put the class past the batch LIMIT,
+    never selected, never warned, forever).
+
+    Rate-limited to the leader's warn cadence (``_NULL_STAMP_REWARN_SECS``
+    per table): a live stamping bug is a persistent condition — the
+    operator alerts on the event and fixes the stamp or backfills it;
+    until then the rows stay and the warning returns on the hour, not
+    on every pass."""
+    if observed <= 0:
+        return
+    now = monotonic()
+    last = _null_stamp_last_warned.get(table)
+    if last is not None and (now - last) < _NULL_STAMP_REWARN_SECS:
+        return
+    _null_stamp_last_warned[table] = now
+    logger.warning(
+        "wf_retention_null_finished_at",
+        kind="wf_retention_null_finished_at",
+        table=table,
+        null_stamped_flows=observed,
+        note="the roots' finished_at was never stamped; the arm SKIPS them "
+        "(never doomed) — fix the stamp or backfill it, the history is kept",
+    )
+
+
+async def prune_wf_edge(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = 200,
+) -> int:
+    """THE EDGE LEDGER'S RETENTION ARM (the TAStack P1's cure) — the
+    FLOWS-SIDE pass (H-B1's law): the TERMINAL-AGED ROOTS are selected
+    FIRST from the tiny jobs side (``step_key='__flow__'`` — the root
+    identity, H-B3 — + a terminal status + ``finished_at`` past the
+    period, ``jobs_finished_at_idx``-served), and each selected flow's
+    edge rows delete through the table's flow_id index
+    (``wf_edge_flow_idx``, 01.00.35_01), row-LIMITed to the batch. The
+    zero-doomed steady state is O(terminal flows), never the convicted
+    full-table walk with two jobs-probes per row (TimeoutError at 3M
+    rows — the arms permanently stopped pruning at exactly the scale
+    they exist for). wf_edge has NO timestamp column of its own (checked:
+    01.00.24_02 + 01.00.25_01), so the root's ``finished_at`` is the
+    flow's honest terminalization clock; a NULL-stamped terminal root is
+    SKIPPED — never doomed (R2's conservative shape: no history is
+    removed that has no honest age) — and the pass OBSERVES the class,
+    firing the rate-limited ``wf_retention_null_finished_at`` warning
+    (the stamping-bug tripwire, keyed on the observation, never on a
+    deletion). ``retention``
+    is the deletion-sweep family's zero-means-off sentinel: the caller's
+    settings gate skips the arm entirely at ``timedelta(0)`` (these arms
+    default OFF — they prune FLOW HISTORY, not derived data). The
+    ROOTLESS class (a row whose pointee is not a flow root at all) is
+    :func:`prune_wf_edge_rootless`'s own pass."""
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(wsql.edge_retention, batch_size, retention)
+    assert summary is not None  # the statement always returns its summary row
+    deleted = int(summary["deleted"])
+    _warn_null_stamp("wf_edge", int(summary["null_observed"]))
+    return deleted
+
+
+async def prune_wf_edge_rootless(
+    pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size: int = 200
+) -> int:
+    """THE EDGE LEDGER'S ROOTLESS PASS (H-B1's second leg, H-B3's
+    identity): an edge whose pointee is NOT a flow root AT ALL — the
+    root absent (archived or hard-pruned by the jobs retention), or a
+    live NON-root job the link was corrupted into — can never match the
+    flows-side pass's root selection, so it rides this SEPARATE bounded
+    statement on a coarser cadence (the leader wiring runs it every Nth
+    call): a PK-ordered walk visiting AT MOST the batch (the LIMIT
+    bounds the SCAN, not the result — the property the convicted
+    whole-table shape lacked), one jobs PK probe per visited row.
+    wf_edge has no timestamp column: the pointee's absence (or
+    non-rootness) IS the age proof — a committed edge's flow column can
+    only name a deleted or corrupted link.
+
+    THE WALK ADVANCES (the round-2 R1's cure): the statement seeks
+    strictly past the arm's persisted cursor (``wf_rootless_sweep_state``,
+    01.00.36_01 — the job_events_prune_state watermark's precedent), the
+    cursor riding the last VISITED row — visited, not deleted, so a live
+    PK front's rows are probed once and the walk moves PAST them instead
+    of re-reading the same first batch forever — and it rewinds on the
+    exhausted pass (the wraparound). The cursor survives restarts (a
+    table row) and advances in the delete's own transaction.
+
+    Returns the deleted count."""
+    sql = render_rootless_retention_sql(EDGE_ROOTLESS_RETENTION_SQL, wsql.schema)
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(sql, batch_size)
+    assert summary is not None  # the statement always returns its summary row
+    return int(summary["deleted"])
+
+
+async def prune_wf_join_fire(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = 200,
+) -> int:
+    """THE FIRE LEDGER'S RETENTION ARM — the FLOWS-SIDE pass (H-B1's
+    law, :func:`prune_wf_edge`'s shape): the terminal-aged ROOTS
+    selected first, the fires deleted through ``wf_join_fire_flow_idx``
+    (01.00.35_01), row-LIMITed to the batch. The exactly-once ledger is
+    dead weight on a terminal flow (a terminal flow never re-fires); the
+    row's creation clock is ``fired_at`` — but the flows-side pass ages
+    by the ROOT's ``finished_at`` (the latest clock any of the flow's
+    rows can carry: the root's age subsumes the row clocks); the
+    NULL-stamped terminal root is SKIPPED (never doomed) and the
+    observation fires the rate-limited ``wf_retention_null_finished_at``
+    tripwire (H-B4's conservative shape, R2). ``retention`` is
+    the zero-means-off sentinel (default OFF — flow history prunes only
+    when the operator opts in). The rootless class is
+    :func:`prune_wf_join_fire_rootless`'s own pass."""
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(wsql.join_fire_retention, batch_size, retention)
+    assert summary is not None
+    deleted = int(summary["deleted"])
+    _warn_null_stamp("wf_join_fire", int(summary["null_observed"]))
+    return deleted
+
+
+async def prune_wf_join_fire_rootless(
+    pool: asyncpg.Pool, wsql: WorkflowSql, *, retention: timedelta, batch_size: int = 200
+) -> int:
+    """THE FIRE LEDGER'S ROOTLESS PASS (H-B1's second leg, H-B3's
+    identity): a fire row whose pointee is NOT a flow root at all,
+    batch-bounded PK-ordered walk (one PK probe per visited row), the
+    row's own ``fired_at`` clock aging it (a rootless row cannot ride a
+    root's stamp). See :func:`prune_wf_edge_rootless` for the cadence
+    and the walk's advance law (the persisted cursor — a live PK front
+    never strands the orphans behind it). Returns the deleted count."""
+    sql = render_rootless_retention_sql(JOIN_FIRE_ROOTLESS_RETENTION_SQL, wsql.schema)
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(sql, batch_size, retention)
+    assert summary is not None
+    return int(summary["deleted"])
+
+
+async def prune_wf_step_ledger(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = 200,
+) -> int:
+    """THE STEP LEDGER'S RETENTION ARM (the family's fastest grower —
+    one row per attempt) — the FLOWS-SIDE pass (H-B1's law,
+    :func:`prune_wf_edge`'s shape): the terminal-aged ROOTS selected
+    first, the ledger rows deleted through the CLAIM ARBITER's leading
+    flow_id column (``flow_id, step_key, COALESCE(map_index,-1),
+    attempt`` — the narrowest flow probe the table ships;
+    ``wf_step_ledger_flow_idx`` is deliberately NOT built — redundant
+    write amplification on the hottest table, H-B6), row-LIMITed to the
+    batch. The per-row statuses need no guard: a terminal flow's
+    'running' row is the phantom class the reap arm fences first —
+    deleting it outright reconstructs the same (the row is gone, not
+    lying; the flow stays reconstructible from rows alone).
+    ``retention`` is the zero-means-off sentinel (default OFF). The
+    rootless class is :func:`prune_wf_step_ledger_rootless`'s own
+    pass."""
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(wsql.step_ledger_retention, batch_size, retention)
+    assert summary is not None
+    deleted = int(summary["deleted"])
+    _warn_null_stamp("wf_step_ledger", int(summary["null_observed"]))
+    return deleted
+
+
+async def prune_wf_step_ledger_rootless(
+    pool: asyncpg.Pool, wsql: WorkflowSql, *, retention: timedelta, batch_size: int = 200
+) -> int:
+    """THE STEP LEDGER'S ROOTLESS PASS (H-B1's second leg, H-B3's
+    identity): a ledger row whose pointee is NOT a flow root at all,
+    batch-bounded PK-ordered walk, the row's own ``created_at`` aging
+    it. See :func:`prune_wf_edge_rootless` (the cadence, the persisted
+    cursor's advance law). Returns the deleted count."""
+    sql = render_rootless_retention_sql(STEP_LEDGER_ROOTLESS_RETENTION_SQL, wsql.schema)
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(sql, batch_size, retention)
+    assert summary is not None
+    return int(summary["deleted"])
+
+
+async def prune_wf_signals(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = 200,
+) -> int:
+    """THE SIGNAL LEDGER'S RETENTION ARM — the FLOWS-SIDE pass (H-B1's
+    law, :func:`prune_wf_edge`'s shape): the terminal-aged ROOTS
+    selected first (the signal row's flow column is ``workflow_id``),
+    the rows deleted through ``wf_signals_run_status_idx``'s leading
+    flow key (the table ships no separate flow index for exactly this
+    reason), row-LIMITed to the batch. A terminal flow's HELD signals
+    are exactly the abandoned-hold class — nothing will ever deliver
+    them (the wait site is terminal) — they delete with the flow; a
+    LIVE flow's holds are never touched (the deliver/resolve/expire
+    arms own those). ``retention`` is the zero-means-off sentinel
+    (default OFF). The rootless class is
+    :func:`prune_wf_signals_rootless`'s own pass."""
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(wsql.signals_retention, batch_size, retention)
+    assert summary is not None
+    deleted = int(summary["deleted"])
+    _warn_null_stamp("wf_signals", int(summary["null_observed"]))
+    return deleted
+
+
+async def prune_wf_signals_rootless(
+    pool: asyncpg.Pool, wsql: WorkflowSql, *, retention: timedelta, batch_size: int = 200
+) -> int:
+    """THE SIGNAL LEDGER'S ROOTLESS PASS (H-B1's second leg, H-B3's
+    identity): a signal row whose pointee is NOT a flow root at all,
+    batch-bounded PK-ordered walk, the row's own ``created_at`` aging
+    it. See :func:`prune_wf_edge_rootless` (the cadence, the persisted
+    cursor's advance law). Returns the deleted count."""
+    sql = render_rootless_retention_sql(SIGNALS_ROOTLESS_RETENTION_SQL, wsql.schema)
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(sql, batch_size, retention)
+    assert summary is not None
+    return int(summary["deleted"])
+
+
+async def prune_wf_node_progress(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    retention: timedelta,
+    batch_size: int = 200,
+) -> int:
+    """THE PROGRESS STATE'S RETENTION ARM — the FLOWS-SIDE pass through
+    the NODE rows (H-B1's law): the terminal-aged ROOTS selected first
+    (the same jobs-side selection every arm shares), the flows' NODE ids
+    taken from the flow-nodes expression index (01.00.26_02 — the
+    uuid-cast expression the join spells letter for letter, the
+    workflow-rows-only partial its quals imply), and each node's
+    progress rows deleted by the PK probe (node_id, channel),
+    row-LIMITed to the batch. wf_node_progress has no flow column — the
+    node's ``metadata.flow_id`` is the link.
+
+    THE SIXTH TABLE'S RIDE-ALONG (the round-2 R3's FOLD — the
+    documented call): the same statement deletes the doomed flows'
+    ``wf_node_stream`` rows too (the STREAM channel — a dead node's
+    ring, nodes x 64 rows unbounded, had no pruner at all). The stream
+    rows carry the flow_id column directly, so the leg is one
+    ``wf_node_stream_flow_seq_idx``-served join off the SAME doomed-flow
+    selection, its own ``LIMIT $1`` — one pass, two batch-bounded
+    deletes, the family's one-batch-per-pass law's documented allowance
+    (the pass's cost stays O(terminal flows + 2x batch)). A LIVE node's
+    ring is never touched (its flow is not terminal-aged): the ring
+    trim owns the live side. The NULL-stamp tripwire rides the shared
+    root selection (H-B4's conservative shape — the roots are SKIPPED,
+    the observation warns). ``retention`` is the zero-means-off
+    sentinel (default OFF). The orphan classes — the node GONE, the
+    node WITHOUT the flow_id stamp, the pointee not a root at all, and
+    the stream's own (the node gone, or the carried flow link not a
+    root) — are :func:`prune_wf_node_progress_rootless`'s own pass.
+
+    Returns the pass's TOTAL deleted count (the progress rows + the
+    stream rows — the metric's honesty: both deletes happened)."""
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(wsql.node_progress_retention, batch_size, retention)
+    assert summary is not None
+    deleted = int(summary["deleted"]) + int(summary["stream_deleted"])
+    _warn_null_stamp("wf_node_progress", int(summary["null_observed"]))
+    return deleted
+
+
+async def prune_wf_node_progress_rootless(
+    pool: asyncpg.Pool, wsql: WorkflowSql, *, retention: timedelta, batch_size: int = 200
+) -> int:
+    """THE PROGRESS STATE'S ROOTLESS PASS (H-B1's second leg, H-B3's
+    identity): a progress row whose NODE does not ground a live flow
+    root — the node row GONE (pruned/archived: orphaned by the prune's
+    own hand), the node WITHOUT the flow_id stamp (a vanilla node — the
+    convicted unprunable class), or the node's pointee NOT a flow root
+    at all — batch-bounded PK-ordered walk, the row's own ``updated_at``
+    (the upsert's latest-wins stamp) aging it. A node whose pointee IS a
+    live root survives; a node whose pointee is a TERMINAL root's rows
+    are the flows-side pass's own.
+
+    THE FOLD'S SECOND WALK (the round-2 R3's cure): the SAME statement
+    runs the stream's orphan walk — a ``wf_node_stream`` row whose NODE
+    is GONE (a dead node's ring: nothing will ever trim or read it) or
+    whose CARRIED flow link names a NON-root, aged by its own
+    ``emitted_at``, its own batch bound and its own arm cursor. See
+    :func:`prune_wf_edge_rootless` for the cadence and the persisted
+    cursor's advance law. Returns the TOTAL deleted count (the progress
+    rows + the stream rows)."""
+    sql = render_rootless_retention_sql(NODE_PROGRESS_ROOTLESS_RETENTION_SQL, wsql.schema)
+    async with pool.acquire() as conn:
+        summary = await conn.fetchrow(sql, batch_size, retention)
+    assert summary is not None
+    return int(summary["deleted"]) + int(summary["stream_deleted"])
 
 
 async def sweep_loop_budget(

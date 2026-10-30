@@ -771,9 +771,79 @@ arms off):
   (T25): the expired rows pruned (the in-DB TTL's dead weight; the
   freshness decision is the lookup's — the pruner never touches a fresh
   row).
+* `wf_edge_retention` / `wf_join_fire_retention` /
+  `wf_step_ledger_retention` / `wf_signals_retention` /
+  `wf_node_progress_retention` — THE FIVE FLOW-HISTORY ARMS (below).
 
 The arms' imports stay inside the spec calls (nothing outside the package
 may import `taskq.workflows` at module scope).
+
+### The workflow tables' retention arms (the five periods)
+
+Beside the two arms the sweep already owned — `wf_outbox_retention`
+(`TASKQ_WORKFLOW_OUTBOX_RETENTION_PERIOD`, default 24 h) and
+`wf_step_cache_retention` (`TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD`,
+default 1 h) — the leader's sweep carries FIVE retention arms for the
+workflow tables' own rows, one setting per table:
+
+| setting | the rows it retires | the rootless leg's row clock |
+| --- | --- | --- |
+| `TASKQ_WORKFLOW_EDGE_RETENTION_PERIOD` (`wf_edge_retention`) | the `wf_edge` ledger rows | the table has NO timestamp column — the rootless class deletes on sight (the pointee's absence IS the age proof) |
+| `TASKQ_WORKFLOW_JOIN_FIRE_RETENTION_PERIOD` (`wf_join_fire_retention`) | the `wf_join_fire` rows (the exactly-once ledger's spent fires) | `fired_at` |
+| `TASKQ_WORKFLOW_STEP_LEDGER_RETENTION_PERIOD` (`wf_step_ledger_retention`) | the `wf_step_ledger` rows (one per attempt — the family's fastest grower) | `created_at` |
+| `TASKQ_WORKFLOW_SIGNALS_RETENTION_PERIOD` (`wf_signals_retention`) | the `wf_signals` rows (holds and their resolutions) | `created_at` |
+| `TASKQ_WORKFLOW_NODE_PROGRESS_RETENTION_PERIOD` (`wf_node_progress_retention`) | the `wf_node_progress` rows | `updated_at` — a rootless row's flow is reached through the NODE's jobs row (`metadata.flow_id`; the table has no flow column) |
+
+All five default to `timedelta(0)` = **OFF** — the deletion-sweep
+family's zero-means-off sentinel (negative values refuse at settings
+load) — but DELIBERATELY OPPOSITE to the outbox/step-cache precedents,
+which default ON: those prune DERIVED data (a delivered outbox row's
+narration, an expired cache corpse — deleting them loses nothing
+re-derivable), while these five prune THE FLOW HISTORY ITSELF (the
+attempt ledger, the fire ledger, the signals). Default-off keeps the
+upgrade safe — no surprise deletes on an existing estate; the operator
+opts in.
+
+THE DEATH RULE is the FLOW's (a row dies with its flow, never by its
+own age alone), and each arm runs TWO passes (the flows-side doomed
+selection — the full-table-walk shape was convicted at production scale
+and replaced, H-B1):
+
+* **THE FLOWS-SIDE PASS (every tick):** the TERMINAL-AGED ROOTS are
+  selected FIRST from the JOBS side (`step_key='__flow__'` — the root
+  identity, a terminal status, and the root's own `finished_at` past
+  the period; served by `jobs_finished_at_idx`), then each selected
+  flow's rows delete through the table's flow_id index, row-LIMITed to
+  the batch. The flow read through its root is the same law the
+  [retention coupling](#the-retention-coupling-t18) enforces one leg
+  earlier (the guards keep the pruner out of a run's way while it
+  lives): a live flow's rows are never touched, and a flow terminalized
+  within the period waits it out. THE AGE CLOCK IS THE ROOT'S
+  `finished_at` — the latest clock any of the flow's rows can carry
+  (the root's age subsumes the row clocks); the comparisons run on
+  `statement_timestamp()`, the prune family's selection-bound clock. A
+  NULL-stamped terminal root (the stamp never landed) is SKIPPED —
+  never doomed: no history is removed that has no honest age (a
+  seconds-old flow's history must not vanish under a 30-day period
+  because its stamp never landed) — and the arm's rate-limited
+  `wf_retention_null_finished_at` warning fires when a pass OBSERVES
+  one (an hourly re-warn cadence per table, never keyed to a
+  deletion): fix the stamp or backfill it, the rows stay until they
+  carry an honest age.
+* **THE ROOTLESS PASS (a coarser cadence — every 8th call):** the
+  orphan class — a row whose pointee is NOT a flow root at all (the
+  root row absent, or a live NON-root job). It cannot be found from the
+  flows side, so its statement is a PK-ordered walk that visits AT MOST
+  the batch (the LIMIT bounds the SCAN) and probes each visited row's
+  pointee once, deleting the row when the pointee is not a flow root
+  and (where the table has a clock) the row itself is past the period.
+
+Each pass deletes ONE bounded committed batch (`prune_batch_size` —
+NOT a drain, the retention family's one-batch-per-pass discipline). And
+the signals arm carries the ABANDONED-HOLD CLEANUP: a terminal flow's
+HELD signals delete with the flow — nothing will ever deliver them (the
+wait site is terminal) — while a LIVE flow's holds are never touched
+(the deliver/resolve/expire arms own those).
 
 ## THE WORKER EXECUTION — the queue is the runtime, in production
 
@@ -848,6 +918,78 @@ One actor name declared over TWO queues is a cohort conflict — refused
 loudly (the boot refuses, the drift-guard precedent; the error names the
 cure). The override-warning path (one queue silently winning) is dead by
 construction.
+
+### THE CAPACITY SURFACE — the declared admission terms
+
+`@app.actor()` and `wf.step()` both accept the vanilla actor surface's
+four capacity fields, and the declaration rides the SAME projection the
+placement rides:
+
+| the term | what it declares |
+| --- | --- |
+| `max_concurrent` | the per-round admission **damper** — NOT a hard fleet-wide cap. The dispatch claim's per-actor arithmetic reads `actor_config.max_concurrent` and admits up to the value per round per producer, so the in-flight count can exceed it under concurrent dispatchers (the over-dispatch bound is `(num_producers - 1) * max_concurrent` per round — the vanilla field's own law, [Actors](actors.md#choosing-a-concurrency-control)). **The strict instrument is `reservations`** — declare one when the bound must hold. |
+| `reservations` | the STRICT slots: a list of [`ConcurrencyReservation`](rate-limiting.md#concurrencyreservation) objects (`taskq.ratelimit.reservation`) — the dispatch-admission gate the vanilla path enforces via the leased `reservation_slots` rows (the machinery is [Rate limiting](rate-limiting.md)). The boot collects the nodes' declared instances into the worker's resolved registry and materializes their slot rows in the ensure-slots pass — the same pass the vanilla actors' reservations ride (deliberately NOT gated on the vanilla actor registry, so a pure-workflow worker slots its own). |
+| `result_ttl` | the node result's in-DB TTL in seconds — the vanilla result-expiry sweep's own knob, seeded on the stored row. |
+
+`max_pending` is deliberately NOT on the workflow surface — it stays a
+vanilla-actor parameter. The honest removal (never a dead knob): the
+engine's fork/emit inserts bypass the enqueue admission path entirely
+(mid-finalize, inside the engine's own transactions), and the claim side
+cannot bound a backlog (claiming is the only drain — a claim-side gate
+would wedge the backlog forever), so no enforcement point exists that
+wouldn't structurally strand rows. Bound a workflow's backlog with
+`max_concurrent` (the damper) or `reservations` (the strict cap).
+
+THE TERMS FLOW: an `@app.actor(max_concurrent=1, ...)` handle wired via
+`step()` carries its terms into the node as the node's ADMISSION
+DEFAULTS — the explicit `step()` params override, never the reverse.
+(PLACEMENT stays the step's own decision: the handle's NAME is not the
+node's actor — the split-placement law above is unchanged.) The
+non-negative-int law is the vanilla one, enforced at the declaration
+site: a negative or non-int `max_concurrent` on
+`@app.actor` is a `ValueError` before anything registers.
+
+THE PROJECTION IS THE SEED-ONLY CAPACITY LAW: the workflow actors'
+`actor_config` rows carry the declared caps — the SAME seed-only law the
+vanilla `@actor` literals obey. The declaration seeds the row; the
+operator owns it thereafter — override live via
+`ActorsClient.set_capacity` (or `taskq actor-config set`), and **changing
+the `@app.actor` literal later does NOT update a stored cap** (the
+capacity fields are omitted from the config-sync's `SET` clause; a
+literal-vs-stored mismatch logs, never writes). No new enforcement
+machinery exists or is needed: a workflow row IS a `jobs` row, and the
+dispatch claim's per-actor arithmetic reads `actor_config` for EVERY
+actor, wf or not.
+
+THE ONE-CAP-PER-ACTOR LAW: an actor name carrying TWO different capacity
+declarations is REFUSED — `WorkflowActorCapacityConflictError` (the
+queue-conflict law's twin on the capacity axes; raised where the boot
+projection computes the terms, within one workflow and across
+workflows/apps alike). `actor_config` is keyed by actor — one capacity
+per actor, the estate's own law — so the capacity is the ACTOR's, not
+the node's: give the differing node its own actor name (the error's
+message names the cure).
+
+### THE QUEUE-DEFAULT TRAP — declare the queue your workers run
+
+Every wiring verb's queue default is `"default"` (`step`'s
+`queue=`, the map's `map_queue=`, the `RouteArm`'s fallback, the chain's
+rows, the loop's nodes). A deployment whose workers do not consume
+`"default"` — a fleet of queue specialists — strands every such row
+SILENTLY: the fork's INSERT succeeds, the dispatch claim matches only
+the claiming worker's own queues, and nothing ever claims the row. THE
+DISCIPLINE: declare `queue=` explicitly per step when your workers don't
+run `default`. names nowhere FAILS LOUD, gated on `TASKQ_QUEUES_STRICT` (the vanilla
+queues' own opt-in law, H-A8): strict — the boot REFUSES with
+`WorkflowQueueUnconsumedError`; non-strict — the boot proceeds with the
+ONE aggregated `workflow-cohorts-on-unconsumed-queues` warning (the
+vanilla warning's own shape, the remedy named), because a per-queue
+worker specialization legitimately imports the shared apps module while
+a sibling worker consumes the foreign queues. The check fires before
+the cohorts' sync writes anything; both arms name the cures (add the
+queue to a worker's consumed set, or route the step elsewhere). The
+operator-facing entry is
+[Upgrading](upgrading.md#workflow-steps-default-to-the-default-queue).
 
 ### The orchestration-only drive
 

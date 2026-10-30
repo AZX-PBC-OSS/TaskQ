@@ -756,12 +756,16 @@ class _FlowSlotGate(NamedTuple):
     """The workflow path's rate-limit gate result (the intercept's
     pre-flight read): the acquired resources + the registry that owns
     them (the door releases through it), or the denial/failure that
-    parked the row instead."""
+    parked the row instead. ``parked_kind`` is the FAIL-CLOSED PARK
+    ARM's own name (set whenever ``dependency_failure`` is, see
+    :func:`_flow_rate_limit_gate`) — the row stamp reads it, so the
+    operator sees WHICH arm parked the row without the log."""
 
     acquired: list[AcquiredResource]
     registry: RateLimitRegistry | None
     denied: ReservationUnavailable | None
     dependency_failure: BaseException | None
+    parked_kind: str | None = None
 
 
 class _UnknownFlowRateLimitError(RuntimeError):
@@ -796,6 +800,47 @@ def _str_list_metadata(metadata: dict[str, object], key: str) -> list[str] | Non
         else:
             return None
     return names
+
+
+def _flow_denial_snooze_metadata(
+    denied: ReservationUnavailable | None,
+    *,
+    parked_kind: str | None = None,
+) -> dict[str, object]:
+    """THE DENIAL'S ROW STAMP (H-A1): the snooze's ``metadata_update`` —
+    the row's ``released_reason`` names the denial's kind and the denied
+    bucket's own name rides beside it (the operator's row read answers
+    "why is this step looping" without the log).
+
+    BOTH ARMS' snoozes stamp. A real denial (``denied is not None``)
+    keeps the ``flow-rate-limit-denied`` + ``released_bucket`` shape. A
+    FAIL-CLOSED PARK (``denied is None`` — an unknown bucket, a
+    malformed metadata shape, a store outage) stamps
+    ``flow-rate-limit-parked`` + the ARM's own kind (the gate's
+    ``parked_kind`` — the same vocabulary the intercept's WARNINGs
+    speak) and CLEARS ``released_bucket`` (None): the row may carry a
+    PRIOR denial's stamp (denied on bucket X, then fail-closed-parked —
+    the snooze statement's metadata merge is jsonb concatenation, the
+    park's keys overwrite, the untouched keys survive) — without the
+    clear the trail read "parked" beside a bucket that was not the
+    park's truth (the round-3 conviction: one row, one truth). THE
+    PRE-FIX SHAPE (the round-2 conviction): the caller
+    ASSERTED ``denied is not None`` on this path — the AssertionError
+    landed in the caller's broad except → ``_disown_job`` — the
+    heartbeat stopped renewing the row, the reclaim handed it back, the
+    re-claim re-denied: the infinite churn at lease cadence, the denial
+    stamps never landing. The snooze is THE park for BOTH arms."""
+    if denied is not None:
+        return {
+            "released_reason": "flow-rate-limit-denied",
+            "released_bucket": denied.bucket_name,
+            "parked": None,
+        }
+    return {
+        "released_reason": "flow-rate-limit-parked",
+        "released_bucket": None,
+        "parked": parked_kind or "flow-rate-limit-parked",
+    }
 
 
 async def _flow_rate_limit_gate(
@@ -853,8 +898,36 @@ async def _flow_rate_limit_gate(
             job_id=str(job.id),
             queue=job.queue,
         )
-        return _FlowSlotGate([], None, None, _UnknownFlowRateLimitError(str(job.id)))
+        return _FlowSlotGate(
+            [],
+            None,
+            None,
+            _UnknownFlowRateLimitError(str(job.id)),
+            parked_kind="flow-rate-limit-metadata-malformed",
+        )
     names = names_raw
+    # THE ROW'S OWN STRICT CAPS (H-A1 — the reservations' own ride): the
+    # reservation NAMES the fork/static insert stamped beside
+    # ``rate_limits`` — the claim path resolves them through THIS
+    # registry (the instances live there — registered at boot from
+    # ``collect_workflow_reservations`` with the rebind) and acquires
+    # them in the same composition. The SAME metadata walk (the jsonb
+    # boundary), the SAME fail-closed arms.
+    res_raw = _str_list_metadata(job.metadata, "reservations")
+    if res_raw is None:
+        job_log.warning(
+            "dispatch-flow-reservation-metadata-malformed",
+            job_id=str(job.id),
+            queue=job.queue,
+        )
+        return _FlowSlotGate(
+            [],
+            None,
+            None,
+            _UnknownFlowRateLimitError(str(job.id)),
+            parked_kind="flow-reservation-metadata-malformed",
+        )
+    res_names = res_raw
     unknown = [n for n in names if not rl_registry.has_rate_limit(n)]
     if unknown:
         # THE FAIL-CLOSED ARM: the row names a bucket this worker's
@@ -868,16 +941,43 @@ async def _flow_rate_limit_gate(
             remedy="the boot's collection pass warns on the declaration; "
             "register the bucket or fix the name",
         )
-        return _FlowSlotGate([], None, None, _UnknownFlowRateLimitError(", ".join(unknown)))
+        return _FlowSlotGate(
+            [],
+            None,
+            None,
+            _UnknownFlowRateLimitError(", ".join(unknown)),
+            parked_kind="flow-rate-limit-unknown-bucket",
+        )
+    unknown_res = [n for n in res_names if not rl_registry.has_reservation(n)]
+    if unknown_res:
+        # THE FAIL-CLOSED ARM, THE RESERVATION FACE (H-A1): a strict cap
+        # this worker cannot resolve is the admitted-never-limited lie's
+        # own shape — park budget-free, LOUD (the boot's collection pass
+        # warns on the declaration; this is the defense in depth).
+        job_log.warning(
+            "dispatch-flow-reservation-unknown-bucket",
+            job_id=str(job.id),
+            queue=job.queue,
+            reservations=unknown_res,
+            remedy="the boot's collection pass registers the declared "
+            "instances; register the reservation or fix the name",
+        )
+        return _FlowSlotGate(
+            [],
+            None,
+            None,
+            _UnknownFlowRateLimitError(", ".join(unknown_res)),
+            parked_kind="flow-reservation-unknown-bucket",
+        )
     queue_cap = queue_concurrency_reservation_name(job.queue)
     capped = rl_registry.has_reservation(queue_cap)
-    if not capped and not names:
+    if not capped and not names and not res_names:
         return _FlowSlotGate([], None, None, None)  # the common case: no caps anywhere
     try:
         acquired = await _acquire_for_actor_with_denial_retry(
             rl_registry,
             rate_limits=names,
-            reservations=[queue_cap] if capped else [],
+            reservations=[*([queue_cap] if capped else []), *res_names],
             job_id=job.id,
             worker_id=worker_id,
             payload=None,  # plain names only — no keyed resolution on this path
@@ -892,7 +992,7 @@ async def _flow_rate_limit_gate(
         return _FlowSlotGate([], None, exc, None)
     except _RATE_LIMIT_DEPENDENCY_EXCEPTIONS as exc:
         record_ratelimit_denial("postgres")
-        return _FlowSlotGate([], None, None, exc)
+        return _FlowSlotGate([], None, None, exc, parked_kind="flow-rate-limit-dependency-failure")
     return _FlowSlotGate(acquired, rl_registry, None, None)
 
 
@@ -1355,21 +1455,7 @@ async def di_consumer_loop(
                     ),
                 )
                 if _flow_gate.denied is not None or _flow_gate.dependency_failure is not None:
-                    if _flow_gate.dependency_failure is not None:
-                        # THE FAIL-CLOSED DEPENDENCY ARM (the vanilla
-                        # pre-flight's own shape): the limiter's store
-                        # could not answer — an outage is not a job
-                        # outcome; the snooze is budget-free, the
-                        # WARNING names the unavailability.
-                        _consumer_log.warning(
-                            "dispatch-flow-rate-limit-dependency-failure",
-                            job_id=str(job.id),
-                            queue=job.queue,
-                            error_class=type(_flow_gate.dependency_failure).__name__,
-                        )
-                        _flow_snooze = timedelta(seconds=10)
-                    else:
-                        assert _flow_gate.denied is not None
+                    if _flow_gate.denied is not None:
                         _consumer_log.info(
                             "dispatch-flow-rate-limit-denied",
                             job_id=str(job.id),
@@ -1378,12 +1464,49 @@ async def di_consumer_loop(
                             retry_after_s=_flow_gate.denied.retry_after.total_seconds(),
                         )
                         _flow_snooze = _flow_gate.denied.retry_after
+                    else:
+                        # THE FAIL-CLOSED DEPENDENCY ARM (the vanilla
+                        # pre-flight's own shape): the limiter's store
+                        # could not answer — an outage is not a job
+                        # outcome; the snooze is budget-free, the
+                        # WARNING names the unavailability. The gate's
+                        # own invariant puts an arm in
+                        # ``dependency_failure`` here (the outer if
+                        # guaranteed one arm set, and ``denied`` is
+                        # None on this branch) — no assert, the
+                        # conviction's churn door is gone.
+                        _consumer_log.warning(
+                            "dispatch-flow-rate-limit-dependency-failure",
+                            job_id=str(job.id),
+                            queue=job.queue,
+                            error_class=type(_flow_gate.dependency_failure).__name__,
+                        )
+                        _flow_snooze = timedelta(seconds=10)
                     try:
+                        # THE PARK IS THE SNOOZE, FOR BOTH ARMS (the C1
+                        # cure — no assert, no disown): the row goes
+                        # back to the pending pool budget-free, the
+                        # stamp naming ITS arm on the record (the
+                        # helper's two shapes — the denial's bucket,
+                        # the fail-closed park's kind). The disown here
+                        # was the convicted churn: an assert failure in
+                        # this try's except → _disown_job → the
+                        # heartbeat stops renewing → the reclaim hands
+                        # the row back → the re-claim re-denies, at
+                        # lease cadence, forever.
                         _flow_release = await backend.mark_snoozed(
                             job.id,
                             worker_id,
                             _flow_snooze,
-                            metadata_update={"released_reason": "flow-rate-limit-denied"},
+                            # THE DENIAL'S ROW STAMP (H-A1): the
+                            # release_reason names the arm's kind and
+                            # the denied BUCKET's own name rides beside
+                            # it — a reservation denial's row names the
+                            # reservation.
+                            metadata_update=_flow_denial_snooze_metadata(
+                                _flow_gate.denied,
+                                parked_kind=_flow_gate.parked_kind,
+                            ),
                             attempt=job.attempt,
                             claim_epoch=job.claim_epoch,
                         )

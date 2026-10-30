@@ -315,8 +315,14 @@ def loop(
     )
     node = NodeDecl(
         key=name,
-        actor="wf",
-        queue="default",
+        # THE LOOP'S FALLBACK PLACEMENT (C6): the @app.workflow
+        # decorator's declared (actor, queue) when the workflow declares
+        # its own placement — the loop's rows ride the SAME cohort the
+        # definition's own rows (the escalation consumer rows) stamp;
+        # the hardcoded ("wf", "default") otherwise (the non-adopter
+        # default, byte-identical).
+        actor=graph.declared_actor or "wf",
+        queue=graph.declared_queue or "default",
         body=None,  # the runner's loop driver is the engine-side body
         kind="loop",
         gates=gates,

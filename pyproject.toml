@@ -368,6 +368,9 @@ ignore = [
 # The D2 soak's outbox-TTL cure pins: the same shape (wf_schema the only
 # interpolation, values all $N-bound).
 "tests/test_wf_outbox_retention_pins.py" = ["S608"]
+# The flow-history retention arms' pins (the TAStack P1's cure): the same
+# shape (wf_schema the only interpolation, values all $N-bound).
+"tests/test_wf_retention_arms.py" = ["S608"]
 "tests/test_wf_phase3_cure_pins.py" = ["S608"]
 "tests/attack3-hitl.py" = ["S608", "N999"]
 "tests/attack3-loop.py" = ["S608", "N999"]

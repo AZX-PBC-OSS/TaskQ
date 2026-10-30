@@ -580,12 +580,45 @@ class ConcurrencyReservation:
     def schema(self) -> str:
         """The PG schema this reservation's slot table lives in.
 
-        Workers filter registry-global reservations by their own schema at
-        startup (a process-global registry may carry reservations declared
-        for other schemas/databases, touching those would write into the
-        wrong schema or fail noisily).
+        THE REBIND OWNS THE LIVE BINDING (C2's one doctrine): a
+        declaration is constructed at module import — before any settings
+        exist — so its schema is the import-time default, not the
+        deployment's; the worker's bootstrap registration rebinds the
+        live entry to the settings schema at the REGISTER step (a
+        pre-registered raw instance included), so a resolved registry's
+        entries are ALWAYS settings-schema-bound. The declaration's own
+        schema matters only for registry-less, direct ``acquire()`` use
+        (the docs' own-registry pattern): there the constructor's value
+        is the slot table's address, and it must match the deployment's
+        schema or the acquire reads another schema's rows.
         """
         return self._schema
+
+    def rebind_schema(self, schema: str) -> "ConcurrencyReservation":
+        """A COPY of this reservation bound to *schema* — the declaration
+        object is never mutated (a module-level declaration may be
+        registered by many processes and many deployments; the declaring
+        module's own reference must not drift).
+
+        THE SCHEMA-AT-IMPORT SEAM (the flows demo's conviction): a
+        workflow-declared reservation is constructed at module import —
+        before any settings exist — so it cannot know the deployment's
+        schema; the bootstrap rebinds the live one at registration. The
+        in-memory face (``clock=``) is preserved by SHARING the same
+        slot table: the copy is the same gate at a different schema
+        address, and forking the table would fork the gate's state.
+        """
+        copy = ConcurrencyReservation(
+            self._name,
+            self._slots,
+            self._lease,
+            self._lock_lease,
+            schema=schema,
+            keyed=self._keyed,
+        )
+        if self._table is not None:
+            copy._table = self._table
+        return copy
 
     @property
     def keyed(self) -> bool:
@@ -597,6 +630,13 @@ class ConcurrencyReservation:
         reservation's lifecycle origin.
         """
         return self._keyed
+
+    @property
+    def lock_lease(self) -> timedelta | None:
+        """The lock-lease passthrough the declaration carried (``None``
+        when unset — the heartbeat's own default governs). Part of the
+        reservation's identity: the dedup comparisons read it."""
+        return self._lock_lease
 
     @property
     def name(self) -> str:

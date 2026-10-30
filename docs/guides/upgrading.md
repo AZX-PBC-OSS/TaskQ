@@ -2337,6 +2337,70 @@ nothing was lost, the move is documented here).
   clock divergence cannot corrupt an assertion; liveness freshness is
   bounded by the missed-at-most-one-tick contract.
 
+### Workflow steps default to the `default` queue
+
+> **Unreleased.** Strict-mode workers (`TASKQ_QUEUES_STRICT=1`) that
+> import a WorkflowApp whose cohorts project onto queues the worker does
+> not consume now refuse the boot (`WorkflowQueueUnconsumedError`);
+> non-strict boots warn. Deployments whose workers consume `default` are
+> unaffected. The audit: every `step(`/` map_source(`/`route(` wiring in
+> a WorkflowApp, and the queue set each worker actually consumes.
+
+Every workflow wiring verb places its node on the `default` queue unless
+told otherwise (`step`'s `queue=`, the map's `map_queue=`, the typed
+route's `RouteArm` fallback, the `Chain`'s rows, the loop's nodes) — the
+same default the vanilla `@actor` carries. The trap is the deployment
+shape, not the default: a fleet whose workers are queue specialists
+(each consuming its own `TASKQ_QUEUES` subset, nobody consuming
+`default`) never claims the workflow's rows. The strand is silent by
+construction: the fork's INSERT succeeds, the dispatch claim matches
+only the claiming worker's own queues, so the rows sit pending forever
+with no error and no log — the workflow face of the "jobs stranded on a
+queue no worker drains" failure mode.
+
+**The discipline — declare the queue when your workers don't run
+`default`:** pass `queue=` explicitly on the wiring verbs (and the
+per-arm / per-chain placements), keeping the one-actor-one-queue
+placement law — a heterogeneous placement is distinct actor names per
+queue (see
+[Workflows](workflows.md#the-split-placement-one-actor-one-queue-the-design-law)).
+
+**The boot-time loud check (gated on `TASKQ_QUEUES_STRICT`):** every
+worker that imports the app projects its cohorts, and a boot whose
+consumed set names none of a projected cohort's queues fails LOUD —
+gated on the vanilla queues' own opt-in law: strict mode
+(`TASKQ_QUEUES_STRICT=1`) REFUSES the boot —
+`WorkflowQueueUnconsumedError` (a `RuntimeError`) naming the unconsumed
+queues, the consumed set, and the two cures: add each queue to a
+worker's `TASKQ_QUEUES` / `--queues`, or route the step elsewhere
+(`step(..., queue=...)` / `@app.actor(queue=...)`). Non-strict boots
+proceed with the ONE aggregated `workflow-cohorts-on-unconsumed-queues`
+warning (the vanilla warning's own shape, the remedy spelled: a sibling
+worker in the fleet may consume the queue — a per-queue worker
+specialization legitimately imports the shared apps module while its
+siblings run the foreign queues). The check runs before the cohorts'
+`actor_config` sync, so a refusing process writes nothing; a worker
+consuming nothing at all keeps the separate `worker-consumes-no-queues`
+warning.
+
+### The admin SSE gained a fifth topic: `holds`
+
+> **Unreleased.** Breaking for any consumer that derives resource budgets
+> from the admin SSE topic vocabulary: a budget derived from the topic
+> list under-counts by one.
+
+The admin's `GET /admin/sse/{topic}` endpoint validates `topic` against
+a closed vocabulary; the workflow round added **`holds`** (the
+hold/decision stream the run explorer's holds panel rides) alongside the
+existing `jobs`, `workers`, `queues` and `history`. Anything that
+enumerates the topic list to size its own resources — a semaphore keyed
+per topic, a connection-pool budget allocated per topic — now
+under-counts by one: the fifth topic's connections arrive and no budget
+was reserved for them. Count `holds` (found live: a downstream portal's
+pool budget keyed on the topic list came up one short). The endpoint is
+capped per topic by `TASKQ_ADMIN_MAX_SSE_CONNECTIONS`; see
+[the admin UI](admin-ui.md#get-adminssetopic).
+
 ### Bulk enqueues partition `max_pending` admission per actor
 
 > **Unreleased.** Breaking for handlers of bulk cap refusals.

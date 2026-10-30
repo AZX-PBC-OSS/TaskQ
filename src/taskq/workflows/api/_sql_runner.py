@@ -306,6 +306,15 @@ WHERE (metadata->>'flow_id')::uuid = $1
 #: THE MANUAL RESUME'S NODE CAS (§17.2): terminal-FAILED → pending — ONE
 #: statement, the only grant; the attempt ordinal untouched (CONTINUES —
 #: the ladder's own count is the budget).
+#:
+#: THE ROOT'S GUARD (H-C1): ``AND step_key <> '__flow__'`` — the run's
+#: own ROOT row is not a node, and a "retry" that matched it flipped the
+#: root failed→pending with the propagation verdict ERASED (the
+#: maintenance rollup never saw the run again — the run bricked, live-
+#: proven). The verb-level guard is the ONE seat: the admin route, the
+#: CLI's ``flows retry``, and the compiled face all ride this statement,
+#: and the root key's re-run is the RUN-rerun's own concern (a fresh run,
+#: or the run-rerun's census — never the per-node CAS).
 RETRY_NODE_CAS_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
 SET status = 'pending',
@@ -317,6 +326,7 @@ SET status = 'pending',
 WHERE step_key = $2
   AND (metadata->>'flow_id')::uuid = $1
   AND status = 'failed'
+  AND step_key <> '__flow__'
 RETURNING id
 """
 
@@ -339,6 +349,36 @@ UPDATE {schema}.jobs
 SET status = 'running', finished_at = NULL
 WHERE id = $1
   AND status = 'failed'
+"""
+
+#: THE SKIP ENVELOPE'S RE-ARM (H-C4): the run's exit-skipped rows (the
+#: typed early-exit's downstream mark) return to pending with the
+#: envelope CLEARED. A skip is not an attempt (zero ledger rows) — the
+#: re-arm restores exactly the pre-skip shape: a claimable row whose
+#: next claim is its FIRST attempt. The root's own row is out of the
+#: write set (the H-C1 guard's law: the root is not a node).
+#:
+#: THE PREDICATE IS THE ENGINE'S OWN CONTRACT (the round-2 conviction):
+#: ``result @> '{"skipped": true}'::jsonb`` — the shape the exit writer
+#: (``SKIPPED_RESULT``/the EXIT_SKIP mark) actually lands, TRUE with
+#: it. The old ``result ? 'skipped'`` was KEY-EXISTENCE: a foreign
+#: writer's ``{"skipped": false}`` (or any JSON that merely CARRIES the
+#: key) matched and had its result DELETED — the display's false-skip
+#: lie, and a foreign writer's data destroyed. Containment matches the
+#: TRUE envelope only: a false/"no" envelope survives untouched.
+RETRY_SKIP_REARM_SQL_TEMPLATE = """
+UPDATE {schema}.jobs
+SET status = 'pending',
+    result = NULL,
+    finished_at = NULL,
+    scheduled_at = now(),
+    locked_by_worker = NULL,
+    lock_expires_at = NULL
+WHERE (metadata->>'flow_id')::uuid = $1
+  AND status = 'succeeded'
+  AND result @> '{"skipped": true}'::jsonb
+  AND step_key <> '__flow__'
+RETURNING id
 """
 
 
