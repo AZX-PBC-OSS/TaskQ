@@ -372,7 +372,16 @@ def _source_changes_since(head_sha: str) -> bool:
     measurement-only changes. An unresolvable claimed head (not an
     ancestor) = stale."""
     proc = subprocess.run(
-        ["git", "diff", "--name-only", f"{head_sha}..HEAD", "--", ".", ":(exclude).measurements"],
+        [
+            "git",
+            "diff",
+            "--name-only",
+            f"{head_sha}..HEAD",
+            "--",
+            ".",
+            ":(exclude).measurements",
+            ":(exclude).github",
+        ],
         cwd=REPO,
         capture_output=True,
         text=True,
