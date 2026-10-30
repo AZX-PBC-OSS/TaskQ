@@ -22,7 +22,7 @@ Legend: `[ ]` open · `[~]` in flight (branch/PR named) · `[x]` done (receipt) 
 | event-intel | mid — sweep join is flow-shaped | nothing blocking; `max_concurrent` on steps | [~] §B1 |
 | SustainabilityAI | no — Prefect/dramatiq own orchestration | n/a | [x] not-a-candidate |
 
-## B. THE CURE — branch `feat/wf-retention-and-actor-caps` — MERGED as #693 (`f71763df1`, in origin/main). The `[~]` markers below scope ONLY the C15/C16 follow-on gaps named in §C; the surfaces themselves landed.
+## B. THE CURE — branch `feat/wf-retention-and-actor-caps` — MERGED as #693 (`f71763df1`, in origin/main). The `[~]` markers below scope ONLY the C14/C15/C16 follow-on gaps named in §C; the surfaces themselves landed.
 
 - [~] B1. The capacity surface: `@app.actor()`/`step()` gain
       `max_concurrent`, `reservations=[ConcurrencyReservation]`,
