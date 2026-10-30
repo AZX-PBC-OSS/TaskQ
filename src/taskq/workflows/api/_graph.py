@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Final, cast, get_args, get_origin, overlo
 
 from pydantic import BaseModel
 
+from taskq.actor_config import validate_capacity_owner
 from taskq.constants import check_priority_domain
 from taskq.ratelimit.refs import KeyedRateLimitRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -177,19 +178,31 @@ def reservation_names(decls: tuple[object, ...], *, what: str = "reservations") 
 
 
 #: THE HANDLE'S TERM FIELDS (the capacity surface the ``@app.actor``
-#: handle carries — H-A6's removal leaves these three).
-_HANDLE_TERM_FIELDS: Final = ("max_concurrent", "reservations", "result_ttl")
+#: handle carries — H-A6's removal left three; C15's owner opt-in is
+#: the fourth).
+_HANDLE_TERM_FIELDS: Final = ("max_concurrent", "reservations", "result_ttl", "capacity_owner")
 
 
 def _capped_handle_of(body: object) -> WorkflowActor | None:
     """The wired body's ``WorkflowActor`` handle WHEN it carries capacity
     terms (H-A4's subject — "a capped body"); ``None`` when the body is
-    bare or the handle declares no terms."""
+    bare or the handle declares no terms.
+
+    THE CODE-ONLY HANDLE (C15's review cure): an owner declaration IS a
+    capacity declaration — a handle carrying ``capacity_owner="code"``
+    with no caps is RETURNED (wired owner-only at the honoring sites,
+    refused NAMED at the dropping sites), never the zero-signal no-op
+    the pre-cure predicate was."""
     from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
 
     if not isinstance(body, WorkflowActor):
         return None
-    if body.max_concurrent is not None or body.reservations or body.result_ttl is not None:
+    if (
+        body.max_concurrent is not None
+        or body.reservations
+        or body.result_ttl is not None
+        or body.capacity_owner != "operator"
+    ):
         return body
     return None
 
@@ -210,8 +223,27 @@ def _wire_handle_terms_into_node(node: NodeDecl, handle: WorkflowActor, *, what:
     share the node's cohort and ``actor_config`` is keyed by actor (one
     capacity per actor, the estate's own law). A term the node ALREADY
     declares at a DIFFERENT value is the capacity conflict, named at the
-    wiring — never a silent drop, never a silent overwrite."""
+    wiring — never a silent drop, never a silent overwrite.
+
+    THE OWNER AXIS (C15's review cure): the handle's ``capacity_owner``
+    is a carried VALUE (every handle has one — the default "operator" is
+    the value, not an absence), so it flows UNCONDITIONALLY: the node's
+    unset face ("operator") adopts the handle's; a node already carrying
+    a DIFFERENT owner (a code-owned step handle met by a default-owner
+    map/route body on one cohort) is the named conflict — one cohort,
+    one owner. An OVERRIDING route arm never reaches here (its
+    placement drops the terms — ``_uncovered_handle_terms`` demands the
+    arm's own re-declaration, the per-arm thread)."""
     conflicts: list[str] = []
+    if node.capacity_owner != handle.capacity_owner:
+        # The adopt: the unset node ("operator") takes the handle's face.
+        # The conflict: the node already carries a DIFFERENT owner.
+        if node.capacity_owner == "operator":
+            node.capacity_owner = handle.capacity_owner
+        else:
+            conflicts.append(
+                f"capacity_owner: {node.capacity_owner!r} vs the handle's {handle.capacity_owner!r}"
+            )
     if handle.max_concurrent is not None:
         if node.max_concurrent is None:
             node.max_concurrent = handle.max_concurrent
@@ -260,6 +292,12 @@ def _uncovered_handle_terms(arm: RouteArm[object], handle: WorkflowActor) -> lis
         uncovered.append("reservations")
     if handle.result_ttl is not None and arm.result_ttl is None:
         uncovered.append(f"result_ttl={handle.result_ttl!r}")
+    # THE OWNER AXIS (C15's review cure): the override drops the handle's
+    # owner exactly like the caps — the arm's own declaration carries it
+    # (the per-arm thread; the projection reads the arm's field), and a
+    # missing/differing one is the named refusal, never the silent drop.
+    if handle.capacity_owner != "operator" and arm.capacity_owner != handle.capacity_owner:
+        uncovered.append(f"capacity_owner={handle.capacity_owner!r}")
     return uncovered
 
 
@@ -346,6 +384,18 @@ class RouteArm[R]:
     #: column is the row's own, never the cohort's), so the arm's
     #: priority needs no one-cap-per-actor conflict law.
     priority: int | None = None
+    #: THE ARM'S OWN OWNER DECLARATION (C15's review cure — the priority
+    #: surface's per-arm shape): an overriding arm's body handle carrying
+    #: ``capacity_owner="code"`` must be re-declared HERE (the handle's
+    #: owner would be dropped by the placement override — the refusal
+    #: names it); the projection reads THIS field onto the arm's
+    #: effective cohort. PER-ARM, never folded into the source node: the
+    #: other arms and the join must not inherit it (the join stays at
+    #: the source's terms). Declare it only on an OVERRIDING arm — a
+    #: no-override arm's cohort inherits the handle's flow, and a
+    #: redundant declaration here enters the projection's one-cap
+    #: comparison.
+    capacity_owner: str = "operator"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1133,10 +1183,16 @@ def map_source[S, R](
     # body carries capacity terms and the placement keeps the node's
     # actor (the map has no actor override — ``map_queue`` only): the
     # terms FLOW into the node's unset slots (the children share the
-    # node's cohort), never silently dropped.
-    map_handle = _capped_handle_of(body)
-    if map_handle is not None:
-        _wire_handle_terms_into_node(source_node, map_handle, what=f"map {source.key!r}")
+    # node's cohort), never silently dropped. THE GATE IS IS-HANDLE, not
+    # is-capped: the OWNER is a carried value on every handle (the
+    # default "operator" is a value, not an absence), so a default
+    # handle meeting a node that already carries a DIFFERENT owner is
+    # the named conflict (one cohort, one owner) — while a default
+    # handle alone writes nothing.
+    from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
+
+    if isinstance(body, WorkflowActor):
+        _wire_handle_terms_into_node(source_node, body, what=f"map {source.key!r}")
     join_key = f"{source.key}.join"
     graph.add(
         NodeDecl(
@@ -1246,6 +1302,11 @@ def _attach_route[S](
         # dict form and route() lower HERE).
         if arm.priority is not None:
             check_priority_domain(arm.priority, what=f"route arm {tag!r}'s priority")
+        # THE ARM'S OWN OWNER SHAPE DOOR (C15's review cure — the
+        # priority surface's door shape): the arm's declared owner is
+        # exactly one of the two names, validated at the wiring both
+        # this lower and the map_source dict form share.
+        validate_capacity_owner(arm.capacity_owner, what=f"route arm {tag!r}'s")
         normalized[tag] = arm
     graph = source.graph
     source_node = graph.nodes.get(source.key)
@@ -1377,6 +1438,19 @@ def _attach_route[S](
     for arm_tag, arm in normalized.items():
         handle = _capped_handle_of(arm.body)
         if handle is None:
+            # THE OWNER'S IS-HANDLE FLOW (the map arm's own law): a
+            # DEFAULT-owner arm body handle is not "capped" (nothing to
+            # refuse), but its owner face still flows when the placement
+            # KEEPS the actor — the same-cohort conflict law reads it.
+            if arm.actor is None or arm.actor == source_node.actor:
+                from taskq.workflows.api._app import (
+                    WorkflowActor,  # the cycle-break (inner_fn's own pattern)
+                )
+
+                if isinstance(arm.body, WorkflowActor):
+                    _wire_handle_terms_into_node(
+                        source_node, arm.body, what=f"route arm {arm_tag!r}"
+                    )
             continue
         overrides = arm.actor is not None and arm.actor != source_node.actor
         if overrides:

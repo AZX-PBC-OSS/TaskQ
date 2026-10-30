@@ -384,9 +384,23 @@ def test_the_wf_surface_accepts_and_rejects_the_owner_shapes() -> None:
 
     assert code_owned.capacity_owner == "code"
 
+
+@pytest.mark.parametrize("bad", ["fleet", "CODE", "operator ", "", None, True, 5])
+def test_the_wf_surface_rejects_the_wrong_shapes(bad: object) -> None:
+    """THE WF FACE'S REJECT PARAMETRIZATION (the review's 4a): the same
+    seven bad shapes the vanilla surface pins — every one is the refused
+    declaration at the wf decorator, never a silent anything."""
+    from pydantic import BaseModel
+
+    from taskq.workflows import StepContext, WorkflowApp
+
+    class Ingest(BaseModel):
+        doc_id: str
+
+    app = WorkflowApp()
     with pytest.raises(ValueError, match="capacity_owner"):
 
-        @app.actor(capacity_owner="fleet")  # type: ignore[arg-type]  # Why: the REFUSED shape is the pin's subject.
+        @app.actor(capacity_owner=bad)  # type: ignore[arg-type]  # Why: the REFUSED shapes are the pin's subject.
         async def refused(ctx: StepContext, params: Ingest) -> str:
             return params.doc_id  # pragma: no cover
 
@@ -635,3 +649,81 @@ async def test_code_owned_queue_and_max_pending_changes_do_not_deploy(
     assert stored["queue"] == "default", "the queue assignment is never code-owned"
     assert stored["max_pending"] == 30, "max_pending is never code-owned"
     assert stored["max_concurrent"] == 2  # the unchanged literal deploys as itself
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# The review's 4(b) + 4(d): the converged boot's quiet, the SET clauses frozen
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_converged_code_owned_boot_is_quiet(
+    structlog_capture: list[structlog.types.EventDict],
+) -> None:
+    """THE REVIEW'S 4(b): a CONVERGED code-owned boot (the stored row
+    already reads the literal) emits NO ``actor-config-capacity-code-change``
+    event — the deploy warning is DIVERGENCE-GATED (it announces a change,
+    and a converged boot changes nothing). A boot that warned on every
+    converge would be noise about nothing."""
+    fake_conn = FakeAsyncpgConnection()
+    fake_conn.set_select_rows(
+        [_make_record("X", max_concurrent=7, result_ttl=120.0, queue="default")]
+    )
+
+    await sync_actor_config(
+        fake_conn,  # pyright: ignore[reportArgumentType]  # Why: unit-test double, see the sibling sync pins.
+        [_make_config("X", max_concurrent=7, result_ttl=120.0, capacity_owner="code")],
+    )
+
+    assert not [
+        e for e in structlog_capture if e["event"] == "actor-config-capacity-code-change"
+    ], "a converged code-owned boot is quiet — the warning is divergence-gated"
+    assert not [e for e in structlog_capture if e["event"] == "actor-config-capacity-override"], (
+        "and it is not an operator override either"
+    )
+
+
+def test_the_operator_statement_set_clause_is_frozen() -> None:
+    """THE REVIEW'S 4(d) — THE BYTE-IDENTITY CLAIM, LITERAL: the operator
+    statement's ``DO UPDATE SET`` assigns EXACTLY this column list, in
+    this order. A future statement that adds, drops, or REORDERS these
+    assignments reds here — the operator-owns law's own shape, frozen
+    (the capacity columns' absence is what keeps a stored row's capacity
+    operator-owned; a reorder is a reviewable diff, never a drive-by)."""
+    from taskq.worker.startup import _UPSERT_ACTOR_CONFIG_SQL
+
+    set_clause = _on_conflict_clause(_UPSERT_ACTOR_CONFIG_SQL)
+    assignments = [
+        line.strip().removesuffix(",").replace(" ", "")
+        for line in set_clause.splitlines()
+        if line.strip()
+    ]
+    assert assignments == [
+        "metadata=EXCLUDED.metadata",
+        "max_attempts=EXCLUDED.max_attempts",
+        "retry_kind=EXCLUDED.retry_kind",
+        "updated_at=clock_timestamp()",
+    ], "the operator statement's SET clause moved — the byte-identity law's own freeze"
+
+
+def test_the_code_owned_statement_set_clause_is_frozen() -> None:
+    """The code-owned statement's freeze (the operator's own list PLUS
+    exactly the two capacity columns, in order): the opt-in's surface is
+    exactly these two assignments — a third column joining them is a
+    reviewable diff, never a drive-by."""
+    from taskq.worker.startup import _UPSERT_CODE_OWNED_CAPACITY_SQL
+
+    set_clause = _on_conflict_clause(_UPSERT_CODE_OWNED_CAPACITY_SQL)
+    assignments = [
+        line.strip().removesuffix(",").replace(" ", "")
+        for line in set_clause.splitlines()
+        if line.strip()
+    ]
+    assert assignments == [
+        "metadata=EXCLUDED.metadata",
+        "max_concurrent=EXCLUDED.max_concurrent",
+        "result_ttl=EXCLUDED.result_ttl",
+        "max_attempts=EXCLUDED.max_attempts",
+        "retry_kind=EXCLUDED.retry_kind",
+        "updated_at=clock_timestamp()",
+    ], "the code-owned statement's SET clause moved — the opt-in's own freeze"

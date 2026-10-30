@@ -51,6 +51,9 @@ THE FLEET SEAT: the same mechanism at the fleet's claim (``dispatch_batch``
 the SAME drain (pending → running, the only one), so a gate keyed to the
 cohort's pending level has the same fixed point there. The runner's
 claim seat demonstrates it minimally; the seat is not the mechanism.
+Materialization-side bounded channels are a different face, not tried
+here — they bound inserts by stalling the source's finalize at the cost
+of the source's own lease budget, and give producers no admission seat.
 
 THE SURFACE STAYS CLOSED: ``test_max_pending_is_off_the_wf_surface``
 (the H-A6 pin) keeps passing — the omission now rides a red-proven
@@ -216,7 +219,7 @@ async def test_the_fan_outs_inserts_bypass_the_gate_and_the_admission(
     harness = _GatedFanOutApp()
     runner = harness.runner(wf_pool, wf_schema)
     claim = await runner.create_flow()
-    gate = _install_gate(runner, wf_pool, wf_schema, MAX_PENDING)
+    _gate = _install_gate(runner, wf_pool, wf_schema, MAX_PENDING)
 
     # One tick: the source claims (pending = 1 < 10), runs, and its
     # finalize forks the 12 items.
@@ -229,9 +232,6 @@ async def test_the_fan_outs_inserts_bypass_the_gate_and_the_admission(
         f"gate AND the enqueue admission (the cohort's pending = {pending})"
     )
     assert harness.ran == [], "no item body ran — the gate has no insert-side say"
-    assert (
-        gate.held_observations >= 0
-    )  # the hold arm may not even fire yet; the BYPASS is the subject
 
 
 @pytest.mark.integration
