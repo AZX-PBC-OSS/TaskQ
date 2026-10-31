@@ -458,6 +458,7 @@ def ts_schema() -> str:
 # ── 4. Re-archive racing the chunk boundary ──────────────────────────────
 
 
+@pytest.mark.load_sensitive
 async def test_rearchive_racing_chunk_drop_folds_without_duplicates(
     timescale_dsn: str, ts_schema: str
 ) -> None:
