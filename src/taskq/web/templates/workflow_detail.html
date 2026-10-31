@@ -127,7 +127,19 @@
             {% for n in nodes %}
             <tr class="border-t border-slate-100 dark:border-slate-800" data-wf-node-row="{{ n.key }}">
                 <td class="py-1.5 pr-4 font-mono text-xs">{{ n.key }}</td>
-                <td class="py-1.5 pr-4"><span data-wf-node-chip class="{{ badge_chip_base }}{{ status_chip_classes.get(n.status, status_chip_classes['pending']) }}">{{ n.status }}</span></td>
+                <td class="py-1.5 pr-4">
+                    <span data-wf-node-chip class="{{ badge_chip_base }}{{ status_chip_classes.get(n.status, status_chip_classes['pending']) }}">{{ n.status }}</span>
+                    {% if n.deferral_label %}
+                    {# THE DEFERRAL LINE (the snoozed step's sitting state —
+                       the "why is this step sitting here" answer): the
+                       signal, the next fire time, the deferral count.
+                       The label is the ROW's truth (the deferral stamp's
+                       own discriminator), so a later ladder repend never
+                       reads as a live deferral; the SSE stream
+                       paints/clears the line live. #}
+                    <div class="mt-1 text-xs text-amber-700 dark:text-amber-300" data-wf-node-deferral>{{ n.deferral_label }}</div>
+                    {% endif %}
+                </td>
                 <td class="py-1.5 pr-4 font-mono text-xs" data-wf-node-map>{% if n.map_children > 0 %}{{ n.map_done }}/{{ n.map_children }}{% else %}—{% endif %}</td>
                 <td class="py-1.5 pr-4 text-xs" data-wf-node-hold>{% if n.hold %}<span data-wf-held="1">⏳ held</span>{% elif n.join_wait %}join-wait{% else %}—{% endif %}</td>
                 <td class="py-1.5 pr-4 font-mono text-xs" data-wf-node-error>{% if n.error_class %}<span class="text-red-600 dark:text-red-400">{{ n.error_class }}</span>{% else %}—{% endif %}</td>
