@@ -1,0 +1,4 @@
+# the bands leg at the re-stamp head f0d8e25822199d27ddfab395ab4b7b417327bb75
+32 passed in 33.90s
+bands rc=0
+head: f0d8e25822199d27ddfab395ab4b7b417327bb75

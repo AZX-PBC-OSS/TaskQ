@@ -1,0 +1,4 @@
+# the type gate at the re-stamp head f0d8e25822199d27ddfab395ab4b7b417327bb75
+the type gate holds: every MUST_ERROR marker (46) reds on pyright 1.1.414 AND ty 0.0.85 with its DECLARED rule-ids, and no error falls outside the markers
+gate rc=0
+head: f0d8e25822199d27ddfab395ab4b7b417327bb75

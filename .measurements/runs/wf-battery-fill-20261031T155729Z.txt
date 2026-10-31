@@ -1,0 +1,4 @@
+# the wf battery's FILL at the re-stamp head f0d8e25822199d27ddfab395ab4b7b417327bb75
+821 passed, 4 warnings in 83.70s (0:01:23)
+rc=0
+head: f0d8e25822199d27ddfab395ab4b7b417327bb75

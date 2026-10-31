@@ -1,0 +1,4 @@
+# the docs examples at the re-stamp head f0d8e25822199d27ddfab395ab4b7b417327bb75
+107 passed, 13909 deselected, 1 warning in 84.70s (0:01:24)
+docs-examples rc=0
+head: f0d8e25822199d27ddfab395ab4b7b417327bb75
