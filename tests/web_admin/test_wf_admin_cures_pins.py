@@ -233,12 +233,6 @@ async def test_10k_fan_out_renders_one_hexagon_never_10k_lines(
             "absorbed": False,
             "error_class": None,
             "error_message": None,
-            # THE DEFERRAL FACES (the read's own row shape — the
-            # assembly's KeyError is the corpus-matches-the-read guard):
-            "attempt": 1,
-            "scheduled_at": None,
-            "snooze_count": 0,
-            "deferral": None,
         }
     ]
     for _ in range(10_000):
@@ -253,10 +247,6 @@ async def test_10k_fan_out_renders_one_hexagon_never_10k_lines(
                 "absorbed": False,
                 "error_class": None,
                 "error_message": None,
-                "attempt": 1,
-                "scheduled_at": None,
-                "snooze_count": 0,
-                "deferral": None,
             }
         )
     progress = {"src": (10_000, 10_000)}

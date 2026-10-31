@@ -464,14 +464,6 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single node row (the ladder's repend CAS)",
     ),
-    "NODE_DEFER_SQL": (
-        "WHERE j.id = (SELECT job_id FROM params)",
-        "keyed single node row (the deferral disposition's fenced "
-        "reschedule — the wf face of the vanilla mark_snoozed / "
-        "mark_retry_after_consume_* arms: the claim CAS + the cancel "
-        "mark + the budget gate name the ONE claimed row; the two read "
-        "CTEs that name the terminal verdicts write nothing)",
-    ),
     "LOOP_ADVANCE_SQL": (
         "WHERE id = $1",
         "keyed single loop-node row (the iteration cursor's guarded "

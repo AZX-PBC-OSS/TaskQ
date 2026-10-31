@@ -21,8 +21,6 @@ import structlog
 from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq.backend._protocol import JobId
-from taskq.constants import ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED
-from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
 from taskq.workflows._progress import ProgressEmitter
 from taskq.workflows._types import FinalizeResult
@@ -64,10 +62,6 @@ class _LoopHost(Protocol):
 
     def _redact_hook(self) -> Any: ...
 
-    async def _project_auto(
-        self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
-    ) -> None: ...
-
     async def _finalize_success(
         self,
         flow_id: JobId,
@@ -87,168 +81,6 @@ class LoopOps(_LoopHost):
 
     __slots__ = ()
 
-    async def _defer_loop_step(
-        self,
-        flow_id: JobId,
-        row: dict[str, Any],
-        attempt: int,
-        ledger_id: JobId | None,
-        exc: Snooze | RetryAfter,
-        *,
-        claim_epoch: int = 0,
-        ledger_claimed_at: Any = None,
-    ) -> str:
-        """THE LOOP'S DEFERRAL DISPOSITION (the loop body's signals route
-        through the SAME disposition the step bodies share — the C2
-        decision: the loop's iteration machinery already resumes a
-        mid-iteration hold; the deferral is the same resume, later by the
-        delay).
-
-        THE ROW LAW + THE LEDGER'S TRUTH are the deferral module's own
-        shared phase (:func:`~taskq.workflows.api._runner_defer.defer_row_law`
-        — the SAME ``NODE_DEFER_SQL`` arm: the claim CAS, EITHER cancel
-        mark, the budget gate; the deferred rest 'awaited'; the
-        re-mint-guarded fence) — the DIFFERENCE from the step's route is
-        the TERMINAL verdicts' routes, because the LOOP's own doors own
-        the loop's deaths:
-
-        * ``"deferred"`` — the loop node row re-scheduled at the delay;
-          the loop's counters (the metadata's ``iteration``/``carry``) are
-          UNTOUCHED — the ADVANCE statement is their only writer and it
-          never ran — so the re-claim re-enters the driver at THIS
-          iteration (the resume-not-retry shape; the ladder unburned);
-        * ``"exhausted"`` — the LOOP'S OWN BODY-FAILURE FACE
-          (:meth:`_exhaust_loop` — the named state, the flow terminalized
-          in the same tx — STRANDED-FLOW — the escalation policy) under
-          the vanilla's own ``MaxAttemptsExceeded`` class + message: the
-          consuming burn is bounded by the budget, the ladder still bounds
-          loops. The claim's ledger row records the ATTEMPT's failed
-          record (the exhaustion's own audit shape);
-        * ``"cancel_fenced"`` — the cancel wins: the loop's node
-          terminalises 'cancelled' through the wf terminal door (the
-          step's own face);
-        * ``"fenced"`` — the zombie's deferral (the claim fence matched
-          nothing; the re-mint guard kept the fence off a live winner's
-          row).
-
-        Returns the attempt's outcome label (the caller's log line —
-        the ROW is the truth, this is the record's echo).
-        """
-        from taskq.workflows.api._runner_defer import (
-            BUDGET_EXHAUSTED_MESSAGE,
-            WORKFLOW_CANCELLED_CLASS,
-            defer_row_law,
-            deferral_disposition,
-            route_defer_terminal,
-        )
-
-        disposition = deferral_disposition(exc)
-        verdict_text = await defer_row_law(
-            self.pool,
-            self.wsql,
-            job_id=JobId(row["id"]),
-            worker_id=self._worker_id,
-            delay=exc.delay,
-            attempt=attempt,
-            claim_epoch=claim_epoch,
-            disposition=disposition,
-            signal_name=type(exc).__name__,
-            ledger_id=ledger_id,
-            ledger_claimed_at=ledger_claimed_at,
-        )
-
-        if verdict_text == "deferred":
-            # THE LOOP'S COUNTERS ARE THE ADVANCE STATEMENT'S OWN —
-            # untouched here — the resume re-runs THIS iteration.
-            logger.info(
-                "loop.deferred",
-                run_id=str(flow_id),
-                node=row["step_key"],
-                signal=type(exc).__name__,
-                disposition=disposition,
-                delay_seconds=exc.delay.total_seconds(),
-            )
-            return "deferred"
-        if verdict_text == "fenced":
-            logger.info(
-                "loop.defer-fenced",
-                run_id=str(flow_id),
-                node=row["step_key"],
-                signal=type(exc).__name__,
-            )
-            return "fenced"
-
-        # THE TERMINAL VERDICTS — the loop's own doors (the row law wrote
-        # nothing; the doors own every death).
-        if verdict_text == "cancel_fenced":
-            # THE CANCEL WINS: the loop's node terminalises 'cancelled'
-            # through the wf terminal door — the step's own face (the
-            # cancel's vocabulary, never a body failure class). The DOOR'S
-            # MECHANICS are the shared route's (the ledger's terminal +
-            # finalize_node + the projection); the VERDICT's vocabulary is
-            # the cancel's.
-            await route_defer_terminal(
-                self.pool,
-                self.wsql,
-                flow_id=flow_id,
-                row=row,
-                worker_id=self._worker_id,
-                attempt=attempt,
-                claim_epoch=claim_epoch,
-                ledger_id=ledger_id,
-                capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the ladder's own call shape (the declared capture policy rides the COMPILE).
-                project_auto=self._project_auto,
-                outcome="cancelled",
-                error_class=WORKFLOW_CANCELLED_CLASS,
-                error_message="cancelled while deferring (the operator's cancel outranks the deferral)",
-            )
-            logger.info(
-                "loop.defer-terminal",
-                run_id=str(flow_id),
-                node=row["step_key"],
-                signal=type(exc).__name__,
-                outcome="cancelled",
-                error_class=WORKFLOW_CANCELLED_CLASS,
-            )
-            return "cancelled"
-
-        # THE EXHAUSTED BUDGET: the LOOP'S OWN BODY-FAILURE FACE — the
-        # named state + the flow terminalized in the same tx (STRANDED-
-        # FLOW) + the escalation policy ride the loop's own door; the
-        # claim's ledger row records the ATTEMPT's failed record (the
-        # exhaustion's own audit shape).
-        from taskq.constants import ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED
-
-        async with self.pool.acquire() as conn:
-            if ledger_id is not None:
-                await conn.execute(
-                    self.wsql.ledger_terminal_by_id,
-                    ledger_id,
-                    "failed",
-                    None,
-                    ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
-                    BUDGET_EXHAUSTED_MESSAGE,
-                    None,
-                )
-        await self._exhaust_loop(
-            flow_id,
-            row,
-            ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
-            BUDGET_EXHAUSTED_MESSAGE,
-            worker_id=self._worker_id,
-            attempt=attempt,
-            claim_epoch=claim_epoch,
-        )
-        logger.info(
-            "loop.defer-terminal",
-            run_id=str(flow_id),
-            node=row["step_key"],
-            signal=type(exc).__name__,
-            outcome="failed",
-            error_class=ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
-        )
-        return "laddered"
-
     async def _run_loop_node(
         self,
         flow_id: JobId,
@@ -259,7 +91,6 @@ class LoopOps(_LoopHost):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
-        ledger_claimed_at: Any = None,
     ) -> None:
         """THE LOOP DRIVER (T19): fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
@@ -271,12 +102,6 @@ class LoopOps(_LoopHost):
         budget deadline initializes FROM PG'S CLOCK at the first claim
         (the DB-clock doctrine); ``budget_remaining_ms`` is the on-wake
         read of the wall (holds are free).
-
-        ``ledger_claimed_at`` is the ledger claim's OWN RETURNING instant
-        (the re-mint guard's discriminator, C5) — threaded to the loop's
-        deferral route (``_defer_loop_step``) so the loop's zombie fence
-        can never mark a re-minted live winner's row, the SAME threading
-        the step route carries.
 
         THE ESCAPE-POINT CONTRACT (attack-3 H5's cure): the driver's
         drive runs under the machinery boundary — an INFRA fault raised
@@ -293,15 +118,7 @@ class LoopOps(_LoopHost):
 
         try:
             return await self._drive_loop(
-                flow_id,
-                row,
-                attempt,
-                node,
-                spec,
-                ledger_id,
-                emitter,
-                claim_epoch=claim_epoch,
-                ledger_claimed_at=ledger_claimed_at,
+                flow_id, row, attempt, node, spec, ledger_id, emitter, claim_epoch=claim_epoch
             )
         except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped, never its type (attack-3 H5's cure). BLE001 is the boundary's shape: ANY machinery exception is classified, then re-raised or reclaimed.
             if is_infra_fault(exc):
@@ -319,7 +136,6 @@ class LoopOps(_LoopHost):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
-        ledger_claimed_at: Any = None,
     ) -> None:
         """The loop driver's own drive (the machinery side of the
         escape-point contract — attack-3 H5's cure): every exception
@@ -548,35 +364,6 @@ class LoopOps(_LoopHost):
                     # driver's walls stay blind while paused (the arm's
                     # heart) — holds are free.
                     return
-                except (Snooze, RetryAfter) as exc:
-                    # THE LOOP'S DEFERRAL DISPOSITION (C2 — the loop
-                    # cliff's cure): the iteration's control-flow signals
-                    # route through the SAME deferral disposition the
-                    # step bodies share (``api/_runner_defer``'s row law —
-                    # the NODE_DEFER_SQL arm: the reschedule, the refund,
-                    # the fences) — the loop RESUMES at THIS iteration
-                    # after the delay (the counters untouched: the advance
-                    # never ran), the ladder unburned, the run alive.
-                    # Placement: the hold's own catch arm's sibling —
-                    # BEFORE the body-failure boundary, because the
-                    # signals are the body's control flow, never a failure
-                    # the loop's exhaustion may classify. The
-                    # budget-exhausting consuming face takes the LOOP'S
-                    # OWN body-failure face inside the route (the named
-                    # state + STRANDED-FLOW — the ladder still bounds
-                    # loops). The buffer's close is the caller's own
-                    # finally (the loop's entry seam — the driver's
-                    # internal finalizes never wait on it).
-                    await self._defer_loop_step(
-                        flow_id,
-                        row,
-                        attempt,
-                        ledger_id,
-                        exc,
-                        claim_epoch=claim_epoch,
-                        ledger_claimed_at=ledger_claimed_at,
-                    )
-                    return
                 except Exception as exc:
                     # THE BODY BOUNDARY (attack-3 H5's cure): EVERY
                     # exception crossing it is a BODY failure — the
@@ -791,13 +578,7 @@ class LoopOps(_LoopHost):
         )
 
         error_class = error_class or LOOP_ERROR_CAP
-        if error_class in (LOOP_ERROR_BODY, ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED):
-            # THE BODY-FAILURE FACE (the C2 bound face): the deferral
-            # disposition's budget exhaustion — the body's OWN signal
-            # (RetryAfter(consume_budget=True)) past max_attempts — is the
-            # loop's body failure arriving through the ladder's bound: the
-            # same named state, the vanilla's own exhaustion class on the
-            # record.
+        if error_class == LOOP_ERROR_BODY:
             state_name = "loop_body_failed"
         elif error_class == LOOP_ERROR_SHAPE:
             state_name = "loop_body_shape_error"

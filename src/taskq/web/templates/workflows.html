@@ -26,18 +26,7 @@
                     <a href="{{ base_path }}/workflows/{{ r.id }}" class="text-blue-600 dark:text-blue-400 hover:underline" title="{{ r.id }}">{{ r.id[:8] }}…</a>
                 </td>
                 <td class="px-4 py-2.5 text-sm">{{ r.workflow }}</td>
-                <td class="px-4 py-2.5 text-sm">
-                    {{ r.root_status }}
-                    {# THE RUN-LEVEL DEFERRAL BADGE (C4 — the visibility
-                       gap's cure): a pathologically deferring run is
-                       visible from the inventory — the sitting nodes'
-                       count, the next fire, the deferral depth (the
-                       rows' own aggregated truth; the detail page's
-                       deferral line is the per-step face). #}
-                    {% if r.deferring %}
-                    <span class="ml-2 text-xs text-amber-700 dark:text-amber-300" data-wf-run-deferring title="nodes sitting on a live deferral">⏰ {{ r.deferring }} deferred · next fire {{ r.next_fire }} · snooze #{{ r.snooze_count }}</span>
-                    {% endif %}
-                </td>
+                <td class="px-4 py-2.5 text-sm">{{ r.root_status }}</td>
                 <td class="px-4 py-2.5 text-sm text-slate-500 dark:text-slate-400">{{ r.created_at }}</td>
             </tr>
             {% endfor %}
