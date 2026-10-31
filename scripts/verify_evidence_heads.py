@@ -38,6 +38,13 @@ THE MECHANICS (what this verifier enforces over the estate's registry,
   content-identical. A change to a BEHAVIORAL path (``src/``,
   ``tests/``, the lockfiles, the migrations, the examples, the gates,
   the benchmarks) since the claimed head makes the claim stale. THE
+  EXEMPTION'S OWN EDGE (the review round's cure): the DOCS-DERIVED
+  stems (``_DOCS_SENSITIVE_STEM_PREFIXES``: mkdocs-strict,
+  docs-examples, docs-lane) are the exception — their batteries READ
+  the docs estate (mkdocs builds ``docs/`` strict; the docs-example
+  tests' ``DOC_ROOTS = ("docs", "README.md")`` execute the fences) —
+  so for them the exemption set is the NARROW one (the measurements
+  estate + ``.github``) and a docs-only merge stalifies. THE
   DOCS-EXEMPTION ROUND'S CONVICTION: the first cut exempted only
   ``.measurements/``, so #696's DOCS-ONLY merge (``LEDGER.md`` alone)
   re-staled every live claim and reded main's head-stamp lint job on a
@@ -318,29 +325,57 @@ _FILE_STAMP = re.compile(r"\d{8}T\d{6}Z?")
 #: 2030-dated capture) is years past it.
 _FUTURE_TOLERANCE = timedelta(hours=24)
 
+#: THE NARROW EXCLUSION SET: the pathspecs the off-by-one rule's diff
+#: half ignores for EVERY stem — the measurements estate and the
+#: workflow estate (.github). This is the DOCS-DERIVED STEMS' set (see
+#: ``_DOCS_SENSITIVE_STEM_PREFIXES``): for the evidence kinds whose
+#: batteries READ the docs estate, a docs-only merge IS a source
+#: change.
+_NARROW_EXCLUSIONS = (
+    ":(exclude).measurements",
+    ":(exclude).github",
+)
+
+#: THE DOCS-DERIVED STEMS (the review round's cure): the evidence kinds
+#: whose batteries READ the docs estate — mkdocs builds ``docs/``
+#: strict; the docs-example tests
+#: (``tests/_docs_examples.py::DOC_ROOTS = ("docs", "README.md")``)
+#: EXECUTE the fences those documents carry; the docs-lane captures run
+#: the same lanes. For a stem carrying one of these prefixes the docs
+#: exemption does not apply (its exclusion set is ``_NARROW_EXCLUSIONS``):
+#: ``docs/`` and ``README.md`` are INPUTS the capture's verdict was
+#: measured against, so a docs-only merge stalifies the claim exactly
+#: as a src/ merge would.
+_DOCS_SENSITIVE_STEM_PREFIXES = ("mkdocs-strict", "docs-examples", "docs-lane")
+
 #: THE NON-BEHAVIORAL ESTATE (the docs-exemption round's cure): the
-#: pathspecs the off-by-one rule's diff half IGNORES, beside the
-#: measurements estate it always ignored. THE CONVICTION: main's
-#: head-stamp lint job reds on EVERY merge — including #696's DOCS-ONLY
-#: merge (``LEDGER.md`` alone) — because the first cut exempted only
-#: ``.measurements/``: a documentation edit re-staled every live claim
-#: (CI runs 41133332137 + 41140297312). THE LAW'S EDGE: the claims
-#: verify the SOURCE + TEST tree, so the exemption set is exactly the
+#: pathspecs the off-by-one rule's diff half IGNORES for every OTHER
+#: stem — the narrow set above plus the non-behavioral paths. THE
+#: CONVICTION: main's head-stamp lint job reds on EVERY merge —
+#: including #696's DOCS-ONLY merge (``LEDGER.md`` alone) — because the
+#: first cut exempted only ``.measurements/``: a documentation edit
+#: re-staled every live claim (CI runs 41133332137 + 41140297312). THE
+#: LAW'S EDGE (qualified by the review round): a plain stem's claim
+#: verifies the SOURCE + TEST tree, so the exemption set is exactly the
 #: paths that cannot alter that tree — docs and the readme/license/
 #: metadata class — and NEVER the behavioral paths (``src/``,
 #: ``tests/``, ``pyproject.toml``, ``uv.lock``, the migrations, the
-#: examples the docs-example tests run, the scripts the gates run, the
-#: benchmarks). Pathspec shapes (git's anchoring, verified against git
-#: 2.56 and pinned by ``tests/test_evidence_docs_exemption_pins.py``):
-#: a directory pathspec covers its SUBTREE from the root; ``README*``
-#: and the ``glob``-magic ``*.md`` match at the ROOT only (glob magic:
-#: ``*`` does not cross ``/``) — a nested ``tests/*.md`` receipt or a
+#: examples the smoke tests import, the scripts the gates run, the
+#: benchmarks). THE EXEMPTION'S OWN EDGE: the DOCS-DERIVED stems
+#: (``_DOCS_SENSITIVE_STEM_PREFIXES``) are the exception — their
+#: batteries READ the docs estate — so for them the exemption set is
+#: the NARROW one and a docs-only merge stalifies (``_source_changes_since``
+#: picks the set per stem). Pathspec shapes (git's anchoring, verified
+#: against git 2.56 and pinned by
+#: ``tests/test_evidence_docs_exemption_pins.py``): a directory
+#: pathspec covers its SUBTREE from the root; ``README*`` and the
+#: ``glob``-magic ``*.md`` match at the ROOT only (glob magic: ``*``
+#: does not cross ``/``) — a nested ``tests/*.md`` receipt or a
 #: ``src/README`` still stalifies. THE LAW'S SECOND FACE: the in-suite
 #: mirror (``tests/_wf_fixtures.OFF_BY_ONE_DIFF_EXCLUSIONS``) carries
-#: the same set — the sync pin holds the two faces in step.
+#: the same sets — the sync pin holds the two faces in step.
 _NONBEHAVIORAL_EXCLUSIONS = (
-    ":(exclude).measurements",
-    ":(exclude).github",
+    *_NARROW_EXCLUSIONS,
     ":(exclude)LEDGER.md",
     ":(exclude)docs",
     ":(exclude)README*",
@@ -408,14 +443,24 @@ def _verified_head() -> tuple[str, str | None]:
     )
 
 
-def _source_changes_since(head_sha: str) -> bool:
-    """Whether ANY commit since *head_sha* touched a BEHAVIORAL path —
-    anything outside the measurements estate and the non-behavioral
-    paths (``_NONBEHAVIORAL_EXCLUSIONS``). THE OFF-BY-ONE RULE's diff
-    half (see the module docstring): a claim recorded on H is fresh at
-    H2 when H2 is H plus measurement-and-docs-only changes — the source
-    + test tree the claim verifies is content-identical. An
-    unresolvable claimed head (not an ancestor) = stale."""
+def _source_changes_since(head_sha: str, stem: str | None = None) -> bool:
+    """Whether ANY commit since *head_sha* touched a BEHAVIORAL path.
+    For a plain stem that is anything outside the measurements estate
+    and the non-behavioral paths (``_NONBEHAVIORAL_EXCLUSIONS``). THE
+    OFF-BY-ONE RULE's diff half (see the module docstring): a claim
+    recorded on H is fresh at H2 when H2 is H plus
+    measurement-and-docs-only changes — the source + test tree the
+    claim verifies is content-identical. THE DOCS-DERIVED STEMS'
+    FALLBACK (the review round's cure): *stem* carrying a
+    ``_DOCS_SENSITIVE_STEM_PREFIXES`` prefix names an evidence kind
+    whose battery READS the docs estate — for those the exemption set
+    is the NARROW one (``_NARROW_EXCLUSIONS``) and a docs-only merge
+    stalifies exactly as a src/ merge would. An unresolvable claimed
+    head (not an ancestor) = stale."""
+    if stem is not None and stem.startswith(_DOCS_SENSITIVE_STEM_PREFIXES):
+        exclusions = _NARROW_EXCLUSIONS
+    else:
+        exclusions = _NONBEHAVIORAL_EXCLUSIONS
     proc = subprocess.run(
         [
             "git",
@@ -424,7 +469,7 @@ def _source_changes_since(head_sha: str) -> bool:
             f"{head_sha}..HEAD",
             "--",
             ".",
-            *_NONBEHAVIORAL_EXCLUSIONS,
+            *exclusions,
         ],
         cwd=REPO,
         capture_output=True,
@@ -436,17 +481,18 @@ def _source_changes_since(head_sha: str) -> bool:
     return bool(proc.stdout.strip())
 
 
-def _off_by_one_fresh(recorded: str) -> bool:
+def _off_by_one_fresh(recorded: str, stem: str | None = None) -> bool:
     """THE OFF-BY-ONE RULE with its own teeth (the door-edges round's
     non-ancestor-stamp cure, taken — the fix is one cheap subprocess):
     *recorded* must be an ANCESTOR of HEAD — a sha that resolves
     nowhere, or a discarded/orphan commit that exists in the object
     store but is no part of this checkout's history, can never verify
     the checked-out tree — AND the diff since it must touch no
-    BEHAVIORAL path (the diff half's exclusion set,
-    ``_NONBEHAVIORAL_EXCLUSIONS`` — the measurements estate plus the
-    non-behavioral paths). ``git merge-base --is-ancestor`` exits
-    nonzero for both the unresolvable and the non-ancestor sha
+    BEHAVIORAL path (the diff half's exclusion set — the measurements
+    estate plus the non-behavioral paths, NARROWED to the measurements
+    estate + .github for the DOCS-DERIVED stems, see
+    ``_DOCS_SENSITIVE_STEM_PREFIXES``). ``git merge-base --is-ancestor``
+    exits nonzero for both the unresolvable and the non-ancestor sha
     (one subprocess, the walk's cost — measured with the rest)."""
     ancestor = subprocess.run(
         ["git", "merge-base", "--is-ancestor", recorded, "HEAD"],
@@ -457,7 +503,7 @@ def _off_by_one_fresh(recorded: str) -> bool:
     )
     if ancestor.returncode != 0:
         return False
-    return not _source_changes_since(recorded)
+    return not _source_changes_since(recorded, stem)
 
 
 def _supersession_target(marked: str, runs_dir: Path) -> Path:
@@ -784,13 +830,13 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
                 _capture_time_door(stem, terminal, failures)
                 _content_door(stem, terminal, runs_dir, failures, warnings)
                 continue  # the terminal is FRESH — the chain lands on this head
-            if recorded is not None and _off_by_one_fresh(recorded):
+            if recorded is not None and _off_by_one_fresh(recorded, stem):
                 # The off-by-one rule at the terminal (with its ancestry
                 # teeth): the terminal's claimed head is an ancestor of
                 # HEAD and nothing BEHAVIORAL changed since it (the diff
-                # half's exclusions — the measurements estate plus the
-                # non-behavioral paths) — the capture verifies a
-                # content-identical tree.
+                # half's exclusions, per THIS stem — the docs-derived
+                # stems' narrow set makes a docs-only merge stale) — the
+                # capture verifies a content-identical tree.
                 _capture_time_door(stem, terminal, failures)
                 _content_door(stem, terminal, runs_dir, failures, warnings)
                 continue
@@ -826,13 +872,15 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
             _capture_time_door(stem, live, failures)
             _content_door(stem, live, runs_dir, failures, warnings)
             continue  # the live claim is FRESH — verified on its own head
-        if recorded is not None and _off_by_one_fresh(recorded):
+        if recorded is not None and _off_by_one_fresh(recorded, stem):
             # The off-by-one rule (with its ancestry teeth): the claimed
             # head is an ancestor of HEAD and nothing BEHAVIORAL changed
             # since it (the non-behavioral estate — docs, the
-            # readme/license/metadata class — cannot stalify a claim) —
-            # the source tree the claim verifies is content-identical.
-            # Fresh.
+            # readme/license/metadata class — cannot stalify a claim,
+            # EXCEPT for the docs-derived stems, whose batteries read
+            # the docs estate: their narrow set makes a docs-only merge
+            # stale) — the source tree the claim verifies is
+            # content-identical. Fresh.
             _capture_time_door(stem, live, failures)
             _content_door(stem, live, runs_dir, failures, warnings)
             continue
