@@ -70,7 +70,7 @@ from .test_attack_prune_ghost import assert_master_invariant
 from .test_leader_prune import _apply, _seed_terminal_job, _seed_terminal_jobs_bulk
 from .test_timescaledb_hypertables import _RefusingConn, _schedule_policies
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.load_sensitive]
 
 # The fold scenario's clocks. Prune retention 6h makes both ghost stamps
 # (30h and 54h old) aged candidates; the two stamps are 30h apart, which
