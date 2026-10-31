@@ -31,10 +31,18 @@ THE MECHANICS (what this verifier enforces over the estate's registry,
   claim and the tree can never diverge silently.
 * THE OFF-BY-ONE RULE: the artifacts of a battery are committed AFTER
   the battery ran, so a claim recorded on H is still FRESH at H2 when
-  H2 is H plus measurement-only changes (nothing outside
-  ``.measurements/`` changed since the claimed head — the source tree
-  the claim verifies is content-identical). A source change since the
-  claimed head makes the claim stale.
+  H2 is H plus changes to paths that CANNOT change what the claims
+  verify — the measurements estate itself plus the NON-BEHAVIORAL paths
+  (``_NONBEHAVIORAL_EXCLUSIONS``: docs, the readme/license/metadata
+  class, ``.github``) — the source + test tree the claim verifies is
+  content-identical. A change to a BEHAVIORAL path (``src/``,
+  ``tests/``, the lockfiles, the migrations, the examples, the gates,
+  the benchmarks) since the claimed head makes the claim stale. THE
+  DOCS-EXEMPTION ROUND'S CONVICTION: the first cut exempted only
+  ``.measurements/``, so #696's DOCS-ONLY merge (``LEDGER.md`` alone)
+  re-staled every live claim and reded main's head-stamp lint job on a
+  documentation edit (CI runs 41133332137 + 41140297312) — a docs edit
+  is not a source change, and the law does not read it as one.
 * A live claim may be marked ``superseded_by`` (the manifest entry's
   field — the migration bakes in the text files' ``SUPERSEDED-BY:``
   lines): history by its own declaration. THE CHAIN IS THE CLAIM (the
@@ -140,9 +148,11 @@ face, each convicted red-first and pinned
   ``git rev-parse HEAD`` — ALWAYS; the env face is CROSS-CHECKED,
   never trusted: when the event carries a pull-request head sha, that
   sha must exist in THIS checkout's history (an ancestor of the
-  checkout) AND differ from it by nothing outside the measurements
-  estate — the freshness law's own teeth (the off-by-one rule)
-  applied to the env's claim. A forged or impossible sha — or one
+  checkout) AND differ from it by nothing behavioral — the off-by-one
+  rule's own exclusion set (the measurements estate plus the
+  non-behavioral paths) — the freshness law's own teeth (the
+  off-by-one rule) applied to the env's claim. A forged or impossible
+  sha — or one
   whose source differs from the checked-out tree — is THE CONVICTION,
   never rc=0. When the env sha passes the teeth it verifies nothing
   on its own: the repo's head stands, and the off-by-one rule already
@@ -308,6 +318,37 @@ _FILE_STAMP = re.compile(r"\d{8}T\d{6}Z?")
 #: 2030-dated capture) is years past it.
 _FUTURE_TOLERANCE = timedelta(hours=24)
 
+#: THE NON-BEHAVIORAL ESTATE (the docs-exemption round's cure): the
+#: pathspecs the off-by-one rule's diff half IGNORES, beside the
+#: measurements estate it always ignored. THE CONVICTION: main's
+#: head-stamp lint job reds on EVERY merge — including #696's DOCS-ONLY
+#: merge (``LEDGER.md`` alone) — because the first cut exempted only
+#: ``.measurements/``: a documentation edit re-staled every live claim
+#: (CI runs 41133332137 + 41140297312). THE LAW'S EDGE: the claims
+#: verify the SOURCE + TEST tree, so the exemption set is exactly the
+#: paths that cannot alter that tree — docs and the readme/license/
+#: metadata class — and NEVER the behavioral paths (``src/``,
+#: ``tests/``, ``pyproject.toml``, ``uv.lock``, the migrations, the
+#: examples the docs-example tests run, the scripts the gates run, the
+#: benchmarks). Pathspec shapes (git's anchoring, verified against git
+#: 2.56 and pinned by ``tests/test_evidence_docs_exemption_pins.py``):
+#: a directory pathspec covers its SUBTREE from the root; ``README*``
+#: and the ``glob``-magic ``*.md`` match at the ROOT only (glob magic:
+#: ``*`` does not cross ``/``) — a nested ``tests/*.md`` receipt or a
+#: ``src/README`` still stalifies. THE LAW'S SECOND FACE: the in-suite
+#: mirror (``tests/_wf_fixtures.OFF_BY_ONE_DIFF_EXCLUSIONS``) carries
+#: the same set — the sync pin holds the two faces in step.
+_NONBEHAVIORAL_EXCLUSIONS = (
+    ":(exclude).measurements",
+    ":(exclude).github",
+    ":(exclude)LEDGER.md",
+    ":(exclude)docs",
+    ":(exclude)README*",
+    ":(exclude,glob)*.md",
+    ":(exclude)LICENSE",
+    ":(exclude).gitignore",
+)
+
 
 def _git(*args: str, check: bool = True) -> str:
     out = subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, check=check)
@@ -324,9 +365,11 @@ def _verified_head() -> tuple[str, str | None]:
     CROSS-CHECKED, never trusted: when the event payload carries a
     pull-request head sha, that sha must be an ANCESTOR of the
     checked-out HEAD (it must EXIST in this checkout's history) and
-    its diff from the checkout must carry NOTHING outside the
-    measurements estate — the freshness law's own teeth (the off-by-one
-    rule) applied to the env's claim. A forged or impossible sha — or
+    its diff from the checkout must carry NOTHING behavioral — the
+    off-by-one rule's own exclusion set (the measurements estate plus
+    the non-behavioral paths), the freshness law's own teeth (the
+    off-by-one rule) applied to the env's claim. A forged or
+    impossible sha — or
     one whose source differs from the checked-out tree — is THE
     CONVICTION (returned as the second element), never rc=0. When the
     env sha passes the teeth it verifies nothing on its own: the
@@ -366,11 +409,13 @@ def _verified_head() -> tuple[str, str | None]:
 
 
 def _source_changes_since(head_sha: str) -> bool:
-    """Whether ANY commit since *head_sha* touched anything OUTSIDE the
-    measurements estate. THE OFF-BY-ONE RULE's diff half (see the module
-    docstring): a claim recorded on H is fresh at H2 when H2 is H plus
-    measurement-only changes. An unresolvable claimed head (not an
-    ancestor) = stale."""
+    """Whether ANY commit since *head_sha* touched a BEHAVIORAL path —
+    anything outside the measurements estate and the non-behavioral
+    paths (``_NONBEHAVIORAL_EXCLUSIONS``). THE OFF-BY-ONE RULE's diff
+    half (see the module docstring): a claim recorded on H is fresh at
+    H2 when H2 is H plus measurement-and-docs-only changes — the source
+    + test tree the claim verifies is content-identical. An
+    unresolvable claimed head (not an ancestor) = stale."""
     proc = subprocess.run(
         [
             "git",
@@ -379,8 +424,7 @@ def _source_changes_since(head_sha: str) -> bool:
             f"{head_sha}..HEAD",
             "--",
             ".",
-            ":(exclude).measurements",
-            ":(exclude).github",
+            *_NONBEHAVIORAL_EXCLUSIONS,
         ],
         cwd=REPO,
         capture_output=True,
@@ -398,9 +442,11 @@ def _off_by_one_fresh(recorded: str) -> bool:
     *recorded* must be an ANCESTOR of HEAD — a sha that resolves
     nowhere, or a discarded/orphan commit that exists in the object
     store but is no part of this checkout's history, can never verify
-    the checked-out tree — AND the diff since it must touch nothing
-    outside the measurements estate. ``git merge-base --is-ancestor``
-    exits nonzero for both the unresolvable and the non-ancestor sha
+    the checked-out tree — AND the diff since it must touch no
+    BEHAVIORAL path (the diff half's exclusion set,
+    ``_NONBEHAVIORAL_EXCLUSIONS`` — the measurements estate plus the
+    non-behavioral paths). ``git merge-base --is-ancestor`` exits
+    nonzero for both the unresolvable and the non-ancestor sha
     (one subprocess, the walk's cost — measured with the rest)."""
     ancestor = subprocess.run(
         ["git", "merge-base", "--is-ancestor", recorded, "HEAD"],
@@ -741,8 +787,10 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
             if recorded is not None and _off_by_one_fresh(recorded):
                 # The off-by-one rule at the terminal (with its ancestry
                 # teeth): the terminal's claimed head is an ancestor of
-                # HEAD and nothing outside the measurements estate changed
-                # since it — the capture verifies a content-identical tree.
+                # HEAD and nothing BEHAVIORAL changed since it (the diff
+                # half's exclusions — the measurements estate plus the
+                # non-behavioral paths) — the capture verifies a
+                # content-identical tree.
                 _capture_time_door(stem, terminal, failures)
                 _content_door(stem, terminal, runs_dir, failures, warnings)
                 continue
@@ -780,9 +828,11 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
             continue  # the live claim is FRESH — verified on its own head
         if recorded is not None and _off_by_one_fresh(recorded):
             # The off-by-one rule (with its ancestry teeth): the claimed
-            # head is an ancestor of HEAD and nothing outside the
-            # measurements estate changed since it — the source tree the
-            # claim verifies is content-identical. Fresh.
+            # head is an ancestor of HEAD and nothing BEHAVIORAL changed
+            # since it (the non-behavioral estate — docs, the
+            # readme/license/metadata class — cannot stalify a claim) —
+            # the source tree the claim verifies is content-identical.
+            # Fresh.
             _capture_time_door(stem, live, failures)
             _content_door(stem, live, runs_dir, failures, warnings)
             continue

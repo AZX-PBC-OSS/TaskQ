@@ -56,13 +56,39 @@ def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[ob
     return cast("Callable[[], Promise[object]]", fn)
 
 
+#: THE OFF-BY-ONE RULE'S EXCLUSION SET (the docs-exemption round): the
+#: pathspecs the staleness diff IGNORES — the measurements estate plus
+#: the NON-BEHAVIORAL paths (docs and the readme/license/metadata class:
+#: none can alter the source + test tree a claim verifies). This is the
+#: in-suite mirror of the verifier's own ``_NONBEHAVIORAL_EXCLUSIONS``
+#: (``scripts/verify_evidence_heads.py``) — one law, two faces; the sync
+#: pin (``tests/test_evidence_docs_exemption_pins.py``) holds them in
+#: step. Pathspec shapes (git's anchoring, verified against git 2.56): a
+#: directory pathspec covers its SUBTREE from the root; ``README*`` and
+#: the ``glob``-magic ``*.md`` match at the ROOT only (glob magic: ``*``
+#: does not cross ``/``) — a nested ``tests/*.md`` receipt still
+#: stalifies.
+OFF_BY_ONE_DIFF_EXCLUSIONS: tuple[str, ...] = (
+    ":(exclude).measurements",
+    ":(exclude).github",
+    ":(exclude)LEDGER.md",
+    ":(exclude)docs",
+    ":(exclude)README*",
+    ":(exclude,glob)*.md",
+    ":(exclude)LICENSE",
+    ":(exclude).gitignore",
+)
+
+
 def source_changes_since(head_sha_value: str) -> bool:
     """THE OFF-BY-ONE RULE (the head-stamp verifier's own, mirrored for
     the in-suite guards): whether ANY commit since *head_sha_value*
-    touched anything OUTSIDE the measurements estate. A claim recorded
-    on H is fresh at H2 when H2 is H plus measurement-only changes —
-    the source tree the claim verifies is content-identical. An
-    unresolvable claimed head (not an ancestor) = stale by definition.
+    touched a BEHAVIORAL path — anything outside the measurements estate
+    and the non-behavioral paths (``OFF_BY_ONE_DIFF_EXCLUSIONS`` above).
+    A claim recorded on H is fresh at H2 when H2 is H plus
+    measurement-and-docs-only changes — the source + test tree the claim
+    verifies is content-identical. An unresolvable claimed head (not an
+    ancestor) = stale by definition.
 
     THE PER-RUN MEMO (the estate's scale — 18k+ sink records across
     ~100 distinct claimed heads): the verdict is a pure function of the
@@ -87,7 +113,7 @@ def source_changes_since(head_sha_value: str) -> bool:
             f"{head_sha_value}..HEAD",
             "--",
             ".",
-            ":(exclude).measurements",
+            *OFF_BY_ONE_DIFF_EXCLUSIONS,
         ],
         cwd=Path(__file__).parent.parent,
         capture_output=True,
