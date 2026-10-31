@@ -261,10 +261,12 @@ jobs:
       # same 4 threads) pushes a trial off its fast regime, and a
       # pytest-timeout bound cannot fire inside a job cap that fires
       # first - the leg goes silent at 99% and cancels with zero output.
-      # The slow tier's lane below runs it at -n 2, the density its
+      # The slow tier's lane runs its remainder at -n 2, the density its
       # fast regime assumes, on one interpreter: the slow tier's value is
       # behaviour, not runtime parity (that lane's own comment). The
-      # load-sensitive tier has its own lane for the same wall-clock
+      # lost-job soak's trials are no longer among that remainder - as
+      # load_sensitive they run in the load-sensitive lane below,
+      # serially. That tier has its own lane for the same wall-clock
       # reason.
       - name: Run the suite (all extras, minus slow and load-sensitive)
         # faulthandler_timeout: DUMP-ONLY stack dumps (no exit) when a test
@@ -321,7 +323,7 @@ jobs:
       - name: Run the extra's own tests
         # The fastapi leg installs no redis, so the tests tagged for both
         # extras run in the redis leg (which installs fastapi) only.
-        run: uv run --no-sync pytest -n 2 -m "${{ matrix.extra == 'fastapi' && 'fastapi and not redis' || matrix.extra }}"
+        run: uv run --no-sync pytest -n 2 -m "(${{ matrix.extra == 'fastapi' && 'fastapi and not redis' || matrix.extra }}) and not load_sensitive"
 
   test-cross:
     # Common extra PAIRS in one process: both families' tests run together
@@ -349,7 +351,7 @@ jobs:
         with:
           node-version: "22"
       - name: Run both families together
-        run: uv run --no-sync pytest -n 2 -m "${{ matrix.select }}"
+        run: uv run --no-sync pytest -n 2 -m "(${{ matrix.select }}) and not load_sensitive"
 
   test-timescale:
     # The optional-TimescaleDB lane (TASKQ_TIMESCALEDB_HYPERTABLES): the
@@ -445,15 +447,33 @@ jobs:
 
   load-sensitive:
     # The wall-clock/timing guards (watchdog lag sampling, terminal-write
-    # budget, cron commit gates, otel overhead, bootstrap slots) assert on
-    # elapsed time, so they are load-fragile: under xdist a sibling's CPU
-    # churn shows up as flake. They run here, ONCE per CI run, serially, on
-    # a standard runner (the job is ~2 minutes: GitHub bills per second but
-    # rounds up to the minute, so a larger runner would cost more and buy
-    # nothing for a serial lane). Every other lane deselects the family via
-    # "not load_sensitive"; this lane is the one place it runs.
+    # budget, cron commit gates, otel overhead, bootstrap slots, and the
+    # PR #695/#698 convicted families: the retention scale pin, the cron
+    # hang-livelock bounds, the tx-unwind windows, the lost-job soak's
+    # three settle trials, the marches' settle windows, the
+    # lock-contention emission window) assert on elapsed time, so they
+    # are load-fragile: under xdist a sibling's CPU churn shows up as
+    # flake. They run here, ONCE per CI run, serially, on a standard
+    # runner, under the tier's per-test default --timeout=900 (explicit
+    # per-test timeout markers - the soak's 2700 - override it). Honest
+    # composition: the pre-existing family (~2 min) + the convicted
+    # families + the soak's trials + the system-e2e window family (15
+    # pins) - ~32-60 min healthy against this job's 90-min cap (~1.5x,
+    # the repo's cap doctrine). The documented starve-trade still holds,
+    # now at 90: a runner so starved that a settle outlives the cap
+    # cancels this lane silently instead of reding at the test's own cap
+    # (the marker comment in tests/test_rt_lost_job_soak.py). The
+    # accepted trade: the 15 marked tier pins leave the 4-leg PG version
+    # matrix and run ONCE here against the harness's default image (the
+    # family's single-run law); the SQL surface keeps its matrix via the
+    # tier's remaining 38 x 4 legs. Lane selection: the test, slow-suite,
+    # coverage, extras, cross, and system-e2e lanes deselect the family
+    # with the literal "not load_sensitive" filter; timescale and e2e
+    # deselect de facto (file-/directory-scoped selections). This lane -
+    # now collecting the system-e2e tier via --system-e2e - is the one
+    # place the family runs.
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 90
     steps:
       # fetch-depth 0: the evidence-estate read face (tests/_evidence.py) —
       # same reason as the slow-suite lane above: the docs-honesty pins'
@@ -472,7 +492,7 @@ jobs:
       - uses: ./.github/actions/setup-uv-env
 
       - name: Run the load-sensitive suite serially
-        run: uv run --no-sync pytest -m "load_sensitive"
+        run: uv run --no-sync pytest --system-e2e -m "load_sensitive" --timeout=900
 
   coverage:
     # The coverage lane is the single longest CI job (the whole suite, one
@@ -638,7 +658,7 @@ jobs:
       - name: Run the system-e2e tier
         env:
           TASKQ_TEST_PG_IMAGE: postgres:${{ matrix.postgres-version }}-alpine
-        run: uv run --no-sync pytest --system-e2e -m system tests/system_e2e --timeout=900 -n 2 -q
+        run: uv run --no-sync pytest --system-e2e -m "system and not load_sensitive" tests/system_e2e --timeout=900 -n 2 -q
 
 
   security:
@@ -996,14 +1016,14 @@ jobs:
         run: |
           set -euo pipefail
           listing="$(uv run --no-project python -m zipfile -l dist/*.whl)"
-          echo "$listing" | grep -q "taskq/py.typed"
-          echo "$listing" | grep -q "taskq/migrations/01.00.00_01_pre_initial.sql"
-          echo "$listing" | grep -q "taskq/migrations/_variants/"
+          echo "$listing" | grep "taskq/py.typed"
+          echo "$listing" | grep "taskq/migrations/01.00.00_01_pre_initial.sql"
+          echo "$listing" | grep "taskq/migrations/_variants/"
           # ^ migrate.py's checksum-drift check reads the published variant
           # history from the installed package (importlib.resources); a wheel
           # without it silently narrows every accepted-checksum set to the
           # current file only.
-          echo "$listing" | grep -q "taskq/web/templates/"
+          echo "$listing" | grep "taskq/web/templates/"
 
       - name: Test installation from wheel
         run: |

@@ -71,7 +71,21 @@ from .test_rt_cron_harness import (
     server_hour_floor,
 )
 
-pytestmark = pytest.mark.integration
+# load_sensitive (PR #695's ruling): every pin here runs the wedged-tick
+# scenario against real PG under deadline windows — the shipped 5s defaults
+# or a hand-tuned pair — and six pins assert elapsed wall against _BOUND_S
+# (_T_S + 2.5s), ~1.5x headroom: receipt-class under xdist co-tenancy. The
+# serial load-sensitive lane is where those bounds measure the machinery
+# and not the packing. THE TEETH ARE PRESERVED: the elapsed-vs-bound
+# asserts stay exactly as written — they distinguish "cut by the
+# machinery's deadline" from "cut by the test's own net" and still red on
+# a real livelock in the serial lane — and every wait_for(_BOUND_S) hull
+# keeps bounding its scenario. The module mark (the file's existing
+# pattern) is deliberate: there is no deterministic pin here to leave
+# behind — every test, including the strike-accounting pin, boots the same
+# wall-clock hang machinery (the strike pin's tick runs under
+# wait_for(_BOUND_S) itself).
+pytestmark = [pytest.mark.integration, pytest.mark.load_sensitive]
 
 _ACTOR = "rt_hang_actor"
 

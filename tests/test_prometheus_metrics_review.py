@@ -27,7 +27,10 @@ guards. Every rule must fire; a second set of healthy-shape inputs must
 NOT fire (the false-page guard). A rule that cannot fire against real
 names/labels - or that fires on a healthy fleet - fails here.
 
-Marks: integration (testcontainers PG), otel ([prometheus] extra).
+Marks: integration (testcontainers PG), otel ([prometheus] extra); the
+lock-contention family and the two promtool binding pins carry
+load_sensitive (their verdicts are emission-window-dependent — PR #698's
+conviction) and run in the serial load-sensitive lane.
 """
 
 from __future__ import annotations
@@ -404,6 +407,11 @@ class TestCronCounters:
         )
         assert any(s.value >= 1.0 for s in series), series
 
+    # load_sensitive: the same losing-side lock-race emission as the
+    # convicted follower pin (TestFleetHandover) — a real contention event
+    # must land inside the probe's window (count 0 -> >=1); see the family
+    # note there.
+    @pytest.mark.load_sensitive
     def test_cron_lock_contention_during_a_held_cron_lock(self, live: Exposition) -> None:
         """A session holding the cron advisory lock's own key makes every
         leader tick's try-lock lose - the real contention emission."""
@@ -545,6 +553,17 @@ class TestWatchdogFamily:
 
 
 class TestFleetHandover:
+    # load_sensitive (PR #698's conviction — one root, four faces in this
+    # file): the contention counters record the LOSING side of a lock race
+    # whose cycle the lease/tick machinery owns — the follower's election
+    # against the leader's lease, the tick's try-lock against the held
+    # key. The probe's ~130s window allows ~1 cycle of margin; a starved
+    # runner's elections don't cycle in time, the series never emits, and
+    # the pin reds on runner speed. The serial load-sensitive lane (this
+    # file is tier-ungated, so the marker routes it plainly) is where the
+    # window measures the machinery and not the packing. The asserts are
+    # untouched.
+    @pytest.mark.load_sensitive
     def test_lock_contention_recorded_by_the_losing_side(self, follower: Exposition) -> None:
         """A second worker electing while the first holds leadership: the
         losing side's first sight of a holder records the contention."""
@@ -1419,6 +1438,12 @@ def test_threshold_margins_fire_exactly_at_the_documented_line(
     not docker_available(),
     reason="promtool runs in the prom/prometheus container; Docker unreachable",
 )
+# load_sensitive: the binding asserts require the contention series to be
+# among the REAL scrapes' emissions — the harness's literal "0+1x30"
+# contention feed presumes the event landed inside the probe's window
+# (PR #698's conviction: a slow runner's elections don't cycle in time).
+# Same family note as TestFleetHandover.
+@pytest.mark.load_sensitive
 def test_harness_series_are_bound_to_the_served_exposition(
     live: Exposition, follower: Exposition, hostile_mid: Exposition, emitter: Exposition
 ) -> None:
@@ -1483,6 +1508,11 @@ def test_harness_series_are_bound_to_the_served_exposition(
     not docker_available(),
     reason="promtool runs in the prom/prometheus container; Docker unreachable",
 )
+# load_sensitive: the operand scan asserts the contention rule's metric
+# against the REAL emission (``token in emitted``), and promtool evaluates
+# the window-fed cases — the same convicted root as the harness-binding
+# pin (the contention event must land inside the probe's window).
+@pytest.mark.load_sensitive
 def test_every_alert_rule_fires_on_real_names_and_labels(
     live: Exposition,
     follower: Exposition,

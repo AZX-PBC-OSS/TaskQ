@@ -132,6 +132,23 @@ async def _resolve_review_holds(
             await asyncio.sleep(0.3)
 
 
+# load_sensitive (PR #698's conviction, the round-1 law): the march's
+# verdict is its settle windows — the cron-kickoff loop (_KICKOFF_BOUND_S),
+# the map-fork loop (MARCH_SETTLE_BOUND_S), and wait_flow_terminal's
+# settle bound — and PR #698's run expired the settle with the rows STILL
+# MOVING (pending/scheduled, one item at attempt 2, nothing errored): the
+# runner-starvation red, not a lost march — the receipt's own row dump is
+# the "still moving, not stuck" signature. All three marches in this file
+# drive the identical shape (each ends its spine in wait_flow_terminal),
+# so all three carry the mark; the state-based asserts inside (row shapes,
+# joins, the HITL audit, the render) ride along deterministically.
+# PLUMBING (landed with the routing this branch carries): the serial
+# load-sensitive lane collects the tier via --system-e2e and runs these
+# pins ONCE, serially, under the tier's --timeout=900 default; the
+# system-e2e lane's filter carries "and not load_sensitive", so the 4-leg
+# PG version matrix no longer re-runs them co-tenanted - the accepted
+# single-run trade (the load-sensitive lane's comment in ci.yaml).
+@pytest.mark.load_sensitive
 @pytest.mark.timeout(900)
 async def test_the_deep_research_march_kick_to_explorer(
     march_pool: asyncpg.Pool,
@@ -377,6 +394,7 @@ async def test_the_deep_research_march_kick_to_explorer(
         await conn.close()
 
 
+@pytest.mark.load_sensitive
 @pytest.mark.timeout(600)
 async def test_the_streaming_emit_march_conditional_chains(
     march_pool: asyncpg.Pool,
@@ -464,6 +482,7 @@ async def test_the_streaming_emit_march_conditional_chains(
         await conn.close()
 
 
+@pytest.mark.load_sensitive
 @pytest.mark.timeout(600)
 async def test_the_doc_ingest_march_fan_in_progress_render(
     march_pool: asyncpg.Pool,

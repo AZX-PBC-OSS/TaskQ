@@ -588,6 +588,16 @@ async def _bulk_node(conn: asyncpg.Connection, schema: str, flow_id: JobId, *, s
     )
 
 
+# load_sensitive: this pin asserts WALL TIME — four elapsed asserts against
+# dispatcher_command_timeout (default 5.0s) on passes whose healthy runtime
+# is a fraction of that budget. Under xdist co-tenancy a sibling's CPU churn
+# pushed the loaded pass to 15.93s (PR #695's 3.13 leg): runner speed, not
+# the arm's shape. The serial load-sensitive lane is where a wall-time
+# assert measures the code under test and not the packing. The pin's
+# row-count asserts (batch bound, drain total, live survival) ride along;
+# they are deterministic wherever the pin runs. Every other pin in this
+# file is WALL-CLOCK-FREE (the module docstring's law) and stays unmarked.
+@pytest.mark.load_sensitive
 async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
