@@ -56,29 +56,100 @@ def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[ob
     return cast("Callable[[], Promise[object]]", fn)
 
 
-def source_changes_since(head_sha_value: str) -> bool:
+#: THE OFF-BY-ONE RULE'S NARROW EXCLUSION SET: the paths the staleness
+#: diff ignores for EVERY stem — the measurements estate and the
+#: workflow estate (.github). This is the DOCS-DERIVED stems' set (see
+#: ``DOCS_SENSITIVE_STEM_PREFIXES``): for the evidence kinds whose
+#: batteries READ the docs estate, a docs-only merge IS a source
+#: change.
+OFF_BY_ONE_NARROW_EXCLUSIONS: tuple[str, ...] = (
+    ":(exclude).measurements",
+    ":(exclude).github",
+)
+
+#: THE OFF-BY-ONE RULE'S EXCLUSION SET (the docs-exemption round): the
+#: pathspecs the staleness diff IGNORES for every other stem — the
+#: narrow set above plus the NON-BEHAVIORAL paths (docs and the
+#: readme/license/metadata class: paths that cannot alter what a plain
+#: stem's claim verifies). This is the in-suite mirror of the
+#: verifier's own ``_NONBEHAVIORAL_EXCLUSIONS``
+#: (``scripts/verify_evidence_heads.py``) — one law, two faces; the sync
+#: pin (``tests/test_evidence_docs_exemption_pins.py``) holds them in
+#: step. Pathspec shapes (git's anchoring, verified against git 2.56): a
+#: directory pathspec covers its SUBTREE from the root; ``README*`` and
+#: the ``glob``-magic ``*.md`` match at the ROOT only (glob magic: ``*``
+#: does not cross ``/``) — a nested ``tests/*.md`` receipt still
+#: stalifies.
+OFF_BY_ONE_DIFF_EXCLUSIONS: tuple[str, ...] = (
+    *OFF_BY_ONE_NARROW_EXCLUSIONS,
+    ":(exclude)LEDGER.md",
+    ":(exclude)docs",
+    ":(exclude)README*",
+    ":(exclude,glob)*.md",
+    ":(exclude)LICENSE",
+    ":(exclude).gitignore",
+)
+
+#: THE DOCS-DERIVED STEMS (the review round's cure) — the in-suite
+#: mirror of the verifier's own ``_DOCS_SENSITIVE_STEM_PREFIXES``: the
+#: evidence kinds whose batteries READ the docs estate (mkdocs builds
+#: ``docs/`` strict; the docs-example tests'
+#: ``tests/_docs_examples.py::DOC_ROOTS = ("docs", "README.md")``
+#: EXECUTE the fences those documents carry; the docs-lane captures run
+#: the same lanes). For these stems the docs exemption does not apply:
+#: ``source_changes_since`` judges them on the NARROW set, and a
+#: docs-only merge stalifies them exactly as a src/ merge would.
+DOCS_SENSITIVE_STEM_PREFIXES: tuple[str, ...] = (
+    "mkdocs-strict",
+    "docs-examples",
+    "docs-lane",
+)
+
+
+def source_changes_since(head_sha_value: str, stem: str | None = None) -> bool:
     """THE OFF-BY-ONE RULE (the head-stamp verifier's own, mirrored for
     the in-suite guards): whether ANY commit since *head_sha_value*
-    touched anything OUTSIDE the measurements estate. A claim recorded
-    on H is fresh at H2 when H2 is H plus measurement-only changes —
-    the source tree the claim verifies is content-identical. An
-    unresolvable claimed head (not an ancestor) = stale by definition.
+    touched a BEHAVIORAL path. For a plain stem that is anything
+    outside the measurements estate and the non-behavioral paths
+    (``OFF_BY_ONE_DIFF_EXCLUSIONS`` above): a claim recorded on H is
+    fresh at H2 when H2 is H plus measurement-and-docs-only changes —
+    the source + test tree the claim verifies is content-identical.
+
+    THE DOCS-DERIVED STEMS' FALLBACK (the review round's cure): *stem*
+    carrying a ``DOCS_SENSITIVE_STEM_PREFIXES`` prefix names an
+    evidence kind whose battery READS the docs estate — mkdocs builds
+    ``docs/`` strict and the docs-example tests' ``DOC_ROOTS`` execute
+    the ``docs/`` + ``README.md`` fences — so for those the exemption
+    set is the NARROW one (``OFF_BY_ONE_NARROW_EXCLUSIONS``) and a
+    docs-only merge stalifies the claim exactly as a src/ merge would.
+
+    An unresolvable claimed head (not an ancestor) = stale by
+    definition.
 
     THE PER-RUN MEMO (the estate's scale — 18k+ sink records across
     ~100 distinct claimed heads): the verdict is a pure function of the
-    claimed sha and THIS RUN's HEAD — and HEAD cannot move mid-run
-    (a test process never commits; the run's git world is fixed), so
-    each distinct claimed sha is resolved AT MOST ONCE per process.
-    The guard's walk over every sink record collapses from
-    O(records) git subprocesses (18k+ — the per-test timeout's knife
-    edge at 300 s, convicted: the wf battery's redlog-guard timeout)
-    to O(distinct heads)."""
+    claimed sha, THE STEM'S exclusion set and THIS RUN's HEAD — and
+    HEAD cannot move mid-run (a test process never commits; the run's
+    git world is fixed), so each distinct (claimed sha, stem) is
+    resolved AT MOST ONCE per process. The guard's walk over every
+    sink record collapses from O(records) git subprocesses (18k+ — the
+    per-test timeout's knife edge at 300 s, convicted: the wf battery's
+    redlog-guard timeout) to O(distinct heads). THE MEMO KEY IS THE
+    PAIR (the review round's own correctness fix): a docs-derived stem
+    and a plain stem sharing a claimed head get DIFFERENT verdicts from
+    DIFFERENT exclusion sets — keyed by the sha alone the first caller
+    would answer for both."""
     import subprocess
 
-    cached = _SOURCE_CHANGES_MEMO.get(head_sha_value)
+    memo_key = (head_sha_value, stem)
+    cached = _SOURCE_CHANGES_MEMO.get(memo_key)
     if cached is not None:
         return cached
 
+    if stem is not None and stem.startswith(DOCS_SENSITIVE_STEM_PREFIXES):
+        exclusions = OFF_BY_ONE_NARROW_EXCLUSIONS
+    else:
+        exclusions = OFF_BY_ONE_DIFF_EXCLUSIONS
     proc = subprocess.run(
         [
             "git",
@@ -87,7 +158,7 @@ def source_changes_since(head_sha_value: str) -> bool:
             f"{head_sha_value}..HEAD",
             "--",
             ".",
-            ":(exclude).measurements",
+            *exclusions,
         ],
         cwd=Path(__file__).parent.parent,
         capture_output=True,
@@ -97,13 +168,15 @@ def source_changes_since(head_sha_value: str) -> bool:
     verdict = True
     if proc.returncode == 0:
         verdict = bool(proc.stdout.strip())
-    _SOURCE_CHANGES_MEMO[head_sha_value] = verdict
+    _SOURCE_CHANGES_MEMO[memo_key] = verdict
     return verdict
 
 
 #: The memo's store (see :func:`source_changes_since` — the verdict is
-#: pure in (claimed sha, the run's fixed HEAD)).
-_SOURCE_CHANGES_MEMO: dict[str, bool] = {}
+#: pure in (claimed sha, the stem's exclusion set, the run's fixed
+#: HEAD); the key is the (sha, stem) PAIR — the docs-derived stems'
+#: narrow set and a plain stem's full set disagree on the same sha).
+_SOURCE_CHANGES_MEMO: dict[tuple[str, str | None], bool] = {}
 
 
 def head_sha() -> str:
