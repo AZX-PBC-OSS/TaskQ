@@ -225,7 +225,19 @@ def test_actor_carrier_carries_the_caps() -> None:
         "max_concurrent": 2,
         "result_ttl": 60.0,
         "metadata": {"workflow_actor": True},
+        "capacity_owner": "operator",
     }
+
+
+def test_actor_carrier_carries_the_code_owner() -> None:
+    """C15: the F3 carrier carries the handle's capacity-owner
+    declaration (the projection's vocabulary grew with the ActorConfig
+    field) — "code" rides the carrier the same way the caps do."""
+    app = WorkflowApp()
+    handle = app.actor(max_concurrent=2, capacity_owner="code")(_plain_body)
+    config = handle.actor_config()
+    assert config["capacity_owner"] == "code"
+    assert config["max_concurrent"] == 2
 
 
 def test_projection_rows_carry_the_declared_caps() -> None:
@@ -988,6 +1000,7 @@ def test_actor_carrier_matches_the_projection_vocabulary() -> None:
         "max_concurrent": 2,
         "result_ttl": 60.0,
         "metadata": {"workflow_actor": True},
+        "capacity_owner": "operator",
     }
 
 
@@ -1831,3 +1844,246 @@ def test_the_park_stamp_clears_the_stale_denied_bucket() -> None:
         f"THE STALE STAMP: the park kept the denial's bucket — {merged}"
     )
     assert merged["parked"] == "flow-reservation-unknown-bucket", merged
+
+
+# ── (g) the code owner's handle-wiring flow (the review's cure) ──────────
+
+
+def test_map_body_handle_flows_the_code_owner() -> None:
+    """The review's blocker, the map arm: a ``capacity_owner="code"``
+    handle wired as the MAP body flows its owner into the node's decl
+    under the SAME handle-terms law as the caps — the projected
+    ``ActorConfig`` for THAT cohort reads "code". The pre-cure shape
+    honored the handle's ``max_concurrent`` and silently dropped the
+    owner (the opt-in no-op with zero signal)."""
+    app = WorkflowApp()
+
+    @app.actor(max_concurrent=4, capacity_owner="code")
+    async def code_owned_map_item(ctx: StepContext, item: ImageItem) -> Report:
+        return Report(ref=item.kind_id)  # pragma: no cover - the runner drives real bodies
+
+    @app.workflow("map-code-owner-flow")
+    def map_code_owner_flow() -> Promise[object]:
+        source = step(_route_source, Ingest(doc_id="d"), key="src")
+        return build(map_source(source, code_owned_map_item))
+
+    node = app.get("map-code-owner-flow").nodes["src"]
+    assert node.capacity_owner == "code", "the map body's owner flowed into the decl"
+    assert node.max_concurrent == 4, "the caps flow beside it (unchanged)"
+    rows = {c.actor: c for c in project_workflow_actor_configs()}
+    assert rows["wf"].capacity_owner == "code", "the projected cohort reads the owner"
+
+
+def test_route_arm_body_handle_flows_the_code_owner_per_arm() -> None:
+    """The review's blocker, the route arm: an OVERRIDING arm's body
+    handle carries the owner onto THAT ARM's cohort — per-arm, never
+    folded into the source node (the sibling arm and the join must not
+    inherit it). The arm's own ``RouteArm.capacity_owner`` declaration
+    honors it (the priority surface's per-arm shape); WITHOUT it the
+    wiring refuses, NAMING the owner (the H-A4 law's extension — the
+    override would drop it)."""
+    from taskq.workflows._worker_execution import project_workflow_actor_configs as project
+    from taskq.workflows.api._graph import RouteArm, WorkflowBuildError
+
+    app = WorkflowApp()
+
+    @app.actor(max_concurrent=4, capacity_owner="code")
+    async def code_owned_image_arm(ctx: StepContext, item: ImageItem) -> Report:
+        return Report(ref=item.kind_id)  # pragma: no cover - the runner drives real bodies
+
+    @app.workflow("route-per-arm-owner-flow")
+    def route_per_arm_owner_flow() -> Promise[object]:
+        source = step(_route_source, Ingest(doc_id="d"), key="src")
+        return build(
+            route(
+                source,
+                {
+                    # The handle's owner is CARRIED by the arm's own
+                    # declaration (the honor path — the other caps too).
+                    ImageItem: RouteArm(
+                        code_owned_image_arm,
+                        actor="wf-image",
+                        max_concurrent=4,
+                        capacity_owner="code",
+                    ),
+                    # THE SIBLING ARM: untouched — its own cohort stays
+                    # operator-owned.
+                    AudioItem: RouteArm(_audio_arm, actor="wf-audio"),
+                },
+            )
+        )
+
+    rows = {c.actor: c for c in project()}
+    assert rows["wf-image"].capacity_owner == "code", "the arm's cohort reads the owner"
+    assert rows["wf-image"].max_concurrent == 4
+    assert rows["wf-audio"].capacity_owner == "operator", "the sibling arm is untouched"
+
+    # THE DROP ARM: the same handle on an overriding arm WITHOUT the
+    # owner's re-declaration — the named refusal (never a silent drop).
+    app_two = WorkflowApp()
+
+    @app_two.actor(max_concurrent=4, capacity_owner="code")
+    async def code_owned_arm_two(ctx: StepContext, item: ImageItem) -> Report:
+        return Report(ref=item.kind_id)  # pragma: no cover
+
+    @app_two.workflow("route-owner-drop-flow")
+    def route_owner_drop_flow() -> Promise[object]:
+        source = step(_route_source, Ingest(doc_id="d"), key="src")
+        return build(
+            route(
+                source,
+                {
+                    ImageItem: RouteArm(code_owned_arm_two, actor="wf-image-two"),
+                    AudioItem: RouteArm(_audio_arm, actor="wf-audio-two"),
+                },
+            )
+        )
+
+    with pytest.raises(WorkflowBuildError, match="capacity_owner"):
+        app_two.get("route-owner-drop-flow")
+
+
+def test_the_join_node_stays_at_the_source_terms() -> None:
+    """The review's per-arm law, the join's face: the map's derived join
+    node carries NO terms of its own — its cohort is the source's, so
+    the projected row for the shared actor IS the source's declaration
+    (the handle's owner + caps), never a second vocabulary."""
+    app = WorkflowApp()
+
+    @app.actor(max_concurrent=4, capacity_owner="code")
+    async def code_owned_join_map_item(ctx: StepContext, item: ImageItem) -> Report:
+        return Report(ref=item.kind_id)  # pragma: no cover - the runner drives real bodies
+
+    @app.workflow("join-source-terms-flow")
+    def join_source_terms_flow() -> Promise[object]:
+        source = step(_route_source, Ingest(doc_id="d"), key="src")
+        return build(map_source(source, code_owned_join_map_item))
+
+    compiled = app.get("join-source-terms-flow")
+    join = compiled.nodes["src.join"]
+    assert join.capacity_owner == "operator", "the join's decl carries no owner of its own"
+    assert join.max_concurrent is None
+    rows = {c.actor: c for c in project_workflow_actor_configs()}
+    assert rows["wf"].capacity_owner == "code", "the shared cohort reads the SOURCE's terms"
+    assert rows["wf"].max_concurrent == 4
+
+
+def test_a_node_already_carrying_a_different_owner_conflicts() -> None:
+    """The H-A4 shape on the owner axis: a node that already carries an
+    owner (the step's code-owned handle) met at the map/route wiring by
+    a handle carrying a DIFFERENT owner — the named conflict refusal,
+    never a silent overwrite."""
+    from taskq.workflows.api._graph import WorkflowBuildError
+
+    app = WorkflowApp()
+
+    @app.actor(capacity_owner="code", max_concurrent=4)
+    async def code_owned_source(ctx: StepContext, params: Ingest) -> list[ImageItem]:
+        return [ImageItem(kind_id="i")]  # pragma: no cover - the runner drives real bodies
+
+    @app.actor()  # the DEFAULT owner face — a different declaration
+    async def default_map_item(ctx: StepContext, item: ImageItem) -> Report:
+        return Report(ref=item.kind_id)  # pragma: no cover - the runner drives real bodies
+
+    @app.workflow("owner-conflict-flow")
+    def owner_conflict_flow() -> Promise[object]:
+        source = step(code_owned_source, Ingest(doc_id="d"), key="src")
+        return build(map_source(source, default_map_item))
+
+    with pytest.raises(WorkflowBuildError, match="capacity_owner"):
+        app.get("owner-conflict-flow")
+
+
+def test_the_code_only_handle_is_never_silent() -> None:
+    """The review's code-only case: a handle carrying ONLY the owner (no
+    caps) is a capacity declaration — wired as the MAP body (owner only,
+    the caps' slots stay unset), refused NAMED at the route's placement
+    override and the chain (the surfaces that would drop it). Never the
+    zero-signal no-op the pre-cure shape was."""
+    from taskq.workflows._worker_execution import project_workflow_actor_configs as project
+    from taskq.workflows.api._graph import RouteArm, WorkflowBuildError
+
+    # (i) The MAP body: wired, owner only.
+    app = WorkflowApp()
+
+    @app.actor(capacity_owner="code")
+    async def code_only_map_item(ctx: StepContext, item: ImageItem) -> Report:
+        return Report(ref=item.kind_id)  # pragma: no cover - the runner drives real bodies
+
+    @app.workflow("code-only-map-flow")
+    def code_only_map_flow() -> Promise[object]:
+        source = step(_route_source, Ingest(doc_id="d"), key="src")
+        return build(map_source(source, code_only_map_item))
+
+    node = app.get("code-only-map-flow").nodes["src"]
+    assert node.capacity_owner == "code", "the owner-only handle WIRES (owner only)"
+    assert node.max_concurrent is None, "the caps' slots stay unset"
+    rows = {c.actor: c for c in project()}
+    assert rows["wf"].capacity_owner == "code"
+
+    # (ii) The route's placement override: the NAMED refusal.
+    app_two = WorkflowApp()
+
+    @app_two.actor(capacity_owner="code")
+    async def code_only_arm(ctx: StepContext, item: ImageItem) -> Report:
+        return Report(ref=item.kind_id)  # pragma: no cover
+
+    @app_two.workflow("code-only-arm-flow")
+    def code_only_arm_flow() -> Promise[object]:
+        source = step(_route_source, Ingest(doc_id="d"), key="src")
+        return build(
+            route(
+                source,
+                {
+                    ImageItem: RouteArm(code_only_arm, actor="wf-image-x"),
+                    AudioItem: RouteArm(_audio_arm, actor="wf-audio-x"),
+                },
+            )
+        )
+
+    with pytest.raises(WorkflowBuildError, match="capacity_owner"):
+        app_two.get("code-only-arm-flow")
+
+    # (iii) The chain: the same named refusal (the surface that drops).
+    from taskq.workflows.chain import Chain, Step
+
+    app_three = WorkflowApp()
+
+    @app_three.actor(capacity_owner="code")
+    async def code_only_chain_body(ctx: StepContext, item: ImageItem) -> Report:
+        return Report(ref=item.kind_id)  # pragma: no cover
+
+    code_only_chain = Chain(
+        name="code-only-chain",
+        start="s1",
+        steps={"s1": Step(body=code_only_chain_body, outcomes=Report)},
+    )
+
+    @app_three.workflow("code-only-chain-flow")
+    def code_only_chain_flow() -> Promise[object]:
+        return build(chain_source(code_only_chain, Ingest(doc_id="d"), key="chain"))
+
+    with pytest.raises(WorkflowBuildError, match=r"capped actor handle.*capacity_owner"):
+        app_three.get("code-only-chain-flow")
+
+
+def test_the_code_only_step_flows_the_owner_into_the_decl() -> None:
+    """The review's 4(c): the step() verb's own flow carries a CODE-ONLY
+    handle's owner into the decl (no caps involved) — the projection's
+    row reads it. Locks the unconditional flow the blocker's cure
+    relies on."""
+    app = WorkflowApp()
+
+    @app.actor(capacity_owner="code")
+    async def code_only_step_body(ctx: StepContext, params: Ingest) -> Report:
+        return Report(ref=params.doc_id)  # pragma: no cover - the runner drives real bodies
+
+    @app.workflow("code-only-step-flow")
+    def code_only_step_flow() -> Promise[object]:
+        return build(step(code_only_step_body, Ingest(doc_id="d"), key="one", actor="wf-only"))
+
+    node = app.get("code-only-step-flow").nodes["one"]
+    assert node.capacity_owner == "code"
+    rows = {c.actor: c for c in project_workflow_actor_configs()}
+    assert rows["wf-only"].capacity_owner == "code"
+    assert rows["wf-only"].max_concurrent is None

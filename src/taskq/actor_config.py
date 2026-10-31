@@ -2,11 +2,44 @@
 
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Final
+from typing import Final, Literal
 
 MAX_ACTOR_RETENTION_DAYS: Final[int] = timedelta.max.days
 """Maximum supported ``actor_config.metadata.retention_days`` value."""
 _MAX_ACTOR_RETENTION_DAYS_TEXT = str(MAX_ACTOR_RETENTION_DAYS)
+
+type CapacityOwner = Literal["operator", "code"]
+"""Who owns an actor's capacity columns once an ``actor_config`` row exists.
+
+``"operator"`` (the default — today's law, unchanged): the stored row wins
+on every conflict; the ``@actor(...)`` literal only seeds the row on first
+creation, and a later literal change is the expected operator-override
+log, never a write.
+
+``"code"`` (the opt-in): the declaration of record is the CODE literal —
+the startup upsert's ``DO UPDATE SET`` rewrites ``max_concurrent`` and
+``result_ttl`` from the literal on every boot (the retry contract's own
+law, on the capacity axes), so a changed literal deploys by code instead
+of silently doing nothing after first boot.
+"""
+
+CAPACITY_OWNER_OPERATOR: Final[CapacityOwner] = "operator"
+CAPACITY_OWNER_CODE: Final[CapacityOwner] = "code"
+_CAPACITY_OWNERS: Final[tuple[str, ...]] = (CAPACITY_OWNER_OPERATOR, CAPACITY_OWNER_CODE)
+
+
+def validate_capacity_owner(value: object, what: str) -> None:
+    """The declaration-shape door both actor surfaces share: *value* must
+    be exactly one of the two owner names — anything else (another
+    string, ``None``, a bool, an int) is the refused declaration, raised
+    as ``ValueError`` naming the declaration site."""
+    if type(value) is not str or value not in _CAPACITY_OWNERS:
+        raise ValueError(
+            f"{what} capacity_owner must be 'operator' (the default: the "
+            f"operator owns the stored capacity once a row exists) or "
+            f"'code' (the literal deploys by code on every boot); got "
+            f"{value!r}."
+        )
 
 
 def normalize_retention_days(value: object) -> int:
@@ -67,6 +100,18 @@ class ActorConfig:
     # ref's validated values explicitly.
     max_attempts: int = 3
     retry_kind: str = "transient"
+    # THE CAPACITY OWNER (C15's opt-in): who owns the capacity columns
+    # once this row exists. "operator" (the default) is today's law —
+    # the stored value survives every subsequent upsert untouched.
+    # "code" hands max_concurrent/result_ttl to the declaration: the
+    # upsert's SET clause rewrites them from THIS carrier's literal on
+    # every boot. The queue and max_pending stay operator-owned for BOTH
+    # owners (the queue's move-queue law; max_pending's enforcement is
+    # the producer-side enqueue admission reading the stored row).
+    # Plain ``str`` (the retry_kind shape): the two owner names are the
+    # decorators' static door (``CapacityOwner``) + their shared runtime
+    # validation; the carrier just carries.
+    capacity_owner: str = "operator"
 
     def __post_init__(self) -> None:
         if "retention_days" in self.metadata:

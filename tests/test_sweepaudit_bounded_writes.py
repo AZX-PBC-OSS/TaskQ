@@ -231,6 +231,15 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "INSERT ... ON CONFLICT over the registered-actor set; actor_config "
         "cardinality is configuration, not backlog",
     ),
+    "_UPSERT_CODE_OWNED_CAPACITY_SQL": (
+        "ON CONFLICT",
+        "INSERT ... ON CONFLICT over the registered-actor set — C15's "
+        "code-owned capacity partition, the same statement shape in the "
+        "same single boot transaction as _UPSERT_ACTOR_CONFIG_SQL; each "
+        "row's DO UPDATE is bounded by the conflict key, so the write is "
+        "row-proportional to the registered actor set, and actor_config "
+        "cardinality is configuration, not backlog",
+    ),
     # ── Config-cardinality tables: the table itself cannot grow with the
     #    jobs backlog ──
     "_SYNC_DELETE_SQL_TEMPLATE": (

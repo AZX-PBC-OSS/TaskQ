@@ -2335,6 +2335,7 @@ async def _main(
                     if ref.result_ttl is not None
                     else None,
                     metadata=dict(ref.metadata),
+                    capacity_owner=ref.capacity_owner,
                     retry_base=ref.retry.base,
                     retry_cap=ref.retry.cap,
                     retry_backoff=ref.retry.backoff,

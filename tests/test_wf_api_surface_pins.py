@@ -66,6 +66,7 @@ def test_actor_projects_the_estate_carrier() -> None:
         "max_concurrent": None,
         "result_ttl": None,
         "metadata": {"workflow_actor": True},
+        "capacity_owner": "operator",
     }
     assert handle.max_attempts == 5 and handle.retry_kind == "permanent"
 
