@@ -310,8 +310,28 @@ JOIN {schema}.jobs root ON root.id = w.flow_id
 
 
 OUTBOX_FETCH_UNDELIVERED_SQL = """\
-SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindings
+SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindings,
+       -- THE RUN-PRIORITY STAMP'S RESOLUTION (the wf-priority cure's
+       -- drain leg): the flow root's stamped per-call override, resolved
+       -- with THE FLEET DOOR'S OWN ARITHMETIC mirrored in SQL
+       -- (_worker_execution.py's parse: an int the create wrote;
+       -- unparseable or out-of-smallint-domain → NO override) and
+       -- COALESCEd to the column default's own value (0 — the unset
+       -- case binds the column default's own value, the pre-cure
+       -- byte-identical row). The escalation is an interactive run's
+       -- most latency-sensitive follow-up: its consumer row materializes
+       -- at the RUN's priority, never the default.
+       COALESCE(
+           CASE
+             WHEN root.metadata->>'wf_priority' ~ '^[+-]?[0-9]+$'
+                  AND (root.metadata->>'wf_priority')::int
+                      BETWEEN -32768 AND 32767
+             THEN (root.metadata->>'wf_priority')::int
+           END,
+           0
+       ) AS priority
 FROM {schema}.wf_outbox o
+LEFT JOIN {schema}.jobs root ON root.id = o.flow_id
 WHERE NOT o.delivered
 ORDER BY o.id
 LIMIT $1
@@ -324,15 +344,20 @@ FOR UPDATE OF o SKIP LOCKED
 # (jobs_idempotency_scope_key_uniq, 01.00.03) is the dedup authority. A crash
 # between fire-commit and consumer-insert re-drains; the arbiter makes the
 # retry a no-op (pin 20: the drain completes the dispatch EXACTLY ONCE).
+# priority is the RUN's stamped override the drain's fetch resolved (the
+# wf-priority cure — the loop escalation's consumer materializes at the
+# run's priority; the fleet door's own arithmetic, mirrored in the fetch's
+# SQL): resolved by OUTBOX_FETCH_UNDELIVERED_SQL, COALESCEd to the column
+# default's own value (0 — the pre-cure byte-identical row).
 OUTBOX_DRAIN_CONSUMERS_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key)
+     idempotency_scope, idempotency_key, priority)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[]
+    $11::jsonb[], $12::text[], $13::text[], $14::smallint[]
 )
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL

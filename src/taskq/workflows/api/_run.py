@@ -71,6 +71,7 @@ async def run(
     max_ticks: int = 5000,
     execute: bool = True,
     deps: object | None = None,
+    priority: int | None = None,
 ) -> WorkflowRunResult:
     """THE ONE-CALL RUN: create the run (the typed claim — *key* is the
     run key, the G2 arbiter's rememberer), drive it to ``until``
@@ -88,10 +89,25 @@ async def run(
     bound at ``WorkflowApp(deps=…)``; an explicit *deps* is the direct
     door's override (the runner-side binding upgrades the validation's
     view — the E12 contract reads the effective binding).
+
+    *priority* is THE PER-CALL OVERRIDE (the wf-priority cure — the
+    enqueue-time face the vanilla ``enqueue(priority=…)`` always had):
+    the run's rows land at the value in the ``jobs.priority`` column —
+    the dispatch claim's ``priority DESC`` (the same ORDER BY the
+    vanilla rows obey) then serves an interactive run ahead of a deep
+    default-0 backlog. The law's precedence: this override > the step's
+    declaration > the actor handle's > the column default. ``None``
+    (the default) = no override — the pre-cure byte-identical shape.
+    The domain is the smallint column's (``check_priority_domain`` — the
+    same refusal at every layer that accepts a priority).
     """
+    from taskq.constants import check_priority_domain
+
+    if priority is not None:
+        check_priority_domain(priority, what="the run's priority override")
     runner = FlowRunner(flow, pool, schema, deps=deps if deps is not None else flow.deps)
     try:
-        claim = await runner.create_flow(input=input, run_key=key)
+        claim = await runner.create_flow(input=input, run_key=key, priority=priority)
     except asyncpg.exceptions.UndefinedTableError as exc:
         # THE FIRST CONTACT'S TRANSLATION (the teardown round's cure):
         # the packaged run on an unmigrated schema was the RAW driver

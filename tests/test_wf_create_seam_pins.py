@@ -136,7 +136,9 @@ async def test_pin_create_is_one_transaction_the_kill_commits_nothing(
     _app, compiled = _create_seam_app()
     runner = FlowRunner(compiled, wf_pool, wf_schema)
 
-    async def _killed_nodes(conn: object, flow_id: JobId, input: object) -> None:
+    async def _killed_nodes(
+        conn: object, flow_id: JobId, input: object, *, run_priority: int | None = None
+    ) -> None:
         raise RuntimeError("the kill: the process dies after the root insert")
 
     monkeypatch.setattr(runner, "_insert_static_nodes", _killed_nodes)

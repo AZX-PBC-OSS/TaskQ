@@ -93,6 +93,66 @@ shipped with; each was closed on the fixing branch before merge.
 - **Absorbed crashes**: teardown reaping that suppressed a residue task's
   real exception. Silent swallowing is a defect even in test infrastructure.
 
+## Ledgered follow-ups (the reviewed cures' known open faces)
+
+A reviewed cure's known-but-open face, itemized with the same rigor as the
+fix holes above: what the curing commit covers, what stays open, and the
+discipline the open part's future cure owes.
+
+- **The chains' priority DECLARATION face** (the wf-priority cure's
+  ledgered follow-up — the feature review's own itemization). The
+  priority surface's precedence law resolves every row it materializes —
+  except a chain link's own declaration, which has no face today:
+  `EmitChild`, `chain_start`, and `Chain.next_child` (chain.py's emit
+  child specs, the chain's fork children) accept no `priority` field, so
+  `chain_fork` always resolves the column default — a consumer declaring
+  per-chain-link priorities silently lands every link at 0, the exact
+  silent-drop shape the priority cure's other faces refuse at their
+  declaration sites. COVERED by the wf-priority cure: the rows the OUTBOX
+  DRAIN materializes (the loop escalation's consumer — an interactive
+  run's most latency-sensitive follow-up — and the fired joins' fresh
+  item-shape consumers) resolve the run's stamped `wf_priority` (the
+  drain's root-metadata join + COALESCE, the fleet door's parse-and-
+  degrade arithmetic mirrored in SQL; pinned red-first in
+  tests/test_wf_priority_pins.py: the escalation lands at the run's
+  override, a malformed or out-of-domain stamp degrades to the column
+  default, never wedges the drain). OPEN: the chains' DECLARATION face —
+  a `priority=` on the chain's links (the `EmitChild` field, the
+  `chain_start`/`next_child` plumbing, and the smallint-domain refusal at
+  the declaration site — `check_priority_domain`, the same law every
+  other priority face keeps). The future cure's red-first pin: a chain
+  declaring per-link priorities lands its emit-start and link rows at
+  the declared values (today's rows are the default-0 conviction).
+- **The drain's regex guard passes beyond-int4 digit strings to the
+  `::int` cast** (the wf-priority cure's drain residual — the
+  re-review's own ledger line). `OUTBOX_FETCH_UNDELIVERED_SQL`'s stamp
+  resolution guards the stamp text with `^[+-]?[0-9]+$` and then casts
+  `(metadata->>'wf_priority')::int` inside the smallint `BETWEEN` guard
+  (_sql_sweep.py:326-328). A digit string past int4's domain
+  ("99999999999" — the regex PASSES it) makes the CAST RAISE in
+  Postgres (`value ... is out of range for type integer`), erroring the
+  whole drain statement — where the fleet door's Python parse degrades
+  the same stamp to no-override (Python's int is arbitrary-precision;
+  `check_priority_domain` is the clamp). The two doors diverge on
+  exactly the stamp a hand-crafted row can carry. CORRUPTION-ONLY and
+  unreachable via the API: `create_flow`/`run` validate the kwarg
+  (`check_priority_domain`) before the stamp is ever written — only a
+  hand-crafted row renders the shape, and it is the review's own
+  prescribed regex-guard shape's property, not an introduced defect's.
+  Blast radius if hit: one bad root parks EVERY flow's consumer drain
+  behind it (the fetch is a shared batch — the raise kills the pass).
+  OPEN (the future hardening's shape, either arm): length-bound the
+  regex so the cast cannot see a digit string past int4 (a
+  `{1,9}`-shaped digit cap), or cast `::numeric` FIRST and put the
+  smallint `BETWEEN` on the numeric — the raise becomes the guard's own
+  false-arm, the degrade reaching the COALESCE untouched. The
+  red-first pin's design: seed a flow root with
+  `wf_priority="99999999999"` and one undelivered outbox row, run
+  `drain_outbox` — today the statement raises (the drain wedges; the
+  red), post-hardening the consumer lands at the column default 0 and
+  the outbox flips delivered (the green — the same degrade-to-default
+  law the in-domain malformed stamps already pin).
+
 ## The rules the campaign operates under
 
 - A rerun is not evidence. Every red gets the chain: symptom, mechanism,
