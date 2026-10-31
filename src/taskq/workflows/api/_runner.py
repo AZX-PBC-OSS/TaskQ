@@ -58,6 +58,7 @@ from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
+from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
 from taskq.workflows._cache import CachedStep
 from taskq.workflows._progress import (
@@ -100,6 +101,7 @@ from taskq.workflows.api._runner_codec import (
     next_data,
     result_truncation,
 )
+from taskq.workflows.api._runner_defer import DeferOps
 from taskq.workflows.api._runner_errors import VanishedNodeError, WorkflowRunError
 from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import LadderOps, is_infra_fault
@@ -206,11 +208,12 @@ def _resolve_priority(*levels: int | None) -> int:
     return 0
 
 
-class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
+class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     """The API's runner: create, drive, read. One engine, many surfaces —
     the runner OWNS no state; every fact is a row. The concern modules
-    (the loop driver, the ladder, the exit, the chain finalize) compose
-    in as mixins — each seam's machinery lives in its own module (§7b)."""
+    (the loop driver, the ladder, the exit, the chain finalize, the
+    deferral) compose in as mixins — each seam's machinery lives in its
+    own module (§7b)."""
 
     def __init__(
         self,
@@ -1174,6 +1177,29 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
                 signals=list(held.signal_names),
             )
             return "held"
+        except (Snooze, RetryAfter) as exc:
+            # THE DEFERRAL DISPOSITION (the vanilla consumer's own catch,
+            # mirrored onto the wf finalize — see api/_runner_defer for
+            # the law and the extension seam): the body's typed
+            # control-flow signals re-schedule the node at the delay —
+            # the attempt refunded (never burned: a deferral did not
+            # execute), the budget-gated consuming face terminalised
+            # through the wf terminal door, the run alive, no terminal,
+            # no decrement (the join's accounting unchanged). The catch's
+            # placement is the vanilla catch's own: AROUND the body
+            # invocation, BEFORE the ladder's body-failure catch — the
+            # signals are the body's control flow, never a failure the
+            # ladder may classify. The buffer closes first (the
+            # asymmetry's ordering law — the progress published before
+            # the deferral survives it). THE SEAT: this is the runner's
+            # STEP-body seam (the step, the chain, the map's item
+            # children, the route's arms — every body this tail
+            # invokes); the LOOP driver's iteration bodies have their
+            # own boundary (the loop's body-failure face, unchanged).
+            await emitter.aclose()
+            return await self._defer_step(
+                flow_id, row, attempt, ledger_id, exc, claim_epoch=claim_epoch
+            )
         except Exception as exc:  # Why: the ladder's boundary — ANY body failure routes through the retry classification.
             # THE BUFFER CLOSES BEFORE THE LADDER (the asymmetry's ordering
             # law): the final flush is bounded and best-effort — it can

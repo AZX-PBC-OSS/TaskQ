@@ -321,6 +321,11 @@ def register(router: APIRouter) -> None:
                 "map_done": n.map_done,
                 "map_children": n.map_children,
                 "error_class": n.error_class,
+                # THE DEFERRAL LINE (the snoozed step's sitting state —
+                # the "why is this step sitting here" answer): the
+                # label is the row's truth (the stamp's own
+                # discriminator), rendered beside the status chip.
+                "deferral_label": n.deferral_label,
             }
             # THE COLLAPSE (Q1d): the map children render through their
             # source's hexagon — the page's node projection is the

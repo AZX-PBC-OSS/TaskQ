@@ -1,7 +1,11 @@
 """The finalize-path statement constants (T04): the terminal-mark fence, the guarded decrement, the guarded fire, the outbox insert, the node/fork writes.
 
-The schema identifier is the ONLY interpolated value (validated at
-WorkflowSql.build); every caller-controlled value uses ``$N`` parameter
+The schema identifier is the ONLY caller-controlled interpolated value
+(validated at WorkflowSql.build); the ONE further token
+(``{min_deferral_interval}`` — the deferral floor fragment, a constant
+rendered from ``backend/_sql_fragments.MIN_DEFERRAL_INTERVAL_SQL`` so the
+SQL and the in-memory twin cannot drift) is fixed vocabulary, never
+caller input. Every caller-controlled value uses ``$N`` parameter
 binding. See _sql.py for the bundle and the JSONB-landmine rule.
 """
 
@@ -563,4 +567,184 @@ WHERE e.parent_id = $1
   AND j.status = 'pending'
   AND EXISTS (SELECT 1 FROM flow_alive)
 RETURNING j.id, j.deps_pending
+"""
+
+
+# ── THE DEFERRAL DISPOSITION'S STATEMENT (the wf face of the vanilla
+#    consumer's catch — the Snooze / RetryAfter row dispositions) ────────
+#
+# A workflow body raising the vanilla surface's typed control-flow signals
+# (``taskq.exceptions.Snooze`` / ``RetryAfter``) resolves to ONE of the
+# NAMED dispositions (``api/_runner_defer.DeferralDisposition``), and THIS
+# statement is the disposition's whole row law — the vanilla
+# ``mark_snoozed`` / ``mark_retry_after_consume_{true,false}`` arms
+# (``backend/_sql_templates.py``) mirrored onto the wf finalize's own
+# fence vocabulary:
+#
+#   * the row re-schedules: ``scheduled_at = clock_timestamp() + delay``,
+#     status 'scheduled' ('pending' for a zero effective delay) — the SAME
+#     live-row shape the ladder's own NODE_REPEND_SQL_TEMPLATE writes, so
+#     both doors re-claim it (the dev tick's claimable scan directly; the
+#     fleet through the leader's scheduled→pending promotion sweep 3);
+#   * the ATTEMPT ARM (the vanilla dispositions' refund law,
+#     ``ATTEMPT_REFUND_SQL``): a NON-consuming deferral did not execute —
+#     the claim's increment is REFUNDED (floored at 0), so ``max_attempts``
+#     is never exhausted by deferrals alone and the re-claim re-mints the
+#     SAME attempt ordinal (the ledger's arbiter row is re-used — the
+#     record never grows per snooze). A consuming ``RetryAfter`` KEEPS the
+#     increment — the burn is the budget's own charge (the vanilla
+#     mark_retry_after_consume_true's shape), bounded by THE BUDGET GATE
+#     below;
+#   * the non-consuming delay carries the vanilla's deferral floor
+#     (``MIN_DEFERRAL_INTERVAL`` — the monopolisation guard: a zero/now
+#     snooze must not park the node at the head of the dispatch order,
+#     one claim/refund round trip per cycle). The consuming arm keeps the
+#     raw delay: an immediate consuming retry is a real execution, bounded
+#     by the budget it spends;
+#   * the counters: ``snooze_count`` moves for the refunding arms only (a
+#     consuming retry is not a snooze — the vanilla's own accounting);
+#   * THE DEFERRAL STAMP (the run page's visibility — the operator's
+#     "why is this step sitting here" answer): the signal, the budget
+#     face, and the disposition's OWN post-attempt ordinal, derived IN
+#     this statement (the eighth rule: derived values are written only by
+#     the statement that derives them). The stamp's ``attempt`` is the
+#     row-disposition discriminator the run page reads: the label renders
+#     only while the row still SITS at this deferral's own reschedule
+#     (status 'scheduled' AND attempt == the stamp's), so a later ladder
+#     repend — the one other 'scheduled' writer, at a strictly greater
+#     attempt — never reads as a live deferral;
+#   * the lease-clear trio + ``assignment_routed = true`` (the vanilla
+#     deferral arms' own SET): the claim is released, and the row routes
+#     by the actor's current assignment from here on (the routing
+#     contract in ``backend/_dispatch_sql.py``);
+#   * THE CANCEL FENCE (the vanilla deferral arms' own law — "an operator
+#     cancel in flight WINS over the deferral" — in the wf cancel's own
+#     mark vocabulary, ``CANCEL_NODES_SQL_TEMPLATE``'s
+#     ``metadata.cancel_phase``): a row carrying the mark must never match
+#     the deferral arm — the merge below would otherwise read as
+#     never-cancelled and the operator's request would be laundered
+#     mid-flight. The marked row answers the CANCEL_FENCED verdict (the
+#     runner terminalises it through the wf terminal door, the vanilla
+#     cancel ladder's own face), never a deferral;
+#   * THE CLAIM FENCE (the finalize's own CAS vocabulary: status +
+#     worker + attempt + claim_epoch): a zombie's deferral matches
+#     NOTHING — no verdict row — and the runner records the attempt
+#     'fenced' on the ledger (H1: never a running row left forever);
+#   * THE BUDGET GATE (the consuming arm's only vanilla exit —
+#     mark_retry_after_consume_true's max_attempts fence): a consuming
+#     retry past the budget answers the EXHAUSTED verdict — the runner
+#     routes it through the wf terminal door (the ledger's failed row +
+#     the T06 cascade ride finalize_node; the vanilla's own class +
+#     message). The refunding arms are unconditional here: a deferral
+#     that never ran spends nothing.
+#
+# Every write is keyed to the ONE claimed node row (never a scan); the
+# two read CTEs (exhausted / cancel_fenced) write nothing — the verdict
+# is named, the wf terminal door owns every death.
+NODE_DEFER_SQL = """\
+WITH params AS (
+    SELECT $1::uuid AS job_id,
+           $2::uuid AS worker_id,
+           $3::interval AS delay,
+           $4::int AS attempt,
+           $5::bigint AS claim_epoch,
+           $6::text AS disposition,
+           $7::text AS signal_name,
+           -- THE NON-CONSUMING DEFERRAL FLOOR (the vanilla mark_snoozed's
+           -- own guard): only the refunding arms carry it; the consuming
+           -- arm keeps the raw delay.
+           CASE WHEN $6::text = 'retry_after_consuming' THEN $3::interval
+                ELSE GREATEST($3::interval, {min_deferral_interval}) END
+               AS effective_delay,
+           -- THE DISPOSITION'S OWN POST-ATTEMPT ORDINAL (the refund law
+           -- above; the fence guarantees j.attempt = $4 at write time).
+           CASE WHEN $6::text = 'retry_after_consuming' THEN $4::int
+                ELSE GREATEST($4::int - 1, 0) END
+               AS post_attempt
+),
+deferred AS (
+    UPDATE {schema}.jobs j
+    SET status = CASE WHEN (SELECT effective_delay FROM params) > interval '0'
+                      THEN 'scheduled'::"{schema}".job_status
+                      ELSE 'pending'::"{schema}".job_status END,
+        scheduled_at = clock_timestamp() + (SELECT effective_delay FROM params),
+        finished_at = NULL,
+        locked_by_worker = NULL,
+        lock_expires_at = NULL,
+        last_heartbeat_at = NULL,
+        attempt = (SELECT post_attempt FROM params),
+        snooze_count = CASE WHEN $6::text = 'retry_after_consuming' THEN j.snooze_count
+                            ELSE j.snooze_count + 1 END,
+        -- THE DEFERRAL STAMP (the run page's visibility — see the block
+        -- comment): the signal + the budget face + the disposition's own
+        -- post-attempt ordinal, one derived write.
+        metadata = j.metadata || jsonb_build_object(
+            'wf_deferral',
+            jsonb_build_object(
+                'signal', (SELECT signal_name FROM params),
+                'consume_budget', $6::text = 'retry_after_consuming',
+                'attempt', (SELECT post_attempt FROM params)
+            )
+        ),
+        -- A deferral returns a claimed row to the pending pool, so it
+        -- routes by the actor's current assignment from here on (the
+        -- routing contract in taskq/backend/_dispatch_sql.py; the
+        -- vanilla deferral arms' own SET).
+        assignment_routed = true
+    WHERE j.id = (SELECT job_id FROM params)
+      -- THE CLAIM FENCE (the finalize's own CAS vocabulary).
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      -- THE CANCEL FENCE (the wf cancel's own mark — the block comment).
+      AND NOT j.metadata ? 'cancel_phase'
+      -- THE BUDGET GATE (the consuming arm's only exit — the block
+      -- comment); the refunding arms are unconditional.
+      AND (
+          $6::text <> 'retry_after_consuming'
+          OR j.retry_kind = 'indefinite'
+          OR j.attempt < j.max_attempts
+      )
+    RETURNING j.id
+),
+exhausted AS (
+    -- THE BUDGET'S BOUND, read on the SAME fenced row the deferred arm
+    -- keys (the vanilla mark_retry_after_consume_true's max_attempts
+    -- arm, the arm order preserved: the cancel mark outranks it). This
+    -- arm WRITES NOTHING — the wf terminal door owns every node death;
+    -- the statement only names the verdict.
+    SELECT j.id
+    FROM {schema}.jobs j
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      AND NOT j.metadata ? 'cancel_phase'
+      AND $6::text = 'retry_after_consuming'
+      AND j.retry_kind <> 'indefinite'
+      AND j.attempt >= j.max_attempts
+      AND NOT EXISTS (SELECT 1 FROM deferred)
+),
+cancel_fenced AS (
+    -- THE CANCEL WINS (the vanilla deferral's own law — the block
+    -- comment): a clean claimed row carrying the wf cancel's mark. Also
+    -- writes nothing; the runner terminalises the node 'cancelled'
+    -- through the wf terminal door (the vanilla cancel ladder's face).
+    SELECT j.id
+    FROM {schema}.jobs j
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      AND j.metadata ? 'cancel_phase'
+      AND NOT EXISTS (SELECT 1 FROM deferred)
+)
+SELECT 'deferred'::text AS verdict, id AS job_id FROM deferred
+UNION ALL
+SELECT 'exhausted'::text AS verdict, id AS job_id FROM exhausted
+UNION ALL
+SELECT 'cancel_fenced'::text AS verdict, id AS job_id FROM cancel_fenced
 """

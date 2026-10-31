@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+from taskq.backend._sql_fragments import MIN_DEFERRAL_INTERVAL_SQL
 from taskq.constants import require_schema
 from taskq.workflows._sql_finalize import (
     COLLECT_FAN_IN_APPEND_SQL,
@@ -50,6 +51,7 @@ from taskq.workflows._sql_finalize import (
     FORK_EDGES_SQL,
     FORK_JOIN_CONSUMERS_SQL,
     FORK_JOIN_NODE_SQL,
+    NODE_DEFER_SQL,
     NODE_EDGE_SQL,
     NODE_INSERT_SQL,
     OUTBOX_INSERT_SQL,
@@ -185,6 +187,7 @@ class WorkflowSql:
     nodeless_root_reap: str
     node_insert: str
     node_edge: str
+    node_defer: str
     flow_status: str
     flow_run_insert: str
     flow_run_read: str
@@ -219,6 +222,10 @@ class WorkflowSql:
         subs: Final[tuple[tuple[str, str], ...]] = (
             ("{schema}", schema),
             ("{terminal}", TERMINAL_SQL_SET),
+            # The deferral floor (the vanilla mark_snoozed's own guard) —
+            # a fixed fragment rendered from the shared constant, never
+            # caller input (NODE_DEFER_SQL is its only consumer).
+            ("{min_deferral_interval}", MIN_DEFERRAL_INTERVAL_SQL),
         )
 
         def render(template: str) -> str:
@@ -273,6 +280,7 @@ class WorkflowSql:
             nodeless_root_reap=render(NODELESS_ROOT_REAP_SQL),
             node_insert=render(NODE_INSERT_SQL),
             node_edge=render(NODE_EDGE_SQL),
+            node_defer=render(NODE_DEFER_SQL),
             flow_status=render(FLOW_STATUS_SQL),
             flow_run_insert=render(FLOW_RUN_INSERT_SQL),
             flow_run_read=render(FLOW_RUN_READ_SQL),
