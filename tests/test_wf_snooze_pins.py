@@ -69,6 +69,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
+from taskq.backend._protocol import JobId
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.workflows import Done, FlowRunner, Promise, Refine, WorkflowApp, build, loop, step
 
@@ -263,6 +264,24 @@ def demo_app_module() -> Iterator[types.ModuleType]:
         async def _body(ctx: Any, carry: object) -> object:
             _LOOP_CALLS.append("burn")
             raise RetryAfter(timedelta(seconds=0), consume_budget=True)
+
+        return build(loop("counter", _body, initial=0, max_iterations=5))
+
+    # THE LOOP RE-MINT RIG'S FLOW (the re-review's required pin — the
+    # body never gets to run: the driver is driven against SEEDED rows).
+    @app_obj.workflow("loop_remint_rig_flow")
+    def loop_remint_rig() -> Promise[object]:
+        async def _body(ctx: Any, carry: object) -> object:
+            raise Snooze(timedelta(seconds=FLOOR_S))
+
+        return build(loop("counter", _body, initial=0, max_iterations=5))
+
+    # THE LOOP'S CANCEL-FACED FLOW (the loop route's cancel_fenced face —
+    # the seeded row carries the cancel mark; the body never runs).
+    @app_obj.workflow("loop_cancel_face_flow")
+    def loop_cancel_face() -> Promise[object]:
+        async def _body(ctx: Any, carry: object) -> object:
+            return Done(1)
 
         return build(loop("counter", _body, initial=0, max_iterations=5))
 
@@ -1310,3 +1329,166 @@ async def test_loop_body_retry_after_consuming_past_budget_takes_the_body_failur
         dict(r) for r in ledger_rows
     ]
     assert ledger_rows[-1]["error_class"] == "MaxAttemptsExceeded"
+
+
+# ── (11) THE RE-REVIEW'S REQUIRED PINS (the loop's re-mint face) ──────────
+
+
+async def test_the_loops_zombie_fence_cannot_mark_a_reminted_live_row(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+    clean_pg_conn: asyncpg.Connection,
+    demo_app_module: Any,
+) -> None:
+    """THE LOOP ROUTE'S RE-MINT GUARD (the re-review's required residual):
+    the C5 threading the step route carries must reach the LOOP's route
+    too — ``_execute_claimed`` → ``_run_loop_node`` → ``_defer_loop_step``
+    → ``defer_row_law``. The reviewer's rig: the loop node claimed (the
+    ledger row live), the refund re-mints the ordinal — the arbiter
+    re-use hands a LIVE winner the SAME ledger row — then the zombie
+    driver's deferral (its body's Snooze against a row it no longer
+    holds). The fence must key the claim's OWN instant: the re-minted row
+    is the winner's — never 'fenced'. The pre-cure shape: the loop route
+    got NO claim instant (the status-only fence) — the winner's live row
+    went 'fenced'."""
+    from taskq.workflows.ledger import claim_step_ledger
+
+    schema = module_pg_schema.schema_name
+    compiled = sys.modules[MODULE_NAME].app.get("loop_remint_rig_flow")  # type: ignore[attr-defined]
+    runner = FlowRunner(compiled, module_pg_pool, schema)
+    flow_id = (await runner.create_flow()).flow_id
+
+    # THE LOOP NODE'S ROW, re-claimed by a PEER (the zombie's row is no
+    # longer the runner's claim): running, attempt 1, the peer's identity.
+    node_row = await module_pg_pool.fetchrow(
+        f'SELECT id, step_key, map_index, payload FROM "{schema}".jobs '
+        "WHERE step_key = 'counter' AND (metadata->>'flow_id')::uuid = $1",
+        flow_id,
+    )
+    assert node_row is not None
+    peer_worker = new_uuid()
+    await clean_pg_conn.execute(
+        f"UPDATE \"{schema}\".jobs SET status = 'running', locked_by_worker = $2, "
+        "claim_epoch = 5, lock_expires_at = now() + interval '90 seconds', "
+        "metadata = metadata || $3::jsonb WHERE id = $1",
+        node_row["id"],
+        peer_worker,
+        json.dumps({"kind": "loop", "iteration": 0, "carry": 0, "max_iterations": 5}),
+    )
+
+    # THE ZOMBIE'S LEDGER CLAIM (the row's own stamp: the claim's
+    # RETURNING instant) — then THE RE-MINT (the refund's own face: a
+    # later claimant re-claims the SAME ordinal, the arbiter re-use).
+    zombie_claim = await claim_step_ledger(
+        clean_pg_conn,
+        runner.wsql,
+        flow_id=flow_id,
+        job_id=JobId(node_row["id"]),
+        step_key="counter",
+        map_index=None,
+        attempt=1,
+    )
+    assert zombie_claim.claimed_at is not None
+    winner_claim = await claim_step_ledger(
+        clean_pg_conn,
+        runner.wsql,
+        flow_id=flow_id,
+        job_id=JobId(node_row["id"]),
+        step_key="counter",
+        map_index=None,
+        attempt=1,
+    )
+    assert winner_claim.ledger_id == zombie_claim.ledger_id, (
+        "the re-mint re-uses the SAME arbiter row — the winner is LIVE on the zombie's row"
+    )
+
+    # THE ZOMBIE DRIVER'S DEFERRAL, driven through the REAL claim tail
+    # (the seam that owns the threading): the body's Snooze, the claim
+    # fence refuses (the row is the peer's), the route takes the zombie's
+    # arm — the fence must refuse the RE-MINTED row.
+    node = runner.compiled.nodes.get("counter")
+    await runner._execute_claimed(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the runner's own claim tail — the seam the threading rides.
+        flow_id,
+        dict(node_row),
+        1,
+        zombie_claim.ledger_id,
+        node,
+        node.loop_body,
+        claim_epoch=5,
+        ledger_claimed_at=zombie_claim.claimed_at,
+    )
+    # THE ROW IS THE TRUTH (the loop branch's label is the driver's echo —
+    # always "loop" — the LEDGER is the record the fence wrote):
+    ledger_rows = await _ledger_rows(module_pg_pool, schema, str(flow_id), "counter")
+    live = [r for r in ledger_rows if r["attempt"] == 1]
+    assert live, dict(ledger_rows[0]) if ledger_rows else "no rows"
+    assert live[0]["status"] == "running", (
+        f"THE LOOP ROUTE'S RE-MINT GUARD: the zombie's fence must refuse a "
+        f"re-minted row (the winner's LIVE claim), got {live[0]['status']!r}"
+    )
+
+
+async def test_the_loops_deferral_fences_a_cancel_marked_row(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+    clean_pg_conn: asyncpg.Connection,
+    demo_app_module: Any,
+) -> None:
+    """THE LOOP ROUTE'S CANCEL-FENCED FACE (the re-review's quality bar):
+    the loop's deferral fences the cancel mark on the vanilla COLUMN
+    carrier too (the admin job-page cancel's own arm) and routes the
+    loop's node through the wf terminal door 'cancelled' — the cancel's
+    vocabulary, never the loop's named state, never a body failure — the
+    same law the step route pins, on the loop's own route."""
+    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+
+    schema = module_pg_schema.schema_name
+    flow_id = await seed_flow(clean_pg_conn, schema, status="running")
+    node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="counter")
+    # THE VANILLA CANCEL'S COLUMN MARK on the loop node's row.
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET cancel_requested_at = clock_timestamp(), '
+        "cancel_phase = 1, metadata = metadata || "
+        '\'{"kind": "loop", "iteration": 0, "carry": 0}\'::jsonb WHERE id = $1',
+        node_id,
+    )
+    worker_id, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
+    from taskq.workflows.engine import render_workflow_sql
+    from taskq.workflows.ledger import claim_step_ledger
+
+    wsql = render_workflow_sql(schema)
+    claim = await claim_step_ledger(
+        clean_pg_conn,
+        wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="counter",
+        map_index=None,
+        attempt=int(attempt),
+    )
+    compiled = sys.modules[MODULE_NAME].app.get("loop_cancel_face_flow")  # type: ignore[attr-defined]
+    runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=worker_id)
+
+    # THE LOOP'S ROUTE: the cancel wins — the node terminalises
+    # 'cancelled' through the wf terminal door (the shared terminal
+    # route's mechanics), the ledger row the cancel's record.
+    label = await runner._defer_loop_step(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the loop's own deferral route directly.
+        flow_id,
+        {"id": node_id, "step_key": "counter", "map_index": None},
+        int(attempt),
+        claim.ledger_id,
+        Snooze(timedelta(seconds=FLOOR_S)),
+        claim_epoch=int(epoch),
+        ledger_claimed_at=claim.claimed_at,
+    )
+    assert label == "cancelled", label
+    row = await _node_row(module_pg_pool, schema, str(flow_id), "counter")
+    assert row["status"] == "cancelled", row["status"]
+    assert row["cancel_requested_at"] is not None, "the vanilla mark survives as the audit"
+    assert "iteration_state" not in row["metadata"], (
+        "the cancel's face is NOT the loop's named state (the exhaust door "
+        "never ran — the cancel owns this death)"
+    )
+    ledger_rows = await _ledger_rows(module_pg_pool, schema, str(flow_id), "counter")
+    assert ledger_rows[0]["status"] == "cancelled"
+    assert ledger_rows[0]["error_class"] == "WorkflowCancelled"

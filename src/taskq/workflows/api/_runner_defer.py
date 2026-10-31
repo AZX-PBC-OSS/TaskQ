@@ -35,8 +35,9 @@ module exists to keep):
   through the wf terminal door as ``MaxAttemptsExceeded`` (the vanilla's
   own class + message).
 
-THE EXTENSION SEAM: the NEXT deferral verdict (a new signal, a new
-row law) adds exactly three things and touches nothing else —
+THE EXTENSION SEAM: the NEXT deferral DISPOSITION (a new signal, a new
+non-terminal row law) adds exactly three things and touches nothing
+else —
 
 1. a member on :data:`DeferralDisposition` (the named set, never a bare
    string at a call site);
@@ -44,6 +45,18 @@ row law) adds exactly three things and touches nothing else —
    row law's own CASE arms — the vanilla dispositions' shape);
 3. ONE arm in :func:`deferral_disposition` (the signal → disposition
    resolution — the catch arm's whole mapping).
+
+A new TERMINAL verdict is NOT that seam: a verdict the ROW LAW refuses
+to apply (a death the doors own) needs the three things above for its
+disposition PLUS a per-door route in BOTH mixin methods
+(:meth:`DeferOps._defer_step` AND
+:meth:`~taskq.workflows.api._runner_loop.LoopOps._defer_loop_step`) —
+the doors' semantics differ by law (the step's exhaustion finalizes
+through the wf terminal door; the loop's through ``_exhaust_loop``'s
+named state), so the ROUTE is per-door and the docs do not overclaim
+"never a third case" for it. What stays shared either way: the row law
+(:func:`defer_row_law`), the ledger's truth, and the terminal doors'
+own mechanics (:func:`route_defer_terminal`).
 
 The catch arms (the STEP's in ``api/_runner``, the LOOP's in
 ``api/_runner_loop``) consume signals and dispatch by the named
@@ -81,6 +94,7 @@ __all__ = [
     "defer_node_row",
     "defer_row_law",
     "deferral_disposition",
+    "route_defer_terminal",
 ]
 
 logger: Any = get_logger(__name__)
@@ -282,6 +296,93 @@ async def defer_row_law(
         return str(verdict["verdict"])
 
 
+async def route_defer_terminal(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    flow_id: JobId,
+    row: dict[str, Any],
+    worker_id: JobId,
+    attempt: int,
+    claim_epoch: int,
+    ledger_id: JobId | None,
+    capture_policy: Any,
+    project_auto: Any,
+    outcome: str,
+    error_class: str,
+    error_message: str,
+) -> None:
+    """THE TERMINAL VERDICTS' SHARED ROUTE (the wf terminal door's own
+    mechanics — the ledger's terminal + the door + the projection ride):
+    the ONE identical shape both doors' terminal verdicts run, factored
+    once (the DRY of the step's and the loop's routes — the DOORS differ,
+    never the mechanics):
+
+    * THE LEDGER'S TERMINAL: the claim's OWN RETURNING id when held (the
+      strongest keying — ``_run_tx1``'s own law), else the arbiter tuple
+      (the ladder's exhaustion shape);
+    * :func:`~taskq.workflows.engine.finalize_node` — the fenced
+      terminal mark, the T06 cascade and the propagation ride it;
+    * the auto projection (the node's terminal event, best-effort).
+
+    The DOORS' SEMANTICS live at the call sites (which verdict routes
+    which door with which vocabulary — the step's exhaustion finalizes
+    through this door, the loop's through ``_exhaust_loop``'s named
+    state); this function is the shape they share, never a decision."""
+    from taskq.workflows.engine import finalize_node
+
+    async with pool.acquire() as conn:
+        if ledger_id is not None:
+            await conn.execute(
+                wsql.ledger_terminal_by_id,
+                ledger_id,
+                outcome,
+                None,
+                error_class,
+                error_message,
+                None,
+            )
+        else:
+            await conn.execute(
+                wsql.ledger_terminal,
+                flow_id,
+                row["step_key"],
+                attempt,
+                outcome,
+                None,
+                error_class,
+                error_message,
+                None,
+                row["map_index"],
+            )
+    final = await finalize_node(
+        pool,
+        wsql,
+        flow_id=flow_id,
+        job_id=JobId(row["id"]),
+        step_key=row["step_key"],
+        worker_id=worker_id,
+        attempt=attempt,
+        claim_epoch=claim_epoch,
+        outcome=outcome,  # pyright: ignore[reportArgumentType]  # Why: the two verdicts' outcomes are the door's own vocabulary members ('failed' | 'cancelled').
+        error_class=error_class,
+        error_message=error_message,
+        capture_policy=capture_policy,
+        map_index=row["map_index"],
+    )
+    if final.applied:
+        await project_auto(
+            flow_id,
+            JobId(row["id"]),
+            KIND_NODE_TERMINAL,
+            {
+                "outcome": outcome,
+                "step_key": row["step_key"],
+                "error_class": error_class,
+            },
+        )
+
+
 class DeferOps(_DeferHost):
     """The runner's deferral mixin (the machinery's home; the runner
     composes it)."""
@@ -319,8 +420,6 @@ class DeferOps(_DeferHost):
         ``"deferred"`` / ``"fenced"`` / ``"laddered"`` (the exhausted
         budget) / ``"cancelled"`` (the cancel won).
         """
-        from taskq.workflows.engine import finalize_node
-
         disposition = deferral_disposition(exc)
         verdict_text = await defer_row_law(
             self.pool,
@@ -360,6 +459,10 @@ class DeferOps(_DeferHost):
         # exhaustion's ledger row is the ATTEMPT's failed record (the
         # vanilla max_attempts arm's own audit shape); the
         # cancel-fenced node terminalises under the cancel's vocabulary.
+        # The DOOR'S MECHANICS are the shared route's (the ledger's
+        # terminal + finalize_node + the projection — the ONE shape both
+        # doors' terminal verdicts run); the VERDICT's vocabulary is the
+        # step's own.
         exhausted = verdict_text == "exhausted"
         outcome = "failed" if exhausted else "cancelled"
         error_class = ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED if exhausted else WORKFLOW_CANCELLED_CLASS
@@ -368,59 +471,21 @@ class DeferOps(_DeferHost):
             if exhausted
             else "cancelled while deferring (the operator's cancel outranks the deferral)"
         )
-        # THE LEDGER'S TERMINAL: the claim's OWN RETURNING id when held
-        # (the strongest keying — _run_tx1's own law), else the arbiter
-        # tuple (the ladder's exhaustion shape).
-        async with self.pool.acquire() as conn:
-            if ledger_id is not None:
-                await conn.execute(
-                    self.wsql.ledger_terminal_by_id,
-                    ledger_id,
-                    outcome,
-                    None,
-                    error_class,
-                    error_message,
-                    None,
-                )
-            else:
-                await conn.execute(
-                    self.wsql.ledger_terminal,
-                    flow_id,
-                    row["step_key"],
-                    attempt,
-                    outcome,
-                    None,
-                    error_class,
-                    error_message,
-                    None,
-                    row["map_index"],
-                )
-        final = await finalize_node(
+        await route_defer_terminal(
             self.pool,
             self.wsql,
             flow_id=flow_id,
-            job_id=JobId(row["id"]),
-            step_key=row["step_key"],
+            row=row,
             worker_id=self._worker_id,
             attempt=attempt,
             claim_epoch=claim_epoch,
-            outcome=outcome,  # pyright: ignore[reportArgumentType]  # Why: the two verdicts' outcomes are the door's own vocabulary members ('failed' | 'cancelled').
+            ledger_id=ledger_id,
+            capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the COMPILE (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field — the ladder's own call shape.
+            project_auto=self._project_auto,
+            outcome=outcome,
             error_class=error_class,
             error_message=error_message,
-            capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the COMPILE (the workflow decorator's declaration); the host protocol's compiled is the runner's Any-typed field — the ladder's own call shape.
-            map_index=row["map_index"],
         )
-        if final.applied:
-            await self._project_auto(
-                flow_id,
-                JobId(row["id"]),
-                KIND_NODE_TERMINAL,
-                {
-                    "outcome": outcome,
-                    "step_key": row["step_key"],
-                    "error_class": error_class,
-                },
-            )
         logger.info(
             "node.defer-terminal",
             run_id=str(flow_id),

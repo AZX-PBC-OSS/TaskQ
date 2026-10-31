@@ -1447,9 +1447,15 @@ on EITHER carrier: the workflow cancel's metadata stamp AND the vanilla
 cancel's own column mark, the admin job-page cancel's arm)
 terminalises the node `cancelled`, and a zombie's deferral (the claim
 fenced) records the attempt `fenced` — the run is never wedged by a
-refused deferral. The extension seam is named: the next deferral verdict
+refused deferral. The extension seam is named, with its honest bound:
+the next deferral DISPOSITION (a new signal, a non-terminal row law)
 adds a `DeferralDisposition` member, one statement arm, one resolver
-entry — never a third special case. The disposition's seat is the
+entry — and nothing else; a new TERMINAL verdict (a death the doors
+own) additionally needs a per-door route in BOTH the step's and the
+loop's disposition routes (the doors' semantics differ by law — the
+step's exhaustion finalizes through the wf terminal door, the loop's
+through the loop's own named state — so the route is per-door, never a
+shared special case). The disposition's seat is the
 runner's step-body seam (the step, the chain, the map's item children,
 the route's arms); a LOOP body raising a signal routes through the SAME
 disposition — the loop's iteration machinery already resumes a

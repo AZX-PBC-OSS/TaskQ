@@ -24,7 +24,7 @@ from taskq.backend._protocol import JobId
 from taskq.constants import ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
-from taskq.workflows._progress import KIND_NODE_TERMINAL, ProgressEmitter
+from taskq.workflows._progress import ProgressEmitter
 from taskq.workflows._types import FinalizeResult
 from taskq.workflows.api._ctx import build_step_context
 from taskq.workflows.api._ctx_wait import NodeHeldError
@@ -139,8 +139,8 @@ class LoopOps(_LoopHost):
             WORKFLOW_CANCELLED_CLASS,
             defer_row_law,
             deferral_disposition,
+            route_defer_terminal,
         )
-        from taskq.workflows.engine import finalize_node
 
         disposition = deferral_disposition(exc)
         verdict_text = await defer_row_law(
@@ -183,44 +183,25 @@ class LoopOps(_LoopHost):
         if verdict_text == "cancel_fenced":
             # THE CANCEL WINS: the loop's node terminalises 'cancelled'
             # through the wf terminal door — the step's own face (the
-            # cancel's vocabulary, never a body failure class).
-            async with self.pool.acquire() as conn:
-                if ledger_id is not None:
-                    await conn.execute(
-                        self.wsql.ledger_terminal_by_id,
-                        ledger_id,
-                        "cancelled",
-                        None,
-                        WORKFLOW_CANCELLED_CLASS,
-                        "cancelled while deferring (the operator's cancel outranks the deferral)",
-                        None,
-                    )
-            final = await finalize_node(
+            # cancel's vocabulary, never a body failure class). The DOOR'S
+            # MECHANICS are the shared route's (the ledger's terminal +
+            # finalize_node + the projection); the VERDICT's vocabulary is
+            # the cancel's.
+            await route_defer_terminal(
                 self.pool,
                 self.wsql,
                 flow_id=flow_id,
-                job_id=JobId(row["id"]),
-                step_key=row["step_key"],
+                row=row,
                 worker_id=self._worker_id,
                 attempt=attempt,
                 claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the ladder's own call shape (the declared capture policy rides the COMPILE).
+                project_auto=self._project_auto,
                 outcome="cancelled",
                 error_class=WORKFLOW_CANCELLED_CLASS,
                 error_message="cancelled while deferring (the operator's cancel outranks the deferral)",
-                capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the ladder's own call shape (the declared capture policy rides the COMPILE).
-                map_index=row["map_index"],
             )
-            if final.applied:
-                await self._project_auto(
-                    flow_id,
-                    JobId(row["id"]),
-                    KIND_NODE_TERMINAL,
-                    {
-                        "outcome": "cancelled",
-                        "step_key": row["step_key"],
-                        "error_class": WORKFLOW_CANCELLED_CLASS,
-                    },
-                )
             logger.info(
                 "loop.defer-terminal",
                 run_id=str(flow_id),
@@ -278,6 +259,7 @@ class LoopOps(_LoopHost):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
+        ledger_claimed_at: Any = None,
     ) -> None:
         """THE LOOP DRIVER (T19): fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
@@ -289,6 +271,12 @@ class LoopOps(_LoopHost):
         budget deadline initializes FROM PG'S CLOCK at the first claim
         (the DB-clock doctrine); ``budget_remaining_ms`` is the on-wake
         read of the wall (holds are free).
+
+        ``ledger_claimed_at`` is the ledger claim's OWN RETURNING instant
+        (the re-mint guard's discriminator, C5) — threaded to the loop's
+        deferral route (``_defer_loop_step``) so the loop's zombie fence
+        can never mark a re-minted live winner's row, the SAME threading
+        the step route carries.
 
         THE ESCAPE-POINT CONTRACT (attack-3 H5's cure): the driver's
         drive runs under the machinery boundary — an INFRA fault raised
@@ -305,7 +293,15 @@ class LoopOps(_LoopHost):
 
         try:
             return await self._drive_loop(
-                flow_id, row, attempt, node, spec, ledger_id, emitter, claim_epoch=claim_epoch
+                flow_id,
+                row,
+                attempt,
+                node,
+                spec,
+                ledger_id,
+                emitter,
+                claim_epoch=claim_epoch,
+                ledger_claimed_at=ledger_claimed_at,
             )
         except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped, never its type (attack-3 H5's cure). BLE001 is the boundary's shape: ANY machinery exception is classified, then re-raised or reclaimed.
             if is_infra_fault(exc):
@@ -323,6 +319,7 @@ class LoopOps(_LoopHost):
         emitter: ProgressEmitter | None = None,
         *,
         claim_epoch: int = 0,
+        ledger_claimed_at: Any = None,
     ) -> None:
         """The loop driver's own drive (the machinery side of the
         escape-point contract — attack-3 H5's cure): every exception
@@ -571,7 +568,13 @@ class LoopOps(_LoopHost):
                     # finally (the loop's entry seam — the driver's
                     # internal finalizes never wait on it).
                     await self._defer_loop_step(
-                        flow_id, row, attempt, ledger_id, exc, claim_epoch=claim_epoch
+                        flow_id,
+                        row,
+                        attempt,
+                        ledger_id,
+                        exc,
+                        claim_epoch=claim_epoch,
+                        ledger_claimed_at=ledger_claimed_at,
                     )
                     return
                 except Exception as exc:

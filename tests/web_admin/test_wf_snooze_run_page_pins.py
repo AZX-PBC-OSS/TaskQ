@@ -316,3 +316,65 @@ async def test_the_runs_list_exposes_a_pathologically_deferring_run(
     assert "data-wf-run-deferring" not in clean_row, (
         "a run with no sitting deferral renders no badge"
     )
+
+
+async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: Any,
+    demo_app_module: Any,
+) -> None:
+    """THE CAST'S BOUND (the re-review's required residual — the 500): a
+    hostile deferral stamp whose ``attempt`` overflows the int4 domain
+    (an 11-digit write) must not kill the WHOLE Workflows list — the
+    pre-cure regex admitted it and the ``::int`` cast 500'd every render.
+    The page renders; the hostile stamp is refused the badge (the CASE
+    degrades it to NULL — the badge's law keeps its discriminator, the
+    degrade is honest: an unverifiable stamp never reads as a live
+    deferral); the clean face beside it is unchanged."""
+
+    schema = module_pg_schema.schema_name
+    # THE HOSTILE RUN: a seeded root + a node row resting 'scheduled' on
+    # an overflow-shaped deferral stamp (the reviewer's exact write).
+    from tests._wf_fixtures import seed_flow, seed_running_node
+
+    hostile_flow = await seed_flow(clean_pg_conn, schema, status="running")
+    hostile_node = await seed_running_node(clean_pg_conn, schema, hostile_flow, step_key="hostile")
+    await clean_pg_conn.execute(
+        f"UPDATE \"{schema}\".jobs SET status = 'scheduled', "
+        "scheduled_at = now() + interval '60 seconds', metadata = metadata || "
+        '\'{"wf_deferral": {"signal": "Snooze", "consume_budget": false, '
+        '"attempt": 99999999999}}\'::jsonb WHERE id = $1',
+        hostile_node,
+    )
+    # THE CLEAN RUN beside it: the badge's face unchanged.
+    clean_id = await _seed_snoozed_run(module_pg_pool, schema)
+
+    app = _make_admin_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/workflows")
+    assert resp.status_code == 200, (
+        f"the overflow-shaped stamp must never 500 the runs list "
+        f"(the cast's bound), got {resp.status_code}"
+    )
+    html = resp.text
+    # THE HOSTILE RUN'S ROW: no badge (the unverifiable stamp never reads
+    # as a live deferral — the honest degrade).
+    hostile_row = next(
+        (chunk for chunk in html.split("<tr>") if f"/workflows/{hostile_flow}" in chunk),
+        "",
+    )
+    assert hostile_row, "the hostile run's row renders (the page did not die)"
+    assert "data-wf-run-deferring" not in hostile_row, (
+        "the overflow-shaped stamp is refused the badge (the CASE degrades "
+        "it to NULL — the badge's discriminator keeps its law)"
+    )
+    # THE CLEAN FACE UNCHANGED: the real deferral still badges.
+    clean_row = next(
+        (chunk for chunk in html.split("<tr>") if f"/workflows/{clean_id}" in chunk), ""
+    )
+    assert "data-wf-run-deferring" in clean_row, (
+        "the clean deferral's badge is unchanged by the hostile row's presence"
+    )

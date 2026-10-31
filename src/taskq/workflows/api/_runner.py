@@ -980,7 +980,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         if node is not None and node.loop_spec is not None:
             try:
                 await self._run_loop_node(
-                    flow_id, row, attempt, node, ledger_id, emitter, claim_epoch=claim_epoch
+                    flow_id,
+                    row,
+                    attempt,
+                    node,
+                    ledger_id,
+                    emitter,
+                    claim_epoch=claim_epoch,
+                    ledger_claimed_at=ledger_claimed_at,
                 )
             finally:
                 await emitter.aclose()

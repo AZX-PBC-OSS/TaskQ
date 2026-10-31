@@ -81,6 +81,15 @@ _RUNS_SQL = (
     # ONE bounded lateral per root row (the run's own node scan, the
     # workflow-rows partial index's shape) — the list's read budget
     # unchanged.
+    # THE CAST'S BOUND (the re-review's 500): the discriminator's regex
+    # admits at most NINE digits — int4's own domain tops at 2147483647
+    # (10 digits) and the attempt ordinal's estate ceiling is 32767 (5),
+    # so a 10+-digit stamp (the reviewer's 11-digit overflow-shaped write
+    # 500'd the WHOLE list on the ::int cast) is a HOSTILE stamp, refused
+    # the badge: the CASE degrades it to NULL, NULL never equals the
+    # row's attempt, the row drops out of the sitting count (the badge's
+    # law keeps its discriminator; the page renders). The doubled braces
+    # are the .format convention (the JSONB-landmine rule's own face).
     "d.deferring, d.next_fire, d.snooze_count "
     'FROM "{schema}".jobs r '
     "LEFT JOIN LATERAL ("
@@ -90,7 +99,7 @@ _RUNS_SQL = (
     "    WHERE (j.metadata->>'flow_id')::uuid = r.id AND j.metadata ? 'flow_id' "
     "      AND j.step_key <> '__flow__' "
     "      AND j.status = 'scheduled' AND j.metadata ? 'wf_deferral' "
-    "      AND CASE WHEN j.metadata->'wf_deferral'->>'attempt' ~ '^[0-9]+$' "
+    "      AND CASE WHEN j.metadata->'wf_deferral'->>'attempt' ~ '^[0-9]{{1,9}}$' "
     "               THEN (j.metadata->'wf_deferral'->>'attempt')::int END = j.attempt"
     ") d ON true "
     "WHERE r.step_key = '__flow__' "
