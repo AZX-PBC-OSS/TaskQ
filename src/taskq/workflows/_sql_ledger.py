@@ -30,7 +30,7 @@ VALUES ($1, $2, $3, $4, $5, $6, 'running')
 ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt) DO UPDATE
     SET updated_at = clock_timestamp()
 RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
-          result, error_class, error_message
+          result, error_class, error_message, updated_at
 """
 
 
@@ -120,6 +120,16 @@ SET status = 'fenced',
     updated_at = clock_timestamp()
 WHERE id = $1
   AND status = 'running'
+  -- THE RE-MINT GUARD (C5): a caller presenting its OWN claim's
+  -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
+  -- instance identity) fences ONLY the row that claim actually wrote.
+  -- The refund re-mints the ordinal — the arbiter re-use hands a LIVE
+  -- winner the SAME ledger row (the DO UPDATE re-stamps updated_at) —
+  -- and the stale instant REFUSES the fence: the winner's own terminal
+  -- writes the row, the record never marks a live attempt 'fenced'. A
+  -- caller with no claim instant (the pre-cure shape — the engine's
+  -- fenced-out arm) keeps the status-only fence.
+  AND ($3::timestamptz IS NULL OR updated_at = $3::timestamptz)
 RETURNING id
 """
 
