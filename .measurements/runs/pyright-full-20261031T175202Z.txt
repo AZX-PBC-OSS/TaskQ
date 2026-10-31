@@ -1,0 +1,4 @@
+# pyright FULL at the re-stamp head 90944e8b6e9ddac550e948c524c443472faef099
+0 errors, 0 warnings, 0 informations
+pyright rc=0
+head: 90944e8b6e9ddac550e948c524c443472faef099

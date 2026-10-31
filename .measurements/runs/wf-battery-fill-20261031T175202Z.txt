@@ -1,0 +1,4 @@
+# the wf battery's FILL at the re-stamp head 90944e8b6e9ddac550e948c524c443472faef099
+840 passed, 4 warnings in 77.78s (0:01:17)
+rc=0
+head: 90944e8b6e9ddac550e948c524c443472faef099
