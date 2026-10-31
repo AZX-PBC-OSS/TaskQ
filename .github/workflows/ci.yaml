@@ -1038,7 +1038,7 @@ jobs:
           cd /tmp && $GITHUB_WORKSPACE/test-src-env/bin/python -c "import taskq; print(taskq.__version__)"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: dist
           path: dist/
