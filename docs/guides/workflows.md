@@ -1442,16 +1442,25 @@ sits. The signals' full vanilla contract (the construction-time
 `ValueError`s, the `schedule_to_close` interaction, the
 `Retry-After`-header example) is [Control-flow
 signals](retries.md#9-control-flow-signals). A deferral refused by an
-operator cancel in flight (the cancel mark wins, the vanilla's own law)
+operator cancel in flight (the cancel mark wins, the vanilla's own law —
+on EITHER carrier: the workflow cancel's metadata stamp AND the vanilla
+cancel's own column mark, the admin job-page cancel's arm)
 terminalises the node `cancelled`, and a zombie's deferral (the claim
 fenced) records the attempt `fenced` — the run is never wedged by a
 refused deferral. The extension seam is named: the next deferral verdict
 adds a `DeferralDisposition` member, one statement arm, one resolver
 entry — never a third special case. The disposition's seat is the
 runner's step-body seam (the step, the chain, the map's item children,
-the route's arms); a LOOP body raising a signal is the loop's own
-body-failure face (the driver owns the iteration lifecycle — the loop
-terminalizes with the named class), not a deferral.
+the route's arms); a LOOP body raising a signal routes through the SAME
+disposition — the loop's iteration machinery already resumes a
+mid-iteration hold, and the deferral is the same resume, later by the
+delay: the loop node row re-schedules, the iteration counters are
+untouched (the advance never ran), and the loop resumes at THAT
+iteration with the ladder unburned. The bound holds there too: a loop
+body exhausting the budget via `RetryAfter(consume_budget=True)` past
+`max_attempts` takes the loop's own body-failure face (the named state +
+the flow terminalized, `MaxAttemptsExceeded` on the record) — the ladder
+still bounds loops.
 
 The reads (cuts #14/#19's cures): `FlowRunner.result(flow_id)` — the
 terminal's result, DECODED ONCE through the estate's JSON seam; on a
@@ -2744,6 +2753,7 @@ The admin UI's **Workflows** tab is the run explorer: the runs list (the invento
 - **The graph** — the run's Mermaid, emitted FROM THE ROWS (the live graph is a row fact; the admin never imports the workflow's module): the collapsed map renders as ONE hexagon with a `done/total` counter — zero child boxes (the counter reads the children's TRUE parent — the map source the fork parented them at — and the run header carries the SUM across sources); the render does not scale with the fan-out (a 10k map renders one hexagon, never 10k lines). The child detail lives in the node panel. Rendered ONCE by the vendored mermaid (no bundler, no React, no CDN — the air-gapped-ops argument); every later update is a classList patch on `data-node-key` — zero re-renders (the node keys and statuses are sanitized/escaped against the legend's closed vocabulary — a poisoned row key cannot blind the live updates). The state colors: green succeeded, blue running, red failed, amber HELD (a human is waiting).
 - **The node panel** — click a node (or Tab to it and press Enter): the status header, the attempts + the retry kind, the trace id, the captured error (errors-only by default; the panel's read is DISPLAY-CAPPED with the dropped-count named — the full detail stays in the rows), one upstream hop (the causal chain via parent_id), and the attempt ledger.
 - **The deferral line** — a step sitting on a body-raised [`Snooze`/`RetryAfter`](#the-control-flow-signals-the-same-typed-signals-the-vanilla-bodies-raise) renders the line beside its status chip: the signal that deferred it, the NEXT FIRE TIME, and the node's snooze count — the operator's "why is this step sitting here" answer without leaving the page. The line is the ROW's truth (the deferral stamp's own discriminator): it appears when the node arrives at the snoozed state and clears when the step re-claims or a later ladder repend lands (never a stale decoration), in the server snapshot and on the live SSE frames alike.
+- **The runs list's deferral badge** — the same state at the RUN level: a run with a node sitting on a live deferral renders the badge on its runs-list row (the sitting nodes' count, the earliest next fire, the deferral depth) — a pathologically deferring run is visible from the INVENTORY, never only after opening the run. A run with no sitting deferral renders no badge.
 - **The holds & decisions** — the held row's waiting-on state: the gate, the node, the epoch, the deadline, the author's reason/tool/args, the DECLARED payload schema, and a prefilled valid example. The Resolve form delivers through the typed door (the wrong payload answers the named pydantic error inline; the hold survives — and the REFUSAL ITSELF is audited: the trail records the refused attempt with its reason, so probing the door is as visible as using it). Resolved holds render as decisions (the rows-alone audit).
 - **The audit trail** — every operator action on the run (resolve/deliver/cancel) is a ROW here: the principal, the action, the reason. This includes the REFUSED actions — a shape-refused resolve or deliver writes its `refused` row (the refusal is the action). Reads are never audited.
 - **The live transport** — SSE (`/taskq/api/runs/{id}/stream`): every frame is a revisioned FULL snapshot; the seq-cursor drops stale frames; `Last-Event-ID` (EventSource supplies it for free on reconnect) continues the cursor and the next frame carries the whole state — **the reconnect never loses state**. The stream re-checks the admin session every poll — a session revoked MID-STREAM ends the stream at the next tick (the same law `/sse/{topic}` keeps; a verifier error or a hung verifier fails closed). An UNKNOWN run id is a `404` at subscribe (the same subscribe-time refusal `/sse/{topic}` gives an unknown topic) — a run that exists but has no node rows yet still streams. The page sets `suppress_refresh=True` (the meta refresh would destroy the live SVG).

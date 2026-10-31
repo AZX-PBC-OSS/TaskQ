@@ -167,7 +167,13 @@ class RunNode:
             return None
         if stamped != self.attempt:
             return None
-        signal = str(self.deferral.get("signal") or "Snooze")
+        # THE SIGNAL'S BOUND (C3 — H-C9's law at the deferral's face): the
+        # stamp is a row-sourced jsonb doc and its ``signal`` is free text
+        # — a hostile write rides it into the label. The panel's own
+        # error-text bound applies (the same truncation the class/
+        # message fields carry): the label is a display, never a
+        # megabyte line through the DOM and every SSE frame.
+        signal = _truncate_error_text(str(self.deferral.get("signal") or "Snooze"))
         if self.deferral.get("consume_budget"):
             # THE CONSUMING FACE (the vanilla's own vocabulary): the burn
             # is the budget's charge — no snooze count (the counter never

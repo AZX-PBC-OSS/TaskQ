@@ -618,14 +618,21 @@ RETURNING j.id, j.deps_pending
 #     by the actor's current assignment from here on (the routing
 #     contract in ``backend/_dispatch_sql.py``);
 #   * THE CANCEL FENCE (the vanilla deferral arms' own law — "an operator
-#     cancel in flight WINS over the deferral" — in the wf cancel's own
-#     mark vocabulary, ``CANCEL_NODES_SQL_TEMPLATE``'s
-#     ``metadata.cancel_phase``): a row carrying the mark must never match
-#     the deferral arm — the merge below would otherwise read as
-#     never-cancelled and the operator's request would be laundered
-#     mid-flight. The marked row answers the CANCEL_FENCED verdict (the
-#     runner terminalises it through the wf terminal door, the vanilla
-#     cancel ladder's own face), never a deferral;
+#     cancel in flight WINS over the deferral" — on EITHER carrier: the wf
+#     cancel's own mark vocabulary, ``CANCEL_NODES_SQL_TEMPLATE``'s
+#     ``metadata.cancel_phase``, AND the vanilla cancel's own COLUMN mark
+#     — the admin job-page cancel's ``cancel_running`` arm,
+#     ``cancel_requested_at = now, cancel_phase = 1`` on the running row —
+#     a mark a wf node row can carry like any job): a row carrying EITHER
+#     mark must never match the deferral arm — the merge below would
+#     otherwise read as never-cancelled and the operator's request would
+#     be laundered mid-flight (and the vanilla arms' own
+#     ``cancel_phase = 0 / cancel_requested_at = NULL`` resets, mirrored
+#     into the SET below, would wash the column mark off the record). The
+#     marked row answers the CANCEL_FENCED verdict (the runner
+#     terminalises it through the wf terminal door, the vanilla cancel
+#     ladder's own face), never a deferral; the resets are therefore only
+#     ever reachable on a CLEAN row — never laundry;
 #   * THE CLAIM FENCE (the finalize's own CAS vocabulary: status +
 #     worker + attempt + claim_epoch): a zombie's deferral matches
 #     NOTHING — no verdict row — and the runner records the attempt
@@ -672,6 +679,14 @@ deferred AS (
         locked_by_worker = NULL,
         lock_expires_at = NULL,
         last_heartbeat_at = NULL,
+        -- THE CANCEL COLUMNS' RESET (the vanilla mark_snoozed's own SET,
+        -- mirrored): the deferral returns the row to the dispatch pool
+        -- carrying NO cancel request — the columns reset with the claim.
+        -- SAFE BECAUSE THE FENCE REFUSES THE MARKED ROW (below): the
+        -- resets can only ever land on a row that carried NO cancel
+        -- mark — a marked row is fenced, never laundered.
+        cancel_phase = 0,
+        cancel_requested_at = NULL,
         attempt = (SELECT post_attempt FROM params),
         snooze_count = CASE WHEN $6::text = 'retry_after_consuming' THEN j.snooze_count
                             ELSE j.snooze_count + 1 END,
@@ -697,7 +712,14 @@ deferred AS (
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
       AND j.claim_epoch = (SELECT claim_epoch FROM params)
-      -- THE CANCEL FENCE (the wf cancel's own mark — the block comment).
+      -- THE CANCEL FENCE (the wf cancel's own mark — the block
+      -- comment), on EITHER carrier: the wf cancel's metadata stamp
+      -- AND the vanilla cancel's own COLUMN mark (the admin job-page
+      -- cancel's cancel_running arm — cancel_requested_at = now,
+      -- cancel_phase = 1 on the running row). An operator cancel in
+      -- flight WINS over the deferral on both faces; the resets above
+      -- can therefore only ever land on a clean row (never laundry).
+      AND j.cancel_phase = 0
       AND NOT j.metadata ? 'cancel_phase'
       -- THE BUDGET GATE (the consuming arm's only exit — the block
       -- comment); the refunding arms are unconditional.
@@ -721,6 +743,7 @@ exhausted AS (
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
       AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      AND j.cancel_phase = 0
       AND NOT j.metadata ? 'cancel_phase'
       AND $6::text = 'retry_after_consuming'
       AND j.retry_kind <> 'indefinite'
@@ -729,9 +752,11 @@ exhausted AS (
 ),
 cancel_fenced AS (
     -- THE CANCEL WINS (the vanilla deferral's own law — the block
-    -- comment): a clean claimed row carrying the wf cancel's mark. Also
-    -- writes nothing; the runner terminalises the node 'cancelled'
-    -- through the wf terminal door (the vanilla cancel ladder's face).
+    -- comment): a clean claimed row carrying the cancel mark on EITHER
+    -- carrier — the wf cancel's metadata stamp OR the vanilla cancel's
+    -- own column mark (the admin job-page cancel's arm). Also writes
+    -- nothing; the runner terminalises the node 'cancelled' through the
+    -- wf terminal door (the vanilla cancel ladder's face).
     SELECT j.id
     FROM {schema}.jobs j
     WHERE j.id = (SELECT job_id FROM params)
@@ -739,7 +764,7 @@ cancel_fenced AS (
       AND j.locked_by_worker = (SELECT worker_id FROM params)
       AND j.attempt = (SELECT attempt FROM params)
       AND j.claim_epoch = (SELECT claim_epoch FROM params)
-      AND j.metadata ? 'cancel_phase'
+      AND (j.metadata ? 'cancel_phase' OR j.cancel_phase <> 0)
       AND NOT EXISTS (SELECT 1 FROM deferred)
 )
 SELECT 'deferred'::text AS verdict, id AS job_id FROM deferred

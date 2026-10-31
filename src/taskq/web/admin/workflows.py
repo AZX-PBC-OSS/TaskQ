@@ -69,10 +69,32 @@ logger = structlog.get_logger("taskq.web.admin.workflows")
 _RUNS_PAGE_SIZE = 200
 
 _RUNS_SQL = (
-    "SELECT id, actor, status, created_at, finished_at, cancel_requested_at, "
-    "metadata->>'workflow' AS workflow "
-    "FROM \"{schema}\".jobs WHERE step_key = '__flow__' "
-    "ORDER BY created_at DESC LIMIT $1"
+    "SELECT r.id, r.actor, r.status, r.created_at, r.finished_at, r.cancel_requested_at, "
+    "r.metadata->>'workflow' AS workflow, "
+    # THE RUN-LEVEL DEFERRAL FACES (C4 — the visibility gap's cure): a
+    # pathologically deferring run is visible from the INVENTORY — the
+    # sitting nodes' count (a node is sitting when it rests 'scheduled' on
+    # a LIVE deferral stamp: the stamp's own attempt discriminator, the
+    # run page's label law, guarded in SQL so a hostile non-numeric stamp
+    # degrades to NULL — never a cast death), the earliest next fire, and
+    # the deferral depth (the max snooze count among the sitting rows).
+    # ONE bounded lateral per root row (the run's own node scan, the
+    # workflow-rows partial index's shape) — the list's read budget
+    # unchanged.
+    "d.deferring, d.next_fire, d.snooze_count "
+    'FROM "{schema}".jobs r '
+    "LEFT JOIN LATERAL ("
+    "    SELECT count(*) AS deferring, min(j.scheduled_at) AS next_fire, "
+    "           max(j.snooze_count) AS snooze_count "
+    '    FROM "{schema}".jobs j '
+    "    WHERE (j.metadata->>'flow_id')::uuid = r.id AND j.metadata ? 'flow_id' "
+    "      AND j.step_key <> '__flow__' "
+    "      AND j.status = 'scheduled' AND j.metadata ? 'wf_deferral' "
+    "      AND CASE WHEN j.metadata->'wf_deferral'->>'attempt' ~ '^[0-9]+$' "
+    "               THEN (j.metadata->'wf_deferral'->>'attempt')::int END = j.attempt"
+    ") d ON true "
+    "WHERE r.step_key = '__flow__' "
+    "ORDER BY r.created_at DESC LIMIT $1"
 )
 
 _RUN_EVENTS_SQL = (
@@ -226,6 +248,12 @@ def register(router: APIRouter) -> None:
                 "workflow": r["workflow"] or r["actor"],
                 "root_status": r["status"],
                 "created_at": _iso(r["created_at"]),
+                # THE RUN-LEVEL DEFERRAL FACES (C4): the badge's inputs —
+                # a run with no sitting deferral reads all-None/0 (the
+                # defined absent face).
+                "deferring": int(r["deferring"] or 0),
+                "next_fire": _iso(r["next_fire"]),
+                "snooze_count": int(r["snooze_count"] or 0),
             }
             for r in rows
         ]

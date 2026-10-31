@@ -271,9 +271,13 @@ async def _run_tx1(
         )
         if rec is None:
             # Fenced out (a reclaimed row, a cancelled flow, a wrong
-            # worker): the ledger says 'fenced', tx2 never runs.
+            # worker): the ledger says 'fenced', tx2 never runs. The by-ID
+            # fence carries NO claim instant (the engine's callers never
+            # held one) — the re-mint guard's NULL form keeps the
+            # status-only fence here (the deferral's own zombie path is
+            # the caller that proves the instant).
             if ledger_id is not None:
-                await conn.execute(wsql.ledger_fence_by_id, ledger_id, error_class)
+                await conn.execute(wsql.ledger_fence_by_id, ledger_id, error_class, None)
             else:
                 await conn.execute(
                     wsql.ledger_fence_attempt,

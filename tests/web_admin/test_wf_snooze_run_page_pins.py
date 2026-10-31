@@ -218,3 +218,101 @@ async def test_the_deferral_line_clears_when_the_step_moves_on(
     assert "data-wf-node-deferral" not in snooze_row, (
         "the deferral line describes the SITTING state — a step that moved on must not keep it"
     )
+
+
+def test_the_deferral_label_bounds_a_hostile_signal_stamp() -> None:
+    """THE LABEL'S BOUND (C3 — H-C9's law at the deferral's face): the
+    stamp's ``signal`` is row-sourced free text (the jsonb boundary's
+    other side) — a hostile 10KB signal renders TRUNCATED through the
+    node panel's own ``_truncate_error_text`` limit, never a 10KB line
+    into the page's DOM and every SSE frame."""
+    from taskq.web.admin._wf_rows import RunNode
+
+    node = RunNode(
+        key="solo",
+        status="scheduled",
+        attempt=0,
+        snooze_count=1,
+        deferral={"signal": "X" * 10240, "consume_budget": False, "attempt": 0},
+    )
+    label = node.deferral_label
+    assert label is not None, "a sitting deferral renders its label"
+    assert len(label) < 2500, (
+        f"the hostile 10KB signal must render truncated (the error-text "
+        f"bound), got a {len(label)}-character label"
+    )
+    assert "more characters" in label, (
+        "the truncation is HONEST — the marker counts what the label no "
+        "longer spells (the panel's own convention)"
+    )
+    # THE CLEAN FACE UNCHANGED: a normal signal renders whole.
+    clean = RunNode(
+        key="solo",
+        status="scheduled",
+        attempt=0,
+        snooze_count=1,
+        deferral={"signal": "Snooze", "consume_budget": False, "attempt": 0},
+    )
+    clean_label = clean.deferral_label
+    assert clean_label is not None
+    assert "Snooze" in clean_label and "more characters" not in clean_label
+
+
+async def test_the_runs_list_exposes_a_pathologically_deferring_run(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    demo_app_module: Any,
+) -> None:
+    """THE RUN-LEVEL VISIBILITY (C4): the runs LIST carries the deferral
+    state at the RUN level — a pathologically deferring run is visible
+    from the inventory (the badge: the sitting nodes' count, the next
+    fire, the deferral depth — the row's own aggregated truth), never
+    only after opening the run; a clean run renders no badge."""
+    schema = module_pg_schema.schema_name
+    flow_id = await _seed_snoozed_run(module_pg_pool, schema)
+    # THE CLEAN RUN beside it: the same flow driven to terminal (the
+    # snoozing step defers once, then completes) — no badge.
+    clean_compiled = sys.modules[MODULE_NAME].app.get("snooze_page_flow")  # type: ignore[attr-defined]
+    clean_runner = FlowRunner(clean_compiled, module_pg_pool, schema)
+    clean_id = str((await clean_runner.create_flow(input=Ingest(doc_id="d2"))).flow_id)
+    await asyncio.sleep(FLOOR_S + 0.5)
+    status: str | None = "running"
+    for _ in range(30):
+        status = await module_pg_pool.fetchval(
+            f'SELECT status FROM "{schema}".jobs WHERE id = $1',
+            __import__("uuid").UUID(clean_id),
+        )
+        if status in ("succeeded", "failed", "cancelled"):
+            break
+        await clean_runner.tick(clean_id)
+        await asyncio.sleep(0.2)
+    assert status == "succeeded", status
+
+    app = _make_admin_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/workflows")
+    assert resp.status_code == 200
+    html = resp.text
+    # THE DEFERRING RUN'S ROW: the badge with the sitting count, the next
+    # fire, and the depth — the page's own badge patterns.
+    deferring_row = next(
+        (chunk for chunk in html.split("<tr>") if f"/workflows/{flow_id}" in chunk), ""
+    )
+    assert "data-wf-run-deferring" in deferring_row, (
+        "the pathologically deferring run must be visible from the runs "
+        "list (the run-level deferral badge)"
+    )
+    assert "1 deferred" in deferring_row, (
+        f"the badge names the sitting nodes' count, got: {deferring_row[:300]}"
+    )
+    assert "next fire" in deferring_row
+    assert "snooze #" in deferring_row
+    # THE CLEAN RUN'S ROW: no badge (the defined absent face).
+    clean_row = next(
+        (chunk for chunk in html.split("<tr>") if f"/workflows/{clean_id}" in chunk), ""
+    )
+    assert "data-wf-run-deferring" not in clean_row, (
+        "a run with no sitting deferral renders no badge"
+    )

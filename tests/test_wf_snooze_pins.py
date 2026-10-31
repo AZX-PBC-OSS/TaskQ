@@ -68,8 +68,9 @@ import asyncpg
 import pytest
 from pydantic import BaseModel
 
+from taskq._ids import new_uuid
 from taskq.exceptions import RetryAfter, Snooze
-from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, step
+from taskq.workflows import Done, FlowRunner, Promise, Refine, WorkflowApp, build, loop, step
 
 pytestmark = pytest.mark.integration
 
@@ -79,6 +80,12 @@ MODULE_NAME = "wf_snooze_demo_flows"
 #: every non-consuming deferral lands at least this far out; the pins'
 #: waits read the constant, never a re-spelled literal.
 FLOOR_S = 1.0
+
+#: THE LOOP BODIES' INVOCATION LEDGER (the C2 pins' counter — the
+#: module-level list the registered bodies append to; the refund re-mints
+#: the attempt ordinal so ``ctx.attempt`` cannot count, and the pin reads
+#: the CALLS to prove the resume re-ran the iteration).
+_LOOP_CALLS: list[str] = []
 
 
 class Ingest(BaseModel):
@@ -211,6 +218,54 @@ def demo_app_module() -> Iterator[types.ModuleType]:
 
         return build(step(_body, Ingest(doc_id="d1"), key="solo"))
 
+    @app_obj.workflow("snooze_vanilla_cancel_fence_flow")
+    def snooze_vanilla_cancel_fence() -> Promise[object]:
+        async def _body(ctx: Any, params: Ingest) -> str:
+            return "done"
+
+        return build(step(_body, Ingest(doc_id="d1"), key="solo"))
+
+    @app_obj.workflow("snooze_reset_face_flow")
+    def snooze_reset_face() -> Promise[object]:
+        async def _body(ctx: Any, params: Ingest) -> str:
+            return "done"
+
+        return build(step(_body, Ingest(doc_id="d1"), key="solo"))
+
+    @app_obj.workflow("snooze_remint_fence_flow")
+    def snooze_remint_fence() -> Promise[object]:
+        async def _body(ctx: Any, params: Ingest) -> str:
+            return "done"
+
+        return build(step(_body, Ingest(doc_id="d1"), key="solo"))
+
+    # THE LOOP PINS' FLOWS (C2 — the loop cliff): the bodies append to the
+    # module-level _LOOP_CALLS so the pin can count the INVOCATIONS (the
+    # rows cannot).
+    @app_obj.workflow("loop_snooze_flow")
+    def loop_snooze() -> Promise[object]:
+        async def _body(ctx: Any, carry: object) -> object:
+            n = int(carry) if carry is not None else 0
+            _LOOP_CALLS.append(f"carry{n}")
+            if len(_LOOP_CALLS) == 1:
+                # THE FIRST INVOCATION EVER (iteration 0's first attempt):
+                # the deferral — the loop must RESUME this iteration.
+                raise Snooze(timedelta(seconds=FLOOR_S))
+            n += 1
+            if n >= 3:
+                return Done(n)
+            return Refine(n)
+
+        return build(loop("counter", _body, initial=0, max_iterations=5))
+
+    @app_obj.workflow("loop_budget_exhaust_flow")
+    def loop_budget_exhaust() -> Promise[object]:
+        async def _body(ctx: Any, carry: object) -> object:
+            _LOOP_CALLS.append("burn")
+            raise RetryAfter(timedelta(seconds=0), consume_budget=True)
+
+        return build(loop("counter", _body, initial=0, max_iterations=5))
+
     module.app = app_obj  # type: ignore[attr-defined]
     sys.modules[MODULE_NAME] = module
     yield module
@@ -220,7 +275,9 @@ def demo_app_module() -> Iterator[types.ModuleType]:
 async def _node_row(pool: asyncpg.Pool, schema: str, flow_id: str, step_key: str) -> dict[str, Any]:
     row = await pool.fetchrow(
         f"SELECT id, status, attempt, snooze_count, scheduled_at, result, "
-        f'deps_pending, metadata FROM "{schema}".jobs '
+        f"deps_pending, metadata, error_class, error_message, "
+        f"cancel_phase, cancel_requested_at "
+        f'FROM "{schema}".jobs '
         f"WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = $2 "
         "AND step_key <> '__flow__'",
         uuid.UUID(flow_id),
@@ -771,6 +828,335 @@ async def test_defer_fences_a_zombie_attempt(
     assert row["status"] == "running", "the winner's row is untouched"
 
 
+# ── (8c) THE VANILLA CANCEL'S OWN MARK (C1 — the cancel launder) ──────────
+
+
+async def test_defer_fences_a_vanilla_cancel_marked_row(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+    clean_pg_conn: asyncpg.Connection,
+    demo_app_module: Any,
+) -> None:
+    """THE VANILLA CANCEL'S COLUMN MARK (C1): the admin job-page cancel
+    (``cancel_running``'s own arm — ``cancel_requested_at = now,
+    cancel_phase = 1`` on the RUNNING row) is a cancel in flight on the
+    wf node row too — the deferral must fence it exactly like the wf's
+    own metadata mark: the verdict ``cancel_fenced``, the row NOT
+    rescheduled (it does not survive the cancel), the vanilla mark
+    untouched on the record. The convicted shape: the column mark fenced
+    NOTHING — the deferral rescheduled the row (the cancel laundered:
+    the body invoked twice, the run SUCCEEDED, the vanilla cancel door
+    dead for life on that row)."""
+    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+
+    schema = module_pg_schema.schema_name
+    flow_id = await seed_flow(clean_pg_conn, schema, status="running")
+    node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="solo")
+    # THE VANILLA CANCEL (the admin job-page cancel's own arm —
+    # ``backend/_sql_templates.py``'s cancel_running: the COLUMN mark on
+    # the running row, no metadata stamp).
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET cancel_requested_at = clock_timestamp(), '
+        "cancel_phase = 1 WHERE id = $1 AND status = 'running' AND cancel_phase = 0",
+        node_id,
+    )
+    worker_id, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
+    from taskq.workflows.api._runner_defer import defer_node_row
+    from taskq.workflows.engine import render_workflow_sql
+    from taskq.workflows.ledger import claim_step_ledger
+
+    wsql = render_workflow_sql(schema)
+    claim = await claim_step_ledger(
+        clean_pg_conn,
+        wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="solo",
+        map_index=None,
+        attempt=int(attempt),
+    )
+    # THE STATEMENT'S VERDICT: the cancel wins on EITHER mark, nothing lands.
+    verdict = await defer_node_row(
+        module_pg_pool,
+        wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        worker_id=worker_id,
+        attempt=int(attempt),
+        claim_epoch=int(epoch),
+        disposition="snooze",
+        delay=timedelta(seconds=FLOOR_S),
+        signal_name="Snooze",
+    )
+    assert verdict == "cancel_fenced", (
+        f"the vanilla cancel's column mark must fence the deferral "
+        f"(the operator's cancel in flight wins), got {verdict!r}"
+    )
+    row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
+    assert row["status"] == "running", (
+        "the fenced row does NOT reschedule — it does not survive the cancel"
+    )
+    assert row["cancel_requested_at"] is not None, "the vanilla mark survives untouched"
+    assert row["snooze_count"] == 0, "a fenced deferral never moved the counter"
+
+    # THE RUNNER'S ROUTE: the cancel-fenced node terminalises 'cancelled'
+    # through the wf terminal door (the vanilla cancel ladder's face).
+    compiled = sys.modules[MODULE_NAME].app.get("snooze_vanilla_cancel_fence_flow")  # type: ignore[attr-defined]
+    runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=worker_id)
+    label = await runner._defer_step(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the runner's own seam directly — the mixin method is the machinery under test.
+        flow_id,
+        {"id": node_id, "step_key": "solo", "map_index": None},
+        int(attempt),
+        claim.ledger_id,
+        Snooze(timedelta(seconds=FLOOR_S)),
+        claim_epoch=int(epoch),
+    )
+    assert label == "cancelled"
+    row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
+    assert row["status"] == "cancelled", row["status"]
+    ledger_rows = await _ledger_rows(module_pg_pool, schema, str(flow_id), "solo")
+    assert ledger_rows[0]["status"] == "cancelled"
+    assert ledger_rows[0]["error_class"] == "WorkflowCancelled"
+
+
+async def test_the_exhausted_arm_also_fences_the_cancel_mark(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+    clean_pg_conn: asyncpg.Connection,
+    demo_app_module: Any,
+) -> None:
+    """THE EXHAUSTED ARM'S OWN FENCE (C1a): a consuming RetryAfter past
+    the budget on a row carrying the vanilla cancel's column mark answers
+    the CANCEL's verdict — the cancel outranks the exhaustion (the arm
+    order's law: the marked row never reads as a body failure)."""
+    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+
+    schema = module_pg_schema.schema_name
+    flow_id = await seed_flow(clean_pg_conn, schema, status="running")
+    node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="solo")
+    # The seeded row carries max_attempts=3 and attempt=1 (the claim view)
+    # — pin the budget gate's OTHER leg: the consuming disposition at the
+    # budget's edge (attempt >= max_attempts) on a MARKED row.
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET cancel_requested_at = clock_timestamp(), '
+        "cancel_phase = 1, attempt = 3 WHERE id = $1",
+        node_id,
+    )
+    worker_id, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
+    from taskq.workflows.api._runner_defer import defer_node_row
+    from taskq.workflows.engine import render_workflow_sql
+
+    wsql = render_workflow_sql(schema)
+    verdict = await defer_node_row(
+        module_pg_pool,
+        wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        worker_id=worker_id,
+        attempt=int(attempt),
+        claim_epoch=int(epoch),
+        disposition="retry_after_consuming",
+        delay=timedelta(seconds=0),
+        signal_name="RetryAfter",
+    )
+    assert verdict == "cancel_fenced", (
+        f"the marked row's consuming past-budget deferral must answer the "
+        f"CANCEL's verdict (the cancel outranks the exhaustion), got {verdict!r}"
+    )
+    row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
+    assert row["status"] == "running", "the fenced row moved nothing"
+
+
+async def test_the_deferral_resets_the_cancel_columns_for_the_later_claim(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+    clean_pg_conn: asyncpg.Connection,
+    demo_app_module: Any,
+) -> None:
+    """THE RESET'S OWN SHAPE (C1c — the vanilla arms' SET, mirrored): the
+    deferral's reschedule carries ``cancel_phase = 0 / cancel_requested_at
+    = NULL`` — mark_snoozed's own reset — so a LATER clean claim reads a
+    clean row: a stale cancel-request residue (a request stamped on the
+    row, its phase resolved back to 0) does not survive the deferral, and
+    the fence above guarantees the resets only ever land on a row that
+    carries NO cancel mark (a marked row is fenced, never laundered)."""
+    from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
+
+    schema = module_pg_schema.schema_name
+    flow_id = await seed_flow(clean_pg_conn, schema, status="running")
+    node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="solo")
+    # THE RESIDUE SHAPE: a cancel request stamped on the row, its phase
+    # resolved back to 0 — the columns the vanilla arms' SET resets.
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".jobs SET cancel_requested_at = clock_timestamp(), '
+        "cancel_phase = 0 WHERE id = $1",
+        node_id,
+    )
+    worker_id, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
+    from taskq.workflows.engine import render_workflow_sql
+    from taskq.workflows.ledger import claim_step_ledger
+
+    wsql = render_workflow_sql(schema)
+    claim = await claim_step_ledger(
+        clean_pg_conn,
+        wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="solo",
+        map_index=None,
+        attempt=int(attempt),
+    )
+    compiled = sys.modules[MODULE_NAME].app.get("snooze_reset_face_flow")  # type: ignore[attr-defined]
+    runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=worker_id)
+
+    # THE DEFERRAL LANDS (the residue row carries NO cancel mark — phase
+    # 0 — the fence admits it) and the SET resets the columns.
+    label = await runner._defer_step(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the runner's own seam directly — the mixin method is the machinery under test.
+        flow_id,
+        {"id": node_id, "step_key": "solo", "map_index": None},
+        int(attempt),
+        claim.ledger_id,
+        Snooze(timedelta(seconds=FLOOR_S)),
+        claim_epoch=int(epoch),
+    )
+    assert label == "deferred", label
+    row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
+    assert row["status"] == "scheduled", row["status"]
+    assert row["cancel_requested_at"] is None, (
+        "the deferral's SET resets the stale cancel request (the vanilla "
+        "mark_snoozed's own shape) — a later claim reads a clean row"
+    )
+    assert row["cancel_phase"] == 0, "the later claim's row is clean (no laundry)"
+
+
+# ── (8d) THE ZOMBIE'S FENCE vs THE RE-MINT (C5) ───────────────────────────
+
+
+async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+    clean_pg_conn: asyncpg.Connection,
+    demo_app_module: Any,
+) -> None:
+    """THE RE-MINT GUARD (C5): the refund re-mints the ordinal — the
+    arbiter re-use hands a LIVE winner the SAME ledger row a zombie once
+    claimed. The zombie's by-id fence (the status='running' guard alone)
+    would mark the WINNER's live attempt 'fenced' — the ledger lie. The
+    guard: the fence binds the caller's own claim instant (the claim's
+    RETURNING updated_at) — a re-minted row carries the re-mint's own
+    stamp, the stale instant refuses the fence, and the winner's own
+    terminal writes the row. THE CLASSIC ARM beside it: an un-re-minted
+    zombie row still fences (H1 — never a running row left forever)."""
+    from taskq.workflows.api._runner_defer import defer_node_row
+    from taskq.workflows.engine import render_workflow_sql
+    from taskq.workflows.ledger import claim_step_ledger
+    from tests._wf_fixtures import seed_flow, seed_running_node
+
+    schema = module_pg_schema.schema_name
+    flow_id = await seed_flow(clean_pg_conn, schema, status="running")
+    node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="solo")
+    wsql = render_workflow_sql(schema)
+
+    zombie_worker = new_uuid()
+    # THE ZOMBIE'S CLAIM (the row's own stamp: the claim's RETURNING
+    # instant — the discriminator the fence binds).
+    zombie_claim = await claim_step_ledger(
+        clean_pg_conn,
+        wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="solo",
+        map_index=None,
+        attempt=1,
+    )
+    assert zombie_claim.claimed_at is not None
+    # THE RE-MINT (the refund's own face): a later claimant re-claims the
+    # SAME ordinal — the arbiter re-use hands it the SAME ledger row, and
+    # the re-mint re-stamps the row's updated_at (the claim's own
+    # instance identity moves to the winner).
+    winner_claim = await claim_step_ledger(
+        clean_pg_conn,
+        wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        step_key="solo",
+        map_index=None,
+        attempt=1,
+    )
+    assert winner_claim.ledger_id == zombie_claim.ledger_id, (
+        "the re-mint re-uses the SAME arbiter row (the refund's own law) — "
+        "the winner is LIVE on the zombie's row"
+    )
+    assert winner_claim.claimed_at is not None
+    assert winner_claim.claimed_at > zombie_claim.claimed_at, (
+        "the re-mint re-stamped the claim instant (the discriminator moved to the winner)"
+    )
+
+    # THE ZOMBIE'S DEFERRAL: the stale epoch matches nothing on the row.
+    verdict = await defer_node_row(
+        module_pg_pool,
+        wsql,
+        flow_id=flow_id,
+        job_id=node_id,
+        worker_id=zombie_worker,
+        attempt=1,
+        claim_epoch=999,  # stale — the row's claim moved on
+        disposition="snooze",
+        delay=timedelta(seconds=FLOOR_S),
+        signal_name="Snooze",
+    )
+    assert verdict is None, "the zombie's deferral matches no verdict row"
+
+    compiled = sys.modules[MODULE_NAME].app.get("snooze_remint_fence_flow")  # type: ignore[attr-defined]
+    runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=zombie_worker)
+    label = await runner._defer_step(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the runner's own seam directly.
+        flow_id,
+        {"id": node_id, "step_key": "solo", "map_index": None},
+        1,
+        zombie_claim.ledger_id,
+        Snooze(timedelta(seconds=FLOOR_S)),
+        claim_epoch=999,
+        ledger_claimed_at=zombie_claim.claimed_at,
+    )
+    assert label == "fenced"
+    # THE WINNER'S ROW STAYS LIVE (never 'fenced' — its own terminal
+    # writes it; the record never lies about the live attempt).
+    ledger_rows = await _ledger_rows(module_pg_pool, schema, str(flow_id), "solo")
+    assert ledger_rows[0]["status"] == "running", (
+        f"THE RE-MINT GUARD: the zombie's fence must refuse a re-minted "
+        f"row (the winner's LIVE claim — the record stays the claim's), "
+        f"got {ledger_rows[0]['status']!r}"
+    )
+
+    # THE CLASSIC ARM (beside it): an UN-re-minted zombie row still
+    # fences — H1's law, never a running row left forever.
+    flow2 = await seed_flow(clean_pg_conn, schema, status="running")
+    node2 = await seed_running_node(clean_pg_conn, schema, flow2, step_key="solo")
+    claim2 = await claim_step_ledger(
+        clean_pg_conn,
+        wsql,
+        flow_id=flow2,
+        job_id=node2,
+        step_key="solo",
+        map_index=None,
+        attempt=1,
+    )
+    label2 = await runner._defer_step(  # pyright: ignore[reportPrivateUsage]
+        flow2,
+        {"id": node2, "step_key": "solo", "map_index": None},
+        5,  # the stale attempt — the classic zombie's shape
+        claim2.ledger_id,
+        Snooze(timedelta(seconds=FLOOR_S)),
+        claim_epoch=0,
+        ledger_claimed_at=claim2.claimed_at,
+    )
+    assert label2 == "fenced"
+    ledger2 = await _ledger_rows(module_pg_pool, schema, str(flow2), "solo")
+    assert ledger2[0]["status"] == "fenced", (
+        "THE CLASSIC ARM: the zombie's un-re-minted row still fences (H1)"
+    )
+
+
 # ── (9) the disposition resolver (the extension seam's own pin) ───────────
 
 
@@ -789,3 +1175,138 @@ def test_the_signal_resolver_names_the_dispositions() -> None:
         deferral_disposition(RetryAfter(timedelta(seconds=1), consume_budget=True))
         == "retry_after_consuming"
     )
+
+
+# ── (10) THE LOOP'S ITERATION SIGNALS (C2 — the loop cliff) ───────────────
+
+
+async def test_loop_body_snooze_defers_the_iteration(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+    demo_app_module: Any,
+) -> None:
+    """THE LOOP'S DEFERRAL (C2): a loop ITERATION body raising Snooze
+    routes through the deferral disposition — the SAME NODE_DEFER_SQL arm
+    the step bodies share: the loop node row re-schedules at the delay,
+    the attempt REFUNDED (the ladder unburned), the iteration counters
+    UNTOUCHED (the advance never ran — the loop resumes at THIS
+    iteration), the run alive. The pre-cure shape: the signal fell into
+    the loop's body-failure catch — the run terminalized on the FIRST
+    signal (LoopBodyFailure, one invocation)."""
+    schema = module_pg_schema.schema_name
+    _LOOP_CALLS.clear()
+    compiled = sys.modules[MODULE_NAME].app.get("loop_snooze_flow")  # type: ignore[attr-defined]
+    runner = FlowRunner(compiled, module_pg_pool, schema)
+    flow_id = str((await runner.create_flow()).flow_id)
+
+    # THE FIRST TICK: the loop claims, iteration 0's body snoozes — the
+    # DEFERRAL lands on the loop node row (never the body-failure death).
+    assert await runner.tick(flow_id)
+    assert _LOOP_CALLS == ["carry0"], _LOOP_CALLS
+    row = await _node_row(module_pg_pool, schema, flow_id, "counter")
+    assert row["status"] == "scheduled", (
+        f"the loop's deferral re-schedules the loop node row (the SAME "
+        f"disposition the step bodies share), got {row['status']!r}"
+    )
+    assert row["attempt"] == 0, (
+        f"the loop's deferral refunds the claim's increment (the ladder "
+        f"unburned), got {row['attempt']}"
+    )
+    assert row["snooze_count"] == 1, "the deferral counter moved"
+    # THE LOOP'S OWN COUNTERS CONSISTENT ACROSS THE DEFERRAL: the
+    # iteration counter did NOT advance, the carry did NOT move — the
+    # resume re-runs THIS iteration.
+    assert row["metadata"].get("iteration") == 0, (
+        f"the deferral must not advance the loop's iteration counter (the "
+        f"resume re-runs THIS iteration), got {row['metadata'].get('iteration')!r}"
+    )
+    assert row["metadata"].get("carry") == 0, "the carry is frozen at the deferral"
+    # THE RUN STAYS ALIVE (never the LoopBodyFailure terminal).
+    assert await _root_status(module_pg_pool, schema, flow_id) == "running"
+    # THE LEDGER: the loop node's claim row rested 'awaited' (the hold's
+    # own resume-not-retry status — never a failed row the ladder counts).
+    (ledger,) = await _ledger_rows(module_pg_pool, schema, flow_id, "counter")
+    assert ledger["status"] == "awaited", ledger["status"]
+
+    # THE RESUME: past the delay, the loop re-claims and RE-RUNS iteration
+    # 0 — the counters consistent, the run completes.
+    await asyncio.sleep(FLOOR_S + 0.5)
+    for _ in range(20):
+        status = await _root_status(module_pg_pool, schema, flow_id)
+        if status in ("succeeded", "failed", "cancelled"):
+            break
+        await runner.tick(flow_id)
+        await asyncio.sleep(0.2)
+    row = await _node_row(module_pg_pool, schema, flow_id, "counter")
+    assert row["status"] == "succeeded", (
+        f"the loop must complete after the deferral's resume (the run "
+        f"alive, the ladder unburned), got {row['status']!r}"
+    )
+    assert _LOOP_CALLS == ["carry0", "carry0", "carry1", "carry2"], (
+        f"the resume re-runs THE SAME iteration (iteration 0's body twice), "
+        f"then the march continues: {_LOOP_CALLS}"
+    )
+    # THE LOOP'S TERMINAL ACCOUNTING: the iteration timeline reads THREE
+    # terminal iterations (the §13.3 trace) — one arbiter row per
+    # iteration (the re-mint re-used iteration 0's row, never grew it).
+    timeline = await module_pg_pool.fetch(
+        f'SELECT step_key, status FROM "{schema}".wf_step_ledger '
+        f"WHERE flow_id = $1 AND step_key LIKE 'counter.iter%' ORDER BY id",
+        uuid.UUID(flow_id),
+    )
+    assert [r["step_key"] for r in timeline] == [
+        "counter.iter0",
+        "counter.iter1",
+        "counter.iter2",
+    ], [r["step_key"] for r in timeline]
+    assert all(r["status"] == "succeeded" for r in timeline)
+
+
+async def test_loop_body_retry_after_consuming_past_budget_takes_the_body_failure_face(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+    demo_app_module: Any,
+) -> None:
+    """THE LADDER STILL BOUNDS LOOPS (C2's bound face): a loop body
+    exhausting the budget via ``RetryAfter(consume_budget=True)`` past
+    ``max_attempts`` takes the LOOP'S BODY-FAILURE FACE — the named
+    state, the node failed ``MaxAttemptsExceeded``, the flow terminal
+    (STRANDED-FLOW) — the consuming burn bounded by the budget, never a
+    deferral loop that outlives its budget."""
+    schema = module_pg_schema.schema_name
+    _LOOP_CALLS.clear()
+    compiled = sys.modules[MODULE_NAME].app.get("loop_budget_exhaust_flow")  # type: ignore[attr-defined]
+    runner = FlowRunner(compiled, module_pg_pool, schema)
+    flow_id = str((await runner.create_flow()).flow_id)
+
+    for _ in range(30):
+        status = await _root_status(module_pg_pool, schema, flow_id)
+        if status in ("succeeded", "failed", "cancelled"):
+            break
+        await runner.tick(flow_id)
+        await asyncio.sleep(0.05)
+    row = await _node_row(module_pg_pool, schema, flow_id, "counter")
+    assert row["status"] == "failed", (
+        f"the budget-exhausted loop terminal-fails (the ladder's bound "
+        f"arrives through the body's own signal), got {row['status']!r}"
+    )
+    # THE LOOP'S BODY-FAILURE FACE: the named state + the vanilla's own
+    # exhaustion class + message.
+    assert row["error_class"] == "MaxAttemptsExceeded", row["error_class"]
+    assert row["metadata"].get("iteration_state") == "loop_body_failed", (
+        f"the named state is the loop's BODY-FAILURE face (the consuming "
+        f"burn exhausted the budget), got {row['metadata'].get('iteration_state')!r}"
+    )
+    # THE BUDGET BOUNDED IT: three burns (max_attempts=3), never a fourth.
+    assert len(_LOOP_CALLS) == 3, _LOOP_CALLS
+    # THE TERMINAL ACCOUNTING: the flow terminal (STRANDED-FLOW) and the
+    # ledger's claim rows resolved — the consuming burn KEEPS each
+    # increment (the vanilla's own shape: a new arbiter row per burn), so
+    # the claim rows read awaited, awaited, failed (the last attempt's
+    # failed record carrying the vanilla's own class).
+    assert await _root_status(module_pg_pool, schema, flow_id) == "failed"
+    ledger_rows = await _ledger_rows(module_pg_pool, schema, flow_id, "counter")
+    assert [r["status"] for r in ledger_rows] == ["awaited", "awaited", "failed"], [
+        dict(r) for r in ledger_rows
+    ]
+    assert ledger_rows[-1]["error_class"] == "MaxAttemptsExceeded"

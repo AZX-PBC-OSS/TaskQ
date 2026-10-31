@@ -45,11 +45,18 @@ row law) adds exactly three things and touches nothing else —
 3. ONE arm in :func:`deferral_disposition` (the signal → disposition
    resolution — the catch arm's whole mapping).
 
-The catch arm in ``api/_runner`` consumes signals and dispatches by the
-named disposition; it never grows a per-signal branch. The ladder's own
-arms (the count, the backoff, the deterministic route) are untouched —
-the deferral is the ladder's SIBLING (the budget's other face), never
-its special case.
+The catch arms (the STEP's in ``api/_runner``, the LOOP's in
+``api/_runner_loop``) consume signals and dispatch by the named
+disposition; neither grows a per-signal branch. The ROW LAW + THE
+LEDGER'S TRUTH are ONE shared phase (:func:`defer_row_law` — the two
+catch arms' common body); the TERMINAL verdicts route per SEAM — the
+step's through the wf terminal door (:meth:`DeferOps._defer_step`), the
+loop's through the loop's own doors
+(:meth:`~taskq.workflows.api._runner_loop.LoopOps._defer_loop_step`:
+the named state + STRANDED-FLOW ride ``_exhaust_loop``). The ladder's
+own arms (the count, the backoff, the deterministic route) are
+untouched — the deferral is the ladder's SIBLING (the budget's other
+face), never its special case.
 """
 
 from __future__ import annotations
@@ -71,6 +78,8 @@ if TYPE_CHECKING:
 __all__ = [
     "DeferOps",
     "DeferralDisposition",
+    "defer_node_row",
+    "defer_row_law",
     "deferral_disposition",
 ]
 
@@ -79,7 +88,10 @@ logger: Any = get_logger(__name__)
 #: The vanilla ``mark_retry_after_consume_true``'s own exhaustion message
 #: (``backend/_sql_templates.py``'s max_attempts_failed arm) — one
 #: vocabulary with the vanilla surface's record, never a re-spelling.
-_BUDGET_EXHAUSTED_MESSAGE: Final[str] = "retry budget exhausted"
+#: (MODULE-LEVEL PUBLIC: the LOOP's deferral route — the exhausted
+#: verdict's own body-failure face — reads it beside the loop's own
+#: named-state machinery.)
+BUDGET_EXHAUSTED_MESSAGE: Final[str] = "retry budget exhausted"
 
 #: The wf cancel's own error class (``CANCEL_NODES_SQL_TEMPLATE``'s event
 #: stamp): the cancel-fenced deferral terminalises the node under the
@@ -124,6 +136,22 @@ class _DeferHost(Protocol):
     async def _project_auto(
         self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
     ) -> None: ...
+
+    async def _exhaust_loop(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        error_class: str | None,
+        message: str | None,
+        *,
+        worker_id: JobId,
+        attempt: int,
+        claim_epoch: int,
+    ) -> None:
+        """THE LOOP'S OWN EXHAUSTION DOOR (the exhausted verdict's route
+        for the loop's deferral — the loop's named state + STRANDED-FLOW
+        + the escalation ride the loop's own machinery, never a
+        re-spelling)."""
 
 
 async def defer_node_row(
@@ -178,6 +206,82 @@ async def defer_node_row(
     return verdict
 
 
+async def defer_row_law(
+    pool: asyncpg.Pool,
+    wsql: WorkflowSql,
+    *,
+    job_id: JobId,
+    worker_id: JobId,
+    delay: timedelta,
+    attempt: int,
+    claim_epoch: int,
+    disposition: DeferralDisposition,
+    signal_name: str,
+    ledger_id: JobId | None,
+    ledger_claimed_at: Any,
+) -> str:
+    """THE ROW LAW + THE LEDGER'S TRUTH, one transaction (the H9 law's own
+    shape — a split write leaves the row 'scheduled' with the ledger
+    'running': the phantom the fence prevents) — the SHARED phase of both
+    verdict routes (the STEP's and the LOOP's; the two mixins' own
+    methods apply the verdict, never the SQL):
+
+    * ``"deferred"`` — the row re-scheduled at the delay (the attempt
+      arm's refund/keep law applied) and the claim's ledger row rested
+      ``awaited`` (the hold's own resume-not-retry status — never a
+      ``failed`` row the ladder's budget read would count);
+    * ``"fenced"`` — the ZOMBIE's deferral: the claim fence matched
+      nothing (a peer re-claimed the row at a newer attempt) and the
+      attempt records 'fenced' on the ledger (H1 — never a running row
+      left forever), keyed on the claim's OWN RETURNING instant (the
+      re-mint guard, C5 — a re-minted row is the LIVE winner's, never
+      ours);
+    * ``"exhausted"`` / ``"cancel_fenced"`` — the row law wrote NOTHING
+      (the verdict names the caller's own terminal door).
+
+    ``disposition``/``signal_name`` arrive pre-resolved
+    (:func:`deferral_disposition` + the signal's class name) — this
+    function is the ROW LAW only, never the signal's interpretation.
+    """
+    async with pool.acquire() as conn, conn.transaction():
+        verdict = await conn.fetchrow(
+            wsql.node_defer,
+            job_id,
+            worker_id,
+            delay,
+            attempt,
+            claim_epoch,
+            disposition,
+            signal_name,
+        )
+        if verdict is None:
+            if ledger_id is not None:
+                await conn.execute(
+                    wsql.ledger_fence_by_id,
+                    ledger_id,
+                    signal_name,
+                    ledger_claimed_at,
+                )
+            return "fenced"
+        if verdict["verdict"] == "deferred":
+            if ledger_id is not None:
+                # THE DEFERRED REST: 'awaited' — the hold's own
+                # resume-not-retry status. Never 'failed': the ladder's
+                # budget read counts failures only, and the deferral never
+                # executed.
+                await conn.execute(
+                    wsql.ledger_terminal_by_id,
+                    ledger_id,
+                    "awaited",
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            return "deferred"
+        return str(verdict["verdict"])
+
+
 class DeferOps(_DeferHost):
     """The runner's deferral mixin (the machinery's home; the runner
     composes it)."""
@@ -193,17 +297,22 @@ class DeferOps(_DeferHost):
         exc: Snooze | RetryAfter,
         *,
         claim_epoch: int = 0,
+        ledger_claimed_at: Any = None,
     ) -> str:
-        """THE DEFERRAL DISPOSITION'S VERDICT ROUTES (the catch arm's
-        body): the row law runs in ONE transaction with the LEDGER's own
-        truth for the claim's row — the deferred rest (``awaited``, the
-        hold's own resume-not-retry status: the ladder's budget read
-        counts 'failed' rows only, so a deferral never burns), the
-        zombie's fenced record (H1: never a running row left forever) —
-        and the two TERMINAL verdicts route through the wf terminal door
+        """THE STEP'S DEFERRAL VERDICT ROUTES (the catch arm's body): the
+        shared row law (``defer_row_law`` — the NODE_DEFER_SQL write + the
+        ledger's truth, one transaction) applied by the STEP's own routes —
+        the two TERMINAL verdicts route through the wf terminal door
         (:meth:`~taskq.workflows.engine.finalize_node` — the ledger's
         terminal, the T06 cascade and the propagation ride it), exactly
-        like the ladder's own exhaustion arm.
+        like the ladder's own exhaustion arm. (The LOOP body's signals
+        route through ``LoopOps._defer_loop_step`` — the same row law, the
+        loop's own doors.)
+
+        ``ledger_claimed_at`` is the claim's OWN RETURNING instant (the
+        re-mint guard's discriminator, C5): the zombie's fence keys on it,
+        so a claim the arbiter re-minted onto a LIVE winner (the refund's
+        own row re-use) can never be fenced by the stale claimant.
 
         Returns the attempt's outcome label (the caller's log line —
         the ROW is the truth, this is the record's echo):
@@ -213,52 +322,19 @@ class DeferOps(_DeferHost):
         from taskq.workflows.engine import finalize_node
 
         disposition = deferral_disposition(exc)
-        # THE ROW LAW + THE LEDGER'S TRUTH, one transaction (the H9 law's
-        # own shape — a split write leaves the row 'scheduled' with the
-        # ledger 'running': the phantom the fence prevents).
-        async with self.pool.acquire() as conn, conn.transaction():
-            verdict = await conn.fetchrow(
-                self.wsql.node_defer,
-                JobId(row["id"]),
-                self._worker_id,
-                exc.delay,
-                attempt,
-                claim_epoch,
-                disposition,
-                type(exc).__name__,
-            )
-            if verdict is None:
-                # THE ZOMBIE'S DEFERRAL (the claim fence matched nothing —
-                # a peer re-claimed the row at a newer attempt): the
-                # attempt records 'fenced' on the ledger (H1) and this
-                # attempt touches nothing else — the winner owns the row.
-                if ledger_id is not None:
-                    await conn.execute(self.wsql.ledger_fence_by_id, ledger_id, type(exc).__name__)
-                logger.info(
-                    "node.defer-fenced",
-                    run_id=str(flow_id),
-                    node=row["step_key"],
-                    signal=type(exc).__name__,
-                )
-                verdict_text = "fenced"
-            elif verdict["verdict"] == "deferred":
-                if ledger_id is not None:
-                    # THE DEFERRED REST: 'awaited' — the hold's own
-                    # resume-not-retry status. Never 'failed': the
-                    # ladder's budget read counts failures only, and the
-                    # deferral never executed.
-                    await conn.execute(
-                        self.wsql.ledger_terminal_by_id,
-                        ledger_id,
-                        "awaited",
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                verdict_text = "deferred"
-            else:
-                verdict_text = str(verdict["verdict"])
+        verdict_text = await defer_row_law(
+            self.pool,
+            self.wsql,
+            job_id=JobId(row["id"]),
+            worker_id=self._worker_id,
+            delay=exc.delay,
+            attempt=attempt,
+            claim_epoch=claim_epoch,
+            disposition=disposition,
+            signal_name=type(exc).__name__,
+            ledger_id=ledger_id,
+            ledger_claimed_at=ledger_claimed_at,
+        )
 
         if verdict_text == "deferred":
             logger.info(
@@ -271,6 +347,12 @@ class DeferOps(_DeferHost):
             )
             return "deferred"
         if verdict_text == "fenced":
+            logger.info(
+                "node.defer-fenced",
+                run_id=str(flow_id),
+                node=row["step_key"],
+                signal=type(exc).__name__,
+            )
             return "fenced"
 
         # THE TERMINAL VERDICTS — the wf terminal door's own faces (the
@@ -282,7 +364,7 @@ class DeferOps(_DeferHost):
         outcome = "failed" if exhausted else "cancelled"
         error_class = ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED if exhausted else WORKFLOW_CANCELLED_CLASS
         error_message = (
-            _BUDGET_EXHAUSTED_MESSAGE
+            BUDGET_EXHAUSTED_MESSAGE
             if exhausted
             else "cancelled while deferring (the operator's cancel outranks the deferral)"
         )
