@@ -1,0 +1,8 @@
+# the estate regression slice x3 (serial) at the re-stamp head ce94e138c91b1fa16b6f55daa2175bbe410916b7
+41 passed in 10.99s
+slice1 rc=0
+41 passed in 8.34s
+slice2 rc=0
+41 passed in 8.40s
+slice3 rc=0
+head: ce94e138c91b1fa16b6f55daa2175bbe410916b7

@@ -1,0 +1,4 @@
+# THE FAST TIER at -n 8 — the ZERO-FAILURES fill at the re-stamp head ce94e138c91b1fa16b6f55daa2175bbe410916b7
+13618 passed, 9 skipped, 1 xfailed, 152 warnings in 699.29s (0:11:39)
+rc=0
+head: ce94e138c91b1fa16b6f55daa2175bbe410916b7

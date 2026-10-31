@@ -1,0 +1,4 @@
+# the wf battery's FILL — the ZERO-FAILURE run at the re-stamp head ce94e138c91b1fa16b6f55daa2175bbe410916b7
+787 passed, 3 warnings in 76.60s (0:01:16)
+rc=0
+head: ce94e138c91b1fa16b6f55daa2175bbe410916b7
