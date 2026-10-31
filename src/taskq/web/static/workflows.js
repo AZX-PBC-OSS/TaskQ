@@ -198,27 +198,6 @@
         errCell.classList.remove("text-red-600", "dark:text-red-400");
       }
     }
-    // THE DEFERRAL LINE (the snoozed step's sitting state): the frame
-    // carries the label — the row's truth (the deferral stamp's own
-    // discriminator), so a node that ARRIVES at the snoozed state while
-    // you watch gains the line, and one that moves on (the re-claim, a
-    // later ladder repend — never a live deferral) loses it. Mirrors the
-    // retry affordance's live add/remove.
-    var deferLine = row.querySelector('[data-wf-node-deferral]');
-    if (node.deferral_label) {
-      if (!deferLine) {
-        var chipEl = row.querySelector('[data-wf-node-chip]');
-        if (chipEl) {
-          deferLine = document.createElement("div");
-          deferLine.setAttribute("data-wf-node-deferral", "1");
-          deferLine.className = "mt-1 text-xs text-amber-700 dark:text-amber-300";
-          chipEl.parentNode.appendChild(deferLine);
-        }
-      }
-      if (deferLine) deferLine.textContent = node.deferral_label;
-    } else if (deferLine) {
-      deferLine.remove();
-    }
     // THE RETRY AFFORDANCE'S LIVE ADD/REMOVE (H-C9): a failed row
     // carries the retry form; a row that leaves failed reverts to the
     // dash. Only rows the ACTIONS column renders participate (the

@@ -55,8 +55,6 @@ from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.workflows._sql import WorkflowSql
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     # Type-only export: JSONValue lives in tors' stubs, not its runtime
     # module -- future annotations make the string-form uses safe.
     from tors import JSONValue
@@ -160,13 +158,6 @@ class LedgerClaim:
     error_class: str | None
     error_message: str | None
     ledger_id: JobId | None = None
-    # THE CLAIM'S OWN INSTANCE IDENTITY (the re-mint guard's discriminator,
-    # C5): the RETURNING updated_at — the arbiter's re-use re-stamps it, so
-    # a fence keyed on THIS instant can never mark a row a LATER claimant
-    # re-minted onto the same arbiter tuple (the refund's own law: the
-    # ledger re-claims the SAME arbiter row — the winner and the zombie
-    # share the id, never the instant).
-    claimed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,7 +234,6 @@ async def claim_step_ledger(
         result=_decode_jsonb(rec["result"]),
         error_class=rec["error_class"],
         error_message=rec["error_message"],
-        claimed_at=rec["updated_at"],
     )
 
 

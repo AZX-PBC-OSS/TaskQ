@@ -922,9 +922,8 @@ async def execute_flow_job(
     finalize, the same fences. NOT a second execution semantics.
 
     Returns the execution record (:class:`FlowExecution`) — the outcome
-    label (``succeeded`` / ``laddered`` / ``held`` / ``deferred`` — the
-    tail's outcome faces, the deferral the body's own control-flow
-    signals) beside the REAL identities the door resolved on the way.
+    label (``succeeded`` / ``laddered`` / ``held`` — the tail's terminal
+    faces) beside the REAL identities the door resolved on the way.
 
     Raises :class:`WorkflowBodyUnresolvableError` when the stamped name
     or the step key resolves to nothing registered in this process —

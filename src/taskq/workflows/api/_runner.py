@@ -58,7 +58,6 @@ from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
-from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
 from taskq.workflows._cache import CachedStep
 from taskq.workflows._progress import (
@@ -101,7 +100,6 @@ from taskq.workflows.api._runner_codec import (
     next_data,
     result_truncation,
 )
-from taskq.workflows.api._runner_defer import DeferOps
 from taskq.workflows.api._runner_errors import VanishedNodeError, WorkflowRunError
 from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import LadderOps, is_infra_fault
@@ -208,12 +206,11 @@ def _resolve_priority(*levels: int | None) -> int:
     return 0
 
 
-class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
+class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps):
     """The API's runner: create, drive, read. One engine, many surfaces —
     the runner OWNS no state; every fact is a row. The concern modules
-    (the loop driver, the ladder, the exit, the chain finalize, the
-    deferral) compose in as mixins — each seam's machinery lives in its
-    own module (§7b)."""
+    (the loop driver, the ladder, the exit, the chain finalize) compose
+    in as mixins — each seam's machinery lives in its own module (§7b)."""
 
     def __init__(
         self,
@@ -718,7 +715,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # running row (T05's contract — the terminal write keys the
         # claim's own row; a skipped ledger claim strands the terminal).
         ledger_id: JobId | None = None
-        ledger_claimed_at: Any = None
         async with self.pool.acquire() as conn:
             claimed = await conn.fetchval(
                 render_sql(NODE_CLAIM_SQL_TEMPLATE, self.schema), row["id"], self._worker_id
@@ -736,7 +732,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     attempt=int(claimed),
                 )
                 ledger_id = claim.ledger_id
-                ledger_claimed_at = claim.claimed_at
         if claimed is None:
             return  # someone else claimed it (or the flow died) — no error
         attempt = int(claimed)
@@ -749,14 +744,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # stamps claim_epoch 0; the fleet's dispatch claim carries the
         # row's epoch).
         await self._execute_claimed(
-            flow_id,
-            row,
-            attempt,
-            ledger_id,
-            node,
-            body,
-            run_priority=self._run_priority,
-            ledger_claimed_at=ledger_claimed_at,
+            flow_id, row, attempt, ledger_id, node, body, run_priority=self._run_priority
         )
 
     async def _fail_vanished_node(
@@ -892,7 +880,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             body,
             claim_epoch=claim_epoch,
             run_priority=run_priority,
-            ledger_claimed_at=claim.claimed_at,
         )
 
     async def _execute_claimed(
@@ -906,7 +893,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         *,
         claim_epoch: int = 0,
         run_priority: int | None = None,
-        ledger_claimed_at: Any = None,
     ) -> str:
         """The shared execution tail, from the ledger claim to the
         terminal: the in-process driver (:meth:`_run_node`) and the
@@ -917,11 +903,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         own claim stamps 0; a fleet-claimed row carries its dispatch
         claim's epoch. Returns the attempt's outcome label (the caller's
         log line — the ROW is the truth, this is the record's echo).
-
-        ``ledger_claimed_at`` is the ledger claim's OWN RETURNING instant
-        (the re-mint guard's discriminator, C5) — threaded to the
-        deferral's zombie fence so a re-minted row is never fenced by the
-        stale claimant.
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
         cure): the fork builds (the map's children, the route's arms)
@@ -980,14 +961,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         if node is not None and node.loop_spec is not None:
             try:
                 await self._run_loop_node(
-                    flow_id,
-                    row,
-                    attempt,
-                    node,
-                    ledger_id,
-                    emitter,
-                    claim_epoch=claim_epoch,
-                    ledger_claimed_at=ledger_claimed_at,
+                    flow_id, row, attempt, node, ledger_id, emitter, claim_epoch=claim_epoch
                 )
             finally:
                 await emitter.aclose()
@@ -1200,35 +1174,6 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 signals=list(held.signal_names),
             )
             return "held"
-        except (Snooze, RetryAfter) as exc:
-            # THE DEFERRAL DISPOSITION (the vanilla consumer's own catch,
-            # mirrored onto the wf finalize — see api/_runner_defer for
-            # the law and the extension seam): the body's typed
-            # control-flow signals re-schedule the node at the delay —
-            # the attempt refunded (never burned: a deferral did not
-            # execute), the budget-gated consuming face terminalised
-            # through the wf terminal door, the run alive, no terminal,
-            # no decrement (the join's accounting unchanged). The catch's
-            # placement is the vanilla catch's own: AROUND the body
-            # invocation, BEFORE the ladder's body-failure catch — the
-            # signals are the body's control flow, never a failure the
-            # ladder may classify. The buffer closes first (the
-            # asymmetry's ordering law — the progress published before
-            # the deferral survives it). THE SEAT: this is the runner's
-            # STEP-body seam (the step, the chain, the map's item
-            # children, the route's arms — every body this tail
-            # invokes); the LOOP driver's iteration bodies have their
-            # own boundary (the loop's body-failure face, unchanged).
-            await emitter.aclose()
-            return await self._defer_step(
-                flow_id,
-                row,
-                attempt,
-                ledger_id,
-                exc,
-                claim_epoch=claim_epoch,
-                ledger_claimed_at=ledger_claimed_at,
-            )
         except Exception as exc:  # Why: the ladder's boundary — ANY body failure routes through the retry classification.
             # THE BUFFER CLOSES BEFORE THE LADDER (the asymmetry's ordering
             # law): the final flush is bounded and best-effort — it can
