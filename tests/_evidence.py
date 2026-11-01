@@ -7,8 +7,12 @@ the file-read face only."""
 
 from __future__ import annotations
 
+import atexit
+import fcntl
+import shutil
 import subprocess
 from pathlib import Path
+from typing import IO
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -89,14 +93,21 @@ def evidence_glob(pattern: str) -> list[str]:
 
 
 _staged_dir: Path | None = None
+_staging_lock: IO[str] | None = None
 
 
 def evidence_measurements_dir() -> Path:
     """The estate's ROOT as a Path — the branch's .measurements/ staged
-    ONCE into a temp dir (git archive + extract). The pins that WALK the
-    tree (the docs-numbers rglob faces) read the staged copy; the
-    verifier's own --evidence-ref uses the same staging shape."""
-    global _staged_dir
+    ONCE into a temp dir (git archive + extract), cached for the
+    process's lifetime. The pins that WALK the tree (the docs-numbers
+    rglob faces) read the staged copy; the verifier's own --evidence-ref
+    uses the same staging shape.
+
+    The staging carries the same marker + lock the verifier's sweep
+    honors (``.evidence-estate.lock``, flocked for the process's
+    lifetime — a concurrent prune skips a directory whose lock is
+    held), and an atexit finalizer removes it when the process exits."""
+    global _staged_dir, _staging_lock
     if _staged_dir is not None:
         return _staged_dir
     import io
@@ -104,14 +115,25 @@ def evidence_measurements_dir() -> Path:
     import tempfile
 
     ref = evidence_ref()
-    staging = Path(tempfile.mkdtemp(prefix="evidence-estate-"))
     archive = subprocess.run(  # noqa: S603  # Why: as above.
         ["git", "archive", ref, ".measurements"],  # noqa: S607
         cwd=_REPO,
         capture_output=True,
         check=True,
     )
-    with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
-        tar.extractall(staging)  # noqa: S202  # Why: the archive is the repo's own ref's tree, never untrusted input.
+    staging = Path(tempfile.mkdtemp(prefix="evidence-estate-"))
+    lock = (staging / ".evidence-estate.lock").open("a")
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+            tar.extractall(
+                staging, filter="data"
+            )  # Why: the archive is the repo's own ref's tree, never untrusted input.
+    except BaseException:
+        lock.close()
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    _staging_lock = lock
     _staged_dir = staging / ".measurements"
+    atexit.register(shutil.rmtree, staging, ignore_errors=True)
     return _staged_dir

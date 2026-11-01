@@ -28,7 +28,8 @@ transport — that honesty is this file's premise):
 * the audit trail's completeness: the resolve and the cancel each land
   their admin_audit row and the page's trail renders them;
 * the panel latency band re-measured on a 200-child map (my own
-  measurement, captured to .measurements/attack4/).
+  measurement, captured to the private temp captures root — the
+  repository tree carries no capture files).
 
 This file FIXES NOTHING: a red here is a finding, reported.
 """
@@ -59,6 +60,7 @@ from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.workflows import FlowRunner, Promise, WorkflowApp, build, map_source, step
 from taskq.workflows.api import GateDecl
+from tests._wf_fixtures import redlog_captures_root
 
 pytestmark = pytest.mark.integration
 
@@ -638,7 +640,11 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
     """THE PINNED 50 ms BAND, re-measured on the ADVERSARIAL shape: a
     run whose map has 200 children (the builder's band was measured on a
     small run — the collapsed hexagon must keep the panel cheap at map
-    scale). MY OWN numbers, captured to .measurements/attack4/."""
+    scale). MY OWN numbers, captured to the private temp captures root
+    (:func:`tests._wf_fixtures.redlog_captures_root`); the in-tree
+    ``.measurements/attack4/`` home exists only under the explicit pin,
+    and a fresh checkout carries none — the lane must not depend on
+    it."""
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("attack4a_map_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
@@ -677,7 +683,9 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
         f"\n[attack4] 200-child map: panel p95 {p95_panel:.1f} ms "
         f"(band 50 ms), run-page median {med_page:.1f} ms"
     )
-    with open(".measurements/attack4/attack4-panel-latency-200map.json", "w") as f:
+    capture_dir = redlog_captures_root() / "attack4"
+    capture_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with open(capture_dir / "attack4-panel-latency-200map.json", "w") as f:
         json.dump(
             {"children": 200, "panel_ms_sorted": panel_ms, "page_ms_sorted": page_ms}, f, indent=2
         )

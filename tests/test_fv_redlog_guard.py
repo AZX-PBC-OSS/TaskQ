@@ -45,12 +45,34 @@ captures, cross-tree identity confusion.)
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import stat
 import subprocess
+import sys
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from tests._wf_fixtures import MEASUREMENTS, REDLOG_LAW, head_sha, source_changes_since
+from tests._wf_fixtures import (
+    _REPO_ROOT,
+    MEASUREMENTS,
+    REDLOG_CAPTURES_DIR_ENV,
+    REDLOG_LAW,
+    RedLog,
+    head_sha,
+    redlog_captures_root,
+    resolve_redlog_capture,
+    source_changes_since,
+)
+
+#: The checkout the guard runs from (resolved — the symlinked-checkout
+#: anchor pin's reference point).
+_REPO = Path(__file__).resolve().parents[1]
+
+#: The run id the forgery pins build around: the record's and the
+#: honest capture's own run field.
+_FORGED_RUN = "20260101T000000-1-cafecafe"
 
 #: The redlog sinks (the fixtures' filenames — every RedLog instance).
 _SINKS: tuple[str, ...] = (
@@ -124,12 +146,16 @@ def _sink_records() -> tuple[list[tuple[Path, dict[str, Any]]], str]:
 
 def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: Path) -> str | None:
     """The receipt chain's verdict for ONE entry: ``None`` = the chain
-    holds; otherwise the FIRST broken link, named. The three links:
+    holds; otherwise the FIRST broken link, named. The links:
 
     (a) the entry cites its drill's run-id (the record's own run);
     (b) the entry cites the drill's captured output file path;
     (c) the file EXISTS, its sha256 matches, and its content contains
-        the recorded red (the capture's own observed, byte-equal).
+        the recorded red (the capture's own observed, byte-equal);
+    (d) the capture's own payload self-identifies — its ``run`` and
+        ``pin`` fields name the record's run and the entry's pin — so a
+        capture from another run or another pin cannot stand as this
+        entry's receipt, whatever its citation claims.
     """
     capture_rel = entry.get("capture")
     if not capture_rel:
@@ -144,12 +170,26 @@ def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: 
             f"is not the record's run {record.get('run')!r} — the citation's "
             "link (a) is broken (cross-run identity confusion)"
         )
-    capture = measurements / capture_rel
+    try:
+        capture, homes, refused_roots = resolve_redlog_capture(
+            measurements, capture_rel, record.get("captures_root")
+        )
+    except ValueError as refusal:
+        # The refused-citation face is this entry's own violation, not a
+        # run-erroring traceback: the citation and the face, named.
+        return f"pin={entry.get('pin')!r}: the cited capture {capture_rel!r} is REFUSED: {refusal}"
     if not capture.is_file():
+        refused_note = "".join(
+            f"; REFUSED the record's own captures_root {r} — it lies inside "
+            "the guard's own checkout, and a tree under review cannot ship "
+            "the receipt that clears it"
+            for r in refused_roots
+        )
         return (
             f"pin={entry.get('pin')!r}: the cited capture {capture_rel} does "
-            "not EXIST — the receipt chain's link (c) is broken (a red that "
-            "never ran, or a capture deleted since)"
+            f"not EXIST (searched: {'; '.join(homes)}{refused_note}) — the "
+            "receipt chain's link (c) is broken (a red that never ran, or a "
+            "capture deleted since)"
         )
     digest = sha256(capture.read_bytes()).hexdigest()
     if digest != entry.get("sha256"):
@@ -160,6 +200,21 @@ def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: 
         )
     recorded = json.loads(entry["red"])
     captured = json.loads(capture.read_text())
+    if captured.get("run") != record.get("run"):
+        return (
+            f"pin={entry.get('pin')!r}: the cited capture's OWN run field "
+            f"reads {captured.get('run')!r} but the record's run is "
+            f"{record.get('run')!r} — the capture was written by another run "
+            "(its content forged or its citation stolen): the receipt's "
+            "identity link is broken"
+        )
+    if captured.get("pin") != entry.get("pin"):
+        return (
+            f"pin={entry.get('pin')!r}: the cited capture's OWN pin field "
+            f"reads {captured.get('pin')!r} — the capture was written for "
+            "another pin (its citation stolen): the receipt's identity "
+            "link is broken"
+        )
     if captured.get("observed") != recorded:
         return (
             f"pin={entry.get('pin')!r}: the cited capture's observed payload is "
@@ -274,6 +329,9 @@ def test_the_guard_convicts_the_two_shape_bypasses_by_provenance(
 
     sink = tmp_path / "bypass-reds.json"
     monkeypatch.setattr("tests._wf_fixtures.MEASUREMENTS", tmp_path)
+    # The captures' root is pinned to the test's own directory: both the
+    # sink file and the cited captures resolve inside tmp_path.
+    monkeypatch.setenv(REDLOG_CAPTURES_DIR_ENV, str(tmp_path / "captures"))
     measurements_root = tmp_path  # the RedLog module-global is patched above
 
     log = RedLog(sink.name)
@@ -296,7 +354,9 @@ def test_the_guard_convicts_the_two_shape_bypasses_by_provenance(
     # THE CONVICTIONS (both by provenance):
     keyword_entry, laundered_entry = records[0]["entries"]
     # 1. The keyword-form entry whose capture VANISHED: convicted.
-    capture_of = lambda entry: measurements_root / entry["capture"]  # noqa: E731
+    capture_of = lambda entry: resolve_redlog_capture(  # noqa: E731
+        measurements_root, entry["capture"], records[0].get("captures_root")
+    )[0]
     capture_of(keyword_entry).unlink()
     broken = verify_receipt(records[0], keyword_entry, measurements_root)
     assert broken is not None and "does not EXIST" in broken, broken
@@ -343,3 +403,264 @@ def test_a_fabricated_sink_entry_without_a_citation_is_convicted(tmp_path: Path)
     record = {"run": fabricated["run"], "law": REDLOG_LAW, "entries": fabricated["entries"]}
     broken = verify_receipt(record, record["entries"][0], tmp_path)
     assert broken is not None and "cites NO capture" in broken, broken
+
+
+def test_the_captures_default_outside_the_repo_tree(tmp_path: Path, monkeypatch: Any) -> None:
+    """With no pin set, a drill's capture file is written under the
+    system temp root and never into the repository tree — a pytest run
+    leaves no untracked per-run capture directories behind."""
+    monkeypatch.delenv(REDLOG_CAPTURES_DIR_ENV, raising=False)
+    log = RedLog("default-root-reds.json")
+    log.red("default-root-pin", "no mutation", {"ok": True})
+
+    capture, _, _ = resolve_redlog_capture(MEASUREMENTS, log.entries[0]["capture"])
+    assert capture.is_file()
+    assert capture.resolve().is_relative_to(redlog_captures_root().resolve())
+    assert not capture.resolve().is_relative_to(MEASUREMENTS.resolve())
+
+
+def test_an_explicit_pin_places_the_captures_under_the_pinned_root(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """With ``TASKQ_REDLG_CAPTURES_DIR`` set, the capture lands under
+    that directory — the battery recording estate evidence keeps its
+    in-repo output — and the citation resolves to it."""
+    pinned_root = tmp_path / "pinned-captures"
+    monkeypatch.setenv(REDLOG_CAPTURES_DIR_ENV, str(pinned_root))
+    log = RedLog("pinned-root-reds.json")
+    log.red("pinned-root-pin", "no mutation", {"ok": True})
+
+    capture, _, _ = resolve_redlog_capture(MEASUREMENTS, log.entries[0]["capture"])
+    assert capture.is_file()
+    assert capture.resolve().is_relative_to(pinned_root.resolve())
+    assert redlog_captures_root() == pinned_root
+
+
+def test_the_root_pin_resolves_absolute(tmp_path: Path, monkeypatch: Any) -> None:
+    """A relative pin is stored resolved to an absolute path — a reader
+    in another working directory resolves the same directory, and the
+    record's captures root is usable verbatim."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(REDLOG_CAPTURES_DIR_ENV, "captures-rel")
+    root = redlog_captures_root()
+    assert root.is_absolute()
+    assert root == (tmp_path / "captures-rel").resolve()
+
+
+def test_the_default_root_is_per_uid_and_private(tmp_path: Path, monkeypatch: Any) -> None:
+    """The default root is namespaced per uid and created 0700: the
+    captures are receipts, and a shared-world-readable temp directory
+    is neither."""
+    monkeypatch.delenv(REDLOG_CAPTURES_DIR_ENV, raising=False)
+    log = RedLog("private-root-reds.json")
+    log.red("private-root-pin", "no mutation", {"ok": True})
+
+    root = redlog_captures_root()
+    assert f"-{os.getuid()}" in root.name
+    mode = stat.S_IMODE(root.stat().st_mode)
+    assert mode == 0o700, f"the captures root is mode {oct(mode)}, not 0700"
+
+
+def _forged_entry(
+    tmp_path: Path, captures_root: Path, payload_pin: str, payload_run: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A record + entry pair whose cited capture is REAL (on disk, with
+    a matching sha256 and a matching observed payload) but whose
+    payload's own identity fields name *payload_pin* / *payload_run*
+    instead of the run the record claims — the self-consistent forgery
+    the receipt chain's identity links must catch."""
+    observed = {"ok": True}
+    capture_dir = captures_root / _FORGED_RUN
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    capture = capture_dir / "pin-x.json"
+    payload = {
+        "pin": payload_pin,
+        "mutation": "no mutation",
+        "observed": observed,
+        "run": payload_run,
+        "ts": "2026-01-01T00:00:00",
+    }
+    capture.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    entry = {
+        "pin": "pin-x",
+        "mutation": "no mutation",
+        "red": json.dumps(observed),
+        "run": _FORGED_RUN,
+        "capture": f"redlog-captures/{_FORGED_RUN}/pin-x.json",
+        "sha256": sha256(capture.read_bytes()).hexdigest(),
+    }
+    record = {
+        "run": _FORGED_RUN,
+        "ts": "2026-01-01T00:00:00",
+        "law": REDLOG_LAW,
+        "captures_root": str(captures_root),
+        "entries": [entry],
+    }
+    return record, entry
+
+
+def test_a_capture_written_by_another_run_is_convicted(tmp_path: Path) -> None:
+    """A cited capture whose OWN payload names another run does not
+    prove this run's red — the identity link is checked from the
+    capture's content, not the citation's say-so."""
+    record, entry = _forged_entry(
+        tmp_path, tmp_path / "caps", "pin-x", "20260101T000000-2-beefbeef"
+    )
+    broken = verify_receipt(record, entry, tmp_path)
+    assert broken is not None and "another run" in broken, broken
+
+
+def test_a_capture_written_for_another_pin_is_convicted(tmp_path: Path) -> None:
+    """A cited capture whose OWN payload names another pin does not
+    prove this pin's red — the capture must self-identify with the
+    entry's pin."""
+    record, entry = _forged_entry(
+        tmp_path, tmp_path / "caps", "pin-y", "20260101T000000-1-cafecafe"
+    )
+    broken = verify_receipt(record, entry, tmp_path)
+    assert broken is not None and "another pin" in broken, broken
+
+
+def test_an_escaping_citation_is_refused(tmp_path: Path) -> None:
+    """A citation that is absolute or walks out with ``..`` names a file
+    outside the estate — refused as its OWN entry's violation (a receipt
+    line naming the citation and the face), not an erroring run."""
+    record, entry = _forged_entry(tmp_path, tmp_path / "caps", "pin-x", _FORGED_RUN)
+    for forged in ("/etc/hostname", "redlog-captures/../../outside.json"):
+        escaped = dict(entry, capture=forged)
+        broken = verify_receipt(record, escaped, tmp_path)
+        assert broken is not None, broken
+        assert "REFUSED" in broken and "estate-relative" in broken, broken
+
+
+def test_a_record_root_inside_the_repo_is_refused(tmp_path: Path) -> None:
+    """A record whose own captures_root names a path inside the
+    repository containing the record cannot clear its receipt with a
+    capture the tree ships itself: that root is refused, and the
+    verdict is the missing-capture refusal naming it."""
+    capture_root = MEASUREMENTS / "forge-caps"
+    record, entry = _forged_entry(tmp_path, capture_root, "pin-x", _FORGED_RUN)
+    try:
+        broken = verify_receipt(record, entry, MEASUREMENTS)
+        assert broken is not None, (
+            f"the forged receipt passed: the record's captures_root "
+            f"{capture_root} lies inside the repository containing the "
+            "record — a tree under review cannot ship the receipt that "
+            "clears it"
+        )
+        assert "REFUSED" in broken and str(capture_root) in broken, broken
+    finally:
+        shutil.rmtree(capture_root, ignore_errors=True)
+
+
+def test_a_cwd_relative_record_root_inside_the_repo_is_refused(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Same refusal for a record-declared root given as a relative path:
+    resolved against the reader's working directory it lands inside the
+    repository containing the record, and the resolution skips it."""
+    monkeypatch.chdir(MEASUREMENTS.parent)
+    capture_root = MEASUREMENTS / "forge-caps"
+    record, entry = _forged_entry(tmp_path, capture_root, "pin-x", _FORGED_RUN)
+    record["captures_root"] = ".measurements/forge-caps"
+    try:
+        broken = verify_receipt(record, entry, MEASUREMENTS)
+        assert broken is not None, (
+            f"the forged receipt passed: the record's relative captures_root "
+            f"{record['captures_root']!r} resolves inside the repository "
+            "containing the record"
+        )
+        assert "REFUSED" in broken and str(capture_root) in broken, broken
+    finally:
+        shutil.rmtree(capture_root, ignore_errors=True)
+
+
+def test_a_record_root_outside_the_repo_still_resolves(tmp_path: Path) -> None:
+    """The trust rule's legitimate case (d): a battery run from a
+    checkout whose captures went to a directory OUTSIDE the repository —
+    its record-declared root is honored and the receipt chain resolves."""
+    external = tmp_path / "external-caps"
+    record, entry = _forged_entry(tmp_path, external, "pin-x", _FORGED_RUN)
+    broken = verify_receipt(record, entry, MEASUREMENTS)
+    assert broken is None, broken
+
+
+def _staged_measurements() -> Path:
+    """The STAGED estate (the guard's fallback face: no local
+    ``.measurements``, the CI shape) — the evidence branch's copy."""
+    from tests import _evidence
+
+    return _evidence.evidence_measurements_dir()
+
+
+def test_a_record_root_inside_the_repo_is_refused_on_a_staged_estate(
+    tmp_path: Path,
+) -> None:
+    """The in-repo refusal holds when the estate is STAGED (no local
+    ``.measurements``): the record's captures_root names the repository
+    the GUARD runs from, and the receipt must not clear against a
+    capture that tree ships itself."""
+    capture_root = MEASUREMENTS / "forge-caps"
+    record, entry = _forged_entry(tmp_path, capture_root, "pin-x", _FORGED_RUN)
+    staged = _staged_measurements()
+    try:
+        broken = verify_receipt(record, entry, staged)
+        assert broken is not None, (
+            f"the forged receipt passed on a staged estate: the record's "
+            f"captures_root {capture_root} lies inside the guard's own "
+            "checkout — the anchor for the refusal is the checkout, not "
+            "the estate's location"
+        )
+        assert "REFUSED" in broken and str(capture_root) in broken, broken
+    finally:
+        shutil.rmtree(capture_root, ignore_errors=True)
+
+
+def test_a_record_root_outside_the_repo_resolves_on_a_staged_estate(
+    tmp_path: Path,
+) -> None:
+    """The staged estate keeps the legitimate case: a record whose
+    captures went to an external directory (the cross-TMPDIR chain's
+    shape) resolves through its record-declared root."""
+    external = tmp_path / "external-caps"
+    record, entry = _forged_entry(tmp_path, external, "pin-x", _FORGED_RUN)
+    staged = _staged_measurements()
+    broken = verify_receipt(record, entry, staged)
+    assert broken is None, broken
+
+
+def test_the_anchor_survives_a_symlinked_checkout(tmp_path: Path) -> None:
+    """The trust rule's anchor is the checkout's REAL path: a symlinked
+    view of the checkout must not become the anchor, or a record root
+    resolved to the real tree escapes it and the in-repo refusal slips."""
+    link = tmp_path / "linked-checkout"
+    link.symlink_to(_REPO)
+    proc = subprocess.run(  # Why: the interpreter is sys.executable; fixed argv, no shell.
+        [sys.executable, "-c", "from tests import _wf_fixtures as f; print(f._REPO_ROOT)"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_path,  # no tests/ here: the import can only resolve through the link
+        env={**os.environ, "PYTHONPATH": f"{link}:{_REPO / 'src'}"},
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    anchor = Path(proc.stdout.strip())
+    assert anchor == _REPO_ROOT, (
+        f"the trust rule's anchor is {anchor} — the symlinked view's walk. "
+        f"The record's declared root resolves to the real tree "
+        f"({_REPO_ROOT}), so a root inside the checkout escapes the "
+        "unresolved anchor and the refusal never fires: the anchor must be "
+        "resolved before the walk"
+    )
+
+
+def test_a_missing_capture_names_the_home_it_searched(tmp_path: Path) -> None:
+    """The missing-capture verdict names the resolved home it searched —
+    the reader's answer to 'deleted since, or never on this machine?'."""
+    record, entry = _forged_entry(tmp_path, tmp_path / "caps", "pin-x", _FORGED_RUN)
+    record_root = Path(record["captures_root"]) / entry["capture"].removeprefix("redlog-captures/")
+    record_root.unlink()
+    broken = verify_receipt(record, entry, tmp_path)
+    assert broken is not None, broken
+    assert "does not EXIST" in broken and "searched:" in broken, broken
+    assert str(tmp_path / "caps") in broken, broken  # the record's own root, named
