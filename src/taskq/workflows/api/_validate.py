@@ -1579,7 +1579,7 @@ def _rule_loop_wait_shape(compiled: CompiledWorkflow) -> list[WorkflowValidation
                         "the row's iteration counter IS the answer cursor, "
                         "so an iteration that does not wait drifts the "
                         "sequence (the operator's answer consumed by the "
-                        "wrong iteration — the mis-index). "
+                        "wrong iteration). "
                         "Make the wait unconditional (a no-op refinement "
                         "arm for the skip case), or move the gate to a "
                         "plain step the loop calls",
