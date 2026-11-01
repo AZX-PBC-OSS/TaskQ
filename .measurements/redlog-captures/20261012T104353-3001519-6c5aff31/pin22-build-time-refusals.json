@@ -1,9 +1,0 @@
-{
-  "mutation": "the unvalidated builders (empty fork / edge-less join) reached the DB",
-  "observed": {
-    "edgeless_join": "stranded invisible in join-wait (pre-hardening: not even diagnosable)"
-  },
-  "pin": "pin22-build-time-refusals",
-  "run": "20261012T104353-3001519-6c5aff31",
-  "ts": "2026-10-12T10:43:53"
-}

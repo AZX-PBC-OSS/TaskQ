@@ -1013,13 +1013,8 @@ def _fail_fast_on_unconsumed_workflow_queues(
     unconsumed = sorted({config.queue for config in wf_configs} - consumed)
     if not unconsumed:
         return
-    # THE OR-LAW: strict if EITHER face is set — the app's own
-    # declaration (WorkflowApp(queues_strict=True), read off the app
-    # registry the projection itself walks) or the env
-    # (TASKQ_QUEUES_STRICT via settings.queues_strict). The env can only
-    # ADD strictness — ops tightening a fleet via env stays possible;
-    # silently DISABLING a declared contract is not a thing (no face
-    # un-strictes the gate). The lazy import keeps the wf seam's module
+    # THE OR-LAW is the gate docstring's own paragraph above (the faces
+    # OR-combine). The lazy import keeps the wf seam's module
     # graph out of the bootstrap's own import time (the raise path's
     # import below is the same seam).
     from taskq.workflows._worker_execution import (

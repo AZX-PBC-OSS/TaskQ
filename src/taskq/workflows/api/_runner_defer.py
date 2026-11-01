@@ -78,7 +78,14 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 from taskq.backend._protocol import JobId
-from taskq.constants import ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED
+from taskq.constants import (
+    # The exhaustion message's single home; re-exported from this module
+    # because the LOOP's deferral route — the exhausted verdict's own
+    # body-failure face — reads it beside the loop's own named-state
+    # machinery (module-level public under the same name).
+    BUDGET_EXHAUSTED_MESSAGE,
+    ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
+)
 from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs import get_logger
 from taskq.workflows._progress import KIND_NODE_TERMINAL
@@ -91,21 +98,12 @@ if TYPE_CHECKING:
 __all__ = [
     "DeferOps",
     "DeferralDisposition",
-    "defer_node_row",
     "defer_row_law",
     "deferral_disposition",
     "route_defer_terminal",
 ]
 
 logger: Any = get_logger(__name__)
-
-#: The vanilla ``mark_retry_after_consume_true``'s own exhaustion message
-#: (``backend/_sql_templates.py``'s max_attempts_failed arm) — one
-#: vocabulary with the vanilla surface's record, never a re-spelling.
-#: (MODULE-LEVEL PUBLIC: the LOOP's deferral route — the exhausted
-#: verdict's own body-failure face — reads it beside the loop's own
-#: named-state machinery.)
-BUDGET_EXHAUSTED_MESSAGE: Final[str] = "retry budget exhausted"
 
 #: The wf cancel's own error class (``CANCEL_NODES_SQL_TEMPLATE``'s event
 #: stamp): the cancel-fenced deferral terminalises the node under the
@@ -166,58 +164,6 @@ class _DeferHost(Protocol):
         for the loop's deferral — the loop's named state + STRANDED-FLOW
         + the escalation ride the loop's own machinery, never a
         re-spelling)."""
-
-
-async def defer_node_row(
-    pool: asyncpg.Pool,
-    wsql: WorkflowSql,
-    *,
-    flow_id: JobId,
-    job_id: JobId,
-    worker_id: JobId,
-    attempt: int,
-    claim_epoch: int,
-    disposition: DeferralDisposition,
-    delay: timedelta,
-    signal_name: str,
-) -> str | None:
-    """THE DISPOSITION'S ROW WRITE (one bounded, keyed statement — the
-    statement-level face, split from the verdict routes so the pins can
-    drive it directly).
-
-    Applies ``NODE_DEFER_SQL`` — the vanilla deferral arms mirrored onto
-    the wf fences (the claim CAS, the cancel mark, the budget gate) —
-    and returns the verdict:
-
-    * ``"deferred"`` — the row re-scheduled at the delay (the attempt
-      arm's own refund/keep law applied);
-    * ``"exhausted"`` — a consuming retry the budget refused (the row
-      untouched; the caller routes the terminal);
-    * ``"cancel_fenced"`` — an operator cancel in flight won (the row
-      untouched; the caller routes the cancel's terminal);
-    * ``None`` — the ZOMBIE's deferral: the claim fence matched nothing
-      (the row moved to a newer attempt — the winner owns the row).
-
-    The statement is the disposition's whole row law; the caller owns
-    the LEDGER's truth (the claim's own row — the deferred rest, the
-    fenced record, the terminal faces) in the same transaction as the
-    write where the two must be atomic.
-    """
-    async with pool.acquire() as conn:
-        rec = await conn.fetchrow(
-            wsql.node_defer,
-            job_id,
-            worker_id,
-            delay,
-            attempt,
-            claim_epoch,
-            disposition,
-            signal_name,
-        )
-    if rec is None:
-        return None
-    verdict: str = rec["verdict"]
-    return verdict
 
 
 async def defer_row_law(
@@ -282,11 +228,14 @@ async def defer_row_law(
                 # THE DEFERRED REST: 'awaited' — the hold's own
                 # resume-not-retry status. Never 'failed': the ladder's
                 # budget read counts failures only, and the deferral never
-                # executed.
+                # executed. (The caller proved its claim at the node row's
+                # fence — the instant's re-mint guard is the fence-by-id's
+                # own; the rest keeps the by-id-only write.)
                 await conn.execute(
                     wsql.ledger_terminal_by_id,
                     ledger_id,
                     "awaited",
+                    None,
                     None,
                     None,
                     None,
@@ -340,6 +289,10 @@ async def route_defer_terminal(
                 None,
                 error_class,
                 error_message,
+                None,
+                # The route's callers proved their claim at the fence
+                # legs' own verdict — the NULL form keeps the by-id-only
+                # write here.
                 None,
             )
         else:

@@ -47,11 +47,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 import asyncpg
 import structlog
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
@@ -59,8 +61,18 @@ from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.exceptions import RetryAfter, Snooze
-from taskq.obs import get_logger
+from taskq.obs import get_logger, safe_start_span
 from taskq.workflows._cache import CachedStep
+from taskq.workflows._obs import (
+    finish_step_span,
+    record_step_deferred,
+    record_step_forked,
+    record_step_held,
+    record_step_join_fired,
+    record_step_laddered,
+    step_span_attributes,
+    step_span_name,
+)
 from taskq.workflows._progress import (
     KIND_NODE_STARTED,
     KIND_NODE_TERMINAL,
@@ -208,6 +220,21 @@ def _resolve_priority(*levels: int | None) -> int:
     return 0
 
 
+def _first_declared(*levels: timedelta | None) -> timedelta | None:
+    """THE DEADLINE RESOLUTION'S ARITHMETIC (the wf start_to_close cure
+    — the priority helper's own shape, the coalesce the timedelta's
+    ``None``-or-value face needs): the first non-``None`` level wins;
+    ``None`` everywhere = nothing declared (the row's column NULL — the
+    worker's ``default_start_to_close`` applies at the enforcement, the
+    resolution chain's own tail). The levels, in the law's order: the
+    arm's own declaration, the arm body handle's declaration, the source
+    node's declaration."""
+    for value in levels:
+        if value is not None:
+            return value
+    return None
+
+
 class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     """The API's runner: create, drive, read. One engine, many surfaces —
     the runner OWNS no state; every fact is a row. The concern modules
@@ -223,6 +250,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         *,
         worker_id: JobId | None = None,
         deps: object | None = None,
+        default_start_to_close: timedelta | None = None,
     ) -> None:
         from taskq.workflows.api._validate import validate_compiled
 
@@ -269,6 +297,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # from the row; this echo only spares the dev loop a per-node
         # read. ``None`` = no override declared.
         self._run_priority: int | None = None
+        # THE WORKER'S DEFAULT DEADLINE (the wf start_to_close cure — the
+        # resolution chain's own tail): the worker settings' value the
+        # FLEET door threads (``_worker_execution.execute_flow_job`` ←
+        # ``run._dispatch_flow_job``'s deps.settings). The ROW's own
+        # stamp outranks it (the vanilla ``_effective_start_to_close``
+        # chain: ``job.start_to_close if not None else default``); the
+        # DEV door constructs without one — the pre-cure face (an
+        # undeclared row's deadline is UNBOUNDED there, the dev loop
+        # never had a worker default). ``None`` = no default — the
+        # undeclared row's body runs unbounded.
+        self._default_start_to_close = default_start_to_close
 
     # ── create ───────────────────────────────────────────────────────
 
@@ -386,7 +425,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # never lies about the state it handed back).
                 claim = replace(claim, status="running")
             else:
-                # THE ADOPTION'S ECHO (review F2's cure — the dev door's
+                # THE ADOPTION'S ECHO (the dev door's
                 # arbiter-adoption path): the claim returned an EXISTING
                 # run — the create-time echo above never ran, so the
                 # per-call level resolves from the ROOT'S STAMP (ONE
@@ -401,29 +440,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         return claim
 
     async def _adopted_run_priority(self, conn: ConnLike, flow_id: JobId) -> int | None:
-        """THE ADOPTED RUN'S PER-CALL OVERRIDE (review F2's cure): the
-        root's stamped ``wf_priority``, resolved with the FLEET DOOR'S OWN
-        ARITHMETIC — the same parse → post-parse DOMAIN CLAMP → degrade
-        (a stamp a hand-crafted row rendered unparseable OR out of the
-        smallint domain degrades to NO override, never a door death;
-        ``check_priority_domain`` is the predicate, the exception the
-        degrade). ``None`` = no override stamped (the declarations — or
-        the column default — speak)."""
-        from taskq.constants import check_priority_domain
+        """THE ADOPTED RUN'S PER-CALL OVERRIDE: the
+        root's stamped ``wf_priority``, resolved through the shared
+        parse → domain-clamp → degrade cascade
+        (:func:`resolve_priority_stamp` — the fleet door's own arithmetic;
+        ``None`` = no override stamped, the declarations — or the column
+        default — speak)."""
+        from taskq.constants import resolve_priority_stamp
 
         read = await conn.fetchrow(
             render_sql(ROOT_PRIORITY_STAMP_SQL_TEMPLATE, self.schema), flow_id
         )
         raw_priority: object | None = read["wf_priority"] if read is not None else None
-        try:
-            parsed_priority = (
-                int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
-            )
-            if parsed_priority is not None:
-                check_priority_domain(parsed_priority, what="the root's wf_priority stamp")
-        except (TypeError, ValueError):
-            parsed_priority = None
-        return parsed_priority
+        return resolve_priority_stamp(raw_priority)
 
     async def _node_census(self, conn: ConnLike, flow_id: JobId) -> int:
         """The run's node-row count — the orphan's census (a nodeless
@@ -483,6 +512,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # per-call override > the node's declared (the handle's
                 # folded in at the wiring) > the column default.
                 priority=_resolve_priority(run_priority, node.priority),
+                # THE ROW'S DECLARED DEADLINE (the wf start_to_close
+                # cure): the node's own resolution (the step's own or the
+                # handle's folded in at the wiring) — no run-level face
+                # exists (a deadline is a per-node declaration, never a
+                # per-call override), so the value rides the row as-is;
+                # the undeclared case is the column's NULL.
+                start_to_close=node.start_to_close,
             )
             # THE STATIC ROW'S OWN TERMS (CURE 2 + H-A1): a step
             # declaring rate_limits carries the bucket names on its
@@ -520,6 +556,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 step_idempotency_scope(flow_id),
                 step_idempotency_key(spec.step_key),
                 spec.priority,
+                # THE ROW'S DECLARED DEADLINE (the wf start_to_close
+                # cure): the RESOLVED declaration (the step's own or the
+                # handle's folded default) — the NULL case binds the
+                # column's own default (the pre-cure row byte-identical).
+                spec.start_to_close,
             )
         # The EDGES in a second pass (both endpoints exist).
         for key in sorted(self.compiled.nodes):
@@ -619,7 +660,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         from taskq.workflows.api._hitl import sweep_child_joins
 
         await sweep_child_joins(self.pool, self.wsql)
-        # THE EXPIRY ARM (rv5-C5a — the dev-drives parity): the tick
+        # THE EXPIRY ARM (the dev-drives parity): the tick
         # runs the signal sweep's expiry leg, so a ``timeout_s`` wait in
         # a DEV DRIVE fires the ``Expired`` member exactly as it does
         # under the leader's belt — the pre-cure dev face parked on the
@@ -679,12 +720,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             compiled = get_compiled_workflow(name)
         except KeyError:
             logger.warning(
-                "childflow.definition_unregistered",
+                "childflow.definition-unregistered",
                 run_id=str(flow_id),
                 workflow=name,
             )
             return None
-        child = FlowRunner(compiled, self.pool, self.schema)
+        # THE WORKER'S DEFAULT DEADLINE THREADS (the wf start_to_close
+        # cure — the descendant's runner inherits its parent runner's
+        # value: the same worker's settings govern the descendant's
+        # undeclared steps).
+        child = FlowRunner(
+            compiled, self.pool, self.schema, default_start_to_close=self._default_start_to_close
+        )
         self._child_runners[str(flow_id)] = child
         return child
 
@@ -699,7 +746,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         try:
             body = self._resolve_body(node_key, node)
         except WorkflowRunError as exc:
-            # THE VANISHED-NODE WEDGE's LOUD TERMINAL (rv5-t6's cure):
+            # THE VANISHED-NODE WEDGE's LOUD TERMINAL:
             # the body resolves NOWHERE (the structural redeploy — the
             # registry-is-truth law, D1). Before this cure the error
             # escaped drive() RAW — the row stayed ``pending``, the root
@@ -762,7 +809,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     async def _fail_vanished_node(
         self, flow_id: JobId, row: dict[str, Any], exc: WorkflowRunError
     ) -> None:
-        """THE VANISHED-NODE WEDGE's loud terminal (rv5-t6's cure — the
+        """THE VANISHED-NODE WEDGE's loud terminal (the
         structural redeploy's pending row must terminal-fail, never
         zombie). The node is claimed HERE (the CAS — pending → running,
         the attempt incremented, the ledger claim's running row inserted:
@@ -818,6 +865,27 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             return ()
         return (self._deps,)
 
+    def _body_deadline_seconds(self, row: dict[str, Any]) -> float | None:
+        """THE DEADLINE RESOLUTION AT THE ENFORCEMENT (the wf
+        start_to_close cure — the vanilla consumer's own
+        ``_effective_start_to_close`` arithmetic):
+        the ROW's own stamp (the declared bound the INSERTs wrote — the
+        step's/arm's resolution) > the worker's default (the runner's
+        field — the fleet door threads the worker settings' value);
+        ``None`` everywhere = UNBOUNDED (the body invoked inline, the
+        pre-cure shape)."""
+        row_bound = row.get("start_to_close")
+        effective = (
+            row_bound  # pyright: ignore[reportUnknownVariableType]  # Why: the row dict's jsonb read is Any-typed; the interval's decode is the timedelta the column carries.
+            if row_bound is not None
+            else self._default_start_to_close
+        )
+        if effective is None:
+            return None
+        return (
+            effective.total_seconds() if isinstance(effective, timedelta) else float(effective)  # pyright: ignore[reportArgumentType]  # Why: a hand-built row dict may carry the seconds number — the same degrade the fleet door's reads keep.
+        )
+
     async def run_fleet_claimed_step(
         self,
         flow_id: JobId,
@@ -839,9 +907,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         and every fence carries the fleet claim's epoch.
 
         *row* is the claimed node's read model: ``id`` / ``step_key`` /
-        ``map_index`` / ``payload`` / ``trace_id`` — the fields the tail
-        consumes (the worker's intercept reads them off the claimed row
-        plus one bounded read of the step key and map index).
+        ``map_index`` / ``payload`` / ``trace_id`` / ``start_to_close`` —
+        the fields the tail consumes (the worker's intercept reads them
+        off the claimed row plus one bounded read of the step key and
+        map index; the deadline's resolution reads the row's own
+        declared bound off the SAME decode).
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
         cure), resolved by the CALLER from the root's metadata stamp
@@ -928,7 +998,76 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         resolve it as the law's FIRST level — the dev door passes the
         create-time echo, the fleet door the root's metadata stamp's
         resolution. ``None`` = no override declared (the declarations —
-        or the column default — speak)."""
+        or the column default — speak).
+
+        THE STEP SPAN (the wf's face of the vanilla obs law — the
+        contract lives in ``workflows/_obs.py``): THIS call is one
+        attempt's lifecycle, so the span wraps it whole — the name
+        ``step {step_key}``, the ``taskq.*`` attribute document (the
+        flow link, the workflow, the step key, the attempt ordinal, the
+        node's queue when the decl carries one, the map index when the
+        row has one), the outcome attribute echoing THIS method's return
+        label, and the status mapped by the vanilla consumer span's own
+        law. Telemetry off → the attributes are never built (the
+        vanilla's gated-allocation law) and the span is the
+        non-recording no-op."""
+        with safe_start_span(
+            step_span_name(row["step_key"]),
+            kind=SpanKind.INTERNAL,
+            attributes=step_span_attributes(
+                flow_id=str(flow_id),
+                workflow=self.compiled.name,
+                step_key=row["step_key"],
+                attempt=attempt,
+                queue=node.queue if node is not None else None,
+                map_index=row["map_index"],
+            ),
+        ) as span:
+            try:
+                outcome = await self._execute_claimed_tail(
+                    flow_id,
+                    row,
+                    attempt,
+                    ledger_id,
+                    node,
+                    body,
+                    claim_epoch=claim_epoch,
+                    run_priority=run_priority,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
+            except Exception:
+                # THE ESCAPED FAULT (the machinery boundary's re-raise — the
+                # reclaim class): safe_start_span's fallback recorded the
+                # scrubbed error on its way out; the outcome attribute names
+                # the ledger's own 'crashed' vocabulary.
+                span.set_attribute("taskq.outcome", "crashed")
+                raise
+            finish_step_span(span, outcome)
+            return outcome
+
+    async def _execute_claimed_tail(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+        run_priority: int | None = None,
+        ledger_claimed_at: Any = None,
+    ) -> str:
+        """The claim tail's body — :meth:`_execute_claimed` wraps THIS
+        call in the step span; the semantics, the fences and the
+        returns are untouched by it (the spans wrap the lifecycle
+        points, they never steer them)."""
+        # THE §16.1 IMPORT LAW: the worker-module imports are LAZY (the
+        # deadline enforcement and its marker live in the worker's own
+        # modules — ``import taskq`` never imports them through the
+        # authoring surface).
+        from taskq.worker._handlers import _StartToCloseExceededError
+
         # THE PER-ATTEMPT CODE-VERSION RECORD (T03/§22.1 — the deploy
         # matrix's audit cure): the record is "written at claim by the
         # workflow claim path" — every claim's execution stamps the
@@ -1118,7 +1257,36 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 result = _bounded_collect(parents_values)
             else:
                 deps_tail = self._deps_tail(body, len(args))
-                outcome_value = await body(ctx, *args, *deps_tail)
+                deadline_s = self._body_deadline_seconds(row)
+                if deadline_s is None:
+                    # THE CONTROL (the byte-identical law): no declaration
+                    # anywhere (the row's column NULL, no worker default)
+                    # — the body invoked INLINE, the pre-cure shape
+                    # exactly (no task, no machinery, no deadline).
+                    outcome_value = await body(ctx, *args, *deps_tail)
+                else:
+                    # THE DEADLINE (the wf start_to_close cure — the
+                    # vanilla enforcement, imported: the #791
+                    # TimeoutError-conflation cure, the unwind budget,
+                    # the hostile-finally drills inherited). The body
+                    # runs in its own task; the deadline's expiry raises
+                    # the marker (a bare TimeoutError the body raised
+                    # stays its own ordinary failure — the same split the
+                    # vanilla rows record); a body-raised Snooze WITHIN
+                    # the window propagates (the deferral wins the race —
+                    # the vanilla's own semantics).
+                    from taskq.worker._consumer import (
+                        _enforce_start_to_close,  # pyright: ignore[reportPrivateUsage]  # Why: the deadline enforcement is the consumer module's shared machinery by design (the wf face imports the SAME function — the three holes, the unwind budget, the hostile-finally drills inherited); the private name is the honest boundary of that import.
+                    )
+
+                    async def _run_wf_body(
+                        _job: object, run_ctx: object
+                    ) -> object:  # the enforcement's shared face: the row is opaque here
+                        return await body(cast("StepContext", run_ctx), *args, *deps_tail)
+
+                    outcome_value = await _enforce_start_to_close(
+                        _run_wf_body, None, ctx, deadline_s
+                    )
                 chain = self._chain_steps.get(row["step_key"])
                 if chain is not None:
                     # THE CHAIN STEP (T20): the body's typed outcome IS
@@ -1163,7 +1331,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     except RouterNotTotal as exc:
                         await emitter.aclose()
                         logger.warning(
-                            "node.router_not_total",
+                            "node.router-not-total",
                             run_id=str(flow_id),
                             node=row["step_key"],
                             outcome=repr(outcome_value)[:200],
@@ -1199,6 +1367,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 hold_id=held.hold_id,
                 signals=list(held.signal_names),
             )
+            record_step_held(trace.get_current_span(), held.hold_id, held.signal_names)
             return "held"
         except (Snooze, RetryAfter) as exc:
             # THE DEFERRAL DISPOSITION (the vanilla consumer's own catch,
@@ -1220,7 +1389,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # invokes); the LOOP driver's iteration bodies have their
             # own boundary (the loop's body-failure face, unchanged).
             await emitter.aclose()
-            return await self._defer_step(
+            record_step_deferred(trace.get_current_span(), exc)
+            verdict = await self._defer_step(
                 flow_id,
                 row,
                 attempt,
@@ -1229,12 +1399,48 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 claim_epoch=claim_epoch,
                 ledger_claimed_at=ledger_claimed_at,
             )
+            if verdict == "laddered":
+                # THE EXHAUSTED BUDGET'S FAILURE SIGNAL ON THE SPAN (the
+                # ladder arm's own shape — the site with the exception
+                # records it): the body's real signal is in scope, the
+                # route is the terminal (retried False).
+                record_step_laddered(trace.get_current_span(), exc, retried=False)
+            return verdict
+        except _StartToCloseExceededError:
+            # THE DEADLINE'S DISPOSITION (the wf face of the vanilla
+            # timeout handler): the marker is the MACHINERY's own expiry
+            # (the enforcement raised it — a body-raised TimeoutError
+            # propagates unchanged and takes the generic catch below,
+            # the #791 split). The attempt BURNS — a real execution, the
+            # retry per the contract, never a deferral (the C4
+            # deferral's sibling; the vanilla's own race law mirrored: a
+            # body converting the deadline's cancellation to a Snooze
+            # loses — the clock's win is final). The cancel mark is
+            # fenced IN-STATEMENT (the vanilla mark_retry's own law: a
+            # phase-carrying row matches no arm — the cancel wins).
+            await emitter.aclose()
+            return await self._deadline_disposition(
+                flow_id,
+                row,
+                attempt,
+                node,
+                claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                ledger_claimed_at=ledger_claimed_at,
+            )
         except Exception as exc:  # Why: the ladder's boundary — ANY body failure routes through the retry classification.
             # THE BUFFER CLOSES BEFORE THE LADDER (the asymmetry's ordering
             # law): the final flush is bounded and best-effort — it can
             # cost freshness, never the ladder's correctness.
             await emitter.aclose()
-            await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
+            route = await self._ladder_or_fail(
+                flow_id, row, attempt, node, exc, claim_epoch=claim_epoch
+            )
+            # THE FAILURE SIGNAL ON THE SPAN (the vanilla consumer's own
+            # idiom — the site with the exception records it): the SCRUBBED
+            # render + the ladder's route (retried / the terminal). The
+            # current span is THIS attempt's step span (the wrapper above).
+            record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
             return "laddered"
         try:
             # THE CLAIM TAIL'S MACHINERY BOUNDARY (the K7 cure — ONE
@@ -1306,9 +1512,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 )
             except FanInBoundExceededError as exc:
                 await emitter.aclose()
-                await self._ladder_or_fail(
+                route = await self._ladder_or_fail(
                     flow_id, row, attempt, node, exc, claim_epoch=claim_epoch
                 )
+                record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
                 return "laddered"
             # THE SUCCESS-ONLY STORE (T25): the miss ran the body — the
             # cache fill happens ONLY on the terminal that actually landed
@@ -1437,8 +1644,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         fork-spawned keys (``<src>.item``, the outbox consumers) have no
         compiled NodeDecl — their bodies live in the definition only.
 
-        THE VANISHED-NODE WEDGE (the structural redeploy — rv5-t6's
-        cure): a key in NEITHER the compiled graph nor the registered
+        THE VANISHED-NODE WEDGE (the structural redeploy): a key in
+        NEITHER the compiled graph nor the registered
         definition raises the TYPED :class:`VanishedNodeError` — the
         redeploy renamed/removed the node while this run was in flight,
         and no re-run can ever resolve it. The claimants of the wedge
@@ -1598,7 +1805,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
         log line.
 
-        THE CASCADE IS THE ROWS' OWN (rv5-C2b/C4's cure — the SAME walk
+        THE CASCADE IS THE ROWS' OWN (the SAME walk
         the id-addressed verb carries): the worklist walk, never Python
         recursion (a 1200-deep cascade cancels clean), and the children
         are read from the ROWS' crash-safe ``parent_flow_id`` direction
@@ -1660,6 +1867,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # blindness to the progress substrate). The LEDGER owns the
         # state; the projection only publishes it to the stream.
         if final.applied:
+            # THE FORK + THE JOIN FIRE, AS SPAN EVENTS (the wf's face of
+            # the vanilla obs law — events on the spans, never separate
+            # spans; the contract lives in ``workflows/_obs.py``): the
+            # fork's children and the fired joins are rows the finalize
+            # materialized atomically with THIS terminal mark — the
+            # current span is the finalizing step's own.
+            if fork is not None:
+                record_step_forked(trace.get_current_span(), len(fork.children))
+            if final.fired:
+                record_step_join_fired(
+                    trace.get_current_span(), [fired.step_key for fired in final.fired]
+                )
             # THE TRUNCATION'S RECEIPT (the F4 cure's read-side
             # reconciliation): a bounded collect's envelope unwraps at
             # the consumer's typed boundary (decode_result's key-set
@@ -1802,8 +2021,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             Exception
         ) as exc:  # Why: the asymmetry — the projection degrades first, never correctness.
             logger.warning(
-                "progress_projection_lost",
-                kind="progress_projection_lost",
+                "progress-projection-lost",
+                kind="progress-projection-lost",
                 run_id=str(flow_id),
                 node=str(node_id),
                 projection=kind,
@@ -1831,7 +2050,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         default (the children share the source's cohort, so the source's
         resolution is theirs). A map body wired as an ``@app.actor``
         HANDLE adds ITS declared priority as the CHILDREN'S actor level
-        (the review F3 cure — never folded into the source node); the
+        (never folded into the source node); the
         join stays the source's resolution."""
         from taskq.workflows._emit import MapIndexExhaustedError
         from taskq.workflows._types import MAP_INDEX_CEILING, ConsumerBinding
@@ -1861,7 +2080,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # map's children share the source's cohort — the source's
         # resolution is theirs (per-call override > the source node's
         # declaration > the column default).
-        # THE MAP BODY HANDLE'S OWN LEVEL (review F3's cure — the
+        # THE MAP BODY HANDLE'S OWN LEVEL (the
         # never-a-silent-drop law, the capacity terms' own H-A4 shape): a
         # map body wired as an ``@app.actor(priority=…)`` HANDLE carries
         # its declaration as the CHILDREN'S actor level — read here, at
@@ -1880,6 +2099,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # handle's declaration governs the CHILDREN only — the join stays
         # the source's own).
         source_priority = _resolve_priority(run_priority, node.priority)
+        # THE CHILDREN'S DECLARED DEADLINE (the wf start_to_close cure —
+        # the priority arithmetic's own shape): the children share the
+        # source's cohort — the map body handle's deadline is the
+        # CHILDREN'S actor level (read here, at the fork, never folded
+        # into the source node), then the source node's declaration; the
+        # JOIN stays the source's own resolution.
+        map_body_start_to_close = (
+            node.map_item.start_to_close if isinstance(node.map_item, WorkflowActor) else None
+        )
+        child_start_to_close = _first_declared(map_body_start_to_close, node.start_to_close)
+        source_start_to_close = node.start_to_close
         bindings = tuple(
             ConsumerBinding(
                 step_key=downstream,
@@ -1891,6 +2121,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # T06's propagation reads the policy off the ledger when
                 # the JOIN terminal-fails.
                 failure_policy=self.compiled.nodes[downstream].on_failure,
+                # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
+                # cure): the downstream node's own resolution rides the
+                # binding (the join row's metadata → the fire's outbox
+                # bindings → the drain's consumer row's column).
+                start_to_close=self.compiled.nodes[downstream].start_to_close,
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
@@ -1920,6 +2155,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # cure): the source's resolution (above) rides every
                     # child row.
                     priority=child_priority,
+                    # THE CHILD'S DECLARED DEADLINE (the wf start_to_close
+                    # cure): the source's resolution (above) rides every
+                    # child row.
+                    start_to_close=child_start_to_close,
                 )
                 for i, item in enumerate(items)
             ),
@@ -1941,6 +2180,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # wf-priority cure): the join is the source's own cohort — the
             # map body handle's declaration governs the CHILDREN only.
             priority=source_priority,
+            # THE JOIN'S DEADLINE = THE SOURCE'S RESOLUTION (the wf
+            # start_to_close cure — the map body handle's declaration
+            # governs the CHILDREN only).
+            start_to_close=source_start_to_close,
         )
 
     def _route_fork(
@@ -1980,8 +2223,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         ``run_priority`` is the RUN's per-call override (the wf-priority
         cure): each ARM's children resolve the law's levels — the
         override > the ARM's own ``priority=`` (the down-override) > the
-        arm body HANDLE's declaration (the actor level — review F3's
-        cure, read per arm and never folded into the source node) > the
+        arm body HANDLE's declaration (the actor level, read per arm
+        and never folded into the source node) > the
         source node's declaration > the column default; the JOIN (the
         source's own cohort — the arm overrides never retouch it) lands
         at the SOURCE's resolution."""
@@ -1998,7 +2241,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # join (the join is the source's own cohort, the placement
         # fields' law).
         source_priority = _resolve_priority(run_priority, node.priority)
-        # THE PER-ARM HANDLE LEVEL (review F3's cure — the
+        # THE PER-ARM HANDLE LEVEL (the
         # never-a-silent-drop law, the capacity terms' own H-A4 shape):
         # an arm body wired as an ``@app.actor(priority=…)`` HANDLE
         # carries its declaration as THAT ARM'S actor level — read per
@@ -2015,6 +2258,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             arm_tag: arm.body.priority if isinstance(arm.body, WorkflowActor) else None
             for arm_tag, arm in arms_typed.items()
         }
+        # THE ARM HANDLE'S OWN DEADLINE (the wf start_to_close cure — the
+        # priority shape's own twin): an arm body wired as an
+        # ``@app.actor(start_to_close=…)`` HANDLE carries its declaration
+        # as THAT ARM'S actor level, read per arm here, never folded into
+        # the source node.
+        arm_handle_deadlines: dict[str, timedelta | None] = {
+            arm_tag: arm.body.start_to_close if isinstance(arm.body, WorkflowActor) else None
+            for arm_tag, arm in arms_typed.items()
+        }
         join_key = f"{row['step_key']}.join"
         bindings = tuple(
             ConsumerBinding(
@@ -2027,6 +2279,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # T06's propagation reads the policy off the ledger when
                 # the JOIN terminal-fails.
                 failure_policy=self.compiled.nodes[downstream].on_failure,
+                # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
+                # cure): the downstream node's own resolution rides the
+                # binding (the join row's metadata → the fire's outbox
+                # bindings → the drain's consumer row's column).
+                start_to_close=self.compiled.nodes[downstream].start_to_close,
             )
             for downstream in sorted(self.compiled.nodes)
             if join_key in self.compiled.nodes[downstream].parents
@@ -2091,7 +2348,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # THE CHILD'S RESOLVED PRIORITY (the wf-priority
                     # cure): the arm's DOWN-OVERRIDE — the override > the
                     # arm's own declaration > the arm body HANDLE's
-                    # declaration (the actor level — review F3's cure)
+                    # declaration (the actor level)
                     # > the source node's declaration > the column
                     # default. ``None`` on a level means it declares
                     # nothing (the arm overrides DOWN from the source,
@@ -2101,6 +2358,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                         arm.priority,
                         arm_handle_priorities.get(tag),
                         node.priority,
+                    ),
+                    # THE CHILD'S DECLARED DEADLINE (the wf start_to_close
+                    # cure — the priority's own down-override shape): the
+                    # ARM's own declaration > the arm body HANDLE's
+                    # declaration (the actor level — read per arm at the
+                    # fork) > the source node's declaration. ``None`` on a
+                    # level means it declares nothing (the arm overrides
+                    # DOWN from the source, never up).
+                    start_to_close=_first_declared(
+                        arm.start_to_close,
+                        arm_handle_deadlines.get(tag),
+                        node.start_to_close,
                     ),
                 )
             )
@@ -2120,6 +2389,9 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # THE JOIN'S PRIORITY = THE SOURCE'S RESOLUTION (the
             # wf-priority cure — the arm overrides never retouch it).
             priority=source_priority,
+            # THE JOIN'S DEADLINE = THE SOURCE'S RESOLUTION (the wf
+            # start_to_close cure — the arm overrides never retouch it).
+            start_to_close=node.start_to_close,
         )
         # THE VALIDATED FORK (rv4 F8's cure — the raise INTO the ladder's
         # try): the fork validates HERE, at the body path — this call

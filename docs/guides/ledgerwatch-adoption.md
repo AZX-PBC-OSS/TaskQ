@@ -389,7 +389,9 @@ holdmap-cures lane's map-index identity (F2), the ladder-inheritance
 
 ## The receipts
 
-The drills' evidence lands in `.measurements/ledgerwatch/`: the
+The drills' evidence lands in `.measurements/ledgerwatch/` (the
+`.measurements/…` artifacts cited in this document live on the evidence
+branch, `evidence/taskqflow`, not in this repo): the
 1000-transaction flake drill's journal (every external call, its
 outcome, its latency), the concurrency overlap measured from the rows
 (the fan-out enriched 32-wide), the engine attempt histograms, the

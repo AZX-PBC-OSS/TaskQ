@@ -357,6 +357,12 @@ async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
 # ── F-T3: THE 10K-TIMER TAIL (the drain + the index) ────────────────────
 
 
+# Why load_sensitive: the drain ceiling (1500 due timers inside 15 s) is
+# a wall-clock band on the cascade's elapsed — CI's parallel lanes are
+# the load the band cannot survive (the perf-bands file is the
+# precedent). The row-count asserts ride along; they are deterministic
+# wherever the pin runs.
+@pytest.mark.load_sensitive
 @pytest.mark.integration
 async def test_t3a_the_timer_arm_drains_the_due_set_in_one_cascade(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool

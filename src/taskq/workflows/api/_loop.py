@@ -283,13 +283,7 @@ def loop(
     always resolves a body (never the ``loop_escalation``-actor ghost).
     ``on_exhausted="fail"`` terminal-fails the flow and enqueues
     NOTHING — the policy is READ by the driver AND the sweep, both arms
-    pinned end-to-end.
-
-    ``gates=`` declares the body's HOLD gates (T16's addition — the
-    typed door's compile visibility): a mid-loop ``wait_signal`` the
-    body makes is INVISIBLE to the admin's resolve/deliver doors unless
-    the gate is DECLARED on the node — the same law the step wiring's
-    ``gates=`` keeps."""
+    pinned end-to-end."""
     from taskq.workflows.api._graph import NodeDecl
 
     # THE NAMING RULE (cut #6's API-compile face — the same refusal

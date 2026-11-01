@@ -22,9 +22,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast
 
+from taskq._humantime import split_seconds
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike
 
@@ -98,7 +99,7 @@ _RUN_HOLDS_SQL = (
     "WHERE workflow_id = $1 ORDER BY id"
 )
 
-#: THE CHILD FLOWS' LINKS (rv5-C5b — the admin is not child-blind): the
+#: THE CHILD FLOWS' LINKS (the admin is not child-blind): the
 #: run's child-flow receipts (the parent's node rows' ``child_flows``),
 #: dedup'd and bounded (a 10k fan-out renders the count, the first ids
 #: capped by the display bound the runs list carries).
@@ -144,6 +145,51 @@ class RunNode:
     scheduled_at: str | None = None
     snooze_count: int = 0
     deferral: dict[str, Any] | None = None
+    # THE DEADLINE FACES (the wf start_to_close cure): the row's own
+    # declared bound (the column's seconds) + the claim's instant (the
+    # running face's age source) — the node panel's deadline line's
+    # inputs. ``None`` = nothing declared (no line — the row is the
+    # declaration's own truth).
+    start_to_close_s: float | None = None
+    started_at: str | None = None
+    # THE CLOCK ARBITER (the single-arbiter doctrine — the label reads
+    # the DATABASE's clock, ``running_for_ms``'s own law): the
+    # deadline's remaining/age computed IN THE READ against
+    # ``clock_timestamp()`` — never the app clock's guess (a DB ahead of
+    # the app read as "expired 120s ago" on a step that just started).
+    # Positive = the time left; negative = the expiry's age; ``None`` =
+    # the face doesn't render the reality (the bound alone).
+    deadline_remaining_s: float | None = None
+
+    @property
+    def deadline_label(self) -> str | None:
+        """THE DEADLINE LINE (the page's and the SSE frame's shared
+        spelling — one derivation, two renderers, the deferral label's
+        own pattern): the bound WHERE DECLARED, and — for a RUNNING node
+        whose claim instant is available — the deadline's REALITY (the
+        instant + the bound, with the time left or the expiry's age).
+        Sub-second spans — a bound under a second, a remaining under a
+        second — read ``<1s`` (``0s`` reads as no time at all). ``None``
+        = no bound declared (the line renders nothing — an
+        undeclared row reads as the unbounded face it is). The REALITY's
+        remaining is the READ's own computation (the DB clock's — the
+        row's ``deadline_remaining_s``), never an app-clock guess."""
+        if self.start_to_close_s is None:
+            return None
+        bound = _format_deadline_bound(self.start_to_close_s)
+        if self.status != "running" or self.started_at is None:
+            return f"deadline {bound}"
+        remaining = self.deadline_remaining_s
+        if remaining is None:
+            return f"deadline {bound}"
+        if remaining > 0:
+            # THE SUB-SECOND FLOOR (the bound's own spelling): a remaining
+            # under a second reads ``<1s`` — ``0s left`` reads as no time
+            # at all on a clock that has not expired.
+            left = f"{int(remaining)}s" if remaining >= 1 else "<1s"
+            return f"deadline {bound} · {left} left"
+        age = f"{int(-remaining)}s" if -remaining >= 1 else "<1s"
+        return f"deadline {bound} · expired {age} ago"
 
     @property
     def deferral_label(self) -> str | None:
@@ -227,7 +273,7 @@ class RunView:
     # a run with no map/fork fan-out.
     root_map_done: int = 0
     root_map_children: int = 0
-    # THE PARENT↔CHILD LINKS (rv5-C5b's cure — the admin is not
+    # THE PARENT↔CHILD LINKS (the admin is not
     # child-blind): the run's own child-flow receipts (the parent's
     # page links each child's run page) and the run's OWN parent (a
     # child flow's page links back). Both are ROW facts — the identity
@@ -281,6 +327,26 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
 
 
+def _format_deadline_bound(seconds: float) -> str:
+    """The declared bound's operator form: a sub-second bound reads
+    ``<1s`` (a 0.25s deadline rendered ``0s`` reads as NO bound at all —
+    the useless face; the whole-seconds round is the lie in the other
+    direction), sub-minute bounds keep seconds resolution (``30s`` —
+    ``<1m`` would lie), minutes and hours carry the two-unit split over
+    ``split_seconds`` (the unit cascade's ONE home — the split is never
+    re-derived here), the panel's own resolution."""
+    if seconds < 1:
+        return "<1s"
+    days, hours, minutes, secs = split_seconds(round(seconds))
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    if minutes:
+        return f"{minutes}m {secs}s" if secs else f"{minutes}m"
+    return f"{secs}s"
+
+
 def _decode_stamp(raw: Any) -> dict[str, Any] | None:
     """The deferral stamp's decode (asyncpg hands a str for the bare
     ``->`` operator on un-coded connections, a dict for typed paths)
@@ -297,6 +363,18 @@ def _decode_stamp(raw: Any) -> dict[str, Any] | None:
     except ValueError:
         return None
     return cast("dict[str, Any]", decoded) if isinstance(decoded, dict) else None
+
+
+def _start_to_close_seconds(raw: Any) -> float | None:
+    """The declared bound's seconds (the wf start_to_close cure): the
+    interval column decodes to a :class:`timedelta` on coded
+    connections — a str (an un-coded connection's ISO interval form) or
+    anything else degrades to None (the line is a display, never
+    load-bearing — an unreadable bound renders no line, never a
+    500)."""
+    if isinstance(raw, timedelta):
+        return raw.total_seconds()
+    return None
 
 
 async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunView | None:
@@ -337,7 +415,7 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
         [dict(r) for r in hold_rows],
         progress,
     )
-    # THE PARENT↔CHILD LINKS (rv5-C5b): the receipts' read rides the
+    # THE PARENT↔CHILD LINKS: the receipts' read rides the
     # SAME grouped read (one connection, the page's own query budget).
     child_rows = await conn.fetch(
         _RUN_CHILD_FLOWS_SQL.format(schema=schema), run_id, _CHILD_LINKS_DISPLAY_LIMIT
@@ -447,6 +525,24 @@ def _run_view_from_rows(
                 # a dict): a corrupted stamp reads None (the label is a
                 # display, never load-bearing).
                 deferral=_decode_stamp(r["deferral"]),
+                # THE DEADLINE FACES (the wf start_to_close cure): the
+                # row's own bound (the interval's decode is the
+                # timedelta the column carries on coded connections) +
+                # the claim's instant. The read is TOLERANT of the
+                # hand-built row shapes (the pins' seeds — a row dict
+                # predating the column reads None, the absent face).
+                start_to_close_s=_start_to_close_seconds(r.get("start_to_close")),
+                started_at=_iso(r.get("started_at")),
+                # THE CLOCK ARBITER: the remaining is the
+                # READ's own clock_timestamp() computation — the label
+                # never measures the DB-written instant against the app
+                # clock. A row dict predating the column reads None (the
+                # bound-alone face).
+                deadline_remaining_s=(
+                    float(r["deadline_remaining_s"])
+                    if r.get("deadline_remaining_s") is not None
+                    else None
+                ),
             )
         )
     return RunView(
@@ -554,6 +650,11 @@ def run_state_json(view: RunView, *, seq: int) -> dict[str, Any]:
                 # the frame, so a node that ARRIVES at (or leaves) the
                 # snoozed state never needs a reload.
                 "deferral_label": n.deferral_label,
+                # THE DEADLINE LINE (the wf start_to_close cure): the
+                # bound where declared + the running face's reality —
+                # the same two-renderers pattern the deferral line
+                # keeps.
+                "deadline_label": n.deadline_label,
             }
             for n in sorted(rendered, key=lambda n: n.key)
         ],

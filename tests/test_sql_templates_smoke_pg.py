@@ -202,6 +202,20 @@ def _render_extra(placeholder: str, owning_module: str, body: str) -> object:
         return value
     if placeholder == "outbox_multiplier":
         return RECLAIM_OUTBOX_RETENTION_MULTIPLIER
+    if placeholder == "capacity_set":
+        # taskq.worker.startup renders its shared actor_config upsert
+        # body's {capacity_set} slot by token replacement with its own
+        # face constants (the operator face fills it empty, the
+        # code-owned face fills it from _CODE_OWNED_CAPACITY_SET);
+        # rendering with the owning module's constant is that module's
+        # own render path.
+        value = getattr(importlib.import_module(owning_module), "_CODE_OWNED_CAPACITY_SET", None)
+        if not isinstance(value, str):
+            raise AssertionError(
+                f"{owning_module}._CODE_OWNED_CAPACITY_SET is no longer a string; "
+                "the actor-config upsert's slot render changed - re-review this resolver"
+            )
+        return value
     raise AssertionError(
         f"unregistered render placeholder {{{placeholder}}} on a constant in "
         f"{owning_module} - register the value production substitutes in "

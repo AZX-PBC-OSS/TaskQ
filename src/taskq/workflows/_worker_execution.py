@@ -48,12 +48,13 @@ from __future__ import annotations
 
 import weakref
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 from uuid import UUID
 
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import JobId, JobRow
-from taskq.constants import check_priority_domain
+from taskq.constants import resolve_priority_stamp
 from taskq.obs import get_logger
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -318,15 +319,13 @@ def any_app_declares_strict_queues() -> bool:
     the app's own definition carries the contract in code (the fleet
     that needs this face cannot coordinate a fleet-wide env var; the
     declaration rides the app every worker child already imports).
-    THE OR-LAW's app-side arm: the bootstrap's gate
-    (``_fail_fast_on_unconsumed_workflow_queues``) is strict if EITHER
-    this predicate or ``settings.queues_strict`` (``TASKQ_QUEUES_STRICT``)
-    is set — the env can only ADD strictness, never silence a declared
-    contract. An undeclared app (the default) changes nothing:
+    An undeclared app (the default) changes nothing:
     ``getattr``'s False is today's behavior byte-identically. One strict
     app tightens the gate for the WHOLE projected cohort set — the same
     aggregated shape the warning arm reports in (the cohorts are ONE
-    projection; the gate is its one door)."""
+    projection; the gate is its one door). The faces' OR-law (strict if
+    EITHER this face or the env is set) is the bootstrap gate's own
+    docstring (``_fail_fast_on_unconsumed_workflow_queues``)."""
     return any(getattr(app, "queues_strict", False) for app in _apps)
 
 
@@ -870,17 +869,28 @@ def collect_workflow_reservations() -> tuple[list[ConcurrencyReservation], list[
 
 # ── the execution door ───────────────────────────────────────────────────
 
-_runners: dict[tuple[str, str, str], tuple[Any, Any]] = {}
-"""The worker-hosted runners, keyed (schema, workflow name, worker id) —
-the worker's pool + identity are process-stable, so the cache holds ONE
-runner per workflow per process (the construction validates the graph
-once). The pool rides the value so a swapped pool rebuilds the runner."""
+_runners: dict[tuple[str, str, str, str], tuple[Any, Any]] = {}
+"""The worker-hosted runners, keyed (schema, workflow name, worker id,
+worker default) — the worker's pool + identity are process-stable, so
+the cache holds ONE runner per workflow per process (the construction
+validates the graph once). The pool rides the value so a swapped pool
+rebuilds the runner; the worker default rides the KEY — two callers
+naming different defaults (a test's 300s, another's ``None``, a fleet's
+per-tenant settings) must never share a runner (the second would
+inherit the first's deadline)."""
 
 
-def _runner_for(name: str, pool: asyncpg.Pool, schema: str, worker_id: JobId) -> Any:
+def _runner_for(
+    name: str,
+    pool: asyncpg.Pool,
+    schema: str,
+    worker_id: JobId,
+    default_start_to_close: timedelta | None = None,
+) -> Any:
     from taskq.workflows.api._runner import FlowRunner
 
-    key = (schema, name, str(worker_id))
+    default_key = "" if default_start_to_close is None else repr(default_start_to_close)
+    key = (schema, name, str(worker_id), default_key)
     cached = _runners.get(key)
     if cached is not None and cached[0] is pool:
         return cached[1]
@@ -897,6 +907,12 @@ def _runner_for(name: str, pool: asyncpg.Pool, schema: str, worker_id: JobId) ->
         schema,
         worker_id=worker_id,
         deps=compiled.deps if isinstance(compiled, CompiledWorkflow) else None,
+        # THE WORKER'S DEFAULT DEADLINE (the wf start_to_close cure — the
+        # resolution chain's own tail): the worker settings' value,
+        # threaded from the dispatch loop's deps. Process-stable (the
+        # settings load once at boot), and part of the cache KEY — a
+        # changed default builds its own runner, never inherits.
+        default_start_to_close=default_start_to_close,
     )
     _runners[key] = (pool, runner)
     return runner
@@ -908,6 +924,7 @@ async def execute_flow_job(
     schema: str,
     worker_id: JobId,
     job: JobRow,
+    default_start_to_close: timedelta | None = None,
 ) -> FlowExecution:
     """Execute ONE claimed workflow row on THIS worker.
 
@@ -920,6 +937,13 @@ async def execute_flow_job(
     machinery (:meth:`FlowRunner.run_fleet_claimed_step`): the ledger
     claim, the emitter, the router, the ladder, the two-transaction
     finalize, the same fences. NOT a second execution semantics.
+
+    ``default_start_to_close`` is the WORKER'S DEFAULT DEADLINE (the wf
+    start_to_close cure — the resolution chain's own tail): the worker
+    settings' value, threaded from the dispatch loop's deps; the row's
+    own stamp (the declared bound) outranks it — the vanilla
+    ``_effective_start_to_close`` chain's own order. ``None`` = no
+    default — an undeclared row's body runs unbounded.
 
     Returns the execution record (:class:`FlowExecution`) — the outcome
     label (``succeeded`` / ``laddered`` / ``held`` / ``deferred`` — the
@@ -961,36 +985,27 @@ async def execute_flow_job(
             "a deployment defect"
         ) from None
 
-    runner = _runner_for(workflow_name, pool, schema, worker_id)
-    # THE RUN-PRIORITY STAMP'S RESOLUTION (the wf-priority cure): the
-    # root's stamped override (an int the create wrote) — a stamp a
-    # hand-crafted row rendered unparseable degrades to NO override (the
-    # declarations — or the column default — speak; a priority is an
-    # ordering hint, never a correctness input worth crashing the door
-    # on), never a door death.
-    # THE POST-PARSE DOMAIN CLAMP (the review's recommended cure): the
-    # parse alone is not enough — a PARSEABLE stamp past the smallint
-    # column's domain ("99999") wedged the fork at the bind (the
-    # DataError mid-finalize — the run parked). ``check_priority_domain``
-    # (the same refusal every layer that accepts a priority raises, read
-    # as a PREDICATE here) demotes the out-of-domain value to the same
-    # no-override degrade.
+    runner = _runner_for(
+        workflow_name, pool, schema, worker_id, default_start_to_close=default_start_to_close
+    )
+    # THE RUN-PRIORITY STAMP'S RESOLUTION: the root's stamped override
+    # through the shared parse → domain-clamp → degrade cascade
+    # (``resolve_priority_stamp`` — a stamp a hand-crafted row rendered
+    # unparseable or out-of-domain degrades to NO override, never a door
+    # death).
     raw_priority: object | None = read["wf_priority"]
-    try:
-        parsed_priority = (
-            int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
-        )
-        if parsed_priority is not None:
-            check_priority_domain(parsed_priority, what="the root's wf_priority stamp")
-    except (TypeError, ValueError):
-        parsed_priority = None
-    run_priority = parsed_priority
+    run_priority = resolve_priority_stamp(raw_priority)
     row = {
         "id": job.id,
         "step_key": read["step_key"],
         "map_index": read["map_index"],
         "payload": job.payload,
         "trace_id": job.trace_id,
+        # THE ROW'S DECLARED DEADLINE (the wf start_to_close cure): the
+        # dispatch claim's own decode carries the column (the vanilla
+        # JobRow's field — the row IS the truth); the runner's
+        # enforcement resolves it over the worker's default.
+        "start_to_close": job.start_to_close,
     }
     from taskq.workflows.api._runner_errors import WorkflowRunError
 

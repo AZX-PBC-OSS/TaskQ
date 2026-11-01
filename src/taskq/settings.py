@@ -2064,7 +2064,7 @@ class WorkerSettings(TaskQSettings):
         "NULL-stamped terminal root (the stamp never landed) is SKIPPED — "
         "never doomed: no history is removed that has no honest age — "
         "and the arm's rate-limited warning "
-        "(wf_retention_null_finished_at) fires when a pass OBSERVES one: "
+        "(wf-retention-null-finished-at) fires when a pass OBSERVES one: "
         "fix the stamp or backfill it, the rows stay until they carry an "
         "honest age (the round-2 R2's conservative shape). The edges are "
         "pure flow-structure narration on a terminal flow (the join "

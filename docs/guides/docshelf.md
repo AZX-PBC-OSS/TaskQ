@@ -16,7 +16,9 @@ REAL — real Postgres, real rows, real worker PROCESSES (the crash
 drills SIGKILL them). Its drill suite (15 tests, the chaos suite runs
 5 iterations) passes against real workers; the receipts (counts,
 retries, slot measurements, the variance) land in
-`.measurements/docshelf/`.
+`.measurements/docshelf/`. The `.measurements/…` artifacts cited in
+this document live on the evidence branch (`evidence/taskqflow`), not
+in this repo.
 
 This page is the BUILD-THROUGH: the shapes an adopting team needs, in
 the order the team reached for them, with the frictions the adoption

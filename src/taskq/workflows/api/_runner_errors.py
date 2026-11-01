@@ -15,8 +15,8 @@ class WorkflowRunError(RuntimeError):
 
 
 class VanishedNodeError(WorkflowRunError):
-    """THE VANISHED-NODE REDEPLOY WEDGE (the structural redeploy —
-    rv5-t6's convicted class): a deploy renamed or removed a node while
+    """THE VANISHED-NODE REDEPLOY WEDGE (the structural redeploy):
+    a deploy renamed or removed a node while
     a run was in flight, and the run's pending row's step key now
     resolves NOWHERE in the new process — not in the compiled graph, not
     in the registered definition.

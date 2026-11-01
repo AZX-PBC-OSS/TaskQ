@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 
@@ -36,6 +37,15 @@ from taskq import TaskQ
 from taskq.migrate import apply_pending_locked
 from taskq.settings import TaskQSettings
 from taskq.web.admin import create_router, setup_admin_state
+
+# THE LOCAL-HTTP DEV CASE (the settings' own carve-out for
+# TASKQ_ADMIN_UI_SECURE_COOKIES): this demo serves plain
+# http://localhost:8003, where the browser rejects a Secure cookie — the
+# admin CSRF cookie never lands and every action POST (the Resolve flow)
+# answers 403. The demo's own process defaults the flag off, before the
+# settings load; an explicit operator setting still wins (setdefault,
+# never a stomp).
+os.environ.setdefault("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
 
 #: The drive loop's logger (one name, the demo's own).
 log = structlog.get_logger("examples.flows_demo.webapp")

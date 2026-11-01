@@ -242,6 +242,11 @@ async def test_map_item_ladder_honors_the_stamped_max_attempts(
     )
 
 
+# Why load_sensitive: the pin's ceiling (six 0.3 s bodies inside 0.6 s)
+# is ONE round of claim round-trips of margin — co-tenant scheduling on
+# a parallel lane can spend that on its own. The overlap law the pin
+# exists for is a serial-lane measurement.
+@pytest.mark.load_sensitive
 async def test_the_substep_does_not_hold_the_pool_connection_across_the_body(
     module_pg_schema: Any, wf_schema: str, hitl_redlog: Any
 ) -> None:

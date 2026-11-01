@@ -84,7 +84,7 @@ _RUNS_SQL = (
     # THE CAST'S BOUND (the re-review's 500): the discriminator's regex
     # admits at most NINE digits — int4's own domain tops at 2147483647
     # (10 digits) and the attempt ordinal's estate ceiling is 32767 (5),
-    # so a 10+-digit stamp (the reviewer's 11-digit overflow-shaped write
+    # so a 10+-digit stamp (an 11-digit overflow-shaped write
     # 500'd the WHOLE list on the ::int cast) is a HOSTILE stamp, refused
     # the badge: the CASE degrades it to NULL, NULL never equals the
     # row's attempt, the row drops out of the sitting count (the badge's
@@ -363,6 +363,11 @@ def register(router: APIRouter) -> None:
                 # label is the row's truth (the stamp's own
                 # discriminator), rendered beside the status chip.
                 "deferral_label": n.deferral_label,
+                # THE DEADLINE LINE (the wf start_to_close cure — the
+                # bound where declared + the running face's reality):
+                # the same row's-truth pattern, rendered beside the
+                # deferral line.
+                "deadline_label": n.deadline_label,
             }
             # THE COLLAPSE (Q1d): the map children render through their
             # source's hexagon — the page's node projection is the
@@ -382,9 +387,16 @@ def register(router: APIRouter) -> None:
                 "reason": _field_of(h["payload"], "reason"),
                 "tool": _field_of(h["payload"], "tool"),
                 "args": _field_of(h["payload"], "args"),
-                "created_at": _iso(h["created_at"]),
-                "expires_at": _iso(h["expires_at"]),
-                "resolved_at": _iso(h["resolved_at"]),
+                "created_at": h["created_at"],
+                # THE CLOCK FIELDS PASS THROUGH (the deadline face's
+                # cure): the view's holds are ALREADY normalized
+                # (_normalize_hold's contract — the clocks as ISO text,
+                # JSON-safe), so a second _iso() here read a STRING,
+                # answered None, and the page's deadline line rendered
+                # the none-face for EVERY hold — the with-deadline face
+                # was dead code (the deadline-face pin's red).
+                "expires_at": h["expires_at"],
+                "resolved_at": h["resolved_at"],
                 # THE TIMER'S BRANCH (the timer-cures lane's cure 3): the
                 # normalized row's own timer mark (the reserved prefix's
                 # derivation) rides the projection — the template branches

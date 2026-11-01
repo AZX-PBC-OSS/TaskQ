@@ -47,6 +47,7 @@ from taskq.backend._sql_fragments import (
     DEADLINE_RETRY_EXCEEDED_MESSAGE,
 )
 from taskq.constants import (
+    BUDGET_EXHAUSTED_MESSAGE,
     CANCEL_ORIGIN_ABANDONED,
     CANCEL_ORIGIN_COOPERATIVE,
     CANCEL_ORIGIN_FORCED,
@@ -1222,7 +1223,7 @@ async def _mark_retry_after(
             status="failed",
             finished_at=now,
             error_class="MaxAttemptsExceeded",
-            error_message="retry budget exhausted",
+            error_message=BUDGET_EXHAUSTED_MESSAGE,
             error_traceback=None,
             locked_by_worker=None,
             lock_expires_at=None,
@@ -1238,7 +1239,7 @@ async def _mark_retry_after(
             now=now,
             outcome="failed",
             error_class="MaxAttemptsExceeded",
-            error_message="retry budget exhausted",
+            error_message=BUDGET_EXHAUSTED_MESSAGE,
             error_traceback=None,
             worker_id=worker_id,
             # The pre-write row's scheduled_at: the claim-time due time the

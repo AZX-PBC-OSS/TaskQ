@@ -21,6 +21,7 @@ import uuid as uuid_module
 from typing import Any
 
 import asyncpg
+import pytest
 from pydantic import BaseModel
 
 from taskq.backend._protocol import JobId
@@ -621,6 +622,11 @@ async def test_cancel_workflow_one_transaction_idempotent(
     )
 
 
+# Why load_sensitive: the assertion IS the pin — elapsed < 500 ms is the
+# hold→resume band itself, and CI's parallel lanes are exactly the load
+# the band cannot survive (the perf-bands file is the precedent: a
+# wall-clock band's home is the serial lane).
+@pytest.mark.load_sensitive
 async def test_hold_to_resume_latency_band(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:

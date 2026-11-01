@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal, cast, overload
 
 from pydantic import BaseModel
@@ -42,6 +43,7 @@ from taskq.workflows.api._graph import (
     BuildGraph,
     NodeDecl,
     Promise,
+    check_start_to_close_decl,
     record_under,
     route_child_key,
 )
@@ -77,6 +79,7 @@ class WorkflowActor:
         result_ttl: float | None = None,
         priority: int | None = None,
         capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
+        start_to_close: timedelta | None = None,
     ) -> None:
         self._fn = fn
         self.name = name
@@ -104,6 +107,15 @@ class WorkflowActor:
         # vanilla ``ActorRef.priority``, it rides the handle and the
         # enqueue, never the config row.
         self.priority = priority
+        # THE ACTOR'S DECLARED DEADLINE (the wf start_to_close cure): the
+        # handle's DEFAULT for its nodes' rows — the wiring folds it into
+        # the node decl when the step declares none (the priority
+        # fold's own shape). ``None`` = nothing declared — the row's
+        # column NULL (the worker's default_start_to_close applies at
+        # the enforcement). Like priority, NOT an actor_config axis: the
+        # deadline is the ROW's own column value, and two steps of one
+        # actor may declare different bounds with no conflict law.
+        self.start_to_close = start_to_close
         # THE CAPACITY OWNER (C15's opt-in, the vanilla actor's own
         # declaration): "operator" (the default) keeps the estate's
         # seed-only law — the stored row wins every conflict after
@@ -331,6 +343,7 @@ class WorkflowApp:
         result_ttl: float | None = None,
         priority: int | None = None,
         capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
+        start_to_close: timedelta | None = None,
     ) -> WorkflowActor: ...
 
     @overload
@@ -350,6 +363,7 @@ class WorkflowApp:
         result_ttl: float | None = None,
         priority: int | None = None,
         capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
+        start_to_close: timedelta | None = None,
     ) -> Callable[[Callable[..., Awaitable[object]]], WorkflowActor]: ...
 
     def actor(
@@ -368,6 +382,7 @@ class WorkflowApp:
         result_ttl: float | None = None,
         priority: int | None = None,
         capacity_owner: CapacityOwner = CAPACITY_OWNER_OPERATOR,
+        start_to_close: timedelta | None = None,
     ) -> WorkflowActor | Callable[[Callable[..., Awaitable[object]]], WorkflowActor]:
         """``@app.actor`` — the workflow step decorator: registers the
         body into the workflow definition registry (D1) and projects the
@@ -375,7 +390,11 @@ class WorkflowApp:
         (chain → hook, never a replacement — pin 11's composed-anyway).
         ``priority=`` is the actor's declared enqueue DEFAULT for its
         nodes' rows (the vanilla ``@actor(priority=)`` face; the step's
-        own ``priority=`` overrides, the run's per-call overrides both)."""
+        own ``priority=`` overrides, the run's per-call overrides both).
+        ``start_to_close=`` is the actor's declared DEADLINE DEFAULT for
+        its nodes' rows (the vanilla ``@actor(start_to_close=)`` face —
+        a timedelta, the positive-domain law shared; the step's own
+        ``start_to_close=`` overrides)."""
 
         def decorate(body: Callable[..., Awaitable[object]]) -> WorkflowActor:
             from taskq.workflows.api._graph import reservation_names
@@ -410,6 +429,10 @@ class WorkflowApp:
                 check_priority_domain(
                     priority, what=f"the workflow actor {actor_name!r}'s priority"
                 )
+            # THE DEADLINE'S DOMAIN (the vanilla actor's own law —
+            # actor.py's "start_to_close must be > 0" check at the
+            # declaration site): the refusal before anything registers.
+            check_start_to_close_decl(start_to_close, what=f"the workflow actor {actor_name!r}'s")
             handle = WorkflowActor(
                 body,
                 name=actor_name,
@@ -423,6 +446,7 @@ class WorkflowApp:
                 result_ttl=result_ttl,
                 priority=priority,
                 capacity_owner=capacity_owner,
+                start_to_close=start_to_close,
             )
             self._actor_queues.add(queue)
             return handle

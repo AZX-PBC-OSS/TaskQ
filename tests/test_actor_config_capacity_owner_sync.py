@@ -38,7 +38,7 @@ import structlog.types
 from pydantic import BaseModel
 
 from taskq._ids import new_base62
-from taskq._json import dumps_str
+from taskq._json import dumps_str, loads
 from taskq.actor import actor
 from taskq.actor_config import ActorConfig
 from taskq.exceptions import ActorConfigDriftList
@@ -142,6 +142,8 @@ def _make_config(
     result_ttl: float | None = None,
     metadata: dict[str, object] | None = None,
     capacity_owner: str = "operator",
+    max_attempts: int = 3,
+    retry_kind: str = "transient",
 ) -> ActorConfig:
     return ActorConfig(
         actor=actor,
@@ -151,11 +153,9 @@ def _make_config(
         result_ttl=result_ttl,
         metadata=metadata if metadata is not None else {},
         capacity_owner=capacity_owner,
+        max_attempts=max_attempts,
+        retry_kind=retry_kind,
     )
-
-
-def _on_conflict_clause(sql: str) -> str:
-    return sql.split("DO UPDATE SET", 1)[1]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -165,9 +165,11 @@ def _on_conflict_clause(sql: str) -> str:
 
 @pytest.mark.asyncio
 async def test_the_default_sync_keeps_its_single_operator_statement() -> None:
-    """C15's byte-identity law, statement-shaped: a sync with NO code-owned
-    rows runs EXACTLY ONE upsert, and its conflict arm assigns no capacity
-    column — the operator-owns law's own SQL, unchanged by the opt-in."""
+    """C15's write-shape law, count-shaped: a sync with NO code-owned
+    rows runs EXACTLY ONE upsert (one statement per sync — the boot's
+    write amplification stays at one). The statement's OUTCOME (the
+    stored capacity and queue surviving a changed literal) is the
+    real-PG pins' law below."""
     fake_conn = FakeAsyncpgConnection()
     fake_conn.set_select_rows([_make_record("X", max_concurrent=5, queue="default")])
 
@@ -177,63 +179,6 @@ async def test_the_default_sync_keeps_its_single_operator_statement() -> None:
     )
 
     assert len(fake_conn._execute_calls) == 1
-    sql, _params = fake_conn._execute_calls[0]
-    on_conflict = _on_conflict_clause(sql)
-    assert "max_concurrent" not in on_conflict
-    assert "result_ttl" not in on_conflict
-    assert "max_pending" not in on_conflict
-    assert "queue" not in on_conflict
-
-
-@pytest.mark.asyncio
-async def test_the_code_owned_rows_ride_the_code_owned_statement() -> None:
-    """The opt-in's own statement: the code-owned partition's upsert SET
-    clause rewrites max_concurrent and result_ttl from EXCLUDED — and
-    NOTHING else joins them (the queue and max_pending stay
-    operator-owned for BOTH owners). The operator partition's statement
-    stays byte-identical in the same transaction."""
-    fake_conn = FakeAsyncpgConnection()
-    fake_conn.set_select_rows(
-        [
-            _make_record("operator-actor", max_concurrent=5, queue="default"),
-            _make_record("code-actor", max_concurrent=5, queue="default"),
-        ]
-    )
-
-    await sync_actor_config(
-        fake_conn,  # pyright: ignore[reportArgumentType]  # Why: unit-test double, see the sibling sync pins.
-        [
-            _make_config("operator-actor", max_concurrent=3),
-            _make_config("code-actor", max_concurrent=7, result_ttl=120.0, capacity_owner="code"),
-        ],
-    )
-
-    assert len(fake_conn._execute_calls) == 2, (
-        "one statement per partition, disjoint actors, one transaction"
-    )
-    operator_sql, operator_params = fake_conn._execute_calls[0]
-    code_sql, code_params = fake_conn._execute_calls[1]
-
-    # THE OPERATOR STATEMENT IS UNCHANGED — even with a code-owned actor
-    # riding the same sync, the operator partition's conflict arm assigns
-    # no capacity column (the default rows' byte-identity law).
-    operator_on_conflict = _on_conflict_clause(operator_sql)
-    assert "max_concurrent" not in operator_on_conflict
-    assert "result_ttl" not in operator_on_conflict
-    assert operator_params[0] == ["operator-actor"], (
-        "the operator statement gets only its partition"
-    )
-
-    # THE CODE-OWNED STATEMENT'S SET CLAUSE: the two capacity columns
-    # join the retry contract's family; the queue and max_pending do NOT.
-    code_on_conflict = _on_conflict_clause(code_sql)
-    assert "max_concurrent = EXCLUDED.max_concurrent" in code_on_conflict
-    assert "result_ttl     = EXCLUDED.result_ttl" in code_on_conflict
-    assert "queue" not in code_on_conflict, "the queue stays operator-owned (the move-queue law)"
-    assert "max_pending" not in code_on_conflict, (
-        "max_pending stays operator-owned (the producer-side admission reads the stored row)"
-    )
-    assert code_params[0] == ["code-actor"], "the code-owned statement gets only its partition"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -498,35 +443,27 @@ def test_the_code_owner_participates_in_the_one_cap_law() -> None:
 
 
 async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
+    """The schema via the SHIPPED migrations — the house pattern (a
+    fresh schema + ``apply_pending``), never a hand-rolled shadow DDL:
+    a second copy of the table's DDL drifts from the migrations the
+    moment either side moves."""
+    from taskq.migrate import apply_pending
+
     await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-    await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-    await conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS "{schema}".actor_config (
-            actor          text PRIMARY KEY,
-            max_concurrent int,
-            max_pending    int,
-            queue          text NOT NULL,
-            max_attempts   smallint NOT NULL DEFAULT 3,
-            retry_kind     text NOT NULL DEFAULT 'transient',
-            result_ttl     float,
-            metadata       jsonb NOT NULL DEFAULT '{{}}'::jsonb,
-            updated_at     timestamptz NOT NULL DEFAULT now(),
-            retry_base     interval,
-            retry_cap      interval,
-            retry_backoff  text,
-            retry_jitter   float8
-        )
-    """)
+    await apply_pending(conn, schema=schema)
 
 
 async def _read_row(conn: asyncpg.Connection, schema: str, actor: str) -> dict[str, object]:
     row = await conn.fetchrow(
-        f"SELECT actor, max_concurrent, max_pending, queue, result_ttl "  # noqa: S608  # Why: the schema identifier is the fixture's own (module_pg_schema); asyncpg cannot bind identifiers.
+        f"SELECT actor, max_concurrent, max_pending, queue, result_ttl, "  # noqa: S608  # Why: the schema identifier is the fixture's own (module_pg_schema); asyncpg cannot bind identifiers.
+        f"metadata, max_attempts, retry_kind "
         f'FROM "{schema}".actor_config WHERE actor = $1',
         actor,
     )
     assert row is not None, f"the row for {actor!r} must exist"
-    return dict(row)
+    record = dict(row)
+    record["metadata"] = loads(record["metadata"])
+    return record
 
 
 @pytest.mark.asyncio
@@ -651,8 +588,100 @@ async def test_code_owned_queue_and_max_pending_changes_do_not_deploy(
     assert stored["max_concurrent"] == 2  # the unchanged literal deploys as itself
 
 
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_the_conflict_arm_deploys_the_code_families_and_keeps_the_operators(
+    pg_conn: asyncpg.Connection,
+) -> None:
+    """The conflict arm's OUTCOME, every family, both ownership faces —
+    the documented contract read off the rows after a second boot whose
+    literals all changed:
+
+    * the operator families (the queue assignment, ``max_pending``) keep
+      the STORED values — the move-queue law and the producer-side
+      admission's lever hold for BOTH owners;
+    * the code families (the retry contract: ``max_attempts`` +
+      ``retry_kind``) rewrite from the literal on every boot — the
+      declaration of record wins, for BOTH owners;
+    * metadata rewrites from the registered value under ``force=True``
+      (the structural family's own overwrite path);
+    * the capacity columns follow the row's owner (stored for the
+      operator face, rewritten for the code face — the sibling pins'
+      law, asserted here beside the families above so one boot's row
+      reads whole).
+    """
+    schema = f"tacs_{new_base62()}".lower()
+    await _ensure_schema(pg_conn, schema)
+
+    boot_one = [
+        _make_config(
+            "operator",
+            max_concurrent=2,
+            max_pending=30,
+            queue="default",
+            result_ttl=60.0,
+            metadata={"env": "prod"},
+        ),
+        _make_config(
+            "code",
+            max_concurrent=2,
+            max_pending=30,
+            queue="default",
+            result_ttl=60.0,
+            capacity_owner="code",
+            metadata={"env": "prod"},
+        ),
+    ]
+    await sync_actor_config(pg_conn, boot_one, schema=schema)
+
+    boot_two = [
+        _make_config(
+            "operator",
+            max_concurrent=2,
+            max_pending=99,
+            queue="critical",
+            result_ttl=60.0,
+            metadata={"env": "staging"},
+            max_attempts=7,
+            retry_kind="indefinite",
+        ),
+        _make_config(
+            "code",
+            max_concurrent=8,
+            max_pending=99,
+            queue="critical",
+            result_ttl=300.0,
+            capacity_owner="code",
+            metadata={"env": "staging"},
+            max_attempts=7,
+            retry_kind="indefinite",
+        ),
+    ]
+    await sync_actor_config(pg_conn, boot_two, schema=schema, force=True)
+
+    for row_actor, owned_mc, owned_ttl in (("operator", 2, 60.0), ("code", 8, 300.0)):
+        row = await _read_row(pg_conn, schema, row_actor)
+        assert row["queue"] == "default", (
+            f"{row_actor}: the stored queue survives the changed literal (the move-queue law)"
+        )
+        assert row["max_pending"] == 30, (
+            f"{row_actor}: the stored backlog cap survives the changed literal"
+        )
+        assert row["max_attempts"] == 7, (
+            f"{row_actor}: the retry contract rewrites from the literal on every boot"
+        )
+        assert row["retry_kind"] == "indefinite"
+        assert row["metadata"] == {"env": "staging"}, (
+            f"{row_actor}: force=True overwrites the stored metadata from the registered value"
+        )
+        assert row["max_concurrent"] == owned_mc, (
+            f"{row_actor}: the capacity column follows the row's owner"
+        )
+        assert row["result_ttl"] == owned_ttl
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# The review's 4(b) + 4(d): the converged boot's quiet, the SET clauses frozen
+# The converged boot's quiet — the deploy's outcome, read off the rows
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -681,52 +710,6 @@ async def test_converged_code_owned_boot_is_quiet(
     assert not [e for e in structlog_capture if e["event"] == "actor-config-capacity-override"], (
         "and it is not an operator override either"
     )
-
-
-def test_the_operator_statement_set_clause_is_frozen() -> None:
-    """THE REVIEW'S 4(d) — THE BYTE-IDENTITY CLAIM, LITERAL: the operator
-    statement's ``DO UPDATE SET`` assigns EXACTLY this column list, in
-    this order. A future statement that adds, drops, or REORDERS these
-    assignments reds here — the operator-owns law's own shape, frozen
-    (the capacity columns' absence is what keeps a stored row's capacity
-    operator-owned; a reorder is a reviewable diff, never a drive-by)."""
-    from taskq.worker.startup import _UPSERT_ACTOR_CONFIG_SQL
-
-    set_clause = _on_conflict_clause(_UPSERT_ACTOR_CONFIG_SQL)
-    assignments = [
-        line.strip().removesuffix(",").replace(" ", "")
-        for line in set_clause.splitlines()
-        if line.strip()
-    ]
-    assert assignments == [
-        "metadata=EXCLUDED.metadata",
-        "max_attempts=EXCLUDED.max_attempts",
-        "retry_kind=EXCLUDED.retry_kind",
-        "updated_at=clock_timestamp()",
-    ], "the operator statement's SET clause moved — the byte-identity law's own freeze"
-
-
-def test_the_code_owned_statement_set_clause_is_frozen() -> None:
-    """The code-owned statement's freeze (the operator's own list PLUS
-    exactly the two capacity columns, in order): the opt-in's surface is
-    exactly these two assignments — a third column joining them is a
-    reviewable diff, never a drive-by."""
-    from taskq.worker.startup import _UPSERT_CODE_OWNED_CAPACITY_SQL
-
-    set_clause = _on_conflict_clause(_UPSERT_CODE_OWNED_CAPACITY_SQL)
-    assignments = [
-        line.strip().removesuffix(",").replace(" ", "")
-        for line in set_clause.splitlines()
-        if line.strip()
-    ]
-    assert assignments == [
-        "metadata=EXCLUDED.metadata",
-        "max_concurrent=EXCLUDED.max_concurrent",
-        "result_ttl=EXCLUDED.result_ttl",
-        "max_attempts=EXCLUDED.max_attempts",
-        "retry_kind=EXCLUDED.retry_kind",
-        "updated_at=clock_timestamp()",
-    ], "the code-owned statement's SET clause moved — the opt-in's own freeze"
 
 
 @pytest.mark.asyncio

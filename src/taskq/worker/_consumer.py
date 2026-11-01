@@ -29,7 +29,7 @@ import contextlib
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from time import monotonic
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 from uuid import UUID
 
 import asyncpg
@@ -1693,10 +1693,43 @@ def _retrieve_body_task_outcome(task: "asyncio.Task[object]") -> None:
         task.exception()
 
 
+class _DeadlineEnforcementCtx(Protocol):
+    """The deadline enforcement's ctx face (the machinery's designated
+    write on the ctx it runs) — the ONE contract both carriers satisfy
+    structurally:
+
+    * the vanilla :class:`taskq.context.JobContext` (the consumer's own
+      face: the handle the cancel arm / the timeout handler's exit-proof
+      hold read);
+    * the workflow :class:`taskq.workflows.api._ctx.StepContext` (the wf
+      runner's body seam runs the SAME enforcement — the handle records
+      the detached unwind).
+
+    Structural on purpose: the enforcement is ONE machinery, never a
+    second one per carrier (the wf runner imports THIS function — the
+    three holes, the unwind budget, the hostile-finally drills
+    inherited)."""
+
+    def _set_actor_body_task(self, task: asyncio.Task[object]) -> None: ...
+
+
+class _TxDeadlineEnforcementCtx(_DeadlineEnforcementCtx, Protocol):
+    """The TRANSACTIONAL carrier's fuller face: adds the
+    rollback-collision window stamp the tx capture boundary reads (the
+    window's opener and the ``_take`` reader live on the vanilla
+    :class:`taskq.context.JobContext`). The wf ctx does not carry it —
+    the wf body runs in no transaction: there is no ``__aexit__``
+    ROLLBACK the marker could collide with, no capture boundary, no
+    reader on that face, and the wf face passes no unwind budget, so the
+    enforcement never reaches for the stamp there."""
+
+    def _set_tx_rollback_collision_window(self) -> None: ...
+
+
 async def _enforce_start_to_close(
-    run_actor: Callable[[JobRow, JobContext[BaseModel]], Awaitable[object]],
-    job: JobRow,
-    ctx: JobContext[BaseModel],
+    run_actor: Callable[[Any, Any], Awaitable[object]],
+    job: JobRow | None,
+    ctx: _DeadlineEnforcementCtx,
     timeout: float | None,
     unwind_wait: float | None = None,
 ) -> object:
@@ -1778,6 +1811,16 @@ async def _enforce_start_to_close(
     runs while the body unwinds detached, and the interrupt hold reads the
     ctx handle instead of the old "the cancellation propagated through the
     body's frames, so an async actor has provably unwound" assumption.
+
+    THE SHARED FACE: the enforcement is ONE machinery for both carriers —
+    the vanilla consumer's call sites (the *job* is the claimed
+    :class:`JobRow`) and the workflow runner's body seam (``api/_runner``
+    imports THIS function; the *job* is opaque — the runner's closure
+    reads its own claim's row, and ``None`` is what arrives here). The
+    ctx face is the structural :class:`_DeadlineEnforcementCtx` protocol
+    (the body-task handle, both carriers); the tx-only window stamp is
+    the :class:`_TxDeadlineEnforcementCtx` extension, reached only on
+    the unwind-wait path the tx caller's budget arms.
     """
     if timeout is None:
         return await run_actor(job, ctx)
@@ -1891,8 +1934,11 @@ async def _enforce_start_to_close(
             # TimeoutError (the row, the job_timeout log and the metric
             # all stay the deadline's), and never touches one arriving
             # without it (a body-caused InterfaceError keeps its own
-            # class). Read the stamp's contract on the ctx setter.
-            ctx._set_tx_rollback_collision_window()
+            # class). Read the stamp's contract on the tx ctx protocol.
+            # The unwind_wait budget is the tx path's own argument — the
+            # only caller that passes it is the one whose ctx implements
+            # the tx face.
+            cast("_TxDeadlineEnforcementCtx", ctx)._set_tx_rollback_collision_window()
         raise _StartToCloseExceededError from None
     # The body finished before the deadline: its return value, or its own
     # exception (including its own TimeoutError, which now routes as the

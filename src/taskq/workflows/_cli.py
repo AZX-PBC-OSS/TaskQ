@@ -345,7 +345,7 @@ def stranded_lines(
 def code_version_drift_lines(
     stamps: Sequence[tuple[str, str | None]],
 ) -> list[str]:
-    """THE §22.1 STAMPS' DRIFT FACE (rv5-t5's cure — the surface, the
+    """THE §22.1 STAMPS' DRIFT FACE (the surface, the
     stamps are the data): a run whose node rows carry >1 DISTINCT
     ``code_version`` was redeployed mid-flight — the run mixes pre- and
     post-deploy attempts, and the operator sees it HERE, from the run's
@@ -510,7 +510,7 @@ def format_flow_status(
     if code_version_stamps:
         lines.extend(code_version_drift_lines(code_version_stamps))
     # THE ONE COHERENT VERSIONING-DRIFT SECTION (the timer-cures lane's
-    # cure 5 + rv5-t5's stamps): the stranded-node surface (only when
+    # cure 5 + the §22.1 stamps): the stranded-node surface (only when
     # *registry_node_keys* is given: the --app door) + the §22.1 stamps'
     # drift face (the stamps are the data, no --app needed).
     if registry_node_keys is not None and nodes:

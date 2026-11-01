@@ -67,7 +67,13 @@ from taskq.workflows._sql_sweep import (
     STEP_LEDGER_ROOTLESS_RETENTION_SQL,
     render_rootless_retention_sql,
 )
-from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
+from taskq.workflows._types import (
+    FiredJoin,
+    _consumer_bindings,
+    _jsonb,
+    _metadata,
+    _seconds_or_none,
+)
 
 __all__ = [
     "NODELESS_ROOT_REAP_GRACE_S",
@@ -226,8 +232,8 @@ async def sweep_join_rederive(
                         BLOCKING_REASON_BODY_UNAVAILABLE,
                     )
                     logger.warning(
-                        "sweep_join_body_unavailable",
-                        kind="sweep_join_body_unavailable",
+                        "sweep-join-body-unavailable",
+                        kind="sweep-join-body-unavailable",
                         join_job_id=str(w["join_job_id"]),
                         step_key=w["step_key"],
                         flow_id=str(w["flow_id"]),
@@ -357,6 +363,20 @@ async def drain_outbox(
             # priority (the loop escalation's interactive follow-up), the
             # unset case at the column default's own value (0).
             [r["priority"] for r in rows],
+            # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
+            # cure's drain leg): the fire's bindings carry the downstream
+            # node's own resolution (the join row's metadata `consumers`
+            # array, serialized as SECONDS — the jsonb wire form); the
+            # unset/malformed case binds NULL (the pre-cure row). A
+            # deadline is a correctness input, but the binding's author
+            # is the fork's own build (a typed timedelta's serialization)
+            # — a malformed value degrades to NULL, never a sweep death.
+            # The parse is the binding decode's own helper
+            # (``_seconds_or_none``) — one guard, both faces.
+            [
+                _seconds_or_none(b.get("start_to_close_s"))  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the jsonb walk hands the Any-typed doc the drain decoded above; the helper is the parse.
+                for b in bindings
+            ],
         )
         await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
     return len(rows)
@@ -486,7 +506,7 @@ async def sweep_hold_stamps(
         # silent fix — the operator can correlate it with the process
         # death that stamped it.
         logger.warning(
-            "wf_hold_stamp_reclaimed",
+            "wf-hold-stamp-reclaimed",
             kind="wf_hold_stamp_reconcile",
             cleared=cleared_count,
         )
@@ -561,8 +581,8 @@ def _warn_null_stamp(table: str, observed: int) -> None:
         return
     _null_stamp_last_warned[table] = now
     logger.warning(
-        "wf_retention_null_finished_at",
-        kind="wf_retention_null_finished_at",
+        "wf-retention-null-finished-at",
+        kind="wf-retention-null-finished-at",
         table=table,
         null_stamped_flows=observed,
         note="the roots' finished_at was never stamped; the arm SKIPS them "
@@ -592,7 +612,7 @@ async def prune_wf_edge(
     flow's honest terminalization clock; a NULL-stamped terminal root is
     SKIPPED — never doomed (R2's conservative shape: no history is
     removed that has no honest age) — and the pass OBSERVES the class,
-    firing the rate-limited ``wf_retention_null_finished_at`` warning
+    firing the rate-limited ``wf-retention-null-finished-at`` warning
     (the stamping-bug tripwire, keyed on the observation, never on a
     deletion). ``retention``
     is the deletion-sweep family's zero-means-off sentinel: the caller's
@@ -657,7 +677,7 @@ async def prune_wf_join_fire(
     by the ROOT's ``finished_at`` (the latest clock any of the flow's
     rows can carry: the root's age subsumes the row clocks); the
     NULL-stamped terminal root is SKIPPED (never doomed) and the
-    observation fires the rate-limited ``wf_retention_null_finished_at``
+    observation fires the rate-limited ``wf-retention-null-finished-at``
     tripwire (H-B4's conservative shape, R2). ``retention`` is
     the zero-means-off sentinel (default OFF — flow history prunes only
     when the operator opts in). The rootless class is

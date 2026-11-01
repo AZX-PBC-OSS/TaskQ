@@ -11,12 +11,13 @@ body's runtime context in ``_ctx``/``_ctx_wait``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 import asyncpg
 
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
+from taskq.workflows.api._runner_defer import WORKFLOW_CANCELLED_CLASS
 
 __all__ = ["wf_conn_fetchval"]
 
@@ -110,6 +111,115 @@ WHERE id = $1
 RETURNING id
 """
 
+# THE DEADLINE'S RE-PEND (the wf start_to_close cure — the expiry's
+# disposition's own write): the ladder's re-pend shape
+# (NODE_REPEND_SQL_TEMPLATE) with THE CANCEL FENCE IN-STATEMENT and THE
+# BUDGET GATE — the vanilla ``mark_retry``'s own arms mirrored (the same
+# shape NODE_DEFER_SQL's deferral arms keep):
+#
+#   * 'repended' — the clean face: the row 'scheduled' at the backoff
+#     (the burn's retry), the cancel columns untouched;
+#   * 'exhausted' — THE BUDGET'S BOUND (the retry kind is ``permanent``,
+#     or the ladder's failed count reached ``max_attempts`` — the caller
+#     prices both into $3): the arm WRITES NOTHING (the wf terminal door
+#     owns every death — the row must still be 'running' for the
+#     terminal mark's fence), the verdict names the caller's route;
+#   * 'cancel_fenced' — THE CANCEL WINS (the vanilla mark_retry's own
+#     law: a phase-carrying row — the wf cancel's metadata mark OR the
+#     vanilla cancel's own column mark — matches NO arm; the deadline's
+#     backoff must never re-queue a row a cancel in flight owns): the
+#     caller routes the node through the wf terminal door, the C4
+#     deferral's cancel_faced shape;
+#   * None — the ZOMBIE (the claim fence matched nothing, a newer
+#     attempt owns the row): the caller records the ledger's 'fenced',
+#     H1.
+#
+# THE CLAIM IDENTITY'S FENCE (the fence legs bind the caller's own claim
+# — the NODE_DEFER_SQL's own shape): the deadline's disposition carries the
+# claim's own identity legs — worker + attempt + claim_epoch, the
+# terminal-mark CAS's full vocabulary. The pre-cure WHERE (id + status +
+# the cancel marks) let a ZOMBIE W1's deadline disposition flip a
+# re-minted LIVE W2 row (the 90s wf lease lapses → the reclaim +
+# re-claim as W2 → W1's timer fires → W2's row to 'scheduled', its
+# ledger phantom-runs, its finalize refuses): the row the fence matches
+# must be the row the CALLER'S OWN CLAIM holds, or every arm refuses and
+# the no-match routes to the zombie face (the ledger's 'fenced' record,
+# keyed on the claim's own instant — the C5 shape).
+#
+# Keyed to the ONE claimed node row; the two read arms write nothing.
+NODE_DEADLINE_REPEND_SQL = """\
+WITH params AS (
+    SELECT $1::uuid AS job_id,
+           $2::double precision AS backoff_s,
+           $3::boolean AS exhausted,
+           $4::uuid AS worker_id,
+           $5::int AS attempt,
+           $6::bigint AS claim_epoch
+),
+repended AS (
+    UPDATE {schema}.jobs j
+    SET status = 'scheduled',
+        locked_by_worker = NULL,
+        scheduled_at = now() + ((SELECT backoff_s FROM params) * interval '1 second')
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      -- THE CLAIM IDENTITY'S FENCE (the NODE_DEFER_SQL's own CAS
+      -- vocabulary): a zombie's deadline disposition — its claim lapsed,
+      -- the row re-claimed and LIVE under a newer claimant — matches
+      -- NOTHING (the row is the winner's; its own deadline owns it).
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      -- THE BUDGET GATE (the vanilla mark_retry's own max_attempts
+      -- fence — the exhausted face's row must stay 'running' for the
+      -- terminal mark's fence).
+      AND NOT (SELECT exhausted FROM params)
+      -- THE CANCEL FENCE (the vanilla mark_retry's own law, mirrored —
+      -- the C1 cure's shape): a phase-carrying row on EITHER carrier
+      -- matches NO arm.
+      AND j.cancel_phase = 0
+      AND NOT j.metadata ? 'cancel_phase'
+    RETURNING j.id
+),
+cancel_fenced AS (
+    SELECT j.id
+    FROM {schema}.jobs j
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      -- THE CLAIM IDENTITY'S FENCE (the repended arm's own legs): the
+      -- cancel's verdict names the CALLER'S OWN claim-carrying row — a
+      -- zombie's deadline never terminalises the winner's row
+      -- 'cancelled' on its view.
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      AND (j.metadata ? 'cancel_phase' OR j.cancel_phase <> 0)
+      AND NOT EXISTS (SELECT 1 FROM repended)
+)
+SELECT 'repended'::text AS verdict, id FROM repended
+UNION ALL
+-- THE EXHAUSTED VERDICT (a pure read of the params + the two arms'
+-- existence — the C4 NODE_DEFER_SQL's own arm order: the cancel mark
+-- outranks the budget's bound, the repended face outranks both). THE
+-- CLAIM IDENTITY'S FENCE rides this arm too: a budget-exhausted
+-- ZOMBIE's deadline is the ZOMBIE's face (no arm matched — the caller
+-- records 'fenced'), never the winner's terminal.
+SELECT 'exhausted'::text AS verdict, NULL::uuid AS id
+WHERE (SELECT exhausted FROM params)
+  AND EXISTS (
+      SELECT 1 FROM {schema}.jobs j
+      WHERE j.id = (SELECT job_id FROM params)
+        AND j.status = 'running'
+        AND j.locked_by_worker = (SELECT worker_id FROM params)
+        AND j.attempt = (SELECT attempt FROM params)
+        AND j.claim_epoch = (SELECT claim_epoch FROM params)
+  )
+  AND NOT EXISTS (SELECT 1 FROM repended)
+  AND NOT EXISTS (SELECT 1 FROM cancel_fenced)
+UNION ALL
+SELECT 'cancel_fenced'::text AS verdict, id FROM cancel_fenced
+"""
+
 PARENT_RESULTS_BY_KEY_SQL_TEMPLATE = """
 SELECT p.id, p.step_key, p.result
 FROM {schema}.wf_edge e
@@ -162,7 +272,7 @@ WHERE id = $1
 """
 
 CLAIMABLE_NODES_SQL_TEMPLATE = _render_fence_tokens("""
-SELECT id, step_key, map_index, attempt, trace_id, payload FROM {schema}.jobs
+SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status IN ('pending', 'scheduled')
   AND (scheduled_at IS NULL OR scheduled_at <= now())
@@ -201,8 +311,8 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND step_key <> '__flow__'
 """
 
-#: THE ROOT'S PRIORITY-STAMP READ (the wf-priority cure's ADOPTION leg —
-#: review F2's cure): ONE bounded primary-key read of the root's
+#: THE ROOT'S PRIORITY-STAMP READ (the wf-priority cure's ADOPTION leg):
+#: ONE bounded primary-key read of the root's
 #: metadata, the fleet door's own SELECT shape
 #: (``_CLAIMED_NODE_READ_SQL_TEMPLATE``'s stamp leg). The arbiter adopted
 #: an EXISTING run — its root stamp is its own truth (the row is the law,
@@ -240,7 +350,7 @@ UPDATE {schema}.jobs SET status = 'running' WHERE id = $1 AND status = 'pending'
 CANCEL_ROOT_SQL_TEMPLATE = """
 WITH flipped AS (
     UPDATE {schema}.jobs SET status = 'cancelled',
-        error_class = 'WorkflowCancelled',
+        error_class = '{wf_cancelled_class}',
         error_message = $2,
         finished_at = clock_timestamp()
     WHERE id = $1
@@ -254,7 +364,7 @@ WITH flipped AS (
     INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
     SELECT f.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', f.to_state,
-                              'error_class', 'WorkflowCancelled')
+                              'error_class', '{wf_cancelled_class}')
     FROM flipped f
 )
 SELECT id FROM flipped
@@ -265,7 +375,7 @@ WITH flipped AS (
     UPDATE {schema}.jobs
     SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
         finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
-        error_class = CASE WHEN status = 'running' THEN error_class ELSE 'WorkflowCancelled' END,
+        error_class = CASE WHEN status = 'running' THEN error_class ELSE '{wf_cancelled_class}' END,
         metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
     WHERE (metadata->>'flow_id')::uuid = $1
       AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
@@ -277,7 +387,7 @@ WITH flipped AS (
     INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
     SELECT f.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'pending', 'to_state', f.to_state,
-                              'error_class', 'WorkflowCancelled')
+                              'error_class', '{wf_cancelled_class}')
     FROM flipped f
     WHERE f.to_state = 'cancelled'
 )
@@ -402,5 +512,21 @@ async def wf_conn_fetchval(pool: asyncpg.Pool, schema: str, query: str, *args: o
         return await conn.fetchval(render_sql(query, schema), *args)
 
 
+#: The render's token substitutions (the house token-substitution pattern
+#: — the ``subs`` list's shape, :meth:`WorkflowSql.build <taskq.workflows._sql.WorkflowSql.build>`
+#: being where the other templates' tokens resolve): the templates stay
+#: PLAIN strings — ``render_sql`` never ``.format``\s them (the jsonb
+#: shape literals keep their braces, the ``{schema}`` token survives for
+#: the call-site render), and each substitution is a plain ``str.replace``
+#: of an exact token. The wf cancel's own error class is interpolated from
+#: its one home (``api/_runner_defer``), never spelled per template.
+_SQL_TOKEN_SUBS: Final[tuple[tuple[str, str], ...]] = (
+    ("{wf_cancelled_class}", WORKFLOW_CANCELLED_CLASS),
+)
+
+
 def render_sql(template: str, schema: str) -> str:
-    return template.replace("{schema}", schema)
+    out = template.replace("{schema}", schema)
+    for token, value in _SQL_TOKEN_SUBS:
+        out = out.replace(token, value)
+    return out

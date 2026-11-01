@@ -567,6 +567,22 @@ async def test_the_explorer_renders_a_timer_as_a_timer(
     assert "timer key: cures-timer" in text or "cures-timer" in text, (
         "the timer card must name the timer's key"
     )
+    # THE SCHEDULED INSTANT: the row's own wake time renders as the
+    # card's `scheduled:` line — never the placeholder dash (the dead
+    # face the page projection's double-_iso carried).
+    row_expires_at = await wf_pool.fetchval(
+        render_sql(
+            "SELECT expires_at FROM {schema}.wf_signals "
+            "WHERE workflow_id = $1 AND starts_with(signal_name, '__timer__')",
+            wf_schema,
+        ),
+        flow_id,
+    )
+    assert row_expires_at is not None, "the timer hold must carry its scheduled instant"
+    assert f"scheduled: {row_expires_at.isoformat()}" in text, (
+        "the timer card never rendered the scheduled instant — the page shows "
+        "the placeholder dash on a hold whose wake time is in the row"
+    )
     assert 'data-wf-form="resolve"' not in text, (
         "the explorer rendered a RESOLVE FORM on a timer hold — the boundary "
         "refuses every hand delivery to the clock's hold (refuse-only); the "

@@ -58,7 +58,8 @@ The parity claims above are not asserted from the armchair — the
 internal campaign's pattern probes ran each EXPRESSED claim against a
 live database (the hold's slot release, the replay's once-only memo,
 the dynamic map's cardinality, the outbox's idempotence, the run key's
-arbiter) and the captures ship with the source under
-`.measurements/patterns/`. The claims stay modest: **one mechanism per
+arbiter) and the captures live on the evidence branch
+(`evidence/taskqflow`) under `.measurements/patterns/`. The claims stay
+modest: **one mechanism per
 pattern, one row for five of them, and the limits named in the same
 breath as the wins.**

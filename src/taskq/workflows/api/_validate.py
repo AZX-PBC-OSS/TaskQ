@@ -769,7 +769,7 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
 
     * the arms' keys must be EXACTLY the union's member types — a
       MISSING member would route NOTHING (the silent drop the route
-      exists to refuse: the reviewer's live conviction — a "video" tag
+      exists to refuse: a "video" tag
       that skipped both arms and terminalized succeeded-having-routed-
       nothing), an UNKNOWN member would never fire;
     * every arm body declares its arm's MODEL on the item param — the
@@ -1334,7 +1334,7 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
     DECLARED gate the body never waits on, and a body's
     ``ctx.wait_signal`` with NO declared gate, both validated CLEAN.
 
-    THE TWO PROVABLE FACES (the reviewer's own rule):
+    THE TWO PROVABLE FACES:
 
     * declared-never-waited — a node's ``gates=`` carries a ``GateDecl``
       and NO body of the node references ``wait_signal`` AT ALL: the
@@ -1546,8 +1546,8 @@ def _rule_gate_timeout_split(compiled: CompiledWorkflow) -> list[WorkflowValidat
 
 
 def _rule_loop_wait_shape(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """W5 (THE LOOP'S SHAPE LAW — the teardown round's cure, the T26
-    review's C9): the loop's answer cursor IS the row's iteration
+    """W5 (THE LOOP'S SHAPE LAW): the loop's answer cursor IS the row's
+    iteration
     counter — iteration k's wait consumes the k-th answer. A LOOP body
     whose ``wait_signal`` sits in a CONDITIONAL interior (an ``if``, a
     ``try``, a nested loop) can SKIP a wait on some iterations: the
@@ -1579,7 +1579,7 @@ def _rule_loop_wait_shape(compiled: CompiledWorkflow) -> list[WorkflowValidation
                         "the row's iteration counter IS the answer cursor, "
                         "so an iteration that does not wait drifts the "
                         "sequence (the operator's answer consumed by the "
-                        "wrong iteration — the T26 review's C9 mis-index). "
+                        "wrong iteration). "
                         "Make the wait unconditional (a no-op refinement "
                         "arm for the skip case), or move the gate to a "
                         "plain step the loop calls",

@@ -195,6 +195,13 @@ A fifth INTERNAL span wraps the batch dispatch SQL query:
 dispatch                 (INTERNAL)
 ```
 
+Workflow executions emit their own tree — `run <workflow>` over
+`step <step_key>` — with the same machinery, the same `taskq.*`
+attribute namespace and the same no-op/redaction laws; the contract
+(the span tree, the attribute table, the cross-process `taskq.flow_id`
+correlation, the fork/join/hold/defer events) lives in
+[the workflows guide's observability section](workflows.md#the-observability-contract-the-workflow-spans).
+
 ### Enqueue span
 
 **Name**: `enqueue <actor_name>` (e.g. `enqueue send_email`)

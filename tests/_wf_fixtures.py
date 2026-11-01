@@ -106,7 +106,9 @@ DOCS_SENSITIVE_STEM_PREFIXES: tuple[str, ...] = (
 )
 
 
-def source_changes_since(head_sha_value: str, stem: str | None = None) -> bool:
+def source_changes_since(
+    head_sha_value: str, stem: str | None = None, *, anchor: str | None = None
+) -> bool:
     """THE OFF-BY-ONE RULE (the head-stamp verifier's own, mirrored for
     the in-suite guards): whether ANY commit since *head_sha_value*
     touched a BEHAVIORAL path. For a plain stem that is anything
@@ -114,6 +116,13 @@ def source_changes_since(head_sha_value: str, stem: str | None = None) -> bool:
     (``OFF_BY_ONE_DIFF_EXCLUSIONS`` above): a claim recorded on H is
     fresh at H2 when H2 is H plus measurement-and-docs-only changes —
     the source + test tree the claim verifies is content-identical.
+
+    *anchor* names the UPSTREAM the freshness diff runs against: the
+    run's own HEAD when ``None`` (the batteries' own law — the claim's
+    reader IS the tree the claim verifies), or the evidence branch's
+    ref head (the estate-sourced records' home tree: their liveness is
+    a property of the tree THEY verified, not of the checkout that
+    happens to be reading them).
 
     THE DOCS-DERIVED STEMS' FALLBACK (the review round's cure): *stem*
     carrying a ``DOCS_SENSITIVE_STEM_PREFIXES`` prefix names an
@@ -141,7 +150,7 @@ def source_changes_since(head_sha_value: str, stem: str | None = None) -> bool:
     would answer for both."""
     import subprocess
 
-    memo_key = (head_sha_value, stem)
+    memo_key = (head_sha_value, stem, anchor)
     cached = _SOURCE_CHANGES_MEMO.get(memo_key)
     if cached is not None:
         return cached
@@ -155,7 +164,7 @@ def source_changes_since(head_sha_value: str, stem: str | None = None) -> bool:
             "git",
             "diff",
             "--name-only",
-            f"{head_sha_value}..HEAD",
+            f"{head_sha_value}..{anchor or 'HEAD'}",
             "--",
             ".",
             *exclusions,
@@ -173,10 +182,11 @@ def source_changes_since(head_sha_value: str, stem: str | None = None) -> bool:
 
 
 #: The memo's store (see :func:`source_changes_since` — the verdict is
-#: pure in (claimed sha, the stem's exclusion set, the run's fixed
-#: HEAD); the key is the (sha, stem) PAIR — the docs-derived stems'
-#: narrow set and a plain stem's full set disagree on the same sha).
-_SOURCE_CHANGES_MEMO: dict[tuple[str, str | None], bool] = {}
+#: pure in (claimed sha, the stem's exclusion set, the anchor); the key
+#: is the TRIPLE — the docs-derived stems' narrow set and a plain stem's
+#: full set disagree on the same sha, and the estate anchor disagrees
+#: with the run's own HEAD).
+_SOURCE_CHANGES_MEMO: dict[tuple[str, str | None, str | None], bool] = {}
 
 
 def head_sha() -> str:

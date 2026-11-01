@@ -91,6 +91,11 @@ async def insert_fork(
             # coalesces to the column default's own value (the pre-cure
             # byte-identical row).
             [c.priority if c.priority is not None else 0 for c in chunk],
+            # THE CHILDREN'S DECLARED DEADLINE (the wf start_to_close
+            # cure): each child's own resolution rides its row; the
+            # unset case binds NULL (the column's own default — the
+            # pre-cure byte-identical row).
+            [c.start_to_close for c in chunk],
         )
         await conn.execute(
             wsql.fork_edges,
@@ -161,6 +166,10 @@ async def insert_fork(
                 # The unset case coalesces to the column default's own
                 # value (the pre-cure byte-identical row).
                 fork.priority if fork.priority is not None else 0,
+                # THE JOIN'S DECLARED DEADLINE (the wf start_to_close
+                # cure): the SOURCE's resolution (the join is the
+                # source's own cohort); the unset case binds NULL.
+                fork.start_to_close,
             )
         # The join's edges: one per child (the ledger's truth — the
         # fan-out's children feed the join).

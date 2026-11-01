@@ -4598,7 +4598,7 @@ async def _flows_status(
         # second, CLI-owned jobs fetch keyed by the row id) is RETIRED:
         # two reads where one suffices was the engine query's missing
         # columns forcing the workaround.
-        # THE §22.1 STAMPS (rv5-t5's cure — the drift face's data) ride
+        # THE §22.1 STAMPS (the drift face's data) ride
         # THE SAME READ: WORKFLOW_NODES_SQL carries j.code_version, so
         # the drift face derives from the node rows themselves (a run
         # redeployed mid-flight carries >1 DISTINCT stamp on its rows —
@@ -4688,7 +4688,7 @@ async def _flows_status(
         nodes=nodes,
         cancel_in_flight=root["cancel_requested_at"] is not None,
         registry_node_keys=registry_node_keys,
-        # THE STAMPS' DRIFT FACE (rv5-t5's cure): the run's OWN rows'
+        # THE STAMPS' DRIFT FACE: the run's OWN rows'
         # §22.1 stamps — one coherent drift section with the stranded
         # face above.
         code_version_stamps=stamps,

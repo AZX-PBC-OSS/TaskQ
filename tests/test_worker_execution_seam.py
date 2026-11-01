@@ -148,6 +148,48 @@ def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) ->
         seam.reset_app_registry_for_tests()
 
 
+def test_the_runner_door_hands_each_worker_its_own_runner(wf_pool: asyncpg.Pool) -> None:
+    """THE RUNNER CACHE'S BEHAVIOR, from the caller's side: the same
+    (schema, workflow, worker) against the same pool hands back THE SAME
+    runner (one deps binding, one validation per worker process), a
+    different worker_id hands back a DIFFERENT one (the worker-scoped
+    identity — the runner's state never crosses workers), and a swapped
+    pool re-mints (a stale pool's cached runner never serves a new
+    pool). The cache dict stays internal — the pin asserts what callers
+    receive."""
+    seam.reset_app_registry_for_tests()
+    try:
+        app = WorkflowApp()
+
+        @app.workflow("seam_runner_cache_flow")
+        def seam_runner_cache_flow() -> Promise[object]:
+            node = step(
+                _observed_body, Ingest(doc_id="d"), key="solo", actor="wf-seam", queue="q-seam"
+            )
+            return build(node)
+
+        app.get("seam_runner_cache_flow")  # the door's compile + registration
+        worker_id = JobId(new_uuid())
+        first = seam._runner_for("seam_runner_cache_flow", wf_pool, "cache_probe_schema", worker_id)
+        second = seam._runner_for(
+            "seam_runner_cache_flow", wf_pool, "cache_probe_schema", worker_id
+        )
+        assert second is first, "identical callers share one runner"
+        other_worker = seam._runner_for(
+            "seam_runner_cache_flow", wf_pool, "cache_probe_schema", JobId(new_uuid())
+        )
+        assert other_worker is not first, "a different worker's runner is distinct"
+        swapped_pool = cast(
+            Any, object()
+        )  # a different pool object; the constructor only stores it
+        re_minted = seam._runner_for(
+            "seam_runner_cache_flow", swapped_pool, "cache_probe_schema", worker_id
+        )
+        assert re_minted is not first, "a swapped pool re-mints the runner"
+    finally:
+        seam.reset_app_registry_for_tests()
+
+
 def test_the_projection_projects_the_declared_cohorts() -> None:
     """Every imported app's workflows compile HERE (the D1 registry
     populates as a side effect) and the graphs' (actor, queue) cohorts

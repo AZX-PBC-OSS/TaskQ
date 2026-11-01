@@ -226,6 +226,9 @@ co-invariant lock lease — the settings validator's cascade floor).
 
 ## 9. The evidence appendix (the numbers' home)
 
+The `.measurements/…` artifacts cited in this document live on the
+evidence branch (`evidence/taskqflow`), not in this repo.
+
 | Claim | The file |
 |---|---|
 | The deploy matrix's cells (PG 15/16/17/18 × 6, the runs ×3 where pinned) | `.measurements/p5/matrix-pg*-final.txt`, `.measurements/p5/matrix-run5.txt` |

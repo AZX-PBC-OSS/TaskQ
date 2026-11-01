@@ -229,6 +229,7 @@ class LoopOps(_LoopHost):
                     ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
                     BUDGET_EXHAUSTED_MESSAGE,
                     None,
+                    None,  # the loop's route holds no claim instant here — the NULL form
                 )
         await self._exhaust_loop(
             flow_id,
@@ -832,7 +833,7 @@ class LoopOps(_LoopHost):
             )
             if bindings is None:
                 logger.warning(
-                    "loop.escalation_unregistered",
+                    "loop.escalation-unregistered",
                     loop=row["step_key"],
                     run_id=str(flow_id),
                     why="the escalation policy declared but the workflow's "

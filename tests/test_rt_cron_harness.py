@@ -354,6 +354,77 @@ class FrozenClockConn:
         return getattr(self._conn, name)
 
 
+class InjectedClockConn:
+    """Delegates to a real connection with the tick's EVERY clock read injected.
+
+    A scenario whose instants are FIXED calendar values - the DST overlap
+    family's 2026-11-01 fold - is wall-calendar-immune only when every clock
+    the tick reads sees the same injected instant. The tick reads the clock
+    in two statements, three load-bearing positions, and leaving any of them
+    live re-arms the exact bomb the pins exist to defuse (each position armed
+    one measured red when the box's wall clock crossed the 2026 fall-back):
+
+    * the due bound - ``next_fire_at <= statement_timestamp()`` in the due
+      read's WHERE: with a live bound, a schedule whose pinned
+      ``next_fire_at`` lies before the real clock is simply not due, and the
+      scenario's due shape evaporates;
+    * the planning clock - ``statement_timestamp() AS server_now`` in the due
+      read's projection: the catch-up cutoff (``fire_at < server_now -
+      cron_catch_up_window``) and every croniter seed derive from it, so a
+      live clock more than a window past the pinned slot flips a
+      within-window catch-up into a beyond-window recompute mid-drive, and
+      the walk from a live-clock seed answers the POST-overlap shape;
+    * the batched enqueue's status decision -
+      ``COALESCE(t.scheduled_at, clock_timestamp()) > clock_timestamp()``
+      in the batch INSERT: a pre-scheduled occurrence lands 'scheduled' only
+      while the clock the INSERT reads sits before the occurrence's own
+      instant, so a live clock past the pinned fold silently demotes the
+      future twin to 'pending'.
+
+    FrozenClockConn is the narrower sibling: it pins ONLY the planning clock
+    and leaves the due bound live - the right shape for scenarios whose
+    instants are derived from the live server clock each run (relative
+    boundary pins). This class is the right shape for scenarios whose
+    instants are explicit calendar constants. The due read and the batch
+    INSERT are both issued through ``fetch``; the rewrites are literal-
+    substring pins on those statements, the same injection discipline the
+    due-bound-only wrappers used. A template drift that renames any pinned
+    expression turns the pin into a silent no-op - and the pinned scenarios
+    red again at the next wall-calendar crossing, the failure that says the
+    pin stopped saying anything.
+    """
+
+    _PLANNING_CLOCK = "statement_timestamp() AS server_now"
+    _DUE_BOUND = "next_fire_at <= statement_timestamp()"
+    _ENQUEUE_STATUS = "COALESCE(t.scheduled_at, clock_timestamp()) > clock_timestamp()"
+
+    def __init__(self, conn: asyncpg.Connection, now: datetime) -> None:
+        self._conn = conn
+        self._now = now
+
+    def _pinned(self, sql: str) -> str:
+        iso = f"'{self._now.isoformat()}'::timestamptz"
+        sql = sql.replace(self._PLANNING_CLOCK, f"{iso} AS server_now")
+        sql = sql.replace(self._DUE_BOUND, f"next_fire_at <= {iso}")
+        sql = sql.replace(self._ENQUEUE_STATUS, f"COALESCE(t.scheduled_at, {iso}) > {iso}")
+        return sql
+
+    async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
+        return await self._conn.fetch(self._pinned(sql), *args)
+
+    async def fetchrow(self, sql: str, *args: object) -> asyncpg.Record | None:
+        return await self._conn.fetchrow(sql, *args)
+
+    async def fetchval(self, sql: str, *args: object) -> object | None:
+        return await self._conn.fetchval(sql, *args)
+
+    async def execute(self, sql: str, *args: object) -> object:
+        return await self._conn.execute(sql, *args)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
 # ── Seeding helpers ────────────────────────────────────────────────────
 
 

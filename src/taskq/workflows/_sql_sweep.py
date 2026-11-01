@@ -313,8 +313,10 @@ OUTBOX_FETCH_UNDELIVERED_SQL = """\
 SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindings,
        -- THE RUN-PRIORITY STAMP'S RESOLUTION (the wf-priority cure's
        -- drain leg): the flow root's stamped per-call override, resolved
-       -- with THE FLEET DOOR'S OWN ARITHMETIC mirrored in SQL
-       -- (_worker_execution.py's parse: an int the create wrote;
+       -- with THE FLEET DOOR'S OWN ARITHMETIC mirrored in SQL — the
+       -- regex and the domain bounds below are the shared constants the
+       -- Python face's resolve_priority_stamp parses with
+       -- (taskq.constants.PRIORITY_STAMP_INT_PATTERN, SMALLINT_MIN/MAX;
        -- unparseable or out-of-smallint-domain → NO override) and
        -- COALESCEd to the column default's own value (0 — the unset
        -- case binds the column default's own value, the pre-cure
@@ -323,9 +325,9 @@ SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindi
        -- at the RUN's priority, never the default.
        COALESCE(
            CASE
-             WHEN root.metadata->>'wf_priority' ~ '^[+-]?[0-9]+$'
+             WHEN root.metadata->>'wf_priority' ~ '{priority_stamp_int_pattern}'
                   AND (root.metadata->>'wf_priority')::int
-                      BETWEEN -32768 AND 32767
+                      BETWEEN {smallint_min} AND {smallint_max}
              THEN (root.metadata->>'wf_priority')::int
            END,
            0
@@ -349,15 +351,20 @@ FOR UPDATE OF o SKIP LOCKED
 # run's priority; the fleet door's own arithmetic, mirrored in the fetch's
 # SQL): resolved by OUTBOX_FETCH_UNDELIVERED_SQL, COALESCEd to the column
 # default's own value (0 — the pre-cure byte-identical row).
+# start_to_close is the CONSUMER'S DECLARED DEADLINE (the wf
+# start_to_close cure): the fire's bindings carry the downstream node's
+# own resolution (the join row's metadata `consumers` array, serialized
+# as SECONDS — the jsonb wire form); the unset case binds NULL
+# (pre-cure identical).
 OUTBOX_DRAIN_CONSUMERS_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority)
+     idempotency_scope, idempotency_key, priority, start_to_close)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[], $14::smallint[]
+    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[]
 )
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL
@@ -662,7 +669,7 @@ RETURNING o.content_address
 # over the same jobs_finished_at_idx face — the NULLs sit contiguous per
 # status; the observation is not the selection and cannot starve behind
 # the batch), and the arm function warns, rate-limited to the leader's
-# warn cadence (``wf_retention_null_finished_at``): fix the stamping bug
+# warn cadence (``wf-retention-null-finished-at``): fix the stamping bug
 # or backfill the stamps — the rows stay until they carry an honest age.
 #
 # THE CLOCK VOCABULARY (H-B7): every comparison here is

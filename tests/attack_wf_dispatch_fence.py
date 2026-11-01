@@ -1,23 +1,21 @@
-"""ATTACK: the dispatch fence (P3 rule 4's SECOND leg, in the claim) is
-absent — a pending workflow child on a CANCELLED flow is claimed and runs.
+"""THE DISPATCH FENCE SHIPS (P3 rule 4's SECOND leg, in the claim) —
+this file is the fence's kept-green receipt: the pin below HOLDS THE
+FENCE GREEN, and a red here is the fence's regression, not a finding.
 
 P3 rule 4 (T04): "Cancel = one transaction — the flow flip is the
 linearization point; every other statement re-checks flow status inside
 its own statement. THREE legs: the fire guard …, the DISPATCH FENCE (in
 the claim), the finalize fence — any two are insufficient; all three
-ship." Pin 2's green requires "a refused post-cancel claim".
+ship." The claim's leg ships in ``backend/_dispatch_sql.py`` — the
+``_WF_DISPATCH_FENCE_TEMPLATE`` predicate (a workflow row on a TERMINAL
+flow is claim-refused; the escalation exemption and the
+execution-capability gate ride the same leg), rendered into every
+dispatch claim.
 
-The shipped claim gained ``AND deps_pending = 0`` (12 sites in
-``backend/_dispatch_sql.py``) but NO flow-status leg — grep the file: no
-``flow_id``/``metadata``/``blocking_reason`` reference exists. So every
-pending workflow child of a cancelled flow (the common population at
-cancel time: the fork's children, the not-yet-fired consumers) is
-claimable and EXECUTES on a dead flow — the cancel's linearization point
-protects the join's fire and the finalize's decrement, but the leaves run
-on.
-
-RED: ``dispatch_batch`` over the real claim path must NOT return a
-pending workflow child whose flow row is terminal. It returns it.
+THE KEPT-GREEN LAW: ``dispatch_batch`` over the real claim path must
+NOT return a pending workflow child whose flow row is terminal. The
+seeded cancelled flow's child stays fenced OUT — for as long as the
+shipped claim keeps its word.
 """
 
 from __future__ import annotations
@@ -70,8 +68,10 @@ async def test_attack_dispatch_claims_workflow_child_of_cancelled_flow(
     claimed_ids = {str(row.id) for row in dispatched}
 
     assert str(child) not in claimed_ids, (
-        f"the dispatch fence (P3 rule 4's second leg) is absent: the pending "
+        f"the dispatch fence (P3 rule 4's second leg) REGRESSED: the pending "
         f"workflow child {child} of a CANCELLED flow was claimed by the real "
-        f"claim path (dispatched={sorted(claimed_ids)}) — it will EXECUTE on "
-        "a dead flow. Pin 2's 'refused post-cancel claim' is unimplemented."
+        f"claim path (dispatched={sorted(claimed_ids)}) — it would EXECUTE on "
+        "a dead flow. The fence ships in backend/_dispatch_sql.py "
+        "(_WF_DISPATCH_FENCE_TEMPLATE); this kept-green pin just caught "
+        "its removal."
     )

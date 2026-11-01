@@ -114,7 +114,7 @@ class ChildWorkflowUnknownError(RuntimeError):
 
 
 class ChildFlowLostError(RuntimeError):
-    """THE RETENTION-RESPAWN FAIL-CLOSE (rv5-C3's typed arm): the
+    """THE RETENTION-RESPAWN FAIL-CLOSE: the
     parent's resume found a DANGLING child pointer — the parent's row
     still names a child flow whose rows are GONE (the retention purge's
     own law: the purge must walk the parent links first).
@@ -130,7 +130,7 @@ class ChildFlowLostError(RuntimeError):
 
 
 class SpawnDepthExceededError(ValueError):
-    """THE DEPTH BOUND (rv5-C2's typed arm — ``FanInBoundExceededError``'s
+    """THE DEPTH BOUND (``FanInBoundExceededError``'s
     sibling): the spawn's ancestor walk (the rows' ``parent_flow_id``
     links, the cycle detection folded into the same walk) reached the
     declared max depth — a self-spawning flow can no longer mint a
@@ -144,7 +144,7 @@ class SpawnDepthExceededError(ValueError):
     site, or flatten the recursion into a loop over a ledgered step)."""
 
 
-#: THE DECLARED MAX DEPTH (the spawn's default bound — rv5-C2): the
+#: THE DECLARED MAX DEPTH (the spawn's default bound): the
 #: ancestor chain the spawn walks is bounded HERE; a deeper fan-out is
 #: the typed refusal's, never an unbounded generation machine. A spawn
 #: site that genuinely needs more depth declares ``max_depth=`` — the
@@ -432,9 +432,9 @@ class CtxSpawnOps(_SpawnHost):
         retries). ``max_depth=`` raises the spawn's default depth bound
         (:data:`DEFAULT_SPAWN_MAX_DEPTH`) for a fan-out that genuinely
         needs it — the bound's typed arm is
-        :class:`SpawnDepthExceededError` (rv5-C2).
+        :class:`SpawnDepthExceededError`.
 
-        THE SPAWN'S ATOMICITY FACE (rv5-C1 — the gather dragon's cure):
+        THE SPAWN'S ATOMICITY FACE (the gather dragon's cure):
         the default slot's read+write is ONE atomic claim at the row
         (an ``UPDATE … RETURNING`` increment), so K CONCURRENT spawns
         (``asyncio.gather(*[ctx.spawn_flow(...) …])`` — the natural
@@ -468,7 +468,7 @@ class CtxSpawnOps(_SpawnHost):
                 "terminal-less child (the join could never read a result)"
             )
 
-        # THE FAIL-CLOSE (rv5-C3): a dangling child pointer on the
+        # THE FAIL-CLOSE: a dangling child pointer on the
         # parent's own receipts — a receipt whose child rows are GONE —
         # is the TYPED refusal, never a silent respawn. The pre-cure
         # shape re-minted a fresh child on the resume (the purge took
@@ -489,7 +489,7 @@ class CtxSpawnOps(_SpawnHost):
                     "row and re-run the flow on the current code."
                 )
 
-        # THE DEPTH BOUND + THE CYCLE CHECK (rv5-C2): the ancestor chain
+        # THE DEPTH BOUND + THE CYCLE CHECK: the ancestor chain
         # read from the rows' parent links — ONE walk serves both (a
         # cycle's walk reaches the cap and fires the same bound).
         bound = DEFAULT_SPAWN_MAX_DEPTH if max_depth is None else max_depth
@@ -507,7 +507,7 @@ class CtxSpawnOps(_SpawnHost):
                 "or declare max_depth= at the spawn site."
             )
 
-        # THE SLOT (rv5-C1's atomic face): the per-attempt spawn cursor
+        # THE SLOT (the atomic face): the per-attempt spawn cursor
         # is CLAIMED in one atomic statement — the increment and the
         # returned slot are one row-CAS, so concurrent spawns take
         # distinct slots. A fresh attempt re-derives the same slots (the
@@ -529,6 +529,12 @@ class CtxSpawnOps(_SpawnHost):
 
         from taskq.workflows.api._runner import FlowRunner
 
+        # NB: this runner only CREATES the child run's rows (the spawn +
+        # the join's receipts) — it executes no bodies. The child's rows
+        # execute through the doors that own them (the fleet's
+        # ``execute_flow_job``, the dev drive's ``_runner_for_flow``) —
+        # each threads the worker's default deadline itself (the wf
+        # start_to_close cure's own resolution chain).
         child_runner = FlowRunner(compiled_obj, self._pool, self._wsql.schema)
         claim = await child_runner.create_flow(
             input=input,
@@ -588,7 +594,7 @@ SET metadata = jsonb_set(
 WHERE id = $1
 """
 
-#: THE SPAWN'S ATOMIC SLOT CLAIM (rv5-C1 — the gather dragon's cure):
+#: THE SPAWN'S ATOMIC SLOT CLAIM (the gather dragon's cure):
 #: the per-attempt cursor's read+write is ONE statement — the row's
 #: jsonb counter increments IN the UPDATE and the allocated slot
 #: RETURNS from it. Concurrent claims serialize on the row lock and
@@ -605,7 +611,7 @@ WHERE id = $1
 RETURNING (metadata->>$2)::int
 """
 
-#: THE DANGLING-RECEIPT READ (rv5-C3 — the retention-respawn's
+#: THE DANGLING-RECEIPT READ (the retention-respawn's
 #: fail-close): a receipt on the parent's rows whose child's ROOT row
 #: is gone. ONE id is enough to refuse the spawn (the purge's own law:
 #: it must walk the parent links — a purge that leaves a pointer is
@@ -624,7 +630,7 @@ WHERE NOT EXISTS (
 LIMIT 1
 """
 
-#: THE ANCESTOR WALK (rv5-C2 — the depth bound + the cycle check, ONE
+#: THE ANCESTOR WALK (the depth bound + the cycle check, ONE
 #: walk): the chain of the parent flow's OWN ancestors read from the
 #: rows' ``parent_flow_id`` links, capped at the declared bound (the
 #: cap is what makes a cycle's walk terminate — the bound fires on it).
@@ -666,7 +672,7 @@ LIMIT 1
 #: one direction that names the children).
 CHILD_RECEIPTS_SQL_TEMPLATE = _CHILD_RECEIPTS_SQL_TEMPLATE
 
-#: THE CANCEL CASCADE'S COLLECTION (rv5-C2b/C4's cure — the ROWS' LAW
+#: THE CANCEL CASCADE'S COLLECTION (the ROWS' LAW
 #: + the receipts' ACCELERATOR): the children of one run read BOTH
 #: directions — the crash-unsafe receipts (the parent's node rows'
 #: ``child_flows``) AND the crash-safe ``parent_flow_id`` direction the
