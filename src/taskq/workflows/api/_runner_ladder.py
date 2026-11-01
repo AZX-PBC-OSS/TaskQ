@@ -192,8 +192,7 @@ class LadderOps(_LadderHost):
         kinds fail immediately (cut #12's classifier knob). Returns the
         route the ladder took — ``"retried"`` (the re-pend; the attempt's
         span echoes it on the ``wf.laddered`` event) or ``"failed"`` (the
-        terminal landed) — the route's only reader is the span's
-        recording; the pre-span callers ignored the bare ``None``.
+        terminal landed).
 
         THE MAP CHILD'S INHERITANCE (the LedgerWatch F3 cure): a
         fork-spawned map child (``<src>.item`` / ``<src>.item:<tag>``)

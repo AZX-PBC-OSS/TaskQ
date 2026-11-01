@@ -1297,7 +1297,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # own boundary (the loop's body-failure face, unchanged).
             await emitter.aclose()
             record_step_deferred(trace.get_current_span(), exc)
-            return await self._defer_step(
+            verdict = await self._defer_step(
                 flow_id,
                 row,
                 attempt,
@@ -1306,6 +1306,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 claim_epoch=claim_epoch,
                 ledger_claimed_at=ledger_claimed_at,
             )
+            if verdict == "laddered":
+                # THE EXHAUSTED BUDGET'S FAILURE SIGNAL ON THE SPAN (the
+                # ladder arm's own shape — the site with the exception
+                # records it): the body's real signal is in scope, the
+                # route is the terminal (retried False).
+                record_step_laddered(trace.get_current_span(), exc, retried=False)
+            return verdict
         except Exception as exc:  # Why: the ladder's boundary — ANY body failure routes through the retry classification.
             # THE BUFFER CLOSES BEFORE THE LADDER (the asymmetry's ordering
             # law): the final flush is bounded and best-effort — it can

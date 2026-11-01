@@ -2764,7 +2764,7 @@ package emits its own spans at the wf lifecycle's points, with the SAME
 machinery and the SAME laws (no new otel machinery, no new metrics):
 
 - **The RUN span** — `run {workflow}` (INTERNAL): one per
-  [`taskq.workflows.run`](#§1-the-flow-api-the-concept-t09) call. It is
+  [`taskq.workflows.run`](#1-the-flow-api-the-concept-t09) call. It is
   a **root** (`new_root=True`, the producer-link pattern): linked, never
   parented, to the ambient trace — a caller's own span is not held open
   for the run's lifetime, the link is the correlation. Created at the

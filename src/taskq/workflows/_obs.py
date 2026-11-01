@@ -101,7 +101,7 @@ __all__ = [
 #: _runner_codec.FlowEntryShim`, whose queue default is the constant —
 #: the root's placement is a constant by construction (the STEPS carry
 #: their own queues; the step span's ``taskq.queue`` is the node's).
-ROOT_QUEUE: Final[str] = "default"
+_ROOT_QUEUE: Final[str] = "default"
 
 #: The step span's status mapping — the tail's outcome labels onto the
 #: vanilla consumer span's own law (``dispatch.py``: OK on the
@@ -142,7 +142,7 @@ def run_span_attributes(
         return None
     attrs: dict[str, str | int] = {
         "taskq.workflow": workflow,
-        "taskq.queue": ROOT_QUEUE,
+        "taskq.queue": _ROOT_QUEUE,
     }
     if run_key is not None:
         attrs["taskq.run_key"] = run_key
@@ -230,14 +230,12 @@ def finish_step_span(span: Span, outcome: str) -> None:
     span.set_attribute("taskq.outcome", outcome)
     if not span.is_recording():
         return
-    if outcome in _OK_OUTCOMES:
-        status_code = getattr(getattr(span, "status", None), "status_code", None)
-        if status_code is not StatusCode.ERROR:
-            span.set_status(StatusCode.OK)
-    elif outcome == "laddered":
-        status_code = getattr(getattr(span, "status", None), "status_code", None)
-        if status_code is not StatusCode.ERROR:
-            span.set_status(StatusCode.ERROR)
+    # One probe above the arms: the API Span type doesn't expose .status.
+    status_code = getattr(getattr(span, "status", None), "status_code", None)
+    if outcome in _OK_OUTCOMES and status_code is not StatusCode.ERROR:
+        span.set_status(StatusCode.OK)
+    elif outcome == "laddered" and status_code is not StatusCode.ERROR:
+        span.set_status(StatusCode.ERROR)
 
 
 def record_step_laddered(span: Span, exc: Exception, *, retried: bool) -> None:
