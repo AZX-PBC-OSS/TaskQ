@@ -219,6 +219,26 @@
     } else if (deferLine) {
       deferLine.remove();
     }
+    // THE DEADLINE LINE (the wf start_to_close cure): the frame carries
+    // the label — the bound where declared + the running face's reality
+    // (the time left, or the expiry's age). A node whose row carries no
+    // bound renders no line (an undeclared row reads as the unbounded
+    // face it is). Same live add/remove as the deferral line.
+    var deadlineLine = row.querySelector('[data-wf-node-deadline]');
+    if (node.deadline_label) {
+      if (!deadlineLine) {
+        var chipEl2 = row.querySelector('[data-wf-node-chip]');
+        if (chipEl2) {
+          deadlineLine = document.createElement("div");
+          deadlineLine.setAttribute("data-wf-node-deadline", "1");
+          deadlineLine.className = "mt-1 text-xs text-slate-500 dark:text-slate-400";
+          chipEl2.parentNode.appendChild(deadlineLine);
+        }
+      }
+      if (deadlineLine) deadlineLine.textContent = node.deadline_label;
+    } else if (deadlineLine) {
+      deadlineLine.remove();
+    }
     // THE RETRY AFFORDANCE'S LIVE ADD/REMOVE (H-C9): a failed row
     // carries the retry form; a row that leaves failed reverts to the
     // dash. Only rows the ACTIONS column renders participate (the

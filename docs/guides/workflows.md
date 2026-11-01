@@ -923,7 +923,8 @@ construction.
 
 `@app.actor()` and `wf.step()` both accept the vanilla actor surface's
 capacity fields — and, beside them, the vanilla enqueue's `priority=`
-face (the rows' claim order; the table's last row) — and the declaration
+face (the rows' claim order) and the vanilla `start_to_close=` face
+(the step deadline; the table's last row) — and the declaration
 rides the SAME projection the placement rides:
 
 | the term | what it declares |
@@ -932,6 +933,7 @@ rides the SAME projection the placement rides:
 | `reservations` | the STRICT slots: a list of [`ConcurrencyReservation`](rate-limiting.md#concurrencyreservation) objects (`taskq.ratelimit.reservation`) — the dispatch-admission gate the vanilla path enforces via the leased `reservation_slots` rows (the machinery is [Rate limiting](rate-limiting.md)). The boot collects the nodes' declared instances into the worker's resolved registry and materializes their slot rows in the ensure-slots pass — the same pass the vanilla actors' reservations ride (deliberately NOT gated on the vanilla actor registry, so a pure-workflow worker slots its own). |
 | `result_ttl` | the node result's in-DB TTL in seconds — the vanilla result-expiry sweep's own knob, seeded on the stored row. |
 | `priority` | the rows' claim ORDER (the vanilla `enqueue(priority=…)` face, carried to the workflow surface): the value stamped into the `jobs.priority` column, which the dispatch claim's `priority DESC` orders by — the SAME claim SQL the vanilla rows obey, so a workflow step and a vanilla job compete on one vocabulary. THE PRECEDENCE LAW per row, first non-`None` wins: the **per-call** `run(..., priority=…)`/`create_flow(priority=…)` override > the step's declaration (`step(priority=)`, `RouteArm(priority=)` for its arm's children) > the actor's declaration (`@app.actor(priority=)`) > the column default `0`. The per-call face is the load-bearing one — an interactive run jumps a deep sweep backlog without touching its declaration (and the rows materialized AFTER create obey it too: the map/route children a worker forks, and the loop escalation's consumer row the outbox drain enqueues, all resolve the run's stamped override). The domain is the `smallint` column's (-32768..32767), refused at the declaration site like every other layer that accepts a priority. The map's children and the route's join land at the SOURCE step's resolution; the arms override DOWN from the source — DOWN is graph-DIRECTION, not a value ceiling: an arm's declaration governs its own children BELOW the source in the graph, and the value may raise or lower freely (an arm declaring `priority=9` over a source's 2 raises its children's rows to 9; the JOIN stays the source's 2). A handle body carrying `priority=` (`@app.actor(priority=5)` wired as the map body or an arm body) resolves as its children's actor level — the same precedence law, read at the fork. A spawned childflow run resolves its OWN declarations: the parent's per-call `priority=` does not cross the run boundary (the child run is a new `create_flow` — its rows read the child's own per-call/step/actor law; the parent's stamp governs the parent's rows only). |
+| `start_to_close` | the step's DEADLINE (the vanilla `@actor(start_to_close=…)` face, carried to the workflow surface — a `datetime.timedelta`, enforced per ATTEMPT from the body's start): the value is stamped into the row's EXISTING `jobs.start_to_close` column at the node INSERT (no new column, no migration — the column the vanilla rows always carry), and the runner's body execution wraps in the SAME `_enforce_start_to_close` the vanilla consumer runs — the #791 TimeoutError-conflation cure (a body's own `TimeoutError` stays its own ordinary failure; only the deadline's expiry routes as the timeout), the tx-unwind budget, and the hostile-finally drills inherited. THE RESOLUTION LAW per row, first non-`None` wins: the **step's declaration** (`step(start_to_close=)`; a `RouteArm(start_to_close=)` for its arm's children — the arm overrides DOWN from the source, the JOIN staying the source's own cohort) > the **actor's declaration** (`@app.actor(start_to_close=)` — folded into the node at the wiring when the step declares none) > the **row's NULL** (nothing declared) > the **worker's `default_start_to_close`** (the enforcement-time fallback — the worker settings' value the fleet door threads; the dev-loop runner honors the row's stamp only). THE EXPIRY'S DISPOSITION: the attempt BURNS (a real execution — the ledger's failed row records the truthful `TimeoutError` / `start_to_close` pair, the vanilla rows' own stamp), the ladder re-pends at its own backoff curve until `max_attempts` then terminal-fails, and the run stays alive; a START_TO_CLOSE expiry is NEVER a Snooze — but a body raising `Snooze` WITHIN the window still defers (the deferral wins the race), and a body converting the deadline's cancellation into a `Snooze` LOSES (the clock's win is final — the vanilla enforcement's own race). THE CANCEL WINS over the deadline: a cancel mark on either carrier (the wf cancel's `metadata.cancel_phase` or the vanilla cancel's column mark) is fenced in-statement at the deadline's re-pend arm — the node terminalises `cancelled`, never re-queued under the deadline's backoff. The map's children land at the SOURCE step's resolution; the drain's outbox-materialized consumer rows inherit the downstream node's own declared bound through the fire's bindings. Not an actor_config axis (the deadline is the row's own column value — two steps of one actor may declare different bounds with no conflict law). |
 
 `max_pending` is deliberately NOT on the workflow surface — it stays a
 vanilla-actor parameter. The honest removal (never a dead knob): the
@@ -1467,6 +1469,17 @@ body exhausting the budget via `RetryAfter(consume_budget=True)` past
 `max_attempts` takes the loop's own body-failure face (the named state +
 the flow terminalized, `MaxAttemptsExceeded` on the record) — the ladder
 still bounds loops.
+
+THE DEADLINE INTEROP (the step's own `start_to_close` — the resolution
+law in the [capacity surface](#the-capacity-surface-the-declared-admission-terms)
+table): a `Snooze`/`RetryAfter` raised WITHIN the window defers (the
+deferral wins the enforcement's race — the deadline never fires); a
+START_TO_CLOSE expiry is a REAL attempt burn, never a deferral, so a
+body catching the deadline's cancellation and converting it to a
+`Snooze` LOSES — the clock's win is final (the vanilla enforcement's
+own race, mirrored verbatim); and an operator cancel in flight outranks
+the deadline (the cancel-fenced law — the node terminalises
+`cancelled`, the cancel's vocabulary).
 
 The reads (cuts #14/#19's cures): `FlowRunner.result(flow_id)` — the
 terminal's result, DECODED ONCE through the estate's JSON seam; on a

@@ -10,6 +10,7 @@ never DB-side or random-UUID generation (the TID251 ban).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Final, Literal
 
 from taskq._json import dumps_jsonb_str
@@ -32,6 +33,7 @@ __all__ = [
     "ForkSpec",
     "JoinSpec",
     "NodeSpec",
+    "_consumer_binding",
     "_consumer_bindings",
     "_failure_info_from_json",
     "_join_metadata",
@@ -106,6 +108,14 @@ class ConsumerBinding:
     #: propagation reads the policy off the ledger when the JOIN itself
     #: terminal-fails.
     failure_policy: str = "fail_closed"
+    #: THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close cure): the
+    #: downstream node's own resolution rides the binding — the join row's
+    #: metadata `consumers` array (jsonb, serialized as SECONDS) → the
+    #: fire's outbox bindings → the drain's consumer INSERT stamps the
+    #: row's EXISTING ``jobs.start_to_close`` column. ``None`` = the
+    #: consumer declares none — the row's column NULL (the pre-cure row;
+    #: the binding omits the key, the shape byte-identical).
+    start_to_close: timedelta | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +147,14 @@ class ChildSpec:
     #: column default (the insert coalesces it to 0 — the pre-cure
     #: byte-identical value).
     priority: int | None = None
+    #: THE CHILD'S DECLARED DEADLINE (the wf start_to_close cure): the
+    #: ``jobs.start_to_close`` column value the fork's INSERT stamps — the
+    #: builder's own resolution (the arm's own > the source node's > the
+    #: row's NULL). ``None`` = nothing declared — the column NULL (the
+    #: pre-cure row; the enforcement falls to the worker's
+    #: ``default_start_to_close`` at claim time, the resolution chain's
+    #: own tail).
+    start_to_close: timedelta | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +223,11 @@ class ForkSpec:
     #: overrides apply to the arm children, never the join. ``None`` =
     #: the column default (the insert coalesces it to 0).
     priority: int | None = None
+    #: THE JOIN ROW'S DEADLINE (the wf start_to_close cure): the fork's
+    #: JOIN is the source's own cohort — its row lands at the SOURCE's
+    #: resolution (the arms' declarations govern the arm children, never
+    #: the join). ``None`` = nothing declared — the column NULL.
+    start_to_close: timedelta | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +267,13 @@ class NodeSpec:
     #: column default 0). The default is the column default's own value,
     #: so a spec built without it stores exactly the pre-cure row.
     priority: int = 0
+    #: THE ROW'S DECLARED DEADLINE (the wf start_to_close cure): the
+    #: ``jobs.start_to_close`` column value the insert stamps — the
+    #: RESOLVED value (the caller's own precedence arithmetic). The
+    #: default is the column's own NULL (the pre-cure row: the column is
+    #: nullable with no default — migrations/01.00.00_01:85), so a spec
+    #: built without it stores exactly the pre-cure row.
+    start_to_close: timedelta | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,17 +412,29 @@ def _metadata(
     if blocking_reason is not None:
         meta["blocking_reason"] = blocking_reason
     if consumers:
-        meta["consumers"] = [
-            {
-                "step_key": c.step_key,
-                "actor": c.actor,
-                "queue": c.queue,
-                "payload": c.payload,
-                "map_index": c.map_index,
-            }
-            for c in consumers
-        ]
+        meta["consumers"] = [_consumer_binding_doc(c) for c in consumers]
     return meta
+
+
+def _consumer_binding_doc(c: ConsumerBinding) -> dict[str, object]:
+    """ONE consumer binding's jsonb shape (the join row's metadata
+    ``consumers`` array entry — the fire reads them back through
+    :func:`_consumer_bindings` and copies them into the outbox
+    bindings): the placement + payload + map index, PLUS the declared
+    deadline as SECONDS when the consumer declared one (the wf
+    start_to_close cure — jsonb has no interval; seconds is the wire
+    form the drain parses back). The undeclared consumer omits the key
+    — the pre-cure shape byte-identical."""
+    doc: dict[str, object] = {
+        "step_key": c.step_key,
+        "actor": c.actor,
+        "queue": c.queue,
+        "payload": c.payload,
+        "map_index": c.map_index,
+    }
+    if c.start_to_close is not None:
+        doc["start_to_close_s"] = c.start_to_close.total_seconds()
+    return doc
 
 
 def _row_metadata(
@@ -440,13 +482,25 @@ def _consumer_bindings(raw: object) -> tuple[ConsumerBinding, ...]:
     # asyncpg returns jsonb as ``str`` on un-coded connections — parse
     # before indexing (the estate's _json seam, never the stdlib import).
     decoded: Any = _json_loads(raw) if isinstance(raw, str) else raw
-    return tuple(
-        ConsumerBinding(
-            step_key=c["step_key"],
-            actor=c["actor"],
-            queue=c["queue"],
-            payload=c.get("payload"),
-            map_index=c.get("map_index"),
-        )
-        for c in decoded
+    return tuple(_consumer_binding(c) for c in decoded)  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — decoded's members are Unknown; _consumer_binding's asserts guard the runtime shape.
+
+
+def _consumer_binding(raw: dict[str, Any]) -> ConsumerBinding:
+    """ONE metadata ``consumers`` entry → the typed binding (the walk's
+    own arm): the declared deadline parses back from the binding's
+    SECONDS (the jsonb wire form — :func:`_consumer_binding_doc`'s own
+    serialization); a malformed value degrades to None (the binding is
+    a declaration, never a correctness input worth a sweep death)."""
+    raw_s = raw.get("start_to_close_s")
+    return ConsumerBinding(
+        step_key=raw["step_key"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: the Any-contract walk (the ledger wrote the shape).
+        actor=raw["actor"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]
+        queue=raw["queue"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]
+        payload=raw.get("payload"),
+        map_index=raw.get("map_index"),
+        start_to_close=(
+            timedelta(seconds=float(raw_s))  # pyright: ignore[reportArgumentType]  # Why: the jsonb walk hands the number the doc wrote; the float() is the parse.
+            if isinstance(raw_s, (int, float)) and raw_s >= 0
+            else None
+        ),
     )

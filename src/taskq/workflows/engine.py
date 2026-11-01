@@ -178,6 +178,10 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
         # own value — the column default 0 when the caller resolved none
         # (the pre-cure byte-identical row).
         spec.priority,
+        # THE ROW'S DECLARED DEADLINE (the wf start_to_close cure): the
+        # spec's own value — the column NULL when the caller resolved
+        # none (the pre-cure byte-identical row).
+        spec.start_to_close,
     )
     # The declared edges ride the SAME call (the exported edge writer): a
     # joined node's incoming edges are the join counter's ONLY truth — the
@@ -298,6 +302,11 @@ async def _run_tx1(
                 error_class,
                 error_message,
                 _jsonb(capture) if capture is not None else None,
+                # The engine's callers hold no claim instant — the
+                # re-mint guard's NULL form keeps the by-id-only write
+                # here (the deadline's own faces are the callers that
+                # prove the instant).
+                None,
             )
         else:
             await conn.execute(
@@ -379,6 +388,18 @@ async def _fire_and_deliver(
                             "queue": c.queue,
                             "payload": c.payload,
                             "trace_id": trace_id,
+                            # THE CONSUMER'S DECLARED DEADLINE (the wf
+                            # start_to_close cure): the binding's own
+                            # resolution rides the fire's bindings (as
+                            # SECONDS — the jsonb wire form the drain
+                            # parses back); the undeclared consumer
+                            # omits the key (the pre-cure bindings'
+                            # shape byte-identical).
+                            **(
+                                {"start_to_close_s": c.start_to_close.total_seconds()}
+                                if c.start_to_close is not None
+                                else {}
+                            ),
                         }
                     ),
                 )

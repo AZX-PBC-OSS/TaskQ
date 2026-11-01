@@ -13,6 +13,7 @@ seam (``_runner``).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -147,6 +148,47 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     claimed_at: datetime | None = None
     budget_remaining_ms: int | None = None
     _runtime: dict[str, int] = field(default_factory=lambda: dict[str, int]())  # pyright: ignore[reportUnknownVariableType]  # Why: pyright's inference for the slots+frozen dataclass's mutable default degrades; the annotation is the truth.
+    # THE DEADLINE ENFORCEMENT'S CTX STATE (the consumer's
+    # ``_enforce_start_to_close`` designated writes — the SAME ctx face
+    # the vanilla ``JobContext`` carries): the detached body task's
+    # handle, written when the deadline enforcement runs the body in its
+    # own task; the tx path's rollback-collision window stamp, which the
+    # wf face never arms (its body runs in NO transaction — there is no
+    # ``__aexit__`` ROLLBACK, no capture boundary, no reader here; the
+    # method exists so the enforcement's ONE shared ctx face is
+    # satisfied by both carriers without an adapter).
+    _actor_body_task: asyncio.Task[object] | None = None
+    _tx_rollback_collision_window: bool = False
+
+    def _set_actor_body_task(self, task: asyncio.Task[object]) -> None:
+        """Record the deadline-enforced body task. Called by the
+        start_to_close enforcement (the consumer's deadline helper, the
+        same designated writer the vanilla ``JobContext`` documents) when
+        the body runs in its own task, never by body code.
+
+        The start_to_close machinery runs the body in a task so the
+        deadline can win over whatever the body does after expiry (a
+        cancellation-absorbing return, a hostile ``finally``); the task
+        then unwinds ASYNCHRONOUSLY — the handle is the wf face's own
+        record of that detached unwind. ``object.__setattr__`` because
+        the dataclass is frozen; the handle is enforcement state that
+        arrives after construction, exactly as the vanilla ctx's
+        handles do.
+        """
+        object.__setattr__(self, "_actor_body_task", task)
+
+    def _set_tx_rollback_collision_window(self) -> None:
+        """Stamp the tx path's rollback-collision window as OPEN. The
+        enforcement's designated write on the TRANSACTIONAL path — the
+        wf face never arms it: the step body runs in no transaction
+        (each statement takes its own acquisition), so there is no
+        ``__aexit__`` ROLLBACK the marker could collide with and NO
+        reader for the flag on this face. The method exists to satisfy
+        the enforcement's ONE shared ctx face (the same shape
+        ``JobContext`` carries) — the write is state, never behavior.
+        ``object.__setattr__`` because the dataclass is frozen; the
+        stamp is enforcement state that arrives after construction."""
+        object.__setattr__(self, "_tx_rollback_collision_window", True)
 
     @property
     def map_index(self) -> int | None:

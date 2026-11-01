@@ -97,6 +97,25 @@ SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        -- label renders from).
        j.scheduled_at, j.snooze_count,
        j.metadata->'wf_deferral' AS deferral,
+       -- THE DEADLINE FACE (the wf start_to_close cure): the row's own
+       -- declared bound — the node panel's "the bound where declared +
+       -- the deadline's reality for a RUNNING node" line (the claim's
+       -- started_at is already read; the label derives from the pair).
+       j.start_to_close,
+       -- THE CLOCK ARBITER (the re-review's OBSERVATION-1 — the
+       -- single-arbiter doctrine, ``running_for_ms``'s own law): the
+       -- deadline's remaining computed HERE against clock_timestamp() —
+       -- started_at is DATABASE-written, so measuring it against the
+       -- app's clock skews the span by the app-to-database offset (a
+       -- DB two minutes ahead read as "expired 120s ago" on a step that
+       -- just started: the label contradicting its own row). Positive =
+       -- the time left; negative = the expiry's age; NULL when the
+       -- reality's face doesn't render (a non-running row, no bound, no
+       -- claim instant — the bound-alone face).
+       CASE WHEN j.status = 'running' AND j.started_at IS NOT NULL
+                 AND j.start_to_close IS NOT NULL
+            THEN extract(epoch from (j.started_at + j.start_to_close) - clock_timestamp())
+            ELSE NULL END AS deadline_remaining_s,
        j.metadata->>'failed_parent' AS failed_parent,
        j.lock_expires_at, j.last_heartbeat_at,
        j.code_version,

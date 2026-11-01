@@ -29,7 +29,7 @@ import contextlib
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import timedelta
 from time import monotonic
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
 from uuid import UUID
 
 import asyncpg
@@ -1693,10 +1693,33 @@ def _retrieve_body_task_outcome(task: "asyncio.Task[object]") -> None:
         task.exception()
 
 
+class _DeadlineEnforcementCtx(Protocol):
+    """The deadline enforcement's ctx face (the machinery's designated
+    writes on the ctx it runs) — the ONE shared contract both carriers
+    satisfy structurally:
+
+    * the vanilla :class:`taskq.context.JobContext` (the consumer's own
+      face: the handle the cancel arm / the timeout handler's exit-proof
+      hold read, the window stamp the tx capture boundary reads);
+    * the workflow :class:`taskq.workflows.api._ctx.StepContext` (the wf
+      runner's body seam runs the SAME enforcement — the handle records
+      the detached unwind; the window stamp is never armed there, the wf
+      body runs in no transaction).
+
+    Structural on purpose: the enforcement is ONE machinery, never a
+    second one per carrier (the wf runner imports THIS function — the
+    three holes, the unwind budget, the hostile-finally drills
+    inherited)."""
+
+    def _set_actor_body_task(self, task: asyncio.Task[object]) -> None: ...
+
+    def _set_tx_rollback_collision_window(self) -> None: ...
+
+
 async def _enforce_start_to_close(
-    run_actor: Callable[[JobRow, JobContext[BaseModel]], Awaitable[object]],
-    job: JobRow,
-    ctx: JobContext[BaseModel],
+    run_actor: Callable[[Any, Any], Awaitable[object]],
+    job: Any,
+    ctx: _DeadlineEnforcementCtx,
     timeout: float | None,
     unwind_wait: float | None = None,
 ) -> object:
@@ -1778,6 +1801,14 @@ async def _enforce_start_to_close(
     runs while the body unwinds detached, and the interrupt hold reads the
     ctx handle instead of the old "the cancellation propagated through the
     body's frames, so an async actor has provably unwound" assumption.
+
+    THE SHARED FACE: the enforcement is ONE machinery for both carriers —
+    the vanilla consumer's call sites (the *job* is the claimed
+    :class:`JobRow`) and the workflow runner's body seam (``api/_runner``
+    imports THIS function; the *job* is opaque — the runner's closure
+    reads its own claim's row). The ctx face is the structural
+    :class:`_DeadlineEnforcementCtx` protocol; see it for the two
+    designated writes.
     """
     if timeout is None:
         return await run_actor(job, ctx)

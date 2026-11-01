@@ -357,6 +357,21 @@ async def drain_outbox(
             # priority (the loop escalation's interactive follow-up), the
             # unset case at the column default's own value (0).
             [r["priority"] for r in rows],
+            # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
+            # cure's drain leg): the fire's bindings carry the downstream
+            # node's own resolution (the join row's metadata `consumers`
+            # array, serialized as SECONDS — the jsonb wire form); the
+            # unset/malformed case binds NULL (the pre-cure row). A
+            # deadline is a correctness input, but the binding's author
+            # is the fork's own build (a typed timedelta's serialization)
+            # — a malformed value degrades to NULL, never a sweep death.
+            [
+                timedelta(seconds=float(b["start_to_close_s"]))
+                if isinstance(b.get("start_to_close_s"), (int, float))
+                and b["start_to_close_s"] >= 0  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the jsonb walk hands the number the doc wrote; the guards are the parse.
+                else None
+                for b in bindings
+            ],
         )
         await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
     return len(rows)

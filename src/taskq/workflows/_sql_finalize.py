@@ -197,12 +197,18 @@ VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 # declaration > the column default 0) — the wf-priority cure's enqueue
 # face; the unset case binds the column default's own value, so the
 # pre-cure rows are byte-identical.
+# start_to_close is the row's DECLARED DEADLINE (the wf start_to_close
+# cure): the RESOLVED value the caller computed, stamped into the
+# column the vanilla rows always had (01.00.00_01:85 — nullable, no
+# default); the unset case binds NULL — the pre-cure row byte-identical
+# (the enforcement falls to the worker's default_start_to_close at claim
+# time, the resolution chain's own tail).
 NODE_INSERT_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
      parent_id, map_index, step_key, deps_pending, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15)
+     idempotency_scope, idempotency_key, priority, start_to_close)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16)
 """
 
 
@@ -212,15 +218,18 @@ VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13,
 # retry_kind rides the vanilla vocabulary. priority is the child's RESOLVED
 # value (the builder's precedence arithmetic — the wf-priority cure); the
 # unset case binds 0, the column default's own value (pre-cure identical).
+# start_to_close is the child's DECLARED DEADLINE (the wf start_to_close
+# cure — the column the vanilla rows always had); the unset case binds
+# NULL (pre-cure identical).
 FORK_CHILDREN_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority)
+     idempotency_scope, idempotency_key, priority, start_to_close)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[], $14::smallint[]
+    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[]
 )
 """
 
@@ -307,8 +316,8 @@ FORK_JOIN_NODE_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
      parent_id, step_key, deps_pending, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14)
+     idempotency_scope, idempotency_key, priority, start_to_close)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15)
 """
 
 

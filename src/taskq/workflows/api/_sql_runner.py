@@ -110,6 +110,115 @@ WHERE id = $1
 RETURNING id
 """
 
+# THE DEADLINE'S RE-PEND (the wf start_to_close cure — the expiry's
+# disposition's own write): the ladder's re-pend shape
+# (NODE_REPEND_SQL_TEMPLATE) with THE CANCEL FENCE IN-STATEMENT and THE
+# BUDGET GATE — the vanilla ``mark_retry``'s own arms mirrored (the same
+# shape NODE_DEFER_SQL's deferral arms keep):
+#
+#   * 'repended' — the clean face: the row 'scheduled' at the backoff
+#     (the burn's retry), the cancel columns untouched;
+#   * 'exhausted' — THE BUDGET'S BOUND (the retry kind is ``permanent``,
+#     or the ladder's failed count reached ``max_attempts`` — the caller
+#     prices both into $3): the arm WRITES NOTHING (the wf terminal door
+#     owns every death — the row must still be 'running' for the
+#     terminal mark's fence), the verdict names the caller's route;
+#   * 'cancel_fenced' — THE CANCEL WINS (the vanilla mark_retry's own
+#     law: a phase-carrying row — the wf cancel's metadata mark OR the
+#     vanilla cancel's own column mark — matches NO arm; the deadline's
+#     backoff must never re-queue a row a cancel in flight owns): the
+#     caller routes the node through the wf terminal door, the C4
+#     deferral's cancel_faced shape;
+#   * None — the ZOMBIE (the claim fence matched nothing, a newer
+#     attempt owns the row): the caller records the ledger's 'fenced',
+#     H1.
+#
+# THE CLAIM IDENTITY'S FENCE (the re-review's HIGH conviction — the
+# NODE_DEFER_SQL's own shape): the deadline's disposition carries the
+# claim's own identity legs — worker + attempt + claim_epoch, the
+# terminal-mark CAS's full vocabulary. The pre-cure WHERE (id + status +
+# the cancel marks) let a ZOMBIE W1's deadline disposition flip a
+# re-minted LIVE W2 row (the 90s wf lease lapses → the reclaim +
+# re-claim as W2 → W1's timer fires → W2's row to 'scheduled', its
+# ledger phantom-runs, its finalize refuses): the row the fence matches
+# must be the row the CALLER'S OWN CLAIM holds, or every arm refuses and
+# the no-match routes to the zombie face (the ledger's 'fenced' record,
+# keyed on the claim's own instant — the C5 shape).
+#
+# Keyed to the ONE claimed node row; the two read arms write nothing.
+NODE_DEADLINE_REPEND_SQL = """\
+WITH params AS (
+    SELECT $1::uuid AS job_id,
+           $2::double precision AS backoff_s,
+           $3::boolean AS exhausted,
+           $4::uuid AS worker_id,
+           $5::int AS attempt,
+           $6::bigint AS claim_epoch
+),
+repended AS (
+    UPDATE {schema}.jobs j
+    SET status = 'scheduled',
+        locked_by_worker = NULL,
+        scheduled_at = now() + ((SELECT backoff_s FROM params) * interval '1 second')
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      -- THE CLAIM IDENTITY'S FENCE (the NODE_DEFER_SQL's own CAS
+      -- vocabulary): a zombie's deadline disposition — its claim lapsed,
+      -- the row re-claimed and LIVE under a newer claimant — matches
+      -- NOTHING (the row is the winner's; its own deadline owns it).
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      -- THE BUDGET GATE (the vanilla mark_retry's own max_attempts
+      -- fence — the exhausted face's row must stay 'running' for the
+      -- terminal mark's fence).
+      AND NOT (SELECT exhausted FROM params)
+      -- THE CANCEL FENCE (the vanilla mark_retry's own law, mirrored —
+      -- the C1 cure's shape): a phase-carrying row on EITHER carrier
+      -- matches NO arm.
+      AND j.cancel_phase = 0
+      AND NOT j.metadata ? 'cancel_phase'
+    RETURNING j.id
+),
+cancel_fenced AS (
+    SELECT j.id
+    FROM {schema}.jobs j
+    WHERE j.id = (SELECT job_id FROM params)
+      AND j.status = 'running'
+      -- THE CLAIM IDENTITY'S FENCE (the repended arm's own legs): the
+      -- cancel's verdict names the CALLER'S OWN claim-carrying row — a
+      -- zombie's deadline never terminalises the winner's row
+      -- 'cancelled' on its view.
+      AND j.locked_by_worker = (SELECT worker_id FROM params)
+      AND j.attempt = (SELECT attempt FROM params)
+      AND j.claim_epoch = (SELECT claim_epoch FROM params)
+      AND (j.metadata ? 'cancel_phase' OR j.cancel_phase <> 0)
+      AND NOT EXISTS (SELECT 1 FROM repended)
+)
+SELECT 'repended'::text AS verdict, id FROM repended
+UNION ALL
+-- THE EXHAUSTED VERDICT (a pure read of the params + the two arms'
+-- existence — the C4 NODE_DEFER_SQL's own arm order: the cancel mark
+-- outranks the budget's bound, the repended face outranks both). THE
+-- CLAIM IDENTITY'S FENCE rides this arm too: a budget-exhausted
+-- ZOMBIE's deadline is the ZOMBIE's face (no arm matched — the caller
+-- records 'fenced'), never the winner's terminal.
+SELECT 'exhausted'::text AS verdict, NULL::uuid AS id
+WHERE (SELECT exhausted FROM params)
+  AND EXISTS (
+      SELECT 1 FROM {schema}.jobs j
+      WHERE j.id = (SELECT job_id FROM params)
+        AND j.status = 'running'
+        AND j.locked_by_worker = (SELECT worker_id FROM params)
+        AND j.attempt = (SELECT attempt FROM params)
+        AND j.claim_epoch = (SELECT claim_epoch FROM params)
+  )
+  AND NOT EXISTS (SELECT 1 FROM repended)
+  AND NOT EXISTS (SELECT 1 FROM cancel_fenced)
+UNION ALL
+SELECT 'cancel_fenced'::text AS verdict, id FROM cancel_fenced
+"""
+
 PARENT_RESULTS_BY_KEY_SQL_TEMPLATE = """
 SELECT p.id, p.step_key, p.result
 FROM {schema}.wf_edge e
@@ -162,7 +271,7 @@ WHERE id = $1
 """
 
 CLAIMABLE_NODES_SQL_TEMPLATE = _render_fence_tokens("""
-SELECT id, step_key, map_index, attempt, trace_id, payload FROM {schema}.jobs
+SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status IN ('pending', 'scheduled')
   AND (scheduled_at IS NULL OR scheduled_at <= now())

@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, cast, get_args, get_origin, overload
 
 from pydantic import BaseModel
@@ -61,6 +62,7 @@ __all__ = [
     "WorkflowBuildError",
     "active_graph",
     "build",
+    "check_start_to_close_decl",
     "declared_exit_return",
     "gather",
     "map_source",
@@ -143,6 +145,36 @@ def rate_limit_names(
             )
         names.append(entry.name if isinstance(entry, TokenBucket | SlidingWindow) else entry)
     return tuple(names)
+
+
+def check_start_to_close_decl(value: object, *, what: str = "") -> None:
+    """THE DEADLINE DECLARATION'S DOOR (the vanilla ``@actor``'s own law,
+    actor.py's type+domain check — stated once, called at the
+    resolution chain's every declaration site: ``@app.actor``'s, the
+    wiring verb's, the arm's): the bound is a POSITIVE
+    :class:`datetime.timedelta` — a bare number is the refused
+    declaration (never a seconds-silent-coercion), a zero or negative
+    bound the refused domain. ``None`` rides (nothing declared — the
+    row's column NULL, the worker's default at the enforcement).
+
+    The refusal is the VANILLA's own ValueError (the same class
+    ``taskq.actor`` raises for the same kwarg — one law, one class at
+    every layer that accepts the declaration, the priority domain's own
+    convention)."""
+    if value is None:
+        return
+    if not isinstance(value, timedelta):
+        raise ValueError(
+            f"{what} start_to_close must be a timedelta, got "
+            f"{type(value).__name__} {value!r} — the declared bound is a "
+            "duration, never a bare number"
+        )
+    if value <= timedelta(0):
+        raise ValueError(
+            f"{what} start_to_close must be > 0, got {value!r} — a deadline "
+            "that expires on arrival is the refused domain (the vanilla "
+            "@actor's own law)"
+        )
 
 
 def reservation_names(decls: tuple[object, ...], *, what: str = "reservations") -> tuple[str, ...]:
@@ -384,6 +416,16 @@ class RouteArm[R]:
     #: column is the row's own, never the cohort's), so the arm's
     #: priority needs no one-cap-per-actor conflict law.
     priority: int | None = None
+    #: THE ARM'S OWN DEADLINE DECLARATION (the wf start_to_close cure —
+    #: the vanilla ``@actor(start_to_close=)`` face, carried to the arm):
+    #: the arm's children's rows land at this value in the row's EXISTING
+    #: ``jobs.start_to_close`` column, and the runner's body enforcement
+    #: reads the ROW — the deadline fires on the arm's children at THIS
+    #: bound. ``None`` = the arm does not override: the SOURCE node's
+    #: resolution applies (the arm overrides DOWN from the source, never
+    #: up — the placement law's own arithmetic, the priority field's
+    #: own shape).
+    start_to_close: timedelta | None = None
     #: THE ARM'S OWN OWNER DECLARATION (C15's review cure — the priority
     #: surface's per-arm shape): an overriding arm's body handle carrying
     #: ``capacity_owner="code"`` must be re-declared HERE (the handle's
@@ -500,6 +542,25 @@ class NodeDecl:
     #: config row either), so two steps of one actor may declare
     #: different priorities with no conflict law.
     priority: int | None = None
+    #: THE NODE'S DECLARED DEADLINE (the wf start_to_close cure — the
+    #: vanilla ``@actor(start_to_close=)`` face, carried to the wiring):
+    #: the node's rows land at this value in the row's EXISTING
+    #: ``jobs.start_to_close`` column (nullable, no default —
+    #: migrations/01.00.00_01:85), and the runner's body enforcement
+    #: reads the ROW (the SAME ``_enforce_start_to_close`` the vanilla
+    #: consumer runs — the #791 conflation cure, the unwind budget, the
+    #: hostile-finally drills inherited). THE RESOLUTION LAW per row,
+    #: first non-``None`` wins: this declaration > the actor handle's
+    #: (folded in at the wiring when this is None) > the row's NULL > the
+    #: worker's ``default_start_to_close`` (the enforcement-time
+    #: fallback — the ``_effective_start_to_close`` chain's own tail).
+    #: The map's children + the route's arms resolve through the SAME law
+    #: (the arms override DOWN from the source; the join stays the
+    #: source's own cohort). ``None`` = nothing declared — the column
+    #: NULL, the pre-cure byte-identical row. NOT an actor_config axis
+    #: (the deadline is the row's own, never the cohort's — two steps of
+    #: one actor may declare different bounds with no conflict law).
+    start_to_close: timedelta | None = None
     #: THE CAPACITY OWNER (C15's opt-in — the handle's declaration, read
     #: at wiring): "operator" (the default) keeps the estate's seed-only
     #: law; "code" makes the config sync rewrite the cohort's
@@ -746,6 +807,7 @@ def step[R](
     reservations: tuple[object, ...] | list[object] = (),
     result_ttl: float | None = None,
     priority: int | None = None,
+    start_to_close: timedelta | None = None,
     cache: bool = False,
     cache_ttl: float | None = None,
 ) -> Promise[R]:
@@ -846,6 +908,11 @@ def step[R](
             result_ttl = getattr(handle, "result_ttl", None)
         if priority is None:
             priority = getattr(handle, "priority", None)
+        # THE DEADLINE'S FOLD (the wf start_to_close cure — the priority
+        # fold's own shape): the handle's declared bound is the node's
+        # DEFAULT — the explicit step param overrides, never the reverse.
+        if start_to_close is None:
+            start_to_close = getattr(handle, "start_to_close", None)
         # THE CAPACITY OWNER (C15): the handle's declaration is the
         # node's — the projection carries it into the cohort's
         # ActorConfig, where the config sync's code-owned upsert reads
@@ -860,6 +927,12 @@ def step[R](
     # means "nothing declared — the column default").
     if priority is not None:
         check_priority_domain(priority, what=f"step {node_key!r}'s priority")
+    # THE DEADLINE'S DOMAIN (the vanilla law's own shape —
+    # check_start_to_close_decl, the shared declaration door): the
+    # RESOLVED declaration is checked ONCE here — a non-timedelta or a
+    # non-positive bound is refused at the wiring, before any row
+    # exists. ``None`` rides (nothing declared — the row's column NULL).
+    check_start_to_close_decl(start_to_close, what=f"step {node_key!r}'s")
     # THE NAMING RULE (cut #6's API-compile face): a DOTTED wiring key is
     # refused — the fork's derived namespace (``<key>.item``,
     # ``<key>.join``, ``<key>.iter<i>``) owns the dot; a wiring key
@@ -1037,6 +1110,7 @@ def step[R](
             reservations=tuple(reservations),
             result_ttl=result_ttl,
             priority=priority,
+            start_to_close=start_to_close,
             capacity_owner=capacity_owner,
             cache=cache,
             cache_ttl=cache_ttl,
@@ -1302,6 +1376,10 @@ def _attach_route[S](
         # dict form and route() lower HERE).
         if arm.priority is not None:
             check_priority_domain(arm.priority, what=f"route arm {tag!r}'s priority")
+        # THE DEADLINE'S DOMAIN (the same door, the wf start_to_close
+        # cure): the arm's own bound checked at the wiring — the same
+        # refusal the step's and the actor's declarations raise.
+        check_start_to_close_decl(arm.start_to_close, what=f"route arm {tag!r}'s")
         # THE ARM'S OWN OWNER SHAPE DOOR (C15's review cure — the
         # priority surface's door shape): the arm's declared owner is
         # exactly one of the two names, validated at the wiring both

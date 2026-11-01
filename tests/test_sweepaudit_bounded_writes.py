@@ -464,6 +464,13 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single node row (the ladder's repend CAS)",
     ),
+    "NODE_DEADLINE_REPEND_SQL": (
+        "WHERE j.id = (SELECT job_id FROM params)",
+        "keyed single node row (the deadline's disposition — the wf "
+        "start_to_close cure's own ladder arm: the re-pend CAS + the "
+        "budget gate + the cancel mark fence name the ONE claimed row; "
+        "the exhausted/cancel_fenced read arms write nothing)",
+    ),
     "NODE_DEFER_SQL": (
         "WHERE j.id = (SELECT job_id FROM params)",
         "keyed single node row (the deferral disposition's fenced "
