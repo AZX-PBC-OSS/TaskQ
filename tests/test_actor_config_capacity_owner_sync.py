@@ -681,7 +681,7 @@ async def test_the_conflict_arm_deploys_the_code_families_and_keeps_the_operator
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# The review's 4(b) + 4(d): the converged boot's quiet, the SET clauses frozen
+# The converged boot's quiet — the deploy's outcome, read off the rows
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
