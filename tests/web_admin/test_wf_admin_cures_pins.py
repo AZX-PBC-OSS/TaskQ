@@ -670,6 +670,32 @@ def test_the_page_js_escapes_the_row_key_and_sanitizes_the_status_class() -> Non
     )
 
 
+# ── Q6b: THE CHIP MAPS' COMPLETENESS (the map's own law, enforced) ───────
+
+
+def test_the_status_chip_maps_carry_every_node_status() -> None:
+    """THE MAP'S COMPLETENESS PIN: _constants's own law — "a new status
+    gains an entry HERE or nowhere" — is enforced, not just stated. The
+    run page's node chips read ``status_chip_classes`` (a missing key
+    SILENTLY falls back to the pending chip: exactly how ``skipped``
+    went missing), and the text classes ride the same falling pair.
+    Every node status ``_wf_rows.STATUS_CLASS`` can render must have an
+    entry in BOTH maps; a missing key fails naming itself."""
+    from taskq.web.admin._constants import STATUS_CHIP_CLASSES, STATUS_TEXT_CLASSES
+    from taskq.web.admin._wf_rows import STATUS_CLASS
+
+    for status in STATUS_CLASS:
+        assert status in STATUS_CHIP_CLASSES, (
+            f"STATUS_CHIP_CLASSES has no entry for {status!r} — the map's own "
+            "law: a new status gains an entry HERE or nowhere (the run page's "
+            "node chip would silently paint as pending)"
+        )
+        assert status in STATUS_TEXT_CLASSES, (
+            f"STATUS_TEXT_CLASSES has no entry for {status!r} — the same law "
+            "(the falling pair drifts apart)"
+        )
+
+
 # ── Q7: THE UNKNOWN-RUN STREAM (the existence oracle) ────────────────────
 
 

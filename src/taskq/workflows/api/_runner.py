@@ -1803,7 +1803,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         ) as exc:  # Why: the asymmetry — the projection degrades first, never correctness.
             logger.warning(
                 "progress-projection-lost",
-                kind="progress_projection_lost",
+                kind="progress-projection-lost",
                 run_id=str(flow_id),
                 node=str(node_id),
                 projection=kind,

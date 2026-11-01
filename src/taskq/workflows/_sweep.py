@@ -227,7 +227,7 @@ async def sweep_join_rederive(
                     )
                     logger.warning(
                         "sweep-join-body-unavailable",
-                        kind="sweep_join_body_unavailable",
+                        kind="sweep-join-body-unavailable",
                         join_job_id=str(w["join_job_id"]),
                         step_key=w["step_key"],
                         flow_id=str(w["flow_id"]),
@@ -562,7 +562,7 @@ def _warn_null_stamp(table: str, observed: int) -> None:
     _null_stamp_last_warned[table] = now
     logger.warning(
         "wf-retention-null-finished-at",
-        kind="wf_retention_null_finished_at",
+        kind="wf-retention-null-finished-at",
         table=table,
         null_stamped_flows=observed,
         note="the roots' finished_at was never stamped; the arm SKIPS them "

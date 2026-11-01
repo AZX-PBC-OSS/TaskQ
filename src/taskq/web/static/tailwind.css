@@ -45,8 +45,6 @@
 #wf-graph svg .node.wf-st-skipped path {
   fill: #f1f5f9; stroke: #94a3b8;
 }
-/* THE HELD NODE IS AMBER (the state-matrix pin: the held node reads at
-   a glance — a human is waiting). */
 /* THE HELD NODE IS AMBER (the state-matrix pin: a human is waiting —
    it reads at a glance). The held state is NOT a job status: it is the
    pending row + the signal row, so the JS paints a dedicated class. */

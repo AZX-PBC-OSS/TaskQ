@@ -407,7 +407,7 @@ class ProgressEmitter:
             if self.write_errors == 1:
                 logger.warning(
                     "progress-flush-lost",
-                    kind="progress_flush_lost",
+                    kind="progress-flush-lost",
                     flow_id=str(self._flow_id),
                     node_id=str(self._node_id),
                     error=str(exc)[:200],
@@ -417,7 +417,7 @@ class ProgressEmitter:
             else:
                 logger.debug(
                     "progress-flush-lost",
-                    kind="progress_flush_lost",
+                    kind="progress-flush-lost",
                     flow_id=str(self._flow_id),
                     node_id=str(self._node_id),
                     write_errors=self.write_errors,
@@ -436,7 +436,7 @@ class ProgressEmitter:
             except Exception as exc:
                 logger.debug(
                     "progress-flush-lost",
-                    kind="progress_flush_lost",
+                    kind="progress-flush-lost",
                     flow_id=str(self._flow_id),
                     node_id=str(self._node_id),
                     phase="aclose_inflight",
@@ -450,7 +450,7 @@ class ProgressEmitter:
             self.write_errors += 1
             logger.debug(
                 "progress-flush-lost",
-                kind="progress_flush_lost",
+                kind="progress-flush-lost",
                 flow_id=str(self._flow_id),
                 node_id=str(self._node_id),
                 phase="aclose",
