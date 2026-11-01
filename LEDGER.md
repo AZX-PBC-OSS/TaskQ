@@ -63,20 +63,20 @@ THE WORKING RANK (the consumer re-review's order — build top-down; no
  omission lands without a red-proven impossibility pin behind it):
 C1 → C14 → C15 → C16 → C4 → C3 → C10 → C13(the click) → the rest.
 
-- [~] C14. The queue-trap's app-declared strict face: `strict_queues`
-      declared on the App (code, not env) so subset-subscribing fleets —
-      workgroup children each consuming a cohort subset — get the boot
-      REFUSAL without fleet-wide `TASKQ_QUEUES_STRICT`. The env stays
-      (strict if either is set); the remedy text names both faces.
-      IN FLIGHT: PR #695 (feat/wf-strict-queues) — built, reviewed APPROVE, the doc round landed.
-- [~] C15. Opt-in code-owned capacity sync: `sync_actor_config`'s UPSERT
-      omits the capacity columns from `SET` (the operator owns the row
-      after first boot) — so a flow actor's `max_concurrent` change
-      deploys NOTHING after the seed. Add the per-actor opt-in: for
-      code-owned actors the UPSERT carries the capacity columns; the
-      default unchanged; the reservation face unaffected (it never
-      rides `actor_config`). IN FLIGHT: PR #697 (feat/wf-capacity-sync) —
-      built, reviewed, re-reviewed APPROVE.
+- [x] C14. DONE — the app-declared strict face merged as #695
+      (`WorkflowApp(queues_strict=True)`; strict if the env OR any
+      imported app declares it; the env can only add strictness). Pins:
+      tests/test_wf_capacity_surface.py's strict section (7). Red-team:
+      reviewed APPROVE (the WeakSet transport judged deterministic; the
+      naming kept `queues_strict` per the one-name law).
+- [x] C15. DONE — `capacity_owner="code"` (default `"operator"`)
+      merged as #697: the boot upsert partitions rows; code-owned rows'
+      SET carries `max_concurrent`/`result_ttl`; queue and max_pending
+      stay operator-owned; the deploy emits
+      `actor-config-capacity-code-change`. The map/route-body wiring
+      honors the owner per-arm. Pins: tests/test_actor_config_capacity_owner_sync.py
+      (20 red-first + the NULL-out and freeze pins). Red-team: the
+      wiring drop convicted HIGH, fixed, re-reviewed APPROVE.
 - [~] C16. `max_pending` on the wf surface — BUILD OR PROVE. The H-A6
       verdict (the engine's inserts bypass the enqueue admission; a
       claim-side gate wedges) is an ASSERTION until it is a pin. Either
@@ -95,13 +95,15 @@ C1 → C14 → C15 → C16 → C4 → C3 → C10 → C13(the click) → the rest
       rerun; the operator's CLI doesn't).
 - [ ] C13. The 0.3.0 cut: the release PR (#36) waits — the consumers pin
       revs because there is no tag to pin. The click is the release.
-- [~] C1. `priority` on wf run/step enqueues (cennan's interactive-vs-backlog;
-      TAStack's BACKLOG stamping). RANK 1 — the re-review calls it a
-      regression on a shipped surface: 23 `priority=` matches downstream
-      (17 in src, the rest harness/vendored), and a
-      flow step lands at the column default, so an interactive step
-      cannot jump a 100k-deep sweep backlog. IN FLIGHT: PR #698
-      (feat/wf-priority) — built, reviewed, re-reviewed APPROVE.
+- [x] C1. DONE — `priority` on wf enqueues merged as #698: the
+      four-level resolution (per-call > step/arm > actor > column
+      default 0), the per-call override reaching mid-run rows via the
+      root's stamp (the fleet door + the outbox drain thread it), the
+      join staying at the source's resolution, every door degrading
+      malformed/out-of-domain stamps. Pins: tests/test_wf_priority_pins.py
+      (24, red-first). Red-team: three defects (the escalation row at
+      0, the map/arm-body drop, the adoption door) — fixed, re-reviewed
+      APPROVE.
 - [ ] C2. `fairness_key` on wf enqueues (cennan's multi-tenant round_robin —
       without it a workflow is a starvation vector on shared queues).
 - [ ] C3. `start_to_close` per-actor backstop on the wf surface.
