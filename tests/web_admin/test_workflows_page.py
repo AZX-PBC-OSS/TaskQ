@@ -223,6 +223,43 @@ async def test_run_page_renders_the_rows_alone_graph_and_suppresses_refresh(
     # The hold's context (the WAITING-ON state + the schema + the example).
     assert "editorial approval" in html
     assert "declared payload schema" in html
+    # THE DEADLINE FACE (the hold card's W1 line): the hold's id is the
+    # seeded run's own wf_signals row (one hold on this run), the card
+    # from its data-hold-id li — the page's stable markers, never an
+    # HTML regex. A seeded hold WITH a deadline (the wait's timeout_s
+    # arm) renders the row's own instant.
+    hold_id = await clean_pg_conn.fetchval(
+        f'SELECT id FROM "{schema}".wf_signals WHERE workflow_id = $1',
+        uuid.UUID(run_id),
+    )
+    hold_id = str(hold_id)
+    hold_card = html.split(f'data-hold-id="{hold_id}"', 1)[1].split("</li>", 1)[0]
+    row_expires_at = await clean_pg_conn.fetchval(
+        f'SELECT expires_at FROM "{schema}".wf_signals WHERE id = $1',
+        uuid.UUID(hold_id),
+    )
+    assert row_expires_at is not None, (
+        "the seeded hold must carry a deadline (the wait's timeout_s arm) — "
+        "the WITH-deadline face needs the row's own instant"
+    )
+    assert f"deadline: {row_expires_at.isoformat()}" in hold_card, hold_card
+    # THE NONE FACE: a hold WITHOUT a deadline renders the W1 warning —
+    # the honest line for a run that waits forever on a human, never a
+    # blank field.
+    await clean_pg_conn.execute(
+        f'UPDATE "{schema}".wf_signals SET expires_at = NULL WHERE id = $1',
+        uuid.UUID(hold_id),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp_none = await client.get(f"/workflows/{run_id}")
+    assert resp_none.status_code == 200
+    hold_card_none = resp_none.text.split(f'data-hold-id="{hold_id}"', 1)[1].split("</li>", 1)[0]
+    assert (
+        "deadline: none (the W1 warning: a workflow that waits forever on a human)"
+        in hold_card_none
+    ), hold_card_none
 
 
 async def test_run_page_zero_holds_is_the_defined_state(

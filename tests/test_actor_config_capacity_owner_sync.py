@@ -158,6 +158,14 @@ def _on_conflict_clause(sql: str) -> str:
     return sql.split("DO UPDATE SET", 1)[1]
 
 
+def _sql_text(sql: str) -> str:
+    """The statement's whitespace-normalized text: the SQL-text pins
+    match the statement's WORDS, never the renderer's column alignment
+    (the shipped SET clause's internal spacing is its formatting's own,
+    not a law)."""
+    return " ".join(sql.split())
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Unit-tier: the statement partition (fake connection)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -217,7 +225,7 @@ async def test_the_code_owned_rows_ride_the_code_owned_statement() -> None:
     # THE OPERATOR STATEMENT IS UNCHANGED — even with a code-owned actor
     # riding the same sync, the operator partition's conflict arm assigns
     # no capacity column (the default rows' byte-identity law).
-    operator_on_conflict = _on_conflict_clause(operator_sql)
+    operator_on_conflict = _sql_text(_on_conflict_clause(operator_sql))
     assert "max_concurrent" not in operator_on_conflict
     assert "result_ttl" not in operator_on_conflict
     assert operator_params[0] == ["operator-actor"], (
@@ -226,9 +234,11 @@ async def test_the_code_owned_rows_ride_the_code_owned_statement() -> None:
 
     # THE CODE-OWNED STATEMENT'S SET CLAUSE: the two capacity columns
     # join the retry contract's family; the queue and max_pending do NOT.
-    code_on_conflict = _on_conflict_clause(code_sql)
+    # (Whitespace-normalized on both sides — the renderer's alignment is
+    # not the pin's subject.)
+    code_on_conflict = _sql_text(_on_conflict_clause(code_sql))
     assert "max_concurrent = EXCLUDED.max_concurrent" in code_on_conflict
-    assert "result_ttl     = EXCLUDED.result_ttl" in code_on_conflict
+    assert "result_ttl = EXCLUDED.result_ttl" in code_on_conflict
     assert "queue" not in code_on_conflict, "the queue stays operator-owned (the move-queue law)"
     assert "max_pending" not in code_on_conflict, (
         "max_pending stays operator-owned (the producer-side admission reads the stored row)"
@@ -498,25 +508,14 @@ def test_the_code_owner_participates_in_the_one_cap_law() -> None:
 
 
 async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
+    """The schema via the SHIPPED migrations — the house pattern (a
+    fresh schema + ``apply_pending``), never a hand-rolled shadow DDL:
+    a second copy of the table's DDL drifts from the migrations the
+    moment either side moves."""
+    from taskq.migrate import apply_pending
+
     await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-    await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-    await conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS "{schema}".actor_config (
-            actor          text PRIMARY KEY,
-            max_concurrent int,
-            max_pending    int,
-            queue          text NOT NULL,
-            max_attempts   smallint NOT NULL DEFAULT 3,
-            retry_kind     text NOT NULL DEFAULT 'transient',
-            result_ttl     float,
-            metadata       jsonb NOT NULL DEFAULT '{{}}'::jsonb,
-            updated_at     timestamptz NOT NULL DEFAULT now(),
-            retry_base     interval,
-            retry_cap      interval,
-            retry_backoff  text,
-            retry_jitter   float8
-        )
-    """)
+    await apply_pending(conn, schema=schema)
 
 
 async def _read_row(conn: asyncpg.Connection, schema: str, actor: str) -> dict[str, object]:

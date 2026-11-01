@@ -382,9 +382,16 @@ def register(router: APIRouter) -> None:
                 "reason": _field_of(h["payload"], "reason"),
                 "tool": _field_of(h["payload"], "tool"),
                 "args": _field_of(h["payload"], "args"),
-                "created_at": _iso(h["created_at"]),
-                "expires_at": _iso(h["expires_at"]),
-                "resolved_at": _iso(h["resolved_at"]),
+                "created_at": h["created_at"],
+                # THE CLOCK FIELDS PASS THROUGH (the deadline face's
+                # cure): the view's holds are ALREADY normalized
+                # (_normalize_hold's contract — the clocks as ISO text,
+                # JSON-safe), so a second _iso() here read a STRING,
+                # answered None, and the page's deadline line rendered
+                # the none-face for EVERY hold — the with-deadline face
+                # was dead code (the deadline-face pin's red).
+                "expires_at": h["expires_at"],
+                "resolved_at": h["resolved_at"],
                 # THE TIMER'S BRANCH (the timer-cures lane's cure 3): the
                 # normalized row's own timer mark (the reserved prefix's
                 # derivation) rides the projection — the template branches
