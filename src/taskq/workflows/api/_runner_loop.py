@@ -832,7 +832,7 @@ class LoopOps(_LoopHost):
             )
             if bindings is None:
                 logger.warning(
-                    "loop.escalation_unregistered",
+                    "loop.escalation-unregistered",
                     loop=row["step_key"],
                     run_id=str(flow_id),
                     why="the escalation policy declared but the workflow's "

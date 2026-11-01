@@ -669,7 +669,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             compiled = get_compiled_workflow(name)
         except KeyError:
             logger.warning(
-                "childflow.definition_unregistered",
+                "childflow.definition-unregistered",
                 run_id=str(flow_id),
                 workflow=name,
             )
@@ -1153,7 +1153,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     except RouterNotTotal as exc:
                         await emitter.aclose()
                         logger.warning(
-                            "node.router_not_total",
+                            "node.router-not-total",
                             run_id=str(flow_id),
                             node=row["step_key"],
                             outcome=repr(outcome_value)[:200],
@@ -1792,8 +1792,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             Exception
         ) as exc:  # Why: the asymmetry — the projection degrades first, never correctness.
             logger.warning(
-                "progress_projection_lost",
-                kind="progress_projection_lost",
+                "progress-projection-lost",
+                kind="progress-projection-lost",
                 run_id=str(flow_id),
                 node=str(node_id),
                 projection=kind,

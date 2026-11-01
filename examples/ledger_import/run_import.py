@@ -19,8 +19,11 @@ import tempfile
 import time
 from pathlib import Path
 
+import asyncpg
+
 from examples.ledger_import import feed, store, workflow
 from examples.ledger_import.models import LedgerReceipt, RunInput
+from taskq.migrate import apply_pending
 from taskq.workflows import (
     FlowRunner,
     ProgressBackfilled,
@@ -72,6 +75,15 @@ async def run_import(
 ) -> LedgerReceipt:
     """One import run: create → listen → drive → decode the receipt."""
     store.configure(dsn)
+    # THE SELF-MIGRATION (a fresh Postgres runs the README verbatim): the
+    # run door applies TaskQ's own migrations before the engine's tables
+    # are read — the demo's ledger DDL below never creates them (the same
+    # door site_audit's run_audit and flows_demo's run_demo open).
+    conn = await asyncpg.connect(dsn)
+    try:
+        await apply_pending(conn, schema=SCHEMA)
+    finally:
+        await conn.close()
     await store.apply_ddl()
     pool = await store.pool()
 

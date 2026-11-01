@@ -827,7 +827,7 @@ and replaced, H-B1):
   never doomed: no history is removed that has no honest age (a
   seconds-old flow's history must not vanish under a 30-day period
   because its stamp never landed) — and the arm's rate-limited
-  `wf_retention_null_finished_at` warning fires when a pass OBSERVES
+  `wf-retention-null-finished-at` warning fires when a pass OBSERVES
   one (an hourly re-warn cadence per table, never keyed to a
   deletion): fix the stamp or backfill it, the rows stay until they
   carry an honest age.
@@ -2545,7 +2545,7 @@ rate); it NEVER awaits the network and NEVER touches the finalize path.
 The coalescing is HONEST: the node's `occurrences` counter counts every
 emission that coalesced into the row, so the record shows both the
 delivered state and the emission rate. A flush that fails is counted and
-warned once (`progress_flush_lost`); a node whose every flush fails still
+warned once (`progress-flush-lost`); a node whose every flush fails still
 terminalizes normally. A lost emission costs freshness; a blocked node
 costs correctness.
 

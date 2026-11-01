@@ -168,7 +168,7 @@ async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
     assert cleared == 1
     # THE LOUDNESS LAW: the heal is a NAMED event (nothing detects or
     # names them — was the soak's half-complaint).
-    assert any(e["event"] == "wf_hold_stamp_reclaimed" for e in captured)
+    assert any(e["event"] == "wf-hold-stamp-reclaimed" for e in captured)
 
     verdict = await runner.drive(flow_id, until="terminal", max_ticks=400, tick=0.01)
     assert verdict == "terminal"

@@ -64,7 +64,11 @@ and prints the run's observations. The schema is left in place so the
 webapp below can serve the run.
 
 The admin UI over the SAME rows (plus a background drive loop so runs
-continue past holds and timers while the UI is open):
+continue past holds and timers while the UI is open; the webapp defaults
+`TASKQ_ADMIN_UI_SECURE_COOKIES` off for its own process — this demo is
+plain http, where a Secure CSRF cookie is dropped and the Resolve form
+would 403; `TASKQ_ADMIN_ACTIONS_ENABLED` is the Resolve's own opt-in —
+without it the form never renders):
 
 ```bash
 TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq \
@@ -72,6 +76,7 @@ TASKQ_SCHEMA_NAME=flows_demo \
 TASKQ_ENVIRONMENT=dev \
 TASKQ_QUEUES=flows-src,flows-review,flows-timer,flows-pub \
 TASKQ_MIGRATE_ON_START=true \
+TASKQ_ADMIN_ACTIONS_ENABLED=true \
   uv run uvicorn examples.flows_demo.webapp:app --port 8003
 ```
 

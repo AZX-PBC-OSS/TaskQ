@@ -80,7 +80,7 @@ class ChainOps(_ChainHost):
             )
         except RouterNotTotal as exc:
             logger.warning(
-                "node.router_not_total",
+                "node.router-not-total",
                 run_id=str(flow_id),
                 node=step_key,
                 outcome=repr(outcome),

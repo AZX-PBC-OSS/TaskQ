@@ -45,8 +45,6 @@
 #wf-graph svg .node.wf-st-skipped path {
   fill: #f1f5f9; stroke: #94a3b8;
 }
-/* THE HELD NODE IS AMBER (the state-matrix pin: the held node reads at
-   a glance — a human is waiting). */
 /* THE HELD NODE IS AMBER (the state-matrix pin: a human is waiting —
    it reads at a glance). The held state is NOT a job status: it is the
    pending row + the signal row, so the JS paints a dedicated class. */
@@ -71,5 +69,9 @@
 .wf-st-running-fill { background: #dbeafe; border: 1px solid #2563eb; }
 .wf-st-failed-fill { background: #fee2e2; border: 1px solid #dc2626; }
 .wf-st-pending-fill { background: #f1f5f9; border: 1px solid #94a3b8; }
+.wf-st-scheduled-fill { background: #f1f5f9; border: 1px solid #94a3b8; }
+.wf-st-cancelled-fill { background: #e2e8f0; border: 1px solid #64748b; }
+.wf-st-crashed-fill { background: #f1f5f9; border: 1px solid #94a3b8; }
+.wf-st-abandoned-fill { background: #f1f5f9; border: 1px solid #94a3b8; }
 .wf-st-held-fill { background: #fef3c7; border: 1px solid #d97706; }
 .wf-st-skipped-fill { background: #f1f5f9; border: 1px solid #94a3b8; }

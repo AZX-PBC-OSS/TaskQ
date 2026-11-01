@@ -1154,7 +1154,7 @@ async def sweep_due_timers(
                 break
     if total:
         logger.info(
-            "timer.wake_fired",
+            "timer.wake-fired",
             fired=total,
             first_node=first_node or "unknown",
         )
