@@ -98,7 +98,7 @@ _RUN_HOLDS_SQL = (
     "WHERE workflow_id = $1 ORDER BY id"
 )
 
-#: THE CHILD FLOWS' LINKS (rv5-C5b — the admin is not child-blind): the
+#: THE CHILD FLOWS' LINKS (the admin is not child-blind): the
 #: run's child-flow receipts (the parent's node rows' ``child_flows``),
 #: dedup'd and bounded (a 10k fan-out renders the count, the first ids
 #: capped by the display bound the runs list carries).
@@ -227,7 +227,7 @@ class RunView:
     # a run with no map/fork fan-out.
     root_map_done: int = 0
     root_map_children: int = 0
-    # THE PARENT↔CHILD LINKS (rv5-C5b's cure — the admin is not
+    # THE PARENT↔CHILD LINKS (the admin is not
     # child-blind): the run's own child-flow receipts (the parent's
     # page links each child's run page) and the run's OWN parent (a
     # child flow's page links back). Both are ROW facts — the identity
@@ -337,7 +337,7 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
         [dict(r) for r in hold_rows],
         progress,
     )
-    # THE PARENT↔CHILD LINKS (rv5-C5b): the receipts' read rides the
+    # THE PARENT↔CHILD LINKS: the receipts' read rides the
     # SAME grouped read (one connection, the page's own query budget).
     child_rows = await conn.fetch(
         _RUN_CHILD_FLOWS_SQL.format(schema=schema), run_id, _CHILD_LINKS_DISPLAY_LIMIT

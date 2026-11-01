@@ -24,6 +24,36 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata,
  WHERE actor = ANY($1::text[])
 """.strip()
 
+# ── The upserts' shared body ────────────────────────────────────────────
+# ONE INSERT…SELECT…unnest statement (the 12-position bind list included)
+# with a ``{capacity_set}`` slot for the ``DO UPDATE SET`` clause's
+# capacity assignments — the two faces below render the same body, so
+# their bind lists cannot drift. The ``{{schema}}`` doubling is the
+# two-stage render: this body formats the capacity slot first, and the
+# caller's ``.format(schema=schema)`` fills the schema token.
+_ACTOR_CONFIG_UPSERT_BODY_SQL = """
+INSERT INTO "{{schema}}".actor_config (
+    actor, max_concurrent, max_pending, queue, result_ttl, metadata,
+    retry_base, retry_cap, retry_backoff, retry_jitter,
+    max_attempts, retry_kind
+)
+SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb,
+       retry_base, retry_cap, retry_backoff, retry_jitter,
+       max_attempts, retry_kind
+  FROM unnest(
+      $1::text[], $2::int[], $3::int[], $4::text[], $5::float[], $6::text[],
+      $7::interval[], $8::interval[], $9::text[], $10::float8[],
+      $11::smallint[], $12::text[]
+  ) AS t(actor, max_concurrent, max_pending, queue, result_ttl, metadata,
+         retry_base, retry_cap, retry_backoff, retry_jitter,
+         max_attempts, retry_kind)
+ON CONFLICT (actor) DO UPDATE SET
+    metadata       = EXCLUDED.metadata,
+{capacity_set}    max_attempts   = EXCLUDED.max_attempts,
+    retry_kind     = EXCLUDED.retry_kind,
+    updated_at     = clock_timestamp()
+"""
+
 # ``max_concurrent``, ``max_pending``, ``result_ttl``, and ``queue`` are
 # deliberately absent from the ``DO UPDATE SET`` clause: Postgres leaves an
 # unlisted column at its current value on conflict, so an existing row's
@@ -52,28 +82,7 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata,
 # edit; the code literal is the declaration of record and must win, and
 # ``actor-config-retry-contract-change`` (emitted by `sync_actor_config`
 # below) is what makes the win visible instead of silent.
-_UPSERT_ACTOR_CONFIG_SQL = """
-INSERT INTO "{schema}".actor_config (
-    actor, max_concurrent, max_pending, queue, result_ttl, metadata,
-    retry_base, retry_cap, retry_backoff, retry_jitter,
-    max_attempts, retry_kind
-)
-SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb,
-       retry_base, retry_cap, retry_backoff, retry_jitter,
-       max_attempts, retry_kind
-  FROM unnest(
-      $1::text[], $2::int[], $3::int[], $4::text[], $5::float[], $6::text[],
-      $7::interval[], $8::interval[], $9::text[], $10::float8[],
-      $11::smallint[], $12::text[]
-  ) AS t(actor, max_concurrent, max_pending, queue, result_ttl, metadata,
-         retry_base, retry_cap, retry_backoff, retry_jitter,
-         max_attempts, retry_kind)
-ON CONFLICT (actor) DO UPDATE SET
-    metadata       = EXCLUDED.metadata,
-    max_attempts   = EXCLUDED.max_attempts,
-    retry_kind     = EXCLUDED.retry_kind,
-    updated_at     = clock_timestamp()
-""".strip()
+_UPSERT_ACTOR_CONFIG_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.format(capacity_set="").strip()
 
 # THE CODE-OWNED CAPACITY UPSERT (C15's opt-in): the SAME statement as
 # ``_UPSERT_ACTOR_CONFIG_SQL`` except the ``DO UPDATE SET`` clause also
@@ -100,30 +109,11 @@ ON CONFLICT (actor) DO UPDATE SET
 #   the cached cap. The claim-side cannot bound a backlog (claiming is
 #   the only drain — the H-A6 law), so the stored row is the only
 #   enforcement seat there is.
-_UPSERT_CODE_OWNED_CAPACITY_SQL = """
-INSERT INTO "{schema}".actor_config (
-    actor, max_concurrent, max_pending, queue, result_ttl, metadata,
-    retry_base, retry_cap, retry_backoff, retry_jitter,
-    max_attempts, retry_kind
-)
-SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata::jsonb,
-       retry_base, retry_cap, retry_backoff, retry_jitter,
-       max_attempts, retry_kind
-  FROM unnest(
-      $1::text[], $2::int[], $3::int[], $4::text[], $5::float[], $6::text[],
-      $7::interval[], $8::interval[], $9::text[], $10::float8[],
-      $11::smallint[], $12::text[]
-  ) AS t(actor, max_concurrent, max_pending, queue, result_ttl, metadata,
-         retry_base, retry_cap, retry_backoff, retry_jitter,
-         max_attempts, retry_kind)
-ON CONFLICT (actor) DO UPDATE SET
-    metadata       = EXCLUDED.metadata,
-    max_concurrent = EXCLUDED.max_concurrent,
-    result_ttl     = EXCLUDED.result_ttl,
-    max_attempts   = EXCLUDED.max_attempts,
-    retry_kind     = EXCLUDED.retry_kind,
-    updated_at     = clock_timestamp()
-""".strip()
+_UPSERT_CODE_OWNED_CAPACITY_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.format(
+    capacity_set=(
+        "    max_concurrent = EXCLUDED.max_concurrent,\n    result_ttl     = EXCLUDED.result_ttl,\n"
+    )
+).strip()
 
 # Fields whose stored value is operator-owned once a row exists: the
 # ``@actor(...)`` literal only seeds the row on first registration

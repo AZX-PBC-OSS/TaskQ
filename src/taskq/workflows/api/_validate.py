@@ -769,7 +769,7 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
 
     * the arms' keys must be EXACTLY the union's member types — a
       MISSING member would route NOTHING (the silent drop the route
-      exists to refuse: the reviewer's live conviction — a "video" tag
+      exists to refuse: a "video" tag
       that skipped both arms and terminalized succeeded-having-routed-
       nothing), an UNKNOWN member would never fire;
     * every arm body declares its arm's MODEL on the item param — the
@@ -1334,7 +1334,7 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
     DECLARED gate the body never waits on, and a body's
     ``ctx.wait_signal`` with NO declared gate, both validated CLEAN.
 
-    THE TWO PROVABLE FACES (the reviewer's own rule):
+    THE TWO PROVABLE FACES:
 
     * declared-never-waited — a node's ``gates=`` carries a ``GateDecl``
       and NO body of the node references ``wait_signal`` AT ALL: the

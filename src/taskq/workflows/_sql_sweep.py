@@ -313,8 +313,10 @@ OUTBOX_FETCH_UNDELIVERED_SQL = """\
 SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindings,
        -- THE RUN-PRIORITY STAMP'S RESOLUTION (the wf-priority cure's
        -- drain leg): the flow root's stamped per-call override, resolved
-       -- with THE FLEET DOOR'S OWN ARITHMETIC mirrored in SQL
-       -- (_worker_execution.py's parse: an int the create wrote;
+       -- with THE FLEET DOOR'S OWN ARITHMETIC mirrored in SQL — the
+       -- regex and the domain bounds below are the shared constants the
+       -- Python face's resolve_priority_stamp parses with
+       -- (taskq.constants.PRIORITY_STAMP_INT_PATTERN, SMALLINT_MIN/MAX;
        -- unparseable or out-of-smallint-domain → NO override) and
        -- COALESCEd to the column default's own value (0 — the unset
        -- case binds the column default's own value, the pre-cure
@@ -323,9 +325,9 @@ SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindi
        -- at the RUN's priority, never the default.
        COALESCE(
            CASE
-             WHEN root.metadata->>'wf_priority' ~ '^[+-]?[0-9]+$'
+             WHEN root.metadata->>'wf_priority' ~ '{priority_stamp_int_pattern}'
                   AND (root.metadata->>'wf_priority')::int
-                      BETWEEN -32768 AND 32767
+                      BETWEEN {smallint_min} AND {smallint_max}
              THEN (root.metadata->>'wf_priority')::int
            END,
            0

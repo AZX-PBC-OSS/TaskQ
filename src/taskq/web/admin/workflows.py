@@ -84,7 +84,7 @@ _RUNS_SQL = (
     # THE CAST'S BOUND (the re-review's 500): the discriminator's regex
     # admits at most NINE digits — int4's own domain tops at 2147483647
     # (10 digits) and the attempt ordinal's estate ceiling is 32767 (5),
-    # so a 10+-digit stamp (the reviewer's 11-digit overflow-shaped write
+    # so a 10+-digit stamp (an 11-digit overflow-shaped write
     # 500'd the WHOLE list on the ::int cast) is a HOSTILE stamp, refused
     # the badge: the CASE degrades it to NULL, NULL never equals the
     # row's attempt, the row drops out of the sitting count (the badge's

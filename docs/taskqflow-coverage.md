@@ -11,7 +11,9 @@ Legend — **example**: the runnable file that demonstrates the capability
 (the example IS the verification; each is exercised by a named test
 file, run twice for the docs lane's capture). **guide**: the reference
 section that teaches it. **pins**: the test family that can fail. **use
-case**: the consumer workload the capability carries.
+case**: the consumer workload the capability carries. The
+`.measurements/…` artifacts cited in the pins column live on the
+evidence branch (`evidence/taskqflow`), not in this repo.
 
 ## The matrix
 

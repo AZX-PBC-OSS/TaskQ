@@ -938,7 +938,7 @@ async def deliver_payload(
 
 
 async def _child_join_refusal(conn: ConnLike, schema: str, hold_id: JobId) -> str | None:
-    """The child-join hold's typed refusal (rv5-C5c): a hold whose
+    """The child-join hold's typed refusal: a hold whose
     signal names a CHILD JOIN (``__child__:<child flow id>``) cannot be
     resolved by an operator — its resolver is the child's own terminal
     (the wake arm's CAS). ``None`` = a human-resolvable hold, the
@@ -1343,7 +1343,7 @@ class HitlClient:
         already-resolved hold is the DEFINED no-op (the idempotence
         pin).
 
-        THE CHILD-JOIN REFUSAL (rv5-C5c — the honest face): a
+        THE CHILD-JOIN REFUSAL (the honest face): a
         CHILD-JOIN hold (signal ``__child__:…``) is NOT operator-
         resolvable — its resolver is the CHILD'S TERMINAL (the wake
         arm's own CAS). The pre-cure face DELIVERED on a matching

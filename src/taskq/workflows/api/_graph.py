@@ -1097,7 +1097,7 @@ def map_source[S, R](
     children — the engine's FORK ATOMICITY); a second map on the same
     source is refused (a node finalizes ONCE — one fork).
 
-    THE DICT FORM IS THE TYPED ROUTE (T27 — the reviewer's (b), the
+    THE DICT FORM IS THE TYPED ROUTE (T27 — the
     per-element case): ``map_source(src, {A: fn_a, B: fn_b})`` keys the
     arms by the source's union members' TYPES — each element runs ITS
     type's arm as a fresh job (the fork stamps the child's placement
@@ -1365,8 +1365,8 @@ def _attach_route[S](
             # The refusal names the resolution failure (the fix: name
             # the model at module scope so the annotation resolves).
             #
-            # THE TWO FACES, DISTINGUISHED (the de-slop round's finding —
-            # the pre-fix cure collapsed them: a body with NO return
+            # THE TWO FACES, DISTINGUISHED (the earlier fix collapsed
+            # them: a body with NO return
             # annotation also resolves to hints {} and got the
             # CANNOT-RESOLVE refusal — a lie in the OTHER direction). The
             # discriminator is the RAW annotation dict's own "return" key

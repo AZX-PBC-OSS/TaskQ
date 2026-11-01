@@ -23,6 +23,8 @@ from taskq.workflows.api._graph import Exit
 from taskq.workflows.api._runner_codec import jsonable
 from taskq.workflows.api._runner_errors import WorkflowRunError
 from taskq.workflows.api._sql_runner import (
+    CANCEL_NODES_SQL_TEMPLATE,
+    CANCEL_ROOT_SQL_TEMPLATE,
     EXIT_SKIP_SQL_TEMPLATE,
     RETRY_FLOW_REOPEN_SQL_TEMPLATE,
     RETRY_NODE_CAS_SQL_TEMPLATE,
@@ -159,52 +161,6 @@ class ExitOps(_ExitHost):
         return granted > 0
 
 
-_EXIT_CANCEL_ROOT_SQL_TEMPLATE = """
-WITH flipped AS (
-    UPDATE {schema}.jobs SET status = 'cancelled',
-        error_class = 'WorkflowCancelled',
-        error_message = $2,
-        finished_at = clock_timestamp()
-    WHERE id = $1
-      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
-    RETURNING id, status::text AS to_state
-), evt AS (
-    -- THE AUDIT LEG (the same cure CANCEL_ROOT carries): the cancel's
-    -- flip is a mutation — the event names it.
-    INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
-    SELECT f.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'running', 'to_state', f.to_state,
-                              'error_class', 'WorkflowCancelled')
-    FROM flipped f
-)
-SELECT id FROM flipped
-"""
-
-_EXIT_CANCEL_NODES_SQL_TEMPLATE = """
-WITH flipped AS (
-    UPDATE {schema}.jobs
-    SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
-        finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
-        error_class = CASE WHEN status = 'running' THEN error_class ELSE 'WorkflowCancelled' END,
-        metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
-    WHERE (metadata->>'flow_id')::uuid = $1
-      AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
-    RETURNING id, (status::text) AS to_state
-), evt AS (
-    -- THE AUDIT LEG: only the rows THIS statement terminalised (the
-    -- running row's cooperative phase-1 keeps it running — its own
-    -- terminal write carries its event).
-    INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
-    SELECT f.id, clock_timestamp(), 'state_change',
-           jsonb_build_object('from_state', 'pending', 'to_state', f.to_state,
-                              'error_class', 'WorkflowCancelled')
-    FROM flipped f
-    WHERE f.to_state = 'cancelled'
-)
-SELECT count(*) FROM flipped
-"""
-
-
 # ── the run-operator verbs (the id-addressed forms — T12) ───────────────
 #
 # The runner's methods own the rows work for a COMPILED flow; the CLI's
@@ -233,14 +189,19 @@ async def _cancel_one_run(
     bounded_reason = bound_reason(reason or "cancel_workflow", 500)
 
     async with pool.acquire() as conn, conn.transaction():
+        # THE AUDIT LEG (the same cure CANCEL_ROOT carries): the cancel's
+        # flip is a mutation — the event names it.
         flipped = await conn.fetchval(
-            render_sql(_EXIT_CANCEL_ROOT_SQL_TEMPLATE, schema),
+            render_sql(CANCEL_ROOT_SQL_TEMPLATE, schema),
             flow_id,
             bounded_reason,
         )
         if flipped is None:
             return 0  # already terminal — idempotent
-        await conn.execute(render_sql(_EXIT_CANCEL_NODES_SQL_TEMPLATE, schema), flow_id)
+        # THE AUDIT LEG: only the rows THIS statement terminalised (the
+        # running row's cooperative phase-1 keeps it running — its own
+        # terminal write carries its event).
+        await conn.execute(render_sql(CANCEL_NODES_SQL_TEMPLATE, schema), flow_id)
         held = await cancel_run_signals(conn, schema=schema, workflow_id=flow_id)
         # THE AUDIT ROW (the caller owns the tx — the same-tx
         # guarantee; the lazy import keeps the layering).
@@ -267,7 +228,7 @@ async def cancel_cascade(
     reason: str | None,
     principal: Any,
 ) -> int:
-    """THE CANCEL CASCADE (rv5-C2b/C4's cure): the WORKLIST WALK, never
+    """THE CANCEL CASCADE: the WORKLIST WALK, never
     Python recursion (the pre-cure shape recursed per child — a
     1200-deep cascade raised ``RecursionError`` at the operator and
     left hundreds of runs running), and the children are read from the
@@ -322,8 +283,8 @@ async def cancel_workflow_run(
     """P3 rule 4's cancel (T10): the flow flip is the linearization
     point; every non-terminal node + held signal resolves in the same
     snapshot; the CASCADE walks the children ITERATIVELY (the worklist
-    — rv5-C2b: depth 1200 cancels clean, no RecursionError) from the
-    ROWS' parent links first (rv5-C4: the orphan window is closed —
+    — depth 1200 cancels clean, no RecursionError) from the
+    ROWS' parent links first (the orphan window is closed —
     the crash-safe direction is the law, the receipts the accelerator).
     Running children take the existing two-phase cooperative cancel;
     terminal rows untouched; IDEMPOTENT (cancel twice = one cancel — a

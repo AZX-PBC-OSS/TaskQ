@@ -135,8 +135,9 @@ this page is the machinery those fences ride.
 > names ONE landed subsystem (T06 failed-parent propagation, T07 fan-in
 > bounds, T09 the typed API, T10 holds/HITL, T18 retention coupling, T19
 > loops, T20 the streaming router). `§N` references this page's own
-> sections. `.measurements/…` citations point at files IN THIS REPO
-> (the evidence tier ships with the source). "P3 rule N" is the engine's
+> sections. `.measurements/…` citations point at the measurement
+> artifacts' home on the evidence branch (`evidence/taskqflow`), not at
+> files in this repo. "P3 rule N" is the engine's
 > own rulebook (see the design docs under `docs/design/`; the layer's
 > SPEC — the built truth, the kill list, the adoption pitch, the LATER
 > rows — is [docs/design/workflows-spec.md](../design/workflows-spec.md)).

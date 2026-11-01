@@ -201,8 +201,8 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND step_key <> '__flow__'
 """
 
-#: THE ROOT'S PRIORITY-STAMP READ (the wf-priority cure's ADOPTION leg —
-#: review F2's cure): ONE bounded primary-key read of the root's
+#: THE ROOT'S PRIORITY-STAMP READ (the wf-priority cure's ADOPTION leg):
+#: ONE bounded primary-key read of the root's
 #: metadata, the fleet door's own SELECT shape
 #: (``_CLAIMED_NODE_READ_SQL_TEMPLATE``'s stamp leg). The arbiter adopted
 #: an EXISTING run — its root stamp is its own truth (the row is the law,

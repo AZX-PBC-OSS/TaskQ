@@ -1,9 +1,0 @@
-{
-  "mutation": "the failed attempts' errors leaking into the join's result",
-  "observed": {
-    "failures": null
-  },
-  "pin": "map-retry-barrier-(e)-errors-in-collect",
-  "run": "20261012T155435-2113587-3e9a984f",
-  "ts": "2026-10-12T15:54:35"
-}

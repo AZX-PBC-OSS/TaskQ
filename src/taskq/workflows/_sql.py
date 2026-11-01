@@ -32,7 +32,12 @@ from dataclasses import dataclass
 from typing import Final
 
 from taskq.backend._sql_fragments import MIN_DEFERRAL_INTERVAL_SQL
-from taskq.constants import require_schema
+from taskq.constants import (
+    PRIORITY_STAMP_INT_PATTERN,
+    SMALLINT_MAX,
+    SMALLINT_MIN,
+    require_schema,
+)
 from taskq.workflows._sql_finalize import (
     COLLECT_FAN_IN_APPEND_SQL,
     COLLECT_FAN_IN_SQL,
@@ -226,6 +231,12 @@ class WorkflowSql:
             # a fixed fragment rendered from the shared constant, never
             # caller input (NODE_DEFER_SQL is its only consumer).
             ("{min_deferral_interval}", MIN_DEFERRAL_INTERVAL_SQL),
+            # The run-priority stamp's SQL face — the grammar and the
+            # smallint domain are the shared constants
+            # (resolve_priority_stamp's own parse reads the same law).
+            ("{priority_stamp_int_pattern}", PRIORITY_STAMP_INT_PATTERN),
+            ("{smallint_min}", str(SMALLINT_MIN)),
+            ("{smallint_max}", str(SMALLINT_MAX)),
         )
 
         def render(template: str) -> str:

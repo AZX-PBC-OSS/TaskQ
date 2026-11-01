@@ -26,7 +26,7 @@ NEVER REPLACES it — the pipeline is CHAIN → HOOK, unconditionally:
   receives already-scrubbed text whose masks are irreversible. A
   replacement-seeking hook (one returning raw fixture text) still lands a
   MASKED row: the pin asserts the chain's masks are present on the persisted
-  row REGARDLESS of the hook's return (red-first pin 11's negative arm).
+  row REGARDLESS of the hook's return.
 
 The capture runs on the worker's event loop inside tx1, so every call in the
 pipeline must be GIL-free or short-input by construction (tors is GIL-free;
