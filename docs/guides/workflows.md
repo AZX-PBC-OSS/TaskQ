@@ -869,7 +869,7 @@ detector surfaces a flow nobody can run). The fence short-circuits on the
 cost class the P3 fence's own comment pins (the zero-tax law: the vanilla
 claim path is unchanged; the dispatch band stays green).
 
-**2. THE BOOT PROJECTION (the F3 law's call site).** A worker whose
+**2. THE BOOT PROJECTION.** A worker whose
 process imported at least one `WorkflowApp` boots CAPABLE: the projection
 compiles every imported app's declared workflows (which is what populates
 the definition registry in the worker's process — the body resolution
