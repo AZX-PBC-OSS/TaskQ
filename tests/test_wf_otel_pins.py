@@ -60,7 +60,7 @@ from pydantic import BaseModel
 from taskq._ids import new_uuid
 from taskq.backend._dispatch_sql import DISPATCH_STRICT_FIFO_SQL, dispatch_batch
 from taskq.backend._protocol import JobId
-from taskq.exceptions import Snooze
+from taskq.exceptions import RetryAfter, Snooze
 from taskq.obs._otel import set_otel_enabled
 from taskq.testing.otel import setup_tracer
 from taskq.workflows import (
@@ -387,6 +387,63 @@ async def test_a_deferred_step_records_the_deferral_event(
     assert deferred_attrs.get("delay_s") == 30.0
 
     assert step_span.status is None or step_span.status.status_code is trace.StatusCode.UNSET
+
+
+async def test_an_exhausted_deferral_records_the_ladder_scrubbed(
+    wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE DEFERRAL'S EXHAUSTED FACE (the consuming signal past the
+    budget): the body's ``RetryAfter(consume_budget=True)`` rides the
+    deferral arm, the budget gate refuses (``max_attempts=1`` — the
+    claim at the budget's edge), the wf terminal door lands — and the
+    span records the FULL failure face, not the silence an outcome
+    attribute alone would leave: the ``wf.deferred`` event (the body's
+    ask), the ``wf.laddered`` event with ``retried`` False (the route is
+    the terminal — the ladder arm's own exhausted shape), and the
+    SCRUBBED exception event rendered from the body's REAL signal (the
+    caught ``RetryAfter`` — never a fabricated object). ERROR status —
+    the vanilla consumer span's failed class."""
+    _, exporter = setup_tracer(monkeypatch)
+    app = WorkflowApp()
+
+    async def _greedy_body(ctx: StepContext, params: Ingest) -> Report:
+        raise RetryAfter(timedelta(seconds=0), consume_budget=True)
+
+    @app.workflow("otel-greedy-flow")
+    def otel_greedy_flow() -> Promise[object]:
+        return build(step(_greedy_body, Ingest(doc_id="d"), key="greedy", max_attempts=1))
+
+    runner = FlowRunner(app.get("otel-greedy-flow"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow(input={"doc_id": "d"})).flow_id
+    await runner.tick(flow_id)
+
+    step_span = exporter.span_named("step greedy")
+    assert step_span is not None, [s.name for s in exporter.spans]
+    step_attrs = step_span.attributes
+    assert step_attrs is not None
+    assert step_attrs.get("taskq.attempt") == 1
+    assert step_attrs.get("taskq.outcome") == "laddered"
+
+    # THE BODY'S ASK, THEN THE BUDGET'S REFUSAL — both events on the
+    # span, the arm's own chronology.
+    deferred = [ev for ev in step_span.events if ev.name == "wf.deferred"]
+    assert deferred, [ev.name for ev in step_span.events]
+    laddered = [ev for ev in step_span.events if ev.name == "wf.laddered"]
+    assert laddered, [ev.name for ev in step_span.events]
+    laddered_attrs = laddered[0].attributes
+    assert laddered_attrs is not None
+    assert laddered_attrs.get("retried") is False, "the budget exhausted"
+    assert laddered_attrs.get("error_class") == "RetryAfter"
+
+    # THE SCRUBBED RENDER: the exception event carries the body's REAL
+    # signal — the caught RetryAfter, never a fabricated object.
+    exc_events = [ev for ev in step_span.events if ev.name == "exception"]
+    assert exc_events, [ev.name for ev in step_span.events]
+    rendered = str(exc_events[0].attributes)
+    assert "RetryAfter" in rendered, rendered
+
+    assert step_span.status is not None
+    assert step_span.status.status_code == trace.StatusCode.ERROR
 
 
 async def test_a_held_step_records_the_hold_event(
