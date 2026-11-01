@@ -89,6 +89,14 @@ SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        j.metadata->>'blocking_reason' AS blocking_reason,
        j.attempt, j.max_attempts,
        j.started_at,
+       -- THE DEFERRAL FACES (the run page's "why is this step sitting
+       -- here" answer — the snoozed step's own columns): the next fire
+       -- time (the disposition's reschedule), the row's deferral counter,
+       -- and the deferral stamp (the signal + the budget face + the
+       -- disposition's own post-attempt ordinal — the discriminator the
+       -- label renders from).
+       j.scheduled_at, j.snooze_count,
+       j.metadata->'wf_deferral' AS deferral,
        j.metadata->>'failed_parent' AS failed_parent,
        j.lock_expires_at, j.last_heartbeat_at,
        j.code_version,

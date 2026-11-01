@@ -23,8 +23,9 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
+from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike
 
 if TYPE_CHECKING:
@@ -133,6 +134,58 @@ class RunNode:
     # status drives the §17.5 verdict exactly as before; only the RENDER
     # collapses (a 10k fan-out renders ONE hexagon, never 10k lines).
     map_child: bool = False
+    # THE DEFERRAL FACES (the run page's "why is this step sitting here"
+    # answer): the row's attempt ordinal (the stamp's discriminator), the
+    # disposition's reschedule (the next fire time), the row's deferral
+    # counter, and the deferral stamp itself (the signal + the budget
+    # face + the disposition's own post-attempt ordinal, written by
+    # NODE_DEFER_SQL).
+    attempt: int = 0
+    scheduled_at: str | None = None
+    snooze_count: int = 0
+    deferral: dict[str, Any] | None = None
+
+    @property
+    def deferral_label(self) -> str | None:
+        """The SITTING state's one-line answer (the page's and the SSE
+        frame's shared spelling — one derivation, two renderers), None
+        when the node is not sitting on a deferral.
+
+        THE ROW'S TRUTH, not a stale decoration: the label renders only
+        while the row still sits at THIS deferral's own reschedule —
+        status ``scheduled`` AND the row's attempt ordinal equal to the
+        stamp's own post-disposition ordinal (written by the statement).
+        A later ladder repend — the one other ``scheduled`` writer, at a
+        strictly greater attempt — never reads as a live deferral; the
+        awaited attempt's story stays on the ledger (the panel's
+        timeline), where the record's truth lives."""
+        if self.deferral is None or self.status != "scheduled":
+            return None
+        try:
+            stamped = int(self.deferral.get("attempt", -1))
+        except (TypeError, ValueError):
+            return None
+        if stamped != self.attempt:
+            return None
+        # THE SIGNAL'S BOUND (C3 — H-C9's law at the deferral's face): the
+        # stamp is a row-sourced jsonb doc and its ``signal`` is free text
+        # — a hostile write rides it into the label. The panel's own
+        # error-text bound applies (the same truncation the class/
+        # message fields carry): the label is a display, never a
+        # megabyte line through the DOM and every SSE frame.
+        signal = _truncate_error_text(str(self.deferral.get("signal") or "Snooze"))
+        if self.deferral.get("consume_budget"):
+            # THE CONSUMING FACE (the vanilla's own vocabulary): the burn
+            # is the budget's charge — no snooze count (the counter never
+            # moved), the budget face named.
+            return f"⏰ {signal} (consumes budget)" + (
+                f" · next fire {self.scheduled_at}" if self.scheduled_at else ""
+            )
+        return (
+            f"⏰ {signal}"
+            + (f" · next fire {self.scheduled_at}" if self.scheduled_at else "")
+            + f" · snooze #{self.snooze_count}"
+        )
 
     def view(self) -> NodeView:
         """The §17.5 derivation's input (the one conversion — the same
@@ -226,6 +279,24 @@ def _normalize_hold(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
+
+
+def _decode_stamp(raw: Any) -> dict[str, Any] | None:
+    """The deferral stamp's decode (asyncpg hands a str for the bare
+    ``->`` operator on un-coded connections, a dict for typed paths)
+    through the estate's JSON seam; a non-object — a corrupted or hostile
+    write — reads None (the label is a display, never load-bearing). The
+    cast is the JSONB boundary's declared contract (RFC 8259: the wire's
+    object keys are strings)."""
+    if isinstance(raw, dict):
+        return cast("dict[str, Any]", raw)
+    if not isinstance(raw, str):
+        return None
+    try:
+        decoded: object = _json_loads(raw)
+    except ValueError:
+        return None
+    return cast("dict[str, Any]", decoded) if isinstance(decoded, dict) else None
 
 
 async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunView | None:
@@ -368,6 +439,14 @@ def _run_view_from_rows(
                 hold=dict(held_by_node[step_key]) if step_key in held_by_node else None,
                 parents=tuple(sorted(set(parents_of.get(step_key, [])) - collapsed_keys)),
                 map_child=is_map_child,
+                attempt=int(r["attempt"] or 0),
+                scheduled_at=_iso(r["scheduled_at"]),
+                snooze_count=int(r["snooze_count"] or 0),
+                # THE DEFERRAL STAMP'S DECODE (the jsonb boundary's own
+                # shape — the bare -> operator hands a str, a typed path
+                # a dict): a corrupted stamp reads None (the label is a
+                # display, never load-bearing).
+                deferral=_decode_stamp(r["deferral"]),
             )
         )
     return RunView(
@@ -469,6 +548,12 @@ def run_state_json(view: RunView, *, seq: int) -> dict[str, Any]:
                 "hold": n.hold is not None,
                 "map_done": n.map_done,
                 "map_children": n.map_children,
+                # THE DEFERRAL LINE (the snoozed step's sitting state):
+                # the label is the row's truth (the stamp's own
+                # discriminator) — the JS paints/clears the line from
+                # the frame, so a node that ARRIVES at (or leaves) the
+                # snoozed state never needs a reload.
+                "deferral_label": n.deferral_label,
             }
             for n in sorted(rendered, key=lambda n: n.key)
         ],
