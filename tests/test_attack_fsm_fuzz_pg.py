@@ -166,10 +166,25 @@ def _assert_snapshot_invariants(obs: dict[str, Any]) -> None:
         for a in job["attempts"]:
             assert a["attempt"] not in seen, f"{token}: duplicate attempt epoch {a['attempt']}"
             seen.add(a["attempt"])
-        # Legal event edges; terminal absorbing.  One documented
+        # Legal event edges; terminal absorbing PER EPOCH.  One documented
         # self-loop allowance: the cancel escalation's phase-carrying
         # (running, running) event (both backends' _write_cancel_escalation
         # spell it identically, the row stays running).
+        #
+        # THE EPOCH RESET (the twin's own watermark rule, projected onto a
+        # trail-only snapshot - the twin pins "a terminal state_change
+        # event is the last event of its EPOCH", test_attack_fsm_fuzz.py's
+        # operator_retry raising event_watermark at each re-run): an
+        # operator re-run (retry_job) re-pends the row WITHOUT a
+        # state_change event (the retry_job template's own contract -
+        # "every state a job can come to rest in is a valid source") and
+        # starts a new epoch above the watermark.  A final snapshot
+        # carries no watermark, but the trail itself proves the re-open:
+        # an event's from_state is the row's TRUE pre-state (the event
+        # rides the row's own gated write), so a state_change whose
+        # from_state is NON-terminal after a terminal event is only
+        # writable when the row IS non-terminal again - the silent
+        # re-pend happened, and the scan resets to the new epoch there.
         terminal_seen = False
         for e in job["events"]:
             if e["kind"] != "state_change":
@@ -184,6 +199,9 @@ def _assert_snapshot_invariants(obs: dict[str, Any]) -> None:
             )
             if not is_escalation:
                 assert to in VALID_TRANSITIONS[frm], f"{token}: illegal event edge {frm}->{to}"
+                if terminal_seen and frm not in terminal:
+                    # The documented eventless re-pend's new epoch begins.
+                    terminal_seen = False
                 assert not terminal_seen, f"{token}: state_change after a terminal event"
             if to in terminal:
                 terminal_seen = True
@@ -213,26 +231,27 @@ async def test_diff_fsm_serial_plans_mirror_pg(plan: list[Op], pg_dsn: str) -> N
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "LIVE FINDING @ 2309f4b4 (the consolidator's own fast tier convicted it, "
-        "the red receipted .measurements/fsm-red/red-20261010-fsm-mirror.txt): the "
-        "DETERMINISTIC replay of the convicted plan (enqueue, cancel_request, "
-        "retry_job, cancel_request) emits a state_change AFTER a terminal event — "
-        "the retry-after-cancel path re-opens the row and the SECOND "
-        "cancel_request's recorded transition lands after the first terminal "
-        "write without the FSM's terminal_seen reset. Either the model's "
-        "terminal_seen must reset on a legal re-open (cancelled->pending IS a "
-        "legal retry edge) or the engine's event ordering is wrong — the reads "
-        "decide; the cure flips this to XPASS-strict — remove the marker WITH "
-        "the cure."
-    ),
-)
 async def test_the_convicted_reopen_plan(pg_dsn: str) -> None:
-    """The convicted counterexample, replayed DETERMINISTICALLY: the
-    fuzz's xfail was a lie (CI drew different plans — three legs
-    XPASS'd); the counterexample is THIS plan, fixed, forever."""
+    """The convicted counterexample, replayed DETERMINISTICALLY - now GREEN.
+
+    The 2026-10-10 conviction (the consolidator's fast tier, red receipted
+    .measurements/fsm-red/red-20261010-fsm-mirror.txt) held that this plan
+    (enqueue, cancel_request, retry_job, cancel_request) "emits a
+    state_change AFTER a terminal event".  The reads decided in the
+    invariant's own favor: the retry-after-cancel path's re-pend is the
+    retry_job template's DOCUMENTED contract ("every state a job can come
+    to rest in is a valid source") and it deliberately writes NO event -
+    the trail's second pending->cancelled transition is the FIRST terminal
+    event of the re-pend's NEW epoch, exactly the shape the twin machine
+    pins with its per-epoch event_watermark (test_attack_fsm_fuzz.py's
+    operator_retry).  The snapshot invariant now carries that epoch reset
+    (_assert_snapshot_invariants: a non-terminal from_state after a
+    terminal event proves the silent re-pend and resets the scan), so
+    this replay passes verbatim - the xfail(strict) marker came off WITH
+    the cure, as its own note directed.  The engine's event ordering and
+    the backends are untouched: both sides' trails were IDENTICAL all
+    along (the mirror never diverged - the invariant's projection was the
+    stricter, unfaithful one)."""
     plan: list[Op] = [
         ("enqueue", "j1"),
         ("cancel_request", "j1"),
