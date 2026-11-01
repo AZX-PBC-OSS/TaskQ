@@ -105,11 +105,13 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
 ) -> None:
     """F-CREATE-2: kill the first create after the root insert
     (``_insert_static_nodes`` raises once), then RETRY with the same run
-    key — the caller's recovery move. The SAFE law: the retry leaves a
-    run whose node census is COMPLETE (one static node for the one-step
-    flow), or the retry refuses with a named error. Today the retry
-    returns the squatted id and the census stays 0 (the red in
-    RECEIPTS.md)."""
+    key — the caller's recovery move. THE SAFE LAW (the shipped arm,
+    pinned exactly): the retry returns the SAME run with a COMPLETE node
+    census (one static node for the one-step flow). The alternative cure
+    shape once considered — the retry refuses with a named
+    ``WorkflowRunError`` — is documented here as an alternative only,
+    NOT an accepted arm: the census completion is what shipped (the flip
+    receipts), so a refusal reds this pin."""
     runner = _one_step_runner(wf_pool, wf_schema, "create2_retry_flow")
     key = "create2:retry"
 
@@ -125,37 +127,23 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
 
     # THE RETRY (the caller's recovery): the arbiter's conflict path —
     # created=False — must not strand the shell.
-    conflict_error: Exception | None = None
-    replay: Any = None
-    try:
-        replay = await runner.create_flow(run_key=key)
-    except Exception as exc:  # the named-refusal cure shape
-        conflict_error = exc
+    replay = await runner.create_flow(run_key=key)
 
     flow_id = await wf_conn.fetchval(
         f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = '__flow__' AND idempotency_key = $1",
         key,
     )
     assert flow_id is not None  # the interrupted create's root row exists
-    if conflict_error is None:
-        # The replay named a run: it must be the SAME row (the replay law,
-        # pin 4's green at the ledger layer) with a COMPLETE census.
-        assert str(getattr(replay, "flow_id", replay)) == str(flow_id)
-        census = await _node_census(wf_conn, wf_schema, JobId(flow_id))
-        assert census == 1, (
-            f"the retry returned the squatted run with a {census}-node census "
-            "(the one-step flow's complete census is 1) — 'your run' to a "
-            "shell that can never run"
-        )
-    else:
-        # The named-refusal cure: a WORKFLOW error naming the squatted,
-        # census-incomplete run — never a bare id.
-        from taskq.workflows import WorkflowRunError
-
-        assert isinstance(conflict_error, WorkflowRunError), (
-            f"the retry's refusal must be the named WorkflowRunError, got "
-            f"{type(conflict_error).__name__}: {conflict_error}"
-        )
+    # THE REPLAY IS THE SAME ROW (the replay law, pin 4's green at the
+    # ledger layer) — and its census is COMPLETE (the shipped arm: the
+    # retry finishes the interrupted create's node rows).
+    assert str(getattr(replay, "flow_id", replay)) == str(flow_id)
+    census = await _node_census(wf_conn, wf_schema, JobId(flow_id))
+    assert census == 1, (
+        f"the retry returned the squatted run with a {census}-node census "
+        "(the one-step flow's complete census is 1) — 'your run' to a "
+        "shell that can never run"
+    )
 
 
 # ── F-RUNKEY-4: THE CONFLICT'S STATUS SURFACES ON THE CALL ─────────────

@@ -443,25 +443,14 @@ def test_the_code_owner_participates_in_the_one_cap_law() -> None:
 
 
 async def _ensure_schema(conn: asyncpg.Connection, schema: str) -> None:
+    """The schema via the SHIPPED migrations — the house pattern (a
+    fresh schema + ``apply_pending``), never a hand-rolled shadow DDL:
+    a second copy of the table's DDL drifts from the migrations the
+    moment either side moves."""
+    from taskq.migrate import apply_pending
+
     await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-    await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-    await conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS "{schema}".actor_config (
-            actor          text PRIMARY KEY,
-            max_concurrent int,
-            max_pending    int,
-            queue          text NOT NULL,
-            max_attempts   smallint NOT NULL DEFAULT 3,
-            retry_kind     text NOT NULL DEFAULT 'transient',
-            result_ttl     float,
-            metadata       jsonb NOT NULL DEFAULT '{{}}'::jsonb,
-            updated_at     timestamptz NOT NULL DEFAULT now(),
-            retry_base     interval,
-            retry_cap      interval,
-            retry_backoff  text,
-            retry_jitter   float8
-        )
-    """)
+    await apply_pending(conn, schema=schema)
 
 
 async def _read_row(conn: asyncpg.Connection, schema: str, actor: str) -> dict[str, object]:

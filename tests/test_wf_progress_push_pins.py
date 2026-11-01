@@ -339,6 +339,12 @@ async def test_the_listener_fans_out_and_degrades_first(
                 )
             produced = time.monotonic() - t0
             await conn.close()
+            # THE MARGIN (why 5.0 and why still parallel): the pin's
+            # subject is the never-blocks LAW, not a latency band — ten
+            # knocks cost ~ms healthy, and the bound exists only to
+            # fail-stop a producer that AWAITS the bounded queue (which
+            # blocks ~forever). A ~1000x ceiling cannot be crossed by
+            # lane noise, so the serial lane buys nothing.
             assert produced < 5.0, "the producer blocked on the consumer — the law is broken"
             # THE SETTLE: the pump decodes the raw queue into the bounded
             # subscriber queues — the drop-oldest runs while nobody
@@ -455,6 +461,12 @@ async def test_the_sse_push_delivers_sub_poll_latency(
         delivered = time.monotonic() - t0
         progress_frames = [f for f in frames if f["event"] == "progress"]
         assert progress_frames, "the emission's frame never rode the stream"
+        # THE MARGIN (why 25.0 and why still parallel): the ceiling's job
+        # is the QUALITATIVE split — the push delivers in ~ms, the poll
+        # cadence delivers at ~poll_s=30 — so the bound sits just under
+        # one poll interval, ~1000x the healthy pass. Only the
+        # poll-shaped failure can cross it; lane noise cannot. A serial
+        # home would pin nothing the margin doesn't already.
         assert delivered < 25.0, f"delivered in {delivered:.2f}s — the poll interval, not the push"
     finally:
         stop.set()
