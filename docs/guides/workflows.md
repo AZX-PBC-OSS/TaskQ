@@ -952,6 +952,63 @@ would wedge the backlog forever), so no enforcement point exists that
 wouldn't structurally strand rows. Bound a workflow's backlog with
 `max_concurrent` (the damper) or `reservations` (the strict cap).
 
+THE KEYED FACE (per-tenant caps): `rate_limits=`/`reservations=` accept
+the vanilla surface's keyed refs (`KeyedRateLimitRef` /
+`KeyedReservationRef`). The ref's concrete name resolves PER CHILD at
+the fork/static-insert — each child's own declared payload runs
+`key_fn`, and the row stamps `f"{base_name}:{key}"` into its admission
+terms beside any static names. THE RATE-LIMIT FACE resolves per record
+on the fan-outs (a `map_source`'s children, a route's arms): two
+tenants' runs fork under one keyed limit and their child rows carry
+distinct concrete buckets. THE RESERVATION FACE is cohort-scoped: a
+fan-out source's children RIDE the source row's already-resolved names
+(one concrete bucket per RUN), so a keyed reservation on a map/route
+source must bind the source step's declared payload face (the
+run-scoped inheritance — the wiring door states the rule) and an arm's
+keyed reservation is refused (an arm declares no payload of its own). A
+static step resolves from the RUN'S OWN INPUT first (a parentless node:
+two runs, two inputs, two buckets — one bucket per run), then its
+declared data args. At claim the concrete name resolves back through
+the boot's collected decls and the per-key bucket materializes on first
+acquire — lazy registration, the entry cap (`max_keyed_rate_limits` /
+`max_keyed_reservations` — a cap hit is the budget-free park at the
+gate, never a crash), and the idle-eviction sweep bound registry
+growth, the same machinery the vanilla keyed acquires run. One
+tenant's saturated bucket snoozes only that tenant's children
+(budget-free) while the other tenants' children claim — keyed buckets
+never gate the actor's dispatch arithmetic. The registry's keyed-name
+space is unambiguous: a base_name that is a `:`-prefix of another
+registered ref's base_name refuses at registration (the longest-match
+would silently re-bind a child to the wrong ref's config). A child
+whose key cannot resolve (its payload fails the ref's `payload_type`,
+or the key breaks the charset/length law) fails the fork LOUDLY, naming
+the child — no row lands half-stamped. A keyed term on a node whose
+args resolve from parent results is refused at the wiring (no payload
+exists at create).
+The runnable demonstration (two tenants, one keyed rate limit, one
+`round_robin` queue, the REAL fleet door) is
+`examples/tenant_fairness_demo/` — its run prints the per-child bucket
+names, the per-key acquire/deny trace, and both tenants' completion.
+
+THE FAIRNESS LAW (the dispatch cohort): every claimable workflow row is
+born with its run's `flow_id` as `jobs.fairness_key` — on a
+`round_robin` queue each RUN is its own cohort, so a deep run's backlog
+cannot occupy whole dispatch rounds against a shallow run's (the
+round-robin partition interleaves the runs; the flow root itself stays
+unstamped — it is never work). On a `strict_fifo` queue the stamp is
+stored and IGNORED: the claim orders by `priority` then birth time, a
+later-born run waits behind an earlier-born run's rows. The re-pend
+paths never touch the column, so a row keeps its cohort across
+retries/snoozes. THE STORAGE: the stamp is a 36-char uuid text on every
+workflow row (~40 B/row) plus, while the row is `pending`, the same
+value in the common pending probe's key column
+(`jobs_round_robin_probe_idx`) AND a second entry in the population
+probes (the unrouted probe for the producer-placed rows, the
+assignment-routed probe for the re-pended ones); the upgrade guide
+carries the migration faces (the pre-upgrade rows' NULL cohort, the
+post-phase backfill, and the `jobs_wf_fairness_cohort_check` backstop —
+the database itself refuses an unstamped workflow row).
+
 THE TERMS FLOW: an `@app.actor(max_concurrent=1, ...)` handle wired via
 `step()` carries its terms into the node as the node's ADMISSION
 DEFAULTS — the explicit `step()` params override, never the reverse.

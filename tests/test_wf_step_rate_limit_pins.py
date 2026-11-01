@@ -10,9 +10,9 @@ THE CURE'S SHAPE (ONE mechanism, the authoring face added):
 * the authoring surface: ``step(body, rate_limits=[TokenBucket(...)])``,
   ``RouteArm(body=..., rate_limits=[...])`` (the typed route's per-arm
   buckets), ``map_source(src, item, rate_limits=[...])`` (the plain
-  map's children's buckets) — the VANILLA union's shapes; a keyed ref
-  names no concrete bucket (the fork stamps names) and is REFUSED at
-  the wiring site;
+  map's children's buckets) — the VANILLA union's shapes; a keyed ref's
+  concrete bucket resolves PER CHILD from the child's own payload at
+  the fork/static-insert;
 * the fork stamps the buckets' NAMES onto the child rows' metadata (the
   static step's row too) — the ROW carries its own admission terms;
 * the claim path honors them: the intercept's rate-limit gate acquires
@@ -260,11 +260,11 @@ def test_map_source_children_carry_the_map_rate_limits(cons2_redlog: RedLog) -> 
     assert node.map_rate_limits == (bucket,)
 
 
-def test_a_keyed_ref_names_no_concrete_bucket_and_is_refused() -> None:
-    """THE LOUD DOOR: a keyed ref's concrete bucket materializes per
-    payload — the fork stamps NAMES onto rows, so a keyed ref on a
-    workflow step is the refused shape (named at the wiring site, before
-    any row exists)."""
+def test_a_keyed_ref_resolves_per_child_at_the_fork() -> None:
+    """THE RESOLVING LAW: a keyed ref's concrete bucket resolves PER
+    CHILD from the child's own payload at the fork — the declaration is
+    admitted at the wiring, the map's children stamp their own concrete
+    names (the wiring refusal was the old law)."""
 
     class Tenant(BaseModel):
         tenant_id: str
@@ -278,12 +278,22 @@ def test_a_keyed_ref_names_no_concrete_bucket_and_is_refused() -> None:
         refill_per_second=1.0,
     )
 
-    @app.workflow("cons2_keyed_refusal")
-    def w() -> Promise[object]:
-        return build(step(_ocr_body, Ingest(doc_id="d1"), key="ocr", rate_limits=[keyed]))
+    async def src(ctx: StepContext, params: Ingest) -> list[Tenant]:
+        return [Tenant(tenant_id="acme")]
 
-    with pytest.raises(Exception, match=r"keyed|concrete|per-payload"):
-        app.get("cons2_keyed_refusal")
+    async def item(ctx: StepContext, value: Tenant) -> str:
+        return value.tenant_id
+
+    @app.workflow("cons2_keyed_resolved")
+    def w() -> Promise[object]:
+        source = step(src, Ingest(doc_id="d1"), key="src")
+        return build(map_source(source, item, rate_limits=[keyed]))
+
+    # The wiring accepts the keyed shape; the compiled node carries the
+    # keyed DECLARATION (the per-child resolution happens at the fork —
+    # the fork-stamp pins below hold the row truth).
+    node = app.get("cons2_keyed_resolved").nodes["src"]
+    assert node.map_rate_limits == (keyed,)
 
 
 def test_the_forks_name_read_is_the_instances_names() -> None:

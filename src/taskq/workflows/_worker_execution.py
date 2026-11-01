@@ -56,6 +56,7 @@ from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import JobId, JobRow
 from taskq.constants import resolve_priority_stamp
 from taskq.obs import get_logger
+from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.workflows.api._app import CompiledWorkflow
@@ -742,12 +743,20 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
                         "the differing node its own bucket."
                     ) from exc
                 registered.append(entry.name)
+            elif isinstance(entry, KeyedRateLimitRef):
+                # THE KEYED DECLS' COLLECT: the ref registers by
+                # base_name (the same-config idempotent, the different-config
+                # ValueError) — the fork-stamped concrete names resolve back
+                # through it at claim.
+                registry.register_keyed_rate_limit_ref(entry)
             elif isinstance(entry, str) and not registry.has_rate_limit(entry):
                 unknown.append(entry)
     return registered, sorted(set(unknown))
 
 
-def collect_workflow_reservations() -> tuple[list[ConcurrencyReservation], list[str]]:
+def collect_workflow_reservations(
+    registry: RateLimitRegistry | None = None,
+) -> tuple[list[ConcurrencyReservation], list[str]]:
     """THE WORKFLOW-DECLARED RESERVATIONS' COLLECT (the vanilla actors'
     collection pass's sibling — ``_bootstrap``'s ``actor_ref.reservations``
     loop, over the projected graphs): every imported app's RECORDED
@@ -829,6 +838,14 @@ def collect_workflow_reservations() -> tuple[list[ConcurrencyReservation], list[
                     "duplicate-name law); give the differing node its "
                     "own reservation."
                 )
+        elif isinstance(entry, KeyedReservationRef):
+            # THE KEYED DECLS' COLLECT (the rate-limit twin's own shape):
+            # the ref registers by base_name into the CALLER'S registry
+            # (the parameter is None on the collect-only callers — the
+            # declaration-only walks), where the fork-stamped concrete
+            # names resolve back through it at claim.
+            if registry is not None:
+                registry.register_keyed_reservation_ref(entry)
         elif isinstance(entry, str):
             unknown.append(entry)
 
@@ -1006,6 +1023,11 @@ async def execute_flow_job(
         # JobRow's field — the row IS the truth); the runner's
         # enforcement resolves it over the worker's default.
         "start_to_close": job.start_to_close,
+        # THE ROW'S OWN METADATA (the admission terms' carrier): the
+        # fork's builders read the source row's already-resolved
+        # reservation names off it — the children ride the source row's
+        # cohort (never a per-item re-derivation).
+        "metadata": job.metadata,
     }
     from taskq.workflows.api._runner_errors import WorkflowRunError
 

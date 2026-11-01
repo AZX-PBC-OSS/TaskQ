@@ -337,11 +337,12 @@ async def test_map_progress_line_reads_the_state_channel(
     for cid in child_ids:  # the map children: rows WITH the parent link
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, parent_id, metadata) "
-            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'item', $2, $3::jsonb)",
+            "retry_kind, status, step_key, parent_id, metadata, fairness_key) "
+            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'item', $2, $3::jsonb, $4)",
             cid,
             source,
             json.dumps({"flow_id": str(flow)}),
+            str(flow),
         )
     for i, cid in enumerate(child_ids[:2]):  # two emitted, one silent
         await wf_conn.fetchrow(
@@ -371,14 +372,15 @@ async def test_child_results_read_is_the_aggregate_input(
     ):
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, parent_id, result, metadata) "
+            "retry_kind, status, step_key, parent_id, result, metadata, fairness_key) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, 'item', $3, "
-            "$4::jsonb, $5::jsonb)",
+            "$4::jsonb, $5::jsonb, $6)",
             jid,
             status,
             parent,
             result,
             json.dumps({"flow_id": str(flow)}),
+            str(flow),
         )
     rows = await wf_conn.fetch(wf_sql.progress_child_results, parent)
     assert len(rows) == 1 and rows[0]["id"] == ok

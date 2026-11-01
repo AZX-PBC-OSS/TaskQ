@@ -374,10 +374,11 @@ async def test_pin_6_ledger_terminal_atomic(
     node_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, 'split', $2)",
+        "retry_kind, status, attempt, step_key, metadata, fairness_key) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, 'split', $2, $3)",
         node_id,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
 
     # THE SHIPPED SHAPE: the node's finalize tx1 carries the ledger's
@@ -442,12 +443,13 @@ async def test_pin_6_ledger_terminal_atomic(
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
-        "step_key, metadata) "
+        "step_key, metadata, fairness_key) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
-        "now() + interval '90 seconds', 0, 'split2', $3::jsonb)",
+        "now() + interval '90 seconds', 0, 'split2', $3::jsonb, $4)",
         split_node,
         split_worker,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await claim_step_ledger(
         wf_conn,
@@ -524,12 +526,13 @@ async def test_pin_7_map_children_own_ledger_rows(
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
             "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
-            "step_key, metadata) "
+            "step_key, metadata, fairness_key) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
-            "now() + interval '90 seconds', 0, 'enrich', $3::jsonb)",
+            "now() + interval '90 seconds', 0, 'enrich', $3::jsonb, $4)",
             node,
             worker_id,
             json.dumps({"flow_id": str(flow_id)}),
+            str(flow_id),
         )
         result = await finalize_node(
             module_pg_pool,
@@ -567,12 +570,13 @@ async def test_pin_7_map_children_own_ledger_rows(
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
-        "step_key, metadata) "
+        "step_key, metadata, fairness_key) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
-        "now() + interval '90 seconds', 0, 'enrich', $3::jsonb)",
+        "now() + interval '90 seconds', 0, 'enrich', $3::jsonb, $4)",
         node_2,
         worker_id,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     result = await finalize_node(
         module_pg_pool,

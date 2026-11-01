@@ -2192,7 +2192,9 @@ async def _main(
                 # The registration REBINDS to this deployment's schema —
                 # the C2 doctrine (the registry's register step rebinds
                 # any pre-registered raw instance to the same copy).
-                _wf_reservations, _wf_res_unknown = _wf_execution.collect_workflow_reservations()
+                _wf_reservations, _wf_res_unknown = _wf_execution.collect_workflow_reservations(
+                    resolved_rl_registry
+                )
                 for wf_res in _wf_reservations:
                     # THE SCHEMA REBIND (the flows demo's conviction): a
                     # workflow-declared reservation is constructed at module

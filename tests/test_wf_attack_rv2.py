@@ -162,12 +162,13 @@ async def _seed_failed_run_with_a_hostile_error_class(
         await conn.execute(
             f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
             "retry_kind, status, step_key, deps_pending, map_index, metadata, "
-            "error_class, error_message) "
+            "fairness_key, error_class, error_message) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'failed', 'n1', 0, "
-            "$2, $3::jsonb, $4, 'boom')",
+            "$2, $3::jsonb, $4, $5, 'boom')",
             new_uuid(),
             map_index,
             json.dumps({"flow_id": str(flow_id)}),
+            str(flow_id),
             hostile,
         )
     return flow_id, "n1"
@@ -434,13 +435,14 @@ async def test_rv2_5_the_cursor_probe_fences_identically_to_the_plain_probe(
     async def seed_node(flow_id: uuid.UUID, step_key: str, deps: int) -> None:
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, deps_pending, metadata) "
+            "retry_kind, status, step_key, deps_pending, metadata, fairness_key) "
             "VALUES ($1, 'actor_a', 'default', '{}', 3, 'transient', 'pending', $2, $3, "
-            "$4::jsonb)",
+            "$4::jsonb, $5)",
             new_uuid(),
             step_key,
             deps,
             json.dumps({"flow_id": str(flow_id)}),
+            str(flow_id),
         )
 
     legs: list[str] = []

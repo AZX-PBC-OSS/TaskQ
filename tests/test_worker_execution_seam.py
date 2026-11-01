@@ -488,13 +488,18 @@ async def test_the_door_refuses_a_row_without_a_step_key(
 ) -> None:
     """The claimed-row read model needs the step identity; a row with no
     ``step_key`` (the flow root itself, routed by defect) refuses LOUD."""
+    root_flow = str(new_uuid())
     root_id = await wf_conn.fetchval(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata) "
+        "retry_kind, status, step_key, metadata, fairness_key) "
         "VALUES ($1, 'flow', 'default', '{}', 3, 'transient', 'running', NULL, "
-        "$2::jsonb) RETURNING id",
+        "$2::jsonb, $3) RETURNING id",
         new_uuid(),
-        json.dumps({"flow_id": str(new_uuid()), "workflow": "seam_root"}),
+        json.dumps({"flow_id": root_flow, "workflow": "seam_root"}),
+        # THE RUN'S COHORT (the shipped shape — the CHECK's own law); the
+        # pin's subject is the DOOR's refusal of the missing step
+        # identity, never the cohort's absence.
+        root_flow,
     )
     with pytest.raises(seam.WorkflowBodyUnresolvableError, match="gone or carries no step_key"):
         await seam.execute_flow_job(
@@ -516,11 +521,12 @@ async def test_the_door_refuses_a_flow_root_without_a_workflow_stamp(
     flow_id = new_uuid()
     node_id = await wf_conn.fetchval(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, deps_pending) "
+        "retry_kind, status, step_key, metadata, fairness_key, deps_pending) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'solo', "
-        "$2::jsonb, 0) RETURNING id",
+        "$2::jsonb, $3, 0) RETURNING id",
         new_uuid(),
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
@@ -549,11 +555,12 @@ async def test_the_door_refuses_an_uncompiled_workflow_name(
     flow_id = new_uuid()
     node_id = await wf_conn.fetchval(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, deps_pending) "
+        "retry_kind, status, step_key, metadata, fairness_key, deps_pending) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'solo', "
-        "$2::jsonb, 0) RETURNING id",
+        "$2::jsonb, $3, 0) RETURNING id",
         new_uuid(),
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '

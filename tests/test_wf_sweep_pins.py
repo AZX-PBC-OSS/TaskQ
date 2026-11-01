@@ -186,11 +186,12 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     child = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'c', "
-        "$2::jsonb, now() - interval '1 hour')",
+        "$2::jsonb, $3, now() - interval '1 hour')",
         child,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
@@ -232,11 +233,12 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     live_child = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live', "
-        "$2::jsonb, now() - interval '1 hour')",
+        "$2::jsonb, $3, now() - interval '1 hour')",
         live_child,
         json.dumps({"flow_id": str(live_flow)}),
+        str(live_flow),
     )
     dispatched = await dispatch_batch(
         wf_conn,
@@ -269,11 +271,12 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     live2_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live2', "
-        "$2::jsonb, now() - interval '1 hour')",
+        "$2::jsonb, $3, now() - interval '1 hour')",
         live2_id,
         json.dumps({"flow_id": str(live_flow)}),
+        str(live_flow),
     )
     unregistered_worker = new_uuid()
     dispatched = await dispatch_batch(
@@ -331,11 +334,12 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     live3_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live3', "
-        "$2::jsonb, now() - interval '1 hour')",
+        "$2::jsonb, $3, now() - interval '1 hour')",
         live3_id,
         json.dumps({"flow_id": str(live_flow)}),
+        str(live_flow),
     )
     dispatched = await dispatch_batch(
         wf_conn,

@@ -104,10 +104,11 @@ async def test_e1_the_in_process_claim_never_executes_on_a_terminal_flow(
     flow_id = await seed_flow(wf_conn, wf_schema, status="cancelled")
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'only', 0, $2::jsonb)",
+        "retry_kind, status, step_key, deps_pending, metadata, fairness_key) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'only', 0, $2::jsonb, $3)",
         new_uuid(),
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await runner.tick(flow_id)
     assert _E1_SENTINEL == [], (
@@ -168,9 +169,9 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
         node_by_hold[str(hold_id)] = str(node_id)
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, deps_pending, map_index, metadata) "
+            "retry_kind, status, step_key, deps_pending, map_index, metadata, fairness_key) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', "
-            "'work.item', 0, $2, $3::jsonb)",
+            "'work.item', 0, $2, $3::jsonb, $4)",
             node_id,
             i,
             json.dumps(
@@ -180,6 +181,7 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
                     "held_signal": f"sig-{i}",
                 }
             ),
+            str(flow_id),
         )
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".wf_signals (id, workflow_id, node_key, '

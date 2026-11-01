@@ -182,6 +182,9 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
         # spec's own value — the column NULL when the caller resolved
         # none (the pre-cure byte-identical row).
         spec.start_to_close,
+        # THE ROW'S DISPATCH COHORT (the wf fairness stamp): the run's
+        # flow_id — one cohort per run on the round-robin queues.
+        str(spec.flow_id),
     )
     # The declared edges ride the SAME call (the exported edge writer): a
     # joined node's incoming edges are the join counter's ONLY truth — the

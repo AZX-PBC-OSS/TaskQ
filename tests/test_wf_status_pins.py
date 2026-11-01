@@ -646,10 +646,11 @@ async def test_t08_rollup_cost_gate_index_driven(
         flow_ids.append(flow_id)
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "
+            "retry_kind, status, step_key, metadata, fairness_key, idempotency_scope, idempotency_key) "
             "SELECT gen_random_uuid(), 'wf', 'default', '{}', 3, 'transient', "
             f"(ARRAY['succeeded','running','pending','failed']::text[])[1 + (g % 4)]::{wf_schema}.job_status, "
             "'c', jsonb_build_object('flow_id', $1::text, 'blocking_reason', 'join'), "
+            "$1::text, "
             "'workflow:' || $1::text, 'wf:' || $1::text || ':' || g "
             "FROM generate_series(1, $2) g",
             str(flow_id),

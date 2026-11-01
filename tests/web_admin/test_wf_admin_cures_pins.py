@@ -608,12 +608,13 @@ async def test_node_panel_error_fields_are_display_capped(
         )
         await conn.execute(
             f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, attempt, max_attempts, '
-            "retry_kind, step_key, metadata, status, error_class, error_message, error_traceback) "
-            "VALUES ($1,'wf','q','{}'::jsonb,0,1,'transient','n1',$2::jsonb,'failed','E',$3,$4)",
+            "retry_kind, step_key, metadata, fairness_key, status, error_class, error_message, error_traceback) "
+            "VALUES ($1,'wf','q','{}'::jsonb,0,1,'transient','n1',$2::jsonb,$5,'failed','E',$3,$4)",
             node_id,
             json.dumps({"flow_id": str(run_id), "error": big}),
             big,
             big,
+            str(run_id),
         )
     app = _make_admin_app(module_pg_pool, schema)
     async with httpx.AsyncClient(

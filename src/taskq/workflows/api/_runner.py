@@ -100,6 +100,8 @@ from taskq.workflows.api._ctx_wait import NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._graph import (
     Exit,
+    keyed_rate_limit_names,
+    keyed_reservation_names,
     rate_limit_names,
     reservation_names,
     route_child_key,
@@ -525,17 +527,28 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # metadata, and a step declaring RESERVATIONS carries their
             # NAMES beside them (the claim path's read — the gate
             # resolves the names through the resolved registry); the
-            # no-terms rows keep the base shape byte-identical.
+            # no-terms rows keep the base shape byte-identical. A KEYED
+            # ref resolves its concrete name from the row's DECLARED
+            # payload values — for a parentless node THE RUN'S OWN INPUT
+            # first (the run's declared face: two runs, two inputs, two
+            # buckets — one bucket per run), then the node's data args
+            # (the values the body's signature binds); the wiring
+            # refuses the keyed shape on a node whose args resolve from
+            # parents, so a keyed decl here always has a face.
+            declared_args = tuple(v for kind, v in node.args if kind == "d")
+            key_payloads = (input, *declared_args) if not node.parents else declared_args
+            static_rl = rate_limit_names(
+                node.rate_limits, what=f"step {key!r}'s rate_limits"
+            ) + keyed_rate_limit_names(
+                node.rate_limits, key_payloads, what=f"step {key!r}'s rate_limits"
+            )
+            static_res = reservation_names(
+                tuple(node.reservations), what=f"step {key!r}'s reservations"
+            ) + keyed_reservation_names(
+                tuple(node.reservations), key_payloads, what=f"step {key!r}'s reservations"
+            )
             row_meta = (
-                _row_metadata(
-                    flow_id,
-                    rate_limits=rate_limit_names(
-                        node.rate_limits, what=f"step {key!r}'s rate_limits"
-                    ),
-                    reservations=reservation_names(
-                        tuple(node.reservations), what=f"step {key!r}'s reservations"
-                    ),
-                )
+                _row_metadata(flow_id, rate_limits=static_rl, reservations=static_res)
                 if node.rate_limits or node.reservations
                 else {"flow_id": str(flow_id)}
             )
@@ -561,6 +574,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # handle's folded default) — the NULL case binds the
                 # column's own default (the pre-cure row byte-identical).
                 spec.start_to_close,
+                # THE ROW'S DISPATCH COHORT (the wf fairness stamp): the
+                # run's flow_id — one cohort per run on the round-robin
+                # queues.
+                str(flow_id),
             )
         # The EDGES in a second pass (both endpoints exist).
         for key in sorted(self.compiled.nodes):
@@ -2029,6 +2046,23 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 error=str(exc)[:200],
             )
 
+    @staticmethod
+    def _source_row_reservations(row: dict[str, Any], *, what: str) -> tuple[str, ...]:
+        """The claimed source row's ALREADY-RESOLVED reservation names
+        (its own metadata's stamp — the static insert resolved them from
+        the run's input and the declared args, keyed refs included): the
+        fork's children ride them verbatim (the run's own cohort, never
+        a per-item re-derivation). A row that carries no stamp (the
+        undeclared face) contributes nothing."""
+        raw: object = row.get("metadata")
+        meta: object = _json_loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(meta, dict):
+            return ()
+        names: object = meta.get("reservations")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType,reportAny]  # Why: the Any-contract walk — the jsonb round-trip's dict is Unknown by construction; the isinstance guards below assert the shape.
+        if not isinstance(names, list):
+            return ()
+        return tuple(str(n) for n in names if isinstance(n, str))  # pyright: ignore[reportUnknownVariableType]  # Why: the same walk — the list's members are Unknown; the isinstance IS the boundary.
+
     def _map_fork(
         self,
         row: dict[str, Any],
@@ -2140,16 +2174,29 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     map_index=i,
                     # THE ADMISSION TERMS STAMPED (CURE 2): the map's
                     # declared buckets' NAMES on every child row — the
-                    # claim path's read.
-                    rate_limits=rate_limit_names(
-                        node.map_rate_limits, what="map_source's rate_limits"
+                    # claim path's read. A KEYED ref resolves its
+                    # concrete name per child from the child's own item
+                    # payload (the fan-out is the keyed shape's home —
+                    # each tenant's items stamp their own bucket name).
+                    rate_limits=(
+                        rate_limit_names(node.map_rate_limits, what="map_source's rate_limits")
+                        + keyed_rate_limit_names(
+                            node.map_rate_limits,
+                            (item,),
+                            what=f"map {row['step_key']!r}'s child {i}",
+                        )
                     ),
                     # THE STRICT CAPACITY TERMS STAMPED (H-A1): the map's
-                    # children share the source node's cohort, so the
-                    # source's declared reservations ride their rows — the
-                    # same stamp the static row carries.
-                    reservations=reservation_names(
-                        tuple(node.reservations), what=f"map {row['step_key']!r}'s reservations"
+                    # children share the source node's cohort — the
+                    # source ROW's already-resolved reservation names
+                    # (its own metadata's stamp: the static insert
+                    # resolved them from the run's input and the
+                    # declared args, keyed refs included) ride the
+                    # children's rows verbatim. NEVER a per-item
+                    # re-derivation: the reservation is the run's own
+                    # cohort, not each item's bucket.
+                    reservations=self._source_row_reservations(
+                        row, what=f"map {row['step_key']!r}"
                     ),
                     # THE CHILD'S RESOLVED PRIORITY (the wf-priority
                     # cure): the source's resolution (above) rides every
@@ -2167,6 +2214,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 actor=node.actor,
                 queue=node.map_queue,
                 consumers=bindings,
+                # THE SOURCE ROW'S RESOLVED RESERVATION NAMES (the run's
+                # own cohort): the join row's metadata carries them — a
+                # NESTED fan-out over this join reads the stamp and the
+                # depth-2 children inherit the run's cap (depth-N, not
+                # depth-1).
+                reservations=self._source_row_reservations(row, what=f"map {row['step_key']!r}"),
                 failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators.
                 # THE FAN-IN BOUND'S ESCAPE, EXPOSED AT THE WIRING (the
                 # docshelf team's F6): the map_source's child_driven= —
@@ -2316,32 +2369,48 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # symmetrization: the reservations' own ride-the-cohort
                     # law, the same stamp the source's rows carry). An arm
                     # declaring its own keeps its OWN — never a silent
-                    # merge.
+                    # merge. A KEYED ref resolves its concrete name per
+                    # child from the child's own element payload.
                     rate_limits=(
-                        rate_limit_names(arm.rate_limits, what="route arm's rate_limits")
+                        (
+                            rate_limit_names(arm.rate_limits, what="route arm's rate_limits")
+                            + keyed_rate_limit_names(
+                                arm.rate_limits, (element,), what=f"route arm {tag!r}'s child {i}"
+                            )
+                        )
                         or (
                             ()
                             if (arm.actor is not None and arm.actor != node.actor)
                             else rate_limit_names(
                                 tuple(node.rate_limits), what="the source node's rate_limits"
                             )
+                            + keyed_rate_limit_names(
+                                tuple(node.rate_limits),
+                                (element,),
+                                what=f"route arm {tag!r}'s child {i}",
+                            )
                         )
                     ),
                     # THE ARM'S STRICT CAPACITY TERMS STAMPED (H-A1 +
-                    # H-A4's passthrough): the arm's own declaration rides
-                    # ITS rows; an arm declaring none KEEPS the source
-                    # node's stamp (the arm rides the source's cohort) and
-                    # an arm OVERRIDING the actor stamps none (a different
+                    # H-A4's passthrough): the arm's own STATIC
+                    # declaration rides ITS rows; an arm declaring none
+                    # KEEPS the source row's stamp (the arm rides the
+                    # source's cohort — the already-resolved names the
+                    # source row's metadata carries) and an arm
+                    # OVERRIDING the actor stamps none (a different
                     # cohort — inheriting the source's cap onto it would
                     # be the silent lie; the wiring refused a capped body
-                    # whose terms that override would drop).
+                    # whose terms that override would drop). The keyed
+                    # face never re-derives here: the run's cohort
+                    # resolved ONCE onto the source row (the arms' keyed
+                    # declarations are refused at the wiring).
                     reservations=(
                         reservation_names(tuple(arm.reservations), what="route arm's reservations")
                         or (
                             ()
                             if (arm.actor is not None and arm.actor != node.actor)
-                            else reservation_names(
-                                tuple(node.reservations), what="the source node's reservations"
+                            else self._source_row_reservations(
+                                row, what=f"route {row['step_key']!r}"
                             )
                         )
                     ),
@@ -2380,6 +2449,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 actor=node.actor,
                 queue=node.map_queue,
                 consumers=bindings,
+                # THE SOURCE ROW'S RESOLVED RESERVATION NAMES (the run's
+                # own cohort): the join row's metadata carries them — a
+                # nested fan-out over this join inherits the run's cap
+                # (depth-N, not depth-1).
+                reservations=self._source_row_reservations(row, what=f"route {row['step_key']!r}"),
                 failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators (the map fork's own declaration, the same seam).
                 # THE FAN-IN BOUND'S ESCAPE (F6 — the same face the map
                 # fork carries): the route's child_driven= rides ITS join.

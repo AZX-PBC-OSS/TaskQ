@@ -197,6 +197,13 @@ class JoinSpec:
     queue: str
     payload: dict[str, object] | None = None
     consumers: tuple[ConsumerBinding, ...] = ()
+    #: The SOURCE ROW'S already-resolved reservation names (the run's own
+    #: cohort — the static insert resolved them from the run's input and
+    #: the declared args): the join row's metadata carries them so a
+    #: NESTED fan-out (a map/route over this join) reads the stamp and
+    #: the depth-2 children ride the run's cohort — the guarantee is
+    #: depth-N, not depth-1.
+    reservations: tuple[str, ...] = ()
     #: The declared failure policy recorded on the join's incoming edges
     #: (T06): what a parent's TERMINAL failure does to this join.
     failure_policy: FailurePolicy = "fail_closed"
@@ -463,14 +470,21 @@ def _join_metadata(
     consumers: tuple[ConsumerBinding, ...] = (),
     *,
     child_driven: bool = False,
+    reservations: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """The joined node's metadata: the flow link, the join-wait marker, the
     declared consumers — and T07's shape record (metadata.join_shape) when
     the child-driven escape declared it: the choice rides the ROW (the
-    sweep's re-derive reads it; the record never guesses)."""
+    sweep's re-derive reads it; the record never guesses). The SOURCE
+    ROW's already-resolved reservation names ride beside them (the run's
+    own cohort): a nested fan-out over this join reads the stamp, the
+    depth-2 children inherit the run's cap — the cohort guarantee is
+    depth-N."""
     meta = _metadata(flow_id, blocking_reason=BLOCKING_REASON_JOIN, consumers=consumers)
     if child_driven:
         meta["join_shape"] = "child_driven"
+    if reservations:
+        meta["reservations"] = list(reservations)
     return meta
 
 

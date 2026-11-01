@@ -905,13 +905,14 @@ async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
     for paused in (True, False):
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+            "retry_kind, status, step_key, metadata, fairness_key, budget_deadline, budget_paused) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'heldl', "
-            "$2::jsonb, now() - interval '1 hour', $3)",
+            "$2::jsonb, $3, now() - interval '1 hour', $4)",
             new_uuid(),
             json.dumps(
                 {"flow_id": str(flow_id), "kind": "loop", "iteration": 0, "max_iterations": 100}
             ),
+            str(flow_id),
             paused,
         )
     await sweep_loop_budget(wf_pool, runner.wsql)

@@ -117,10 +117,10 @@ async def _seed_state(wf_conn: asyncpg.Connection, wf_schema: str, state: str) -
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
-        "step_key, metadata) "
+        "step_key, metadata, fairness_key) "
         f"VALUES ($1::uuid, 'wf', 'default', '{{}}'::jsonb, 3, 'transient', "
         f'$2::"{wf_schema}".job_status, $3, $4::uuid, {lock_expiry_sql}, $5::int, '
-        f"'tot_{state}', to_jsonb(jsonb_build_object('flow_id', $6::text)))",
+        f"'tot_{state}', to_jsonb(jsonb_build_object('flow_id', $6::text)), $6::text)",
         node_id,
         status,
         attempt,

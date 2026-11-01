@@ -272,7 +272,7 @@ WHERE id = $1
 """
 
 CLAIMABLE_NODES_SQL_TEMPLATE = _render_fence_tokens("""
-SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close FROM {schema}.jobs
+SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close, metadata FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status IN ('pending', 'scheduled')
   AND (scheduled_at IS NULL OR scheduled_at <= now())
