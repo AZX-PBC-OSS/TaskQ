@@ -235,8 +235,8 @@ DETERMINISTIC authoring failure (the run record carries
 re-running cannot shrink the corpus), and its message carries the
 remedy: the child-driven escape below, or partition the map.
 
-THE HONEST DERIVATION (F7, restated — never a line through points that
-don't share one): P1's three measured points — 200 → 14.9 ms, 1000 →
+THE HONEST DERIVATION (never a line through points that
+don't share one): the three measured points — 200 → 14.9 ms, 1000 →
 23.8 ms, 5000 → 39.3 ms — are sub-linear-in-log but NOT one line: an
 endpoint fit (~5.1 µs/edge + ~14 ms base) predicts 19.1 ms at 1000
 against the measured 23.8 — **the 1000 point is the outlier, named as
@@ -1038,7 +1038,7 @@ A malformed graph is a coding error, refused before any row is written:
 `validate_fork` refuses the empty fork that carries NO join (zero
 children, nothing to collect — the stranded invisible join's shape);
 an empty fork WITH a join is the legitimate shape (the born-zero
-receipt — the F1 cure: the route/map over a legitimately-empty
+receipt: the route/map over a legitimately-empty
 corpus declares its join, the join is BORN `deps_pending=0`, fires
 immediately, and packs the EMPTY list — `result() == []`, the run
 terminal, SUCCESS truthful: a night with no documents chunked zero
@@ -1184,7 +1184,7 @@ and `tests/test_wf_perf_bands.py` (the T03 bands); no pin was dropped.
 | `tests/test_wf_t20_emit_pins.py` | T20's emit tx: the kill-storm at every statement window (zero re-emitted, zero lost), the between-pages kill, the zombie fence, the map_index discipline |
 | `tests/test_wf_t20_fence_probe.py` | T20's fences: the 30-sweep premature-terminal probe (no worker — nothing terminalizes), the mutation drill's teeth, the source-terminal subject |
 | `tests/test_wf_t20_router_pins.py` | T20's router: both totality doors + the flips, the route through the certified fork, the end-to-end author surface, the loud refusal's row |
-| `tests/test_wf_t20_backpressure_pins.py` | T20's DH9: the pager blocks at the declared bound (the unbounded variant's blow-out captured red), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end (the stalls ride the ladder, the resume from the cursor) |
+| `tests/test_wf_t20_backpressure_pins.py` | T20's backpressure law: the pager blocks at the declared bound (the unbounded variant's blow-out captured red), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end (the stalls ride the ladder, the resume from the cursor) |
 | `tests/test_wf_t20_crashed_terminal_wedge.py` | THE TERMINAL-CRASH SEMANTICS (the T20/T21 fixer's wedge cure): the corpse derives the failed-class terminal (red-first: it derived `running` forever), the wedged root heals on ONE maintenance pass, the red-drill (the assertion REDS on a corpse the heal cannot land — the no-op-maintenance mutant), the reclaim-input asymmetry (the ledger's attempt-level crash stays live), the zombie-audit structural pin (the liveness spellings) |
 | `tests/test_wf_t2021_gate_cures.py` | T20/T21's gate cures: the VALIDATED dump is the record (the lax-pydantic string hole), the buffer door is private + the public op validates, the pct domain CHECK is real at the storage domain, the auto class's drop receipt, the failure-class ROUTING per class (3 deterministic legs + the transient leg), the poison record kills ITSELF loudly — never its mates |
 
@@ -2351,7 +2351,7 @@ ladder's own use: raise it yourself off the `Expired` member. (The
 example honors the loop's shape law — ONE wait per iteration; the
 scenario's "three loops" are three research passes inside the first
 iteration, because the answer queue's cursor IS the iteration counter.
-The law has TEETH now — the E13 rule: a loop-kind body whose wait is
+The law has TEETH now — the W5-loop-wait-shape rule: a loop-kind body whose wait is
 CONDITIONAL (some iterations wait, others don't) leaves the iteration
 cursor past the answer queue — stranded answers, retries replaying the
 wrong slot — and the wait site REFUSES the mis-aligned state with the
@@ -2523,7 +2523,7 @@ The machinery, and the laws each piece carries:
   fail-close beside a clock's wake fan in as two named outcomes); a
   mid-wait REDEPLOY re-enters the NEW body on the wake's resume (the
   versioning contract, §6). In a LOOP the timer shares the answer
-  queue's cursor — the ONE-wait-per-iteration shape law (E13) reads a
+  queue's cursor — the ONE-wait-per-iteration shape law (W5) reads a
   conditional timer exactly as a conditional `wait_signal`.
 
 **THE NAIVE-DATETIME LAW** (the silent coercion, stated at the API
