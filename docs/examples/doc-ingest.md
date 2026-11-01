@@ -3,8 +3,9 @@
 A document-ingestion pipeline: documents arrive, get enriched, pass an
 editorial review, and publish — with the failures REPORTED, never
 swallowed. This page is the minimal copy-paste form; the repo's
-`examples/` directory runs the SAME graph live (the FastAPI demo app,
-`examples/fastapi_app/`) with the admin's run explorer attached.
+`examples/` directory runs the SAME graph live (the demo app
+`examples/app.py`, serving the graph wired in `examples/workflows.py`)
+with the admin's run explorer attached.
 
 > **New to the workflows engine?** The guides are the tutorial:
 > [the workflows guide](../guides/workflows.md) teaches the wiring
@@ -439,7 +440,8 @@ What each shape shows (and where to look):
 | 8 | typed terminal verdict | `PublishReport` — derived from the run's collect (the ghost named) |
 | 9 | cron-slot run key | `run_nightly_refresh`'s `run_key=f"doc_ingest:nightly:{slot}"` |
 
-**Run it live**: the demo app (`examples/fastapi_app/`) wires this same
+**Run it live**: the demo app (`examples/app.py`, with the graph wired
+in `examples/workflows.py`) serves this same
 graph behind HTTP with the admin's run explorer. **The verify loop**: the
 example's fence executes in CI (`make test-docs-examples`), the fast tier
 runs its `build()` + `validate()` without containers, and the compiled
@@ -484,5 +486,5 @@ exactly ONE worker of the stack, so a queue's node runs on ITS worker —
 the pin lives in `tests/test_wf_demo_legs.py`). A worker subscribes
 with `TASKQ_QUEUES=demo-screen,demo-cpu,...` — the boot projection
 declares the cohorts in `actor_config` (the worker's import of
-`examples.workflows` populates the D1 registry the bodies resolve
+`examples.workflows` populates the definition registry the bodies resolve
 from); the subscription is the operator's deployment knob.

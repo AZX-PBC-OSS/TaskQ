@@ -196,23 +196,32 @@ RE-RUNS. **At-least-once body execution; exactly-once for DB-local
 effects** (the ledger claim + the composite arbiter), the stated boundary.
 
 The tx1→tx2 crash window keeps the same guarantee ACROSS PROCESSES: the
-leader's maintenance sweep registers `wf_join_rederive`, which re-derives
-the counter from the edge ledger, fires the firable joins and runs their
-reducer bodies. The sweep heals schema-wide — ANY leader heals ANY flow's
-join-wait rows — so the body must resolve in the HEALER'S process, never
-the finalizer's memory. The resolution is therefore DURABLE:
-`insert_flow_run` stamps the flow root's metadata with its workflow's
-registered name (`metadata.workflow`), and the fire arm resolves the body
-FROM THE REGISTERED DEFINITION via that name — the definition registry
-every worker process carries (the same definitions imported fleet-wide;
-D1's BODY-FROM-DEFINITION discipline). **The registry is the truth; the
-process-local reducer memo is a cache** — it answers only for a flow the
-registry cannot resolve (a root stamped before the stamp existed, an
-anonymous flow), in the process whose finalize warmed it, and it never
-shadows the definition. The cache is bounded: the phantom reaper drops a
-terminal flow's entry at the reap (a terminal flow's joins can never
-fire). A raising body there rolls the sweep pass back; the next tick
-re-fires.
+leader's maintenance sweep runs `sweep_join_rederive`, which re-derives
+the counter from the edge ledger and fires the firable joins. The sweep
+heals schema-wide — ANY leader heals ANY flow's join-wait rows. The fired
+join's body resolves through one door, in a fixed order: the fire arm
+consults the process-local reducer memo FIRST; on a miss, the flow
+root's stamped workflow name (`metadata.workflow` — `insert_flow_run`
+writes it at create) decides the record's face. A stamped name that
+resolves to NO compiled graph in the healer's process (the definitions
+not imported there — a deployment defect), and a root with no stamp at
+all, are the LOUD face: the delivery CONTINUES, the row is stamped
+`blocking_reason='body_unavailable'`, and a WARNING names it. A stamped
+name that resolves answers NO body: **the registry never supplies a
+reducer body on the fire path** — a join has no body of its own (the
+identity packer assembles its output from the parents' decoded
+results), and a step's body executes at the row's CLAIM (the wired
+args), never at the fire. No shipped `finalize_node` caller passes
+`reducers=`, so the memo is never warmed and the healer never runs a
+reducer body inside its transaction: the fire delivers, and every body
+resolves from the registered definition at the fired row's CLAIM — the
+durable leg (the BODY-FROM-DEFINITION discipline). The memo, when a
+caller warms it, answers only in the process whose finalize warmed it;
+it is bounded — the phantom reaper drops a terminal flow's entry at the
+reap (a terminal flow's joins can never fire). A body that does run
+inside the fire's transaction rolls the pass back on a raise, and the
+next tick re-fires — the same at-least-once shape the finalize's tx2
+states.
 
 ## The fan-in bound + the two join shapes (T07)
 
@@ -227,8 +236,8 @@ DETERMINISTIC authoring failure (the run record carries
 re-running cannot shrink the corpus), and its message carries the
 remedy: the child-driven escape below, or partition the map.
 
-THE HONEST DERIVATION (F7, restated — never a line through points that
-don't share one): P1's three measured points — 200 → 14.9 ms, 1000 →
+THE HONEST DERIVATION (never a line through points that
+don't share one): the three measured points — 200 → 14.9 ms, 1000 →
 23.8 ms, 5000 → 39.3 ms — are sub-linear-in-log but NOT one line: an
 endpoint fit (~5.1 µs/edge + ~14 ms base) predicts 19.1 ms at 1000
 against the measured 23.8 — **the 1000 point is the outlier, named as
@@ -244,13 +253,9 @@ shape. THE GOVERNING BUDGET,
 STATED HONESTLY: at the ~3-16 ms BASE term no fan-in meets a 5 ms-class
 budget; the declared-edge cost is dominated by the BASE (paid once per
 sweep pass regardless of fan-in), not the edges — the marginal edge cost
-is µs-class. The bound's candidate therefore stands on the BASE-COST
-argument (what the bound bounds is the PER-JOIN marginal work inside one
-pass), NOT on the 5 ms-class comparison — that comparison was false and
-is struck. **The refit procedure is the pin's own**: re-fit the curve on
-the landed code, re-derive the marginal from the fit, and re-state the
-argument against the refit numbers; the bound moves only by that argument
-in review.
+is µs-class. The bound stands on that BASE-COST argument — what it
+bounds is the PER-JOIN marginal work inside one pass, not a per-edge
+cost comparison.
 
 **The child-driven escape** (`child_driven=True` on `map_source` /
 `route` — the authoring verbs' own param; the engine-level spelling is
@@ -294,7 +299,7 @@ whose tx2 never ran (the crash window) is healed by the rederive arm's
 `failed_required` count — the fail_closed join is blocked-with-reason by
 the HEAL, never fired over the failed parent.
 
-**THE D6 SENTENCE:** the peer-cascade fires only on TERMINAL failure — a
+**THE TERMINAL-FAILURE TRIGGER:** the peer-cascade fires only on TERMINAL failure — a
 child mid-ladder does not trigger it (a ladder retry emits no terminal, P3
 decision 7), so a fail-closed map with a long-ladder child keeps its peers
 running until exhaustion. BY DESIGN, not an oversight: over-rejecting
@@ -319,8 +324,9 @@ terminalizing tx: the fire is strictly AFTER the last ladder attempt
 not an attempt. The workflow SUCCEEDS with the failure report (the
 absorbed-failure clause in the status derivation,
 `docs/guides/observability.md`); the failure detail's home is the
-ledger/attempts — the join row's array is the bounded summary (the JSONB
-size-cap policy, `docs/guides/maintenance-sweeps.md`).
+ledger/attempts — the join row's array is the bounded summary (the
+JSONB size-cap policy — see *The JSONB size cap / compaction policy*
+below).
 
 **THE CRASH CLASS IS THE COLLECT CONTRACT'S EDGE — know it before you
 rely on the absorption.** The fan-in above runs on the child's FAILED
@@ -355,7 +361,8 @@ failure mode the guards prevent is Oban-Pro's documented
 `preserve_workflows` lesson (the reduce reading holes — the silent
 partial). See `docs/guides/maintenance-sweeps.md` §7.
 
-**The JSONB size cap / compaction policy (GAPS-ESTATE D5's one home):**
+**The JSONB size cap / compaction policy (this note is the policy's one
+home):**
 the collect's FailureInfo list on the join row is BOUNDED — an append
 that would exceed the byte cap (`FANIN_FAILURES_BYTE_CAP`, 64 KiB)
 compacts the row to the bounded summary (the `"__truncated__": N` marker
@@ -393,9 +400,9 @@ between them the body runs with NO connection held. The pre-cure shape
 held ONE connection from the claim to the terminal — and the workflow
 execution door runs bodies on the DISPATCHER pool (4 connections at the
 shipped default), so a hot map fan-out's concurrent substeps collapsed
-to the conn count: the team's A/B measured a 300-child fan-out drop
-from 32 in-flight to 4 (10.1 s → 27.1 s at their profile; 11.1 s →
-42.2 s at 0.5 s/call on the cure tree's red run). The exactly-once law
+to the conn count: a 300-child fan-out measured the drop from 32 in-flight
+to 4 (10.1 s → 27.1 s at the demo profile; 11.1 s → 42.2 s at 0.5
+s/call). The exactly-once law
 never needed the held connection — the claim arbiter linearizes the
 grant, and the terminal keys the claim's OWN row id. Substep the calls
 that cannot tolerate a re-run freely: the replay face is now
@@ -576,8 +583,7 @@ THE ADDRESS'S SCOPE — what "same body, same input" covers, exactly:
   delivered to tenant B, terminal-success, audits clean). For a SOURCE
   node the flow input is its only run-varying input, so a source body
   reading the run input has NO sound address either (the 640-row feed
-  served its cached answer to the 60-row feed — the import probe's
-  live conviction); the refusal teaches the fix.
+  served its cached answer to the 60-row feed); the refusal teaches the fix.
 
 The cure is the same shape for both faces — **lift the flow input into
 the dataflow with an UNcached upstream step and wire its result as the
@@ -808,7 +814,7 @@ opts in.
 THE DEATH RULE is the FLOW's (a row dies with its flow, never by its
 own age alone), and each arm runs TWO passes (the flows-side doomed
 selection — the full-table-walk shape was convicted at production scale
-and replaced, H-B1):
+and replaced):
 
 * **THE FLOWS-SIDE PASS (every tick):** the TERMINAL-AGED ROOTS are
   selected FIRST from the JOBS side (`step_key='__flow__'` — the root
@@ -864,10 +870,10 @@ detector surfaces a flow nobody can run). The fence short-circuits on the
 cost class the P3 fence's own comment pins (the zero-tax law: the vanilla
 claim path is unchanged; the dispatch band stays green).
 
-**2. THE BOOT PROJECTION (the F3 law's call site).** A worker whose
+**2. THE BOOT PROJECTION.** A worker whose
 process imported at least one `WorkflowApp` boots CAPABLE: the projection
 compiles every imported app's declared workflows (which is what populates
-the D1 definition registry in the worker's process — the body resolution
+the definition registry in the worker's process — the body resolution
 answers from these very compiles) and projects the compiled graphs'
 `(actor, queue)` cohorts into `actor_config` rows — the SAME carrier, the
 same `sync_actor_config` surface, the same drift guards the vanilla
@@ -879,7 +885,7 @@ population.
 **3. THE INTERCEPT (the claimed row's execution door).** A claimed row
 carrying the flow lineage (`metadata.flow_id`) executes through the
 WORKFLOW machinery, never the actor registry: the body resolves from the
-registered definition (D1 — the flow root's stamped `metadata.workflow`
+registered definition (the flow root's stamped `metadata.workflow`
 name, the same durable leg the leader's fire arm uses) and runs via the
 runner's ledger-claim + finalize machinery — the same two-transaction
 finalize, the same fences, the same ladder. NOT a second execution
@@ -932,6 +938,7 @@ rides the SAME projection the placement rides:
 | `max_concurrent` | the per-round admission **damper** — NOT a hard fleet-wide cap. The dispatch claim's per-actor arithmetic reads `actor_config.max_concurrent` and admits up to the value per round per producer, so the in-flight count can exceed it under concurrent dispatchers (the over-dispatch bound is `(num_producers - 1) * max_concurrent` per round — the vanilla field's own law, [Actors](actors.md#choosing-a-concurrency-control)). **The strict instrument is `reservations`** — declare one when the bound must hold. |
 | `reservations` | the STRICT slots: a list of [`ConcurrencyReservation`](rate-limiting.md#concurrencyreservation) objects (`taskq.ratelimit.reservation`) — the dispatch-admission gate the vanilla path enforces via the leased `reservation_slots` rows (the machinery is [Rate limiting](rate-limiting.md)). The boot collects the nodes' declared instances into the worker's resolved registry and materializes their slot rows in the ensure-slots pass — the same pass the vanilla actors' reservations ride (deliberately NOT gated on the vanilla actor registry, so a pure-workflow worker slots its own). |
 | `result_ttl` | the node result's in-DB TTL in seconds — the vanilla result-expiry sweep's own knob, seeded on the stored row. |
+| `capacity_owner` | who owns the STORED capacity columns once the row exists (accepted on `@app.actor(...)` and on the route's `RouteArm(...)`; not a `step()` param). `"operator"` (the default) is the seed-only law: the literal seeds the row once, the operator owns it thereafter, and a later literal change LOGS a mismatch, never writes. `"code"` is the opt-out: the boot sync REWRITES `max_concurrent` and `result_ttl` from the literal on every boot, so a changed literal deploys by code instead of doing nothing after first boot (the queue and `max_pending` stay operator-owned under both owners). |
 | `priority` | the rows' claim ORDER (the vanilla `enqueue(priority=…)` face, carried to the workflow surface): the value stamped into the `jobs.priority` column, which the dispatch claim's `priority DESC` orders by — the SAME claim SQL the vanilla rows obey, so a workflow step and a vanilla job compete on one vocabulary. THE PRECEDENCE LAW per row, first non-`None` wins: the **per-call** `run(..., priority=…)`/`create_flow(priority=…)` override > the step's declaration (`step(priority=)`, `RouteArm(priority=)` for its arm's children) > the actor's declaration (`@app.actor(priority=)`) > the column default `0`. The per-call face is the load-bearing one — an interactive run jumps a deep sweep backlog without touching its declaration (and the rows materialized AFTER create obey it too: the map/route children a worker forks, and the loop escalation's consumer row the outbox drain enqueues, all resolve the run's stamped override). The domain is the `smallint` column's (-32768..32767), refused at the declaration site like every other layer that accepts a priority. The map's children and the route's join land at the SOURCE step's resolution; the arms override DOWN from the source — DOWN is graph-DIRECTION, not a value ceiling: an arm's declaration governs its own children BELOW the source in the graph, and the value may raise or lower freely (an arm declaring `priority=9` over a source's 2 raises its children's rows to 9; the JOIN stays the source's 2). A handle body carrying `priority=` (`@app.actor(priority=5)` wired as the map body or an arm body) resolves as its children's actor level — the same precedence law, read at the fork. A spawned childflow run resolves its OWN declarations: the parent's per-call `priority=` does not cross the run boundary (the child run is a new `create_flow` — its rows read the child's own per-call/step/actor law; the parent's stamp governs the parent's rows only). |
 
 `max_pending` is deliberately NOT on the workflow surface — it stays a
@@ -952,14 +959,19 @@ non-negative-int law is the vanilla one, enforced at the declaration
 site: a negative or non-int `max_concurrent` on
 `@app.actor` is a `ValueError` before anything registers.
 
-THE PROJECTION IS THE SEED-ONLY CAPACITY LAW: the workflow actors'
-`actor_config` rows carry the declared caps — the SAME seed-only law the
-vanilla `@actor` literals obey. The declaration seeds the row; the
+THE PROJECTION IS THE SEED-ONLY CAPACITY LAW — WITH ONE OPT-OUT: the
+workflow actors' `actor_config` rows carry the declared caps — the SAME
+law the vanilla `@actor` literals obey under the default
+`capacity_owner="operator"`: the declaration seeds the row; the
 operator owns it thereafter — override live via
 `ActorsClient.set_capacity` (or `taskq actor-config set`), and **changing
 the `@app.actor` literal later does NOT update a stored cap** (the
 capacity fields are omitted from the config-sync's `SET` clause; a
-literal-vs-stored mismatch logs, never writes). No new enforcement
+literal-vs-stored mismatch logs, never writes). The opt-out is
+`capacity_owner="code"`: the boot sync REWRITES `max_concurrent` and
+`result_ttl` from the literal on every boot — a changed literal deploys
+by code instead of silently doing nothing after first boot (the queue
+and `max_pending` stay operator-owned under both owners). No new enforcement
 machinery exists or is needed: a workflow row IS a `jobs` row, and the
 dispatch claim's per-actor arithmetic reads `actor_config` for EVERY
 actor, wf or not.
@@ -982,8 +994,9 @@ rows, the loop's nodes). A deployment whose workers do not consume
 SILENTLY: the fork's INSERT succeeds, the dispatch claim matches only
 the claiming worker's own queues, and nothing ever claims the row. THE
 DISCIPLINE: declare `queue=` explicitly per step when your workers don't
-run `default`. names nowhere FAILS LOUD, gated on `TASKQ_QUEUES_STRICT` (the vanilla
-queues' own opt-in law, H-A8): strict — the boot REFUSES with
+run `default`. A queue named in no worker's consumed set FAILS LOUD,
+gated on `TASKQ_QUEUES_STRICT` (the vanilla queues' own opt-in law):
+strict — the boot REFUSES with
 `WorkflowQueueUnconsumedError`; non-strict — the boot proceeds with the
 ONE aggregated `workflow-cohorts-on-unconsumed-queues` warning (the
 vanilla warning's own shape, the remedy named), because a per-queue
@@ -1026,7 +1039,7 @@ A malformed graph is a coding error, refused before any row is written:
 `validate_fork` refuses the empty fork that carries NO join (zero
 children, nothing to collect — the stranded invisible join's shape);
 an empty fork WITH a join is the legitimate shape (the born-zero
-receipt — the rv4 F1 cure: the route/map over a legitimately-empty
+receipt: the route/map over a legitimately-empty
 corpus declares its join, the join is BORN `deps_pending=0`, fires
 immediately, and packs the EMPTY list — `result() == []`, the run
 terminal, SUCCESS truthful: a night with no documents chunked zero
@@ -1037,8 +1050,7 @@ arm enumerates edge-less join-wait rows (a LEFT JOIN on the edge ledger)
 and stamps them `metadata.blocking_reason='orphan_parent'` — the record
 never looks healthy while the work is wrong.
 
-`wf.validate()`'s own rule matrix (T09, checker-independent; attack-3's
-M2-M5 cures included): **E1** acyclicity · **E2** produced-never-consumed ·
+`wf.validate()`'s own rule matrix (T09, checker-independent): **E1** acyclicity · **E2** produced-never-consumed ·
 **E3** the edge-less join (the compiled graph is public data — the rule
 owns the shape injected into it, not just the verb's door) · **E4** the
 unannotated step · **E5** the incompatible consumer — including the
@@ -1160,7 +1172,7 @@ families:
 | `tests/test_wf_progress_emission.py` + `test_wf_progress_faces.py` + `test_wf_progress_persistence.py` | the T21 progress family: the emission op's typed gate (the validated dump is the record), the coalesce cadence + the constant rows, the auto projections' counted trims, the two-channel persistence, the faces' contracts |
 | `tests/typeprobe/` | T01's negative type probes (pyright + ty, the CI `type-probes` gate) |
 | `tests/test_wf_perf_bands.py` | the perf bands: the 1000-child fan-out tx, the join-fire latency, the enqueue/dispatch noise bands, the T07 edge-join scale curve (the refit + the 100k-edge plan assert) |
-| `tests/test_wf_step_cache_pins.py` | the T25 cross-run cache family: the hit (the body runs ONCE across runs; the receipt on the node row), the success-only law (a failed body's key never squats), the TTL's expiry (the scaled clock: expired is a miss, the re-fill beats the corpse), the CAS (two concurrent misses, ONE winner), the typed decode at the hit (R3's face), the address's code sensitivity (the stale-code face dead), the wiring refusals (the TTL without the opt-in, the non-positive TTL, the gather), the retention arm's fresh/expired split + the disable sentinel |
+| `tests/test_wf_step_cache_pins.py` | the T25 cross-run cache family: the hit (the body runs ONCE across runs; the receipt on the node row), the success-only law (a failed body's key never squats), the TTL's expiry (the scaled clock: expired is a miss, the re-fill beats the corpse), the CAS (two concurrent misses, ONE winner), the typed decode at the hit, the address's code sensitivity (the stale-code face dead), the wiring refusals (the TTL without the opt-in, the non-positive TTL, the gather), the retention arm's fresh/expired split + the disable sentinel |
 | `tests/test_wf_timer_pins.py` | the T28 durable-timer family: the at-least wake (never early, the receipt's arithmetic), the slot's release (the held representation, the ledger's `awaited`), the crash-mid-wait durability (the successor's sweep fires the wake), the cancel interplay (the hold dies with the flow), the Expired/timer orthogonality (both named outcomes fan in), the resolve boundary's refusal (the clock is the only resolver) |
 | `tests/test_wf_versioning_pins.py` | the T29 versioning-contract family: the redeploy face (the adopt at the next node claim + the stamps proving WHICH code ran each row), the mid-wait redeploy (the wake re-enters the NEW body, the replay law across the deploy) |
 
@@ -1169,12 +1181,12 @@ was folded when T05 landed — its pins live in
 `tests/test_wf_schema_migration.py` (the schema/lock-class/import families)
 and `tests/test_wf_perf_bands.py` (the T03 bands); no pin was dropped.
 
-| `tests/test_wf_t20_maintain_liveness.py` | T20's core fix: the failed arm gates on live UNRESOLVED work (the 149-siblings scenario red-first; the H1 wedge-cure-stands regression) |
+| `tests/test_wf_t20_maintain_liveness.py` | T20's core fix: the failed arm gates on live UNRESOLVED work (the 149-siblings scenario red-first; the wedge-cure-stands regression) |
 | `tests/test_wf_t20_emit_pins.py` | T20's emit tx: the kill-storm at every statement window (zero re-emitted, zero lost), the between-pages kill, the zombie fence, the map_index discipline |
 | `tests/test_wf_t20_fence_probe.py` | T20's fences: the 30-sweep premature-terminal probe (no worker — nothing terminalizes), the mutation drill's teeth, the source-terminal subject |
 | `tests/test_wf_t20_router_pins.py` | T20's router: both totality doors + the flips, the route through the certified fork, the end-to-end author surface, the loud refusal's row |
-| `tests/test_wf_t20_backpressure_pins.py` | T20's DH9: the pager blocks at the declared bound (the unbounded variant's blow-out captured red), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end (the stalls ride the ladder, the resume from the cursor) |
-| `tests/test_wf_t20_crashed_terminal_wedge.py` | THE TERMINAL-CRASH SEMANTICS (the T20/T21 fixer's wedge cure): the corpse derives the failed-class terminal (red-first: it derived `running` forever), the wedged root heals on ONE maintenance pass, the G7 red-drill (the assertion REDS on a corpse the heal cannot land — the no-op-maintenance mutant), the reclaim-input asymmetry (the ledger's attempt-level crash stays live), the zombie-audit structural pin (the liveness spellings) |
+| `tests/test_wf_t20_backpressure_pins.py` | T20's backpressure law: the pager blocks at the declared bound (the unbounded variant's blow-out captured red), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end (the stalls ride the ladder, the resume from the cursor) |
+| `tests/test_wf_t20_crashed_terminal_wedge.py` | THE TERMINAL-CRASH SEMANTICS (the T20/T21 fixer's wedge cure): the corpse derives the failed-class terminal (red-first: it derived `running` forever), the wedged root heals on ONE maintenance pass, the red-drill (the assertion REDS on a corpse the heal cannot land — the no-op-maintenance mutant), the reclaim-input asymmetry (the ledger's attempt-level crash stays live), the zombie-audit structural pin (the liveness spellings) |
 | `tests/test_wf_t2021_gate_cures.py` | T20/T21's gate cures: the VALIDATED dump is the record (the lax-pydantic string hole), the buffer door is private + the public op validates, the pct domain CHECK is real at the storage domain, the auto class's drop receipt, the failure-class ROUTING per class (3 deterministic legs + the transient leg), the poison record kills ITSELF loudly — never its mates |
 
 ## The ergonomic contract (T17 — the authoring session's paper cuts)
@@ -1240,8 +1252,8 @@ and PURE — that SPELLS the graph by dataflow:
   declared param type is the decode's target (the element arrives AS
   the declared model — never a dict), and the derived `<source>.join`
   packs the arms' returns (the typed sum — the flat `Promise[list[R]]`,
-  R the union of the arms' returns). THE ARM CONTRACT IS EXACT (the
-  rv4 cure — E15's exact-member law at `validate()`): the declared
+  R the union of the arms' returns). THE ARM CONTRACT IS EXACT (E15's
+  exact-member law at `validate()`): the declared
   model must BE the union member — a SUPERCLASS builds clean past the
   old issubclass fence and the runtime decode then drops the
   subclass's own fields (pydantic's `extra='ignore'` default, the
@@ -1300,7 +1312,7 @@ face is STRINGLY: the state it reads is decoded JSON dicts, and a
 predicate keyed by a tag (`item["mime"] == "video"`) can skip EVERY
 downstream arm and still let the run terminalize SUCCEEDED having
 routed NOTHING — the exact silent drop the totality fence exists to
-refuse (the routing-proof round's live conviction). For
+refuse. For
 "dispatch each element by what it IS", the typed route is the taught
 face: the union's members key the arms, a non-total route is a BUILD
 refusal (E15), and an element of a type with no arm dies LOUDLY
@@ -1368,7 +1380,7 @@ the DECLARED model; a body sees the type it declared, never a raw
 dict. `wf.validate()` refuses an unannotated body (E4 — the annotation
 IS the wiring).
 
-**THE UNION CONSUMER'S DISCRIMINATOR LAW (E16 — the rv4 cure)**: a body
+**THE UNION CONSUMER'S DISCRIMINATOR LAW (E16)**: a body
 param decoded as a UNION of models (the join's downstream reads
 `list[ImageResult | AudioResult]`) is decoded by the codec's
 left-to-right smart union — the FIRST member whose required fields the
@@ -1627,17 +1639,17 @@ source's body returns the list, the fork spawns one fresh job per item
 (map_index = the item's ledger identity), and the join packs the
 decoded item results for the downstream body. The map takes NO `key=`:
 the join's key is DERIVED (`<source-key>.join` — the engine's fork
-addresses it), so naming the node means naming the SOURCE. (An earlier
-revision shipped a `key=` param whose every value was refused — the
-trap is gone; see the changelog.)
+addresses it), so naming the node means naming the SOURCE. (A `key=`
+parameter on the map does not exist and no value of one would be
+honored — the derived key is the only form.)
 
 **THE ITEM LADDER HONORS THE STAMPED `max_attempts`** (the LedgerWatch
 F3 cure — the knob is the operator's, the record keeps it): a
 transient-failing item ladders to the `max_attempts` wired on the
 `map_source` — the SAME knob a plain `step` honors, stamped on every
 child row by the fork. The pre-cure ladder capped items at the bare 3
-regardless (the row LIED — the team's probe: a plain step wired 7
-laddered 7; a map item wired 7 died at 3 — and every adoption
+regardless (the row LIED — a plain step wired 7 laddered
+7; a map item wired 7 died at 3 — and every adoption
 re-implemented the ladder client-side). The deterministic-failure and
 `permanent` routes are unchanged (they never ride the ladder).
 
@@ -1858,9 +1870,8 @@ the child line landed, surfaced.
 ## §9 — Loops & back-edges (T19)
 
 `wf.loop(name, body, *, initial, carry_type, until, max_iterations,
-budget_s, on_exhausted, escalates_to, gates)` — the loop is v1 (the
-maintainer's ruling: *"you do not cut must haves"*); the signature is
-the SHIPPED verb's own, every parameter spelled: `initial` seeds the
+budget_s, on_exhausted, escalates_to, gates)` — the loop is v1; the
+signature is the SHIPPED verb's own, every parameter spelled: `initial` seeds the
 carry at iteration 0, `carry_type` declares the carry's model
 (revalidated at every boundary), `until` is awaited per iteration,
 `budget_s` bounds the loop's wall clock, and the exhaustion takes
@@ -1904,12 +1915,12 @@ TRANSACTION (STRANDED-FLOW: the spike's `_loop_advance` left the flow
 `running` forever — the worker ticks forever, the admin shows a live
 run; the pin convicts it).
 
-**THE EXHAUSTION POLICY IS READ — BY THE DRIVER AND THE SWEEP** (the
-attack-3 H1 cure): `on_exhausted="escalate"` enqueues the escalation
+**THE EXHAUSTION POLICY IS READ — BY THE DRIVER AND THE SWEEP**:
+`on_exhausted="escalate"` enqueues the escalation
 through the SAME outbox the fired joins use — addressed to the
 workflow's REGISTERED escalation step (`loop.escalation`; the body is
 your `escalates_to=fn`, or the framework default, registered at compile
-by the definition registry — D1), and the escalation consumer job RUNS:
+by the definition registry), and the escalation consumer job RUNS:
 the drained job resolves the registered body and terminal-succeeds
 carrying the exhaustion record — no dead letter, on EITHER path (the
 live driver's cap check AND the sweep's orphaned-loop arm). (The
@@ -1918,8 +1929,7 @@ escalation step's declared shape, never to the loop's argument order:
 the wiring's SHAPE decides, the declaration order decides nothing.)
 `on_exhausted="fail"` terminal-fails the flow and enqueues NOTHING.
 
-**THE CAP LETS THE FINAL ITERATION RUN** (the attack-3 vacuous-pin
-cure): the advance guard admits the advance TO the cap, so the
+**THE CAP LETS THE FINAL ITERATION RUN**: the advance guard admits the advance TO the cap, so the
 metadata's counter REACHES `max_iterations` — the live driver exhausts
 at its top-of-loop cap check, and the crash window (a worker death
 after the final advance) leaves exactly that state on the running row
@@ -1999,7 +2009,7 @@ terminal, never liveness. The runbook asymmetry: a corpse that reports
 honest failed terminal is resumable-by-rerun. The wedged root heals on
 ONE maintenance pass — the pin family
 `tests/test_wf_t20_crashed_terminal_wedge.py` holds the semantics, the
-G7 red-drill (the assertion can red a corpse), and the zombie audit's
+red-drill (the assertion can red a corpse), and the zombie audit's
 spellings. The LEDGER's `crashed` rows are the ATTEMPT-level reclaim
 receipt (the row re-pends — the real crash recovery), never a terminal.
 
@@ -2199,7 +2209,7 @@ None).
 reference — `HitlClient.resolve(id, decision)` addresses ONE hold; the
 `(node, signal, epoch)` identity disambiguates MULTIPLE holds. The
 resolve is IDEMPOTENT (an already-resolved hold is the DEFINED no-op)
-and AUDITED (G4: "who resolved this" is a ROW, not a log line).
+and AUDITED ("who resolved this" is a ROW, not a log line).
 
 **MAP SIBLINGS HOLD CONCURRENTLY, AS DISTINCT ROWS** (the LedgerWatch
 F2 cure — the per-item approval is the machinery's OWN shape): the hold
@@ -2238,8 +2248,8 @@ by every non-`held` transition.
 **THE CONTEXT CONTRACT** (round-8): the hold carries the payload-model
 schema (what a UI renders from), the author-supplied
 reason/tool/args, the provenance (run id, node key, gate name, epoch,
-created_at, the deadline). **THE REDACT LAW EXTENDS — BEFORE PERSIST**
-(the attack-3 H3 cure): the context passes the chain-then-hook redact
+created_at, the deadline). **THE REDACT LAW EXTENDS — BEFORE PERSIST**:
+the context passes the chain-then-hook redact
 pipeline (the vetted masks + the hold surface's token-head pass + the
 workflow's own `redact=` hook, wired from the registered definition) IN
 THE SAME TRANSACTION as the hold's insert — the row never carries a
@@ -2342,7 +2352,7 @@ ladder's own use: raise it yourself off the `Expired` member. (The
 example honors the loop's shape law — ONE wait per iteration; the
 scenario's "three loops" are three research passes inside the first
 iteration, because the answer queue's cursor IS the iteration counter.
-The law has TEETH now — the E13 rule: a loop-kind body whose wait is
+The law has TEETH now — the W5-loop-wait-shape rule: a loop-kind body whose wait is
 CONDITIONAL (some iterations wait, others don't) leaves the iteration
 cursor past the answer queue — stranded answers, retries replaying the
 wrong slot — and the wait site REFUSES the mis-aligned state with the
@@ -2355,8 +2365,7 @@ the DEFINED `abandoned` state (the resume's wait site returns the
 union's `Expired` member — the typed face, never a silent orphan);
 `timeout=None` must be EXPLICIT (the W1 validate warning).
 
-**THE TIMEOUT FACE IS THE UNION'S SECOND ARM** (the attack-3 B1 cure,
-T26's amendment): after the sweep marks the hold `abandoned`, the
+**THE TIMEOUT FACE IS THE UNION'S SECOND ARM** (T26's amendment): after the sweep marks the hold `abandoned`, the
 resume's wait site RETURNS the `Expired` member — the fail-close arm
 the CHECKER forces — and NEVER mints an automatic new epoch (hold →
 expire → re-hold → ∞ is the convicted dragon, kept red by the attack
@@ -2373,7 +2382,7 @@ LATER for v1 (the don't-pay law): the body-level escape — match the
 yourself — is the sanctioned composition until then, and it is exactly
 what the value-based face enables.
 
-**THE DELIVER BOUNDARY IS REAL** (the attack-3 B2/H2 cure): a resolve
+**THE DELIVER BOUNDARY IS REAL**: a resolve
 validates the payload against the hold's DECLARED models — BY SHAPE,
 never by declaration order — BEFORE the CAS: a payload that fits NO
 model, or fits MORE than one without the gate's `discriminator=`, is
@@ -2382,7 +2391,7 @@ refusal is AUDITED and the operator sees WHY). The union wait narrows
 to the model the payload's shape fits — a lenient first member cannot
 swallow a strict second member's delivery.
 
-**THE AUDIT IS EXACTLY-ONCE** (the attack-3 H4 cure): the resolve's
+**THE AUDIT IS EXACTLY-ONCE**: the resolve's
 audit row + the knock ride the CAS-WINNING transaction — two concurrent
 resolves → exactly ONE `hitl.resolve` audit row, ONE knock, ONE
 resolution; the loser writes nothing.
@@ -2399,7 +2408,7 @@ ladder attempts — the ledger distinguishes `awaited` from `failed`;
 the ladder counts `failed` only. The shared-counter variant (2 holds +
 max_attempts=3 = terminal failure with zero retries) is red forever.
 
-The hold→resume latency band (G11c) is measured and pinned in
+The hold→resume latency band is measured and pinned in
 `perf-evidence-workflows.md` (the band from
 `.measurements/t10-hold-resume-band.json`).
 
@@ -2515,7 +2524,7 @@ The machinery, and the laws each piece carries:
   fail-close beside a clock's wake fan in as two named outcomes); a
   mid-wait REDEPLOY re-enters the NEW body on the wake's resume (the
   versioning contract, §6). In a LOOP the timer shares the answer
-  queue's cursor — the ONE-wait-per-iteration shape law (E13) reads a
+  queue's cursor — the ONE-wait-per-iteration shape law (W5) reads a
   conditional timer exactly as a conditional `wait_signal`.
 
 **THE NAIVE-DATETIME LAW** (the silent coercion, stated at the API
@@ -2644,7 +2653,7 @@ the storage CHECK).
 definition is adopted by the in-flight runs at their NEXT NODE CLAIM.
 The compile's STRUCTURE is the create-time snapshot (the nodes, the
 edges, the wiring — a run's graph never morphs mid-flight); every BODY
-resolves from the CURRENT registry at the claim seam (D1's resolution
+resolves from the CURRENT registry at the claim seam (the resolution
 is per-claim, never per-run — the registry answers first, the compiled
 node's own body is the fallback when the registry lacks the key). A
 redeploy keeps the same node KEYS, so the registry hit is the norm:

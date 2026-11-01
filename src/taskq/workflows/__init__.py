@@ -100,6 +100,7 @@ from taskq.workflows.chain import (
     chain_fork,
     chain_start,
 )
+from taskq.workflows.definitions import FanInBoundExceededError
 from taskq.workflows.ledger import RunClaim
 
 __all__ = [
@@ -119,6 +120,7 @@ __all__ = [
     "Done",
     "Exit",
     "Expired",
+    "FanInBoundExceededError",
     "FlowRunner",
     "GateDecl",
     "HitlClient",
