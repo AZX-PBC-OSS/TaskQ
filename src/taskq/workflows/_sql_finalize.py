@@ -203,12 +203,18 @@ VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 # default); the unset case binds NULL — the pre-cure row byte-identical
 # (the enforcement falls to the worker's default_start_to_close at claim
 # time, the resolution chain's own tail).
+# fairness_key is the row's DISPATCH COHORT (the wf fairness stamp):
+# every claimable wf row is born with its run's flow_id as the value, so
+# the round-robin dispatch partitions the run's rows into ONE cohort per
+# run — a deep run's backlog cannot occupy the whole round against a
+# shallow run's. The flow ROOT stays unstamped (it is never work — the
+# dispatch fence's root-marker leg excludes it).
 NODE_INSERT_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
      parent_id, map_index, step_key, deps_pending, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority, start_to_close)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16)
+     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
 """
 
 
@@ -221,15 +227,19 @@ VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13,
 # start_to_close is the child's DECLARED DEADLINE (the wf start_to_close
 # cure — the column the vanilla rows always had); the unset case binds
 # NULL (pre-cure identical).
+# fairness_key is the child's DISPATCH COHORT (the wf fairness stamp):
+# one cohort per run (the flow_id), so the round-robin dispatch
+# interleaves runs instead of draining them as one FIFO stream.
 FORK_CHILDREN_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority, start_to_close)
+     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[]
+    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[],
+    $16::text[]
 )
 """
 
@@ -258,15 +268,17 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 # (``wf:{flow}:emit:{map_index}:{step}``) and carry the per-child
 # ``map_index`` — the fork key's discipline (pin 18) at chain level, plus
 # the per-child trace_id the drill-down reads.
+# fairness_key is the child's DISPATCH COHORT (the wf fairness stamp) —
+# one cohort per run, the fork's own law at the emit's page inserts.
 EMIT_CHILDREN_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key)
+     idempotency_scope, idempotency_key, fairness_key)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[]
+    $11::jsonb[], $12::text[], $13::text[], $14::text[]
 )
 """
 
@@ -316,8 +328,8 @@ FORK_JOIN_NODE_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
      parent_id, step_key, deps_pending, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority, start_to_close)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15)
+     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16)
 """
 
 

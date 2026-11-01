@@ -736,13 +736,16 @@ async def seed_join(
         meta["consumers"] = consumers
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata, scheduled_at) "
+        "retry_kind, status, step_key, deps_pending, metadata, fairness_key, scheduled_at) "
         f"VALUES ($1, 'wf', 'default', '{{}}', 3, 'transient', 'pending', $2, $3, "
-        f"$4::jsonb, {scheduled_sql})",
+        f"$4::jsonb, $5, {scheduled_sql})",
         join_id,
         step_key,
         deps,
         json.dumps(meta),
+        # THE RUN'S COHORT (the shipped shape the engine's own inserts
+        # stamp — jobs_wf_fairness_cohort_check enforces it).
+        str(flow_id),
     )
     return JobId(join_id)
 
@@ -769,13 +772,16 @@ async def seed_running_node(
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, attempt, locked_by_worker, lock_expires_at, "
-        "claim_epoch, step_key, metadata) "
+        "claim_epoch, step_key, metadata, fairness_key) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
-        "now() + interval '90 seconds', 0, $3, $4)",
+        "now() + interval '90 seconds', 0, $3, $4, $5)",
         node_id,
         worker_id,
         step_key,
         json.dumps({"flow_id": str(flow_id)}),
+        # THE RUN'S COHORT (the shipped shape — the CHECK backstop
+        # enforces it on every wf row).
+        str(flow_id),
     )
     return JobId(node_id)
 

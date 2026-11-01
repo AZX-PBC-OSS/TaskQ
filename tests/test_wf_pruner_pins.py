@@ -154,24 +154,26 @@ async def test_t18_pin1_expiry_eats_children(
     join2 = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata) "
+        "retry_kind, status, step_key, deps_pending, metadata, fairness_key) "
         f"VALUES ($1::uuid, 'wf', 'default', '{{}}'::jsonb, 3, 'transient', "
         f"'pending'::\"{wf_schema}\".job_status, 'reduce2', 1, "
-        "to_jsonb(jsonb_build_object('flow_id', $2::text, 'blocking_reason', 'join')))",
+        "to_jsonb(jsonb_build_object('flow_id', $2::text, 'blocking_reason', 'join')), $3)",
         join2,
+        str(flow2),
         str(flow2),
     )
     child2 = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, attempt, step_key, result, result_expires_at, metadata, "
-        "idempotency_scope, idempotency_key) "
+        "fairness_key, idempotency_scope, idempotency_key) "
         f"VALUES ($1::uuid, 'wf', 'default', '{{}}'::jsonb, 3, 'transient', "
         f"'succeeded'::\"{wf_schema}\".job_status, 1, 'child2', "
         "'{\"i\": 1}'::jsonb, now() - interval '1 second', "
-        "to_jsonb(jsonb_build_object('flow_id', $2::text)), "
+        "to_jsonb(jsonb_build_object('flow_id', $2::text)), $3, "
         "'workflow-scope', 'key2')",
         child2,
+        str(flow2),
         str(flow2),
     )
     await wf_conn.execute(

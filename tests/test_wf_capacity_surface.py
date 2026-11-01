@@ -24,6 +24,9 @@ surface.
 
 from __future__ import annotations
 
+import json
+
+import asyncpg
 import pytest
 from pydantic import BaseModel
 
@@ -31,6 +34,7 @@ from taskq.actor_config import ActorConfig
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
 from taskq.workflows import (
+    FlowRunner,
     Promise,
     StepContext,
     WorkflowApp,
@@ -916,16 +920,15 @@ def test_collect_dedup_refuses_differing_lock_lease() -> None:
     assert "lock_lease" in str(excinfo.value), "the differing field is named"
 
 
-def test_keyed_reservation_ref_refused_at_the_wiring() -> None:
-    """H-A10: a ``KeyedReservationRef`` in ``reservations=`` is the LOUD
-    door at the wiring (``rate_limit_names``' own pattern — the keyed
-    shape names no concrete bucket, and a row stamped with a name it
-    cannot carry is the admitted-never-limited lie). Never silently
-    dropped."""
+def test_keyed_reservation_ref_admitted_at_the_wiring() -> None:
+    """H-A10's keyed face, the RESOLVING law: a ``KeyedReservationRef``
+    in ``reservations=`` is ADMITTED at the wiring — its concrete
+    reservation name resolves per child from the child's own payload at
+    the fork/static-insert, and the entry step's row carries the
+    resolved name (the claim path's read)."""
     from datetime import timedelta
 
     from taskq.ratelimit.refs import KeyedReservationRef
-    from taskq.workflows.api._graph import WorkflowBuildError
 
     ref = KeyedReservationRef.typed(
         Ingest,
@@ -938,22 +941,58 @@ def test_keyed_reservation_ref_refused_at_the_wiring() -> None:
 
     @app.workflow("keyed-reservation-ref-flow")
     def keyed_ref_flow() -> Promise[object]:
-        return build(step(_plain_body, Ingest(doc_id="d"), key="one", reservations=[ref]))
+        return build(step(_plain_body, Ingest(doc_id="d-42"), key="one", reservations=[ref]))
 
-    # The wiring verbs run at COMPILE (the build fn is the recorder's
-    # subject) — the door fires when the graph is compiled.
-    with pytest.raises(WorkflowBuildError, match="KeyedReservationRef"):
-        app.get("keyed-reservation-ref-flow")
+    # The wiring accepts the keyed shape (the compile succeeds — the
+    # refusal was the OLD law); the row's own stamp carries the concrete
+    # name resolved from the run input.
+    compiled = app.get("keyed-reservation-ref-flow")
+    assert compiled is not None
 
 
-def test_keyed_reservation_ref_refused_at_the_decorator() -> None:
-    """H-A10's decorator arm: ``@app.actor(reservations=[ref])`` refuses
-    the keyed shape at the declaration site — the same loud door, the
-    other entry."""
+async def test_keyed_reservation_ref_resolved_on_the_entry_row(
+    wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The entry step's static row carries the keyed declaration's
+    CONCRETE reservation name, resolved from the run input (the claim
+    path's read — one cohort per tenant's run)."""
     from datetime import timedelta
 
     from taskq.ratelimit.refs import KeyedReservationRef
-    from taskq.workflows.api._graph import WorkflowBuildError
+
+    ref = KeyedReservationRef.typed(
+        Ingest,
+        base_name="tenant-guard",
+        key_fn=lambda p: p.doc_id,
+        slots=1,
+        lease=timedelta(seconds=30),
+    )
+    app = WorkflowApp()
+
+    @app.workflow("keyed-reservation-entry-row")
+    def keyed_ref_flow() -> Promise[object]:
+        return build(step(_plain_body, Ingest(doc_id="d-42"), key="one", reservations=[ref]))
+
+    runner = FlowRunner(app.get("keyed-reservation-entry-row"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    raw = await wf_pool.fetchval(
+        f"""SELECT metadata FROM "{wf_schema}".jobs
+            WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'one'""",  # noqa: S608  # Why: the schema is the module fixture's validated identifier; every value is $-bound.
+        flow_id,
+    )
+    assert raw is not None
+    meta = json.loads(raw) if isinstance(raw, str) else raw
+    assert meta.get("reservations") == ["tenant-guard:d-42"]
+
+
+def test_keyed_reservation_ref_admitted_at_the_decorator() -> None:
+    """H-A10's decorator arm, the RESOLVING law: ``@app.actor(reservations=[ref])``
+    accepts the keyed shape — its concrete name resolves per child at
+    the fork/static-insert (never a silently-dropped cap, never a
+    declaration-site refusal)."""
+    from datetime import timedelta
+
+    from taskq.ratelimit.refs import KeyedReservationRef
 
     ref = KeyedReservationRef.typed(
         Ingest,
@@ -963,11 +1002,12 @@ def test_keyed_reservation_ref_refused_at_the_decorator() -> None:
         lease=timedelta(seconds=30),
     )
     app = WorkflowApp()
-    with pytest.raises(WorkflowBuildError, match="KeyedReservationRef"):
 
-        @app.actor(reservations=[ref])
-        async def guarded(ctx: StepContext, params: Ingest) -> Report:
-            return Report(ref=params.doc_id)  # pragma: no cover
+    @app.actor(reservations=[ref])
+    async def guarded(ctx: StepContext, params: Ingest) -> Report:
+        return Report(ref=params.doc_id)  # pragma: no cover
+
+    assert guarded.name == "guarded"
 
 
 def test_max_pending_is_off_the_wf_surface() -> None:

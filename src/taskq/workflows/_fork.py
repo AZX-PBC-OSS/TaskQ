@@ -96,6 +96,11 @@ async def insert_fork(
             # unset case binds NULL (the column's own default — the
             # pre-cure byte-identical row).
             [c.start_to_close for c in chunk],
+            # THE CHILDREN'S DISPATCH COHORT (the wf fairness stamp): one
+            # cohort per run (the flow_id) — the round-robin dispatch
+            # interleaves runs instead of draining them as one FIFO
+            # stream.
+            [str(flow_id)] * len(chunk),
         )
         await conn.execute(
             wsql.fork_edges,
@@ -124,12 +129,27 @@ async def insert_fork(
             flow_id,
         )
         if join_id is not None:
+            # THE ADOPTED JOIN'S SHAPE = THE NON-ADOPTED JOIN'S: the
+            # pre-created row (the drain-precreated shape — the flow
+            # link + the cohort stamp, NO join-wait marker) leaves the
+            # adoption UPDATE carrying the marker AND the run's cohort
+            # (the source row's resolved names), so a nested fan-out
+            # over THIS join reads the stamp — the depth-N induction
+            # holds through adoption too.
+            join_doc = _join_metadata(
+                flow_id,
+                (),
+                child_driven=fork.join.child_driven,
+                reservations=fork.join.reservations,
+            )
+            join_doc.pop("flow_id", None)
             await conn.execute(
                 f"UPDATE {wsql.schema}.jobs "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is a bound parameter.
                 "SET deps_pending = deps_pending + $1, "
-                "metadata = jsonb_set(metadata, '{consumers}', $2::jsonb, true) "
-                "WHERE id = $3",
+                "metadata = jsonb_set(metadata || $2::jsonb, '{consumers}', $3::jsonb, true) "
+                "WHERE id = $4",
                 len(children),
+                _jsonb(join_doc),
                 _jsonb(
                     _join_metadata(
                         flow_id, fork.join.consumers, child_driven=fork.join.child_driven
@@ -154,7 +174,14 @@ async def insert_fork(
                 fork.trace_id,
                 _jsonb(
                     _join_metadata(
-                        flow_id, fork.join.consumers, child_driven=fork.join.child_driven
+                        flow_id,
+                        fork.join.consumers,
+                        child_driven=fork.join.child_driven,
+                        # THE SOURCE ROW'S RESOLVED RESERVATION NAMES (the
+                        # run's own cohort): the join carries them so a
+                        # nested fan-out over this join reads the stamp —
+                        # the depth-N cohort guarantee.
+                        reservations=fork.join.reservations,
                     )
                 ),
                 f"workflow:{flow_id}",
@@ -170,6 +197,10 @@ async def insert_fork(
                 # cure): the SOURCE's resolution (the join is the
                 # source's own cohort); the unset case binds NULL.
                 fork.start_to_close,
+                # THE JOIN'S DISPATCH COHORT (the wf fairness stamp):
+                # the run's flow_id — the join is claimable work like
+                # any node of the run.
+                str(flow_id),
             )
         # The join's edges: one per child (the ledger's truth — the
         # fan-out's children feed the join).

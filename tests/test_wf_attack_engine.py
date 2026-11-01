@@ -96,13 +96,14 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
     crashed = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata, error_class, error_message, "
-        "finished_at) "
+        "retry_kind, status, attempt, step_key, metadata, fairness_key, error_class, "
+        "error_message, finished_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'crashed', 3, 'boom', "
-        "$2::jsonb, 'WorkerCrashed', "
+        "$2::jsonb, $3, 'WorkerCrashed', "
         "'lock expired before worker reported terminal state', clock_timestamp())",
         crashed,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
@@ -114,11 +115,12 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
     sibling = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata, finished_at) "
+        "retry_kind, status, attempt, step_key, metadata, fairness_key, finished_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'succeeded', 1, 'ok', "
-        "$2::jsonb, clock_timestamp())",
+        "$2::jsonb, $3, clock_timestamp())",
         sibling,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger (id, flow_id, job_id, step_key, '

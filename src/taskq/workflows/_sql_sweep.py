@@ -356,15 +356,19 @@ FOR UPDATE OF o SKIP LOCKED
 # own resolution (the join row's metadata `consumers` array, serialized
 # as SECONDS — the jsonb wire form); the unset case binds NULL
 # (pre-cure identical).
+# fairness_key is the consumer row's DISPATCH COHORT (the wf fairness
+# stamp): the run's flow_id, the same birth stamp every claimable wf
+# row of the run carries.
 OUTBOX_DRAIN_CONSUMERS_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority, start_to_close)
+     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[]
+    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[],
+    $16::text[]
 )
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL

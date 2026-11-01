@@ -187,11 +187,13 @@ async def _seed_node_row(
     node_id = new_uuid()
     await pool.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, attempt, max_attempts, '
-        f"retry_kind, step_key, metadata, status, result) "
-        f"VALUES ($1,'wf','q','{{}}'::jsonb,1,1,'transient',$2,$3::jsonb,$4,$5::jsonb)",
+        f"retry_kind, step_key, metadata, fairness_key, status, result) "
+        f"VALUES ($1,'wf','q','{{}}'::jsonb,1,1,'transient',$2,$3::jsonb,$4,$5,$6::jsonb)",
         node_id,
         step_key,
         json.dumps({"flow_id": run_id}),
+        # THE RUN'S COHORT (the shipped shape — the CHECK's own law).
+        run_id,
         status,
         json.dumps(result) if result is not None else None,
     )

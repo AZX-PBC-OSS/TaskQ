@@ -67,13 +67,14 @@ async def seed_chain_node(
         meta["trace_id"] = trace_id
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, map_index, metadata, idempotency_scope, "
-        "idempotency_key) VALUES ($1, 'wf', 'default', '{}', 3, 'transient', "
-        "'pending', $2, $3, $4::jsonb, 'workflow', $5)",
+        "retry_kind, status, step_key, map_index, metadata, fairness_key, "
+        "idempotency_scope, idempotency_key) VALUES ($1, 'wf', 'default', '{}', 3, "
+        "'transient', 'pending', $2, $3, $4::jsonb, $5, 'workflow', $6)",
         node_id,
         step_key,
         map_index,
         json.dumps(meta),
+        str(flow_id),
         f"wf:{flow_id}:emit:{map_index}:{step_key}",
     )
     return JobId(node_id)

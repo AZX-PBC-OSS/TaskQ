@@ -66,14 +66,15 @@ async def seed_crashed_node(
     node_id = new_uuid()
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, map_index, metadata, "
+        "retry_kind, status, attempt, step_key, map_index, metadata, fairness_key, "
         "error_class, error_message, finished_at, idempotency_scope, idempotency_key) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'crashed', 3, $2, 0, "
-        "$3::jsonb, 'WorkerCrashedError', 'the lease expired with the retry "
-        "budget exhausted', now(), 'workflow', $4)",
+        "$3::jsonb, $4, 'WorkerCrashedError', 'the lease expired with the retry "
+        "budget exhausted', now(), 'workflow', $5)",
         node_id,
         step_key,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
         f"wf:{flow_id}:emit:0:{step_key}",
     )
     return JobId(node_id)

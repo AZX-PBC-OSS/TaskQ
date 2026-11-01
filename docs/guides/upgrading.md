@@ -495,6 +495,73 @@ buckets alongside old ones (a temporary over-admission window). Drain
 affected queues before deploying payload model changes that affect key
 derivation.
 
+### Workflow rows carry a fairness cohort
+
+> **Unreleased.** The dispatch BEHAVIOR change is confined to
+> `round_robin` queues hosting workflows; the STORAGE rides every
+> workflow row on every queue mode.
+
+Every claimable workflow row (static steps, fork/emit children, join
+nodes, outbox-drained consumers) is now born with its run's `flow_id`
+as `jobs.fairness_key`, so on a `round_robin` queue each workflow run
+dispatches as its own cohort — previously every workflow row collapsed
+into the single `__null__` cohort and drained as one FIFO stream, and
+a deep run could starve a shallow one. Queues serving no workflows see
+no dispatch change; vanilla enqueue callers still pass `fairness_key`
+explicitly. On `strict_fifo` queues the stamp is stored and ignored
+(the claim order is unchanged).
+
+**The storage face (every queue mode):** the stamp is a 36-char uuid
+text on every workflow row — about 40 B on the row itself, live until
+the row archives/prunes — and, while the row is `pending`, the same
+value in the probe indexes' key columns: the common pending probe
+(`jobs_round_robin_probe_idx`, partial on `pending`) carries EVERY
+pending row's stamp, and the population probes add a SECOND entry per
+pending wf row — `jobs_unrouted_round_robin_probe_idx` for the
+producer-placed rows, `jobs_assignment_routed_probe_idx` for the
+re-pended rows (the entries leave when the row leaves `pending`).
+Vanilla rows carry NULL: no workflow-face storage, no workflow-face
+index change (a producer's own user cohort rides the same indexes by
+design).
+
+**The pre-upgrade face:** rows still `pending` from the pre-stamp code
+keep the NULL cohort — the old code stamps nothing and no re-pend path
+ever touches the column — so they drain in the `__null__` FIFO cohort
+until they terminalize. The post-phase migration backfills the cohort
+for EVERY workflow row — terminal rows included (the full-history
+top-up: one statement over the flow-nodes expression index, the
+write-once column takes its value once) — and adds the structural
+backstop (`jobs_wf_fairness_cohort_check`, `NOT VALID`): every workflow
+row written after it carries its run's cohort — a regression's
+unstamped insert is refused by the database itself.
+
+**The deploy face (the HOW):** apply `taskq migrate up --phase pre` as
+the pre-deploy job while the workers roll (the pre phase for this
+feature is empty — the stamp rides the existing column); apply
+`taskq migrate up --phase post` once, by hand, AFTER THE LAST WORKER IS
+UP; then `VALIDATE CONSTRAINT jobs_wf_fairness_cohort_check` (the
+same two-phase pattern the denial-counters and retry-curve migrations
+document). THE BREAKAGE, PLAINLY: once the post phase is applied, an
+old worker cannot write workflow WORK — the flow ROOT row is exempt
+(its insert passes), but the STATIC NODE INSERTS are refused, so the
+old worker's `create_flow` still fails, and its forks and emits refuse
+the same way. The mixed old/new worker wave is viable in the
+PRE-PHASE WINDOW ONLY; schedule the post phase after the wave
+completes. The restart-based path cannot do this for you:
+`TASKQ_MIGRATE_ON_START` (honoured only by `taskq ui serve`) and the
+lifecycle migration path apply the PRE PHASE BY DEFAULT — the post
+phase stays behind an explicit `taskq migrate up --phase post` on an
+operator's decision, never a process lifecycle event.
+
+**The keyed rolling-deploy face:** a keyed admission term's concrete
+name (`base:key`) is stamped onto the row at the fork, and the worker
+that CLAIMS the row materializes the bucket. During a rolling deploy,
+an OLD worker claiming a keyed-stamped row cannot resolve the concrete
+name against its own (pre-keyed) registry — the row PARKS budget-free
+(the fail-closed arm, the warning naming the bucket) until the
+upgraded workers claim it. The row is never admitted unprotected and
+never lost; the run resumes when the upgrade wave reaches its queue.
+
 ### Dispatch-path malformed payloads fail immediately
 
 > **Unreleased.** Breaking for callers that relied on invalid payloads

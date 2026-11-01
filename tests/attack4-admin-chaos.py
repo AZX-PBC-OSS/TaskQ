@@ -477,12 +477,13 @@ async def test_a_nodes_error_text_carrying_markup_is_escaped_everywhere(
     await module_pg_pool.execute(
         f'INSERT INTO "{schema}".jobs '
         "(id, actor, step_key, status, attempt, max_attempts, payload, metadata, queue, "
-        " error_class, error_message, retry_kind, created_at) "
+        " fairness_key, error_class, error_message, retry_kind, created_at) "
         "VALUES ($1, 'attack4', 'evil_step', 'failed', 1, 3, 'null'::jsonb, "
-        " $2::jsonb, 'default', 'EvilError', $3, 'transient', now())",
+        " $2::jsonb, 'default', $4, 'EvilError', $3, 'transient', now())",
         uuid.uuid4(),
         json.dumps({"flow_id": str(run_uuid), "workflow": "attack4a_evil"}),
         evil,
+        str(run_uuid),
     )
     await module_pg_pool.execute(
         f'INSERT INTO "{schema}".jobs '

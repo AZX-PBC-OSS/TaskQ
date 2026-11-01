@@ -574,11 +574,12 @@ async def test_edge_join_scale_curve_across_the_bound(
     # decided).
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata) "
+        "retry_kind, status, step_key, deps_pending, metadata, fairness_key) "
         f"VALUES ($1::uuid, 'wf', 'default', '{{}}', 3, 'transient', "
         f"'pending'::\"{wf_schema}\".job_status, 'big_join', 1, "
-        "to_jsonb(jsonb_build_object('flow_id', $2::text, 'blocking_reason', 'join')))",
+        "to_jsonb(jsonb_build_object('flow_id', $2::text, 'blocking_reason', 'join')), $3)",
         join_id,
+        str(join_id),
         str(join_id),
     )
     from taskq.workflows._types import _metadata
@@ -588,14 +589,14 @@ async def test_edge_join_scale_curve_across_the_bound(
         chunk = parent_ids[start : start + 500]
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "
+            "retry_kind, status, step_key, metadata, fairness_key, idempotency_scope, idempotency_key) "
             "SELECT u.id, u.actor, u.queue, u.payload, u.max_attempts, u.retry_kind, "
-            f'u.status::"{wf_schema}".job_status, u.step_key, u.metadata, '
+            f'u.status::"{wf_schema}".job_status, u.step_key, u.metadata, u.fairness_key, '
             "u.idempotency_scope, u.idempotency_key "
             "FROM unnest($1::uuid[], $2::text[], $3::text[], $4::jsonb[], "
-            "$5::smallint[], $6::text[], $7::text[], $8::text[], $9::jsonb[], $10::text[], $11::text[]) "
+            "$5::smallint[], $6::text[], $7::text[], $8::text[], $9::jsonb[], $10::text[], $11::text[], $12::text[]) "
             "AS u(id, actor, queue, payload, max_attempts, retry_kind, status, "
-            "step_key, metadata, idempotency_scope, idempotency_key) ",
+            "step_key, metadata, idempotency_scope, idempotency_key, fairness_key) ",
             chunk,
             ["wf"] * len(chunk),
             ["default"] * len(chunk),
@@ -607,6 +608,7 @@ async def test_edge_join_scale_curve_across_the_bound(
             [json.dumps(_metadata(flow_id, blocking_reason=None))] * len(chunk),
             [f"workflow:{flow_id}"] * len(chunk),
             [f"wf:{flow_id}:c:{i}" for i in range(start, start + len(chunk))],
+            [str(flow_id)] * len(chunk),
         )
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id) '

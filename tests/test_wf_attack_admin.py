@@ -250,13 +250,14 @@ async def _seed_node(
     node_id = new_uuid()
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, $3, $4, $5::jsonb)",
+        "retry_kind, status, step_key, deps_pending, metadata, fairness_key) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, $3, $4, $5::jsonb, $6)",
         node_id,
         status,
         step_key,
         deps,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     return JobId(node_id)
 
@@ -542,12 +543,13 @@ async def test_the_node_panel_bounds_the_error_fields_it_serves(
     flow_id = await seed_flow(wf_conn, schema, status="failed")
     await wf_conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata, error_class, "
+        "retry_kind, status, attempt, step_key, metadata, fairness_key, error_class, "
         "error_message, error_traceback, finished_at) "
         "VALUES ($1, 'wf', 'default', '{}', 1, 'transient', 'failed', 1, 'big', "
-        "$2::jsonb, 'AttackError', $3, $4, clock_timestamp())",
+        "$2::jsonb, $3, 'AttackError', $4, $5, clock_timestamp())",
         new_uuid(),
         json.dumps({"flow_id": str(flow_id), "error": "E" * _HUGE_CHARS}),
+        str(flow_id),
         "M" * _HUGE_CHARS,
         "T" * _HUGE_CHARS,
     )

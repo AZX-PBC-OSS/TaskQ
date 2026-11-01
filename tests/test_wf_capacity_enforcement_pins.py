@@ -228,7 +228,13 @@ async def test_the_reservation_stamp_rides_the_static_and_fork_rows(
             f"the fork's child row {item_key} carries the source's reservation stamp"
         )
     join_meta = stamped["src.join"]
-    assert "reservations" not in join_meta, "the join's packer body declares no reservation"
+    # THE JOIN RIDES THE RUN'S COHORT (the depth-N law): the join row's
+    # metadata carries the source row's already-resolved names, so a
+    # NESTED fan-out over this join reads the stamp — the depth-2
+    # children inherit the run's cap.
+    assert join_meta.get("reservations") == [GUARD_NAME], (
+        f"the join row rides the run's own reservation cohort; got {join_meta}"
+    )
 
 
 def _meta(raw: Any) -> dict[str, Any]:

@@ -928,7 +928,37 @@ async def _flow_rate_limit_gate(
             parked_kind="flow-reservation-metadata-malformed",
         )
     res_names = res_raw
-    unknown = [n for n in names if not rl_registry.has_rate_limit(n)]
+    # THE KEYED CONCRETE NAMES (the wf keyed face): a name this registry
+    # does not carry directly may be a fork-stamped keyed concrete name
+    # ("base:key") — it resolves back through the boot's collected keyed
+    # decls and the concrete bucket materializes on first claim (the
+    # same lazy registration, cap and idle-eviction bound the vanilla
+    # keyed acquire runs). The materialization's OWN denial (the entry
+    # cap's raise after the opportunistic eviction) IS the denial
+    # verdict here — the budget-free park the settings doc promises, the
+    # same shape the acquire's own denial takes below; a raise out of
+    # the gate would kill the worker's loop and strand the claimed row.
+    # A name no declared ref claims stays unknown — the fail-closed arm
+    # below owns it.
+    keyed_unknown = [n for n in names if not rl_registry.has_rate_limit(n)]
+    if keyed_unknown:
+        try:
+            keyed_unknown = await rl_registry.materialize_keyed_rate_limits(
+                keyed_unknown, settings=deps.settings, pg_pool=deps.worker_pool
+            )
+        except ReservationUnavailable as exc:
+            record_ratelimit_denial("postgres")
+            return _FlowSlotGate([], None, exc, None)
+    keyed_res_unknown = [n for n in res_names if not rl_registry.has_reservation(n)]
+    if keyed_res_unknown:
+        try:
+            keyed_res_unknown = await rl_registry.materialize_keyed_reservations(
+                keyed_res_unknown, settings=deps.settings, pg_pool=deps.worker_pool
+            )
+        except ReservationUnavailable as exc:
+            record_ratelimit_denial("postgres")
+            return _FlowSlotGate([], None, exc, None)
+    unknown = keyed_unknown
     if unknown:
         # THE FAIL-CLOSED ARM: the row names a bucket this worker's
         # registry does not carry — admitting it unprotected is the lie
@@ -948,7 +978,7 @@ async def _flow_rate_limit_gate(
             _UnknownFlowRateLimitError(", ".join(unknown)),
             parked_kind="flow-rate-limit-unknown-bucket",
         )
-    unknown_res = [n for n in res_names if not rl_registry.has_reservation(n)]
+    unknown_res = keyed_res_unknown
     if unknown_res:
         # THE FAIL-CLOSED ARM, THE RESERVATION FACE (H-A1): a strict cap
         # this worker cannot resolve is the admitted-never-limited lie's

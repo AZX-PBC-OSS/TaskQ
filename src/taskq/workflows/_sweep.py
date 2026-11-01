@@ -377,6 +377,10 @@ async def drain_outbox(
                 _seconds_or_none(b.get("start_to_close_s"))  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the jsonb walk hands the Any-typed doc the drain decoded above; the helper is the parse.
                 for b in bindings
             ],
+            # THE CONSUMER ROW'S DISPATCH COHORT (the wf fairness stamp):
+            # the run's flow_id — the same birth stamp every claimable wf
+            # row of the run carries.
+            [str(r["flow_id"]) for r in rows],
         )
         await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
     return len(rows)

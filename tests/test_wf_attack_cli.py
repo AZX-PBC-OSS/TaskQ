@@ -280,19 +280,23 @@ async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
     failed_node = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, error_class, error_message, attempt) "
+        "retry_kind, status, step_key, metadata, fairness_key, error_class, "
+        "error_message, attempt) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'failed', 'worker', "
-        "$2::jsonb, 'FakeError', 'boom', 3)",
+        "$2::jsonb, $3, 'FakeError', 'boom', 3)",
         failed_node,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     collect_node = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata) VALUES ($1, 'wf', 'default', '{}', "
-        "3, 'transient', 'succeeded', 'collect', $2::jsonb)",
+        "retry_kind, status, step_key, metadata, fairness_key) VALUES ($1, 'wf', "
+        "'default', '{}', "
+        "3, 'transient', 'succeeded', 'collect', $2::jsonb, $3)",
         collect_node,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '

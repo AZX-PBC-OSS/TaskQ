@@ -258,6 +258,10 @@ async def _emit_tx(
                 # emit scope + the per-record index.
                 [f"workflow:{flow_id}"] * len(chunk),
                 [f"wf:{flow_id}:emit:{c.map_index}:{c.step_key}" for c in chunk],
+                # THE CHILDREN'S DISPATCH COHORT (the wf fairness stamp):
+                # one cohort per run (the flow_id), the fork's own law at
+                # the page inserts.
+                [str(flow_id)] * len(chunk),
             )
         except asyncpg.UniqueViolationError as exc:
             raise PageDivergedError(

@@ -91,12 +91,13 @@ async def _seed_terminal_node(conn: asyncpg.Connection, schema: str, flow_id: Jo
     node_id = new_uuid()
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, finished_at) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'succeeded', $2, $3, "
-        "clock_timestamp() - $4::interval)",
+        "retry_kind, status, step_key, metadata, fairness_key, finished_at) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'succeeded', $2, $3, $4, "
+        "clock_timestamp() - $5::interval)",
         node_id,
         "done",
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
         _OLD,
     )
     return JobId(node_id)
@@ -581,10 +582,10 @@ async def _bulk_node(conn: asyncpg.Connection, schema: str, flow_id: JobId, *, s
     reconstruct 'complete' — the node row survives retention)."""
     await conn.executemany(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, finished_at) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, 'done', $3::jsonb, "
+        "retry_kind, status, step_key, metadata, fairness_key, finished_at) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, 'done', $3::jsonb, $4, "
         "clock_timestamp() - interval '2 hours')",
-        [(new_uuid(), status, json.dumps({"flow_id": str(flow_id)}))],
+        [(new_uuid(), status, json.dumps({"flow_id": str(flow_id)}), str(flow_id))],
     )
 
 
@@ -818,13 +819,15 @@ async def test_node_progress_orphan_legs_are_honest(
     await _seed_progress(wf_conn, wf_schema, JobId(new_uuid()), age=_OLD, channel="user")
     # (iii) a node whose flow_id points at a NON-root job.
     stamped_to_non_root = new_uuid()
+    foreign_flow = str(new_uuid())  # the flow row does not exist
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata) "
+        "retry_kind, status, step_key, metadata, fairness_key) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'compute', "
-        "$2::jsonb)",
+        "$2::jsonb, $3)",
         stamped_to_non_root,
-        json.dumps({"flow_id": str(new_uuid())}),  # the flow row does not exist
+        json.dumps({"flow_id": foreign_flow}),
+        foreign_flow,  # the stamp IS the flow link (the CHECK's own law)
     )
     await _seed_progress(wf_conn, wf_schema, JobId(stamped_to_non_root), age=_OLD, channel="user")
     # (c) a node whose pointee IS a live root.
@@ -1191,10 +1194,10 @@ async def _seed_rootless_story(
         orphans = [_pk_uuid(high=True, i=i) for i in range(1, _ORPHAN_N + 1)]
         await conn.executemany(
             f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, metadata) "
+            "retry_kind, status, step_key, metadata, fairness_key) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'compute', "
-            "$2::jsonb)",
-            [(k, json.dumps({"flow_id": str(live_root)})) for k in front],
+            "$2::jsonb, $3)",
+            [(k, json.dumps({"flow_id": str(live_root)}), str(live_root)) for k in front],
         )
         await conn.executemany(
             f'INSERT INTO "{schema}".wf_node_progress (node_id, channel, pct, updated_at) '

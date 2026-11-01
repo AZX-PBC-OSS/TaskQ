@@ -361,6 +361,15 @@ class RateLimitRegistry:
         # evict_idle_keyed_rate_limits() to bound registry growth under
         # high key cardinality. Never consulted by acquire_for_actor.
         self._keyed_rate_limit_last_used: dict[str, float] = {}
+        # The workflow surface's declared keyed refs, collected at boot
+        # (the collect passes register them), keyed by base_name. A
+        # fork-stamped CONCRETE name ("base:key") on a workflow row
+        # resolves back through these decls at claim: the matching ref
+        # (longest base_name wins) provides the bucket's config, the key
+        # parses out of the name, and the primitive materializes with
+        # the same arms the payload-derived path runs.
+        self._keyed_rate_limit_refs: dict[str, KeyedRateLimitRef] = {}
+        self._keyed_reservation_refs: dict[str, KeyedReservationRef] = {}
         # Schema of the rate_limit_buckets row each keyed rate limit
         # published, captured at publish time, a TokenBucket carries no
         # schema of its own (unlike ConcurrencyReservation), so this is
@@ -521,6 +530,113 @@ class RateLimitRegistry:
             kind="rate_limit",
             name=name,
         )
+
+    def _refuse_prefix_base_name(
+        self,
+        refs: "dict[str, KeyedRateLimitRef] | dict[str, KeyedReservationRef]",
+        base_name: str,
+    ) -> None:
+        """The keyed-name space's unambiguity law: a base_name that is a
+        ``:``-prefix of another registered ref's base_name (or the
+        reverse) makes the concrete-name match ambiguous — a fork-stamped
+        ``base:key`` would resolve to the WRONG ref by the longest-match,
+        silently re-binding the child to a different bucket config (the
+        over-admission). The second registration refuses, naming both
+        refs; the registered ref stays."""
+        for other_base in refs:
+            if other_base.startswith(base_name + ":") or base_name.startswith(other_base + ":"):
+                raise ValueError(
+                    f"keyed ref base_name {base_name!r} is a ':'-prefix of the "
+                    f"registered base_name {other_base!r} (or the reverse) — "
+                    "the concrete-name match would be ambiguous and the "
+                    "longest-match would re-bind a fork-stamped child to the "
+                    "wrong ref's config (a silent over-admission). Choose "
+                    "base_names that are not ':'-prefixes of one another "
+                    "(e.g. 'tenant-api' and 'tenant-api-v2' are fine; "
+                    "'tenant' and 'tenant:api' are not)."
+                )
+
+    def _match_keyed_ref(
+        self,
+        refs: "dict[str, KeyedRateLimitRef] | dict[str, KeyedReservationRef]",
+        name: str,
+    ) -> tuple[KeyedRateLimitRef | KeyedReservationRef, str] | None:
+        """Parse a fork-stamped concrete name back to its declared ref
+        and key: the declared refs whose ``base_name`` prefixes the name
+        compete, the LONGEST base_name wins (':' is a legal key
+        character, so one ref's base_name can be a prefix of another's
+        concrete name), and the remainder is the key. The key re-runs
+        the acquisition-path validation (non-empty, length, charset) —
+        a malformed remainder is no match (the caller's unknown-name arm
+        handles it). ``None`` when no declared ref claims the name."""
+        candidates = sorted(
+            (base for base in refs if name.startswith(base + ":")),
+            key=len,
+            reverse=True,
+        )
+        if not candidates:
+            return None
+        base = candidates[0]
+        key = name[len(base) + 1 :]
+        try:
+            validated = self._validate_keyed_key(key, f"concrete name {name!r}")
+        except ValueError:
+            return None
+        return refs[base], validated
+
+    def register_keyed_reservation_ref(self, ref: KeyedReservationRef) -> None:
+        """The reservation twin of :meth:`register_keyed_rate_limit_ref`
+        (the prefix law included)."""
+        self._refuse_prefix_base_name(self._keyed_reservation_refs, ref.base_name)
+        existing = self._keyed_reservation_refs.get(ref.base_name)
+        if existing is not None:
+            if existing.slots == ref.slots and existing.lease == ref.lease:
+                return
+            raise ValueError(
+                f"KeyedReservationRef(base_name={ref.base_name!r}) is declared "
+                f"with two different configs (existing slots={existing.slots}, "
+                f"lease={existing.lease}; new slots={ref.slots}, "
+                f"lease={ref.lease}) — one config per base_name (the "
+                "registry's own duplicate-name law); give the differing "
+                "declaration its own base_name."
+            )
+        self._keyed_reservation_refs[ref.base_name] = ref
+
+    def register_keyed_rate_limit_ref(self, ref: KeyedRateLimitRef) -> None:
+        """Register the workflow surface's declared keyed rate-limit ref
+        (the boot collect's own call), keyed by ``base_name``.
+
+        Same-base/same-config is the idempotent no-op; same-base with a
+        different config raises ``ValueError`` (the duplicate-name law —
+        one config per base_name, the same rule the concrete entries
+        keep). A base_name that is a ``:``-prefix of another registered
+        ref's base_name raises too: the concrete-name match would be
+        ambiguous (one ref's ``base:key`` can be another's
+        ``base:key:key``), and the longest-match would silently re-bind
+        a fork-stamped child to the WRONG ref's config. The ref is a
+        DECLARATION, never a live bucket: its concrete names materialize
+        per claim through :meth:`materialize_keyed_rate_limits`.
+        """
+        self._refuse_prefix_base_name(self._keyed_rate_limit_refs, ref.base_name)
+        existing = self._keyed_rate_limit_refs.get(ref.base_name)
+        if existing is not None:
+            if (
+                existing.capacity == ref.capacity
+                and existing.refill_per_second == ref.refill_per_second
+                and existing.backend == ref.backend
+            ):
+                return
+            raise ValueError(
+                f"KeyedRateLimitRef(base_name={ref.base_name!r}) is declared "
+                "with two different configs (existing capacity="
+                f"{existing.capacity}, refill_per_second="
+                f"{existing.refill_per_second}, backend={existing.backend!r}; "
+                f"new capacity={ref.capacity}, refill_per_second="
+                f"{ref.refill_per_second}, backend={ref.backend!r}) — one "
+                "config per base_name (the registry's own duplicate-name law); "
+                "give the differing declaration its own base_name."
+            )
+        self._keyed_rate_limit_refs[ref.base_name] = ref
 
     def _register_reservation_unchecked(
         self,
@@ -764,6 +880,66 @@ class RateLimitRegistry:
                 validation_errors=errs,
             ) from exc
 
+    async def materialize_keyed_rate_limits(
+        self,
+        names: Sequence[str],
+        *,
+        settings: "WorkerSettings | None",
+        pg_pool: "asyncpg.Pool | None" = None,
+    ) -> list[str]:
+        """Materialize the workflow rows' fork-stamped keyed rate-limit
+        names (``"base:key"``) against the declared refs, registering
+        each concrete bucket on first sight — the same lazy
+        registration, recency tracking, entry cap and opportunistic
+        eviction the payload-derived path
+        (:meth:`_resolve_rate_limit_name`) runs. Returns the names that
+        resolve to NO declared ref (or carry a malformed key) — the
+        caller's unknown-bucket arm owns them."""
+        unresolved: list[str] = []
+        for name in names:
+            if self.has_rate_limit(name):
+                continue
+            match = self._match_keyed_ref(self._keyed_rate_limit_refs, name)
+            if match is None:
+                unresolved.append(name)
+                continue
+            rl_ref, key = match
+            if not isinstance(rl_ref, KeyedRateLimitRef):
+                unresolved.append(name)
+                continue
+            await self._materialize_keyed_rate_limit(
+                rl_ref, key, settings=settings, pg_pool=pg_pool
+            )
+        return unresolved
+
+    async def materialize_keyed_reservations(
+        self,
+        names: Sequence[str],
+        *,
+        settings: "WorkerSettings | None",
+        pg_pool: "asyncpg.Pool | None" = None,
+    ) -> list[str]:
+        """The reservation twin of :meth:`materialize_keyed_rate_limits`:
+        the concrete reservation materializes with its ``ensure_slots``
+        pass (the acquire precondition — a freshly registered
+        reservation without slot rows denies every acquire forever)."""
+        unresolved: list[str] = []
+        for name in names:
+            if self.has_reservation(name):
+                continue
+            match = self._match_keyed_ref(self._keyed_reservation_refs, name)
+            if match is None:
+                unresolved.append(name)
+                continue
+            res_ref, key = match
+            if not isinstance(res_ref, KeyedReservationRef):
+                unresolved.append(name)
+                continue
+            await self._materialize_keyed_reservation(
+                res_ref, key, settings=settings, pg_pool=pg_pool
+            )
+        return unresolved
+
     async def _resolve_reservation_name(
         self,
         ref: "str | KeyedReservationRef",
@@ -845,6 +1021,24 @@ class RateLimitRegistry:
                 "payload was provided to derive its key from"
             )
         key = self._derive_keyed_key(ref, payload, empty_key_msg="an empty key or non-string value")
+        return await self._materialize_keyed_reservation(
+            ref, key, settings=settings, pg_pool=pg_pool
+        )
+
+    async def _materialize_keyed_reservation(
+        self,
+        ref: KeyedReservationRef,
+        key: str,
+        *,
+        settings: "WorkerSettings | None",
+        pg_pool: "asyncpg.Pool | None",
+    ) -> str:
+        """The concrete reservation's materialization arms — the
+        payload-derived path's and the fork-stamped concrete-name path's
+        shared core: the entry cap with the opportunistic eviction, the
+        lazy registration with its ``ensure_slots`` pass and unwind, the
+        collision guard and the recency refresh on reuse. ``key``
+        arrives already validated."""
         concrete_name = f"{ref.base_name}:{key}"
         # The cap bounds keyed-materialized GROWTH. It must not fire when
         # the concrete name already exists, neither for a tracked keyed
@@ -1026,6 +1220,24 @@ class RateLimitRegistry:
                 "payload was provided to derive its key from"
             )
         key = self._derive_keyed_key(ref, payload)
+        return await self._materialize_keyed_rate_limit(
+            ref, key, settings=settings, pg_pool=pg_pool
+        )
+
+    async def _materialize_keyed_rate_limit(
+        self,
+        ref: KeyedRateLimitRef,
+        key: str,
+        *,
+        settings: "WorkerSettings | None",
+        pg_pool: "asyncpg.Pool | None" = None,
+    ) -> str:
+        """The concrete token bucket's materialization arms — the
+        payload-derived path's and the fork-stamped concrete-name path's
+        shared core: the entry cap with the opportunistic eviction, the
+        lazy registration with its PG publish, the collision guard and
+        the recency refresh on reuse. ``key`` arrives already
+        validated."""
         concrete_name = f"{ref.base_name}:{key}"
         # The cap bounds keyed-materialized GROWTH. It must not fire when
         # the concrete name already exists, neither for a tracked keyed

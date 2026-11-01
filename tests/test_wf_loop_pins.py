@@ -239,9 +239,9 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
         loop_id = new_uuid()
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+            "retry_kind, status, step_key, metadata, fairness_key, budget_deadline, budget_paused) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
-            "$2::jsonb, now() - interval '1 hour', $3)",
+            "$2::jsonb, $3, now() - interval '1 hour', $4)",
             loop_id,
             json.dumps(
                 {
@@ -251,6 +251,7 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
                     "max_iterations": 100,
                 }
             ),
+            str(flow_id),
             paused,
         )
     # THE ARM: the paused row is invisible; the un-paused row fires.
@@ -512,11 +513,12 @@ async def test_consume_budget_dragon_red_forever(
     loop_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+        "retry_kind, status, step_key, metadata, fairness_key, budget_deadline, budget_paused) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
-        "$2::jsonb, now() - interval '1 hour', true)",
+        "$2::jsonb, $3, now() - interval '1 hour', true)",
         loop_id,
         json.dumps({"flow_id": str(flow_id), "kind": "loop", "iteration": 0}),
+        str(flow_id),
     )
     await sweep_loop_budget(wf_pool, runner.wsql)
     status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', loop_id)
@@ -567,11 +569,12 @@ async def test_carry_optimistic_apply_dragon_red_forever(
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, budget_paused) "
+        "retry_kind, status, step_key, metadata, fairness_key, budget_paused) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
-        "$2::jsonb, true)",
+        "$2::jsonb, $3, true)",
         loop_id,
         metadata,
+        str(flow_id),
     )
     # The resumed loop's own advance (the driver's path) moves the
     # counter ONCE: the metadata's iteration reads 2 after one
@@ -808,10 +811,10 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
     loop_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, locked_by_worker, attempt, "
+        "retry_kind, status, step_key, metadata, fairness_key, locked_by_worker, attempt, "
         "claim_epoch, deps_pending) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
-        "$2::jsonb, $3, 6, 4, 0)",
+        "$2::jsonb, $3, $4, 6, 4, 0)",
         loop_id,
         json.dumps(
             {
@@ -822,6 +825,7 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
                 "carry": {"acc": 3},
             }
         ),
+        str(flow_id),
         fresh,
     )
     await wf_conn.execute(

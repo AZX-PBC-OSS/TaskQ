@@ -20,7 +20,7 @@ concurrently without seeing each other's wiring.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import timedelta
@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from taskq.actor_config import validate_capacity_owner
 from taskq.constants import check_priority_domain
-from taskq.ratelimit.refs import KeyedRateLimitRef
+from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
@@ -116,34 +116,136 @@ SkipPredicate = Callable[[dict[str, object]], bool]
 #: THE AUTHORING UNION for the per-step admission terms (CURE 2 — the
 #: vanilla ``@actor``'s own ``rate_limits=`` shapes): a primitive
 #: instance, a plain name (resolved against the worker's registry — W2's
-#: warning register when nothing registers it), or a keyed ref. The KEYED
-#: REF is refused on the WORKFLOW surface (the wiring verbs' loud door):
-#: its concrete bucket materializes per payload, and the fork stamps
-#: NAMES onto the child rows — a declaration that cannot name what it
-#: stamps is the admitted-never-limited lie wearing the signature.
+#: warning register when nothing registers it), or a keyed ref. The
+#: keyed ref's concrete bucket is resolved PER CHILD — ``key_fn`` runs
+#: against each child's declared payload at the fork/static-insert and
+#: the concrete name (``f"{base_name}:{key}"``) is what stamps the row.
 RateLimitDecl = str | KeyedRateLimitRef | TokenBucket | SlidingWindow
 
 
 def rate_limit_names(
     decls: tuple[RateLimitDecl, ...], *, what: str = "rate_limits"
 ) -> tuple[str, ...]:
-    """The DECLARATION's concrete bucket NAMES — the fork's stamp source:
-    an instance contributes its ``.name`` (the registry's own
-    normalization, ``acquire_for_actor``'s), a plain name passes through.
-    A keyed ref is the REFUSED shape (the union's own docstring) — the
-    wiring verbs call this helper, so the refusal lands at the wiring
-    site, before any row exists."""
+    """The DECLARATION's concrete bucket NAMES — one stamp source: an
+    instance contributes its ``.name`` (the registry's own
+    normalization, ``acquire_for_actor``'s), a plain name passes
+    through, and a keyed ref contributes NO static name — its concrete
+    bucket resolves per child from the child's own payload at the
+    fork/static-insert (:func:`keyed_rate_limit_names`), so a declaration
+    that cannot name a static bucket is admitted with its resolution
+    deferred to the only site that holds the payload."""
     names: list[str] = []
     for entry in decls:
         if isinstance(entry, KeyedRateLimitRef):
-            raise WorkflowBuildError(
-                f"{what}: a KeyedRateLimitRef names no concrete bucket — "
-                "its bucket materializes PER PAYLOAD, and a workflow row's "
-                "admission terms are stamped as NAMES at the fork. Declare "
-                "the static buckets (rate_limits=[TokenBucket(...)]) or "
-                "route the keyed shape through a vanilla @actor."
-            )
+            continue
         names.append(entry.name if isinstance(entry, TokenBucket | SlidingWindow) else entry)
+    return tuple(names)
+
+
+def _keyed_key_fn_arg(
+    ref: KeyedRateLimitRef | KeyedReservationRef, payloads: Sequence[object], *, what: str
+) -> BaseModel:
+    """The keyed ref's ``key_fn`` argument: the child's DECLARED payload
+    values (in the order the body's signature binds them) validated
+    through the ref's ``payload_type`` — the registry's own conversion
+    law (a same-type model instance passes through by identity, a
+    different model re-validates through its dump, a raw dict validates
+    directly); the first value the type validates provides the key. No
+    value validates → :class:`WorkflowBuildError` naming *what* (the
+    step/child) — the fork's loud death, the row never lands
+    half-stamped."""
+    from pydantic import ValidationError
+
+    for payload in payloads:
+        if isinstance(payload, ref.payload_type):
+            return payload
+    last: ValidationError | None = None
+    for payload in payloads:
+        try:
+            if isinstance(payload, BaseModel):
+                return ref.payload_type.model_validate(payload.model_dump(by_alias=True))
+            return ref.payload_type.model_validate(payload)  # type: ignore[invalid-argument-type]  # Why: the raw-dict/raw-JSON arm — model_validate rejects non-dict shapes itself, the same boundary the registry's conversion runs.
+        except ValidationError as exc:
+            last = exc
+    received = ", ".join(type(p).__name__ for p in payloads) or "no values"
+    raise WorkflowBuildError(
+        f"{what}: {type(ref).__name__}(base_name={ref.base_name!r})'s "
+        f"payload_type={ref.payload_type.__name__} cannot validate this "
+        f"child's payload ({received}) — a child whose key cannot resolve "
+        "fails the fork loudly, never a half-stamped row"
+    ) from last
+
+
+def _keyed_concrete_name(
+    entry: KeyedRateLimitRef | KeyedReservationRef, model: BaseModel, *, what: str
+) -> str:
+    """ONE keyed decl's concrete name for one child: ``key_fn`` runs
+    against the validated model and the key re-runs the acquisition-path
+    validation — a non-string/empty key, an over-length key, or a key
+    outside the charset law is the child's LOUD refusal (the registry's
+    own key law, mirrored here because the fork resolves without a
+    registry)."""
+    # The private constants' home owns the keyed charset/length law; the
+    # workflows surface resolves the keys at the fork, before any
+    # registry exists in the process.
+    from taskq.constants import (  # pyright: ignore[reportPrivateUsage]  # Why: the constants' home's law — the fork resolves the keys before any registry exists in the process.
+        _KEYED_KEY_RE,  # pyright: ignore[reportPrivateUsage]  # Why: the import's own line carries the private-usage boundary.
+        _MAX_KEYED_KEY_LEN,  # pyright: ignore[reportPrivateUsage]  # Why: the same.
+    )
+
+    raw = entry.key_fn(model)  # type: ignore[arg-type]  # Why: key_fn is declared Callable[[BaseModel], str]; the arg IS a validated instance of entry.payload_type (a BaseModel subclass) — the registry's own unsound-by-declaration contract.
+    if not isinstance(raw, str) or not raw:  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: key_fn is CALLER code — its declared ``str`` return is verified at runtime, never trusted (the registry's own key law).
+        raise WorkflowBuildError(
+            f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+            f"key_fn returned a non-string or empty key for this child's "
+            "payload — the child's concrete name cannot resolve, the fork "
+            "refuses loudly (never a half-stamped row)"
+        )
+    if len(raw) > _MAX_KEYED_KEY_LEN:
+        raise WorkflowBuildError(
+            f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+            f"key_fn returned a key of length {len(raw)} for this child's "
+            f"payload, past the maximum of {_MAX_KEYED_KEY_LEN} — the "
+            "child's concrete name cannot resolve, the fork refuses loudly "
+            "(never a half-stamped row)"
+        )
+    if not _KEYED_KEY_RE.match(raw):
+        raise WorkflowBuildError(
+            f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+            f"key_fn returned key {raw!r} for this child's payload, outside "
+            "the allowed set [A-Za-z0-9_\\-:.] — the child's concrete name "
+            "cannot resolve, the fork refuses loudly (never a half-stamped row)"
+        )
+    return f"{entry.base_name}:{raw}"
+
+
+def keyed_rate_limit_names(
+    decls: tuple[RateLimitDecl, ...], payloads: Sequence[object], *, what: str = "rate_limits"
+) -> tuple[str, ...]:
+    """The KEYED decls' concrete bucket names, resolved from ONE child's
+    declared payload values — the per-child stamp source: each
+    :class:`KeyedRateLimitRef`'s ``payload_type`` validates the values
+    (in the order the body's signature binds them; see
+    :func:`_keyed_key_fn_arg`), ``key_fn`` derives the key, and the key
+    re-runs the acquisition-path validation. A payload that fails
+    validation raises :class:`WorkflowBuildError` naming *what* (the
+    child) — the fork dies loudly, the row never lands half-stamped."""
+    names: list[str] = []
+    for entry in decls:
+        if not isinstance(entry, KeyedRateLimitRef):
+            continue
+        model = _keyed_key_fn_arg(entry, payloads, what=what)
+        try:
+            names.append(_keyed_concrete_name(entry, model, what=what))
+        except WorkflowBuildError:
+            raise
+        except Exception as exc:
+            raise WorkflowBuildError(
+                f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+                f"key_fn could not resolve this child's key from its payload "
+                f"({type(exc).__name__}: {exc}) — a child whose key cannot "
+                "resolve fails the fork loudly, never a half-stamped row"
+            ) from exc
     return tuple(names)
 
 
@@ -182,31 +284,77 @@ def reservation_names(decls: tuple[object, ...], *, what: str = "reservations") 
     loud door — ``rate_limit_names``' own pattern): a
     :class:`ConcurrencyReservation` instance contributes its ``.name``, a
     plain name (``str`` — the vanilla face's registry-name shape) passes
-    through, and ANYTHING ELSE — a :class:`KeyedReservationRef` above
-    all — is the REFUSED shape: its concrete bucket materializes per
-    payload, and a workflow row's strict cap is stamped as NAMES at the
-    fork — a declaration that cannot name what it stamps would be the
-    silently-dropped cap (the admitted-never-limited lie). The wiring
-    verbs call this helper, so the refusal lands at the wiring site,
-    before any row exists."""
+    through, and a :class:`KeyedReservationRef` contributes NO static
+    name — its concrete reservation resolves per child from the child's
+    own payload at the fork/static-insert
+    (:func:`keyed_reservation_names`), so a declaration that cannot name
+    a static bucket is admitted with its resolution deferred to the only
+    site that holds the payload."""
     names: list[str] = []
     for entry in decls:
         if isinstance(entry, ConcurrencyReservation):
             names.append(entry.name)
         elif isinstance(entry, str):
             names.append(entry)
-        else:
-            raise WorkflowBuildError(
-                f"{what}: a {type(entry).__name__} names no concrete "
-                "reservation — its bucket materializes PER PAYLOAD, and a "
-                "workflow row's strict cap is stamped as NAMES at the fork; "
-                "the keyed shape would be silently dropped here (the "
-                "admitted-never-limited lie). Declare the static "
-                "reservations (ConcurrencyReservation instances or their "
-                "registered names) or route the keyed shape through a "
-                "vanilla @actor."
-            )
     return tuple(names)
+
+
+def keyed_reservation_names(
+    decls: tuple[object, ...], payloads: Sequence[object], *, what: str = "reservations"
+) -> tuple[str, ...]:
+    """The KEYED capacity decls' concrete reservation names, resolved
+    from ONE child's declared payload values —
+    ``keyed_rate_limit_names``' own law on the strict-cap face:
+    ``payload_type`` validates, ``key_fn`` derives, the key re-runs the
+    acquisition-path validation, and a payload that cannot resolve
+    raises :class:`WorkflowBuildError` naming *what* (the child) — the
+    fork dies loudly, never a half-stamped row."""
+    names: list[str] = []
+    for entry in decls:
+        if not isinstance(entry, KeyedReservationRef):
+            continue
+        model = _keyed_key_fn_arg(entry, payloads, what=what)
+        try:
+            names.append(_keyed_concrete_name(entry, model, what=what))
+        except WorkflowBuildError:
+            raise
+        except Exception as exc:
+            raise WorkflowBuildError(
+                f"{what}: {type(entry).__name__}(base_name={entry.base_name!r})'s "
+                f"key_fn could not resolve this child's key from its payload "
+                f"({type(exc).__name__}: {exc}) — a child whose key cannot "
+                "resolve fails the fork loudly, never a half-stamped row"
+            ) from exc
+    return tuple(names)
+
+
+def _refuse_unbound_keyed_reservations(source_node: object, *, what: str) -> None:
+    """The fan-out source's reservation-cohort door: the source's
+    declared reservations stamp the source's OWN row (resolved once at
+    create — the run's input and the source step's declared args) and
+    the fork's children RIDE the source row's already-resolved names —
+    ONE concrete bucket for the run. A keyed reservation whose
+    ``payload_type`` binds NONE of the source step's declared data args
+    cannot resolve on that face: the per-item shape it implies (each
+    child its own bucket) is not what the cohort law stamps, so the
+    declaration refuses here, at the wiring, with the rule stated."""
+    declared = [arg for kind, arg in getattr(source_node, "args", ()) if kind == "d"]
+    for entry in getattr(source_node, "reservations", ()):
+        if not isinstance(entry, KeyedReservationRef):
+            continue
+        if not any(isinstance(arg, entry.payload_type) for arg in declared):
+            raise WorkflowBuildError(
+                f"{what}: a KeyedReservationRef(base_name={entry.base_name!r}, "
+                f"payload_type={entry.payload_type.__name__}) does not bind any "
+                "declared payload of the source step. THE RULE: a fan-out "
+                "source's children RIDE the source row's already-resolved "
+                "reservation names — one concrete bucket per RUN, resolved "
+                "from the run's input and the source step's declared args "
+                "(the run-scoped inheritance). Bind the ref to the source "
+                "step's declared payload (payload_type= the declared arg's "
+                "model), or declare the per-item cap as a keyed rate limit "
+                "on the map (rate_limits=), which resolves per child."
+            )
 
 
 #: THE HANDLE'S TERM FIELDS (the capacity surface the ``@app.actor``
@@ -1083,14 +1231,32 @@ def step[R](
             sources.append(("p", arg.key))
         else:
             sources.append(("d", arg))
-    # THE LOUD DOOR at the wiring site (the keyed-ref refusal — before
-    # any row exists); the DECLS ride the node (the boot's collect pass
-    # registers the instances, the fork stamps the names).
+    # THE DECLARATION DOOR: the static faces' names resolve here (a
+    # malformed shape is refused before any row exists); the DECLS ride
+    # the node (the boot's collect pass registers the instances, the
+    # fork stamps the per-child names).
     rate_limit_names(tuple(rate_limits), what=f"step {node_key!r}'s rate_limits")
-    # THE CAPACITY DOOR (H-A10 — the same keyed-ref refusal on the
-    # strict-cap face): a KeyedReservationRef in reservations= is the
-    # refused shape — never a silently-dropped cap.
     reservation_names(tuple(reservations), what=f"step {node_key!r}'s reservations")
+    # THE KEYED FACE'S RESOLVABILITY LAW: a keyed ref resolves from the
+    # row's DECLARED payload. A node with parents resolves its body args
+    # from the parent RESULTS at dispatch — no payload exists at create,
+    # so a keyed declaration there could never stamp an honest name:
+    # refused at the wiring (the keyed shapes declare on the entry step
+    # — the run input — or on a map/route fan-out, where each child's
+    # own payload resolves the key).
+    if keys and any(
+        isinstance(entry, KeyedRateLimitRef | KeyedReservationRef)
+        for entry in (*rate_limits, *reservations)
+    ):
+        raise WorkflowBuildError(
+            f"step {node_key!r}: a keyed admission term (KeyedRateLimitRef/"
+            "KeyedReservationRef) is declared on a node whose payload "
+            "resolves from its parent results at dispatch — the child's key "
+            "cannot resolve at create, so the row could never carry an "
+            "honest concrete name. Declare the keyed shape on the entry "
+            "step (the run input) or on a map/route fan-out (each child's "
+            "own payload resolves the key)."
+        )
     graph.add(
         NodeDecl(
             key=node_key,
@@ -1246,6 +1412,7 @@ def map_source[S, R](
             "finalizes once (one fork); wire the second map or route "
             "from a distinct source"
         )
+    _refuse_unbound_keyed_reservations(source_node, what=f"map_source {source.key!r}")
     source_node.map_item = body
     source_node.map_queue = queue
     source_node.map_max_attempts = max_attempts
@@ -1385,6 +1552,26 @@ def _attach_route[S](
         # exactly one of the two names, validated at the wiring both
         # this lower and the map_source dict form share.
         validate_capacity_owner(arm.capacity_owner, what=f"route arm {tag!r}'s")
+        # THE ARM'S RESERVATION-COHORT DOOR: an arm declares no payload
+        # of its own — a keyed reservation in an arm's ``reservations=``
+        # could only re-derive per element (the per-item bucket the
+        # cohort law never stamps). Refused at the wiring, the rule
+        # stated: the source step's own face resolves the run's cohort,
+        # the arms ride it.
+        for entry in arm.reservations:
+            if isinstance(entry, KeyedReservationRef):
+                raise WorkflowBuildError(
+                    f"route arm {tag!r}: a KeyedReservationRef(base_name="
+                    f"{entry.base_name!r}) in an arm's reservations= is the "
+                    "refused declaration — an arm declares no payload of its "
+                    "own, so the ref could only re-derive per element (a "
+                    "per-item bucket the run's cohort law never stamps). "
+                    "THE RULE: a fan-out source's children RIDE the source "
+                    "row's already-resolved reservation names — one concrete "
+                    "bucket per RUN. Declare the keyed reservation on the "
+                    "source step (its declared payload face resolves it), "
+                    "and the arms ride the source's cohort."
+                )
         normalized[tag] = arm
     graph = source.graph
     source_node = graph.nodes.get(source.key)
@@ -1398,6 +1585,49 @@ def _attach_route[S](
             f"node {source.key!r} already carries a map or a route — a node "
             "finalizes once (one fork); wire the second from a distinct source"
         )
+    _refuse_unbound_keyed_reservations(source_node, what=f"route {source.key!r}")
+    # THE OVERRIDE'S CAP DOOR (H-A4's own law, the source's keyed
+    # reservation's face): an arm overriding the ACTOR stamps none of the
+    # source's reservation names (a different cohort — inheriting the
+    # source's cap onto it would be the silent lie) — so the override
+    # would silently drop the run's own keyed cap: the arm's children
+    # running OUTSIDE the run's per-run bucket. The same law the capped
+    # handle keeps (an override may not drop a cap silently): the wiring
+    # refuses.
+    for tag, arm in normalized.items():
+        if (
+            arm.actor is not None
+            and arm.actor != source_node.actor
+            and any(isinstance(entry, KeyedReservationRef) for entry in source_node.reservations)
+        ):
+            raise WorkflowBuildError(
+                f"route arm {tag!r} overrides the actor to {arm.actor!r} while "
+                f"the source step {source.key!r} declares a keyed reservation — "
+                "the override drops the run's own cap: the arm's children "
+                "would run OUTSIDE the run's per-run bucket (a different "
+                "cohort stamps none of the source's names). THE RULE: the "
+                "run's cap holds or the wiring refuses — keep the arms on "
+                "the source's actor (they ride the source's cohort), or "
+                "split the arm onto its own step with its own declared cap."
+            )
+        # THE ARM'S OWN NAMES FACE (the same door): a same-actor arm
+        # declaring its OWN reservation names stamps ITS names on the
+        # arm's rows — the source's keyed run cap never rides them (the
+        # arm's rows leave the run's cohort). The override law's other
+        # face: the run's cap holds or the wiring refuses.
+        if arm.reservations and any(
+            isinstance(entry, KeyedReservationRef) for entry in source_node.reservations
+        ):
+            raise WorkflowBuildError(
+                f"route arm {tag!r} declares its own reservations while the "
+                f"source step {source.key!r} declares a keyed reservation — "
+                "the arm's own names replace the run's keyed cap on the "
+                "arm's rows (the silent drop of the run's per-run bucket). "
+                "THE RULE: the run's cap holds or the wiring refuses — "
+                "either keep the source's (drop the arm's own "
+                "reservations= so the arm rides the source's cohort), or "
+                "put the arm on its own step with its own declared cap."
+            )
     if source_node.cache:
         # THE ROUTE-SOURCE WEDGE'S REFUSAL (the cache-cures round's
         # CURE 1 — MERGE-BLOCKER P8f): cache=True on a typed-route
