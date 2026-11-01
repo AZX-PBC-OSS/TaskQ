@@ -21,13 +21,22 @@ second occurrence is unreachable from any later seed.
 The fall-back construction (America/New_York 2026-11-01, local 01:30 at
 both 05:30Z and 06:30Z - the same construction the time-semantics file
 uses for the non-singleton pin) is driven at real PG across the tick
-sequence a real leader would run: the pre-overlap tick (real wall clock,
-a within-window catch-up seed), then the first- and second-occurrence
-ticks with the due-check bound pinned to the overlap via
-:class:`PinnedDueConn` - the due bound is the one statement in the tick
-whose clock a test cannot otherwise reach, because the wall clock is
-months away from the overlap and a past seed makes the planning compute
-the overlap PAIR instead of landing inside it.
+sequence a real leader would run: the pre-overlap tick, then the first-
+and second-occurrence ticks. Every clock the tick reads is INJECTED
+(:class:`InjectedClockConn` pins the due bound, the planning clock and
+the batched enqueue's status decision to one explicit instant) and the
+seeds are fixed constants: the drives simulate the wall clock AT the
+pinned instants instead of anchoring to the live one. The first version
+of these scenarios seeded ``server_now() - 5min`` and ran the
+pre-overlap tick on the live clock - correct only while the real clock
+remained before the overlap, and armed the moment it crossed
+2026-11-01 05:30Z (the fold-0 occurrence itself): the walk from a
+post-fold seed answers 06:30Z fold-1 (or next year past the whole
+overlap), the pre-overlap shape became unreachable, and the family went
+red on the wall calendar alone. The engine's answers at every one of
+those instants are CORRECT (the fold-0 occurrence is genuinely spent
+once now is past it) - the defect was the test's own clock anchoring,
+which is what the injection removes.
 """
 
 from __future__ import annotations
@@ -47,13 +56,13 @@ from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
 
 from .test_rt_cron_harness import (
+    InjectedClockConn,
     count_jobs,
     cron_settings,
     make_backend,
     schedule_row,
     seed_actor_config,
     seed_schedule,
-    server_now,
 )
 
 pytestmark = pytest.mark.integration
@@ -85,47 +94,19 @@ _FOLD1_TICKS_UTC = [
     datetime(2026, 11, 1, 6, 2, tzinfo=UTC),
 ]
 
+# The scenario's injected "now": every seed and every tick clock in the
+# pre-overlap scenarios below reads this explicit instant. It is a control
+# point far from any DST transition (Saturday mid-afternoon UTC, the day
+# before the 2026 fall-back) and 9.5 hours before the fold-0 occurrence, so
+# a slot seeded 5 minutes "overdue" against it is a within-window catch-up
+# whose walk answers the overlap PAIR - the pre-overlap shape the
+# assertions encode. The first version of these scenarios read this instant
+# from the live server clock (``server_now() - 5min``) and ran the
+# pre-overlap tick on the live clock: correct only while the wall clock
+# remained before the overlap, armed when it crossed 2026-11-01 05:30Z.
+_SCENARIO_NOW_UTC = datetime(2026, 10, 31, 20, 0, tzinfo=UTC)
+
 _SINGLETON_POLICIES = {_SINGLETON_ACTOR: ActorFirePolicy(singleton=True)}
-
-
-class PinnedDueConn:
-    """Delegates to a real connection except the tick's due-check bound.
-
-    The tick's driving SELECT is the only statement whose
-    ``statement_timestamp()`` decides WHICH rows are due; rewriting that
-    one bound to a pinned instant simulates the wall clock reaching the
-    2026-11-01 overlap, which a test otherwise cannot (the real clock is
-    months away, and seeding a PAST ``next_fire_at`` makes the planning
-    compute the overlap PAIR - the pre-overlap tick shape - instead of a
-    fire landing inside the overlap).  Every other statement - the
-    advisory-lock probe, the planning clock read, the policy preflights,
-    the batched enqueue and the schedule UPDATEs - runs against real PG
-    with real values on this same connection.
-    """
-
-    def __init__(self, conn: asyncpg.Connection, due_as_of: datetime) -> None:
-        self._conn = conn
-        self._due_as_of = due_as_of
-
-    async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
-        if "next_fire_at <= statement_timestamp()" in sql:
-            sql = sql.replace(
-                "statement_timestamp()",
-                f"'{self._due_as_of.isoformat()}'::timestamptz",
-            )
-        return await self._conn.fetch(sql, *args)
-
-    async def fetchrow(self, sql: str, *args: object) -> asyncpg.Record | None:
-        return await self._conn.fetchrow(sql, *args)
-
-    async def fetchval(self, sql: str, *args: object) -> object | None:
-        return await self._conn.fetchval(sql, *args)
-
-    async def execute(self, sql: str, *args: object) -> object:
-        return await self._conn.execute(sql, *args)
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._conn, name)
 
 
 async def _tick(
@@ -134,13 +115,22 @@ async def _tick(
     schema: str,
     policies: Mapping[str, ActorFirePolicy],
     *,
-    due_as_of: datetime | None = None,
+    due_as_of: datetime,
 ) -> int:
-    """One tick in its own transaction; *due_as_of* pins the due bound."""
-    tick_conn: object = PinnedDueConn(conn, due_as_of) if due_as_of is not None else conn
+    """One tick in its own transaction; *due_as_of* is the tick's injected clock.
+
+    Every clock read inside the tick - the due bound, the planning clock
+    (``server_now``, the catch-up cutoff's anchor and every walk seed) and
+    the batched enqueue's status decision - sees *due_as_of* via
+    :class:`InjectedClockConn`: the drives below simulate the wall clock AT
+    ``due_as_of`` rather than anchoring any part of the scenario to the
+    live one.  Every call site passes it; a tick whose clock is not
+    injected is the wall-calendar bomb this file went red with on
+    2026-11-01.
+    """
     async with conn.transaction():
         return await tick_cron(
-            tick_conn,  # type: ignore[arg-type]  # Why: either the real connection or the due-bound-pinning wrapper whose awaited protocol methods are all typed above.
+            InjectedClockConn(conn, due_as_of),  # type: ignore[arg-type]  # Why: the wrapper implements the connection's awaited protocol surface the tick uses (the rest delegates through __getattr__); pyright cannot see through the delegation.
             settings,
             make_backend(settings),
             schema,
@@ -253,7 +243,7 @@ class TestSingletonDstOverlap:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
-        due_slot = await server_now(clean_pg_conn) - timedelta(minutes=5)
+        due_slot = _SCENARIO_NOW_UTC - timedelta(minutes=5)
         schedule_id = await _seed_overlap_schedule(
             clean_pg_conn,
             schema,
@@ -264,7 +254,13 @@ class TestSingletonDstOverlap:
         )
 
         with structlog.testing.capture_logs() as captured:
-            fired = await _tick(clean_pg_conn, settings, schema, _SINGLETON_POLICIES)
+            fired = await _tick(
+                clean_pg_conn,
+                settings,
+                schema,
+                _SINGLETON_POLICIES,
+                due_as_of=_SCENARIO_NOW_UTC,
+            )
 
         assert fired == 1, "the catch-up slot fires; only the second occurrence is deferred"
         assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1, (
@@ -309,7 +305,7 @@ class TestSingletonDstOverlap:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
-        due_slot = await server_now(clean_pg_conn) - timedelta(minutes=5)
+        due_slot = _SCENARIO_NOW_UTC - timedelta(minutes=5)
         schedule_id = await _seed_overlap_schedule(
             clean_pg_conn,
             schema,
@@ -319,13 +315,20 @@ class TestSingletonDstOverlap:
             identity_key="dst-chain",
         )
 
-        # Tick 1 - pre-overlap, real wall clock: the catch-up fire, deferral.
-        fired = await _tick(clean_pg_conn, settings, schema, _SINGLETON_POLICIES)
+        # Tick 1 - pre-overlap, injected clock (the scenario's control
+        # instant): the catch-up fire, deferral.
+        fired = await _tick(
+            clean_pg_conn,
+            settings,
+            schema,
+            _SINGLETON_POLICIES,
+            due_as_of=_SCENARIO_NOW_UTC,
+        )
         assert fired == 1
         assert await count_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR) == 1
         await _settle_active_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR)
 
-        # Tick 2 - the wall clock reaches the first occurrence (05:30Z); the
+        # Tick 2 - the injected clock reaches the first occurrence (05:30Z); the
         # catch-up job is terminal, so the actor is free to fire it.
         second = await _tick(
             clean_pg_conn,
@@ -345,7 +348,7 @@ class TestSingletonDstOverlap:
         )
         await _settle_active_jobs(clean_pg_conn, schema, _SINGLETON_ACTOR)
 
-        # Tick 3 - the wall clock reaches the second occurrence (06:30Z); the
+        # Tick 3 - the injected clock reaches the second occurrence (06:30Z); the
         # first occurrence's job is terminal, so the actor is free to fire it.
         third = await _tick(
             clean_pg_conn,
@@ -384,7 +387,7 @@ class TestSingletonDstOverlap:
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
         await _seed_active_singleton_job(clean_pg_conn, schema)
-        due_slot = await server_now(clean_pg_conn) - timedelta(minutes=5)
+        due_slot = _SCENARIO_NOW_UTC - timedelta(minutes=5)
         schedule_id = await _seed_overlap_schedule(
             clean_pg_conn,
             schema,
@@ -394,9 +397,16 @@ class TestSingletonDstOverlap:
             identity_key="dst-suppressed",
         )
 
-        # Tick 1 - pre-overlap, blocked: suppressed, advanced to the first
+        # Tick 1 - pre-overlap, injected clock (the scenario's control
+        # instant), blocked: suppressed, advanced to the first
         # occurrence (sequential catch-up without firing).
-        first = await _tick(clean_pg_conn, settings, schema, _SINGLETON_POLICIES)
+        first = await _tick(
+            clean_pg_conn,
+            settings,
+            schema,
+            _SINGLETON_POLICIES,
+            due_as_of=_SCENARIO_NOW_UTC,
+        )
         assert first == 0
         row = await schedule_row(clean_pg_conn, schema, schedule_id)
         assert row["next_fire_at"] == _OVERLAP_FIRST_UTC
@@ -464,7 +474,7 @@ class TestCappedDstOverlap:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _CAPPED_ACTOR)
-        due_slot = await server_now(clean_pg_conn) - timedelta(minutes=5)
+        due_slot = _SCENARIO_NOW_UTC - timedelta(minutes=5)
         schedule_id = await _seed_overlap_schedule(
             clean_pg_conn,
             schema,
@@ -476,7 +486,13 @@ class TestCappedDstOverlap:
         policies = {_CAPPED_ACTOR: ActorFirePolicy(max_pending=1)}
 
         with structlog.testing.capture_logs() as captured:
-            first = await _tick(clean_pg_conn, settings, schema, policies)
+            first = await _tick(
+                clean_pg_conn,
+                settings,
+                schema,
+                policies,
+                due_as_of=_SCENARIO_NOW_UTC,
+            )
 
         assert first == 1
         assert await count_jobs(clean_pg_conn, schema, _CAPPED_ACTOR) == 1, (
@@ -493,8 +509,8 @@ class TestCappedDstOverlap:
         assert len(deferred) == 1
         assert datetime.fromisoformat(deferred[0]["deferred_at"]) == _OVERLAP_SECOND_UTC
 
-        # Capacity frees and the wall clock reaches the deferred occurrence:
-        # it fires at its own instant.
+        # Capacity frees and the injected clock reaches the deferred
+        # occurrence: it fires at its own instant.
         await _settle_active_jobs(clean_pg_conn, schema, _CAPPED_ACTOR)
         second = await _tick(
             clean_pg_conn,
@@ -521,7 +537,7 @@ class TestCappedDstOverlap:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _CAPPED_ACTOR)
-        due_slot = await server_now(clean_pg_conn) - timedelta(minutes=5)
+        due_slot = _SCENARIO_NOW_UTC - timedelta(minutes=5)
         schedule_id = await _seed_overlap_schedule(
             clean_pg_conn,
             schema,
@@ -532,7 +548,13 @@ class TestCappedDstOverlap:
         )
         policies = {_CAPPED_ACTOR: ActorFirePolicy(max_pending=2)}
 
-        first = await _tick(clean_pg_conn, settings, schema, policies)
+        first = await _tick(
+            clean_pg_conn,
+            settings,
+            schema,
+            policies,
+            due_as_of=_SCENARIO_NOW_UTC,
+        )
         assert first == 1
         assert await count_jobs(clean_pg_conn, schema, _CAPPED_ACTOR) == 2, (
             "capacity 2 admits the whole pair - no trim may drop an occurrence that fits"
@@ -583,7 +605,7 @@ class TestOpenActorDstControl:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _OPEN_ACTOR)
-        due_slot = await server_now(clean_pg_conn) - timedelta(minutes=5)
+        due_slot = _SCENARIO_NOW_UTC - timedelta(minutes=5)
         schedule_id = await _seed_overlap_schedule(
             clean_pg_conn,
             schema,
@@ -594,7 +616,13 @@ class TestOpenActorDstControl:
         )
         policies = {_OPEN_ACTOR: ActorFirePolicy()}
 
-        first = await _tick(clean_pg_conn, settings, schema, policies)
+        first = await _tick(
+            clean_pg_conn,
+            settings,
+            schema,
+            policies,
+            due_as_of=_SCENARIO_NOW_UTC,
+        )
         assert first == 1
         assert await count_jobs(clean_pg_conn, schema, _OPEN_ACTOR) == 2, (
             "catch-up fire (pending) + second occurrence (pre-scheduled)"
@@ -662,7 +690,7 @@ class TestNonSingletonAllofOutageInsideOverlap:
         )
         no_policies: Mapping[str, ActorFirePolicy] = {}
 
-        # The post-outage tick: the wall clock has reached the fold-0
+        # The post-outage tick: the injected clock has reached the fold-0
         # occurrence, and the schedule is due exactly there.
         first = await _tick(
             clean_pg_conn,
@@ -680,7 +708,7 @@ class TestNonSingletonAllofOutageInsideOverlap:
         )
         assert await count_jobs(clean_pg_conn, schema, _OPEN_ACTOR) == 1
 
-        # The wall clock reaches the fold-1 occurrence: it fires on its own
+        # The injected clock reaches the fold-1 occurrence: it fires on its own
         # tick (nothing pre-scheduled it - this tick IS its delivery).
         second = await _tick(
             clean_pg_conn,
@@ -807,9 +835,10 @@ class TestPartialTwinCoverageFoldHandoff:
     The partial state is seeded directly: the schedule sits mid fold-1
     pass at 01:00 fold-1 with pre-queued twin jobs covering 01:05..01:59
     - the state a mid-pass leader outage with a beyond-catch-up-window
-    gap leaves behind (the harness cannot produce that gap naturally:
-    its real clock precedes the November overlap, so no slot is ever
-    beyond the window relative to the server clock the tick reads).  The
+    gap leaves behind (the drive cannot produce that gap naturally: its
+    ticks are pinned at most one window from the seeded slot, so no slot
+    is ever beyond the window relative to the injected clock the tick
+    reads).  The
     assertions are invariant-strength and ordering-agnostic: every owed
     occurrence lands exactly once, no instant holds two jobs, and
     ``next_fire_at`` is strictly monotone across the whole traversal.
@@ -1254,8 +1283,8 @@ class TestTwinCoverageSurvivesBeyondPendingScheduled:
     operator-cancel arm needs no timing argument at all, the cancel can
     land at any moment before the walk.
 
-    The drive seeds that state directly (the harness's real clock precedes
-    the November overlap, the same honesty note
+    The drive seeds that state directly (the ticks are pinned to explicit
+    instants inside the fold, the same injected-clock shape
     ``TestPartialTwinCoverageFoldHandoff`` carries): a schedule mid
     fold-1 pass at 01:00 fold-1, pre-queued twins covering 01:05..01:59,
     and the 01:30 twin moved past the pending/scheduled pair by the arm
@@ -1574,17 +1603,23 @@ class TestTerminalNotDeliveredTwinKeepsTheOwedRefire:
         # The re-fired schedule jobs are enqueued for immediate delivery
         # (a fire's own job carries the SERVER clock as its scheduled_at,
         # not the occurrence instant - only pre-scheduled twins carry the
-        # fold instant), so the census is by count, not per-instant
-        # duplication: 60 fires (5 fresh + 55 re-fires, the owed
-        # at-least-once delivery a genuinely-not-delivered occurrence
-        # gets) plus the 55 '{status}' twins, untouched at their instants.
+        # fold instant), so a fire census cannot separate fires from twins
+        # by comparing a live server stamp against a PINNED bound: that
+        # comparison re-arms the wall-calendar bomb the injected clocks
+        # exist to defuse (it armed when the real clock crossed the fold-1
+        # pass's first slot, 2026-11-01 06:00Z). The wall-immune
+        # discriminator is the twins' own transformation: every fire the
+        # schedule enqueued is a fresh 'pending' row, every twin rests
+        # '{status}' - so the fire census counts the schedule's pending
+        # rows: 60 fires (5 fresh + 55 re-fires, the owed at-least-once
+        # delivery a genuinely-not-delivered occurrence gets) plus the 55
+        # '{status}' twins, untouched at their instants.
         fired_jobs = await clean_pg_conn.fetchval(
             f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the actor is $-bound.
             "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
-            "  AND scheduled_at < $3",
+            "  AND status = 'pending'",
             _OPEN_ACTOR,
             str(schedule_id),
-            _FOLD1_TICKS_UTC[0],
         )
         assert fired_jobs == 60, (
             "every fold-1 slot must be fired exactly once - the 55 twins "
@@ -1592,19 +1627,22 @@ class TestTerminalNotDeliveredTwinKeepsTheOwedRefire:
             f"fire is the only deliverer each has; got {fired_jobs}"
         )
         twins = await clean_pg_conn.fetch(
-            f'SELECT scheduled_at, status FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the actor is $-bound.
+            f'SELECT scheduled_at FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the actor is $-bound.
             "WHERE actor = $1 AND metadata->>'cron_schedule_id' = $2 "
-            "  AND scheduled_at >= $3",
+            f"  AND status = '{status}'::\"{schema}\".job_status",
             _OPEN_ACTOR,
             str(schedule_id),
-            _FOLD1_TICKS_UTC[0] + timedelta(minutes=5),
         )
         assert len(twins) == 55, (
             f"the 55 '{status}' twins must still hold their fold instants, got {len(twins)}"
         )
-        assert all(r["status"] == status for r in twins), (
-            f"the walk must not touch the twins' own write path: every "
-            f"twin keeps its '{status}' status"
+        twin_instants = sorted(r["scheduled_at"] for r in twins)
+        assert twin_instants == [
+            _FOLD1_TICKS_UTC[0] + timedelta(minutes=m) for m in range(5, 60)
+        ], (
+            f"the walk must not touch the twins' own write path: every twin "
+            f"keeps its '{status}' status (the query's filter) and its own "
+            "fold instant, verbatim"
         )
         assert await _count_schedule_jobs(clean_pg_conn, schema, _OPEN_ACTOR, schedule_id) == 115, (
             f"60 fired occurrences + 55 '{status}' twins - every owed "

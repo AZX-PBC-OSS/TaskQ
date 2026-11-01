@@ -13,11 +13,13 @@
 * **DST ``allof`` at a future overlap (C5)** - America/New_York falls
   back on 2026-11-01 (02:00 EDT → 01:00 EST), so local 01:30 occurs at
   both 05:30Z and 06:30Z.  A yearly schedule pinned to that date and
-  seeded due now (within window) owes TWO jobs: the overdue fire
-  immediately (server-stamped, pending) and the second occurrence
-  pre-scheduled at exactly 06:30Z (status ``scheduled`` - the enqueue
-  SQL decides status from the server clock, which is why the overlap
-  must be in the future for this pin).  A ``skip`` twin owes one.
+  seeded due at the scenario's INJECTED clock (within window) owes TWO
+  jobs: the overdue fire immediately (server-stamped, pending) and the
+  second occurrence pre-scheduled at exactly 06:30Z (status
+  ``scheduled`` - the enqueue SQL decides status from the clock it
+  reads, which the pin injects along with the due bound and the
+  planning clock, so the overlap stays future at every crossing).  A
+  ``skip`` twin owes one.
 * **Cap semantics (C6)** - limit fires the EARLIEST due schedules and
   leaves the remainder bit-for-bit untouched; a due set exactly equal to
   the limit fires all (no off-by-one) and the next tick fires nothing; a
@@ -46,6 +48,7 @@ from .test_rt_cron_harness import (
     _HOURLY,
     _TEN_MINUTELY,
     FrozenClockConn,
+    InjectedClockConn,
     cron_settings,
     hour_floor,
     jobs_for_identity,
@@ -67,6 +70,18 @@ _FIVE_MINUTELY = "*/5 * * * *"
 _OVERLAP_FIRST_UTC = datetime(2026, 11, 1, 5, 30, tzinfo=UTC)
 _OVERLAP_SECOND_UTC = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
 _OVERLAP_YEARLY = "30 1 1 11 *"
+
+# The C5 scenario's injected clock: the "now" the seeds and both ticks'
+# clocks read, an explicit control instant far from any DST transition
+# (Saturday mid-afternoon UTC, the day before the 2026 fall-back) and 9.5
+# hours before the fold-0 occurrence, so a schedule seeded due at
+# now - 5min is a within-window catch-up whose walk answers the overlap
+# PAIR.  The first version read the seed and both ticks' clocks from the
+# live server clock: correct only while the wall clock remained before the
+# overlap, armed when it crossed 2026-11-01 05:30Z - the walk from a
+# post-fold seed answers 06:30Z fold-1 (or next year past the whole
+# overlap) and the two-occurrences shape became unreachable.
+_SCENARIO_NOW_UTC = datetime(2026, 10, 31, 20, 0, tzinfo=UTC)
 
 
 class TestCatchUpRecompute:
@@ -272,8 +287,9 @@ class TestDstAllofOverlap:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """A schedule whose next match is the future fall-back overlap
-        (2026-11-01 01:30 America/New_York = 05:30Z and 06:30Z):
+        """A schedule whose next match is the fall-back overlap
+        (2026-11-01 01:30 America/New_York = 05:30Z and 06:30Z), seeded
+        due at the injected scenario clock (within window):
 
         * ``allof``: TWO jobs from ONE tick - the overdue fire immediately
           (pending, server-stamped) and the second occurrence at exactly
@@ -284,7 +300,7 @@ class TestDstAllofOverlap:
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _ACTOR)
-        due_slot = await server_now(clean_pg_conn) - timedelta(minutes=5)
+        due_slot = _SCENARIO_NOW_UTC - timedelta(minutes=5)
         allof_id = await seed_schedule(
             clean_pg_conn,
             schema,
@@ -311,7 +327,11 @@ class TestDstAllofOverlap:
         now_before = await server_now(clean_pg_conn)
         async with clean_pg_conn.transaction():
             fired = await tick_cron(
-                clean_pg_conn, settings, make_backend(settings), schema, new_uuid()
+                InjectedClockConn(clean_pg_conn, _SCENARIO_NOW_UTC),  # type: ignore[arg-type]  # Why: the wrapper implements the connection's awaited protocol surface the tick uses (the rest delegates through __getattr__); pyright cannot see through the delegation.
+                settings,
+                make_backend(settings),
+                schema,
+                new_uuid(),
             )
         now_after = await server_now(clean_pg_conn)
 
@@ -343,7 +363,14 @@ class TestDstAllofOverlap:
 
         async with clean_pg_conn.transaction():
             second = await tick_cron(
-                clean_pg_conn, settings, make_backend(settings), schema, new_uuid()
+                # The same injected clock: both schedules advanced past it
+                # (to the overlap), so nothing is due - the second tick's
+                # "nothing" must hold at any wall calendar.
+                InjectedClockConn(clean_pg_conn, _SCENARIO_NOW_UTC),  # type: ignore[arg-type]  # Why: the wrapper implements the connection's awaited protocol surface the tick uses (the rest delegates through __getattr__); pyright cannot see through the delegation.
+                settings,
+                make_backend(settings),
+                schema,
+                new_uuid(),
             )
         assert second == 0, "both schedules advanced to the future overlap - nothing due"
         assert len(await jobs_for_identity(clean_pg_conn, schema, "dst-allof")) == 2
