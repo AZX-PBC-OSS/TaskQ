@@ -98,6 +98,7 @@ nav:
       - Tutorial: guides/tutorial.md
   - Guides:
       - Actors: guides/actors.md
+      - The Scenario Grounds: guides/scenario-grounds.md
       - Jobs & Clients: guides/jobs-clients.md
       - Workers: guides/workers.md
       - Rate Limiting: guides/rate-limiting.md

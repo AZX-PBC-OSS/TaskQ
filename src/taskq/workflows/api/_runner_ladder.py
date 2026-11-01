@@ -282,6 +282,7 @@ class LadderOps(_LadderHost):
                     render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
                     row["id"],
                     0.05 * (2 ** (failed_count)),
+                    attempt,
                 )
                 return "retried"
         final = await finalize_node(
@@ -562,4 +563,5 @@ class LadderOps(_LadderHost):
                 render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
                 row["id"],
                 0.05,
+                attempt,
             )
