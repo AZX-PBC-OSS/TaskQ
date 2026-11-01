@@ -689,7 +689,7 @@ async def test_drip_fed_headers_do_not_hold_the_connection_open() -> None:
     A peer sending one *valid* header line just under the per-line timeout never trips it while
     holding a connection - and its server task - indefinitely. The TCP listener is
     network-reachable, so the whole head-read is bounded by ``health_request_timeout`` regardless
-    of per-line progress. Discovered downstream in cennan's bridge; it belongs here.
+    of per-line progress.
     """
     async with _running() as (server, settings):
         deadline: float = settings.health_request_timeout

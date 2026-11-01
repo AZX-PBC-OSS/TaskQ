@@ -47,7 +47,7 @@ from taskq.testing.in_memory import InMemoryBackend
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
-#: The cennan shape: their classifier hands back the server's 90s reprieve.
+#: The downstream shape: the consumer's classifier hands back the server's 90s reprieve.
 _HINT = timedelta(seconds=90)
 
 
@@ -87,7 +87,7 @@ def _job_state(*, attempt: int = 1, max_attempts: int = 3) -> JobRetryState:
     )
 
 
-# ── pin 1: the exact-compliance property (the red-first pin) ────────
+# ── pin 1: the exact-compliance property ────────────────────────────
 
 
 @given(seed=st.integers(min_value=0, max_value=2**63 - 1))
@@ -116,7 +116,7 @@ def test_explicit_override_delay_is_honored_exactly_under_default_jitter(seed: i
     )
 
 
-# ── pin 2: the cennan-shaped pin, mirrored upstream ─────────────────
+# ── pin 2: the classifier's exact 90s-reprieve pin ──────────────────
 
 
 async def test_429_reprieve_schedules_the_retry_exactly_at_the_hint_in_virtual_time() -> None:
@@ -179,15 +179,14 @@ async def test_429_reprieve_schedules_the_retry_exactly_at_the_hint_in_virtual_t
     )
 
 
-# ── pin 2b: the cennan pin's full drain shape, mirrored upstream ────
+# ── pin 2b: the full drain shape, end to end ────────────────────────
 
 
 async def test_a_429_reprieve_schedules_the_retry_at_the_server_horizon_in_virtual_time() -> None:
-    """The downstream consumer's pin, mirrored upstream at full fidelity
-    (cennan ``tests/unit/test_pipeline_actor_dispatch.py``, same test
-    name): the REAL ``rate_limit_aware_classifier`` (the built-in, not a
-    stand-in — the original pins its real classifier by identity, this
-    pin uses the real built-in for the same reason) turns a 429 carrying
+    """The 429-reprieve scenario at full fidelity: the REAL
+    ``rate_limit_aware_classifier`` (the built-in, not a stand-in — a
+    consumer's suite pins its real classifier by identity, and this pin
+    does the same) turns a 429 carrying
     ``Retry-After: 90`` into a reprieve scheduled at the server's own
     horizon, advanced in VIRTUAL time by a full ``run_until_drained``
     drain — attempt 2 runs and succeeds, the attempt rows' started_at
@@ -382,7 +381,7 @@ def test_the_delay_field_documentation_names_the_floor() -> None:
 async def test_override_delay_landing_past_schedule_to_close_fails_terminally_at_the_write() -> (
     None
 ):
-    """The cennan hazard shape, end to end on the override path: a server's
+    """The hazard shape, end to end on the override path: a server's
     90s reprieve against a job whose ``schedule_to_close`` is only 60s away.
     The write arm refuses the reschedule (the same single effective delay
     feeds its deadline guard) and terminalises ``DeadlineExceeded`` — the

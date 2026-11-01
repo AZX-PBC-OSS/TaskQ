@@ -4,9 +4,9 @@
 from the ``DO UPDATE SET`` clause: an existing row's
 ``max_concurrent``/``max_pending``/``result_ttl`` survive every
 subsequent boot (the operator-owns law). Consequence (C15's conviction):
-for an actor whose capacity terms ride the CODE — TAStack's best-effort
-dampers ride ``max_concurrent`` — a changed literal deploys NOTHING after
-first boot; editing code silently does nothing.
+for an actor whose capacity terms ride the CODE — best-effort dampers
+riding ``max_concurrent`` — a changed literal deploys NOTHING after first
+boot; editing code silently does nothing.
 
 The cure is a PER-ACTOR OPT-IN: ``@actor(capacity_owner="code")`` /
 ``@app.actor(capacity_owner="code")``. For code-owned actors the upsert's
@@ -16,7 +16,7 @@ stay operator-owned for BOTH owners. The default is byte-identical: no
 code-owned rows → the operator statement alone, exactly the pre-opt-in
 shape.
 
-Pins here, red-first:
+Pins here:
 * a code-owned actor's capacity change deploys by code after first boot
   (real PG);
 * a default actor's row is untouched by a code change (real PG);

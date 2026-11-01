@@ -577,7 +577,7 @@ RETURNING o.content_address
 """
 
 
-# ── THE SIX FLOW-HISTORY RETENTION ARMS (the TAStack P1's cure) ──────────
+# ── THE SIX FLOW-HISTORY RETENTION ARMS ──────────────────────────────────
 # Six tables grow monotone-forever with no retention arm and no FK for
 # the job prune to cascade: wf_edge, wf_step_ledger, wf_join_fire,
 # wf_signals, wf_node_progress, wf_node_stream. The outbox/step-cache

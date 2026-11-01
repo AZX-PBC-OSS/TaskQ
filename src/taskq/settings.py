@@ -2026,7 +2026,7 @@ class WorkerSettings(TaskQSettings):
         "raise at settings load.",
     )
 
-    # -- Workflow flow-history retention (the TAStack P1's cure) -------
+    # -- Workflow flow-history retention -------------------------------
     # FIVE arms for the SIX tables that grow monotone-forever with no
     # retention arm and no FK for the job prune to cascade: wf_edge,
     # wf_step_ledger, wf_join_fire, wf_signals, wf_node_progress — and

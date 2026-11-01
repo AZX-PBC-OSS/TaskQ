@@ -1,6 +1,6 @@
-# Event-intel pipelines — the streaming fan-out, the typed route, the envelope
+# Event pipelines — the streaming fan-out, the typed route, the envelope
 
-An event-intel pipeline ingests an open-ended feed of records — pages,
+An event pipeline ingests an open-ended feed of records — pages,
 messages, sensor reads — and runs each record through a route: classify
 or screen it, enrich the readable ones, dead-letter the rest, aggregate
 the results. The engineering constraints that decide whether it is
