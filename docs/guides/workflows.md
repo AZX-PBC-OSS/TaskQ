@@ -1177,6 +1177,7 @@ families:
 | `tests/test_wf_step_cache_pins.py` | the T25 cross-run cache family: the hit (the body runs ONCE across runs; the receipt on the node row), the success-only law (a failed body's key never squats), the TTL's expiry (the scaled clock: expired is a miss, the re-fill beats the corpse), the CAS (two concurrent misses, ONE winner), the typed decode at the hit, the address's code sensitivity (the stale-code face dead), the wiring refusals (the TTL without the opt-in, the non-positive TTL, the gather), the retention arm's fresh/expired split + the disable sentinel |
 | `tests/test_wf_timer_pins.py` | the T28 durable-timer family: the at-least wake (never early, the receipt's arithmetic), the slot's release (the held representation, the ledger's `awaited`), the crash-mid-wait durability (the successor's sweep fires the wake), the cancel interplay (the hold dies with the flow), the Expired/timer orthogonality (both named outcomes fan in), the resolve boundary's refusal (the clock is the only resolver) |
 | `tests/test_wf_versioning_pins.py` | the T29 versioning-contract family: the redeploy face (the adopt at the next node claim + the stamps proving WHICH code ran each row), the mid-wait redeploy (the wake re-enters the NEW body, the replay law across the deploy) |
+| `tests/test_wf_otel_pins.py` | the wf-otel family: the run span (the root + the ambient link, the attribute contract, the lifecycle events, the terminal's status), the step spans (the children in-process, the fleet door's per-process root, the attribute contract), the ladder's scrubbed failure (the retried/terminal routes, the DSN canary), the deferral/hold/fork/join events, the crashed face, the no-op law (telemetry off, the provider absent), the rows-identical parity |
 
 History note: T03's schema-pin file (`tests/test_workflows_schema_pins.py`)
 was folded when T05 landed — its pins live in
@@ -2774,6 +2775,76 @@ The body's `ctx` is the observability primitive: every field the contract names 
 | `ctx.hold_epoch` | the last consumed hold's epoch (a resumed body's answer identity) |
 
 **The two doors' contracts differ (stated, not hidden):** the STEP door coerces — a body handing a pydantic model to `step(...)` has it re-validated at the boundary (the dict round-trips as the model). The EMIT door refuses — `ctx.progress(...)`'s payloads are dicts/bytes (the wire's own vocabulary); a pydantic model handed to emit is the LOUD `ProgressRefusedError` (an authoring error is the body's problem). Pass `model.model_dump()` at emit. (The ergonomics cure — the emit door accepting models — is owed to the T20 lane; until then the refusal is the contract.)
+
+## The observability contract (the workflow spans)
+
+The vanilla lifecycle emits spans at every messaging point (`enqueue
+{actor}`, `process {actor}`, `attempt.{N}`, `dispatch`, `cron fire` —
+see [the observability guide's span hierarchy](observability.md#2-traces-span-hierarchy)).
+A workflow's rows never ride that path — the fleet intercept bypasses
+`consume_one_job` and the dev drive never enters it — so the workflows
+package emits its own spans at the wf lifecycle's points, with the SAME
+machinery and the SAME laws (no new otel machinery, no new metrics):
+
+- **The RUN span** — `run {workflow}` (INTERNAL): one per
+  [`taskq.workflows.run`](#1-the-flow-api-the-concept-t09) call. It is
+  a **root** (`new_root=True`, the producer-link pattern): linked, never
+  parented, to the ambient trace — a caller's own span is not held open
+  for the run's lifetime, the link is the correlation. Created at the
+  flow's first claim (the run-key claim) and ended at the drive's stop.
+  Child flows (T28) carry no run span of their own — their steps ride
+  the tree below their parent's.
+- **The STEP span** — `step {step_key}` (INTERNAL): ONE attempt of one
+  node through the claim tail — the one shared tail the dev drive and
+  the worker-hosted fleet door both land in, so both faces emit it. When
+  the run drives in-process (`execute=True`), the step span is the run
+  span's **child** (otel's in-process context propagation). On a fleet
+  worker there is no run span in that process, so the step span is a
+  **per-process root**: the vanilla's cross-process law is
+  producer-stamped ids on the job row plus a consumer-side link, and wf
+  rows have no producer span to stamp otel ids from (the row's
+  `trace_id` column carries the wf per-record lineage id — a different
+  concept). The cross-process correlation is therefore the
+  **`taskq.flow_id` attribute**; no traceparent crosses processes.
+
+**The attribute contract** (the vanilla `taskq.*` namespace):
+
+| span | attribute | value |
+| --- | --- | --- |
+| run | `taskq.workflow` | the registered workflow name |
+| run | `taskq.flow_id` | the run's root-row id (set the moment the claim returns) |
+| run | `taskq.queue` | the root row's queue (a constant by construction — the steps carry their own) |
+| run | `taskq.run_key` | only when the caller declared a `key=` — UNREDACTED caller-controlled text (the observability guide's own caveat for `taskq.identity_key`: attribute cardinality is free but the value rides whole; declare keys accordingly — a slot timestamp, never an email + token) |
+| run | `taskq.priority` | only when the caller declared a `priority=` |
+| run | `taskq.outcome` | the drive's label: `terminal` / `held` / `max_ticks` |
+| step | `taskq.flow_id`, `taskq.workflow`, `taskq.step` | the flow link, the name, the step key |
+| step | `taskq.attempt` | the attempt ordinal |
+| step | `taskq.queue` | the node's queue, when the node's decl carries one (the fork-spawned map children have no decl) |
+| step | `taskq.map_index` | the map item's index, when the row has one |
+| step | `taskq.outcome` | the claim tail's own label: `succeeded` / `skipped` / `loop` / `held` / `deferred` / `fenced` / `laddered` / `cancelled`, and `crashed` for the machinery boundary's re-raise |
+
+**Status and events** follow the vanilla consumer span's laws. Status:
+OK on the succeeded class, ERROR on the failed class, the mid-states
+(held, deferred, fenced, cancelled) UNSET. The lifecycle events reuse
+the vanilla grammar (`lifecycle.running`, then
+`lifecycle.succeeded`/`lifecycle.failed`/`lifecycle.cancelled` with
+`from_state`/`to_state`). The fan-out's shape is EVENTS on the spans,
+never separate spans — `wf.forked` (the map source's children count),
+`wf.join_fired` (the join keys that fired in the finalizing tx),
+`wf.held` (the hold id + the signals), `wf.deferred` (the signal + the
+delay), and `wf.laddered` (the error class + whether the ladder
+re-pended) beside the SCRUBBED `exception` event.
+
+**The redaction law** holds unchanged: a failing step's error is
+rendered through the obs layer's scrub pass once — the Postgres DETAIL
+row values and the URI credentials never reach the exporter. **The
+no-op law** holds unchanged: with telemetry off (`TASKQ_OTEL_ENABLED=false`)
+the attribute documents are never built, no span is created, and the run
+is byte-identical (a run under spans and a run without them produce the
+same rows). **Metrics**: none are added — the vanilla's one wf-relevant
+instrument is the maintenance leader's fleet gauge
+(`taskq.wf_progress_nodes_total`); no per-run wf metric exists to
+mirror, and the per-node truth lives in the rows and the run page.
 
 ## Visualizing workflows: the admin's run explorer
 
