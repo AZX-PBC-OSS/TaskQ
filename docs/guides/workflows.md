@@ -2791,7 +2791,7 @@ machinery and the SAME laws (no new otel machinery, no new metrics):
 | run | `taskq.workflow` | the registered workflow name |
 | run | `taskq.flow_id` | the run's root-row id (set the moment the claim returns) |
 | run | `taskq.queue` | the root row's queue (a constant by construction — the steps carry their own) |
-| run | `taskq.run_key` | only when the caller declared a `key=` |
+| run | `taskq.run_key` | only when the caller declared a `key=` — UNREDACTED caller-controlled text (the observability guide's own caveat for `taskq.identity_key`: attribute cardinality is free but the value rides whole; declare keys accordingly — a slot timestamp, never an email + token) |
 | run | `taskq.priority` | only when the caller declared a `priority=` |
 | run | `taskq.outcome` | the drive's label: `terminal` / `held` / `max_ticks` |
 | step | `taskq.flow_id`, `taskq.workflow`, `taskq.step` | the flow link, the name, the step key |

@@ -17,8 +17,13 @@ metric exists in the vanilla to mirror):
 * the SAME :func:`taskq.obs.safe_start_span` (the no-op law: telemetry
   off → a non-recording span, the flow runs, nothing fails);
 * the SAME scrubbed-error recording (``render_exception`` /
-  ``record_exception_text`` — caller-supplied values never leak
-  unredacted);
+  ``record_exception_text`` — EXCEPTION TEXT is scrubbed: the Postgres
+  DETAIL row values and the URI credentials never reach the exporter.
+  The posture is span-text-only, stated plainly: caller-supplied
+  ATTRIBUTE values (``taskq.run_key``, the workflow and step names)
+  ride as-declared, unredacted — the same posture as the vanilla's
+  ``taskq.identity_key``, which the observability guide documents as
+  the operator's own declaration);
 * the SAME naming grammar (lowercase phrases beside the vanilla's
   ``process {actor}`` / ``cron fire``): the RUN span is ``run
   {workflow}``, the STEP span is ``step {step_key}``;

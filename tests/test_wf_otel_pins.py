@@ -14,8 +14,10 @@ THE CURE'S LAW (mirroring the vanilla exactly — no new otel machinery):
 * the SAME ``safe_start_span`` at the wf lifecycle's own points; the
   SAME no-op law (telemetry off → no spans, the flow runs, nothing
   fails); the SAME scrubbed-error recording (``render_exception`` /
-  ``record_exception_text`` — caller-supplied values never leak
-  unredacted); the SAME naming grammar (lowercase phrases — ``run
+  ``record_exception_text`` — exception text is scrubbed; the
+  caller-supplied ATTRIBUTE values — ``taskq.run_key``, the workflow
+  and step names — ride as-declared, the vanilla ``identity_key``'s
+  own posture); the SAME naming grammar (lowercase phrases — ``run
   {workflow}``, ``step {step_key}`` — beside the vanilla's ``process
   {actor}``, ``cron fire``); the SAME ``taskq.*`` attribute namespace.
 * the RUN span (``run {workflow}``): a ROOT (``new_root=True`` — the
