@@ -1,9 +1,0 @@
-{
-  "mutation": "the rederive + fire without the missing-parent arm (a missing parent counts as counted-and-terminal)",
-  "observed": {
-    "orphan_fired": 1
-  },
-  "pin": "pin8-misnamed-child",
-  "run": "20261012T111158-3707833-9a0efcdd",
-  "ts": "2026-10-12T11:11:58"
-}

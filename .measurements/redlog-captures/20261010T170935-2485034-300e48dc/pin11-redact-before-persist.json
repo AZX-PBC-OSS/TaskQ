@@ -1,9 +1,0 @@
-{
-  "mutation": "capture writer persists the hook's output without the chain pass",
-  "observed": {
-    "canary_persisted": true
-  },
-  "pin": "pin11-redact-before-persist",
-  "run": "20261010T170935-2485034-300e48dc",
-  "ts": "2026-10-10T17:09:35"
-}

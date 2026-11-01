@@ -386,7 +386,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # never lies about the state it handed back).
                 claim = replace(claim, status="running")
             else:
-                # THE ADOPTION'S ECHO (review F2's cure — the dev door's
+                # THE ADOPTION'S ECHO (the dev door's
                 # arbiter-adoption path): the claim returned an EXISTING
                 # run — the create-time echo above never ran, so the
                 # per-call level resolves from the ROOT'S STAMP (ONE
@@ -401,29 +401,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         return claim
 
     async def _adopted_run_priority(self, conn: ConnLike, flow_id: JobId) -> int | None:
-        """THE ADOPTED RUN'S PER-CALL OVERRIDE (review F2's cure): the
-        root's stamped ``wf_priority``, resolved with the FLEET DOOR'S OWN
-        ARITHMETIC — the same parse → post-parse DOMAIN CLAMP → degrade
-        (a stamp a hand-crafted row rendered unparseable OR out of the
-        smallint domain degrades to NO override, never a door death;
-        ``check_priority_domain`` is the predicate, the exception the
-        degrade). ``None`` = no override stamped (the declarations — or
-        the column default — speak)."""
-        from taskq.constants import check_priority_domain
+        """THE ADOPTED RUN'S PER-CALL OVERRIDE: the
+        root's stamped ``wf_priority``, resolved through the shared
+        parse → domain-clamp → degrade cascade
+        (:func:`resolve_priority_stamp` — the fleet door's own arithmetic;
+        ``None`` = no override stamped, the declarations — or the column
+        default — speak)."""
+        from taskq.constants import resolve_priority_stamp
 
         read = await conn.fetchrow(
             render_sql(ROOT_PRIORITY_STAMP_SQL_TEMPLATE, self.schema), flow_id
         )
         raw_priority: object | None = read["wf_priority"] if read is not None else None
-        try:
-            parsed_priority = (
-                int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
-            )
-            if parsed_priority is not None:
-                check_priority_domain(parsed_priority, what="the root's wf_priority stamp")
-        except (TypeError, ValueError):
-            parsed_priority = None
-        return parsed_priority
+        return resolve_priority_stamp(raw_priority)
 
     async def _node_census(self, conn: ConnLike, flow_id: JobId) -> int:
         """The run's node-row count — the orphan's census (a nodeless
@@ -619,7 +609,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         from taskq.workflows.api._hitl import sweep_child_joins
 
         await sweep_child_joins(self.pool, self.wsql)
-        # THE EXPIRY ARM (rv5-C5a — the dev-drives parity): the tick
+        # THE EXPIRY ARM (the dev-drives parity): the tick
         # runs the signal sweep's expiry leg, so a ``timeout_s`` wait in
         # a DEV DRIVE fires the ``Expired`` member exactly as it does
         # under the leader's belt — the pre-cure dev face parked on the
@@ -699,7 +689,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         try:
             body = self._resolve_body(node_key, node)
         except WorkflowRunError as exc:
-            # THE VANISHED-NODE WEDGE's LOUD TERMINAL (rv5-t6's cure):
+            # THE VANISHED-NODE WEDGE's LOUD TERMINAL:
             # the body resolves NOWHERE (the structural redeploy — the
             # registry-is-truth law, D1). Before this cure the error
             # escaped drive() RAW — the row stayed ``pending``, the root
@@ -762,7 +752,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     async def _fail_vanished_node(
         self, flow_id: JobId, row: dict[str, Any], exc: WorkflowRunError
     ) -> None:
-        """THE VANISHED-NODE WEDGE's loud terminal (rv5-t6's cure — the
+        """THE VANISHED-NODE WEDGE's loud terminal (the
         structural redeploy's pending row must terminal-fail, never
         zombie). The node is claimed HERE (the CAS — pending → running,
         the attempt incremented, the ledger claim's running row inserted:
@@ -1437,8 +1427,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         fork-spawned keys (``<src>.item``, the outbox consumers) have no
         compiled NodeDecl — their bodies live in the definition only.
 
-        THE VANISHED-NODE WEDGE (the structural redeploy — rv5-t6's
-        cure): a key in NEITHER the compiled graph nor the registered
+        THE VANISHED-NODE WEDGE (the structural redeploy): a key in
+        NEITHER the compiled graph nor the registered
         definition raises the TYPED :class:`VanishedNodeError` — the
         redeploy renamed/removed the node while this run was in flight,
         and no re-run can ever resolve it. The claimants of the wedge
@@ -1598,7 +1588,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         nothing). THE AUDIT (G4): "who cancelled this" is a ROW, not a
         log line.
 
-        THE CASCADE IS THE ROWS' OWN (rv5-C2b/C4's cure — the SAME walk
+        THE CASCADE IS THE ROWS' OWN (the SAME walk
         the id-addressed verb carries): the worklist walk, never Python
         recursion (a 1200-deep cascade cancels clean), and the children
         are read from the ROWS' crash-safe ``parent_flow_id`` direction
@@ -1831,7 +1821,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         default (the children share the source's cohort, so the source's
         resolution is theirs). A map body wired as an ``@app.actor``
         HANDLE adds ITS declared priority as the CHILDREN'S actor level
-        (the review F3 cure — never folded into the source node); the
+        (never folded into the source node); the
         join stays the source's resolution."""
         from taskq.workflows._emit import MapIndexExhaustedError
         from taskq.workflows._types import MAP_INDEX_CEILING, ConsumerBinding
@@ -1861,7 +1851,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # map's children share the source's cohort — the source's
         # resolution is theirs (per-call override > the source node's
         # declaration > the column default).
-        # THE MAP BODY HANDLE'S OWN LEVEL (review F3's cure — the
+        # THE MAP BODY HANDLE'S OWN LEVEL (the
         # never-a-silent-drop law, the capacity terms' own H-A4 shape): a
         # map body wired as an ``@app.actor(priority=…)`` HANDLE carries
         # its declaration as the CHILDREN'S actor level — read here, at
@@ -1980,8 +1970,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         ``run_priority`` is the RUN's per-call override (the wf-priority
         cure): each ARM's children resolve the law's levels — the
         override > the ARM's own ``priority=`` (the down-override) > the
-        arm body HANDLE's declaration (the actor level — review F3's
-        cure, read per arm and never folded into the source node) > the
+        arm body HANDLE's declaration (the actor level, read per arm
+        and never folded into the source node) > the
         source node's declaration > the column default; the JOIN (the
         source's own cohort — the arm overrides never retouch it) lands
         at the SOURCE's resolution."""
@@ -1998,7 +1988,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # join (the join is the source's own cohort, the placement
         # fields' law).
         source_priority = _resolve_priority(run_priority, node.priority)
-        # THE PER-ARM HANDLE LEVEL (review F3's cure — the
+        # THE PER-ARM HANDLE LEVEL (the
         # never-a-silent-drop law, the capacity terms' own H-A4 shape):
         # an arm body wired as an ``@app.actor(priority=…)`` HANDLE
         # carries its declaration as THAT ARM'S actor level — read per
@@ -2091,7 +2081,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # THE CHILD'S RESOLVED PRIORITY (the wf-priority
                     # cure): the arm's DOWN-OVERRIDE — the override > the
                     # arm's own declaration > the arm body HANDLE's
-                    # declaration (the actor level — review F3's cure)
+                    # declaration (the actor level)
                     # > the source node's declaration > the column
                     # default. ``None`` on a level means it declares
                     # nothing (the arm overrides DOWN from the source,

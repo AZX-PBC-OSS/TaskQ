@@ -21,7 +21,7 @@ call stays short-input and loop-safe by construction.
 
 §12.7-5's hash-instability lesson applies even to a record: a
 dict-ordering/float-repr mutation must NOT change the hash (a false
-invalidation is the silent failure — pin 12, red-first). ``content_hash`` is
+invalidation is the silent failure). ``content_hash`` is
 verified canonical under dict ordering (the pin holds the door).
 """
 

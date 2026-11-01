@@ -36,6 +36,7 @@ from taskq.backend._sql_fragments import (
     PROGRESS_MERGE_SQL,
 )
 from taskq.constants import (
+    BUDGET_EXHAUSTED_MESSAGE,
     CANCEL_ORIGIN_ABANDONED,
     CANCEL_ORIGIN_COOPERATIVE,
     CANCEL_ORIGIN_FORCED,
@@ -1167,7 +1168,7 @@ max_attempts_failed AS (
     SET status = 'failed',
         finished_at = clock_timestamp(),
         error_class = '{ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED}',
-        error_message = 'retry budget exhausted',
+        error_message = '{BUDGET_EXHAUSTED_MESSAGE}',
         error_traceback = NULL,
         {LEASE_CLEAR_SQL},
         {PROGRESS_MERGE_SQL}
@@ -1278,7 +1279,7 @@ max_attempts_att AS (
     (job_id, attempt, started_at, finished_at, outcome,
      error_class, error_message, error_traceback, duration_ms, worker_id, metadata, due_at)
     SELECT m.id, m.attempt, m.started_at, clock_timestamp(), 'failed',
-           '{ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED}', 'retry budget exhausted', NULL,
+           '{ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED}', '{BUDGET_EXHAUSTED_MESSAGE}', NULL,
            trunc(EXTRACT(EPOCH FROM (m.finished_at - m.started_at)) * 1000)::int,
            (SELECT id FROM holder), '{{}}'::jsonb,
            -- The claim-time due time (this arm does not reschedule; see

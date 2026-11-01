@@ -717,7 +717,7 @@ async def test_defer_fences_a_cancel_marked_row(
     # The claim's own ledger row (the record the terminal route keys —
     # the real claim's H6 law: the claim and the running ledger row are
     # one statement; the seed's shape supplies it here).
-    from taskq.workflows.api._runner_defer import defer_node_row
+    from taskq.workflows.api._runner_defer import defer_row_law
     from taskq.workflows.engine import render_workflow_sql
     from taskq.workflows.ledger import claim_step_ledger
 
@@ -737,10 +737,9 @@ async def test_defer_fences_a_cancel_marked_row(
     )  # the fence binds the runner's own worker id — the seeded claim's.
 
     # THE STATEMENT'S VERDICT: the cancel wins, nothing lands.
-    verdict = await defer_node_row(
+    verdict = await defer_row_law(
         module_pg_pool,
         wsql,
-        flow_id=flow_id,
         job_id=node_id,
         worker_id=worker_id,
         attempt=int(attempt),
@@ -748,6 +747,8 @@ async def test_defer_fences_a_cancel_marked_row(
         disposition="snooze",
         delay=timedelta(seconds=FLOOR_S),
         signal_name="Snooze",
+        ledger_id=None,
+        ledger_claimed_at=None,
     )
     assert verdict == "cancel_fenced", verdict
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
@@ -786,7 +787,7 @@ async def test_defer_fences_a_zombie_attempt(
     statement answers no verdict, the row untouched), and the runner's
     route records the attempt 'fenced' on the ledger (H1 — never a
     running row left forever on the record)."""
-    from taskq.workflows.api._runner_defer import defer_node_row
+    from taskq.workflows.api._runner_defer import defer_row_law
     from taskq.workflows.engine import render_workflow_sql
     from taskq.workflows.ledger import claim_step_ledger
     from tests._wf_fixtures import claim_view, seed_flow, seed_running_node
@@ -812,11 +813,11 @@ async def test_defer_fences_a_zombie_attempt(
         compiled, module_pg_pool, schema, worker_id=worker_id
     )  # the fence binds the runner's own worker id — the seeded claim's.
 
-    # THE STATEMENT'S VERDICT: the zombie matches nothing.
-    verdict = await defer_node_row(
+    # THE STATEMENT'S VERDICT: the zombie matches nothing (the row law's
+    # own mapping of the empty fence: 'fenced', nothing written).
+    verdict = await defer_row_law(
         module_pg_pool,
         wsql,
-        flow_id=flow_id,
         job_id=node_id,
         worker_id=worker_id,
         attempt=int(attempt) + 5,  # the zombie's stale attempt
@@ -824,8 +825,10 @@ async def test_defer_fences_a_zombie_attempt(
         disposition="snooze",
         delay=timedelta(seconds=FLOOR_S),
         signal_name="Snooze",
+        ledger_id=None,
+        ledger_claimed_at=None,
     )
-    assert verdict is None, "the zombie's deferral must match no verdict row"
+    assert verdict == "fenced", "the zombie's deferral must match no verdict row"
     row = await _node_row(module_pg_pool, schema, str(flow_id), "solo")
     assert row["status"] == "running", "the zombie's deferral moved nothing"
     assert row["snooze_count"] == 0
@@ -880,7 +883,7 @@ async def test_defer_fences_a_vanilla_cancel_marked_row(
         node_id,
     )
     worker_id, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
-    from taskq.workflows.api._runner_defer import defer_node_row
+    from taskq.workflows.api._runner_defer import defer_row_law
     from taskq.workflows.engine import render_workflow_sql
     from taskq.workflows.ledger import claim_step_ledger
 
@@ -895,10 +898,9 @@ async def test_defer_fences_a_vanilla_cancel_marked_row(
         attempt=int(attempt),
     )
     # THE STATEMENT'S VERDICT: the cancel wins on EITHER mark, nothing lands.
-    verdict = await defer_node_row(
+    verdict = await defer_row_law(
         module_pg_pool,
         wsql,
-        flow_id=flow_id,
         job_id=node_id,
         worker_id=worker_id,
         attempt=int(attempt),
@@ -906,6 +908,8 @@ async def test_defer_fences_a_vanilla_cancel_marked_row(
         disposition="snooze",
         delay=timedelta(seconds=FLOOR_S),
         signal_name="Snooze",
+        ledger_id=None,
+        ledger_claimed_at=None,
     )
     assert verdict == "cancel_fenced", (
         f"the vanilla cancel's column mark must fence the deferral "
@@ -962,14 +966,13 @@ async def test_the_exhausted_arm_also_fences_the_cancel_mark(
         node_id,
     )
     worker_id, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
-    from taskq.workflows.api._runner_defer import defer_node_row
+    from taskq.workflows.api._runner_defer import defer_row_law
     from taskq.workflows.engine import render_workflow_sql
 
     wsql = render_workflow_sql(schema)
-    verdict = await defer_node_row(
+    verdict = await defer_row_law(
         module_pg_pool,
         wsql,
-        flow_id=flow_id,
         job_id=node_id,
         worker_id=worker_id,
         attempt=int(attempt),
@@ -977,6 +980,8 @@ async def test_the_exhausted_arm_also_fences_the_cancel_mark(
         disposition="retry_after_consuming",
         delay=timedelta(seconds=0),
         signal_name="RetryAfter",
+        ledger_id=None,
+        ledger_claimed_at=None,
     )
     assert verdict == "cancel_fenced", (
         f"the marked row's consuming past-budget deferral must answer the "
@@ -1066,7 +1071,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
     stamp, the stale instant refuses the fence, and the winner's own
     terminal writes the row. THE CLASSIC ARM beside it: an un-re-minted
     zombie row still fences (H1 — never a running row left forever)."""
-    from taskq.workflows.api._runner_defer import defer_node_row
+    from taskq.workflows.api._runner_defer import defer_row_law
     from taskq.workflows.engine import render_workflow_sql
     from taskq.workflows.ledger import claim_step_ledger
     from tests._wf_fixtures import seed_flow, seed_running_node
@@ -1111,11 +1116,12 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         "the re-mint re-stamped the claim instant (the discriminator moved to the winner)"
     )
 
-    # THE ZOMBIE'S DEFERRAL: the stale epoch matches nothing on the row.
-    verdict = await defer_node_row(
+    # THE ZOMBIE'S DEFERRAL: the stale epoch matches nothing on the row
+    # (the row law's own mapping of the empty fence: 'fenced', nothing
+    # written — the ledger leg below drives the real claim's id).
+    verdict = await defer_row_law(
         module_pg_pool,
         wsql,
-        flow_id=flow_id,
         job_id=node_id,
         worker_id=zombie_worker,
         attempt=1,
@@ -1123,8 +1129,10 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
         disposition="snooze",
         delay=timedelta(seconds=FLOOR_S),
         signal_name="Snooze",
+        ledger_id=None,
+        ledger_claimed_at=None,
     )
-    assert verdict is None, "the zombie's deferral matches no verdict row"
+    assert verdict == "fenced", "the zombie's deferral matches no verdict row"
 
     compiled = sys.modules[MODULE_NAME].app.get("snooze_remint_fence_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema, worker_id=zombie_worker)

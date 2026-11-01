@@ -53,7 +53,7 @@ from uuid import UUID
 
 from taskq.actor_config import ActorConfig
 from taskq.backend._protocol import JobId, JobRow
-from taskq.constants import check_priority_domain
+from taskq.constants import resolve_priority_stamp
 from taskq.obs import get_logger
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.ratelimit.reservation import ConcurrencyReservation
@@ -318,15 +318,13 @@ def any_app_declares_strict_queues() -> bool:
     the app's own definition carries the contract in code (the fleet
     that needs this face cannot coordinate a fleet-wide env var; the
     declaration rides the app every worker child already imports).
-    THE OR-LAW's app-side arm: the bootstrap's gate
-    (``_fail_fast_on_unconsumed_workflow_queues``) is strict if EITHER
-    this predicate or ``settings.queues_strict`` (``TASKQ_QUEUES_STRICT``)
-    is set — the env can only ADD strictness, never silence a declared
-    contract. An undeclared app (the default) changes nothing:
+    An undeclared app (the default) changes nothing:
     ``getattr``'s False is today's behavior byte-identically. One strict
     app tightens the gate for the WHOLE projected cohort set — the same
     aggregated shape the warning arm reports in (the cohorts are ONE
-    projection; the gate is its one door)."""
+    projection; the gate is its one door). The faces' OR-law (strict if
+    EITHER this face or the env is set) is the bootstrap gate's own
+    docstring (``_fail_fast_on_unconsumed_workflow_queues``)."""
     return any(getattr(app, "queues_strict", False) for app in _apps)
 
 
@@ -962,29 +960,13 @@ async def execute_flow_job(
         ) from None
 
     runner = _runner_for(workflow_name, pool, schema, worker_id)
-    # THE RUN-PRIORITY STAMP'S RESOLUTION (the wf-priority cure): the
-    # root's stamped override (an int the create wrote) — a stamp a
-    # hand-crafted row rendered unparseable degrades to NO override (the
-    # declarations — or the column default — speak; a priority is an
-    # ordering hint, never a correctness input worth crashing the door
-    # on), never a door death.
-    # THE POST-PARSE DOMAIN CLAMP (the review's recommended cure): the
-    # parse alone is not enough — a PARSEABLE stamp past the smallint
-    # column's domain ("99999") wedged the fork at the bind (the
-    # DataError mid-finalize — the run parked). ``check_priority_domain``
-    # (the same refusal every layer that accepts a priority raises, read
-    # as a PREDICATE here) demotes the out-of-domain value to the same
-    # no-override degrade.
+    # THE RUN-PRIORITY STAMP'S RESOLUTION: the root's stamped override
+    # through the shared parse → domain-clamp → degrade cascade
+    # (``resolve_priority_stamp`` — a stamp a hand-crafted row rendered
+    # unparseable or out-of-domain degrades to NO override, never a door
+    # death).
     raw_priority: object | None = read["wf_priority"]
-    try:
-        parsed_priority = (
-            int(raw_priority) if raw_priority is not None else None  # type: ignore[call-overload]  # Why: the jsonb decode is text-or-None at runtime; the int() is the parse.
-        )
-        if parsed_priority is not None:
-            check_priority_domain(parsed_priority, what="the root's wf_priority stamp")
-    except (TypeError, ValueError):
-        parsed_priority = None
-    run_priority = parsed_priority
+    run_priority = resolve_priority_stamp(raw_priority)
     row = {
         "id": job.id,
         "step_key": read["step_key"],

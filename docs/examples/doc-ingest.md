@@ -451,7 +451,8 @@ Mermaid is byte-pinned.
 
 Each leg is a RUNNABLE path in the demo (`tests/test_wf_demo_legs.py` —
 the evidence-matrix's demo work order; every run's output is captured
-verbatim under `.measurements/demo-legs/`):
+verbatim under `.measurements/demo-legs/` — the artifacts live on the
+evidence branch, `evidence/taskqflow`):
 
 | # | Capability | The runnable path | The captured evidence |
 |---|-----------|-------------------|-----------------------|

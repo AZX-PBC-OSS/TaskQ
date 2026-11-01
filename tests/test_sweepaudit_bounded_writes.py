@@ -231,6 +231,14 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "INSERT ... ON CONFLICT over the registered-actor set; actor_config "
         "cardinality is configuration, not backlog",
     ),
+    "_ACTOR_CONFIG_UPSERT_BODY_SQL": (
+        "ON CONFLICT",
+        "the two actor_config upserts' shared body (the {capacity_set} "
+        "slot the operator and code-owned faces render their DO UPDATE "
+        "SET clause into): INSERT ... ON CONFLICT over the "
+        "registered-actor set; actor_config cardinality is configuration, "
+        "not backlog",
+    ),
     "_UPSERT_CODE_OWNED_CAPACITY_SQL": (
         "ON CONFLICT",
         "INSERT ... ON CONFLICT over the registered-actor set — C15's "
@@ -400,22 +408,15 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     # own flow id).
     "CANCEL_NODES_SQL_TEMPLATE": (
         "(metadata->>'flow_id')::uuid = $1",
-        "the cancel cascade's node leg: its write set is ONE run's "
+        "the cancel cascade's node leg (the runner's and the id-addressed "
+        "verbs' shared statement): its write set is ONE run's "
         "non-terminal rows — the compiled graph's node count, a "
         "definition-time constant",
     ),
     "CANCEL_ROOT_SQL_TEMPLATE": (
         "WHERE id = $1",
-        "keyed single root row (the cancel's linearization flip)",
-    ),
-    "_EXIT_CANCEL_NODES_SQL_TEMPLATE": (
-        "(metadata->>'flow_id')::uuid = $1",
-        "the id-addressed cancel cascade's node leg (T12's twin of "
-        "CANCEL_NODES_SQL_TEMPLATE): ONE run's non-terminal rows",
-    ),
-    "_EXIT_CANCEL_ROOT_SQL_TEMPLATE": (
-        "WHERE id = $1",
-        "keyed single root row (the id-addressed cancel's flip)",
+        "keyed single root row (the cancel's linearization flip; the "
+        "runner's and the id-addressed verbs' shared statement)",
     ),
     "INCREMENT_DEPS_SQL_TEMPLATE": (
         "WHERE id = $1",

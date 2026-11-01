@@ -73,10 +73,26 @@ def _sink_records() -> list[tuple[Path, dict[str, Any]]]:
     """(sink path, record) for every law-stamped record in every sink.
     Pre-law records are HISTORY (the append-only law preserves them);
     they carry no receipt citations and the guard demands none of them —
-    the law's records are the live claims."""
+    the law's records are the live claims.
+
+    The sinks' root resolves local-FIRST, the evidence branch as the
+    fallback: the local ``.measurements/`` when it exists (a battery run
+    on this tree appends to the LOCAL sinks — they are the live tree's
+    own records), else — a fresh clone where the extraction left no
+    local estate — the evidence branch's checkout staged through
+    :func:`tests._evidence.evidence_measurements_dir`. A root absent
+    locally must not vacate the guard: the sinks are append-only and the
+    evidence branch carries them.
+    """
+    if MEASUREMENTS.is_dir():
+        measurements = MEASUREMENTS
+    else:
+        from tests._evidence import evidence_measurements_dir
+
+        measurements = evidence_measurements_dir()
     out: list[tuple[Path, dict[str, Any]]] = []
     for name in _SINKS:
-        sink = MEASUREMENTS / name
+        sink = measurements / name
         if not sink.exists():
             continue
         for line in sink.read_text().splitlines():
@@ -173,6 +189,10 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
     live_records = 0
     history_records = 0
     for sink, record in _sink_records():
+        # The receipts resolve against the SAME root the sink was read
+        # from (the capture paths are relative to the measurements root;
+        # the evidence-branch fallback stages its own copy).
+        measurements = sink.parent
         claimed = record.get("head_sha")
         live = isinstance(claimed, str) and (
             claimed == _head() or not source_changes_since(claimed)
@@ -182,7 +202,7 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
             continue
         live_records += 1
         for entry in record.get("entries", []):
-            broken = verify_receipt(record, entry, MEASUREMENTS)
+            broken = verify_receipt(record, entry, measurements)
             if broken is not None:
                 violations.append(f"{sink.name}: {broken}")
     assert not violations, (
@@ -203,34 +223,25 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
     )
 
 
-def test_the_captures_home_is_not_gitignored() -> None:
-    """THE SEVERED-RECEIPT CURE'S STRUCTURAL HALF: the captures' home
-    rides WITH the sinks. The convicted shape: ``.measurements/`` was
-    gitignored wholesale, so the carries that force-added the sinks
-    landed rows whose capture files were invisible residue — dead
-    receipts by construction (a THOUSAND of them). The negation pattern
-    in :file:`.gitignore` re-includes ``redlog-captures/``; this pin
-    holds it: a NEW capture written now must be trackable (git sees
-    it), and the ignore's own text names the law."""
-    probe = MEASUREMENTS / "redlog-captures" / "._gitignore_probe.json"
-    probe.write_text("{}\n", encoding="utf-8")
-    try:
-        listed = subprocess.run(
-            ["git", "status", "--porcelain", "--", str(probe.relative_to(MEASUREMENTS.parent))],
-            cwd=MEASUREMENTS.parent,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        assert str(probe.relative_to(MEASUREMENTS.parent)) in listed, (
-            "THE REDLOG CAPTURES' HOME IS IGNORED: a new capture under "
-            ".measurements/redlog-captures/ is invisible to git — the "
-            "sinks will carry rows whose receipts are untracked residue "
-            "(the severed-receipt defect again). The .gitignore's "
-            "negation pattern must keep the captures' home trackable."
-        )
-    finally:
-        probe.unlink(missing_ok=True)
+def test_the_captures_are_not_tracked_in_the_product_repo() -> None:
+    """The repo carries code, tests, and docs; the measurement artifacts
+    (including ``.measurements/redlog-captures/``) live on the evidence
+    branch, not in this index. This pin holds that: ``git ls-files``
+    must list nothing under the captures' home."""
+    listed = subprocess.run(
+        ["git", "ls-files", "--", ".measurements/redlog-captures"],
+        cwd=MEASUREMENTS.parent,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert not listed.strip(), (
+        "THE REDLOG CAPTURES ARE TRACKED IN THE PRODUCT REPO: "
+        f"{len(listed.split())} paths under .measurements/redlog-captures/ "
+        "ride the index. The measurement artifacts belong to the evidence "
+        "branch — remove them from the index "
+        "(git rm -r --cached .measurements/redlog-captures)."
+    )
 
 
 def test_the_guard_convicts_the_two_shape_bypasses_by_provenance(

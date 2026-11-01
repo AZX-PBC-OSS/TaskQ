@@ -87,11 +87,11 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
       corpus; the refusal NAMES the child_driven escape — the remedy is
       a re-wiring, never a retry);
     * :class:`SpawnDepthExceededError` — the spawn's ancestor walk past
-      the declared max depth (rv5-C2's cure: re-running cannot shrink
+      the declared max depth (re-running cannot shrink
       the ancestor chain — the child line's own bound, the fan-in
       bound's sibling);
     * :class:`ChildFlowLostError` — the parent's resume found a
-      DANGLING child pointer (rv5-C3's cure: re-running cannot restore
+      DANGLING child pointer (re-running cannot restore
       the purged rows — the respawn refusal is the honest face, the
       silent re-execution it replaced was the lie).
 
@@ -128,7 +128,7 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
         ReservedTimerNamespaceError,
         SpawnDepthExceededError,
         ChildFlowLostError,
-        # THE VANISHED-NODE REDEPLOY WEDGE (rv5-t6's cure): a step key
+        # THE VANISHED-NODE REDEPLOY WEDGE: a step key
         # the registry does not carry has NO body on ANY attempt — the
         # registry is the truth (D1); the remedy is cancel-then-restart,
         # never a retry budget spent on an unresolvable key.
