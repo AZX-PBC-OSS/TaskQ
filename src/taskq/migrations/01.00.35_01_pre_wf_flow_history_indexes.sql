@@ -1,6 +1,6 @@
--- THE FLOW-HISTORY RETENTION ARMS' INDEXES (the TAStack P1's cure —
--- five workflow tables grew monotone-forever: no retention arm, no FK
--- for the job prune to cascade). Forward-only; there is no down
+-- THE FLOW-HISTORY RETENTION ARMS' INDEXES (five workflow tables grew
+-- monotone-forever: no retention arm, no FK for the job prune to
+-- cascade). Forward-only; there is no down
 -- migration. To revert, restore from backup. The literal "{schema}"
 -- token is substituted at apply time by the migration runner.
 --

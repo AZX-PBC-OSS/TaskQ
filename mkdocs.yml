@@ -104,7 +104,7 @@ nav:
       - Retries: guides/retries.md
       - Workflows (DAG Engine): guides/workflows.md
       - Agent Fleets (LLM-gated): guides/agent-fleet.md
-      - Event-Intel Pipelines: guides/event-pipeline.md
+      - Event Pipelines: guides/event-pipeline.md
       - Task Stacks: guides/task-stacks.md
       - DocShelf (the Adoption Story): guides/docshelf.md
       - Pattern Catalog: guides/patterns.md

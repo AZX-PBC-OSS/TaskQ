@@ -574,7 +574,7 @@ async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
     ``mark_interrupted(hold=0)`` the moment the await died, so the row went
     ``pending`` while the body was still mid-execution, and a second
     worker's claim round took it and ran the job a second time, side by
-    side with the dying pod's thread. This is exactly the TAStack shape
+    side with the dying pod's thread. This is exactly the field shape
     (plain ``def`` actors, transactional workers), and the claim below
     runs while the first attempt's thread is PROVABLY still alive.
 

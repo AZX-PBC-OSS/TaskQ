@@ -1,4 +1,4 @@
-"""THE FLOW-HISTORY RETENTION ARMS — the TAStack P1's cure's pins
+"""THE FLOW-HISTORY RETENTION ARMS — the pins
 (integration: real PG).
 
 Five workflow tables grew monotone-forever — no retention arm, no FK

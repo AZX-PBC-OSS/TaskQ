@@ -615,7 +615,7 @@ async def test_deregister_force_with_purge_queue(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """force=True + purge_queue=True simultaneously - the exact pattern downstream
-    consumers (aacrtool) use for ephemeral actor cleanup."""
+    consumers use for ephemeral actor cleanup."""
     schema = module_pg_schema.schema_name
     await _insert_queue(clean_pg_conn, schema, "ephemeral_queue")
     await sync_actor_config(

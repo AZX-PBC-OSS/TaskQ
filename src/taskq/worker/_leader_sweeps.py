@@ -744,8 +744,8 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     node_progress_rootless_gate = _wf_rootless_gate("wf_node_progress", 4)
 
     async def wf_edge_retention_call() -> int:
-        # THE EDGE LEDGER'S RETENTION ARM (the TAStack P1's cure): the
-        # flow-history tables (wf_edge, wf_step_ledger, wf_join_fire,
+        # THE EDGE LEDGER'S RETENTION ARM: the flow-history tables
+        # (wf_edge, wf_step_ledger, wf_join_fire,
         # wf_signals, wf_node_progress + the stream's fold into the
         # node_progress arm) grew monotone-forever — no retention arm,
         # no FK for the job prune to cascade. THE TWO-PASS LAW
@@ -1302,8 +1302,8 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_step_cache_retention_tick"),
         ),
         _SweepSpec(
-            # wf_edge_retention — THE EDGE LEDGER'S FLOW-HISTORY ARM (the
-            # TAStack P1's cure): the five flow-history tables (wf_edge,
+            # wf_edge_retention — THE EDGE LEDGER'S FLOW-HISTORY ARM: the
+            # five flow-history tables (wf_edge,
             # wf_step_ledger, wf_join_fire, wf_signals, wf_node_progress)
             # grew monotone-forever — no retention arm, no FK for the job
             # prune to cascade. THE TWO-PASS LAW (H-B1): the flows-side

@@ -2890,3 +2890,24 @@ and the guard degrades to fail-closed refusal if an install loses them) —
 adding one is a PR, never a runtime knob. Never add a variant for a file
 that has not actually shipped amended bytes: a variant legitimises a
 checksum forever.
+
+## The flow-history retention round (01.00.35) — the sweep arms' indexes
+
+Migration `01.00.35_01` builds the `flow_id` indexes the flow-history
+retention arms' delete legs lean on (`wf_edge`, `wf_join_fire` — the
+file's own checked-against-the-existing-set analysis explains why the
+other three ledger tables need none). See [Workflows](workflows.md) for
+the arms' contract.
+
+**The migration was amended in place before landing.** Its header
+comment was rewritten — the ledger's checksum covers every byte,
+comments included, so the file's checksum changed with it. Because the
+file **never shipped in a release** (the branch is its first
+publication), no `_variants/` entry is owed: variant history exists for
+databases that applied PREVIOUSLY PUBLISHED bytes, and no database ever
+applied these. If you applied a pre-release build that carried the
+older header: the file's checksum changed, and `taskq migrate status`
+will name the drift — the honest bookkeeping is "this pre-release
+build's ledger refers to a draft of 01.00.35 that was never published";
+re-run the migration on a fresh schema rather than legitimising a draft
+checksum with a variant.

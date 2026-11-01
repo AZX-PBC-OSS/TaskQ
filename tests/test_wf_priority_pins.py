@@ -1,6 +1,6 @@
-"""THE WF-PRIORITY PINS — the workflow surface's priority law, red-first.
+"""THE WF-PRIORITY PINS — the workflow surface's priority law.
 
-THE CONVICTION (the deepest downstream consumer's — TAStack, 36+ actors,
+THE CONVICTION (the deepest downstream consumer — a 36+-actor deployment,
 23 ``priority=`` enqueue-time call sites, a BACKLOG/interactive split):
 the vanilla surface carries priority end to end — the ``jobs.priority``
 smallint column (``migrations/01.00.00_01_pre_initial.sql``, DEFAULT 0),
@@ -275,7 +275,7 @@ async def test_the_precedence_law_all_four_levels(wf_schema: str, wf_pool: async
       step-declared step reads its own 7 (the step overrides the actor,
       never the reverse); the undeclared step reads the COLUMN DEFAULT 0.
     * run B (per-call 8): EVERY step reads 8 — the explicit per-call
-      overrides all declarations (TAStack's load-bearing face: the
+      overrides all declarations (the load-bearing face: the
       enqueue-time override wins).
 
     The resolution is per RUN and per ROW: the run-level override never
@@ -315,7 +315,7 @@ async def test_the_precedence_law_all_four_levels(wf_schema: str, wf_pool: async
 async def test_the_packaged_run_carries_the_per_call_override(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE PACKAGED DOOR (TAStack's ergonomic face): ``run(...,
+    """THE PACKAGED DOOR (the ergonomic face): ``run(...,
     priority=6)`` — the run's rows land at 6, the same law the
     create_flow face carries (the packaged run is create + drive, not a
     second enqueue semantics)."""

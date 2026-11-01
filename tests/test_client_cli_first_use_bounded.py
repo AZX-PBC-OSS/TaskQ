@@ -842,8 +842,7 @@ def test_taskq_constructor_schema_env_beats_dotenv_and_explicit_wins_all(
 ) -> None:
     """Precedence for the schema default matches load()'s (process env
     beats .env), and an explicit ``schema=`` argument beats every layer:
-    the cennan/TAStack shape (they pass their loaded schema explicitly)
-    is untouched."""
+    callers that pass their loaded schema explicitly are untouched."""
     _dotenv_dir(
         tmp_path,
         monkeypatch,

@@ -597,7 +597,7 @@ async def prune_wf_edge(
     retention: timedelta,
     batch_size: int = 200,
 ) -> int:
-    """THE EDGE LEDGER'S RETENTION ARM (the TAStack P1's cure) — the
+    """THE EDGE LEDGER'S RETENTION ARM — the
     FLOWS-SIDE pass (H-B1's law): the TERMINAL-AGED ROOTS are selected
     FIRST from the tiny jobs side (``step_key='__flow__'`` — the root
     identity, H-B3 — + a terminal status + ``finished_at`` past the
