@@ -10,7 +10,7 @@ terminal-fail cascade) in ``taskq.workflows.engine``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import asyncpg
 import structlog
@@ -185,11 +185,15 @@ class LadderOps(_LadderHost):
         exc: Exception,
         *,
         claim_epoch: int = 0,
-    ) -> None:
+    ) -> Literal["retried", "failed"]:
         """The ladder: an attempt failure emits NO terminal (P3 rule 7) —
         the node re-pends with backoff until ``max_attempts``, THEN
         terminal-fails (T06's propagation takes over). ``permanent`` retry
-        kinds fail immediately (cut #12's classifier knob).
+        kinds fail immediately (cut #12's classifier knob). Returns the
+        route the ladder took — ``"retried"`` (the re-pend; the attempt's
+        span echoes it on the ``wf.laddered`` event) or ``"failed"`` (the
+        terminal landed) — the route's only reader is the span's
+        recording; the pre-span callers ignored the bare ``None``.
 
         THE MAP CHILD'S INHERITANCE (the LedgerWatch F3 cure): a
         fork-spawned map child (``<src>.item`` / ``<src>.item:<tag>``)
@@ -261,7 +265,7 @@ class LadderOps(_LadderHost):
                     row["id"],
                     0.05 * (2 ** (failed_count)),
                 )
-                return
+                return "retried"
         final = await finalize_node(
             self.pool,
             self.wsql,
@@ -288,6 +292,7 @@ class LadderOps(_LadderHost):
                     "error_class": type(exc).__name__,
                 },
             )
+        return "failed"
 
     async def _reclaim_step(
         self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception

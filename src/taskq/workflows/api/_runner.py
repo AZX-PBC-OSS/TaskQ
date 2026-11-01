@@ -52,6 +52,8 @@ from typing import Any, Literal, cast
 
 import asyncpg
 import structlog
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 from pydantic import BaseModel
 
 from taskq._ids import new_uuid
@@ -59,8 +61,18 @@ from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.exceptions import RetryAfter, Snooze
-from taskq.obs import get_logger
+from taskq.obs import get_logger, safe_start_span
 from taskq.workflows._cache import CachedStep
+from taskq.workflows._obs import (
+    finish_step_span,
+    record_step_deferred,
+    record_step_forked,
+    record_step_held,
+    record_step_join_fired,
+    record_step_laddered,
+    step_span_attributes,
+    step_span_name,
+)
 from taskq.workflows._progress import (
     KIND_NODE_STARTED,
     KIND_NODE_TERMINAL,
@@ -928,7 +940,70 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         resolve it as the law's FIRST level — the dev door passes the
         create-time echo, the fleet door the root's metadata stamp's
         resolution. ``None`` = no override declared (the declarations —
-        or the column default — speak)."""
+        or the column default — speak).
+
+        THE STEP SPAN (the wf's face of the vanilla obs law — the
+        contract lives in ``workflows/_obs.py``): THIS call is one
+        attempt's lifecycle, so the span wraps it whole — the name
+        ``step {step_key}``, the ``taskq.*`` attribute document (the
+        flow link, the workflow, the step key, the attempt ordinal, the
+        node's queue when the decl carries one, the map index when the
+        row has one), the outcome attribute echoing THIS method's return
+        label, and the status mapped by the vanilla consumer span's own
+        law. Telemetry off → the attributes are never built (the
+        vanilla's gated-allocation law) and the span is the
+        non-recording no-op."""
+        with safe_start_span(
+            step_span_name(row["step_key"]),
+            kind=SpanKind.INTERNAL,
+            attributes=step_span_attributes(
+                flow_id=str(flow_id),
+                workflow=self.compiled.name,
+                step_key=row["step_key"],
+                attempt=attempt,
+                queue=node.queue if node is not None else None,
+                map_index=row["map_index"],
+            ),
+        ) as span:
+            try:
+                outcome = await self._execute_claimed_tail(
+                    flow_id,
+                    row,
+                    attempt,
+                    ledger_id,
+                    node,
+                    body,
+                    claim_epoch=claim_epoch,
+                    run_priority=run_priority,
+                    ledger_claimed_at=ledger_claimed_at,
+                )
+            except Exception:
+                # THE ESCAPED FAULT (the machinery boundary's re-raise — the
+                # reclaim class): safe_start_span's fallback recorded the
+                # scrubbed error on its way out; the outcome attribute names
+                # the ledger's own 'crashed' vocabulary.
+                span.set_attribute("taskq.outcome", "crashed")
+                raise
+            finish_step_span(span, outcome)
+            return outcome
+
+    async def _execute_claimed_tail(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        ledger_id: JobId | None,
+        node: Any,
+        body: Any,
+        *,
+        claim_epoch: int = 0,
+        run_priority: int | None = None,
+        ledger_claimed_at: Any = None,
+    ) -> str:
+        """The claim tail's body — :meth:`_execute_claimed` wraps THIS
+        call in the step span; the semantics, the fences and the
+        returns are untouched by it (the spans wrap the lifecycle
+        points, they never steer them)."""
         # THE PER-ATTEMPT CODE-VERSION RECORD (T03/§22.1 — the deploy
         # matrix's audit cure): the record is "written at claim by the
         # workflow claim path" — every claim's execution stamps the
@@ -1199,6 +1274,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 hold_id=held.hold_id,
                 signals=list(held.signal_names),
             )
+            record_step_held(trace.get_current_span(), held.hold_id, held.signal_names)
             return "held"
         except (Snooze, RetryAfter) as exc:
             # THE DEFERRAL DISPOSITION (the vanilla consumer's own catch,
@@ -1220,6 +1296,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # invokes); the LOOP driver's iteration bodies have their
             # own boundary (the loop's body-failure face, unchanged).
             await emitter.aclose()
+            record_step_deferred(trace.get_current_span(), exc)
             return await self._defer_step(
                 flow_id,
                 row,
@@ -1234,7 +1311,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # law): the final flush is bounded and best-effort — it can
             # cost freshness, never the ladder's correctness.
             await emitter.aclose()
-            await self._ladder_or_fail(flow_id, row, attempt, node, exc, claim_epoch=claim_epoch)
+            route = await self._ladder_or_fail(
+                flow_id, row, attempt, node, exc, claim_epoch=claim_epoch
+            )
+            # THE FAILURE SIGNAL ON THE SPAN (the vanilla consumer's own
+            # idiom — the site with the exception records it): the SCRUBBED
+            # render + the ladder's route (retried / the terminal). The
+            # current span is THIS attempt's step span (the wrapper above).
+            record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
             return "laddered"
         try:
             # THE CLAIM TAIL'S MACHINERY BOUNDARY (the K7 cure — ONE
@@ -1306,9 +1390,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 )
             except FanInBoundExceededError as exc:
                 await emitter.aclose()
-                await self._ladder_or_fail(
+                route = await self._ladder_or_fail(
                     flow_id, row, attempt, node, exc, claim_epoch=claim_epoch
                 )
+                record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
                 return "laddered"
             # THE SUCCESS-ONLY STORE (T25): the miss ran the body — the
             # cache fill happens ONLY on the terminal that actually landed
@@ -1660,6 +1745,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # blindness to the progress substrate). The LEDGER owns the
         # state; the projection only publishes it to the stream.
         if final.applied:
+            # THE FORK + THE JOIN FIRE, AS SPAN EVENTS (the wf's face of
+            # the vanilla obs law — events on the spans, never separate
+            # spans; the contract lives in ``workflows/_obs.py``): the
+            # fork's children and the fired joins are rows the finalize
+            # materialized atomically with THIS terminal mark — the
+            # current span is the finalizing step's own.
+            if fork is not None:
+                record_step_forked(trace.get_current_span(), len(fork.children))
+            if final.fired:
+                record_step_join_fired(
+                    trace.get_current_span(), [fired.step_key for fired in final.fired]
+                )
             # THE TRUNCATION'S RECEIPT (the F4 cure's read-side
             # reconciliation): a bounded collect's envelope unwraps at
             # the consumer's typed boundary (decode_result's key-set
