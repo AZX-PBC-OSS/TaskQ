@@ -69,8 +69,11 @@ def _head() -> str:
     return head_sha()
 
 
-def _sink_records() -> list[tuple[Path, dict[str, Any]]]:
-    """(sink path, record) for every law-stamped record in every sink.
+def _sink_records() -> tuple[list[tuple[Path, dict[str, Any]]], str]:
+    """(sink path, record) pairs for every law-stamped record in every
+    sink, plus the LIVENESS ANCHOR the records' head stamps are judged
+    against.
+
     Pre-law records are HISTORY (the append-only law preserves them);
     they carry no receipt citations and the guard demands none of them —
     the law's records are the live claims.
@@ -78,18 +81,25 @@ def _sink_records() -> list[tuple[Path, dict[str, Any]]]:
     The sinks' root resolves local-FIRST, the evidence branch as the
     fallback: the local ``.measurements/`` when it exists (a battery run
     on this tree appends to the LOCAL sinks — they are the live tree's
-    own records), else — a fresh clone where the extraction left no
-    local estate — the evidence branch's checkout staged through
-    :func:`tests._evidence.evidence_measurements_dir`. A root absent
-    locally must not vacate the guard: the sinks are append-only and the
-    evidence branch carries them.
+    own records, anchored at THIS tree's head), else — a fresh clone
+    where the extraction left no local estate — the evidence branch's
+    checkout staged through
+    :func:`tests._evidence.evidence_measurements_dir`, anchored at THE
+    ESTATE REF'S OWN HEAD: the records' home tree. A root absent locally
+    must not vacate the guard, and the checkout's head is a different
+    lineage from the records' — anchoring the estate's records at the
+    checkout's head would history every one of them (the scoping teeth
+    would refuse a check-out that never ran a battery, which is the
+    checkout's honest state, not the guard's failure).
     """
     if MEASUREMENTS.is_dir():
         measurements = MEASUREMENTS
+        anchor = _head()
     else:
-        from tests._evidence import evidence_measurements_dir
+        from tests._evidence import evidence_measurements_dir, evidence_ref
 
         measurements = evidence_measurements_dir()
+        anchor = evidence_ref()
     out: list[tuple[Path, dict[str, Any]]] = []
     for name in _SINKS:
         sink = measurements / name
@@ -109,7 +119,7 @@ def _sink_records() -> list[tuple[Path, dict[str, Any]]]:
                 continue
             if record.get("law") == REDLOG_LAW:
                 out.append((sink, record))
-    return out
+    return out, anchor
 
 
 def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: Path) -> str | None:
@@ -188,14 +198,15 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
     violations: list[str] = []
     live_records = 0
     history_records = 0
-    for sink, record in _sink_records():
+    records, anchor = _sink_records()
+    for sink, record in records:
         # The receipts resolve against the SAME root the sink was read
         # from (the capture paths are relative to the measurements root;
         # the evidence-branch fallback stages its own copy).
         measurements = sink.parent
         claimed = record.get("head_sha")
         live = isinstance(claimed, str) and (
-            claimed == _head() or not source_changes_since(claimed)
+            claimed == anchor or not source_changes_since(claimed, anchor=anchor)
         )
         if not live:
             history_records += 1

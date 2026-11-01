@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import enum
 import json
-from typing import Any
+from typing import Any, Final
 
 from pydantic import BaseModel
 
@@ -205,6 +205,14 @@ async def escalation_body(ctx: Any, carry: int) -> str:
     return f"escalated-at-iteration-{carry}"
 
 
+#: The march's publish-approval wait. 900s (the load-sensitive lane's
+#: per-test ceiling) / 3 = 300s — a hosted 2-core runner's worst beats
+#: (the sweep's abandonment tick under fleet starvation) must land inside
+#: it with headroom, while the march's whole spine stays under the
+#: ceiling. A constant, never a wall-clock scale.
+PUBLISH_APPROVAL_TIMEOUT_S: Final[float] = 300.0
+
+
 async def publish_body(
     ctx: StepContext, triage: dict[str, object], review_note: str
 ) -> ResearchReport:
@@ -218,8 +226,8 @@ async def publish_body(
     degraded = False
     outcome = await ctx.wait_signal(
         (PublishApproval,),
-        timeout_s=5.0,
-        reason="the march's publish approval (a SHORT wall)",
+        timeout_s=PUBLISH_APPROVAL_TIMEOUT_S,
+        reason="the march's publish approval",
     )
     match outcome:
         case PublishApproval() as approval:
@@ -278,7 +286,7 @@ def deep_research() -> Promise[object]:
             GateDecl(
                 name="PublishApproval",
                 payload_models=(PublishApproval,),
-                timeout_s=5.0,
+                timeout_s=PUBLISH_APPROVAL_TIMEOUT_S,
             ),
         ),
     )

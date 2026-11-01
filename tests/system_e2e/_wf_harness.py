@@ -35,7 +35,7 @@ from tests.system_e2e._harness import (
     WorkerProc,
     spawn_joined_worker,
 )
-from tests.system_e2e._wf_app import MARCH_WORKER_QUEUES
+from tests.system_e2e._wf_app import MARCH_WORKER_QUEUES, PUBLISH_APPROVAL_TIMEOUT_S
 
 #: The workflow-capable entry: subprocesses run THIS module (its app
 #: import is the capability stamp).
@@ -60,16 +60,22 @@ MARCH_LOCK_LEASE_S = 15.0
 #: A march's settle bound: the flow's OWN body times (the marches' bodies
 #: are sub-second each) x the co-tenancy stretch, plus one leader lease
 #: (the dispatch cadence the fleet's leader owns) plus the sweep interval
-#: — the same derivation shape the rolling-fleet file's bounds carry.
-#: KNOWN INSUFFICIENT under multi-CI co-tenancy: PR #698's run expired
-#: this bound with the march's rows still moving (4 concurrent CIs on the
-#: shared pool) — the stretch absorbs the co-tenancy it was measured
-#: against, not an arbitrary shared-pool starved runner. The marches'
-#: pins carry load_sensitive for the serial lane (the bounds stay as
-#: derived); see their marker notes for the lane plumbing still owed.
+#: — the same derivation shape the rolling-fleet file's bounds carry —
+#: PLUS the publish's hold window (PUBLISH_APPROVAL_TIMEOUT_S = 900/3,
+#: unstretched — it is already the hosted-runner constant) + one sweep
+#: tick: the flow cannot terminalize before the hold's abandonment
+#: delivers. KNOWN INSUFFICIENT under multi-CI co-tenancy: PR #698's run
+#: expired this bound with the march's rows still moving (4 concurrent
+#: CIs on the shared pool) — the stretch absorbs the co-tenancy it was
+#: measured against, not an arbitrary shared-pool starved runner. The
+#: marches' pins carry load_sensitive for the serial lane (the bounds
+#: stay as derived); see their marker notes for the lane plumbing still
+#: owed.
 MARCH_SETTLE_BOUND_S = (
-    30.0 + MARCH_LEADER_LEASE_S + SWEEP_INTERVAL_S + MARCH_LOCK_LEASE_S
-) * TIER_LOAD_STRETCH
+    (30.0 + MARCH_LEADER_LEASE_S + SWEEP_INTERVAL_S + MARCH_LOCK_LEASE_S) * TIER_LOAD_STRETCH
+    + PUBLISH_APPROVAL_TIMEOUT_S
+    + SWEEP_INTERVAL_S
+)
 
 #: The reclaim cell's bound: the lapsed lease's re-pend (THE MARCH lease +
 #: the sweep) + the new pod's claim (one poll) + the body's OWN re-run (the
