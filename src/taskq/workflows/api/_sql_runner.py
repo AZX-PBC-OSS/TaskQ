@@ -11,12 +11,13 @@ body's runtime context in ``_ctx``/``_ctx_wait``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 import asyncpg
 
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
+from taskq.workflows.api._runner_defer import WORKFLOW_CANCELLED_CLASS
 
 __all__ = ["wf_conn_fetchval"]
 
@@ -240,7 +241,7 @@ UPDATE {schema}.jobs SET status = 'running' WHERE id = $1 AND status = 'pending'
 CANCEL_ROOT_SQL_TEMPLATE = """
 WITH flipped AS (
     UPDATE {schema}.jobs SET status = 'cancelled',
-        error_class = 'WorkflowCancelled',
+        error_class = '{wf_cancelled_class}',
         error_message = $2,
         finished_at = clock_timestamp()
     WHERE id = $1
@@ -254,7 +255,7 @@ WITH flipped AS (
     INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
     SELECT f.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'running', 'to_state', f.to_state,
-                              'error_class', 'WorkflowCancelled')
+                              'error_class', '{wf_cancelled_class}')
     FROM flipped f
 )
 SELECT id FROM flipped
@@ -265,7 +266,7 @@ WITH flipped AS (
     UPDATE {schema}.jobs
     SET status = CASE WHEN status = 'running' THEN status ELSE 'cancelled' END,
         finished_at = CASE WHEN status = 'running' THEN finished_at ELSE clock_timestamp() END,
-        error_class = CASE WHEN status = 'running' THEN error_class ELSE 'WorkflowCancelled' END,
+        error_class = CASE WHEN status = 'running' THEN error_class ELSE '{wf_cancelled_class}' END,
         metadata = metadata || '{"cancel_phase": "cooperative"}'::jsonb
     WHERE (metadata->>'flow_id')::uuid = $1
       AND status NOT IN ('succeeded', 'failed', 'cancelled', 'crashed', 'abandoned')
@@ -277,7 +278,7 @@ WITH flipped AS (
     INSERT INTO {schema}.job_events (job_id, occurred_at, kind, detail)
     SELECT f.id, clock_timestamp(), 'state_change',
            jsonb_build_object('from_state', 'pending', 'to_state', f.to_state,
-                              'error_class', 'WorkflowCancelled')
+                              'error_class', '{wf_cancelled_class}')
     FROM flipped f
     WHERE f.to_state = 'cancelled'
 )
@@ -402,5 +403,21 @@ async def wf_conn_fetchval(pool: asyncpg.Pool, schema: str, query: str, *args: o
         return await conn.fetchval(render_sql(query, schema), *args)
 
 
+#: The render's token substitutions (the house token-substitution pattern
+#: — the ``subs`` list's shape, :meth:`WorkflowSql.build <taskq.workflows._sql.WorkflowSql.build>`
+#: being where the other templates' tokens resolve): the templates stay
+#: PLAIN strings — ``render_sql`` never ``.format``\s them (the jsonb
+#: shape literals keep their braces, the ``{schema}`` token survives for
+#: the call-site render), and each substitution is a plain ``str.replace``
+#: of an exact token. The wf cancel's own error class is interpolated from
+#: its one home (``api/_runner_defer``), never spelled per template.
+_SQL_TOKEN_SUBS: Final[tuple[tuple[str, str], ...]] = (
+    ("{wf_cancelled_class}", WORKFLOW_CANCELLED_CLASS),
+)
+
+
 def render_sql(template: str, schema: str) -> str:
-    return template.replace("{schema}", schema)
+    out = template.replace("{schema}", schema)
+    for token, value in _SQL_TOKEN_SUBS:
+        out = out.replace(token, value)
+    return out

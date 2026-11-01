@@ -73,10 +73,26 @@ def _sink_records() -> list[tuple[Path, dict[str, Any]]]:
     """(sink path, record) for every law-stamped record in every sink.
     Pre-law records are HISTORY (the append-only law preserves them);
     they carry no receipt citations and the guard demands none of them —
-    the law's records are the live claims."""
+    the law's records are the live claims.
+
+    The sinks' root resolves local-FIRST, the evidence branch as the
+    fallback: the local ``.measurements/`` when it exists (a battery run
+    on this tree appends to the LOCAL sinks — they are the live tree's
+    own records), else — a fresh clone where the extraction left no
+    local estate — the evidence branch's checkout staged through
+    :func:`tests._evidence.evidence_measurements_dir`. A root absent
+    locally must not vacate the guard: the sinks are append-only and the
+    evidence branch carries them.
+    """
+    if MEASUREMENTS.is_dir():
+        measurements = MEASUREMENTS
+    else:
+        from tests._evidence import evidence_measurements_dir
+
+        measurements = evidence_measurements_dir()
     out: list[tuple[Path, dict[str, Any]]] = []
     for name in _SINKS:
-        sink = MEASUREMENTS / name
+        sink = measurements / name
         if not sink.exists():
             continue
         for line in sink.read_text().splitlines():
@@ -173,6 +189,10 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
     live_records = 0
     history_records = 0
     for sink, record in _sink_records():
+        # The receipts resolve against the SAME root the sink was read
+        # from (the capture paths are relative to the measurements root;
+        # the evidence-branch fallback stages its own copy).
+        measurements = sink.parent
         claimed = record.get("head_sha")
         live = isinstance(claimed, str) and (
             claimed == _head() or not source_changes_since(claimed)
@@ -182,7 +202,7 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
             continue
         live_records += 1
         for entry in record.get("entries", []):
-            broken = verify_receipt(record, entry, MEASUREMENTS)
+            broken = verify_receipt(record, entry, measurements)
             if broken is not None:
                 violations.append(f"{sink.name}: {broken}")
     assert not violations, (

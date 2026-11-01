@@ -1546,8 +1546,8 @@ def _rule_gate_timeout_split(compiled: CompiledWorkflow) -> list[WorkflowValidat
 
 
 def _rule_loop_wait_shape(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """W5 (THE LOOP'S SHAPE LAW — the teardown round's cure, the T26
-    review's C9): the loop's answer cursor IS the row's iteration
+    """W5 (THE LOOP'S SHAPE LAW): the loop's answer cursor IS the row's
+    iteration
     counter — iteration k's wait consumes the k-th answer. A LOOP body
     whose ``wait_signal`` sits in a CONDITIONAL interior (an ``if``, a
     ``try``, a nested loop) can SKIP a wait on some iterations: the
@@ -1579,7 +1579,7 @@ def _rule_loop_wait_shape(compiled: CompiledWorkflow) -> list[WorkflowValidation
                         "the row's iteration counter IS the answer cursor, "
                         "so an iteration that does not wait drifts the "
                         "sequence (the operator's answer consumed by the "
-                        "wrong iteration — the T26 review's C9 mis-index). "
+                        "wrong iteration — the mis-index). "
                         "Make the wait unconditional (a no-op refinement "
                         "arm for the skip case), or move the gate to a "
                         "plain step the loop calls",
