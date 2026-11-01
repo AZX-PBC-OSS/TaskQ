@@ -77,14 +77,17 @@ C1 → C14 → C15 → C16 → C4 → C3 → C10 → C13(the click) → the rest
       honors the owner per-arm. Pins: tests/test_actor_config_capacity_owner_sync.py
       (20 red-first + the NULL-out and freeze pins). Red-team: the
       wiring drop convicted HIGH, fixed, re-reviewed APPROVE.
-- [~] C16. `max_pending` on the wf surface — BUILD OR PROVE. The H-A6
-      verdict (the engine's inserts bypass the enqueue admission; a
-      claim-side gate wedges) is an ASSERTION until it is a pin. Either
-      build the claim-side throttle (pending per cohort >= max → the
-      claim delays; a fan-out-wider-than-max run must complete —
-      pinned) or produce the impossibility pin (a minimal repro where
-      any claim-side gate deadlocks a join). No adjectives. IN FLIGHT:
-      PR #697 — IMPOSSIBLE, proven (the pins are the verdict).
+- [x] C16. DONE — PROVEN IMPOSSIBLE, the pin is the verdict (#697's
+      second commit): a claim-side max_pending gate cannot bound the
+      backlog without wedging — pending drains only by claiming, the
+      join decrements only on a claimed finalize, the fork materializes
+      the whole fan-out in one transaction: at pending >= max, claims =
+      0, pending never drains, the join waits forever. Four pins carry
+      the proof (the bypass, the fixed point, the control, the inert
+      arm); no product code changed. Scope honestly stated:
+      materialization-side bounded channels are a different face, not
+      tried — they cost the source's own lease budget and give
+      producers no admission seat.
 - [ ] C10. The workflows package emits ZERO otel telemetry (no spans, no
       metrics — the vanilla actors' observability doesn't extend to the
       runs/steps; the consumers run otel and their flows would be
