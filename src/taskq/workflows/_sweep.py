@@ -67,7 +67,13 @@ from taskq.workflows._sql_sweep import (
     STEP_LEDGER_ROOTLESS_RETENTION_SQL,
     render_rootless_retention_sql,
 )
-from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
+from taskq.workflows._types import (
+    FiredJoin,
+    _consumer_bindings,
+    _jsonb,
+    _metadata,
+    _seconds_or_none,
+)
 
 __all__ = [
     "NODELESS_ROOT_REAP_GRACE_S",
@@ -365,11 +371,10 @@ async def drain_outbox(
             # deadline is a correctness input, but the binding's author
             # is the fork's own build (a typed timedelta's serialization)
             # — a malformed value degrades to NULL, never a sweep death.
+            # The parse is the binding decode's own helper
+            # (``_seconds_or_none``) — one guard, both faces.
             [
-                timedelta(seconds=float(b["start_to_close_s"]))
-                if isinstance(b.get("start_to_close_s"), (int, float))
-                and b["start_to_close_s"] >= 0  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the jsonb walk hands the number the doc wrote; the guards are the parse.
-                else None
+                _seconds_or_none(b.get("start_to_close_s"))  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the jsonb walk hands the Any-typed doc the drain decoded above; the helper is the parse.
                 for b in bindings
             ],
         )

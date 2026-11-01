@@ -102,8 +102,8 @@ SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        -- the deadline's reality for a RUNNING node" line (the claim's
        -- started_at is already read; the label derives from the pair).
        j.start_to_close,
-       -- THE CLOCK ARBITER (the re-review's OBSERVATION-1 — the
-       -- single-arbiter doctrine, ``running_for_ms``'s own law): the
+       -- THE CLOCK ARBITER (the single-arbiter doctrine — the label
+       -- reads the DATABASE's clock, ``running_for_ms``'s own law): the
        -- deadline's remaining computed HERE against clock_timestamp() —
        -- started_at is DATABASE-written, so measuring it against the
        -- app's clock skews the span by the app-to-database offset (a

@@ -149,16 +149,16 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     budget_remaining_ms: int | None = None
     _runtime: dict[str, int] = field(default_factory=lambda: dict[str, int]())  # pyright: ignore[reportUnknownVariableType]  # Why: pyright's inference for the slots+frozen dataclass's mutable default degrades; the annotation is the truth.
     # THE DEADLINE ENFORCEMENT'S CTX STATE (the consumer's
-    # ``_enforce_start_to_close`` designated writes — the SAME ctx face
+    # ``_enforce_start_to_close`` designated write — the SAME ctx face
     # the vanilla ``JobContext`` carries): the detached body task's
     # handle, written when the deadline enforcement runs the body in its
-    # own task; the tx path's rollback-collision window stamp, which the
-    # wf face never arms (its body runs in NO transaction — there is no
-    # ``__aexit__`` ROLLBACK, no capture boundary, no reader here; the
-    # method exists so the enforcement's ONE shared ctx face is
-    # satisfied by both carriers without an adapter).
+    # own task. The enforcement's OTHER designated write — the tx
+    # rollback-collision window stamp — is the tx carrier's alone: the
+    # wf body runs in NO transaction (each statement takes its own
+    # acquisition), so there is no ``__aexit__`` ROLLBACK the marker
+    # could collide with, no capture boundary, no reader here — the
+    # enforcement's protocol split keeps that write off this face.
     _actor_body_task: asyncio.Task[object] | None = None
-    _tx_rollback_collision_window: bool = False
 
     def _set_actor_body_task(self, task: asyncio.Task[object]) -> None:
         """Record the deadline-enforced body task. Called by the
@@ -176,19 +176,6 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         handles do.
         """
         object.__setattr__(self, "_actor_body_task", task)
-
-    def _set_tx_rollback_collision_window(self) -> None:
-        """Stamp the tx path's rollback-collision window as OPEN. The
-        enforcement's designated write on the TRANSACTIONAL path — the
-        wf face never arms it: the step body runs in no transaction
-        (each statement takes its own acquisition), so there is no
-        ``__aexit__`` ROLLBACK the marker could collide with and NO
-        reader for the flag on this face. The method exists to satisfy
-        the enforcement's ONE shared ctx face (the same shape
-        ``JobContext`` carries) — the write is state, never behavior.
-        ``object.__setattr__`` because the dataclass is frozen; the
-        stamp is enforcement state that arrives after construction."""
-        object.__setattr__(self, "_tx_rollback_collision_window", True)
 
     @property
     def map_index(self) -> int | None:

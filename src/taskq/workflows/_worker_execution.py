@@ -871,11 +871,15 @@ def collect_workflow_reservations() -> tuple[list[ConcurrencyReservation], list[
 
 # ── the execution door ───────────────────────────────────────────────────
 
-_runners: dict[tuple[str, str, str], tuple[Any, Any]] = {}
-"""The worker-hosted runners, keyed (schema, workflow name, worker id) —
-the worker's pool + identity are process-stable, so the cache holds ONE
-runner per workflow per process (the construction validates the graph
-once). The pool rides the value so a swapped pool rebuilds the runner."""
+_runners: dict[tuple[str, str, str, str], tuple[Any, Any]] = {}
+"""The worker-hosted runners, keyed (schema, workflow name, worker id,
+worker default) — the worker's pool + identity are process-stable, so
+the cache holds ONE runner per workflow per process (the construction
+validates the graph once). The pool rides the value so a swapped pool
+rebuilds the runner; the worker default rides the KEY — two callers
+naming different defaults (a test's 300s, another's ``None``, a fleet's
+per-tenant settings) must never share a runner (the second would
+inherit the first's deadline)."""
 
 
 def _runner_for(
@@ -887,7 +891,8 @@ def _runner_for(
 ) -> Any:
     from taskq.workflows.api._runner import FlowRunner
 
-    key = (schema, name, str(worker_id))
+    default_key = "" if default_start_to_close is None else repr(default_start_to_close)
+    key = (schema, name, str(worker_id), default_key)
     cached = _runners.get(key)
     if cached is not None and cached[0] is pool:
         return cached[1]
@@ -907,7 +912,8 @@ def _runner_for(
         # THE WORKER'S DEFAULT DEADLINE (the wf start_to_close cure — the
         # resolution chain's own tail): the worker settings' value,
         # threaded from the dispatch loop's deps. Process-stable (the
-        # settings load once at boot), so it rides the cached runner.
+        # settings load once at boot), and part of the cache KEY — a
+        # changed default builds its own runner, never inherits.
         default_start_to_close=default_start_to_close,
     )
     _runners[key] = (pool, runner)

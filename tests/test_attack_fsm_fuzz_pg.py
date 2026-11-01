@@ -185,6 +185,8 @@ def _assert_snapshot_invariants(obs: dict[str, Any]) -> None:
         # from_state is NON-terminal after a terminal event is only
         # writable when the row IS non-terminal again - the silent
         # re-pend happened, and the scan resets to the new epoch there.
+        # This reset is sound only while retry_job remains the sole
+        # eventless terminal-source writer.
         terminal_seen = False
         for e in job["events"]:
             if e["kind"] != "state_change":

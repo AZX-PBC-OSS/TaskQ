@@ -40,6 +40,7 @@ __all__ = [
     "_jsonb",
     "_metadata",
     "_row_metadata",
+    "_seconds_or_none",
 ]
 
 #: THE MAP_INDEX CEILING — the wire-format fact the ceiling error
@@ -485,22 +486,26 @@ def _consumer_bindings(raw: object) -> tuple[ConsumerBinding, ...]:
     return tuple(_consumer_binding(c) for c in decoded)  # pyright: ignore[reportUnknownArgumentType]  # Why: the Any-contract walk — decoded's members are Unknown; _consumer_binding's asserts guard the runtime shape.
 
 
+def _seconds_or_none(raw: object) -> timedelta | None:
+    """The binding's declared SECONDS → the deadline timedelta (the jsonb
+    wire form's ONE parse — :func:`_consumer_binding`'s decode and the
+    drain's consumer INSERT are its two faces): a non-number or a
+    negative degrades to None (a declaration is never a correctness
+    input worth a sweep death)."""
+    return timedelta(seconds=float(raw)) if isinstance(raw, (int, float)) and raw >= 0 else None
+
+
 def _consumer_binding(raw: dict[str, Any]) -> ConsumerBinding:
     """ONE metadata ``consumers`` entry → the typed binding (the walk's
     own arm): the declared deadline parses back from the binding's
     SECONDS (the jsonb wire form — :func:`_consumer_binding_doc`'s own
     serialization); a malformed value degrades to None (the binding is
     a declaration, never a correctness input worth a sweep death)."""
-    raw_s = raw.get("start_to_close_s")
     return ConsumerBinding(
         step_key=raw["step_key"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]  # Why: the Any-contract walk (the ledger wrote the shape).
         actor=raw["actor"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]
         queue=raw["queue"],  # pyright: ignore[reportUnknownArgumentType,reportIndexType]
         payload=raw.get("payload"),
         map_index=raw.get("map_index"),
-        start_to_close=(
-            timedelta(seconds=float(raw_s))  # pyright: ignore[reportArgumentType]  # Why: the jsonb walk hands the number the doc wrote; the float() is the parse.
-            if isinstance(raw_s, (int, float)) and raw_s >= 0
-            else None
-        ),
+        start_to_close=_seconds_or_none(raw.get("start_to_close_s")),
     )

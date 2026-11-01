@@ -133,8 +133,8 @@ RETURNING id
 #     attempt owns the row): the caller records the ledger's 'fenced',
 #     H1.
 #
-# THE CLAIM IDENTITY'S FENCE (the re-review's HIGH conviction — the
-# NODE_DEFER_SQL's own shape): the deadline's disposition carries the
+# THE CLAIM IDENTITY'S FENCE (the fence legs bind the caller's own claim
+# — the NODE_DEFER_SQL's own shape): the deadline's disposition carries the
 # claim's own identity legs — worker + attempt + claim_epoch, the
 # terminal-mark CAS's full vocabulary. The pre-cure WHERE (id + status +
 # the cancel marks) let a ZOMBIE W1's deadline disposition flip a

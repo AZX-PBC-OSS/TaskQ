@@ -866,7 +866,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     def _body_deadline_seconds(self, row: dict[str, Any]) -> float | None:
         """THE DEADLINE RESOLUTION AT THE ENFORCEMENT (the wf
         start_to_close cure — the vanilla consumer's own
-        ``_effective_start_to_close`` arithmetic, _consumer.py:1180):
+        ``_effective_start_to_close`` arithmetic):
         the ROW's own stamp (the declared bound the INSERTs wrote — the
         step's/arm's resolution) > the worker's default (the runner's
         field — the fleet door threads the worker settings' value);
@@ -1345,7 +1345,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # fenced IN-STATEMENT (the vanilla mark_retry's own law: a
             # phase-carrying row matches no arm — the cancel wins).
             await emitter.aclose()
-            return await self._deadline_or_fail(
+            return await self._deadline_disposition(
                 flow_id,
                 row,
                 attempt,

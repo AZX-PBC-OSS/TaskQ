@@ -7,7 +7,8 @@ table's ``start_to_close interval`` column (``migrations/
 (``worker/_consumer.py``'s ``_enforce_start_to_close`` — the #791
 TimeoutError-conflation cure, the tx-unwind budget, the hostile-finally
 drills), and the resolution ``job.start_to_close if not None else
-settings.default_start_to_close`` (_consumer.py:1180-1183). The WORKFLOW
+settings.default_start_to_close`` (``_consumer.py``'s
+``_effective_start_to_close``). The WORKFLOW
 runner's body execution (``FlowRunner.run_fleet_claimed_step`` →
 ``_execute_claimed`` → the body invocation) never called it: a claimed wf
 step that hangs lives forever.
@@ -55,7 +56,7 @@ import json
 import sys
 import types
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import timedelta
 from typing import Any
 
@@ -109,6 +110,40 @@ class Audio(BaseModel):
 async def _hang_body(ctx: StepContext, params: Ingest) -> str:
     await asyncio.sleep(HANG_S)
     return "never"
+
+
+async def _poll_node_status(
+    pool: asyncpg.Pool, schema: str, flow_id: str, step_key: str, want: str
+) -> None:
+    """Bounded wait for the node's status to read *want* — the ROW's own
+    truth as the pin's synchronisation (never a blind sleep: a slow
+    claimant is waited for, a never-claiming one fails with a name)."""
+    deadline = asyncio.get_running_loop().time() + 10.0
+    while True:
+        row = await _node_row(pool, schema, flow_id, step_key)
+        if row["status"] == want:
+            return
+        if asyncio.get_running_loop().time() > deadline:
+            pytest.fail(f"the node never reached {want!r} (status {row['status']!r})")
+        await asyncio.sleep(0.01)
+
+
+@pytest.fixture(autouse=True)
+async def reap_detached_unwinds() -> AsyncIterator[None]:
+    """THE DETACHED UNWINDS' REAP (teardown): the deadline pins leave
+    their HANG_S bodies unwinding past the expiry on purpose — the
+    enforcement detaches the body task (the tracked-zombie shape the
+    shutdown watchdog accounts for). At teardown every still-live
+    tracked handle is cancelled and awaited: the pin's loop closes
+    clean, and no 30-second hang leaks past the pin that created it."""
+    yield
+    from taskq.worker._watchdog import live_tracked_actor_handles
+
+    zombies = [z for z in live_tracked_actor_handles() if not z.done()]
+    for z in zombies:
+        z.cancel()
+    if zombies:
+        await asyncio.gather(*zombies, return_exceptions=True)
 
 
 async def _ok_body(ctx: StepContext, params: Ingest) -> str:
@@ -868,9 +903,12 @@ async def test_the_deadline_fences_a_cancel_mark_and_the_cancel_wins(
     assert node_id is not None
 
     # THE CLAIM, then the cancel mark lands mid-flight (the wf cancel's
-    # cooperative phase-1 mark on the running row).
+    # cooperative phase-1 mark on the running row). The wait is the
+    # ROW'S OWN truth — a bounded poll for the claim's visible effect,
+    # never a blind sleep (the mark must land while the row is still
+    # 'running', inside the bound's window).
     task = asyncio.create_task(runner.tick(flow_id))
-    await asyncio.sleep(0.05)
+    await _poll_node_status(module_pg_pool, wf_schema, flow_id, "solo", "running")
     await wf_conn.execute(
         f'UPDATE "{wf_schema}".jobs SET metadata = metadata || \'{{"cancel_phase": "cooperative"}}\'::jsonb '
         "WHERE id = $1",
@@ -937,12 +975,15 @@ async def test_hostile_finally_cannot_defer_the_wf_deadline(
     )
     assert await _root_status(module_pg_pool, schema, flow_id) == "failed"
     # THE UNWINDING ZOMBIE IS ACCOUNTED FOR (the vanilla drill's own
-    # assertion — the shutdown watchdog can see it): tracked, not leaked.
+    # assertion — the shutdown watchdog can see it): tracked, not
+    # leaked. This pin's zombie is pending AT CALL END by design (the
+    # hostile finally outlives the attempt), so the reap is the pin's
+    # OWN inline duty — the module's teardown fixture is the belt for
+    # the pins whose zombies die inside the call.
     from taskq.worker._watchdog import live_tracked_actor_handles
 
     zombies = [z for z in live_tracked_actor_handles() if not z.done()]
     assert zombies, "a hostile unwind must stay tracked"
-    # Teardown: reap the detached unwinds so the test loop closes clean.
     for z in zombies:
         z.cancel()
     await asyncio.gather(*zombies, return_exceptions=True)
@@ -1017,9 +1058,9 @@ def test_the_declaration_refuses_a_non_timedelta() -> None:
         app_obj.get("stc-refused-arm-type-flow")
 
 
-# ── (9) THE RE-REVIEW'S HIGH CONVICTION: the deadline's claim-identity
-#        fence (the zombie W1's disposition must never flip a re-minted
-#        LIVE W2 row) ─────────────────────────────────────────────────────
+# ── (9) THE CLAIM IDENTITY'S FENCE: the deadline's disposition binds
+#        the caller's own claim (the zombie W1's disposition must never
+#        flip a re-minted LIVE W2 row) ─────────────────────────────────
 
 
 async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
@@ -1028,7 +1069,8 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE ATTACKER'S DRILL A (the reviewer's live repro): W1 claims the
+    """THE ZOMBIE'S DEADLINE vs A LIVE RECLAIM (the fence legs bind the
+    caller's own claim identity): W1 claims the
     node (the ledger row live at its own instant); the 90s wf lease
     LAPSES; the reclaim re-pends the row; W2 re-claims (the attempt
     walks, W2's ledger claim live); W1's timer FIRES. The deadline's
@@ -1038,8 +1080,9 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
     RUNNING (never flipped 'scheduled', never a phantom-runs ledger,
     W2's finalize never refuses) — and W1's own attempt takes the ZOMBIE
     face (the ledger's 'fenced' record, keyed on the claim's own
-    instant — the C5 shape). The pre-cure shape: the unfenced WHERE (id +
-    status) flipped W2's row out from under it."""
+    instant, stamped the deadline's truthful class — the C5 shape). The
+    pre-cure shape: the unfenced WHERE (id + status) flipped W2's row
+    out from under it."""
     from tests._wf_fixtures import seed_flow, seed_running_node
 
     schema = module_pg_schema.schema_name
@@ -1095,7 +1138,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
 
     # W1'S TIMER FIRES (the zombie's deadline disposition, its own binds).
     node = compiled.nodes.get("solo")
-    label = await runner._deadline_or_fail(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the ladder's own disposition seam.
+    label = await runner._deadline_disposition(  # pyright: ignore[reportPrivateUsage]  # Why: the pins drive the ladder's own disposition seam.
         flow_id,
         {"id": node_id, "step_key": "solo", "map_index": None},
         int(seeded["attempt"]),
@@ -1124,6 +1167,11 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
     ledger = await _ledger_rows(module_pg_pool, schema, str(flow_id), "solo")
     by_attempt = {r["attempt"]: r for r in ledger}
     assert by_attempt[int(seeded["attempt"])]["status"] == "fenced", dict(
+        by_attempt[int(seeded["attempt"])]
+    )
+    # THE ZOMBIE'S STAMP IS THE DEADLINE'S OWN CLASS (the pair the live
+    # faces carry — never the message's name in the class slot).
+    assert by_attempt[int(seeded["attempt"])]["error_class"] == "TimeoutError", dict(
         by_attempt[int(seeded["attempt"])]
     )
     assert by_attempt[int(w2_attempt)]["status"] == "running", (
@@ -1203,7 +1251,7 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
 
     # W1'S TIMER FIRES (the zombie's deadline disposition).
     node = compiled.nodes.get("solo")
-    label = await runner._deadline_or_fail(  # pyright: ignore[reportPrivateUsage]
+    label = await runner._deadline_disposition(  # pyright: ignore[reportPrivateUsage]
         flow_id,
         {"id": node_id, "step_key": "solo", "map_index": None},
         int(seeded["attempt"]),

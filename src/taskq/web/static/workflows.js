@@ -198,6 +198,9 @@
         errCell.classList.remove("text-red-600", "dark:text-red-400");
       }
     }
+    // THE NODE'S CHIP CELL (one query — the deferral line's and the
+    // deadline line's shared anchor).
+    var chipEl = row.querySelector('[data-wf-node-chip]');
     // THE DEFERRAL LINE (the snoozed step's sitting state): the frame
     // carries the label — the row's truth (the deferral stamp's own
     // discriminator), so a node that ARRIVES at the snoozed state while
@@ -207,7 +210,6 @@
     var deferLine = row.querySelector('[data-wf-node-deferral]');
     if (node.deferral_label) {
       if (!deferLine) {
-        var chipEl = row.querySelector('[data-wf-node-chip]');
         if (chipEl) {
           deferLine = document.createElement("div");
           deferLine.setAttribute("data-wf-node-deferral", "1");
@@ -227,12 +229,11 @@
     var deadlineLine = row.querySelector('[data-wf-node-deadline]');
     if (node.deadline_label) {
       if (!deadlineLine) {
-        var chipEl2 = row.querySelector('[data-wf-node-chip]');
-        if (chipEl2) {
+        if (chipEl) {
           deadlineLine = document.createElement("div");
           deadlineLine.setAttribute("data-wf-node-deadline", "1");
           deadlineLine.className = "mt-1 text-xs text-slate-500 dark:text-slate-400";
-          chipEl2.parentNode.appendChild(deadlineLine);
+          chipEl.parentNode.appendChild(deadlineLine);
         }
       }
       if (deadlineLine) deadlineLine.textContent = node.deadline_label;

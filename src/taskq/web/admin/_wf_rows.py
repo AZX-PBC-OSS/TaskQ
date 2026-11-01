@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Final, cast
 
+from taskq._humantime import split_seconds
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike
 
@@ -151,8 +152,8 @@ class RunNode:
     # declaration's own truth).
     start_to_close_s: float | None = None
     started_at: str | None = None
-    # THE CLOCK ARBITER (the re-review's OBSERVATION-1 — the
-    # single-arbiter doctrine, ``running_for_ms``'s own law): the
+    # THE CLOCK ARBITER (the single-arbiter doctrine — the label reads
+    # the DATABASE's clock, ``running_for_ms``'s own law): the
     # deadline's remaining/age computed IN THE READ against
     # ``clock_timestamp()`` — never the app clock's guess (a DB ahead of
     # the app read as "expired 120s ago" on a step that just started).
@@ -167,7 +168,9 @@ class RunNode:
         own pattern): the bound WHERE DECLARED, and — for a RUNNING node
         whose claim instant is available — the deadline's REALITY (the
         instant + the bound, with the time left or the expiry's age).
-        ``None`` = no bound declared (the line renders nothing — an
+        Sub-second spans — a bound under a second, a remaining under a
+        second — read ``<1s`` (``0s`` reads as no time at all). ``None``
+        = no bound declared (the line renders nothing — an
         undeclared row reads as the unbounded face it is). The REALITY's
         remaining is the READ's own computation (the DB clock's — the
         row's ``deadline_remaining_s``), never an app-clock guess."""
@@ -180,8 +183,13 @@ class RunNode:
         if remaining is None:
             return f"deadline {bound}"
         if remaining > 0:
-            return f"deadline {bound} · {int(remaining)}s left"
-        return f"deadline {bound} · expired {int(-remaining)}s ago"
+            # THE SUB-SECOND FLOOR (the bound's own spelling): a remaining
+            # under a second reads ``<1s`` — ``0s left`` reads as no time
+            # at all on a clock that has not expired.
+            left = f"{int(remaining)}s" if remaining >= 1 else "<1s"
+            return f"deadline {bound} · {left} left"
+        age = f"{int(-remaining)}s" if -remaining >= 1 else "<1s"
+        return f"deadline {bound} · expired {age} ago"
 
     @property
     def deferral_label(self) -> str | None:
@@ -320,14 +328,16 @@ def _iso(value: Any) -> str | None:
 
 
 def _format_deadline_bound(seconds: float) -> str:
-    """The declared bound's operator form: sub-minute bounds keep
-    seconds resolution (a 0.25s deadline reads ``0.3s`` — ``<1m``
-    would lie), minutes and hours carry the two-unit split
-    (``_humantime``'s own cascade shape, the panel's own resolution)."""
-    total = round(seconds)
-    days, rem = divmod(total, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, secs = divmod(rem, 60)
+    """The declared bound's operator form: a sub-second bound reads
+    ``<1s`` (a 0.25s deadline rendered ``0s`` reads as NO bound at all —
+    the useless face; the whole-seconds round is the lie in the other
+    direction), sub-minute bounds keep seconds resolution (``30s`` —
+    ``<1m`` would lie), minutes and hours carry the two-unit split over
+    ``split_seconds`` (the unit cascade's ONE home — the split is never
+    re-derived here), the panel's own resolution."""
+    if seconds < 1:
+        return "<1s"
+    days, hours, minutes, secs = split_seconds(round(seconds))
     if days:
         return f"{days}d {hours}h" if hours else f"{days}d"
     if hours:
@@ -523,7 +533,7 @@ def _run_view_from_rows(
                 # predating the column reads None, the absent face).
                 start_to_close_s=_start_to_close_seconds(r.get("start_to_close")),
                 started_at=_iso(r.get("started_at")),
-                # THE CLOCK ARBITER (OBSERVATION-1): the remaining is the
+                # THE CLOCK ARBITER: the remaining is the
                 # READ's own clock_timestamp() computation — the label
                 # never measures the DB-written instant against the app
                 # clock. A row dict predating the column reads None (the

@@ -308,7 +308,7 @@ class LadderOps(_LadderHost):
                 },
             )
 
-    async def _deadline_or_fail(
+    async def _deadline_disposition(
         self,
         flow_id: JobId,
         row: dict[str, Any],
@@ -377,11 +377,11 @@ class LadderOps(_LadderHost):
                 row["id"],
                 backoff_s,
                 exhausted,
-                # THE CLAIM IDENTITY'S FENCE (the re-review's HIGH
-                # conviction — the NODE_DEFER_SQL's own legs): the
-                # deadline's disposition flips only the row the CALLER'S
-                # OWN CLAIM holds; a zombie's no-match routes to the
-                # zombie face below.
+                # THE CLAIM IDENTITY'S FENCE (the fence legs bind the
+                # caller's own claim — worker + attempt + epoch, the
+                # NODE_DEFER_SQL's own legs): the deadline's disposition
+                # flips only the row the CALLER'S OWN CLAIM holds; a
+                # zombie's no-match routes to the zombie face below.
                 self._worker_id,
                 attempt,
                 claim_epoch,
@@ -396,7 +396,7 @@ class LadderOps(_LadderHost):
                     await conn.execute(
                         self.wsql.ledger_fence_by_id,
                         ledger_id,
-                        DEADLINE_ERROR_MESSAGE,
+                        DEADLINE_ERROR_CLASS,
                         ledger_claimed_at,
                     )
                 verdict = "fenced"
