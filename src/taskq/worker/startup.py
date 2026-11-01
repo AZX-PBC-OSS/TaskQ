@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 from datetime import timedelta
+from typing import Final
 
 import asyncpg
 import structlog
@@ -28,11 +29,11 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata,
 # ONE INSERT…SELECT…unnest statement (the 12-position bind list included)
 # with a ``{capacity_set}`` slot for the ``DO UPDATE SET`` clause's
 # capacity assignments — the two faces below render the same body, so
-# their bind lists cannot drift. The ``{{schema}}`` doubling is the
-# two-stage render: this body formats the capacity slot first, and the
-# caller's ``.format(schema=schema)`` fills the schema token.
+# their bind lists cannot drift. The slot is filled by token replacement
+# (the house convention, never ``.format``): the body keeps ``{schema}``
+# for the caller's ``.format(schema=schema)`` at the boot-time execute.
 _ACTOR_CONFIG_UPSERT_BODY_SQL = """
-INSERT INTO "{{schema}}".actor_config (
+INSERT INTO "{schema}".actor_config (
     actor, max_concurrent, max_pending, queue, result_ttl, metadata,
     retry_base, retry_cap, retry_backoff, retry_jitter,
     max_attempts, retry_kind
@@ -82,7 +83,19 @@ ON CONFLICT (actor) DO UPDATE SET
 # edit; the code literal is the declaration of record and must win, and
 # ``actor-config-retry-contract-change`` (emitted by `sync_actor_config`
 # below) is what makes the win visible instead of silent.
-_UPSERT_ACTOR_CONFIG_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.format(capacity_set="").strip()
+#: The two faces' ``{capacity_set}`` slot fills: the operator face
+#: assigns nothing beyond the shared body's own SET clause; the
+#: code-owned face adds exactly the two capacity assignments (the
+#: module's own render inputs — the smoke guard's ``_render_extra``
+#: resolves the slot from here, never a copy).
+_OPERATOR_CAPACITY_SET: Final[str] = ""
+_CODE_OWNED_CAPACITY_SET: Final[str] = (
+    "    max_concurrent = EXCLUDED.max_concurrent,\n    result_ttl     = EXCLUDED.result_ttl,\n"
+)
+
+_UPSERT_ACTOR_CONFIG_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.replace(
+    "{capacity_set}", _OPERATOR_CAPACITY_SET
+).strip()
 
 # THE CODE-OWNED CAPACITY UPSERT (C15's opt-in): the SAME statement as
 # ``_UPSERT_ACTOR_CONFIG_SQL`` except the ``DO UPDATE SET`` clause also
@@ -109,10 +122,8 @@ _UPSERT_ACTOR_CONFIG_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.format(capacity_set="")
 #   the cached cap. The claim-side cannot bound a backlog (claiming is
 #   the only drain — the H-A6 law), so the stored row is the only
 #   enforcement seat there is.
-_UPSERT_CODE_OWNED_CAPACITY_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.format(
-    capacity_set=(
-        "    max_concurrent = EXCLUDED.max_concurrent,\n    result_ttl     = EXCLUDED.result_ttl,\n"
-    )
+_UPSERT_CODE_OWNED_CAPACITY_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.replace(
+    "{capacity_set}", _CODE_OWNED_CAPACITY_SET
 ).strip()
 
 # Fields whose stored value is operator-owned once a row exists: the
