@@ -199,15 +199,19 @@ future-dated captures, and the env-forged head's conviction.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import IO, cast
 
 from taskq.testing._claims import RUNS, load_claims
 
@@ -230,13 +234,78 @@ def _evidence_ref_resolves(ref: str) -> bool:
     return proc.returncode == 0
 
 
-def _stage_evidence_ref(ref: str) -> Path:
-    """THE EXTRACTED ESTATE'S READ FACE: stage the ref's .measurements/
-    estate into a temp dir and return its runs/ — every read path (the
-    registry, the captures, the supersession walk, the content door)
-    reads the SAME files they always did, from the branch's snapshot.
-    The extraction is not a weakening: the claims' head_sha is still
-    judged against THIS repo's HEAD (the freshness teeth unchanged)."""
+#: The staging directories' name prefix, shared by every run and by the
+#: startup sweep that cleans up after crashed ones.
+_STAGING_PREFIX = "evidence-estate-"
+
+#: The marker + lock file inside every staging directory: its existence
+#: scopes the sweep to directories this tooling wrote (a same-named
+#: stranger is never touched), and the flock a live reader holds on it
+#: keeps the sweep from deleting a staging mid-read.
+_STAGING_LOCK_NAME = ".evidence-estate.lock"
+
+#: A staging directory older than this has no live reader: a
+#: verification run lasts seconds, so anything older was left by a run
+#: that died before it could remove its own staging.
+_STAGING_ORPHAN_AGE = timedelta(hours=1)
+
+
+def _prune_stale_staging(temp: Path | None = None) -> list[str]:
+    """Delete staging directories left behind by dead runs, and return
+    the pruned names.
+
+    Each run stages into its own ``evidence-estate-*`` directory,
+    holds an flock on its ``.evidence-estate.lock`` for its lifetime,
+    and removes the directory on exit; a dead process holds nothing.
+    A directory under *temp* (default: the system temp dir) is swept
+    when it carries the lock file (the marker — directories without it
+    were not written by this tooling and are never touched), when its
+    lock can be taken (a live reader's flock refuses the attempt), and
+    when it is older than the age bar. The lock is checked BEFORE the
+    age, so a live staging is never a candidate.
+    """
+    if temp is None:
+        temp = Path(tempfile.gettempdir())
+    pruned: list[str] = []
+    now = time.time()
+    for orphan in sorted(temp.glob(f"{_STAGING_PREFIX}*")):
+        try:
+            lock_path = orphan / _STAGING_LOCK_NAME
+            if not orphan.is_dir() or not lock_path.is_file():
+                continue  # not this tooling's staging — the marker scopes the glob
+            with lock_path.open("a") as lock:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    continue  # a live reader holds it — not an orphan
+                try:
+                    if now - orphan.stat().st_mtime <= _STAGING_ORPHAN_AGE.total_seconds():
+                        continue
+                    shutil.rmtree(orphan, ignore_errors=True)
+                    pruned.append(orphan.name)
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            continue  # a concurrently removed or unreadable entry is not this run's problem
+    return pruned
+
+
+def _stage_evidence_ref(ref: str) -> tuple[Path, Path, IO[str]]:
+    """Stage the ref's ``.measurements/`` estate into a fresh temp
+    directory and return ``(runs_dir, staging_dir, lock)``. Every read
+    path (the registry, the captures, the supersession walk, the
+    content door) reads the same files it always did, from the branch's
+    snapshot.
+
+    The staging directory is per-invocation scratch: the caller removes
+    it once the reads are done — ``main`` does this in a ``finally`` —
+    because the archive expands to hundreds of megabytes and a staging
+    copy that outlived its run filled the temp filesystem. The lock
+    file is flocked for the caller's lifetime, so a concurrent
+    startup's prune skips the directory while it is being read; a
+    failure at any point after the directory exists removes it before
+    propagating. The claims' ``head_sha`` is still judged against THIS
+    repo's HEAD (the freshness teeth unchanged)."""
     if not _evidence_ref_resolves(ref):
         fallback = ref.removeprefix("origin/")
         if _evidence_ref_resolves(fallback):
@@ -249,36 +318,35 @@ def _stage_evidence_ref(ref: str) -> Path:
                 "actions/checkout with fetch-depth: 0, or an explicit fetch "
                 "of evidence/taskqflow before this script runs)."
             )
-    staging = Path(tempfile.gettempdir()) / (
-        "evidence-estate-"
-        + subprocess.run(
-            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
-            cwd=REPO,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()[:12]
+    archive = subprocess.run(
+        ["git", "archive", ref, ".measurements"],
+        cwd=REPO,
+        capture_output=True,
+        check=False,
     )
-    if not (staging / "runs" / "CLAIMS.json").is_file():
-        archive = subprocess.run(
-            ["git", "archive", ref, ".measurements"],
-            cwd=REPO,
-            capture_output=True,
-            check=False,
+    if archive.returncode != 0:
+        raise SystemExit(
+            f"the evidence ref {ref!r} carries no .measurements/ estate "
+            "(git archive failed) — the extraction's home is wrong"
         )
-        if archive.returncode != 0:
-            raise SystemExit(
-                f"the evidence ref {ref!r} carries no .measurements/ estate "
-                "(git archive failed) — the extraction's home is wrong"
-            )
-        import tarfile
+    import io
+    import tarfile
 
-        staging.mkdir(parents=True, exist_ok=True)
-        import io
-
+    staging = Path(tempfile.mkdtemp(prefix=_STAGING_PREFIX))
+    lock = (staging / _STAGING_LOCK_NAME).open("a")
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
-            tar.extractall(staging)  # noqa: S202  # Why: the archive is the repo's own ref's tree, never untrusted input.
-    return staging / ".measurements" / "runs"
+            # The filter also retires the extractall deprecation (3.14's
+            # default extraction behavior change).
+            tar.extractall(
+                staging, filter="data"
+            )  # Why: the archive is the repo's own ref's tree, never untrusted input.
+    except BaseException:
+        lock.close()
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return staging / ".measurements" / "runs", staging, lock
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -506,6 +574,31 @@ def _off_by_one_fresh(recorded: str, stem: str | None = None) -> bool:
     return not _source_changes_since(recorded, stem)
 
 
+def _entry_capture_path(base: Path, stem: str, file: str) -> Path:
+    """An entry's capture path, resolved under *base* — refused unless
+    it stays there. An absolute path, an empty one, or one carrying
+    ``..`` names whatever the reader's machine happens to have at the
+    escaped location, not a capture of the estate being verified; the
+    refusal names the entry. The resolved-path containment is checked
+    even for a well-formed relative path, so a symlink planted inside
+    the estate cannot walk the read out either."""
+    if not file or Path(file).is_absolute() or ".." in Path(file).parts:
+        raise SystemExit(
+            f"the registry entry for {stem!r} names the capture {file!r} — "
+            "refused: a capture path is not an estate-relative path (an "
+            "absolute path or one carrying '..' points outside the estate "
+            "the verdict reads)"
+        )
+    candidate = (base / file).resolve()
+    if not candidate.is_relative_to(base.resolve()):
+        raise SystemExit(
+            f"the registry entry for {stem!r} names the capture {file!r} — "
+            f"refused: it resolves to {candidate}, outside the estate the "
+            "verdict reads"
+        )
+    return candidate
+
+
 def _supersession_target(marked: str, runs_dir: Path) -> Path:
     """The ``superseded_by`` link's target path (the manifest entry's
     field spells the capture three ways — runs-relative, estate-relative,
@@ -681,7 +774,7 @@ def _content_door(
     over the capture's text, no structured parse (the runtime
     receipt)."""
     base = runs_dir if runs_dir.is_absolute() else REPO / runs_dir
-    path = base / entry["file"]
+    path = _entry_capture_path(base, stem, entry["file"])
     status, evidence, lineno = _content_verdict(path)
     if status == "green":
         return
@@ -758,7 +851,7 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
                 [],
             )
         stems.setdefault(stem, []).append(entry)
-        by_path[str((runs_dir / file).resolve())] = entry
+        by_path[str(_entry_capture_path(runs_dir, stem, file))] = entry
     failures: list[str] = []
     warnings: list[str] = []
     for stem, entries in sorted(stems.items()):
@@ -816,7 +909,7 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
             # freshness — the same rule a live claim carries, applied
             # where the chain actually lands.
             base = runs_dir if runs_dir.is_absolute() else REPO / runs_dir
-            if not (base / terminal["file"]).is_file():
+            if not _entry_capture_path(base, stem, terminal["file"]).is_file():
                 failures.append(
                     f"{stem}: the supersession chain's TERMINAL capture "
                     f"{terminal['file']} is a GHOST — the chain resolves to a "
@@ -859,7 +952,7 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
             )
             continue
         base = runs_dir if runs_dir.is_absolute() else REPO / runs_dir
-        missing = base / live["file"]
+        missing = _entry_capture_path(base, stem, live["file"])
         if not missing.is_file():
             failures.append(
                 f"{stem}: the LIVE CLAIM {live['file']} is a GHOST — the registry "
@@ -907,6 +1000,21 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
     return (failures, warnings)
 
 
+def _install_signal_handlers() -> None:
+    """SIGTERM and SIGHUP become SystemExit(128+signum): ``main``'s
+    finally runs on their arrival, so the staging it holds is removed
+    like any other exit. SIGKILL has no handler — the startup prune is
+    its backstop."""
+
+    def _raise_exit(signum: int, frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, _raise_exit)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs-dir", type=Path, default=None)
@@ -925,44 +1033,61 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
-    # THE EXPLICIT --runs-dir WINS ALWAYS (the pins' synthetic estates':
-    # test_evidence_content_door_pins builds a tmp estate and passes it —
-    # the default face below must never override an EXPLICIT argument;
-    # the override was the bug that verified the evidence branch's REAL
-    # estate against a synthetic run and returned rc=0 for it).
-    if args.runs_dir is not None:
-        runs_dir: Path = args.runs_dir
-    elif args.evidence_ref:
-        runs_dir = _stage_evidence_ref(args.evidence_ref)
-    elif not (RUNS / "CLAIMS.json").is_file() and _evidence_ref_resolves(DEFAULT_EVIDENCE_REF):
-        # THE EXTRACTED ESTATE'S DEFAULT: no local registry (the tree
-        # stopped carrying it) — read the evidence branch's estate.
-        runs_dir = _stage_evidence_ref(DEFAULT_EVIDENCE_REF)
-    else:
-        runs_dir = RUNS
-    head, conviction = _verified_head()
-    if conviction is not None:
-        # THE ENV-FORGED HEAD (D5): the env's claim failed the
-        # cross-check — the conviction, never rc=0.
-        print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
-        print(f"  {conviction}")
-        return 1
-    failures, warnings = verify(runs_dir, head)
-    if failures:
-        print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
-        for failure in failures:
-            print(f"  {failure}")
+    _install_signal_handlers()
+    pruned = _prune_stale_staging()
+    if pruned:
+        print(
+            f"pruned {len(pruned)} staging director{'y' if len(pruned) == 1 else 'ies'} "
+            "left by dead runs (older than an hour, lock unheld)"
+        )
+    staging: Path | None = None
+    staging_lock: IO[str] | None = None
+    try:
+        # THE EXPLICIT --runs-dir WINS ALWAYS (the pins' synthetic estates':
+        # test_evidence_content_door_pins builds a tmp estate and passes it —
+        # the default face below must never override an EXPLICIT argument;
+        # the override was the bug that verified the evidence branch's REAL
+        # estate against a synthetic run and returned rc=0 for it).
+        if args.runs_dir is not None:
+            runs_dir: Path = args.runs_dir
+        elif args.evidence_ref:
+            runs_dir, staging, staging_lock = _stage_evidence_ref(args.evidence_ref)
+        elif not (RUNS / "CLAIMS.json").is_file() and _evidence_ref_resolves(DEFAULT_EVIDENCE_REF):
+            # THE EXTRACTED ESTATE'S DEFAULT: no local registry (the tree
+            # stopped carrying it) — read the evidence branch's estate.
+            runs_dir, staging, staging_lock = _stage_evidence_ref(DEFAULT_EVIDENCE_REF)
+        else:
+            runs_dir = RUNS
+        head, conviction = _verified_head()
+        if conviction is not None:
+            # THE ENV-FORGED HEAD (D5): the env's claim failed the
+            # cross-check — the conviction, never rc=0.
+            print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
+            print(f"  {conviction}")
+            return 1
+        failures, warnings = verify(runs_dir, head)
+        if failures:
+            print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
+            for failure in failures:
+                print(f"  {failure}")
+            for warning in warnings:
+                print(f"  {warning}")
+            return 1
+        print(
+            f"the head-stamp law holds: every evidence kind's live claim in "
+            f"{runs_dir} is recorded at THIS head ({head[:12]}) or "
+            "explicitly superseded"
+        )
         for warning in warnings:
             print(f"  {warning}")
-        return 1
-    print(
-        f"the head-stamp law holds: every evidence kind's live claim in "
-        f"{runs_dir} is recorded at THIS head ({head[:12]}) or "
-        "explicitly superseded"
-    )
-    for warning in warnings:
-        print(f"  {warning}")
-    return 0
+        return 0
+    finally:
+        # The staging copy is this invocation's scratch: the reads above
+        # are done, and the expanded estate must not outlive the run.
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+        if staging_lock is not None:
+            staging_lock.close()
 
 
 if __name__ == "__main__":

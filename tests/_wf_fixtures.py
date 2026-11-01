@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from hashlib import sha256
@@ -214,6 +215,129 @@ def head_sha() -> str:
 REDLOG_LAW = "provenance-1"
 
 
+#: The environment variable that pins the redlog captures' directory.
+#: The battery that records evidence for the measurement estate sets it
+#: to the in-repo path (``.measurements/redlog-captures``) so the
+#: captures are harvested onto the evidence branch together with the
+#: sinks that cite them; unset, the captures go to the system temp dir.
+REDLOG_CAPTURES_DIR_ENV = "TASKQ_REDLG_CAPTURES_DIR"
+
+
+def redlog_captures_root() -> Path:
+    """The directory the redlog drills' capture files are written to.
+
+    Default: ``taskq-redlog-captures-<uid>`` under the system temp dir
+    (``tempfile.gettempdir()``, which honors ``TMPDIR``), created
+    private to the user (0700) — the captures are receipts, and a
+    shared-world-readable temp directory is neither. The path is
+    resolved to its absolute form so a reader in another working
+    directory resolves the same directory. The captures are per-run
+    scratch receipts; writing them into the repository tree left every
+    worktree littered with untracked per-run directories after each
+    pytest run. The explicit pin (``TASKQ_REDLG_CAPTURES_DIR``) moves
+    the root back into the tree for the battery that records evidence
+    for the measurement estate.
+    """
+    pinned = os.environ.get(REDLOG_CAPTURES_DIR_ENV)
+    if pinned:
+        return Path(pinned).resolve()
+    return (Path(tempfile.gettempdir()) / f"taskq-redlog-captures-{os.getuid()}").resolve()
+
+
+def _repo_root_containing(start: Path) -> Path | None:
+    """The nearest ancestor of *start* carrying ``pyproject.toml`` or
+    ``.git`` (a file in a worktree). ``None`` when no ancestor does."""
+    for ancestor in (start, *start.parents):
+        if (ancestor / "pyproject.toml").is_file():
+            return ancestor
+        git = ancestor / ".git"
+        if git.exists():
+            return ancestor
+    return None
+
+
+#: The GUARD'S OWN CHECKOUT — the tree carrying this file, resolved
+#: (an unresolved ``__file__`` through a symlinked checkout anchors the
+#: walk at the symlink's view, and a record root resolved to the real
+#: tree escapes it). The trust rule anchors there (never at the record's
+#: or the estate's location): a staged estate (no local
+#: ``.measurements``) lives in the temp dir, where no ancestor carries a
+#: repo marker — anchoring there would find no repository and trust an
+#: in-repo record root again. Anchored at the checkout, the in-repo
+#: refusal holds identically for a staged estate and a local one.
+_REPO_ROOT: Path | None = _repo_root_containing(Path(__file__).resolve())
+
+
+def resolve_redlog_capture(
+    measurements: Path, capture_rel: str, captures_root: str | None = None
+) -> tuple[Path, list[str], list[str]]:
+    """Locate a capture cited by a redlog sink entry.
+
+    Returns ``(capture, homes_searched, refused_roots)``: *capture* is
+    the first existing trusted candidate (the last trusted candidate
+    when none exists, so the missing-file verdict names a home);
+    *homes_searched* names every trusted root; *refused_roots* names
+    the record-declared roots the trust rule rejected.
+
+    THE TRUST RULE for candidate roots: the estate root being read by
+    the guard, the ``TASKQ_REDLG_CAPTURES_DIR`` pin, and the default
+    temp root are trusted. The record's own captures_root is trusted
+    only when it lies OUTSIDE the guard's own checkout (``_REPO_ROOT``,
+    the tree carrying this file — the anchor is the GUARD's home, never
+    the record's or the estate's, so a staged estate whose temp
+    location carries no repo marker refuses identically): a record is
+    data, and a record pointing its receipts into the checkout under
+    review would let that tree ship the capture that clears its own
+    receipt chain. The estate's own namespace still reaches an in-repo
+    pinned battery's captures (they live under the estate root), and a
+    battery whose captures went to an external directory resolves
+    through its record's root.
+
+    A citation that is absolute or carries ``..`` raises ValueError —
+    as does a candidate that resolves outside the root it was joined
+    to (a symlink planted inside would walk the read out). The caller
+    turns the refusal into its own named violation.
+    """
+    rel_path = Path(capture_rel)
+    if not capture_rel or rel_path.is_absolute() or ".." in rel_path.parts:
+        raise ValueError(
+            f"the cited capture path {capture_rel!r} is not an "
+            "estate-relative path (absolute, empty, or carrying '..'): it "
+            "points outside the estate, and a capture outside the estate "
+            "proves nothing"
+        )
+    rel_under_captures = capture_rel.removeprefix("redlog-captures/")
+
+    candidates: list[tuple[Path, Path]] = []
+    refused_roots: list[str] = []
+    if captures_root:
+        declared = Path(captures_root).resolve()
+        if _REPO_ROOT is not None and declared.is_relative_to(_REPO_ROOT):
+            refused_roots.append(str(declared))
+        else:
+            candidates.append((declared, declared / rel_under_captures))
+    pinned = os.environ.get(REDLOG_CAPTURES_DIR_ENV)
+    if pinned:
+        root = Path(pinned).resolve()
+        candidates.append((root, root / rel_under_captures))
+    estate_root = measurements.resolve()
+    candidates.append((estate_root, measurements / capture_rel))
+    default_root = redlog_captures_root()
+    candidates.append((default_root, default_root / rel_under_captures))
+
+    homes = [str(root) for root, _ in candidates]
+    for root, candidate in candidates:
+        if not candidate.resolve().is_relative_to(root):
+            raise ValueError(
+                f"the cited capture path {capture_rel!r} resolves to "
+                f"{candidate.resolve()} — outside its root {root}: a capture "
+                "outside the estate proves nothing"
+            )
+        if candidate.is_file():
+            return candidate, homes, refused_roots
+    return candidates[-1][1], homes, refused_roots
+
+
 def write_band_artifact(name: str, payload: dict[str, object]) -> Path:
     """THE APPEND-ONLY CONVERSION (the receipts law): a band artifact is
     a RUN-SCOPED file, never a write_text-in-place name. The convicted
@@ -336,22 +460,28 @@ class RedLog:
     module-level constant walked past it) — the receipt chain inspects
     the SINK, never the call's shape, and convictions are by provenance.
 
-    The captures' home (``.measurements/redlog-captures/<run>/``) is
-    deliberately UNIGNORED-adjacent residue: ``.measurements/`` is
-    gitignored, the sinks live there as run records, and the guard
-    verifies captures of records still alive on this tree.
+    The captures are written outside the repository tree by default
+    (see :func:`redlog_captures_root`) — per-run scratch receipts, not
+    source. A battery recording evidence for the measurement estate
+    pins them into ``.measurements/redlog-captures/`` with
+    ``TASKQ_REDLG_CAPTURES_DIR`` so they are harvested onto the
+    evidence branch together with the sinks that cite them.
     """
 
     def __init__(self, filename: str) -> None:
         self._filename = filename
         self._run_id = f"{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}-{uuid4().hex[:8]}"
+        self._captures_root = redlog_captures_root()
         self.entries: list[dict[str, str]] = []
 
     def red(self, pin: str, mutation: str, observed: Any) -> None:
         """Record one convicted red WITH its receipt: the entry carries
         the run-id, the drill's captured output file path, and the
-        capture's sha256 — the chain the guard verifies."""
-        capture_dir = MEASUREMENTS / "redlog-captures" / self._run_id
+        capture's sha256 — the chain the guard verifies. The capture's
+        payload carries the same identity (the pin and the run), so a
+        cited capture self-identifies with the entry citing it."""
+        self._captures_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        capture_dir = self._captures_root / self._run_id
         capture_dir.mkdir(parents=True, exist_ok=True)
         sanitized = "".join(c if c.isalnum() or c in "-_" else "_" for c in pin) or "pin"
         capture = capture_dir / f"{sanitized}.json"
@@ -370,7 +500,11 @@ class RedLog:
                 "mutation": mutation,
                 "red": json.dumps(observed, default=str),
                 "run": self._run_id,
-                "capture": str(capture.relative_to(MEASUREMENTS)),
+                # The citation names the path under the estate root —
+                # the shape every reader resolves (see
+                # resolve_redlog_capture), wherever the captures'
+                # physical root sits.
+                "capture": f"redlog-captures/{self._run_id}/{sanitized}.json",
                 "sha256": digest,
             }
         )
@@ -386,6 +520,13 @@ class RedLog:
             # is attributable to a TREE, not just a process).
             "head_sha": head_sha(),
             "entries": self.entries,
+            # Where this run's cited captures live physically: the
+            # default root is the system temp dir, which a reader can
+            # have under a different TMPDIR (or a tmpfs reaper can have
+            # emptied), so the record carries its own — the resolver's
+            # most specific candidate. Absent on records written before
+            # the captures left the repository tree.
+            "captures_root": str(self._captures_root),
         }
         with (MEASUREMENTS / self._filename).open("a") as sink:
             sink.write(json.dumps(record) + "\n")
