@@ -902,7 +902,7 @@ async def test_null_stamp_idle_shape_rows_survive_and_warning_fires(
     assert await _count(wf_conn, wf_schema, "wf_edge", flow_id) == 1, (
         "the NULL-stamped root's history did not survive — R2's idle shape"
     )
-    warnings = [e for e in logs if e.get("event") == "wf_retention_null_finished_at"]
+    warnings = [e for e in logs if e.get("event") == "wf-retention-null-finished-at"]
     assert warnings, f"the stamping-bug tripwire did not fire on the observation: {logs}"
     assert warnings[0]["table"] == "wf_edge"
 
@@ -944,7 +944,7 @@ async def test_null_stamp_busy_shape_warning_not_starved(
         "the NULL-stamped root's history deleted — R2's conservative shape "
         "(skipped, never doomed) collapsed"
     )
-    warnings = [e for e in logs if e.get("event") == "wf_retention_null_finished_at"]
+    warnings = [e for e in logs if e.get("event") == "wf-retention-null-finished-at"]
     assert warnings, (
         f"the tripwire starved behind the batch (the busy shape's conviction: "
         f"the NULL root never selected, the warning never fired): {logs}"

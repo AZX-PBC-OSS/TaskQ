@@ -40,6 +40,10 @@ STATUS_CHIP_CLASSES: dict[str, str] = {
     "cancelled": "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
     "crashed": "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
     "abandoned": "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400",
+    # skipped is a WORKFLOW NODE status (not a job state-machine member):
+    # informational — the branch that did not run — so it reads sky,
+    # distinct from failed's red and pending's gray.
+    "skipped": "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300",
 }
 
 STATUS_TEXT_CLASSES: dict[str, str] = {
@@ -51,6 +55,7 @@ STATUS_TEXT_CLASSES: dict[str, str] = {
     "cancelled": "text-orange-600 dark:text-orange-400",
     "crashed": "text-red-600 dark:text-red-400",
     "abandoned": "text-gray-500 dark:text-gray-500",
+    "skipped": "text-sky-600 dark:text-sky-400",
 }
 
 # The badge chip's structural classes, prefixed to the status's color set

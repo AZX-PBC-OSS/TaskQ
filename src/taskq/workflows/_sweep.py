@@ -226,7 +226,7 @@ async def sweep_join_rederive(
                         BLOCKING_REASON_BODY_UNAVAILABLE,
                     )
                     logger.warning(
-                        "sweep_join_body_unavailable",
+                        "sweep-join-body-unavailable",
                         kind="sweep_join_body_unavailable",
                         join_job_id=str(w["join_job_id"]),
                         step_key=w["step_key"],
@@ -486,7 +486,7 @@ async def sweep_hold_stamps(
         # silent fix — the operator can correlate it with the process
         # death that stamped it.
         logger.warning(
-            "wf_hold_stamp_reclaimed",
+            "wf-hold-stamp-reclaimed",
             kind="wf_hold_stamp_reconcile",
             cleared=cleared_count,
         )
@@ -561,7 +561,7 @@ def _warn_null_stamp(table: str, observed: int) -> None:
         return
     _null_stamp_last_warned[table] = now
     logger.warning(
-        "wf_retention_null_finished_at",
+        "wf-retention-null-finished-at",
         kind="wf_retention_null_finished_at",
         table=table,
         null_stamped_flows=observed,
@@ -592,7 +592,7 @@ async def prune_wf_edge(
     flow's honest terminalization clock; a NULL-stamped terminal root is
     SKIPPED — never doomed (R2's conservative shape: no history is
     removed that has no honest age) — and the pass OBSERVES the class,
-    firing the rate-limited ``wf_retention_null_finished_at`` warning
+    firing the rate-limited ``wf-retention-null-finished-at`` warning
     (the stamping-bug tripwire, keyed on the observation, never on a
     deletion). ``retention``
     is the deletion-sweep family's zero-means-off sentinel: the caller's
@@ -657,7 +657,7 @@ async def prune_wf_join_fire(
     by the ROOT's ``finished_at`` (the latest clock any of the flow's
     rows can carry: the root's age subsumes the row clocks); the
     NULL-stamped terminal root is SKIPPED (never doomed) and the
-    observation fires the rate-limited ``wf_retention_null_finished_at``
+    observation fires the rate-limited ``wf-retention-null-finished-at``
     tripwire (H-B4's conservative shape, R2). ``retention`` is
     the zero-means-off sentinel (default OFF — flow history prunes only
     when the operator opts in). The rootless class is

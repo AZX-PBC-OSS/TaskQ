@@ -979,14 +979,14 @@ async def test_pin_body_unavailable_the_unregistered_name_is_loud(
         "the silent fire (no stamp, no warn) — the pre-cure shipped shape",
         {
             "blocking_reason": state["metadata"].get("blocking_reason"),
-            "warn_emitted": any(e.get("event") == "sweep_join_body_unavailable" for e in logs),
+            "warn_emitted": any(e.get("event") == "sweep-join-body-unavailable" for e in logs),
         },
     )
     assert state["metadata"].get("blocking_reason") == "body_unavailable", (
         "the fired join's record looks healthy while its body never ran — "
         "the operator must see the defect (R2-2)"
     )
-    warn_events = [e for e in logs if e.get("event") == "sweep_join_body_unavailable"]
+    warn_events = [e for e in logs if e.get("event") == "sweep-join-body-unavailable"]
     assert warn_events, "the unresolvable body must warn LOUDLY, never silently"
     assert any(e.get("workflow_name") == "ghost-flow-unregistered" for e in warn_events), (
         "the warning must name the workflow whose definition failed to resolve"
@@ -996,6 +996,6 @@ async def test_pin_body_unavailable_the_unregistered_name_is_loud(
     # stamp's NOT-EXISTS predicate keeps the row write idempotent).
     with structlog.testing.capture_logs() as second_pass_logs:
         await sweep_join_rederive(module_pg_pool, wf_sql)
-    assert not [e for e in second_pass_logs if e.get("event") == "sweep_join_body_unavailable"], (
+    assert not [e for e in second_pass_logs if e.get("event") == "sweep-join-body-unavailable"], (
         "an already-stamped fired join must not re-fire or re-warn"
     )

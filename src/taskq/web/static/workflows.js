@@ -380,8 +380,17 @@
       if (more > 0) {
         var moreDiv = document.createElement("div");
         moreDiv.className = "text-xs text-slate-500 dark:text-slate-400 mt-1";
+        // THE PASTEABLE REMEDY: the full panel URL with the query param
+        // in place (the same shape openPanel fetches) — an operator
+        // pastes it and swaps <n> for the child's map index; no input
+        // machinery is built for the rare overflow read.
+        var panelUrl =
+          boot.streamUrl.replace(/stream$/, "") +
+          "nodes/" +
+          encodeURIComponent(data.key) +
+          "?map_index=<n>";
         moreDiv.textContent = "… " + more + " more children not shown (total " + total +
-          ") — open a child by its map index: ?map_index=<n>";
+          ") — open a child's panel by its map index: " + panelUrl;
         panelBody.appendChild(moreDiv);
       }
     }

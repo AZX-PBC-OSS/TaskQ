@@ -662,7 +662,7 @@ RETURNING o.content_address
 # over the same jobs_finished_at_idx face — the NULLs sit contiguous per
 # status; the observation is not the selection and cannot starve behind
 # the batch), and the arm function warns, rate-limited to the leader's
-# warn cadence (``wf_retention_null_finished_at``): fix the stamping bug
+# warn cadence (``wf-retention-null-finished-at``): fix the stamping bug
 # or backfill the stamps — the rows stay until they carry an honest age.
 #
 # THE CLOCK VOCABULARY (H-B7): every comparison here is

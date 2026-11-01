@@ -1147,9 +1147,14 @@ async def test_the_run_graph_boot_carries_every_node_and_edge(
             assert f"{parent} --> {node.key}" in mermaid, (
                 f"the edge {parent!r} → {node.key!r} missing from the boot mermaid"
             )
-    # THE LEGEND's fills (held + skipped joined the declared set).
+    # THE LEGEND's fills (the closed vocabulary the stream paints —
+    # held + skipped joined, then cancelled/crashed/abandoned/scheduled).
     assert "wf-st-held-fill" in html
     assert "wf-st-skipped-fill" in html
+    assert "wf-st-scheduled-fill" in html
+    assert "wf-st-cancelled-fill" in html
+    assert "wf-st-crashed-fill" in html
+    assert "wf-st-abandoned-fill" in html
 
 
 async def test_the_rerun_forms_render_on_the_failed_rows(
