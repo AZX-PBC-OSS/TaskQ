@@ -1,0 +1,4 @@
+# THE FAST TIER at -n 8 at the re-stamp head 9a2ab011841dda3214d63884baeee924e6369c5c
+13713 passed, 9 skipped, 1 xfailed, 153 warnings in 742.16s (0:12:22)
+rc=0
+head: 9a2ab011841dda3214d63884baeee924e6369c5c

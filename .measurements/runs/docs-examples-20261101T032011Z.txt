@@ -1,0 +1,6 @@
+# the docs examples at the re-stamp head 966411e5d5fc15455efd02355bdf0c7812311d63
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+107 passed, 13934 deselected, 1 warning in 87.70s (0:01:27)
+docs-examples rc=0
+head: 966411e5d5fc15455efd02355bdf0c7812311d63

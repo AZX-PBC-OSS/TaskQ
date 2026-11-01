@@ -1,0 +1,6 @@
+# evidence-heads-verify at the re-stamp head 966411e5d5fc15455efd02355bdf0c7812311d63 — the verifier's receipt
+the head-stamp law holds: every evidence kind's live claim in /tmp/opencode/evidence-estate/.measurements/runs is recorded at THIS head (966411e5d5fc) or explicitly superseded
+  WARNING (unparsable-capture): evidence-heads-verify: the capture evidence-heads-verify-20261101T032400Z.txt records NO verdict shape the content door parses (the capture carries no rc=, no passed/failed summary) — judged on the head-stamp law alone. If this family's verdict shape is new, TEACH THE DOOR; never teach the capture to be silent.
+  WARNING (unparsable-capture): rv2-13-green: the capture evidence-heads-verify-20261101T032400Z.txt records NO verdict shape the content door parses (the capture carries no rc=, no passed/failed summary) — judged on the head-stamp law alone. If this family's verdict shape is new, TEACH THE DOOR; never teach the capture to be silent.
+verifier rc=0
+head: 966411e5d5fc15455efd02355bdf0c7812311d63
