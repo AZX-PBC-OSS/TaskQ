@@ -105,7 +105,30 @@ RETURNING attempt
 
 NODE_REPEND_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
-SET status = 'scheduled', locked_by_worker = NULL, scheduled_at = now() + ($2::double precision * interval '1 second')
+SET status = 'scheduled', locked_by_worker = NULL, scheduled_at = now() + ($2::double precision * interval '1 second'),
+    -- THE RE-PEND'S OWN PROVENANCE, stamped in the re-pend's own
+    -- statement — atomic with the re-pend, so the curve's evidence is
+    -- the applied value itself, never a poller's reconstruction: the
+    -- applied backoff, the re-pend's instant, and the due instant (one
+    -- now() read — due minus at IS the backoff the statement applied),
+    -- keyed PER ATTEMPT and ACCUMULATED (a later attempt's key wins
+    -- only ITS key; the stamp a row carries after it later SUCCEEDED
+    -- is history, harmless — nothing reads wf_repend as live state;
+    -- the row's own status/scheduled_at columns are the live face).
+    -- The instants ride the ISO-8 face the row's stamps carry (the
+    -- timer wake's payload shape).
+    metadata = metadata || jsonb_build_object(
+        'wf_repend',
+        COALESCE(metadata->'wf_repend', '{}'::jsonb) || jsonb_build_object(
+            $3::int::text,
+            jsonb_build_object(
+                'backoff', $2::double precision,
+                'at', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+                'due', to_char((now() + ($2::double precision * interval '1 second'))
+                               AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+            )
+        )
+    )
 WHERE id = $1
   AND status = 'running'
 RETURNING id

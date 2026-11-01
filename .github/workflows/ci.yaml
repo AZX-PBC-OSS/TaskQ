@@ -660,6 +660,90 @@ jobs:
           TASKQ_TEST_PG_IMAGE: postgres:${{ matrix.postgres-version }}-alpine
         run: uv run --no-sync pytest --system-e2e -m "system and not load_sensitive" tests/system_e2e --timeout=900 -n 2 -q
 
+  scenario-grounds:
+    # The scenario grounds (examples/scenario_grounds): seven runnable
+    # examples, one production behavior each, each driving real workflows
+    # against real Postgres + Redis and printing its own evidence; the
+    # companion test (tests/test_scenario_grounds.py) asserts that
+    # evidence's row-truth.
+    #
+    # THE CHOICE, stated: this is its own lane on EVERY pull_request event
+    # (the maintainers' own shape — the e2e and system-e2e tiers are also
+    # dedicated PR lanes precisely because their scenarios are
+    # wall-clock-bound), not a scheduled job: the lane costs ~8 minutes
+    # (cheaper than the e2e lane above), it needs no Docker and no image
+    # builds (plain service containers), and a scheduled-only lane would
+    # let the examples rot on main silently between runs — the scenarios'
+    # only failure mode is a src change that broke them, and that change
+    # arrives on a PR. No `paths:` filter (the deploy-check deadlock
+    # lesson: a check that must catch a src change cannot scope itself to
+    # the src paths — every lane here obeys that).
+    #
+    # The scenarios opt in via TASKQ_SCENARIO_GROUNDS=1 (a developer
+    # without a local Postgres must not collect red); setting it here
+    # makes the lane skip-free. The final step asserts ALL SEVEN ran and
+    # passed — a lane that silently collected nothing (or skipped all
+    # seven) must not wear a green checkmark.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TASKQ_PG_DSN: postgresql://postgres:postgres@localhost:5432/taskq_grounds
+      TASKQ_REDIS_URL: redis://localhost:6379/0
+      TASKQ_SCENARIO_GROUNDS: "1"
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: taskq_grounds
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d taskq_grounds"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:8.10.2
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-uv-env
+
+      # The workflow-level pin (test_ci_workflow.py) requires Node on every
+      # job whose pytest invocation can reach tests/web_admin; this job's
+      # selection does not, but the pin's substring scan cannot tell, so
+      # Node is installed unconditionally (the system-e2e lane's precedent).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Run the scenario grounds (skip-free, all seven asserted)
+        run: |
+          set -euo pipefail
+          uv run --no-sync pytest tests/test_scenario_grounds.py -v --timeout=900 2>&1 | tee "$RUNNER_TEMP/scenario-grounds.log"
+          # The count assertion: all seven scenario pins ran and none
+          # skipped — a green lane that collected or skipped the module
+          # is the lie this assert exists to refuse.
+          passed="$(grep -c '^tests/test_scenario_grounds.py::test_s[1-7]_.*PASSED' "$RUNNER_TEMP/scenario-grounds.log" || true)"
+          echo "scenario pins that ran green: ${passed}/7"
+          if [ "$passed" -ne 7 ]; then
+            echo "::error::the scenario grounds lane expected 7 green scenario pins, saw ${passed} — the lane must run all seven, skip-free"
+            exit 1
+          fi
+          if grep -E '[0-9]+ skipped' "$RUNNER_TEMP/scenario-grounds.log"; then
+            echo "::error::the scenario grounds lane skipped pins — TASKQ_SCENARIO_GROUNDS must hold in this lane"
+            exit 1
+          fi
+
 
   security:
     runs-on: ubuntu-latest

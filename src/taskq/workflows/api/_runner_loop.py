@@ -748,6 +748,7 @@ class LoopOps(_LoopHost):
                 render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
                 row["id"],
                 0.05,
+                attempt,
             )
 
     async def _exhaust_loop(
