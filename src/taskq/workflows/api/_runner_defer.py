@@ -228,11 +228,14 @@ async def defer_row_law(
                 # THE DEFERRED REST: 'awaited' — the hold's own
                 # resume-not-retry status. Never 'failed': the ladder's
                 # budget read counts failures only, and the deferral never
-                # executed.
+                # executed. (The caller proved its claim at the node row's
+                # fence — the instant's re-mint guard is the fence-by-id's
+                # own; the rest keeps the by-id-only write.)
                 await conn.execute(
                     wsql.ledger_terminal_by_id,
                     ledger_id,
                     "awaited",
+                    None,
                     None,
                     None,
                     None,
@@ -286,6 +289,10 @@ async def route_defer_terminal(
                 None,
                 error_class,
                 error_message,
+                None,
+                # The route's callers proved their claim at the fence
+                # legs' own verdict — the NULL form keeps the by-id-only
+                # write here.
                 None,
             )
         else:

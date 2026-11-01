@@ -529,6 +529,12 @@ class CtxSpawnOps(_SpawnHost):
 
         from taskq.workflows.api._runner import FlowRunner
 
+        # NB: this runner only CREATES the child run's rows (the spawn +
+        # the join's receipts) — it executes no bodies. The child's rows
+        # execute through the doors that own them (the fleet's
+        # ``execute_flow_job``, the dev drive's ``_runner_for_flow``) —
+        # each threads the worker's default deadline itself (the wf
+        # start_to_close cure's own resolution chain).
         child_runner = FlowRunner(compiled_obj, self._pool, self._wsql.schema)
         claim = await child_runner.create_flow(
             input=input,

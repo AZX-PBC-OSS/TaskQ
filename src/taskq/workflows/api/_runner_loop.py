@@ -229,6 +229,7 @@ class LoopOps(_LoopHost):
                     ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED,
                     BUDGET_EXHAUSTED_MESSAGE,
                     None,
+                    None,  # the loop's route holds no claim instant here — the NULL form
                 )
         await self._exhaust_loop(
             flow_id,

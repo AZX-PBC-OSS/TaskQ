@@ -1043,6 +1043,11 @@ async def _dispatch_flow_job(
             schema=deps.settings.schema_name,
             worker_id=JobId(worker_id),
             job=job,
+            # THE WORKER'S DEFAULT DEADLINE (the wf start_to_close cure —
+            # the resolution chain's own tail): the settings' value
+            # threaded to the door; the row's own stamp outranks it (the
+            # vanilla _effective_start_to_close chain's own order).
+            default_start_to_close=deps.settings.default_start_to_close,
         )
 
     task = asyncio.create_task(_run(), name=f"flow-attempt:{job.id}")

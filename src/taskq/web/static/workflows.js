@@ -198,6 +198,9 @@
         errCell.classList.remove("text-red-600", "dark:text-red-400");
       }
     }
+    // THE NODE'S CHIP CELL (one query — the deferral line's and the
+    // deadline line's shared anchor).
+    var chipEl = row.querySelector('[data-wf-node-chip]');
     // THE DEFERRAL LINE (the snoozed step's sitting state): the frame
     // carries the label — the row's truth (the deferral stamp's own
     // discriminator), so a node that ARRIVES at the snoozed state while
@@ -207,7 +210,6 @@
     var deferLine = row.querySelector('[data-wf-node-deferral]');
     if (node.deferral_label) {
       if (!deferLine) {
-        var chipEl = row.querySelector('[data-wf-node-chip]');
         if (chipEl) {
           deferLine = document.createElement("div");
           deferLine.setAttribute("data-wf-node-deferral", "1");
@@ -218,6 +220,25 @@
       if (deferLine) deferLine.textContent = node.deferral_label;
     } else if (deferLine) {
       deferLine.remove();
+    }
+    // THE DEADLINE LINE (the wf start_to_close cure): the frame carries
+    // the label — the bound where declared + the running face's reality
+    // (the time left, or the expiry's age). A node whose row carries no
+    // bound renders no line (an undeclared row reads as the unbounded
+    // face it is). Same live add/remove as the deferral line.
+    var deadlineLine = row.querySelector('[data-wf-node-deadline]');
+    if (node.deadline_label) {
+      if (!deadlineLine) {
+        if (chipEl) {
+          deadlineLine = document.createElement("div");
+          deadlineLine.setAttribute("data-wf-node-deadline", "1");
+          deadlineLine.className = "mt-1 text-xs text-slate-500 dark:text-slate-400";
+          chipEl.parentNode.appendChild(deadlineLine);
+        }
+      }
+      if (deadlineLine) deadlineLine.textContent = node.deadline_label;
+    } else if (deadlineLine) {
+      deadlineLine.remove();
     }
     // THE RETRY AFFORDANCE'S LIVE ADD/REMOVE (H-C9): a failed row
     // carries the retry form; a row that leaves failed reverts to the

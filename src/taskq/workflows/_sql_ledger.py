@@ -90,6 +90,17 @@ SET status = $2,
     capture = $6::jsonb,
     updated_at = clock_timestamp()
 WHERE id = $1
+  -- THE RE-MINT GUARD (the C5 law, LEDGER_FENCE_BY_ID_SQL's own — the
+  -- deadline burn's hardening): a caller presenting its OWN claim's
+  -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
+  -- instance identity) writes ONLY the row that claim actually wrote.
+  -- The arbiter's re-use (the refund re-claims the SAME ordinal → the
+  -- SAME arbiter row) re-stamps updated_at, and the stale instant
+  -- REFUSES the write: a re-minted LIVE winner's ledger row can never
+  -- inherit a stale claimant's stamp (the deadline's 'failed' burn
+  -- included). A caller with no claim instant keeps the by-id-only
+  -- write (the pre-cure shape).
+  AND ($7::timestamptz IS NULL OR updated_at = $7::timestamptz)
 RETURNING id
 """
 

@@ -363,6 +363,11 @@ def register(router: APIRouter) -> None:
                 # label is the row's truth (the stamp's own
                 # discriminator), rendered beside the status chip.
                 "deferral_label": n.deferral_label,
+                # THE DEADLINE LINE (the wf start_to_close cure — the
+                # bound where declared + the running face's reality):
+                # the same row's-truth pattern, rendered beside the
+                # deferral line.
+                "deadline_label": n.deadline_label,
             }
             # THE COLLAPSE (Q1d): the map children render through their
             # source's hexagon — the page's node projection is the

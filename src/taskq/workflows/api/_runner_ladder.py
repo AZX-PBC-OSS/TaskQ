@@ -10,7 +10,7 @@ terminal-fail cascade) in ``taskq.workflows.engine``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 import asyncpg
 import structlog
@@ -22,6 +22,7 @@ from taskq.workflows._progress import (
     MESSAGE_TERMINAL_MAX,
 )
 from taskq.workflows.api._sql_runner import (
+    NODE_DEADLINE_REPEND_SQL,
     NODE_REPEND_SQL_TEMPLATE,
     render_sql,
     wf_conn_fetchval,
@@ -34,6 +35,26 @@ if TYPE_CHECKING:
 __all__ = ["LadderOps", "is_deterministic_authoring_failure", "is_infra_fault"]
 
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
+
+#: THE DEADLINE'S RECORD STAMP (the vanilla timeout handler's own error
+#: face, _handlers.py: ``error_class = "TimeoutError" if isinstance(exc,
+#: _StartToCloseExceededError)...`` — the row reports the deadline class,
+#: never the private marker's own name, and the message carries the
+#: handler's own fallback). The wf face records the SAME pair: the
+#: deadline is the machinery's expiry, and the record reads like the
+#: vanilla rows'.
+DEADLINE_ERROR_CLASS: Final[str] = "TimeoutError"
+DEADLINE_ERROR_MESSAGE: Final[str] = "start_to_close"
+
+#: THE LADDER'S BUDGET READ (the count of the ledger's failed rows —
+#: the ladder's own currency, priced identically on both arms: the
+#: body-failure catch's and the deadline's): ONE statement, two
+#: consumers — never a drifted pair of inline strings.
+_FAILED_COUNT_SQL = (
+    "SELECT count(*) FROM {schema}.wf_step_ledger WHERE flow_id = $1 "
+    "AND step_key = $2 AND COALESCE(map_index, -1) = COALESCE($3::smallint, -1) "
+    "AND status = 'failed'"
+)
 
 
 def is_infra_fault(exc: BaseException) -> bool:
@@ -229,9 +250,7 @@ class LadderOps(_LadderHost):
                 await wf_conn_fetchval(
                     self.pool,
                     self.schema,
-                    "SELECT count(*) FROM {schema}.wf_step_ledger WHERE flow_id = $1 "
-                    "AND step_key = $2 AND COALESCE(map_index, -1) = COALESCE($3::smallint, -1) "
-                    "AND status = 'failed'",
+                    _FAILED_COUNT_SQL,
                     flow_id,
                     row["step_key"],
                     row["map_index"],
@@ -288,6 +307,214 @@ class LadderOps(_LadderHost):
                     "error_class": type(exc).__name__,
                 },
             )
+
+    async def _deadline_disposition(
+        self,
+        flow_id: JobId,
+        row: dict[str, Any],
+        attempt: int,
+        node: Any,
+        *,
+        claim_epoch: int = 0,
+        ledger_id: JobId | None = None,
+        ledger_claimed_at: Any = None,
+    ) -> str:
+        """THE DEADLINE'S DISPOSITION (the wf face of the vanilla
+        ``_handle_timeout`` — the start_to_close expiry's own ladder arm,
+        the deferral's SIBLING: a START_TO_CLOSE TimeoutError is a REAL
+        attempt burn, never a Snooze):
+
+        * the attempt BURNS — the claim's increment stands, the ledger's
+          failed row records the deadline (the truthful
+          :data:`DEADLINE_ERROR_CLASS`/message pair — the vanilla rows'
+          own stamp, never the private marker's name), and the row
+          re-pends at the ladder's own backoff curve until
+          ``max_attempts`` then terminal-fails (the retry per the
+          contract; ``permanent`` fails immediately — the ladder's own
+          arms);
+        * THE CANCEL WINS (the vanilla ``mark_retry``'s own law, mirrored
+          in-statement — a phase-carrying row on EITHER carrier matches
+          no arm of ``NODE_DEADLINE_REPEND_SQL``): the node terminalises
+          'cancelled' through the wf terminal door (the C4 deferral's
+          cancel_fenced shape — the cancel's vocabulary, the ledger row
+          the cancel's record), never re-queued under the deadline's
+          backoff;
+        * THE ZOMBIE (the claim fence matched nothing — a newer attempt
+          owns the row): the ledger records 'fenced' keyed on the claim's
+          OWN instant (the C5 re-mint guard's own shape), H1 — never a
+          running row left forever.
+
+        Returns the attempt's outcome label (the caller's log line — the
+        ROW is the truth, this is the record's echo): ``"laddered"`` /
+        ``"cancelled"`` / ``"fenced"``."""
+        from taskq.workflows.api._runner_defer import (
+            WORKFLOW_CANCELLED_CLASS,
+            route_defer_terminal,
+        )
+
+        if node is not None:
+            max_attempts = node.max_attempts
+            retry_kind = node.retry_kind
+        else:
+            max_attempts, retry_kind = self._map_child_ladder_terms(row["step_key"])
+        # THE LADDER'S OWN COUNT + CURVE (the burn prices like any body
+        # failure: the ledger's failed rows count, the backoff doubles).
+        failed_count = int(
+            await wf_conn_fetchval(
+                self.pool,
+                self.schema,
+                _FAILED_COUNT_SQL,
+                flow_id,
+                row["step_key"],
+                row["map_index"],
+            )
+        )
+        backoff_s = 0.05 * (2**failed_count)
+        exhausted = retry_kind == "permanent" or failed_count + 1 >= max_attempts
+        async with self.pool.acquire() as conn, conn.transaction():
+            rec = await conn.fetchrow(
+                render_sql(NODE_DEADLINE_REPEND_SQL, self.schema),
+                row["id"],
+                backoff_s,
+                exhausted,
+                # THE CLAIM IDENTITY'S FENCE (the fence legs bind the
+                # caller's own claim — worker + attempt + epoch, the
+                # NODE_DEFER_SQL's own legs): the deadline's disposition
+                # flips only the row the CALLER'S OWN CLAIM holds; a
+                # zombie's no-match routes to the zombie face below.
+                self._worker_id,
+                attempt,
+                claim_epoch,
+            )
+            if rec is None:
+                # THE ZOMBIE'S DEADLINE (H1): the claim fence matched
+                # nothing — the row moved to a newer attempt, the winner
+                # owns it. The ledger's 'fenced' keyed on the claim's own
+                # instant (the re-mint guard — a re-minted row is the
+                # LIVE winner's, never ours).
+                if ledger_id is not None:
+                    await conn.execute(
+                        self.wsql.ledger_fence_by_id,
+                        ledger_id,
+                        DEADLINE_ERROR_CLASS,
+                        ledger_claimed_at,
+                    )
+                verdict = "fenced"
+            else:
+                verdict = str(rec["verdict"])
+                if ledger_id is not None:
+                    if verdict == "cancel_fenced":
+                        # THE CANCEL'S RECORD: the ledger row the cancel's
+                        # own vocabulary (the C4 cancel_fenced face),
+                        # keyed on the claim's OWN instant (the re-mint
+                        # guard — a re-minted row is the LIVE winner's).
+                        await conn.execute(
+                            self.wsql.ledger_terminal_by_id,
+                            ledger_id,
+                            "cancelled",
+                            None,
+                            WORKFLOW_CANCELLED_CLASS,
+                            "cancelled while past its start_to_close "
+                            "(the operator's cancel outranks the deadline)",
+                            None,
+                            ledger_claimed_at,
+                        )
+                    else:
+                        # THE BURN'S RECORD: the attempt's failed row, the
+                        # deadline's truthful stamp — on BOTH live faces
+                        # (the repended retry AND the exhausted terminal:
+                        # the attempt executed and the deadline ended it)
+                        # — keyed on the claim's OWN instant (the re-mint
+                        # guard: the failed stamp cannot land on a
+                        # re-minted live winner's ledger row).
+                        await conn.execute(
+                            self.wsql.ledger_terminal_by_id,
+                            ledger_id,
+                            "failed",
+                            None,
+                            DEADLINE_ERROR_CLASS,
+                            DEADLINE_ERROR_MESSAGE,
+                            None,
+                            ledger_claimed_at,
+                        )
+        if verdict == "fenced":
+            logger.info(
+                "node.deadline-fenced",
+                run_id=str(flow_id),
+                node=row["step_key"],
+                error_class=DEADLINE_ERROR_CLASS,
+            )
+            return "fenced"
+        if verdict == "cancel_fenced":
+            # THE CANCEL WINS: the node terminalises through the wf
+            # terminal door (the C4's own route — the ledger's terminal +
+            # finalize_node + the projection ride it).
+            await route_defer_terminal(
+                self.pool,
+                self.wsql,
+                flow_id=flow_id,
+                row=row,
+                worker_id=self._worker_id,
+                attempt=attempt,
+                claim_epoch=claim_epoch,
+                ledger_id=ledger_id,
+                capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]  # Why: the declared capture policy rides the COMPILE (the ladder's own call shape — the host's compiled is Any-typed).
+                project_auto=self._project_auto,
+                outcome="cancelled",
+                error_class=WORKFLOW_CANCELLED_CLASS,
+                error_message=(
+                    "cancelled while past its start_to_close "
+                    "(the operator's cancel outranks the deadline)"
+                ),
+            )
+            logger.info(
+                "node.deadline-cancelled",
+                run_id=str(flow_id),
+                node=row["step_key"],
+                error_class=WORKFLOW_CANCELLED_CLASS,
+            )
+            return "cancelled"
+        # THE CLEAN FACE: the row re-pended at the backoff (the burn's
+        # retry). The budget's bound: past max_attempts — or a
+        # ``permanent`` kind — the deadline terminal-fails the node (the
+        # ladder's own exhaustion face, the deadline's stamp on the
+        # record).
+        if exhausted:
+            final = await finalize_node(
+                self.pool,
+                self.wsql,
+                flow_id=flow_id,
+                job_id=JobId(row["id"]),
+                step_key=row["step_key"],
+                worker_id=self._worker_id,
+                attempt=attempt,
+                claim_epoch=claim_epoch,
+                outcome="failed",
+                error_class=DEADLINE_ERROR_CLASS,
+                error_message=DEADLINE_ERROR_MESSAGE,
+                capture_policy=self.compiled.capture,  # pyright: ignore[reportAttributeAccessIssue]
+                map_index=row["map_index"],
+            )
+            if final.applied:
+                await self._project_auto(
+                    flow_id,
+                    JobId(row["id"]),
+                    KIND_NODE_TERMINAL,
+                    {
+                        "outcome": "failed",
+                        "step_key": row["step_key"],
+                        "error_class": DEADLINE_ERROR_CLASS,
+                    },
+                )
+        logger.info(
+            "node.deadline-exceeded",
+            run_id=str(flow_id),
+            node=row["step_key"],
+            attempt=attempt,
+            error_class=DEADLINE_ERROR_CLASS,
+            exhausted=exhausted,
+        )
+        return "laddered"
 
     async def _reclaim_step(
         self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception

@@ -163,6 +163,7 @@ class WorkflowSteps:
                     error_class,
                     error_message,
                     None,
+                    None,  # the ctx's callers hold no claim instant — the NULL form (the pre-cure shape)
                 )
         else:
             async with self._pool.acquire() as conn:

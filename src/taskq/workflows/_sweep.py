@@ -67,7 +67,13 @@ from taskq.workflows._sql_sweep import (
     STEP_LEDGER_ROOTLESS_RETENTION_SQL,
     render_rootless_retention_sql,
 )
-from taskq.workflows._types import FiredJoin, _consumer_bindings, _jsonb, _metadata
+from taskq.workflows._types import (
+    FiredJoin,
+    _consumer_bindings,
+    _jsonb,
+    _metadata,
+    _seconds_or_none,
+)
 
 __all__ = [
     "NODELESS_ROOT_REAP_GRACE_S",
@@ -357,6 +363,20 @@ async def drain_outbox(
             # priority (the loop escalation's interactive follow-up), the
             # unset case at the column default's own value (0).
             [r["priority"] for r in rows],
+            # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
+            # cure's drain leg): the fire's bindings carry the downstream
+            # node's own resolution (the join row's metadata `consumers`
+            # array, serialized as SECONDS — the jsonb wire form); the
+            # unset/malformed case binds NULL (the pre-cure row). A
+            # deadline is a correctness input, but the binding's author
+            # is the fork's own build (a typed timedelta's serialization)
+            # — a malformed value degrades to NULL, never a sweep death.
+            # The parse is the binding decode's own helper
+            # (``_seconds_or_none``) — one guard, both faces.
+            [
+                _seconds_or_none(b.get("start_to_close_s"))  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the jsonb walk hands the Any-typed doc the drain decoded above; the helper is the parse.
+                for b in bindings
+            ],
         )
         await conn.execute(wsql.outbox_drain_flip, [r["id"] for r in rows])
     return len(rows)

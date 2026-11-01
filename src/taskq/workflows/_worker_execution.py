@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import weakref
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Final, NamedTuple, cast
 from uuid import UUID
 
@@ -868,17 +869,28 @@ def collect_workflow_reservations() -> tuple[list[ConcurrencyReservation], list[
 
 # ── the execution door ───────────────────────────────────────────────────
 
-_runners: dict[tuple[str, str, str], tuple[Any, Any]] = {}
-"""The worker-hosted runners, keyed (schema, workflow name, worker id) —
-the worker's pool + identity are process-stable, so the cache holds ONE
-runner per workflow per process (the construction validates the graph
-once). The pool rides the value so a swapped pool rebuilds the runner."""
+_runners: dict[tuple[str, str, str, str], tuple[Any, Any]] = {}
+"""The worker-hosted runners, keyed (schema, workflow name, worker id,
+worker default) — the worker's pool + identity are process-stable, so
+the cache holds ONE runner per workflow per process (the construction
+validates the graph once). The pool rides the value so a swapped pool
+rebuilds the runner; the worker default rides the KEY — two callers
+naming different defaults (a test's 300s, another's ``None``, a fleet's
+per-tenant settings) must never share a runner (the second would
+inherit the first's deadline)."""
 
 
-def _runner_for(name: str, pool: asyncpg.Pool, schema: str, worker_id: JobId) -> Any:
+def _runner_for(
+    name: str,
+    pool: asyncpg.Pool,
+    schema: str,
+    worker_id: JobId,
+    default_start_to_close: timedelta | None = None,
+) -> Any:
     from taskq.workflows.api._runner import FlowRunner
 
-    key = (schema, name, str(worker_id))
+    default_key = "" if default_start_to_close is None else repr(default_start_to_close)
+    key = (schema, name, str(worker_id), default_key)
     cached = _runners.get(key)
     if cached is not None and cached[0] is pool:
         return cached[1]
@@ -895,6 +907,12 @@ def _runner_for(name: str, pool: asyncpg.Pool, schema: str, worker_id: JobId) ->
         schema,
         worker_id=worker_id,
         deps=compiled.deps if isinstance(compiled, CompiledWorkflow) else None,
+        # THE WORKER'S DEFAULT DEADLINE (the wf start_to_close cure — the
+        # resolution chain's own tail): the worker settings' value,
+        # threaded from the dispatch loop's deps. Process-stable (the
+        # settings load once at boot), and part of the cache KEY — a
+        # changed default builds its own runner, never inherits.
+        default_start_to_close=default_start_to_close,
     )
     _runners[key] = (pool, runner)
     return runner
@@ -906,6 +924,7 @@ async def execute_flow_job(
     schema: str,
     worker_id: JobId,
     job: JobRow,
+    default_start_to_close: timedelta | None = None,
 ) -> FlowExecution:
     """Execute ONE claimed workflow row on THIS worker.
 
@@ -918,6 +937,13 @@ async def execute_flow_job(
     machinery (:meth:`FlowRunner.run_fleet_claimed_step`): the ledger
     claim, the emitter, the router, the ladder, the two-transaction
     finalize, the same fences. NOT a second execution semantics.
+
+    ``default_start_to_close`` is the WORKER'S DEFAULT DEADLINE (the wf
+    start_to_close cure — the resolution chain's own tail): the worker
+    settings' value, threaded from the dispatch loop's deps; the row's
+    own stamp (the declared bound) outranks it — the vanilla
+    ``_effective_start_to_close`` chain's own order. ``None`` = no
+    default — an undeclared row's body runs unbounded.
 
     Returns the execution record (:class:`FlowExecution`) — the outcome
     label (``succeeded`` / ``laddered`` / ``held`` / ``deferred`` — the
@@ -959,7 +985,9 @@ async def execute_flow_job(
             "a deployment defect"
         ) from None
 
-    runner = _runner_for(workflow_name, pool, schema, worker_id)
+    runner = _runner_for(
+        workflow_name, pool, schema, worker_id, default_start_to_close=default_start_to_close
+    )
     # THE RUN-PRIORITY STAMP'S RESOLUTION: the root's stamped override
     # through the shared parse → domain-clamp → degrade cascade
     # (``resolve_priority_stamp`` — a stamp a hand-crafted row rendered
@@ -973,6 +1001,11 @@ async def execute_flow_job(
         "map_index": read["map_index"],
         "payload": job.payload,
         "trace_id": job.trace_id,
+        # THE ROW'S DECLARED DEADLINE (the wf start_to_close cure): the
+        # dispatch claim's own decode carries the column (the vanilla
+        # JobRow's field — the row IS the truth); the runner's
+        # enforcement resolves it over the worker's default.
+        "start_to_close": job.start_to_close,
     }
     from taskq.workflows.api._runner_errors import WorkflowRunError
 

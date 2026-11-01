@@ -351,15 +351,20 @@ FOR UPDATE OF o SKIP LOCKED
 # run's priority; the fleet door's own arithmetic, mirrored in the fetch's
 # SQL): resolved by OUTBOX_FETCH_UNDELIVERED_SQL, COALESCEd to the column
 # default's own value (0 — the pre-cure byte-identical row).
+# start_to_close is the CONSUMER'S DECLARED DEADLINE (the wf
+# start_to_close cure): the fire's bindings carry the downstream node's
+# own resolution (the join row's metadata `consumers` array, serialized
+# as SECONDS — the jsonb wire form); the unset case binds NULL
+# (pre-cure identical).
 OUTBOX_DRAIN_CONSUMERS_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority)
+     idempotency_scope, idempotency_key, priority, start_to_close)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[], $14::smallint[]
+    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[]
 )
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL

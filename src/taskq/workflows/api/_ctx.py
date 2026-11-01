@@ -13,6 +13,7 @@ seam (``_runner``).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -147,6 +148,34 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     claimed_at: datetime | None = None
     budget_remaining_ms: int | None = None
     _runtime: dict[str, int] = field(default_factory=lambda: dict[str, int]())  # pyright: ignore[reportUnknownVariableType]  # Why: pyright's inference for the slots+frozen dataclass's mutable default degrades; the annotation is the truth.
+    # THE DEADLINE ENFORCEMENT'S CTX STATE (the consumer's
+    # ``_enforce_start_to_close`` designated write — the SAME ctx face
+    # the vanilla ``JobContext`` carries): the detached body task's
+    # handle, written when the deadline enforcement runs the body in its
+    # own task. The enforcement's OTHER designated write — the tx
+    # rollback-collision window stamp — is the tx carrier's alone: the
+    # wf body runs in NO transaction (each statement takes its own
+    # acquisition), so there is no ``__aexit__`` ROLLBACK the marker
+    # could collide with, no capture boundary, no reader here — the
+    # enforcement's protocol split keeps that write off this face.
+    _actor_body_task: asyncio.Task[object] | None = None
+
+    def _set_actor_body_task(self, task: asyncio.Task[object]) -> None:
+        """Record the deadline-enforced body task. Called by the
+        start_to_close enforcement (the consumer's deadline helper, the
+        same designated writer the vanilla ``JobContext`` documents) when
+        the body runs in its own task, never by body code.
+
+        The start_to_close machinery runs the body in a task so the
+        deadline can win over whatever the body does after expiry (a
+        cancellation-absorbing return, a hostile ``finally``); the task
+        then unwinds ASYNCHRONOUSLY — the handle is the wf face's own
+        record of that detached unwind. ``object.__setattr__`` because
+        the dataclass is frozen; the handle is enforcement state that
+        arrives after construction, exactly as the vanilla ctx's
+        handles do.
+        """
+        object.__setattr__(self, "_actor_body_task", task)
 
     @property
     def map_index(self) -> int | None:
