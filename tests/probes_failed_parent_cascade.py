@@ -83,7 +83,7 @@ async def _seed_edge_named(
 
 
 @pytest.mark.integration
-async def test_attack_t06_crash_window_fail_closed_root_and_peers(
+async def test_attack_crash_window_fail_closed_root_and_peers(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -163,7 +163,7 @@ async def test_attack_t06_crash_window_fail_closed_root_and_peers(
 
 
 @pytest.mark.integration
-async def test_attack_t06_maybe_child_never_cascades(
+async def test_attack_maybe_child_never_cascades(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -209,7 +209,7 @@ async def test_attack_t06_maybe_child_never_cascades(
 
 
 @pytest.mark.integration
-async def test_attack_t06_cascade_racing_a_normal_finalize(
+async def test_attack_cascade_racing_a_normal_finalize(
     module_pg_pool: asyncpg.Pool,
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -297,7 +297,7 @@ async def test_attack_t06_cascade_racing_a_normal_finalize(
 
 
 @pytest.mark.integration
-async def test_attack_t06_two_cascades_overlapping_peer_sets(
+async def test_attack_two_cascades_overlapping_peer_sets(
     module_pg_pool: asyncpg.Pool,
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -366,7 +366,7 @@ async def test_attack_t06_two_cascades_overlapping_peer_sets(
 
 
 @pytest.mark.integration
-async def test_attack_t06_mixed_policy_node_the_collect_join_hangs(
+async def test_attack_mixed_policy_node_the_collect_join_hangs(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

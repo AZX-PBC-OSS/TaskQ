@@ -73,7 +73,7 @@ bringing up nodes...
 =================================== FAILURES ===================================
 E   AssertionError: the head-stamp verifier reds on the committed estate
 =========================== short test summary info ============================
-FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+FAILED tests/test_wf_run_view_pins.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
 1 failed, 603 passed, 1 warning in 80.24s (0:01:20)
 """
 

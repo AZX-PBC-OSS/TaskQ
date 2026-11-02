@@ -262,7 +262,7 @@ class GatherOut(BaseModel):
 
 
 @pytest.mark.integration
-async def test_rv5_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
+async def test_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """THE SAFE BEHAVIOR: K concurrent spawns in one body mint K DISTINCT
@@ -340,7 +340,7 @@ class PurgeOut(BaseModel):
 
 
 @pytest.mark.integration
-async def test_rv5_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
+async def test_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """THE SAFE BEHAVIOR: the child the parent joined is GONE at the wake
@@ -449,7 +449,7 @@ class GenOut(BaseModel):
 
 
 @pytest.mark.integration
-async def test_rv5_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
+async def test_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """THE SAFE BEHAVIOR: a self/ancestor-spawning flow is BOUNDED and
@@ -558,7 +558,7 @@ C4_DEPTH = 1200
 
 
 @pytest.mark.integration
-async def test_rv5_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
+async def test_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """THE SAFE BEHAVIOR: the cascade is ITERATIVE (or depth-bounded with
@@ -586,7 +586,7 @@ async def test_rv5_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
     cancelled: int | None
     try:
         cancelled = await cancel_workflow_run(
-            wf_pool, schema=wf_schema, flow_id=JobId(ids[0]), reason="rv5-c4 depth"
+            wf_pool, schema=wf_schema, flow_id=JobId(ids[0]), reason="cascade-depth probe"
         )
     except RecursionError:
         cancelled = None
@@ -611,7 +611,7 @@ async def test_rv5_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
 
 
 @pytest.mark.integration
-async def test_rv5_c5_the_cascade_walks_both_directions_no_child_escapes(
+async def test_c5_the_cascade_walks_both_directions_no_child_escapes(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """THE SAFE BEHAVIOR: the cascade walks BOTH directions — the parent
@@ -681,7 +681,9 @@ async def test_rv5_c5_the_cascade_walks_both_directions_no_child_escapes(
     fresh_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
     assert "child_flows" not in fresh_node["metadata"]
 
-    await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=flow_id, reason="rv5-c5")
+    await cancel_workflow_run(
+        wf_pool, schema=wf_schema, flow_id=flow_id, reason="the cascade probe"
+    )
 
     child_root = await wf_conn.fetchrow(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', child_flow_id
@@ -709,7 +711,7 @@ class NeverGate(BaseModel):
 
 
 @pytest.mark.integration
-async def test_rv5_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
+async def test_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
     """THE SAFE BEHAVIOR: the dev driver's tick runs the expiry arm — a
@@ -775,7 +777,7 @@ async def test_rv5_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
 
 
 @pytest.mark.integration
-async def test_rv5_c7_resolving_a_child_join_hold_is_a_named_boundary_refusal(
+async def test_c7_resolving_a_child_join_hold_is_a_named_boundary_refusal(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
     """THE SAFE BEHAVIOR: the resolve boundary REFUSES a child-join hold
@@ -827,7 +829,7 @@ async def test_rv5_c7_resolving_a_child_join_hold_is_a_named_boundary_refusal(
     # The decision payload FITS the hold's declared contract (the child's
     # result model) — the boundary's shape-check alone cannot refuse it.
     result = await client.resolve(
-        str(hold["id"]), {"findings": ["injected-by-hand"]}, reason="rv5-c7"
+        str(hold["id"]), {"findings": ["injected-by-hand"]}, reason="the resolve probe"
     )
     assert result.status == "refused", (
         f"Resolving a child-join hold returned {result.status!r} — the "

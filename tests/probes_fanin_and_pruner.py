@@ -67,7 +67,7 @@ async def _seed_edge_named(
 
 
 @pytest.mark.integration
-async def test_attack_t18_expiry_after_the_fire_before_the_reduce(
+async def test_attack_expiry_after_the_fire_before_the_reduce(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -155,7 +155,7 @@ async def test_attack_t18_expiry_after_the_fire_before_the_reduce(
 
 
 @pytest.mark.integration
-async def test_attack_t18_expiry_guard_does_not_hold_vanilla_rows(
+async def test_attack_expiry_guard_does_not_hold_vanilla_rows(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -188,7 +188,7 @@ async def test_attack_t18_expiry_guard_does_not_hold_vanilla_rows(
 
 
 @pytest.mark.integration
-async def test_attack_t07_barrier_racing_a_cancel(
+async def test_attack_barrier_racing_a_cancel(
     module_pg_pool: asyncpg.Pool,
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -267,7 +267,7 @@ async def test_attack_t07_barrier_racing_a_cancel(
 
 
 @pytest.mark.integration
-async def test_attack_t07_timeout_sweep_racing_the_last_attempt(
+async def test_attack_timeout_sweep_racing_the_last_attempt(
     module_pg_pool: asyncpg.Pool,
     wf_conn: asyncpg.Connection,
     wf_schema: str,

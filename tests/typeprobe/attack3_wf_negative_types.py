@@ -1,4 +1,4 @@
-"""ATTACK-3 — the phase-3 public surface's NEGATIVE type probes.
+"""THE PHASE-3 PUBLIC SURFACE'S NEGATIVE TYPE PROBES.
 
 Each ``MUST_ERROR(rules...)`` marker names a wrong-shape call that must
 RED on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id

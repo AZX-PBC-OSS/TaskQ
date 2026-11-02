@@ -55,7 +55,7 @@ def new_id() -> object:
 # ── Failing-first 1: the UNBOUNDED FAN-IN is refused at validate ────────────
 
 
-def test_t07_pin_bound_refuses_above_the_maximum_naming_the_alternative() -> None:
+def test_pin_bound_refuses_above_the_maximum_naming_the_alternative() -> None:
     """A join declaring fan-in above the bound on the declared-edge shape
     is REJECTED at validate — the error names the bound AND the
     child-driven alternative. Red until the bound check exists: the
@@ -67,7 +67,7 @@ def test_t07_pin_bound_refuses_above_the_maximum_naming_the_alternative() -> Non
     assert str(MAX_FAN_IN_PER_JOIN) in str(exc_info.value), "the error must name the bound"
 
 
-def test_t07_pin_bound_refuses_the_forks_join_above_the_maximum() -> None:
+def test_pin_bound_refuses_the_forks_join_above_the_maximum() -> None:
     """The fork's door: a join over more children than the bound is
     refused unless the child-driven shape is declared explicitly."""
     children = tuple(
@@ -89,7 +89,7 @@ def test_t07_pin_bound_refuses_the_forks_join_above_the_maximum() -> None:
     validate_fork(escaped)
 
 
-def test_t07_pin_bound_at_the_maximum_is_accepted() -> None:
+def test_pin_bound_at_the_maximum_is_accepted() -> None:
     """The bound is a ceiling, not a haircut: exactly the bound is legal
     (over-rejection is the worse asymmetry — the stated doctrine)."""
     parents = tuple(JobId(new_id()) for _ in range(MAX_FAN_IN_PER_JOIN))
@@ -100,7 +100,7 @@ def test_t07_pin_bound_at_the_maximum_is_accepted() -> None:
 
 
 @pytest.mark.integration
-async def test_t07_pin_child_driven_join_fires_exactly_once(
+async def test_pin_child_driven_join_fires_exactly_once(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

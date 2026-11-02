@@ -1,4 +1,4 @@
-# ruff: noqa: N999, S608, S603, ASYNC221, TID251, N817  # Why: the dash-named attack4-* module; the cold-process probes run a subprocess with fixed argv; the seeded ledger rows deliberately use uuid4 (a ledger row the arbiter did not mint); BM is the probe corpus's local shorthand.
+# ruff: noqa: S608, S603, ASYNC221, TID251, N817  # Why: the dash-named attack4-* module; the cold-process probes run a subprocess with fixed argv; the seeded ledger rows deliberately use uuid4 (a ledger row the arbiter did not mint); BM is the probe corpus's local shorthand.
 """ATTACK4 — THE COVERAGE RESIDUALS (the split owner's gaps, closed by
 the attacker's own tests — attack4 ADDS tests, never source).
 

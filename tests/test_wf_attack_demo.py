@@ -1,7 +1,7 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
 """THE DEMO/EXAMPLES' PINS — the demo machinery's rejected defects.
 
-The demo's own machinery was rejected on four LIVE findings and the
+The demo's own machinery was rejected on four recorded findings and the
 evidence law on a fifth; the ergonomics contract carries an inflated
 claim. Each pin asserts the SAFE behavior, red against the shipped tree,
 strict-xfail until the fix lands (the fix flips the pin to XPASS-

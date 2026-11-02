@@ -18,7 +18,7 @@ MIGRATION_NAME = "01.00.23_01_pre_jobs_parent_id.sql"
 # The shipped 23_01 is BYTE-FROZEN with the index still in it: the
 # upgrade-path gate builds its base database from the merge base's own
 # chain, whose ledger holds that file's checksum — any rewrite of the
-# version key's bytes (the d24f17b9 consolidation's split attempt
+# version key's bytes (the consolidation's split attempt
 # included) is checksum drift on every deployed database. The
 # single-lock-class law applies to files not yet shipped; the index's
 # IF NOT EXISTS record rides 23_07.
@@ -75,7 +75,7 @@ def test_migration_index_serves_the_pending_children_count() -> None:
 
 def test_shipped_23_01_is_byte_frozen() -> None:
     """THE UPGRADE-PATH LAW: the merge base's own chain applied this file's
-    exact bytes, and its ledger checksum (bfd0a070b649 at the d24f17b9 CI
+    exact bytes, and its ledger checksum (bfd0a070b649, recorded at the CI
     recorded finding) refuses any rewrite of the version key. The consolidation's
     split-to-23_07 attempt edited the shipped file and the migrations gate
     rejected it — the columns file is frozen to the shipped digest."""

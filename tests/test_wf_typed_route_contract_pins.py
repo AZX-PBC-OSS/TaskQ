@@ -160,7 +160,7 @@ async def process_audio(ctx: object, item: AudioItem) -> AudioResult:
 
 
 @pytest.mark.integration
-async def test_rv4_1a_the_empty_route_fires_the_join_with_the_empty_list(
+async def test_1a_the_empty_route_fires_the_join_with_the_empty_list(
     wf_conn: object,
     wf_schema: str,
     module_pg_pool: object,
@@ -221,7 +221,7 @@ async def test_rv4_1a_the_empty_route_fires_the_join_with_the_empty_list(
 
 
 @pytest.mark.integration
-async def test_rv4_1b_the_empty_route_terminal_join_returns_the_empty_sum(
+async def test_1b_the_empty_route_terminal_join_returns_the_empty_sum(
     wf_conn: object,
     wf_schema: str,
     module_pg_pool: object,
@@ -278,7 +278,7 @@ async def oversized_source(ctx: StepContext) -> list[ImageItem | AudioItem]:
 
 
 @pytest.mark.integration
-async def test_rv4_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
+async def test_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
     wf_conn: object,
     wf_schema: str,
     module_pg_pool: object,
@@ -382,7 +382,7 @@ def _assert_arm_arity_refusal(exc_info: pytest.ExceptionInfo[WorkflowValidationE
     )
 
 
-def test_rv4_3_a_zero_param_arm_is_a_build_refusal() -> None:
+def test_3_a_zero_param_arm_is_a_build_refusal() -> None:
     """The arm's declared params are the invocation's contract (the
     runner calls ``body(ctx, item)`` — exactly one item): a zero-param
     arm is a wiring-time lie the validator refuses, naming the arm."""
@@ -402,7 +402,7 @@ def test_rv4_3_a_zero_param_arm_is_a_build_refusal() -> None:
     _assert_arm_arity_refusal(exc_info)
 
 
-def test_rv4_3_a_two_param_arm_is_a_build_refusal() -> None:
+def test_3_a_two_param_arm_is_a_build_refusal() -> None:
     """The hole's other face: one param BEYOND the item (the deps shape's
     count with no deps contract walked for arms) — the same build
     refusal, the arm named."""
@@ -458,7 +458,7 @@ async def image_arm(ctx: object, item: ImageDoc) -> dict[str, object]:
     return {"doc_id": item.doc_id, "width": item.width}
 
 
-def test_rv4_4_a_superclass_arm_param_is_a_build_refusal() -> None:
+def test_4_a_superclass_arm_param_is_a_build_refusal() -> None:
     """The arm param IS the decode's target: anything WIDER than the
     union member decodes the element with the member's fields DROPPED —
     the silent truncation the typed boundary exists to refuse. The
@@ -485,7 +485,7 @@ def test_rv4_4_a_superclass_arm_param_is_a_build_refusal() -> None:
     )
 
 
-def test_rv4_4_a_bare_basemodel_arm_param_is_a_build_refusal() -> None:
+def test_4_a_bare_basemodel_arm_param_is_a_build_refusal() -> None:
     """The extreme truncation: ``item: BaseModel`` decodes every element
     into the field-less shell (and crashes pydantic outright) — the same
     refusal face, the arm named."""
@@ -534,7 +534,7 @@ twin_arm_a.__annotations__["item"] = TwinA
 twin_arm_b.__annotations__["item"] = TwinB
 
 
-def test_rv4_5_duplicate_type_tags_refuse_at_the_verb() -> None:
+def test_5_duplicate_type_tags_refuse_at_the_verb() -> None:
     """Two union members that share a type tag are UNREPRESENTABLE as
     route arms (one key, two bodies): the verb refuses LOUDLY, naming
     the colliding tag and the duplication — never the silent overwrite
@@ -590,7 +590,7 @@ async def consume_sums(ctx: object, items: list[Rv4SumA | Rv4SumB]) -> dict[str,
     return {"n": len(items)}
 
 
-def test_rv4_6_field_identical_union_members_are_a_build_diagnostic() -> None:
+def test_6_field_identical_union_members_are_a_build_diagnostic() -> None:
     """A routed sum whose members are field-identical (no discriminator)
     cannot round-trip the consumer's decode honestly — the dispatch is
     exact-type at the fork but the consumer's decode needs the tag. The
@@ -640,7 +640,7 @@ async def waiting_image_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
     return ImageResult(doc_id=item.doc_id, ocr=f"answered:{type(approval).__name__}")
 
 
-def test_rv4_7a_an_arm_wait_with_no_declared_gate_is_warned() -> None:
+def test_7a_an_arm_wait_with_no_declared_gate_is_warned() -> None:
     """The E14 walk covers the arms: an arm body calling
     ``ctx.wait_signal`` with NO gate declared on the route's source is
     the waited-never-declared face — the WARNING (the expiry-as-value ruling's
@@ -669,7 +669,7 @@ def test_rv4_7a_an_arm_wait_with_no_declared_gate_is_warned() -> None:
     )
 
 
-def test_rv4_7b_the_source_gate_covers_the_arms_waits() -> None:
+def test_7b_the_source_gate_covers_the_arms_waits() -> None:
     """The contract's other face: the route's arms are the source node's
     OWN bodies for the gate walk — a gate declared on the source COVERS
     the arms' waits (per-arm gate declarations do not exist; the source's
@@ -706,7 +706,7 @@ def test_rv4_7b_the_source_gate_covers_the_arms_waits() -> None:
 # ── the route→map double-attach message ─────────────────────────
 
 
-def test_rv4_8_every_double_attach_direction_speaks_the_designed_message() -> None:
+def test_8_every_double_attach_direction_speaks_the_designed_message() -> None:
     """One fork per node — ALL FOUR double-attach directions refuse, and
     every refusal NAMES THE OFFENDING NODE (the doubled source, not its
     join child): the diagnostic's subject is the node that finalized
@@ -792,7 +792,7 @@ async def hidden_arm(ctx: object, item: BaseModel) -> dict[str, str]:
     return {"doc_id": "x"}
 
 
-def test_rv4_9_the_unresolvable_return_is_distinguished_from_undeclared() -> None:
+def test_9_the_unresolvable_return_is_distinguished_from_undeclared() -> None:
     """The source DECLARED ``list[Rv4HiddenDoc]`` — the compile cannot
     RESOLVE it. The refusal must say so — the DECLARED-but-unresolvable
     face and the NO-annotation face are DIFFERENT refusals (the same
@@ -847,7 +847,7 @@ def test_rv4_9_the_unresolvable_return_is_distinguished_from_undeclared() -> Non
 # ── W2 blind to arm queues ─────────────────────────────────────
 
 
-def test_rv4_10_the_queue_vocabulary_warning_covers_arm_queues(
+def test_10_the_queue_vocabulary_warning_covers_arm_queues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The route's children ride the ARMS' queues — a typo'd arm queue is

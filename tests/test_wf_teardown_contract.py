@@ -121,7 +121,7 @@ def _compile_quietly(app: WorkflowApp, name: str) -> Any:
 # ── the gate wiring's E2-analog (THE HEADLINE) ────────────────
 
 
-def test_rv3_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> None:
+def test_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> None:
     """E14 (the gate-wiring walk — E2's analog): a node declaring a
     ``GateDecl`` whose body carries NO ``wait_signal`` reference AT ALL
     is the provable wiring lie — the compile-visible hold seat with no
@@ -145,7 +145,7 @@ def test_rv3_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> Non
         app.get("rv3-4a-gate-never-waited")
 
 
-def test_rv3_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
+def test_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
     """E14's other face — re-partitioned at the merge (the hold
     evidence won it): a wait with NO declared gate is NOT the lie (the
     wait site is SELF-DESCRIBING — the payload models + the timeout ride
@@ -177,7 +177,7 @@ def test_rv3_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
     assert all(d.severity == "warning" for d in e14), e14
 
 
-def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> None:
+def test_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> None:
     """E14's ZERO-FALSE-POSITIVE bound (the reviewer's own rule): a
     declared gate whose body DOES reference ``wait_signal`` is never
     E14-rejected — the static walk cannot prove a conditional-interior
@@ -216,7 +216,7 @@ def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> Non
 
 
 @pytest.mark.integration
-async def test_rv3_7_a_failed_run_s_result_read_names_the_failure(
+async def test_7_a_failed_run_s_result_read_names_the_failure(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
     """The failed run's first question — WHAT failed, and why — answered
@@ -244,7 +244,7 @@ async def test_rv3_7_a_failed_run_s_result_read_names_the_failure(
 # ── the -m path's dead verbs ───────────────────────────────────
 
 
-def test_rv3_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
+def test_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
     """``python -m taskq.cli --help`` must advertise EVERY verb the
     imported app registers (the console script's face): the __main__
     block runs main() mid-module, so every command registered after it
@@ -277,7 +277,7 @@ def test_rv3_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
 # ── ONE schema convention ──────────────────────────────────────
 
 
-def test_rv3_6_the_schema_param_carries_one_convention() -> None:
+def test_6_the_schema_param_carries_one_convention() -> None:
     """The read-face siblings carry the schema param under ONE
     convention — POSITIONAL (the majority: ``FlowRunner``,
     ``run()``). ``HitlClient``'s keyword-only seat is the minority
@@ -299,7 +299,7 @@ def test_rv3_6_the_schema_param_carries_one_convention() -> None:
 
 
 @pytest.mark.integration
-async def test_rv3_2_the_packaged_run_names_the_unmigrated_schema(
+async def test_2_the_packaged_run_names_the_unmigrated_schema(
     wf_pool: asyncpg.Pool, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """The packaged run's first contact on a schema that EXISTS but was
@@ -329,7 +329,7 @@ async def test_rv3_2_the_packaged_run_names_the_unmigrated_schema(
 # ── apply_pending's Pool is the typed refusal ─────────────────
 
 
-async def test_rv3_3_apply_pending_names_the_connection_it_refuses() -> None:
+async def test_3_apply_pending_names_the_connection_it_refuses() -> None:
     """``apply_pending`` takes ONE ``asyncpg.Connection`` (the caller's
     transaction scope); a POOL is the typed refusal naming the
     Connection — never the untyped ``AttributeError`` the Pool's
@@ -348,7 +348,7 @@ async def test_rv3_3_apply_pending_names_the_connection_it_refuses() -> None:
 
 
 @pytest.mark.integration
-async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
+async def test_8_the_actor_wrapped_bodies_stamp_their_own_code(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
     """§22.1's deploy-drift record: a node claimed through the
@@ -420,7 +420,7 @@ async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
 
 
 @pytest.mark.integration
-async def test_rv3_9_the_hold_s_reason_rides_its_own_field(
+async def test_9_the_hold_s_reason_rides_its_own_field(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
     """The wait site's ``reason=`` is readable at the TYPED field:
@@ -465,7 +465,7 @@ async def test_rv3_9_the_hold_s_reason_rides_its_own_field(
 # ── the gate timeout's one precedence + the cross-check ───────
 
 
-def test_rv3_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
+def test_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
     """The timeout's cross-checkable drift is NAMED at validate: a
     ``GateDecl.timeout_s`` and the body's statically-readable literal
     ``timeout_s=`` that DISAGREE are the W-rule's subject (the split's
@@ -505,7 +505,7 @@ def test_rv3_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
     )
 
 
-def test_rv3_10b_the_gate_decl_docstring_names_the_union_face() -> None:
+def test_10b_the_gate_decl_docstring_names_the_union_face() -> None:
     """The declaration's own documentation states the UNION face: what
     ``GateDecl.timeout_s`` feeds (the compile surfaces) AND what arms
     the runtime (the wait site's value) — the stale raise-face text is
@@ -531,7 +531,7 @@ def test_rv3_10b_the_gate_decl_docstring_names_the_union_face() -> None:
 # ── the loop's shape law — named, never prose ────────────────
 
 
-def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
+def test_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     """The loop's shape law ("ONE wait per iteration") as a NAMED W-rule:
     a loop body whose ``wait_signal`` sits in a CONDITIONAL interior
     mis-indexes the answer cursor (the recorded finding — the iteration
@@ -576,7 +576,7 @@ def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     )
 
 
-def test_rv3_12b_the_unconditional_loop_wait_stays_clean() -> None:
+def test_12b_the_unconditional_loop_wait_stays_clean() -> None:
     """The zero-false-positive bound: the loop body's UNCONDITIONAL wait
     (the shape law kept) is never rejected."""
     app = WorkflowApp()
@@ -617,7 +617,7 @@ def test_rv3_12b_the_unconditional_loop_wait_stays_clean() -> None:
 # ── map_source's can-only-error param is GONE ─────────────────
 
 
-def test_rv3_1_map_source_takes_no_key_param() -> None:
+def test_1_map_source_takes_no_key_param() -> None:
     """The removal: ``map_source``'s ``key=`` existed only to raise (the
     map's join key is DERIVED — the engine addresses it by the source's
     own key). A parameter whose every use is the author's own refusal is
@@ -631,7 +631,7 @@ def test_rv3_1_map_source_takes_no_key_param() -> None:
     )
 
 
-def test_rv3_1b_the_map_source_removal_is_documented() -> None:
+def test_1b_the_map_source_removal_is_documented() -> None:
     """The preserve law: the removal is readable — the changelog (or the
     guide) names the ``key=`` param's deletion, not a silent signature
     edit."""

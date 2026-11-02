@@ -1321,13 +1321,13 @@ was folded when T05 landed — its pins live in
 `tests/test_wf_schema_migration.py` (the schema/lock-class/import families)
 and `tests/test_wf_perf_bands.py` (the T03 bands); no pin was dropped.
 
-| `tests/test_wf_t20_maintain_liveness.py` | T20's core fix: the failed arm gates on live UNRESOLVED work (the 149-siblings scenario, observed live; the wedge-fix-stands regression) |
-| `tests/test_wf_t20_emit_pins.py` | T20's emit tx: the kill-storm at every statement window (zero re-emitted, zero lost), the between-pages kill, the zombie fence, the map_index discipline |
-| `tests/test_wf_t20_fence_probe.py` | T20's fences: the 30-sweep premature-terminal probe (no worker — nothing terminalizes), the mutation probe's teeth, the source-terminal subject |
-| `tests/test_wf_t20_router_pins.py` | T20's router: both totality doors + the flips, the route through the certified fork, the end-to-end author surface, the loud refusal's row |
-| `tests/test_wf_t20_backpressure_pins.py` | T20's backpressure law: the pager blocks at the declared bound (the unbounded variant's blow-out captured as a failing run), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end (the stalls ride the ladder, the resume from the cursor) |
-| `tests/test_wf_t20_crashed_terminal_wedge.py` | THE TERMINAL-CRASH SEMANTICS (the T20/T21 wedge fix): the corpse derives the failed-class terminal (it derived `running` forever before the fix), the wedged root heals on ONE maintenance pass, the mutation pin (the assertion fails on a corpse the heal cannot land — the no-op-maintenance mutant), the reclaim-input asymmetry (the ledger's attempt-level crash stays live), the zombie-audit structural pin (the liveness spellings) |
-| `tests/test_wf_t2021_gate_cures.py` | T20/T21's gate fixes: the VALIDATED dump is the record (the lax-pydantic string hole), the buffer door is private + the public op validates, the pct domain CHECK is real at the storage domain, the auto class's drop record, the failure-class ROUTING per class (3 deterministic legs + the transient leg), the poison record kills ITSELF loudly — never its mates |
+| `tests/test_wf_maintenance_liveness.py` | T20's core fix: the failed arm gates on live UNRESOLVED work (the 149-siblings scenario, observed live; the wedge-fix-stands regression) |
+| `tests/test_wf_emit_tx_pins.py` | T20's emit tx: the kill-storm at every statement window (zero re-emitted, zero lost), the between-pages kill, the zombie fence, the map_index discipline |
+| `tests/test_wf_source_terminal_fence.py` | T20's fences: the 30-sweep premature-terminal probe (no worker — nothing terminalizes), the mutation probe's teeth, the source-terminal subject |
+| `tests/test_wf_router_pins.py` | T20's router: both totality doors + the flips, the route through the certified fork, the end-to-end author surface, the loud refusal's row |
+| `tests/test_wf_emit_backpressure_pins.py` | T20's backpressure law: the pager blocks at the declared bound (the unbounded variant's blow-out captured as a failing run), the throttle releases under a draining worker, the wide-page refusal, the workflow-level declare end to end (the stalls ride the ladder, the resume from the cursor) |
+| `tests/test_wf_crashed_terminal_wedge.py` | THE TERMINAL-CRASH SEMANTICS (the T20/T21 wedge fix): the corpse derives the failed-class terminal (it derived `running` forever before the fix), the wedged root heals on ONE maintenance pass, the mutation pin (the assertion fails on a corpse the heal cannot land — the no-op-maintenance mutant), the reclaim-input asymmetry (the ledger's attempt-level crash stays live), the zombie-audit structural pin (the liveness spellings) |
+| `tests/test_wf_progress_gate_cures.py` | T20/T21's gate fixes: the VALIDATED dump is the record (the lax-pydantic string hole), the buffer door is private + the public op validates, the pct domain CHECK is real at the storage domain, the auto class's drop record, the failure-class ROUTING per class (3 deterministic legs + the transient leg), the poison record kills ITSELF loudly — never its mates |
 
 ## The ergonomic contract (T17 — the authoring session's paper cuts)
 
@@ -2162,7 +2162,7 @@ terminal, never liveness. The runbook asymmetry: a corpse that reports
 `running` forever is the wedge (the operator must notice forever); an
 honest failed terminal is resumable-by-rerun. The wedged root heals on
 ONE maintenance pass — the pin family
-`tests/test_wf_t20_crashed_terminal_wedge.py` holds the semantics, the
+`tests/test_wf_crashed_terminal_wedge.py` holds the semantics, the
 mutation pin (the assertion fails on a corpse), and the zombie audit's
 spellings. The LEDGER's `crashed` rows are the ATTEMPT-level reclaim
 receipt (the row re-pends — the real crash recovery), never a terminal.

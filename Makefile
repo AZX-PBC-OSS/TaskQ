@@ -101,8 +101,8 @@ test-wf-cov: env
 	$(UVRUN) pytest \
 		$(shell ls tests/test_wf_*.py 2>/dev/null) \
 		tests/test_fv_redlog_guard.py \
-		tests/test_worker_execution_seam.py tests/attack3-validate.py \
-		tests/attack4-coverage-closers.py \
+		tests/test_worker_execution_seam.py tests/probes_validator_rules.py \
+		tests/probes_coverage_closers.py \
 		-n 4 --cov=src/taskq/workflows --cov-branch --cov-report=term
 	$(UVRUN) python scripts/check_wf_coverage.py
 

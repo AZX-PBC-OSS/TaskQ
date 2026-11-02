@@ -47,7 +47,7 @@ from tests._wf_fixtures import (
 
 
 @pytest.mark.integration
-async def test_t18_pin1_expiry_eats_children(
+async def test_pin1_expiry_eats_children(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -231,7 +231,7 @@ async def _claim(wf_conn: asyncpg.Connection, wf_schema: str, node_id: JobId) ->
 
 
 @pytest.mark.integration
-async def test_t18_pin2_pruned_parent_of_a_live_run(
+async def test_pin2_pruned_parent_of_a_live_run(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -314,7 +314,7 @@ async def test_t18_pin2_pruned_parent_of_a_live_run(
 
 
 @pytest.mark.integration
-async def test_t18_pin4_unbounded_jsonb_bounded_collect_row(
+async def test_pin4_unbounded_jsonb_bounded_collect_row(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

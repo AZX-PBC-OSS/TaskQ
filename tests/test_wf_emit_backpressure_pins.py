@@ -53,7 +53,7 @@ from taskq.workflows._emit import (
 from taskq.workflows.chain import DONE, Chain, Route, Step
 from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import RedLog, seed_flow
-from tests.test_wf_t20_emit_pins import (
+from tests.test_wf_emit_tx_pins import (
     _LEASE,
     claim_source,
     committed_children,
@@ -135,7 +135,7 @@ async def drain_one_chain(pool: asyncpg.Pool, wf_sql: WorkflowSql, flow_id: JobI
 
 
 @pytest.mark.integration
-async def test_t20_emit_blocks_at_the_declared_bound(
+async def test_emit_blocks_at_the_declared_bound(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -194,7 +194,7 @@ async def test_t20_emit_blocks_at_the_declared_bound(
     t20_redlog.red(
         "t20-backpressure-block",
         "the bound REMOVED (the unbounded variant — the rejected red, "
-        "test_t20_unbounded_emit_is_the_convicted_red): the same fast "
+        "test_unbounded_emit_is_the_convicted_red): the same fast "
         "source emits page 1 immediately and the outstanding count blows "
         "the bound — unbounded materialization",
         {"outstanding_after_blocked_emit": after, "bound": BOUND},
@@ -205,7 +205,7 @@ async def test_t20_emit_blocks_at_the_declared_bound(
 
 
 @pytest.mark.integration
-async def test_t20_backpressure_releases_when_workers_drain(
+async def test_backpressure_releases_when_workers_drain(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -270,7 +270,7 @@ async def test_t20_backpressure_releases_when_workers_drain(
 
 
 @pytest.mark.integration
-async def test_t20_unbounded_emit_is_the_convicted_red(
+async def test_unbounded_emit_is_the_convicted_red(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -315,7 +315,7 @@ async def test_t20_unbounded_emit_is_the_convicted_red(
 
 
 @pytest.mark.integration
-async def test_t20_page_wider_than_the_bound_is_refused(
+async def test_page_wider_than_the_bound_is_refused(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -345,7 +345,7 @@ async def test_t20_page_wider_than_the_bound_is_refused(
     )
 
 
-def test_t20_the_default_is_the_fence_on() -> None:
+def test_the_default_is_the_fence_on() -> None:
     """The shipped default is the fence ON (the author opts OUT loudly —
     ``max_in_flight=None`` is the explicit unbounded, never a silent
     default)."""
@@ -398,7 +398,7 @@ async def bp_source(ctx: Any) -> None:
 
 
 @pytest.mark.integration
-async def test_t20_max_in_flight_is_declared_at_the_workflow(
+async def test_max_in_flight_is_declared_at_the_workflow(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

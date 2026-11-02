@@ -705,7 +705,7 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
     that still disagrees is THE WEDGE — a run the reported state claims
     is live while the rows say it terminalized and nothing will ever
     change either side (the corpse that reports 'running' forever). The
-    scenario pin (tests/test_wf_t20_crashed_terminal_wedge.py) reds this
+    scenario pin (tests/test_wf_crashed_terminal_wedge.py) reds this
     leg against a no-op maintenance mutant — the assertion can fail on
     a wedge, it is not a decoration."""
     from taskq.workflows._status import reconstruct_workflow_status

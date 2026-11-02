@@ -1,6 +1,6 @@
-# ruff: noqa: N999, S603, S607, S608, ASYNC221, ASYNC230  # Why: the dash-named attack4-* module; the restart probe runs pg_ctl with the env-pinned data dir and reads/writes the cluster's own conf between restarts.
+# ruff: noqa: S603, S607, S608, ASYNC221, ASYNC230  # Why: the dash-named attack4-* module; the restart probe runs pg_ctl with the env-pinned data dir and reads/writes the cluster's own conf between restarts.
 """ATTACK4 — THE NOTHING-STUCK PROBES' TEETH (the attacker's own shapes —
-NOT the builder's; tests/attack4_stuck_probes.py owns those).
+NOT the builder's; tests/probes_nothing_stuck_shapes.py owns those).
 
 * THE SELF-CANCELLING BODY: a map's source body cancels ITS OWN run
   mid-emit (the drive loop's fork tx and the cancel cascade race in one

@@ -169,7 +169,7 @@ async def _seed_failed_run_with_a_hostile_error_class(
 
 @pytest.mark.integration
 @pytest.mark.fastapi
-async def test_rv2_1_the_run_view_bounds_error_class(
+async def test_1_the_run_view_bounds_error_class(
     wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """THE READ-SIDE BOUND'S RESIDUE: the run view (the run page's and
@@ -199,7 +199,7 @@ async def test_rv2_1_the_run_view_bounds_error_class(
 
 @pytest.mark.integration
 @pytest.mark.fastapi
-async def test_rv2_1_the_node_panel_route_bounds_error_class(
+async def test_1_the_node_panel_route_bounds_error_class(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_pool: asyncpg.Pool,
@@ -243,7 +243,7 @@ async def test_rv2_1_the_node_panel_route_bounds_error_class(
 
 
 @pytest.mark.integration
-async def test_rv2_2_the_nodeless_reap_returns_the_reaped_count(
+async def test_2_the_nodeless_reap_returns_the_reaped_count(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The arm's own contract ("Returns the reaped count"): one nodeless
@@ -277,7 +277,7 @@ async def _hold_body(ctx: StepContext, params: _Ingest) -> Any:
     return await ctx.wait_signal(_Approval, timeout_s=120.0)
 
 
-def test_rv2_3_a_typed_gate_in_step_gates_is_a_named_refusal() -> None:
+def test_3_a_typed_gate_in_step_gates_is_a_named_refusal() -> None:
     """The author's mistake — ``gates=(app.channel().gate(Model),)``,
     the BOUND-DOOR object where the declaration (``GateDecl``) belongs —
     must be refused by NAME (the validator's report, or the wiring
@@ -298,7 +298,7 @@ def test_rv2_3_a_typed_gate_in_step_gates_is_a_named_refusal() -> None:
 
 
 @pytest.mark.integration
-async def test_rv2_4a_the_audit_reason_and_detail_are_bounded(
+async def test_4a_the_audit_reason_and_detail_are_bounded(
     wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """The audit row's free-text fields carry the same shape discipline
@@ -337,7 +337,7 @@ async def test_rv2_4a_the_audit_reason_and_detail_are_bounded(
 
 
 @pytest.mark.integration
-async def test_rv2_4b_a_nul_reason_never_aborts_the_wf_cancel(
+async def test_4b_a_nul_reason_never_aborts_the_wf_cancel(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The cancel is the operator's safety verb — a control character in
@@ -387,7 +387,7 @@ async def _probe_pair(conn: asyncpg.Connection, sql: Any) -> tuple[int, int]:
 
 
 @pytest.mark.integration
-async def test_rv2_5_the_cursor_probe_fences_identically_to_the_plain_probe(
+async def test_5_the_cursor_probe_fences_identically_to_the_plain_probe(
     wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
     """THE FENCE-AGREEMENT LAW (the module's own, at
@@ -496,7 +496,7 @@ class _StrictFifoModeCache:
         pass
 
 
-def test_rv2_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None:
+def test_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None:
     """The round's own comment's claim ("the next attempt must then run
     the plain shape, not a stale bound") made TRUE — or the degradation
     NAMED. The driver below models the expiry-mid-expansion honestly:
@@ -599,7 +599,7 @@ def test_rv2_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None
 # ── the claim-health snapshot never races the recorder ─────────
 
 
-def test_rv2_7_concurrent_record_and_snapshot_never_raise() -> None:
+def test_7_concurrent_record_and_snapshot_never_raise() -> None:
     """The gauges' read path is a SCRAPE-TIME pull (the module's own
     docstring) — the claim path records on the worker's threads while
     the exporter's threads read. Neither may ever see the other: zero
@@ -659,7 +659,7 @@ async def _loop_body(ctx: Any, carry: Any) -> Done[Any] | Refine[Any]:
     return Done(carry)
 
 
-def test_rv2_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -> None:
+def test_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -> None:
     """E11's law is the CARRY'S VALUEHOOD, not the top level's: a
     ``Promise`` anywhere in the ``initial=`` tree is a handle riding a
     jsonb row it can never survive. The refusal is a BUILD-TIME NAMED
@@ -688,7 +688,7 @@ def test_rv2_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -
 # ── E10 counts the ACTUAL params ───────────────────────────────
 
 
-def test_rv2_9_e10_counts_the_actual_params() -> None:
+def test_9_e10_counts_the_actual_params() -> None:
     """Two legs, one law — the arity the rule speaks of is the body's
     REAL signature (``inspect.signature``), the annotation surface is
     the compat rules' subject:
@@ -753,7 +753,7 @@ _REPO = Path(__file__).resolve().parents[1]
 _MATRIX = _REPO / "tests" / "system_e2e" / "test_wf_deploy_matrix.py"
 
 
-def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
+def test_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
     """The header's claims are the pin's subjects — walked, not
     restated, so an edited header edits its own pin:
 
@@ -843,7 +843,7 @@ def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
 # resolution, so it cannot rot in either direction.
 
 
-def test_rv2_11_the_split_placement_declaration_resolved() -> None:
+def test_11_the_split_placement_declaration_resolved() -> None:
     """The split placement's two cohorts (the source's ``wf``/default
     pair and the chain's gpu-named pair), ONE row each — the projection
     the battery's red test MEANT to pin, over the DECLARED-CORRECTLY
@@ -890,7 +890,7 @@ def test_rv2_11_the_split_placement_declaration_resolved() -> None:
     assert ("wf", "default") in pairs and ("wf-exec-gpu", "gpu") in pairs, pairs
 
 
-def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
+def test_11_the_bad_source_declaration_still_refuses_loudly() -> None:
     """The other half of the resolution: the battery test's OWN shape
     (a params-taking chain-source body wired with zero args) stays a
     NAMED refusal — the projection skips the workflow LOUDLY with the
@@ -960,7 +960,7 @@ def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
 # ── no zombie typeprobe corpus ────────────────────────────────
 
 
-def test_rv2_12_every_typeprobe_file_is_wired_into_the_gate() -> None:
+def test_12_every_typeprobe_file_is_wired_into_the_gate() -> None:
     """The gate's own law ("wire-or-delete, no zombie corpus"): every
     NON-underscore ``*.py`` probe in the directory (the corpus's shape —
     the underscore files are the directory's helpers: ``_gate.py``
@@ -1007,7 +1007,7 @@ _STREAMING_SECTION_FAMILIES = {
 _STREAMING_DOC = _REPO / "perf-evidence-workflows-streaming.md"
 
 
-def test_rv2_14_every_ranged_figure_covers_its_captures() -> None:
+def test_14_every_ranged_figure_covers_its_captures() -> None:
     """The doc's own law walked: every ranged ms figure in a measured
     section of ``perf-evidence-workflows-streaming.md`` must COVER the
     corresponding metric across EVERY capture on disk (the run-scoped

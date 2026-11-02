@@ -443,7 +443,7 @@ def test_jitter_zero_keeps_exact_retry_after_compliance() -> None:
 #: The tracemalloc noise floor, from MEASURED bands: batch-to-batch
 #: bookkeeping jitter observed on CI runners is tens of bytes over 10k
 #: calls (32B in red run 37263479699; 0B in 10 consecutive local runs) —
-#: noise, not signal. The d24f17b9 CI recorded finding re-measured the ceiling
+#: noise, not signal. The CI's recorded finding re-measured the ceiling
 #: under the coverage leg's tracer on a co-tenant runner: 7007B over the
 #: second batch (0.7B/call — arithmetic no real allocation can produce;
 #: Python's smallest meaningful per-call object is ≥ 32B) against the

@@ -5,7 +5,7 @@ THE WEDGE'S FINDING PACK (the engine's most severe recorded defect; the
 evidence lives in the probe schema's rows). The pins assert the SAFE
 behavior; each watched its own failure before the fix landed.
 
-THE WEDGE (pack 1, rejected LIVE at af1b8779): a run whose nodes are
+THE WEDGE: a run whose nodes are
 ``{succeeded|failed, crashed}`` wedges ``running`` FOREVER. The chain:
 
 * the jobs-level reclaim (``backend._sweeps._SWEEP_1_BODY``) reads

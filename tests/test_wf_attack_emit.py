@@ -1,11 +1,9 @@
 """ATTACK PINS — the emit/chain subsystem's landed findings.
 
-Each pin's rejected shape was reproduced live against the
-consolidated head (``af1b8779``; pinned here at the review tree's
-``b2a1c122``). Every pin below was run RED FIRST — written as the SAFE
-behavior, executed against the real PG, the failure captured — then
-marked ``xfail(strict=True)``. The fix flips the pin to XPASS-strict
-(a red that tells you to remove the marker WITH the fix).
+Each pin's rejected shape was reproduced live against the real
+database. Every pin below was written as the SAFE behavior, executed
+against the real PG, and watched fail before its fix landed — the fix
+flipped it green; the assertion stands as the permanent guard.
 
 The surfaces under recorded finding: ``taskq/workflows/_emit.py`` (the emit
 tx) and ``taskq/workflows/chain.py`` (the router's record identity).
@@ -26,8 +24,8 @@ THE GUARD THAT IS NOT HERE: this front's kill-at-the-post-cursor/
 pre-commit-window repro (kill inside the emit tx after the cursor
 checkpoint, whole-tx rollback, the reclaim re-emitting exactly the lost
 page — zero dup, zero lost) is ALREADY PINNED by the shipped suite:
-``tests/test_wf_t20_emit_pins.py``'s
-``test_t20_emit_tx_atomic_at_every_statement_window[3]`` kills the
+``tests/test_wf_emit_tx_pins.py``'s
+``test_emit_tx_atomic_at_every_statement_window[3]`` kills the
 backend at exactly the ``emit:3`` window and drives the real reclaim +
 resume to the zero-re-emitted/zero-lost verdict. Not duplicated.
 """

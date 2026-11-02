@@ -96,11 +96,11 @@ async def run_maintenance(conn: asyncpg.Connection, wf_sql: WorkflowSql) -> int:
     return int(rows or 0)
 
 
-# ── THE 149-STRANDED-CHAINS SCENARIO (the spike's live finding) ─────────
+# ── THE 149-STRANDED-CHAINS SCENARIO ─────────
 
 
 @pytest.mark.integration
-async def test_t20_failed_arm_waits_for_live_siblings(
+async def test_failed_arm_waits_for_live_siblings(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
@@ -178,7 +178,7 @@ async def test_t20_failed_arm_waits_for_live_siblings(
 
 
 @pytest.mark.integration
-async def test_t20_failed_arm_wedge_cure_stands(
+async def test_failed_arm_wedge_cure_stands(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

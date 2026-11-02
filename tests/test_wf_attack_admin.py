@@ -595,7 +595,7 @@ async def test_the_boot_json_escapes_a_hostile_step_key(
     module_pg_schema: ModulePgSchema,
     wf_conn: asyncpg.Connection,
 ) -> None:
-    """GUARD-1 (verified safe @af1b8779): a step key carrying a
+    """GUARD-1 (verified safe): a step key carrying a
     ``</script>`` breakout renders INERT — Jinja's ``tojson`` escapes
     the boot JSON's markup bytes, so the key is NAMED in the graph data
     (fidelity) while the wire never carries the raw breakout (the XSS
@@ -635,7 +635,7 @@ async def test_the_run_page_renders_a_run_stamped_with_a_never_importable_module
     module_pg_schema: ModulePgSchema,
     wf_conn: asyncpg.Connection,
 ) -> None:
-    """GUARD-2 (verified safe @af1b8779): the graph is built FROM THE
+    """GUARD-2 (verified safe): the graph is built FROM THE
     ROWS — a run whose ``metadata.workflow`` stamp names a module that
     does not exist ANYWHERE renders fully (200); the render never
     imports the workflow's module (an import attempt would raise
@@ -669,7 +669,7 @@ async def test_the_node_panel_binds_the_node_key_as_a_value(
     module_pg_schema: ModulePgSchema,
     wf_conn: asyncpg.Connection,
 ) -> None:
-    """GUARD-3 (verified safe @af1b8779): a node key carrying a SQLi
+    """GUARD-3 (verified safe): a node key carrying a SQLi
     payload (``x' OR '1'='1' --``) answers 404 — the key binds as a
     VALUE ($1), never interpolates into the predicate. A 200 here means
     the WHERE clause was string-built and the injection matched."""

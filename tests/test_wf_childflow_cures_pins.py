@@ -534,7 +534,9 @@ class TestRv5C2bCancelCascadeIterative:
         the operator's face honest (no RecursionError, no 500)."""
         ids = await _chain_rows(wf_conn, wf_schema, _CASCADE_DEPTH)
 
-        await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=ids[0], reason="rv5-c2b")
+        await cancel_workflow_run(
+            wf_pool, schema=wf_schema, flow_id=ids[0], reason="the cascade-depth probe"
+        )
 
         left_running = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".jobs '
@@ -579,7 +581,9 @@ class TestRv5C4OrphanWindow:
         )
         assert child_status == "running", child_status
 
-        await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=flow_id, reason="rv5-c4")
+        await cancel_workflow_run(
+            wf_pool, schema=wf_schema, flow_id=flow_id, reason="the cascade probe"
+        )
 
         child_status = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1::uuid', child_id
@@ -718,7 +722,9 @@ class TestRv5C5DevDriveParity:
         @app.actor(queue="cpu", max_attempts=3)
         async def waiter(ctx: StepContext, params: ParentIn) -> Verdict:
             _ = params
-            outcome = await ctx.wait_signal((ContinueApproval,), reason="rv5-c5a", timeout_s=0.05)
+            outcome = await ctx.wait_signal(
+                (ContinueApproval,), reason="the expiry-arm probe", timeout_s=0.05
+            )
             match outcome:
                 case ContinueApproval():
                     return Verdict(v="approved")

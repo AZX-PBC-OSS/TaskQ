@@ -51,7 +51,7 @@ def demo_dotdir(tmp_path_factory: Any) -> Any:
     and the empty dotenv dir live in pytest's own tmp estate — a path
     that exists on EVERY runner (the hardcoded scratch dotdir was
     the local dev loop's pre-created path and died on CI with a
-    FileNotFoundError at the first spawn — the d24f17b9 CI
+    FileNotFoundError at the first spawn — the CI
     recorded finding)."""
     dotdir = tmp_path_factory.mktemp("wf-demo-legs")
     (dotdir / "empty-dotenv").mkdir()
@@ -332,7 +332,7 @@ async def test_leg3_the_live_wf_gauge_scrape(
     is then process-global, and a provider another test installed FIRST
     strands it there forever (OTel's own law: real-provider meters never
     rebind — only the pre-provider proxy does). In a long CI session the
-    scrape then came back EMPTY (the d24f17b9 CI recorded finding). The
+    scrape then came back EMPTY (the CI's recorded finding). The
     subprocess wires the provider at its process start, BEFORE the first
     ``taskq.obs`` import — the shipped serve path's real boot order,
     order-immune by construction."""

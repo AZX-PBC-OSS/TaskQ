@@ -1,11 +1,11 @@
 """ATTACK PINS — the CLI adversarial review front (`taskq flows`), the rejected shapes
-at af1b8779.
+the pins stood strict-xfail until their fixes flipped them green.
 
-The CLI's stated contracts, held against adversarial shapes
-(af1b8779), pinned so each attack is a permanent test. Attacks that LANDED
-are encoded strict-xfail asserting the SAFE behavior — the fix flips them
-XPASS-strict (a red that forces unmarking WITH the fix). Attacks the fence
-held against are green guard pins so the door cannot rot.
+The CLI's stated contracts, held against adversarial shapes, each a
+permanent test: a defect that landed was pinned asserting the SAFE
+behavior and stood strict-xfail until its fix flipped it green; the
+shapes the fence held against are green guard pins so the door cannot
+rot.
 
 THE REJECTED SHAPES (all reproduced live against the harness before
 their fixes landed):

@@ -345,8 +345,10 @@ ignore = [
 # The T10 hitl pins + the phase-3 cure pins + the attack-3 probes: the
 # SAME shape — the f-strings' ONLY interpolation is the module fixture's
 # schema identifier (wf_schema / module_pg_schema), values all $N-bound.
-# The attack probes' dash-named modules (attack3-*) are the red team's
-# run-directly probes (pytest node ids, not import surfaces).
+# The adversarial probes' modules are the run-directly probes (pytest
+# node ids, not import surfaces): tests/conftest.py's collect_ignore_glob
+# keeps them out of the default collection, the same contract the old
+# dash-named files' N999 ignores carried.
 "tests/test_wf_hitl_pins.py" = ["S608"]
 # The hold/map cures lane's pins (the LedgerWatch F2/F3/F4/F6 cures): the
 # same shape — the f-strings' ONLY interpolation is the module fixture's
@@ -372,9 +374,9 @@ ignore = [
 # interpolation, values all $N-bound).
 "tests/test_wf_retention_arms.py" = ["S608"]
 "tests/test_wf_phase3_cure_pins.py" = ["S608"]
-"tests/attack3-hitl.py" = ["S608", "N999"]
-"tests/attack3-loop.py" = ["S608", "N999"]
-"tests/attack3-validate.py" = ["N999"]
+"tests/probes_hold_identity.py" = ["S608"]
+"tests/probes_loop_machinery.py" = ["S608"]
+"tests/probes_validator_rules.py" = []
 # Same rationale as tests/e2e and migrate.py: only the schema identifier is
 # interpolated (a test-generated, fixture-owned name), and every
 # caller-controlled value uses $N parameter binding. The file's SQL is the
@@ -460,9 +462,9 @@ ignore = [
 "tests/test_wf_progress_persistence.py" = ["S608"]
 "tests/test_wf_progress_emission.py" = ["S608"]
 "tests/test_wf_progress_faces.py" = ["S608"]
-"tests/t21_numbers_run.py" = ["S608"]
-"tests/test_wf_t2021_gate_cures.py" = ["S608"]
-"tests/test_wf_t20_crashed_terminal_wedge.py" = ["S608"]
+"tests/progress_numbers_run.py" = ["S608"]
+"tests/test_wf_progress_gate_cures.py" = ["S608"]
+"tests/test_wf_crashed_terminal_wedge.py" = ["S608"]
 "tests/test_wf_finalize_pins.py" = ["S608", "S311"]
 "tests/test_wf_sweep_pins.py" = ["S608"]
 "tests/test_wf_fork_pins.py" = ["S608", "S311"]
@@ -476,10 +478,10 @@ ignore = [
 # (validated by the test fixtures upstream); every caller-controlled
 # value uses $N parameter binding — the same rationale as the wf family
 # above.
-"tests/test_wf_t20_maintain_liveness.py" = ["S608"]
-"tests/test_wf_t20_emit_pins.py" = ["S608"]
-"tests/test_wf_t20_fence_probe.py" = ["S608"]
-"tests/test_wf_t20_router_pins.py" = ["S608"]
+"tests/test_wf_maintenance_liveness.py" = ["S608"]
+"tests/test_wf_emit_tx_pins.py" = ["S608"]
+"tests/test_wf_source_terminal_fence.py" = ["S608"]
+"tests/test_wf_router_pins.py" = ["S608"]
 "tests/test_wf_state_event_totality.py" = ["S608"]
 "tests/test_wf_pruner_pins.py" = ["S608"]
 "tests/test_wf_pre_workflow_tolerance_pins.py" = ["S608"]
@@ -487,9 +489,9 @@ ignore = [
 # evidence paths — name-frozen, dash-named): the same rationale as the wf
 # pin files above (the schema identifier is the only interpolation, and
 # it is validated at WorkflowSql.build).
-"tests/attack2-t06-cascade.py" = ["S608", "N999"]
-"tests/attack2-t07-t18.py" = ["S608", "N999"]
-"tests/attack2-probe-pin6.py" = ["S608", "N999"]
+"tests/probes_failed_parent_cascade.py" = ["S608"]
+"tests/probes_fanin_and_pruner.py" = ["S608"]
+"tests/probes_teardown_endstate.py" = ["S608"]
 # Same rationale — schema name validated against _IDENT_RE; all
 # user-supplied values use $N parameter binding.
 "validation/**" = ["S608"]
