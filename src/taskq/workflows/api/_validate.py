@@ -124,6 +124,7 @@ from typing import TYPE_CHECKING, Any, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
+from taskq.workflows._types import duration_seconds
 from taskq.workflows.api._graph import (
     GateDecl,
     declared_exit_return,
@@ -1512,7 +1513,7 @@ def _rule_gate_timeout_split(compiled: CompiledWorkflow) -> list[WorkflowValidat
             # the Decl's name= is the free-form label the Mermaid face
             # reads).
             for model in gate.payload_models:
-                timeout_by_name[getattr(model, "__name__", "")] = gate.timeout_s
+                timeout_by_name[getattr(model, "__name__", "")] = duration_seconds(gate.timeout_s)  # pyright: ignore[reportArgumentType]  # Why: the dict's value face is the seconds float; the None arm never reaches the read below (the truthiness guard on the dict).
         if not timeout_by_name:
             continue
         for body in _node_bodies(node):

@@ -139,6 +139,22 @@ async def test_status_of_an_unknown_run_is_the_honest_error(cli_settings: Any) -
     assert "taskq flows list" in out
 
 
+async def test_list_renders_with_a_vanilla_root_row_in_the_listing(
+    cli_settings: Any, wf_schema: str, wf_conn: Any
+) -> None:
+    """A vanilla root row (a job whose step_key is the flow root key and
+    whose metadata carries no workflow stamp) renders like any other
+    run: the listing names it by its actor instead of crashing."""
+    await wf_conn.execute(
+        f"""INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, status, step_key, max_attempts, attempt, retry_kind)
+        VALUES (gen_random_uuid(), 'plain_actor', 'default', '{{}}'::jsonb, 'pending', '__flow__', 1, 0, 'transient')"""
+    )
+    result = await to_thread(runner.invoke, app, ["flows", "list"])
+    assert result.exit_code == 0, result.output
+    out = plain_cli_output(result.output)
+    assert "plain_actor" in out
+
+
 async def test_list_on_an_empty_schema_is_the_honest_zero(cli_settings: Any) -> None:
     result = await to_thread(runner.invoke, app, ["flows", "list"])
     assert result.exit_code == 0

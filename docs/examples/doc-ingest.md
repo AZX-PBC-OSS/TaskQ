@@ -34,8 +34,9 @@ reference; the same names every TaskQ surface loads through
 ```bash
 export TASKQ_PG_DSN=postgresql://taskq:taskq@localhost:5432/taskq
 # REQUIRED — the fence fails fast with a named error without it.
-# Any reachable Postgres 18 works; `docker run -d -p 5432:5432 -e
-# POSTGRES_USER=taskq -e POSTGRES_PASSWORD=taskq -e POSTGRES_DB=taskq postgres:18.6`
+# Any reachable Postgres works (15 minimum; 15–18 covered by CI — see
+# docs/getting-started/installation.md); `docker run -d -p 5432:5432 -e
+# POSTGRES_USER=taskq -e POSTGRES_PASSWORD=taskq -e POSTGRES_DB=taskq postgres:18-alpine`
 # is the two-minute one.
 
 export TASKQ_SCHEMA_NAME=fence_first_hour
@@ -311,7 +312,7 @@ def doc_ingest() -> Promise[object]:
     # the barrier closed); the classification path is the MAYBE edge (the
     # barrier does not fail — the failure is surfaced in the report).
     barrier = gather([summaries, entities], on_failure="fail_closed")
-    maybe_labels = gather([labels], on_failure="maybe")
+    maybe_labels = gather([labels], on_failure="collect")
     sink(routed)  # THE FIRE-AND-FORGET DECLARATION: recorded, never silent
 
     review = loop(
@@ -435,7 +436,7 @@ What each shape shows (and where to look):
 | 2 | per-item fork + collect | `map_source(ingested, enrich_item, …)` |
 | 3 | typed HITL hold | `ctx.wait_signal((ReviewDecision,), …)` inside the loop |
 | 4 | retry ladder, isolated | `max_attempts=3` on `map_source` (the item's ladder — a child re-runs alone) |
-| 5 | the worked duality | `gather([summaries, entities], on_failure="fail_closed")` vs `gather([labels], on_failure="maybe")` |
+| 5 | the worked duality | `gather([summaries, entities], on_failure="fail_closed")` vs `gather([labels], on_failure="collect")` |
 | 6 | budget-capped loop, held budget | `loop("review", …, max_iterations=3, budget_s=3600.0)` |
 | 7 | union routing | `match item:` + `case _ as it: assert_never(it)` in `route_body` |
 | 8 | typed terminal verdict | `PublishReport` — derived from the run's collect (the ghost named) |

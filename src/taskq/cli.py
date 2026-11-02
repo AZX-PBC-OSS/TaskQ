@@ -4460,7 +4460,7 @@ async def _flows_list(settings: TaskQSettings, limit: int) -> None:
                 ORDER BY created_at DESC
                 LIMIT $1
             )
-            SELECT r.id, r.workflow, r.status AS root_status, r.created_at,
+            SELECT r.id, r.workflow, r.actor, r.status AS root_status, r.created_at,
                    n.status AS node_status, n.deps_pending,
                    n.metadata->>'blocking_reason' AS blocking_reason,
                    n.step_key,
