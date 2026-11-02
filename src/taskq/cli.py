@@ -371,9 +371,27 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
         raise typer.Exit(code=1)
 
     if not registry:
-        from taskq.workflows._worker_execution import project_with_failures
+        from taskq.workflows._worker_execution import (
+            iter_imported_apps,
+            project_with_failures,
+        )
+        from taskq.workflows._worker_execution import (
+            WorkflowActorCapacityConflictError,
+            WorkflowActorQueueConflictError,
+        )
 
-        cohorts, failures = project_with_failures()
+        try:
+            cohorts, failures = project_with_failures()
+        except (WorkflowActorCapacityConflictError, WorkflowActorQueueConflictError) as exc:
+            # THE CONFLICT'S FACE: two healthy declarations fighting over
+            # one actor's queue or capacity is the drift the projection
+            # refuses — the operator reads the reason and exits, never a
+            # traceback.
+            typer.echo(
+                f"the workflow declarations at {actors} conflict, refusing to boot: {exc}",
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
         if cohorts:
             typer.echo(
                 f"actor registry at {actors} is empty; the imported "
@@ -382,12 +400,18 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
                 err=True,
             )
             return {}
-        if failures:
+        if iter_imported_apps():
+            # An app IS mounted and nothing runnable projects: name the
+            # defects (the compile failures; the empty graphs) — the
+            # operator is never told to import what already imported.
+            reasons = failures or [
+                "the app declares no runnable workflow (the app is empty, "
+                "or its builders wire no nodes)"
+            ]
             typer.echo(
                 f"nothing to dispatch at {actors}: the actor registry is "
                 "empty and the imported WorkflowApp projects no runnable "
-                "workflow — every workflow failed its compile; refusing to "
-                "boot. The compile failures:\n  " + "\n  ".join(failures),
+                "workflow; refusing to boot. The defects:\n  " + "\n  ".join(reasons),
                 err=True,
             )
         else:

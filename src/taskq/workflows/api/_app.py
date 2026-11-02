@@ -570,21 +570,24 @@ class WorkflowApp:
         if name in self._workflows:
             raise DuplicateWorkflowError(f"workflow {name!r} is already declared on this app")
 
+        # THE ONE CANONICAL NAME: ``capture_policy=``; ``capture=``
+        # rides as the alias. Both spellings carry the None sentinel:
+        # two declared values that disagree are refused (naming both) —
+        # never a silent winner decided by argument order. The refusal
+        # precedes the registration: a caught ValueError must not leave
+        # a half-registered workflow behind.
+        if capture_policy is not None and capture is not None and capture_policy != capture:
+            raise ValueError(
+                f"capture_policy={capture_policy!r} and capture={capture!r} are both given "
+                "and disagree — the capture policy is ONE value; pass capture_policy= only"
+            )
+        resolved_capture = (
+            capture_policy if capture_policy is not None else (capture or "errors-only")
+        )
+
         def decorate(build_fn: Callable[[], Promise[R]]) -> Callable[[], Promise[R]]:
             self._workflows[name] = build_fn
             build_fn.__wf_name__ = name  # type: ignore[attr-defined]  # Why: the declaration rides the function; the app is the registry.
-            # THE ONE CANONICAL NAME: ``capture_policy=``; ``capture=``
-            # rides as the alias. Both spellings carry the None sentinel:
-            # two declared values that disagree are refused (naming
-            # both) — never a silent winner decided by argument order.
-            if capture_policy is not None and capture is not None and capture_policy != capture:
-                raise ValueError(
-                    f"capture_policy={capture_policy!r} and capture={capture!r} are both given "
-                    "and disagree — the capture policy is ONE value; pass capture_policy= only"
-                )
-            resolved_capture = (
-                capture_policy if capture_policy is not None else (capture or "errors-only")
-            )
             build_fn.__wf_capture__ = resolved_capture  # type: ignore[attr-defined]  # Why: the definition's capture policy rides the build fn as data — the function-attribute face is this decorator's own contract.
             build_fn.__wf_redact__ = redact  # type: ignore[attr-defined]
             build_fn.__wf_max_in_flight__ = max_in_flight  # type: ignore[attr-defined]  # Why: the declaration rides the function — the compile reads it.
