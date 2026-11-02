@@ -48,7 +48,7 @@ THE MECHANICS (what this verifier enforces over the estate's registry,
   the first cut exempted only
   ``.measurements/``, so #696's DOCS-ONLY merge (``LEDGER.md`` alone)
   re-staled every live claim and reded main's head-stamp lint job on a
-  documentation edit (CI runs 41133332137 + 41140297312) — a docs edit
+  documentation edit (the recorded CI runs) — a docs edit
   is not a source change, and the law does not read it as one.
 * A live claim may be marked ``superseded_by`` (the manifest entry's
   field — the migration bakes in the text files' ``SUPERSEDED-BY:``
@@ -352,7 +352,7 @@ _DOCS_SENSITIVE_STEM_PREFIXES = ("mkdocs-strict", "docs-examples", "docs-lane")
 #: FAILURE MODE: main's head-stamp lint job fails on EVERY merge —
 #: including #696's DOCS-ONLY merge (``LEDGER.md`` alone) — because the
 #: first cut exempted only ``.measurements/``: a documentation edit
-#: re-staled every live claim (CI runs 41133332137 + 41140297312). THE
+#: re-staled every live claim (the recorded CI runs). THE
 #: LAW'S EDGE (qualified by the review round): a plain stem's claim
 #: verifies the SOURCE + TEST tree, so the exemption set is exactly the
 #: paths that cannot alter that tree — docs and the readme/license/
