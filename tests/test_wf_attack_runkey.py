@@ -55,6 +55,7 @@ import asyncpg
 import pytest
 from pydantic import BaseModel
 
+from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build, step
 
@@ -169,3 +170,50 @@ def test_the_guide_s_documented_run_entrypoint_resolves() -> None:
         "the guide instructs `workflows.run(flow, input, key=…)` and the "
         "package has no `run` — the documented run-key door does not exist"
     )
+
+
+# ── THE RUNNER DOOR'S FAILURE FACES ─────────────────────────────────────
+
+
+async def test_create_flow_on_an_unmigrated_schema_names_the_remedy(
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """``FlowRunner.create_flow()`` on an unmigrated schema raises the
+    typed ``SchemaNotMigratedError`` naming the remedy — the same
+    translation the packaged ``run()`` door does (the raw asyncpg
+    ``UndefinedTableError`` traceback is not an operator face)."""
+    from taskq.exceptions import SchemaNotMigratedError
+
+    runner = _one_step_runner(wf_pool, "no_such_schema_here", "unmigrated_flow")
+    with pytest.raises(SchemaNotMigratedError) as exc_info:
+        await runner.create_flow()
+    assert "no_such_schema_here" in str(exc_info.value)
+
+
+async def test_a_terminal_run_s_key_replay_carries_the_claim_verdict(
+    wf_pool: asyncpg.Pool, wf_schema: str
+) -> None:
+    """``run()`` over a FAILED run's key re-raises the prior run's error
+    WITH the claim verdict attached as ``claim_verdict`` — the caller's
+    ``except`` block can read that the refusal is the replay face (the
+    existing-terminal verdict), not a fresh failure, and pick a new key
+    knowing which."""
+    from taskq.workflows import run
+
+    app = WorkflowApp()
+
+    async def doomed(ctx: StepContext, params: _RunkeyIn) -> Any:
+        raise RuntimeError("the prior run's own failure")
+
+    @app.workflow("replay_verdict_flow")
+    def replay_verdict_flow() -> Promise[object]:
+        return build(step(doomed, _RunkeyIn(doc_id="d1"), key="only", max_attempts=1))
+
+    compiled = app.get("replay_verdict_flow")
+    run_key = f"replay-{new_uuid()}"
+    with pytest.raises(Exception):  # noqa: B017,PT011 - the prior run's own RuntimeError family
+        await run(compiled, wf_pool, wf_schema, input=_RunkeyIn(doc_id="d1"), key=run_key)
+
+    with pytest.raises(Exception) as replay_info:  # noqa: B017,PT011
+        await run(compiled, wf_pool, wf_schema, input=_RunkeyIn(doc_id="d1"), key=run_key)
+    assert getattr(replay_info.value, "claim_verdict", None) == "existing-terminal"

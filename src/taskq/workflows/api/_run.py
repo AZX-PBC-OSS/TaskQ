@@ -40,7 +40,7 @@ from taskq.workflows._obs import (
     run_span_name,
 )
 from taskq.workflows.api._app import CompiledWorkflow
-from taskq.workflows.api._runner import FlowRunner
+from taskq.workflows.api._runner import FlowRunner, WorkflowRunError
 from taskq.workflows.ledger import RunClaim
 
 __all__ = ["WorkflowRunResult", "run"]
@@ -152,9 +152,19 @@ async def run(
             # original chained via __cause__.
             raise SchemaNotMigratedError(schema) from exc
         record_run_started(run_span, str(claim.flow_id))
-        outcome_raw = await runner.drive(
-            claim.flow_id, until=until, max_ticks=max_ticks, execute=execute
-        )
+        try:
+            outcome_raw = await runner.drive(
+                claim.flow_id, until=until, max_ticks=max_ticks, execute=execute
+            )
+        except WorkflowRunError as exc:
+            # THE REPLAY'S VERDICT RIDES THE ERROR: a terminal run's key
+            # replay re-raises the prior run's error at the read face —
+            # the claim verdict attached tells the caller this raise is
+            # the REFUSED-TO-REUSE face (the existing-terminal replay),
+            # not a fresh failure; the documented remedy (a new key) is
+            # the caller's informed choice.
+            exc.claim_verdict = claim.kind  # type: ignore[attr-defined] # Why: the replay verdict rides the caller's error object; the attribute is the door's documented contract.
+            raise
         # The drive's label vocabulary IS the Literal (terminal/held/max_ticks —
         # drive's own docstring); the cast names the boundary, never a lie.
         outcome = cast("Literal['terminal', 'held', 'max_ticks']", outcome_raw)
@@ -170,5 +180,9 @@ async def run(
         run_span.set_attribute("taskq.outcome", outcome)
         result: object | None = None
         if outcome == "terminal" and flow.terminal is not None:
-            result = await runner.result(claim.flow_id)
+            try:
+                result = await runner.result(claim.flow_id)
+            except WorkflowRunError as exc:
+                exc.claim_verdict = claim.kind  # type: ignore[attr-defined] # Why: same replay-verdict contract as the drive face above.
+                raise
         return WorkflowRunResult(claim=claim, outcome=outcome, result=result)

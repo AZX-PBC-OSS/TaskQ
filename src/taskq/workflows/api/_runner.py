@@ -393,57 +393,72 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             check_priority_domain(priority, what="the run's priority override")
         if priority is not None:
             root_metadata_extra = {**(root_metadata_extra or {}), "wf_priority": priority}
-        async with self.pool.acquire() as conn, conn.transaction():
-            claim = await self._insert_root(conn, input, run_key, root_metadata_extra)
-            complete = claim.created
-            if not complete:
-                # THE RETRY-COMPLETION CENSUS: the orphan's signature is
-                # pending + zero nodes — a committed create whose node
-                # pass never rode the root's tx. Anything else is the
-                # existing run.
-                complete = (
-                    claim.status == "pending" and await self._node_census(conn, claim.flow_id) == 0
-                )
-            if complete:
-                # THE CREATE IS ONE TRANSACTION (the deploy matrix's
-                # fleet-crash fix): the rows, the edges, the root's
-                # start — one commit. The create ran statement-autocommit
-                # before, and the fleet's dispatch round swept the
-                # not-yet-wired rows UP INSIDE the create: a join-wait
-                # child claimed (and EXECUTED — its parents' results did
-                # not exist, the arg resolution crashed the worker), the
-                # flow's own wiring half-born. A transaction bounds the
-                # dispatch's visibility to the WHOLE wiring (the fork's
-                # atomicity law, create-time face).
-                # THE CREATE-TIME ECHO (the dev door's own leg): the
-                # override the drive's fork builds resolve — set only
-                # when THIS create materialized the rows (an arbiter
-                # conflict returns an EXISTING run whose root stamp is
-                # its own truth; the row is the law, never the echo).
-                self._run_priority = priority
-                await self._insert_static_nodes(conn, claim.flow_id, input, run_priority=priority)
-                # The run is LIVE: the root flips pending → running (the
-                # maintenance leg's derivation owns the TERMINAL verdict
-                # from the rows — the root is a cache, never the decider).
-                await conn.execute(render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id)
-                # THE CLAIM CARRIES THE COMMITTED STATUS: the ROOT_START
-                # rode the same tx — the run returns LIVE ('running'),
-                # never the insert's pre-start 'pending' (the envelope
-                # never lies about the state it handed back).
-                claim = replace(claim, status="running")
-            else:
-                # THE ADOPTION'S ECHO (the dev door's
-                # arbiter-adoption path): the claim returned an EXISTING
-                # run — the create-time echo above never ran, so the
-                # per-call level resolves from the ROOT'S STAMP (ONE
-                # bounded PK read, the fleet door's own SELECT shape):
-                # the row is the law at BOTH doors. A re-drive of a run
-                # created with ``priority=6`` forks its rows at 6 even
-                # when the re-drive passes no kwarg — the adopted run's
-                # stamp is its own truth, and the fork's cohort never
-                # splits (the children riding the declarations while the
-                # root says 6 was the rejected shape).
-                self._run_priority = await self._adopted_run_priority(conn, claim.flow_id)
+        try:
+            async with self.pool.acquire() as conn, conn.transaction():
+                claim = await self._insert_root(conn, input, run_key, root_metadata_extra)
+                complete = claim.created
+                if not complete:
+                    # THE RETRY-COMPLETION CENSUS: the orphan's signature is
+                    # pending + zero nodes — a committed create whose node
+                    # pass never rode the root's tx. Anything else is the
+                    # existing run.
+                    complete = (
+                        claim.status == "pending"
+                        and await self._node_census(conn, claim.flow_id) == 0
+                    )
+                if complete:
+                    # THE CREATE IS ONE TRANSACTION (the deploy matrix's
+                    # fleet-crash fix): the rows, the edges, the root's
+                    # start — one commit. The create ran statement-autocommit
+                    # before, and the fleet's dispatch round swept the
+                    # not-yet-wired rows UP INSIDE the create: a join-wait
+                    # child claimed (and EXECUTED — its parents' results did
+                    # not exist, the arg resolution crashed the worker), the
+                    # flow's own wiring half-born. A transaction bounds the
+                    # dispatch's visibility to the WHOLE wiring (the fork's
+                    # atomicity law, create-time face).
+                    # THE CREATE-TIME ECHO (the dev door's own leg): the
+                    # override the drive's fork builds resolve — set only
+                    # when THIS create materialized the rows (an arbiter
+                    # conflict returns an EXISTING run whose root stamp is
+                    # its own truth; the row is the law, never the echo).
+                    self._run_priority = priority
+                    await self._insert_static_nodes(
+                        conn, claim.flow_id, input, run_priority=priority
+                    )
+                    # The run is LIVE: the root flips pending → running (the
+                    # maintenance leg's derivation owns the TERMINAL verdict
+                    # from the rows — the root is a cache, never the decider).
+                    await conn.execute(
+                        render_sql(ROOT_START_SQL_TEMPLATE, self.schema), claim.flow_id
+                    )
+                    # THE CLAIM CARRIES THE COMMITTED STATUS: the ROOT_START
+                    # rode the same tx — the run returns LIVE ('running'),
+                    # never the insert's pre-start 'pending' (the envelope
+                    # never lies about the state it handed back).
+                    claim = replace(claim, status="running")
+                else:
+                    # THE ADOPTION'S ECHO (the dev door's
+                    # arbiter-adoption path): the claim returned an EXISTING
+                    # run — the create-time echo above never ran, so the
+                    # per-call level resolves from the ROOT'S STAMP (ONE
+                    # bounded PK read, the fleet door's own SELECT shape):
+                    # the row is the law at BOTH doors. A re-drive of a run
+                    # created with ``priority=6`` forks its rows at 6 even
+                    # when the re-drive passes no kwarg — the adopted run's
+                    # stamp is its own truth, and the fork's cohort never
+                    # splits (the children riding the declarations while the
+                    # root says 6 was the rejected shape).
+                    self._run_priority = await self._adopted_run_priority(conn, claim.flow_id)
+        except asyncpg.exceptions.UndefinedTableError as exc:
+            # THE FIRST CONTACT'S TRANSLATION: the runner door on an
+            # unmigrated schema raises the same typed
+            # SchemaNotMigratedError the packaged run() raises — the
+            # setup defect is actionable (the remedy's message), never a
+            # raw asyncpg traceback; the original chained via __cause__.
+            from taskq.exceptions import SchemaNotMigratedError
+
+            raise SchemaNotMigratedError(self.schema) from exc
         return claim
 
     async def _adopted_run_priority(self, conn: ConnLike, flow_id: JobId) -> int | None:
