@@ -607,7 +607,7 @@ RETURNING o.content_address
 #   the table's flow column), row-LIMITed to the batch. The floor is
 #   O(terminal flows + batch) — never O(table). The node_progress arm's
 #   pass carries TWO batch-bounded deletes in one statement (the
-#   round-2 R3 fold): its own table's rows AND the doomed flows'
+#   stream fold): its own table's rows AND the doomed flows'
 #   ``wf_node_stream`` rows — the STREAM channel (a dead node's ring,
 #   nodes x 64 rows unbounded) has the same doomed-flow identity, its
 #   rows carry the flow_id column directly, and wf_node_stream_flow_seq_idx
@@ -659,7 +659,7 @@ RETURNING o.content_address
 # its rootless class deletes on sight: the pointee's absence IS the age
 # proof (a committed edge's root can only be absent by deletion).
 #
-# THE NULL-STAMP LEG (the conservative shape, the round-2 R2 flip):
+# THE NULL-STAMP LEG (the conservative shape):
 # a terminal root whose ``finished_at`` was never stamped is SKIPPED —
 # NEVER doomed. The first cut included it ("aged by nothing") and was
 # degenerate BOTH ways: [idle] a seconds-old flow's entire history
@@ -1219,7 +1219,7 @@ deleted AS (
     RETURNING x.node_id
 ),
 stream_doomed AS (
-    -- THE SIXTH TABLE'S FLOWS-SIDE LEG (the round-2 R3's FOLD —
+    -- THE SIXTH TABLE'S FLOWS-SIDE LEG (the FOLD —
     -- documented call): wf_node_stream grew monotone-forever with the
     -- same five (a dead node's ring — nodes x 64 rows — never had a
     -- pruner); its doomed-flow identity is the SAME terminal-aged root

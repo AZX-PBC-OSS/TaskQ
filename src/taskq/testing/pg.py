@@ -116,7 +116,7 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     "wf_signals",
     "wf_node_progress",
     # wf_node_stream (01.00.29_01) is FK-less like its ledger kin — and
-    # it was MISSING from this list once (the round-2 R3's finding):
+    # it was MISSING from this list once — the gap was live:
     # a dead node's ring survived the reset, the last test's rows
     # leaked into the next test's counts. The STREAM channel truncates
     # with the STATE channel or not at all.

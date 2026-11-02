@@ -528,7 +528,7 @@ WHERE id = $1
 #: next claim is its FIRST attempt. The root's own row is out of the
 #: write set (the root guard's law: the root is not a node).
 #:
-#: THE PREDICATE IS THE ENGINE'S OWN CONTRACT (the round-2 finding):
+#: THE PREDICATE IS THE ENGINE'S OWN CONTRACT:
 #: ``result @> '{"skipped": true}'::jsonb`` — the shape the exit writer
 #: (``SKIPPED_RESULT``/the EXIT_SKIP mark) actually lands, TRUE with
 #: it. The old ``result ? 'skipped'`` was KEY-EXISTENCE: a foreign

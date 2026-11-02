@@ -815,7 +815,7 @@ async def prune_wf_node_progress(
     row-LIMITed to the batch. wf_node_progress has no flow column — the
     node's ``metadata.flow_id`` is the link.
 
-    THE SIXTH TABLE'S RIDE-ALONG (the round-2 R3's FOLD — the
+    THE SIXTH TABLE'S RIDE-ALONG (the FOLD — the
     documented call): the same statement deletes the doomed flows'
     ``wf_node_stream`` rows too (the STREAM channel — a dead node's
     ring, nodes x 64 rows unbounded, had no pruner at all). The stream

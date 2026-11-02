@@ -2031,7 +2031,7 @@ class WorkerSettings(TaskQSettings):
     # retention arm and no FK for the job prune to cascade: wf_edge,
     # wf_step_ledger, wf_join_fire, wf_signals, wf_node_progress — and
     # wf_node_stream, which rides the node_progress arm's statement (the
-    # round-2 R3's fold: one pass, two batch-bounded deletes — the
+    # stream fold: one pass, two batch-bounded deletes — the
     # doomed flows' progress rows AND their stream rings; a dead node's
     # ring, nodes x 64 rows, never had a pruner of its own). Each arm is
     # TWO-PASS (the two-pass law): the flows-side pass selects the
@@ -2066,7 +2066,7 @@ class WorkerSettings(TaskQSettings):
         "and the arm's rate-limited warning "
         "(wf-retention-null-finished-at) fires when a pass OBSERVES one: "
         "fix the stamp or backfill it, the rows stay until they carry an "
-        "honest age (the round-2 R2's conservative shape). The edges are "
+        "honest age (the conservative shape). The edges are "
         "pure flow-structure narration on a terminal flow (the join "
         "counter's truth dies with the flow). timedelta(0) DISABLES the "
         "arm — zero-means-off, the deletion-sweep family's sentinel; "
@@ -2134,7 +2134,7 @@ class WorkerSettings(TaskQSettings):
         "classes (the node gone, the node without the flow_id stamp, "
         "the pointee not a flow root) age by the row's own updated_at on "
         "the coarser-cadence pass. THE SAME ARM CARRIES THE SIXTH TABLE "
-        "(the round-2 R3's fold): the terminal-aged flows' "
+        "(the stream fold): the terminal-aged flows' "
         "wf_node_stream rows (the STREAM channel — a dead node's ring, "
         "nodes x 64 rows, had no pruner) delete in the same pass, and "
         "the rootless pass runs the stream's own orphan walk (the node "

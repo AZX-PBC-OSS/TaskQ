@@ -137,7 +137,7 @@ class ExitOps(_ExitHost):
         principal: Any = None,
         reason: str | None = None,
     ) -> bool:
-        """THE COMPILED FACE'S DELEGATE (the round-2 finding 5a): the
+        """THE COMPILED FACE'S DELEGATE: the
         id-addressed verb ``retry_workflow_node`` is the ONE manual-resume
         implementation — this module's own parallel re-derivation (a
         second CAS + closure + audit walk) was dead in production AND
@@ -331,8 +331,7 @@ async def retry_workflow_node(
 
     Returns the number of NODE ROWS the CAS re-armed (0 when nothing
     was resumable — the node is live, unknown, not terminal-failed, or
-    the run's own root key). THE ROW COUNT, NOT A GRANT BIT (the
-    round-2 finding): a MAP's failed children share one step key —
+    the run's own root key). THE ROW COUNT, NOT A GRANT BIT: a MAP's failed children share one step key —
     one key's grant re-arms every failed row of the key at once, and
     the caller's applied-count counts ROWS (the audit row carries the
     count beside the key's)."""

@@ -1254,7 +1254,7 @@ async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size
 
 @dataclass(frozen=True, slots=True)
 class HoldContext:
-    """THE HOLD CONTEXT CONTRACT (round-8 requirement 4 — enough for a
+    """THE HOLD CONTEXT CONTRACT (enough for a
     SEPARATE UI to render a useful request): the payload + the
     author-supplied reason/tool/args + the provenance (run id, node
     key, gate name, epoch, created_at, the deadline) + the
@@ -1281,8 +1281,8 @@ class HoldContext:
 
 
 class HitlClient:
-    """``client.hitl`` — the programmatic enumeration + resolution (the
-    round-8 requirements 1-3): ``list(run=…)`` (ALL pending holds,
+    """``client.hitl`` — the programmatic enumeration + resolution:
+    ``list(run=…)`` (ALL pending holds,
     distinctly), ``get(hold_id)`` (the id IS the reply handle),
     ``resolve(hold_id, decision)`` (typed through the bound gate's door;
     idempotent per the statemachine — an already-resolved hold is the
