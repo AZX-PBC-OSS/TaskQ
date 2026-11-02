@@ -1,14 +1,11 @@
-"""THE DOCS-CURRENCY PINS (
-PORTED TO the engine-fixes lane and FLIPPED GREEN by its doc fixes.
+"""THE DOCS-CURRENCY PINS — the docs estate's currency guards.
 
-Provenance: the recorded recorded findings over the docs estate. Three were
-LIVE at the pinned head (pinned ``pytest.mark.xfail(strict=True)``
-asserting the SAFE behavior — the fix flips them XPASS-strict). THE
-FLIP IS DONE: the fixes (the api-reference's wiring-verbs table carries
-the `route` + `chain_source` rows; the guide's fan-in section NAMES
-`FanInBoundExceededError` beside its remedy; the guide's route teaching
-states the single-value disposition) removed the markers WITH the fix —
-the assertions stand as the permanent green pins. the cited text
+Three pins held the SAFE behavior at their pinning (xfail-strict) and
+the doc fixes flipped them: the api-reference's wiring-verbs table
+carries the `route` + `chain_source` rows; the guide's fan-in section
+NAMES `FanInBoundExceededError` beside its remedy; the guide's route
+teaching states the single-value disposition — the assertions stand as
+the permanent green pins. The cited text
 (the holdmap fix's runbook paragraph) does NOT exist in this tree — it
 lives on the unmerged ``feat/taskqflow-holdmap-fixes`` lane — so that
 pin stands GREEN as the anti-rot guard: the docs-numbers law it asserts

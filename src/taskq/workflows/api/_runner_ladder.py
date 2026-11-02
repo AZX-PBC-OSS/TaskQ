@@ -89,8 +89,8 @@ def is_infra_fault(exc: BaseException) -> bool:
 
 
 def is_deterministic_authoring_failure(exc: BaseException) -> bool:
-    """THE FAILURE-CLASS ROUTING RULE's deterministic leg (the T20/T21
-    fixer's fix — the rule stated once, pinned per class):
+    """THE FAILURE-CLASS ROUTING RULE's deterministic leg (the rule
+    stated once, pinned per class):
     a DETERMINISTIC authoring failure never rides the retry ladder. The
     three classes the engine itself defines are deterministic BY
     CONSTRUCTION — each is raised by the engine's own gates for a defect

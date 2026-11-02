@@ -176,8 +176,8 @@ def validate_emission(
     context-contract law). A declaration the data violates is a typed
     refusal, never a silent pass.
 
-    THE VALIDATED DUMP IS THE RECORD (the T20/T21 fixer's gate-hole
-    fix): the return carries the VALIDATED MODEL'S OWN dump
+    THE VALIDATED DUMP IS THE RECORD: the return carries the VALIDATED
+    MODEL'S OWN dump
     (``model_dump(mode="json")`` — the jsonb-shaped projection), never
     the pre-validation dict. The rejected hole: the model_validate ran
     (lax — pydantic coerces) and its answer was THROWN AWAY, the raw
@@ -309,8 +309,7 @@ class ProgressEmitter:
         data: dict[str, Any] | None,
     ) -> None:
         """Buffer one ALREADY-VALIDATED emission (latest-wins) and arm the
-        cadence flush. Sync. PRIVATE BY LAW (the T20/T21 fixer's gate-hole
-        fix): the PUBLIC op is :meth:`emit` (``ctx.progress``'s delegate)
+        cadence flush. Sync. PRIVATE BY LAW: the PUBLIC op is :meth:`emit` (``ctx.progress``'s delegate)
         and it VALIDATES — the buffer write was once a public ``submit``
         that validated nothing, and the rejected hole is exactly what a
         public unvalidated door admits: a ``pct=999`` persisted to the
@@ -477,8 +476,8 @@ async def project_auto_event(
     Best-effort by the caller's contract (the runner's seams wrap this —
     a failed projection is a logged freshness loss, never a node
     failure). Returns the appended seq. THE DROP COUNT IS ON THE RECORD
-    (the T20/T21 fixer's gate-hole fix — the user class's receipt
-    discipline, the fence's own): the append's returned drop count lands in
+    (the receipt discipline, the fence's own): the append's returned
+    drop count lands in
     the node's STREAM-channel counters row in the same statement group
     — an auto-class trim that vanished uncounted would be the
     honest-pair's lie (appended == retained + dropped, BOTH classes)."""
