@@ -420,7 +420,11 @@ drive + the decoded result in one call, the typed claim on the returned
 TERMINAL run's replay answers `existing-terminal` with the prior run's
 id + status — the REFUSED-TO-REUSE verdict (a failed run squatting its
 key silently was the founding bug class; the re-run is the caller's
-documented choice of a NEW key). The demo endpoint surfaces the
+documented choice of a NEW key). On the packaged door the replay is
+LOUD at the caller's `except`: the prior run's error re-raised from
+`run()` carries `claim_verdict == "existing-terminal"` — the attribute
+tells the handler this raise is the replay refusal, not a fresh
+failure. The demo endpoint surfaces the
 distinction: 202 for created/existing-running, 409 for
 existing-terminal. Cron composition: the cron entry
 fires the slot key as the run key — same slot twice → ONE run.
