@@ -61,6 +61,7 @@ from taskq.workflows._worker_execution import (
     execute_flow_job,
     iter_imported_apps,
     project_workflow_actor_configs,
+    reset_app_registry_for_tests,
     workflow_execution_capable,
 )
 from tests._di_scopes import bootstrap_scopes, make_scopes
@@ -252,15 +253,29 @@ def test_the_app_registry_observes_without_pinning() -> None:
     gc.collect()
     assert ref() is None, "the registry must not pin the app (a WeakSet, not a list)"
 
-    live_app = WorkflowApp()
-    with patch("taskq.workflows._worker_execution._apps", weakref.WeakSet([live_app])):
-        assert workflow_execution_capable() is True, (
-            "at least one imported app = the process can resolve bodies"
-        )
-    with patch("taskq.workflows._worker_execution._apps", weakref.WeakSet()):
-        assert workflow_execution_capable() is False, (
-            "no imported app = not capable (the fence's data leg never lies)"
-        )
+    # THE RULED CAPABILITY: the marker answers from the LIVE apps'
+    # RUNNABLE workflows — an app that declares none is imported and
+    # still not capable; a runnable workflow projects the capability;
+    # the reset clears both.
+    empty_app = WorkflowApp()
+    assert workflow_execution_capable() is False, (
+        "an imported app with no runnable workflow is not capability"
+    )
+
+    async def _capability_body(ctx: Any) -> dict[str, str]:
+        return {}
+
+    @empty_app.workflow("capability-probe")
+    def capability_probe() -> Promise[object]:
+        return build(step(_capability_body, key="probe"))
+
+    assert workflow_execution_capable() is True, (
+        "the mounted app's runnable workflow projects the capability"
+    )
+    reset_app_registry_for_tests()
+    assert workflow_execution_capable() is False, (
+        "no imported app = not capable (the fence's data leg never lies)"
+    )
 
 
 # ── 2. the door: the resolution errors x the shapes + the fences ────────

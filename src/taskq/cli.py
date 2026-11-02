@@ -372,12 +372,10 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
 
     if not registry:
         from taskq.workflows._worker_execution import (
-            iter_imported_apps,
-            project_with_failures,
-        )
-        from taskq.workflows._worker_execution import (
             WorkflowActorCapacityConflictError,
             WorkflowActorQueueConflictError,
+            iter_imported_apps,
+            project_with_failures,
         )
 
         try:
