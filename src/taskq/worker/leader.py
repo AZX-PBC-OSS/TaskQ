@@ -482,7 +482,7 @@ class MaintenanceLeader:
                 {sleep_task, stop_task, wake_task}, return_when=asyncio.FIRST_COMPLETED
             )
         finally:
-            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure — the
+            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix — the
             # same shape every one of the worker's event-racing loops now
             # carries): CANCEL ALL the pending waiters first, THEN reap
             # each. Our own cancel (the reaper's re-raise) propagates
@@ -1642,7 +1642,7 @@ class MaintenanceLeader:
                     {leader_wait, shutdown_wait}, return_when=asyncio.FIRST_COMPLETED
                 )
             finally:
-                # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure —
+                # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix —
                 # the same shape the reload schedule's, the watchdog's, the
                 # producer's, and the bootstrap's loops carry): CANCEL ALL
                 # the pending waiters first, THEN reap each. The one-per-lap

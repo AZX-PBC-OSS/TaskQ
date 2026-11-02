@@ -1110,7 +1110,7 @@ def _attribute_violation(
 
     Returns ``(violation, offenders, survivors)``, the unwrapped
     violation the strike text and span status are recorded from, the
-    plan(s) it convicts, and the plans cleared to retry, or ``None``
+    plan(s) it indicts, and the plans cleared to retry, or ``None``
     when the error cannot be attributed SAFELY, any other exception
     type, a violation of a constraint TaskQ does not own, an unparsable
     or truncated detail line, or a value naming no pending plan.  The

@@ -814,7 +814,7 @@ def install_signal_handlers(
         nonlocal _sig_count
         _sig_count += 1
         if _sig_count == 1:
-            # H2 guard: skip if orchestration is already in progress
+            # Double-orchestration guard: skip if orchestration is already in progress
             # (e.g., drain monitor triggered first). The _sig_count is
             # NOT reset, the next SIGTERM correctly escalates the
             # already-running orchestration rather than starting a new one.
