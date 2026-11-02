@@ -328,7 +328,7 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
             "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
             "taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",
         ),
-        "-- THE DISPATCH FENCE (P3 rule 4's second leg + the worker",
+        "-- THE DISPATCH FENCE (P3 rule 4's second leg, T04, + the worker",
         "a token template (the __WF_ALIAS__/__WF_TERMINAL__ holes are "
         "substituted by _wf_dispatch_fence per alias, never .format), never "
         "a standalone statement; its rendered text rides the two dispatch "

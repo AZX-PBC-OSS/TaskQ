@@ -290,7 +290,7 @@ async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
         )
         return
 
-    run_a = await _run_flow(compiled, wf_pool, wf_schema, run_key="rv5k1:a")
+    run_a = await _run_flow(compiled, wf_pool, wf_schema, run_key="cache-a")
     assert CALLS["k_source"] == 1
     assert CALLS["k_arm_text"] == 1 and CALLS["k_arm_audio"] == 1 and CALLS["k_sum"] == 1
     assert len(await _cache_rows(wf_conn, wf_schema)) == 1, "run 1 must store the source's result"
@@ -299,7 +299,7 @@ async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
     # hit); the route fork MUST rebuild from the envelope — the children
     # spawn, the join fires, the consumer answers, the run completes.
     runner = FlowRunner(compiled, wf_pool, wf_schema)
-    claim_b = await runner.create_flow(input=None, run_key="rv5k1:b")
+    claim_b = await runner.create_flow(input=None, run_key="cache-b")
     assert claim_b.created
     outcome = await runner.drive(claim_b.flow_id, tick=0.02, max_ticks=120)
     assert outcome == "terminal", (
@@ -374,11 +374,11 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
         "is absent from the address (any run's input reads every run's entry)"
     )
 
-    await _run_flow(compiled_x, wf_pool, wf_schema, run_key="rv5k2:x")
+    await _run_flow(compiled_x, wf_pool, wf_schema, run_key="cache-x")
     assert CALLS["k2_work"] == 1
     # THE SECOND INPUT: a MISS — the body RE-EXECUTES (never the X entry
     # served for the Y call).
-    await _run_flow(app.get("probe"), wf_pool, wf_schema, run_key="rv5k2:y")
+    await _run_flow(app.get("probe"), wf_pool, wf_schema, run_key="cache-y")
     assert CALLS["k2_work"] == 2, (
         "The second input HIT the first's entry — the address is blind "
         "to the wired input (the cross-input leak)"
@@ -527,7 +527,7 @@ async def test_k6_the_cache_purge_verb_evicts(
         return build(step(_k2_work, KDoc(doc_id="purge-me"), key="work", cache=True))
 
     compiled = app.get("purge_flo")
-    await _run_flow(compiled, wf_pool, wf_schema, run_key="rv5k6:a")
+    await _run_flow(compiled, wf_pool, wf_schema, run_key="cache-a")
     assert CALLS["k2_work"] == 1
     rows = await _cache_rows(wf_conn, wf_schema)
     assert len(rows) == 1, "the first run must store exactly one entry"
@@ -560,7 +560,7 @@ async def test_k6_the_cache_purge_verb_evicts(
         "the eviction returned success but the row survives — a lying door"
     )
     # The next run MISSES (the body re-executes — the eviction is real).
-    await _run_flow(compiled, wf_pool, wf_schema, run_key="rv5k6:b")
+    await _run_flow(compiled, wf_pool, wf_schema, run_key="cache-b")
     assert CALLS["k2_work"] == 2, "the purged address still served a hit"
 
 
@@ -600,7 +600,7 @@ async def test_k7_the_hit_finalize_infra_fault_is_the_reclaim_class(
     compiled = app.get("classifier_flo")
     runner = FlowRunner(compiled, wf_pool, wf_schema)
     # The seed run (the clean miss): the body pays for the entry.
-    claim_a = await runner.create_flow(input=None, run_key="rv5k7:a")
+    claim_a = await runner.create_flow(input=None, run_key="cache-a")
     assert (await runner.drive(claim_a.flow_id)) == "terminal"
     assert CALLS["k7_ocr"] == 1
 
@@ -608,7 +608,7 @@ async def test_k7_the_hit_finalize_infra_fault_is_the_reclaim_class(
         raise ConnectionError("the storm's class (the pin's injected finalize fault)")
 
     monkeypatch.setattr(FlowRunner, "_finalize_success", _faulty_finalize)
-    claim_b = await runner.create_flow(input=None, run_key="rv5k7:b")
+    claim_b = await runner.create_flow(input=None, run_key="cache-b")
     assert claim_b.created
     from contextlib import suppress
 

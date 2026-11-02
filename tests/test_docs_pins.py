@@ -1,4 +1,4 @@
-"""the rv6 round's DOCS pack (fix/docs-currency @ 6e2297fe8),
+"""THE DOCS-CURRENCY PINS (
 PORTED TO the engine-fixes lane and FLIPPED GREEN by its doc fixes.
 
 Provenance: the recorded recorded findings over the docs estate. Three were

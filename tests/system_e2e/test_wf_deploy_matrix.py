@@ -9,7 +9,7 @@ every scenario (``_invariants.assert_balanced``) plus the workflow
 invariants (the join fires exactly once, the ledger reconciles).
 
 The cells — each maps to the test function that runs it, and the
-header lists NOTHING ELSE (the rv2 finding's fix: three cells here
+header lists NOTHING ELSE (the recorded finding's fix: three cells here
 named no test function anywhere, and the header cited a defect-scenario
 file and a deployment-guide table that do not exist; the header now
 carries only the cells this file actually tests — the missing

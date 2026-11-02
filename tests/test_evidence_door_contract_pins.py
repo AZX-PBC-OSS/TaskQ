@@ -1,15 +1,11 @@
-"""the rv6 round's ESTATE pack: the content door's own holes
+"""THE ESTATE PACK: the content door's own holes
 (the evidence-integrity lane @ 3f69eaa32; the verifier under pin is
 ``scripts/verify_evidence_heads.py`` there — the fixed content door whose
 own scan is the subject).
 
-Provenance: the recorded live recorded findings, each reproduced against this
-head BEFORE pinning (the pre-pin repro script + output are in the pin
-pack's ``repro/``; the receipts carry the verbatim verdicts). Per the
-doctrine, the pack landed ``pytest.mark.xfail(strict=True, reason="LIVE
-FINDING rv6-d<id>: …")`` asserting the SAFE behavior — at the
-door-edges lane's base (58faf52b7: all five xfail, the failure log receipt in
-``.measurements/door-edges/``) — and the FIX ON THIS BRANCH flipped all
+Each pin's rejected shape was reproduced live against the recorded
+defect before its fix landed; the assertions stand as the permanent
+green guards.
 five to XPASS-strict, so the markers are REMOVED WITH the fix (the
 doctrine's flip): these pins now run GREEN and guard the five edges
 permanently.
