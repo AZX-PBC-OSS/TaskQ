@@ -56,6 +56,7 @@ from opentelemetry.metrics import CallbackOptions, Counter, Histogram, Meter, Ob
 from opentelemetry.trace import Span, StatusCode, Tracer
 from opentelemetry.util.types import Attributes
 
+from taskq._json import sanitize_surrogates
 from taskq.obs._redact_exc import add_exception_event, render_exception
 
 INSTRUMENTATION_NAME: str = "taskq"
@@ -261,7 +262,10 @@ def _record_scrubbed_error(span: Span, exc: BaseException) -> None:
             return
         text = render_exception(exc)
         if needs_status:
-            span.set_status(StatusCode.ERROR, text.message)
+            # The status description is surrogate-escaped like the event's
+            # attributes (the OTLP face); NUL handling stays the log
+            # channel's recipe.
+            span.set_status(StatusCode.ERROR, sanitize_surrogates(text.message))
         if needs_event:
             add_exception_event(span, text)
     except Exception:

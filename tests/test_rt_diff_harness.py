@@ -178,6 +178,57 @@ def _bucket_ms(duration_ms: int | None) -> Any:
     return round(duration_ms / 1000)
 
 
+def _duration_bucket(ts: datetime | None, anchor: datetime | None, created_at: datetime) -> Any:
+    """Normalize a write-plus-duration field to the DURATION it encodes.
+
+    ``lock_expires_at`` and ``result_expires_at`` are stamped write-instant +
+    duration in one statement on both backends: the claim writes
+    ``started_at`` and ``lock_expires_at`` from one clock reading (and a
+    heartbeat refresh restamps both at its own), the terminal write writes
+    ``finished_at`` and ``result_expires_at`` together, and the enqueue
+    writes ``created_at`` and an enqueue-TTL ``result_expires_at`` together.
+    Bucketing such a field against the snapshot's now reads the write's own
+    position in the scenario span into the bucket: a loaded runner's
+    inter-action wall (the coverage tracer's tax plus a co-tenant lane's
+    load) rounds a 60 s claim lease to 59 on PG while the frozen mirror
+    reads exactly 60 — the CI failure on
+    test_diff_dispatch_max_concurrent_admission, whose only differing
+    observable was that one bucket. This is the third conviction of the
+    runner-latency-is-not-a-backend-difference class: the span fence (a
+    write stamped inside the span reads "now" on both engines) and the
+    per-side re-anchor (offsets measure from each side's own scenario start)
+    are the prior two; this cure extends the same doctrine to the
+    duration-bearing fields by measuring each against the stamp written in
+    its own statement.
+
+    The anchor's meaning: the field's own writer stamp — a claim lease
+    measures from the claim (or the refreshing heartbeat), a result expiry
+    from the terminal write, and the enqueue-TTL shape of a result expiry
+    from ``created_at``, which the enqueue stamps in the same statement and
+    which is never NULL on any row. A row the scenario planted reads the
+    planted shape, not a canonical one: a synthetic running row whose lease
+    is stamped 60 s ahead of a stamp planted 30 s before it reads 90 — the
+    planted shape is the observable, the anchor's meaning does not change;
+    a planted row carrying a lease but NO writer stamp measures from
+    ``created_at`` the same way, which is why the fallback anchor is
+    usable on every row and the projection cannot crash on a plant.
+
+    The subtraction runs inside one clock reading on PG and at one frozen
+    instant on the mirror, so the bucket is the duration however loaded the
+    runner. This is the only mode: the TTL-at-enqueue shape (a pending
+    row's ``result_expires_at``, which a snapshot-first harness reads
+    before any terminal write) reads exactly its TTL on both engines, where
+    the end-referenced bucket read 295 against 300 under the same stretch.
+
+    Why not widen the future fence: the fence must not widen past the
+    smallest asserted backoff (5 s in the sweep corpus); the duration form
+    leaves every other field's arithmetic untouched.
+    """
+    if ts is None:
+        return None
+    return round((ts - (anchor if anchor is not None else created_at)).total_seconds())
+
+
 def _seconds(delta: timedelta | None) -> float | None:
     """Project a duration column onto seconds (None passes through).
 
@@ -224,6 +275,8 @@ class DiffSide:
         self._workers_by_token: dict[str, UUID] = {}
         self._token_by_worker: dict[UUID, str] = {}
         self._batches_by_token: dict[str, UUID] = {}
+        self._result_ttl_enqueued: dict[str, bool] = {}
+        self._result_ttl_finished: dict[str, bool] = {}
         self._records: dict[str, Any] = {}
 
     # ── Time domain ────────────────────────────────────────────────────
@@ -247,6 +300,23 @@ class DiffSide:
         """A datetime at ``anchor + offset`` in THIS side's clock domain."""
         assert self._t0 is not None
         return self._t0 + timedelta(seconds=offset_s)
+
+    async def advance_clock(self, seconds: float) -> None:
+        """Advance this side's clock by *seconds* of logical time.
+
+        The mirror's FakeClock jumps; PG's server clock advances in wall
+        time, so this side sleeps - the same logical elapsed, each in its
+        own domain.
+        """
+        if self._clock is not None:
+            self._clock.advance(timedelta(seconds=seconds))
+        else:
+            await asyncio.sleep(seconds)
+
+    async def heartbeat(self, worker_token: str, *, lock_lease_s: float) -> int:
+        """Renew every running lock *worker_token* holds, at the beat's own instant."""
+        wid = self._workers_by_token[worker_token]
+        return await self.backend.heartbeat_jobs(wid, timedelta(seconds=lock_lease_s))
 
     # ── Registries ─────────────────────────────────────────────────────
 
@@ -371,6 +441,12 @@ class DiffSide:
         row = await self.backend.enqueue(args)
         self._jobs_by_token[token] = JobId(row.id)
         self._token_by_id.setdefault(row.id, token)
+        # The enqueue's own statement stamps result_expires_at beside
+        # created_at when a TTL was passed (server-side on PG,
+        # clock_timestamp() + ttl; the mirror's clock the same way) - the
+        # stamp that anchors the duration bucket for that shape, chosen
+        # here while the scenario's own inputs are in hand.
+        self._result_ttl_enqueued[token] = result_ttl_s is not None
         return row
 
     # ── Plant / mutate (row-level time control) ────────────────────────
@@ -399,6 +475,7 @@ class DiffSide:
         jid = new_job_id()
         wid = await self.worker(worker_token) if worker_token is not None else None
         if self.kind == "memory":
+            created_at = self.ts(-1.0)
             row = replace(
                 make_job_row(
                     attempt=attempt,
@@ -417,14 +494,21 @@ class DiffSide:
                 id=JobId(jid),
                 status=status,  # type: ignore[arg-type]  # Why: scenario-supplied status is a known JobStatus literal.
                 identity_key=identity_key,  # type: ignore[arg-type]  # Why: IdentityKey NewType is runtime-transparent.
-                created_at=self.ts(-1.0),
+                created_at=created_at,
                 scheduled_at=self.ts(scheduled_in),
                 started_at=self.ts(-started_ago_s) if started_ago_s is not None else None,
                 locked_by_worker=wid if status == "running" else None,
+                # The lease co-stamps with created_at - the pair derives
+                # from ONE frozen instant, matching the PG arm's bind of
+                # both from the same parameter (the projection reads the
+                # lease's duration against created_at when the row has no
+                # writer stamp, so a server-clock lease beside an
+                # anchor-bound created_at would read the runner's wall
+                # into the planted shape).
                 lock_expires_at=(
-                    self.ts(-lock_expired_ago_s)
+                    created_at - timedelta(seconds=lock_expired_ago_s)
                     if lock_expired_ago_s is not None
-                    else (self.ts(60.0) if status == "running" else None)
+                    else (created_at + timedelta(seconds=60.0) if status == "running" else None)
                 ),
                 cancel_phase=CancelPhase(cancel_phase),
                 cancel_requested_at=self.ts(-1.0) if cancel_phase else None,
@@ -436,22 +520,27 @@ class DiffSide:
             memory._jobs[JobId(jid)] = row  # pyright: ignore[reportPrivateUsage]  # Why: test-only private seeding, the established pattern (test_rt_sweeps_parity.py).
         else:
             assert self._conn is not None and self.schema is not None
-            # started_at / lock_expires_at / cancel_requested_at are inlined
+            # started_at / cancel_requested_at are inlined
             # clock_timestamp() expressions (fixed scenario literals, never
             # user input - the same S608 justification as the schema name);
             # every plain value stays $-bound. payload and created_at mirror
             # the memory arm's make_job_row defaults verbatim (empty payload,
             # anchor - 1s): the snapshot projection compares both, so the
-            # two arms must plant the same logical row.
+            # two arms must plant the same logical row. The LEASE binds from
+            # the created_at parameter - the pair co-stamps from one bound
+            # instant, the way the memory arm stamps both from one frozen
+            # instant; a server-clock lease beside an anchor-bound
+            # created_at reads the runner's wall into the planted row's
+            # duration.
             started_sql = (
                 "NULL"
                 if started_ago_s is None
                 else f"clock_timestamp() - interval '{started_ago_s} seconds'"
             )
             if lock_expired_ago_s is not None:
-                lock_sql = f"clock_timestamp() - interval '{lock_expired_ago_s} seconds'"
+                lock_sql = f"$15::timestamptz - interval '{lock_expired_ago_s} seconds'"
             elif status == "running":
-                lock_sql = "clock_timestamp() + interval '60 seconds'"
+                lock_sql = "$15::timestamptz + interval '60 seconds'"
             else:
                 lock_sql = "NULL"
             cancel_req_sql = (
@@ -664,7 +753,7 @@ class DiffSide:
         result: dict[str, object] | None = None,
         fallback_result_ttl_s: float | None = None,
     ) -> bool:
-        return await self.backend.mark_succeeded(
+        ok = await self.backend.mark_succeeded(
             self._jobs_by_token[token],
             await self.worker(worker_token),
             result,
@@ -674,6 +763,13 @@ class DiffSide:
             attempt=await self._attempt_epoch_of(token),
             claim_epoch=await self._claim_epoch_of(token),
         )
+        # A supplied fallback TTL wins the terminal write's COALESCE over
+        # an enqueue-stamped expiry and restamps the pair beside
+        # finished_at - the anchor for that row's result-expiry duration
+        # moves to the write that supplied the value.
+        if ok:
+            self._result_ttl_finished[token] = fallback_result_ttl_s is not None
+        return ok
 
     async def mark_failed_or_retry(
         self,
@@ -807,6 +903,7 @@ class DiffSide:
         events = await self.backend.get_events(jid)
         if row is None:
             return {"present": False}
+        token = self.token_of(jid)
         # metadata.batch_id is a side-local UUID string; normalize it to the
         # scenario's batch token so member observables compare cross-domain.
         metadata = dict(row.metadata)
@@ -826,10 +923,12 @@ class DiffSide:
         # field the projection cannot serialize is a PG↔memory divergence
         # the harness would never catch. Identity and side-local values
         # normalize to scenario tokens; timestamps bucket against the
-        # snapshot's now; durations project to seconds.
+        # snapshot's now; write-plus-duration fields (the lease, the result
+        # expiry) bucket against their own row stamp; durations project to
+        # seconds.
         return {
             "present": True,
-            "id": self.token_of(row.id),
+            "id": token,
             "actor": row.actor,
             "queue": row.queue,
             "identity_key": row.identity_key,
@@ -850,7 +949,19 @@ class DiffSide:
             "finished_at": _bucket(row.finished_at, now, span_start),
             "last_heartbeat_at": _bucket(row.last_heartbeat_at, now, span_start),
             "locked_by_worker": self.worker_token(row.locked_by_worker),
-            "lock_expires_at": _bucket(row.lock_expires_at, now, span_start),
+            # The lease is stamped claim-instant + lease in one statement;
+            # the heartbeat refreshes it at its own stamp. Measured against
+            # the row's latest writer stamp, the bucket is the lease's own
+            # duration on both engines however loaded the runner (see
+            # _duration_bucket).
+            "lock_expires_at": _duration_bucket(
+                row.lock_expires_at,
+                max(
+                    (s for s in (row.started_at, row.last_heartbeat_at) if s is not None),
+                    default=None,
+                ),
+                row.created_at,
+            ),
             "cancel_requested_at": _bucket(row.cancel_requested_at, now, span_start),
             "cancel_phase": int(row.cancel_phase),
             "error_class": row.error_class,
@@ -860,7 +971,32 @@ class DiffSide:
             "progress_seq": row.progress_seq,
             "result": row.result,
             "result_size_bytes": row.result_size_bytes,
-            "result_expires_at": _bucket(row.result_expires_at, now, span_start),
+            # The anchor is the statement that supplied the TTL: a
+            # fallback supplied by the success write stamps beside
+            # finished_at (and wins the terminal COALESCE over an
+            # enqueue-stamped expiry); a TTL passed at enqueue stamps
+            # beside created_at and survives it. The enqueue adapter
+            # recorded the first shape, the terminal adapter the second
+            # (see _duration_bucket).
+            "result_expires_at": _duration_bucket(
+                row.result_expires_at,
+                row.created_at
+                if (
+                    self._result_ttl_enqueued.get(token, False)
+                    and not self._result_ttl_finished.get(token, False)
+                )
+                else row.finished_at,
+                row.created_at,
+            ),
+            # The heartbeat's own bookkeeping, independent of the lease it
+            # renews: the age of the beat above the claim's stamp. A
+            # renewal that moved the lease but never the beat (or the
+            # reverse) reads the wrong age here while the lease bucket
+            # still reads plausibly - the lease bucket alone cannot see
+            # the difference (see _duration_bucket).
+            "heartbeat_age": _duration_bucket(
+                row.last_heartbeat_at, row.started_at, row.created_at
+            ),
             "idempotency_key": row.idempotency_key,
             "idempotency_scope": row.idempotency_scope,
             "trace_id": row.trace_id,

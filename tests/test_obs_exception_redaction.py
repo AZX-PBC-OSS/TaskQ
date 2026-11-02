@@ -2359,3 +2359,22 @@ def test_scrubbing_a_realistic_traceback_preserves_the_diagnostics() -> None:
         "scrub exists to deliver; a scrub that rewrites them is the "
         "over-redaction the masking doctrine forbids"
     )
+
+
+def test_scrub_exception_field_escapes_even_a_treated_value() -> None:
+    """A ``ScrubbedText`` built by a seam predating the surrogate escape
+    (``nul_escaped``'s output, for one) arrives at the log processor
+    already carrying the treated type - and, if its source seam did not
+    escape, a lone surrogate in it. The processor's passthrough for the
+    treated type must not let that through: the escape is idempotent, so
+    the field closes at the one seam every log field passes through.
+    """
+    from taskq.obs._redact_exc import ScrubbedText, scrub_exception_field
+
+    value = ScrubbedText("cannot open file \udcff")
+    safe = scrub_exception_field("error_message", value)
+    assert isinstance(safe, str) and "\udcff" not in safe
+    assert "\\udcff" in safe, f"the treated value's surrogate must be escaped; got {safe!r}"
+    # Idempotence: an escaped ScrubbedText passes byte-for-byte.
+    again = scrub_exception_field("error_message", safe)
+    assert again == safe

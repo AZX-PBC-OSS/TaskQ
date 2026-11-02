@@ -6,9 +6,9 @@ and each mechanism in isolation. This module pins the INTERPLAY: who deletes
 historical rows when BOTH the hypertable retention policies (whole-chunk
 drops) and TaskQ's own DELETE-based sweeps are armed on the same tables, and
 what each mechanism does to the other's bookkeeping. One real
-``policy_retention`` run per drop (the ``alter_job`` next_start knob, the
-same sanctioned pattern the sibling module pins), so every chunk drop under
-test is the registered policy's own work, never a test shortcut.
+``policy_retention`` run per drop (the harness calls the registered
+policy job itself, ``CALL run_job``, so every chunk drop under test is
+the registered policy's own work, never a test shortcut).
 
 Five hypotheses, one test each (plus one divergence pin):
 
@@ -67,9 +67,12 @@ deletion (row-exact, watermark-visible). On vanilla Postgres the probe
 fails open to None and the sweeps run full-range, byte-identical to the
 pre-floor behavior.
 
-Chunk-drop waits poll TimescaleDB's background worker (an external daemon
-no test clock can advance); the poll is bounded and asserts on the
-policy's own committed effect, mirroring the sibling module's pattern.
+Chunk drops run deterministically: the harness calls each retention
+policy job itself (``CALL run_job``) against the fixture's
+daemon-deferred ``next_start``, and the drop commits synchronously
+inside the call - the background worker stays ineligible and cannot
+race the test's clock; the bounded poll then asserts on the policy's
+own committed effect.
 """
 
 from __future__ import annotations
@@ -199,8 +202,11 @@ async def _schedule_policies(
     conn: asyncpg.Connection, schema: str, *, next_start: datetime, proc_name: str = "policy%"
 ) -> None:
     """Move every policy job's next run to *next_start* (the supported
-    ``alter_job`` knob); the background worker executes the registered
-    policy itself, so a drop under test is always a real policy run.
+    ``alter_job`` knob). Tests that need a drop run the retention job
+    themselves (``CALL run_job``, via ``_force_policies_now``); this
+    helper's remaining work is the fixture's deferral of the whole
+    policy family to the far future, so the background worker stays
+    ineligible and cannot race the test's clock.
 
     Defaults to ALL policy jobs — retention AND the compression policy
     the deploy step arms on the archive tables: a ~now-scheduled
@@ -223,27 +229,34 @@ async def _schedule_policies(
 
 
 async def _force_policies_now(conn: asyncpg.Connection, schema: str) -> None:
-    """Pull every RETENTION policy's next run to now (a real policy run).
+    """Run every RETENTION policy job now, deterministically.
 
-    The compression policy stays deferred: these legs pin sweep
-    behavior, not compression, and a mid-test compress would change the
-    DML surface they assert on.
+    The jobs stay daemon-deferred (the fixture's far-future next_start):
+    the background worker never races the test's clock. ``run_job``
+    executes each policy job synchronously in this session — the drop is
+    the policy's own work, committed by the time the call returns.
     """
-    await _schedule_policies(
-        conn, schema, next_start=datetime.now(UTC), proc_name="policy_retention"
+    rows = await conn.fetch(
+        "SELECT job_id FROM timescaledb_information.jobs "
+        "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
+        schema,
     )
+    for r in rows:
+        await conn.execute("CALL run_job($1)", r["job_id"])
 
 
 async def _wait_for(
-    condition: Callable[[], Awaitable[bool]], *, what: str, timeout_secs: float = 60.0
+    condition: Callable[[], Awaitable[bool]], *, what: str, timeout_secs: float = 30.0
 ) -> None:
-    """Bounded poll for an effect of TimescaleDB's background worker.
+    """Bounded poll for the policy's own committed effect.
 
-    The worker is an external daemon no test clock can advance; the
-    sibling module's policy legs use this exact pattern (``alter_job``
-    next_start, then poll for the policy's own committed effect). The
-    poll never substitutes for a synchronization the test controls —
-    every awaited statement outside it is fully ordered.
+    ``_force_policies_now`` runs the policy job synchronously (``CALL
+    run_job``), so the drop is committed before the wait starts: the
+    ceiling bounds only the policy's own work (a chunk drop on the
+    seeded tables, ~0.02s solo, seconds under a loaded lane) - not a
+    background daemon's wake, which no test clock can advance. The
+    per-site budget (30s) keeps a two-wait test inside the global 300s
+    per-test cap with room for the rest of the test.
     """
     deadline = time.monotonic() + timeout_secs
     while time.monotonic() < deadline:

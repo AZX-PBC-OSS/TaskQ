@@ -37,6 +37,7 @@ from pydantic import (
     model_validator,
 )
 
+from taskq._json import sanitize_surrogates
 from taskq.backend._protocol import Backend, ErrorInfo, JobId, JobRow, RetryKind
 from taskq.constants import (
     DEFAULT_MAX_RETRY_BACKOFF,
@@ -191,6 +192,28 @@ class JobRetryState(NamedTuple):
 
 
 _production_rng = random.Random(secrets.randbits(128))  # noqa: S311  Why: random.Random is for timing jitter, not cryptography; seeded via secrets.randbits(128) by design
+
+
+def _safe_type_name(exception: BaseException) -> str:
+    """The exception's class name, readable and renderable.
+
+    The actor's exception class is attacker-adjacent code: a metaclass can
+    raise on the ``__name__`` access itself (the classification would die
+    mid-handler and strand the row running) or return a non-string. A
+    raising or non-string name degrades to a constant marker; a string name
+    is surrogate-escaped for the stores and renderers it reaches.
+    """
+    try:
+        name = type(exception).__name__
+    except BaseException:
+        return "<exception type name failed>"
+    if not isinstance(name, str):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the runtime defense against a metaclass property returning a non-string; the type cannot model the hostile case.
+        try:
+            name = str(name)
+        except BaseException:
+            return "<exception type name failed>"
+    return sanitize_surrogates(name)
+
 
 # Why: an ``indefinite`` policy has no attempt ceiling, so ``attempt`` is
 # unbounded and the exponential arm's exponent must be clamped somewhere
@@ -1013,7 +1036,7 @@ def _rate_limit_claim(
         return None
 
     status = _extract_http_status(exception)
-    if status != _HTTP_STATUS_429 and type(exception).__name__ != "RateLimitError":
+    if status != _HTTP_STATUS_429 and _safe_type_name(exception) != "RateLimitError":
         return None
 
     # Claimed: sniff the server's hint. Unusable → the curve-fallback
@@ -1283,7 +1306,7 @@ def failure_taxonomy_classifier(
     infer_suffix = infer_timeout_by_suffix
 
     def classify(exception: BaseException, attempt: int) -> RetryOverride | None:
-        name = type(exception).__name__
+        name = _safe_type_name(exception)
         if name in exclude:
             return None
         status = _extract_http_status(exception)
@@ -1370,7 +1393,7 @@ class RetryClassifier:
         override: RetryOverride | None = None,
     ) -> RetryDecision:
         if isinstance(exception, non_retryable_exceptions):
-            return Fail(error_class=type(exception).__name__, retryable=False)
+            return Fail(error_class=_safe_type_name(exception), retryable=False)
 
         if isinstance(exception, PayloadValidationError):
             return Fail(error_class="PayloadValidationError", retryable=False)
@@ -1401,7 +1424,7 @@ class RetryClassifier:
         override_delay = override.delay if override is not None else None
 
         if effective_kind == "non_retryable":
-            return Fail(error_class=type(exception).__name__, retryable=False)
+            return Fail(error_class=_safe_type_name(exception), retryable=False)
 
         if effective_kind == "transient":
             if attempt < policy.max_attempts:
@@ -1411,7 +1434,7 @@ class RetryClassifier:
                     max_retry_backoff=max_retry_backoff,
                     override_delay=override_delay,
                 )
-            return Fail(error_class=type(exception).__name__, retryable=False)
+            return Fail(error_class=_safe_type_name(exception), retryable=False)
 
         # effective_kind == "indefinite"
         return RetryClassifier._retry_decision(
