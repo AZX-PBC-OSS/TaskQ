@@ -130,7 +130,7 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
         "is broken (the leg must be load-bearing)"
     )
 
-    # THE SHIPPED ARMS on an identical state: the flow-fenced arm (the H2
+    # THE SHIPPED ARMS on an identical state: the flow-fenced arm (the
     # fix) RESOLVES the join — a never-fired join row on a TERMINAL flow
     # can never fire, so the sweep stamps it 'flow_dead' instead of
     # reconciling it to a claimable never-fired row and re-firing-refusing
@@ -825,7 +825,7 @@ async def test_pin_23_the_fire_refuses_a_dead_flow_behaviorally_even_stealthily_
 
     Why this pin exists: the fire's flow-status leg rode only pins that
     (a) assert the SHIPPED behavior through the flow-fenced arm's
-    upstream stamp (pin 5 — the H2 fence resolves the row before the
+    upstream stamp (pin 5 — the flow-fenced fence resolves the row before the
     fire arm ever sees it, so gutting the fire's own leg reds nothing
     there), or (b) drop the EXISTS leg wholesale (pin 5's scenario — a
     mutation the stealth variant survives: keep the EXISTS, gut the

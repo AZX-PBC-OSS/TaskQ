@@ -184,7 +184,7 @@ async def test_t20_failed_arm_wedge_cure_stands(
     wf_sql: WorkflowSql,
     t20_redlog: RedLog,
 ) -> None:
-    """THE BLOCKED-STAMP EXCLUSION IS LOAD-BEARING: the phase-2 H1 wedge's
+    """THE BLOCKED-STAMP EXCLUSION IS LOAD-BEARING: the wedge's
     fix must survive the fix — a resolved-blocked join row
     (``blocking_reason='failed_parent'`` stamped by the crash-window heal)
     must NOT hold a failing run. With the fix, a stamped pending row is
@@ -219,7 +219,7 @@ async def test_t20_failed_arm_wedge_cure_stands(
         "t20-failed-arm-blocked-stamp",
         "a has_unresolved predicate WITHOUT the blocked-stamp exclusion — "
         "every pending row (a resolved-blocked join row included) would "
-        "hold the run: the original H1 wedge returns (the root wedges "
+        "hold the run: the original wedge returns (the root wedges "
         "'running' forever over a stamped row nothing will ever "
         "terminalize)",
         {"root_status": root["status"]},

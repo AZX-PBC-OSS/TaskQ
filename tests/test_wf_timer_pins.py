@@ -376,7 +376,7 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
 # behind forever, the wait re-held silently (the plain kind has no E13
 # teeth), the deadline swept the row to 'abandoned', the body returned
 # the fail-close arm, and THE RUN TERMINALIZED `succeeded` with the
-# operator's decision a dead letter (the C7 family's face on an
+# operator's decision a dead letter (the family's face on an
 # unwritten boundary). THE FIX — E13's per-site discipline generalized:
 # the answer queue's cursor is keyed to the WAIT SITE (its own signal
 # name, beneath the attempt), so every site counts ITS OWN

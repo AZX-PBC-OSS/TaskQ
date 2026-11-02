@@ -288,7 +288,7 @@ async def test_pin_4_run_key_replay_one_run(
     assert shipped.created, "the per-flow scope lets another flow's run claim its own key"
 
 
-# ── Pin 5: LEDGER-CLAIM-ATOMIC (hardening H6) ───────────────────────────
+# ── Pin 5: LEDGER-CLAIM-ATOMIC  ───────────────────────────
 
 
 @pytest.mark.integration
@@ -353,7 +353,7 @@ async def test_pin_5_ledger_claim_atomic(
     assert ledger_status == "fenced", ledger_status
 
 
-# ── Pin 6: LEDGER-TERMINAL-ATOMIC (hardening H9) ────────────────────────
+# ── Pin 6: LEDGER-TERMINAL-ATOMIC  ────────────────────────
 
 
 @pytest.mark.integration

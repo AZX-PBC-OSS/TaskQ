@@ -35,7 +35,7 @@ verbatim:
   the cancel wins — the deadline's re-pend arm is fenced in-statement
   (the vanilla ``mark_retry``'s own law: a phase-carrying row matches
   no arm), and the node terminalises 'cancelled' through the wf
-  terminal door (the C4 deferral's cancel_fenced shape).
+  terminal door (the deferral's cancel_fenced shape).
 
 THE RESOLUTION LAW per row, first non-``None`` wins:
 the step's/arm's own declaration > the actor's declaration (folded at

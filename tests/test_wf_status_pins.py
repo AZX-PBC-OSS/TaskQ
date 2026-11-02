@@ -256,7 +256,7 @@ async def test_t08_g7_teeth_the_lying_fixture_reds(
     with pytest.raises(AssertionError, match="drifted from the rows"):
         await g7_check(wf_conn, wf_schema, wf_sql)
     # THE TRUTH RESTORED: the scenario's lie is in-body only — the always-on
-    # teardown runs the same check the scenario just rejected (the H4 round
+    # teardown runs the same check the scenario just rejected (the round
     # made the teardown real), so the record must end lawful: the rows
     # (a pending node) are the truth, the root is the cache.
     await wf_conn.execute(
@@ -427,7 +427,7 @@ async def test_t08_maintenance_leg_finalizes_the_wedged_root(
     wf_sql: WorkflowSql,
     propagation_redlog: RedLog,
 ) -> None:
-    """THE CRASH-WINDOW ROOT WEDGE (the phase-2 attack's H1): tx1 commits
+    """THE CRASH-WINDOW ROOT WEDGE (the phase-2 attack's wedge): tx1 commits
     the child's terminal FAILURE, tx2 (the cascade) never runs — the
     sweep's blocked_required heal stamps the join, but the maintenance
     leg's ``has_live`` counted the stamped join row LIVE forever (nothing
