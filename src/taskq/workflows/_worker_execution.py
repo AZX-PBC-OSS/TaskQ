@@ -306,11 +306,13 @@ def get_compiled_workflow(name: str) -> object:
 
 def workflow_execution_capable() -> bool:
     """Whether THIS process can execute workflow bodies: at least one
-    WorkflowApp was imported (the projection can compile it, which
-    populates the D1 registry the body resolution answers). The same
-    predicate the boot stamps into the workers row's metadata — the
-    dispatch fence's capability is THIS capability, as data."""
-    return len(_apps) > 0
+    RUNNABLE workflow projected — the projection's actual output (an
+    imported app is not capability: an empty app, or one whose every
+    workflow failed its compile, projects no cohort and cannot resolve
+    a workflow row). The same predicate the boot stamps into the workers
+    row's metadata — the dispatch fence's capability is THIS capability,
+    as data."""
+    return len(project_with_failures()[0]) > 0
 
 
 def any_app_declares_strict_queues() -> bool:
@@ -437,17 +439,20 @@ def _workflow_cohorts(
     return cohorts, caps
 
 
-def project_workflow_actor_configs() -> list[ActorConfig]:
-    """THE BOOT PROJECTION: every imported app's workflows compile HERE
-    (populating the D1 definition registry in this process — the
-    intercept's body resolution answers from these very compiles), and
-    the compiled graphs' (actor, queue) cohorts project into
-    ``ActorConfig`` rows — the same carrier, the same ``sync_actor_config``
-    surface, the same drift guards the vanilla ``@actor`` refs ride at
-    boot. THE VISIBILITY LAW'S CALL SITE: the workflow actors are VISIBLE to the
-    estate — the dispatch capacity LATERAL sees their cohorts, the drift
-    machinery, the admin page, ``TASKQ_QUEUES_STRICT`` — no second,
-    invisible actor population.
+def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
+    """THE BOOT PROJECTION with its failures' names: the same projection
+    :func:`project_workflow_actor_configs` runs, returning ALSO the
+    compile failures (one string per skipped workflow — the app, the
+    workflow, the defect) so the boot gate can name WHY nothing
+    dispatchable projects. The compiles populate the D1 definition
+    registry in this process (the intercept's body resolution answers
+    from these very compiles), and the compiled graphs' (actor, queue)
+    cohorts project into ``ActorConfig`` rows — the same carrier, the
+    same ``sync_actor_config`` surface, the same drift guards the vanilla
+    ``@actor`` refs ride at boot. THE VISIBILITY LAW'S CALL SITE: the
+    workflow actors are VISIBLE to the estate — the dispatch capacity
+    LATERAL sees their cohorts, the drift machinery, the admin page,
+    ``TASKQ_QUEUES_STRICT`` — no second, invisible actor population.
 
     THE ONE-QUEUE LAW: an actor name carrying TWO queues is refused
     (``WorkflowActorQueueConflictError``). TWO granularities, two arms:
@@ -483,6 +488,7 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
     """
     totals: dict[str, tuple[str, set[str]]] = {}
     capacity_totals: dict[str, _CapacityTerms] = {}
+    failures: list[str] = []
     for app in iter_imported_apps():
         workflow_app = cast("WorkflowAppFace", app)
         app_face = f"{type(app).__module__}.{type(app).__name__}"
@@ -516,6 +522,7 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
                 # refusal, the queue conflict) keep the skip-loudly arm.
                 raise
             except Exception as exc:  # Why: the isolation IS the fix — one broken build fn (a raising builder, a validation refusal, the workflow's own queue conflict) must not refuse the worker's whole boot; the failure is the same skip-loudly arm for every shape.
+                failures.append(f"{app_face}.{name}: {type(exc).__name__}: {str(exc)[:200]}")
                 logger.error(
                     "workflow-projection-skipped",
                     app=app_face,
@@ -594,7 +601,17 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
                 capacity_owner=terms.capacity_owner,
             )
         )
-    return configured
+    return configured, failures
+
+
+def project_workflow_actor_configs() -> list[ActorConfig]:
+    """THE BOOT PROJECTION: every imported app's workflows compile HERE
+    (populating the D1 definition registry in this process — the
+    intercept's body resolution answers from these very compiles) and
+    the compiled graphs' cohorts project into ``ActorConfig`` rows —
+    the projection :func:`project_with_failures` runs, the failures'
+    names dropped (the logs carry them)."""
+    return project_with_failures()[0]
 
 
 # ── the boot's rate-limit collection (the admission terms) ────────────────────────────

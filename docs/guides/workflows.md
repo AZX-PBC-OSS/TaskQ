@@ -874,7 +874,11 @@ cost class the P3 fence's own comment pins (the zero-tax law: the vanilla
 claim path is unchanged; the dispatch band stays green).
 
 **2. THE BOOT PROJECTION.** A worker whose
-process imported at least one `WorkflowApp` boots CAPABLE: the projection
+process imports at least one `WorkflowApp` with at least one runnable
+workflow boots CAPABLE (the gate counts the projection's actual output —
+an imported-but-empty app, or one whose every workflow fails its compile,
+projects no cohort and is not capability: the boot refuses and names the
+compile failures): the projection
 compiles every imported app's declared workflows (which is what populates
 the definition registry in the worker's process — the body resolution
 answers from these very compiles) and projects the compiled graphs'

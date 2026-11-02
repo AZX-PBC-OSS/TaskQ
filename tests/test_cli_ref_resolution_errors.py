@@ -115,9 +115,13 @@ def test_a_workflow_only_module_boots_with_an_empty_registry(
 app = WorkflowApp()
 
 
+async def probe_body(ctx: StepContext) -> dict[str, str]:
+    return {}
+
+
 @app.workflow("workerless-probe")
 def workerless_probe() -> Promise[object]:
-    return build(step(lambda ctx: None, key="noop"))
+    return build(step(probe_body, key="noop"))
 
 
 ACTORS = {}
@@ -146,6 +150,67 @@ def test_the_empty_refusal_names_both_dispatch_ingredients(
     assert "refusing to boot" in err
     assert "actor" in err
     assert "workflow" in err
+
+
+def test_an_empty_mounted_app_refuses_the_boot(
+    module_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An imported-but-empty app mounts nothing dispatchable: the boot
+    gate counts RUNNABLE workflow cohorts (the projection's actual
+    output), so a module whose only content is an empty WorkflowApp is
+    the both-ingredients-empty refusal, naming both ingredients."""
+    module = _write_module(
+        module_dir,
+        "cli_ref_empty_app_module",
+        """from taskq.workflows import WorkflowApp
+
+app = WorkflowApp()
+
+ACTORS = {}
+""",
+    )
+    with pytest.raises(typer.Exit):
+        _load_actor_registry(_ref(module, "ACTORS"))
+
+    err = capsys.readouterr().err
+    assert "refusing to boot" in err
+    assert "actor" in err
+    assert "workflow" in err
+
+
+def test_an_app_whose_workflows_all_fail_compile_refuses_with_the_failure_named(
+    module_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A mounted app whose only workflow fails its compile projects no
+    runnable cohort: the boot refuses at the earliest stage and the
+    refusal NAMES the compile failure (the operator reads what to fix,
+    not just that the worker sat down)."""
+    module = _write_module(
+        module_dir,
+        "cli_ref_broken_compile_module",
+        """from taskq.workflows import Promise, WorkflowApp, build, step
+
+app = WorkflowApp()
+
+
+async def body(ctx):
+    return None
+
+
+@app.workflow("broken-probe")
+def broken_probe() -> Promise[object]:
+    return build(step(body, key="probe"))
+
+
+ACTORS = {}
+""",
+    )
+    with pytest.raises(typer.Exit):
+        _load_actor_registry(_ref(module, "ACTORS"))
+
+    err = capsys.readouterr().err
+    assert "refusing to boot" in err
+    assert "broken-probe" in err
 
 
 # ── the provider shapes ─────────────────────────────────────────────────
