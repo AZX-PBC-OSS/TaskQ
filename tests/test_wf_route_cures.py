@@ -1,4 +1,4 @@
-"""THE RV4 FIX LANE'S PINS (the recertifier's seven-recorded finding pack).
+"""THE ROUTE'S CURE PINS (the seven recorded findings' pack).
 
 The routing spine certified; seven live recorded findings + the estate red;
 this file carries the pins — each behavior was wrong before its fix and
@@ -221,7 +221,7 @@ def test_the_arm_arity_convicts_at_build() -> None:
     ):
         app = WorkflowApp()
 
-        @app.workflow(f"rv4_arity_{label}")
+        @app.workflow(f"route-arity-{label}")
         def wired(
             body: object = body,
         ) -> Promise[object]:  # the loop binding (B023): the arm's body bound at definition
@@ -236,7 +236,7 @@ def test_the_arm_arity_convicts_at_build() -> None:
             return build(routed)
 
         with pytest.raises(WorkflowValidationError, match=rule):
-            app.get(f"rv4_arity_{label}")
+            app.get(f"route-arity-{label}")
 
 
 # ── E15's "related" door — the exact-union-member law ───────────────────

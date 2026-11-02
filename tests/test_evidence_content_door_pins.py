@@ -73,7 +73,7 @@ bringing up nodes...
 =================================== FAILURES ===================================
 E   AssertionError: the head-stamp verifier reds on the committed estate
 =========================== short test summary info ============================
-FAILED tests/test_wf_run_view_pins.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
+FAILED tests/test_wf_run_view_pins.py::test_13_the_head_stamp_law_greens_on_the_committed_tree
 1 failed, 603 passed, 1 warning in 80.24s (0:01:20)
 """
 
@@ -112,7 +112,7 @@ bringing up nodes...
 #: The staged-slot declaration (the drain's honest intermediate): NO
 #: verdict shape at all — neither rc= nor a passed/failed summary.
 _SLOT_CAPTURE = """\
-# wf-battery-rv4's slot staged at head {head} — the green run's output fills this file in place (the estate-fixes drain's own shape); no verdict recorded yet
+# wf-battery-the pack's slot staged at head {head} — the green run's output fills this file in place (the estate-fixes drain's own shape); no verdict recorded yet
 """
 
 

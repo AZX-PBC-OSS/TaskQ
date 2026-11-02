@@ -699,7 +699,7 @@ def test_9_e10_counts_the_actual_params() -> None:
     * a REAL mismatch refuses AND the message names the REAL arity
       ("takes 2 param(s)"), never the annotated count.
 
-    THE WIRING NOTE (the rv2-fix lane's reconciliation): leg 2's body
+    THE WIRING NOTE (the run-view fix's reconciliation): leg 2's body
     wired ONE arg was a real mismatch when this pin was cut, but the
     consolidated head's E10/E12 partition (5402a4b8) reclassified the
     exactly-one-param-beyond-the-wiring shape as the DEPS class — E12's
@@ -763,7 +763,7 @@ def test_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
     * the header's "operator table" citation names the cells in the
       cited doc (the table the cells claim to be rows of).
 
-    THE FLOOR (the rv2 fix's reconciliation): the pack pinned the
+    THE FLOOR (the run-view fix's reconciliation): the pack pinned the
     header's NINE claimed cells; three (OUTAGE, REDISPATCH OWNERSHIP,
     RETENTION MID-FLIGHT) named no test function anywhere — header
     fiction. The fix regenerated the header to the SIX cells this
@@ -897,7 +897,7 @@ def test_11_the_bad_source_declaration_still_refuses_loudly() -> None:
     rule id in the record, and no cohort for it projects. A fix that
     instead SILENCED the arity rules would flip this red.
 
-    THE RULE ID (the rv2-fix lane's reconciliation): at the pack's cut
+    THE RULE ID (the run-view fix's reconciliation): at the pack's cut
     the record named ``E10-arity``; the consolidated head's E10/E12
     partition (5402a4b8) reclassified the exactly-one-param-beyond-the-
     wiring shape as the DEPS class — the refusal now names

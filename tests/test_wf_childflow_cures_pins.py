@@ -104,7 +104,7 @@ def _child_app(name: str) -> WorkflowApp:
         return SubReport(findings=[f"found:{probe_input.doc_id}"])
 
     @app.workflow(name)
-    def rv5_child() -> Promise[object]:
+    def child() -> Promise[object]:
         return build(step(probe, key="probe"))
 
     return app
@@ -139,7 +139,7 @@ def _parent_app(child_name: str, name: str, *, body: Any = None) -> WorkflowApp:
         return await join_body(ctx, params)  # type: ignore[operator]
 
     @app.workflow(name)
-    def rv5_parent() -> Promise[object]:
+    def parent() -> Promise[object]:
         return build(step(parent_actor, ParentIn(doc_id="d1"), key="spawn_join"))
 
     return app
@@ -231,7 +231,7 @@ async def _descendants(
 # ── THE GATHER DRAGON (the spawn's atomicity face) ──────────────
 
 
-class TestRv5C1GatherDragonAtomicity:
+class TestGatherDragonAtomicity:
     async def test_gather_spawns_mint_k_distinct_children_never_tenant_zero_k_times(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
@@ -339,7 +339,7 @@ class TestRv5C1GatherDragonAtomicity:
             return Echo(echo=raw)
 
         @app.workflow("c1_fid_chil")
-        def rv5_fid_child() -> Promise[object]:
+        def fid_child() -> Promise[object]:
             return build(step(echo_step, key="echo"))
 
         async def fid_body(ctx: StepContext, params: ParentIn) -> dict[str, object]:
@@ -363,7 +363,7 @@ class TestRv5C1GatherDragonAtomicity:
             return await fid_body(ctx, params)  # type: ignore[operator]
 
         @app.workflow("c1_fid_paren")
-        def rv5_fid_parent() -> Promise[object]:
+        def fid_parent_flow() -> Promise[object]:
             return build(step(fid_parent, ParentIn(doc_id="d1"), key="spawn_join"))
 
         app.get("c1_fid_chil")  # the registration door (D1)
@@ -384,7 +384,7 @@ class TestRv5C1GatherDragonAtomicity:
         assert b["only_b"] == "bee" and "only_a" not in b
 
 
-# ── RV5-C2a: THE RECURSION BOMB (the depth bound + the cycle check) ─────
+# ── THE RECURSION BOMB (the depth bound + the cycle check) ─────
 
 
 class GenIn(BaseModel):
@@ -395,7 +395,7 @@ class GenOut(BaseModel):
     gen: int
 
 
-class TestRv5C2SpawnDepthBound:
+class TestSpawnDepthBound:
     async def test_the_self_spawning_flow_is_bounded_the_typed_error_names_the_fix(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
@@ -416,7 +416,7 @@ class TestRv5C2SpawnDepthBound:
             return GenOut(gen=outcome.result.gen)
 
         @app.workflow("c2_bom")
-        def rv5_bomb() -> Promise[object]:
+        def bomb() -> Promise[object]:
             return build(step(bomb_step, key="bomb"))
 
         runner = FlowRunner(app.get("c2_bom"), wf_pool, wf_schema)
@@ -495,7 +495,7 @@ class TestRv5C2SpawnDepthBound:
         assert node_class == "SpawnDepthExceededError", node_class
 
 
-# ── RV5-C2b + RV5-C4: THE CANCEL CASCADE (iterative + the rows' law) ────
+# ── + THE CANCEL CASCADE (iterative + the rows' law) ────
 
 
 async def _chain_rows(wf_conn: asyncpg.Connection, wf_schema: str, depth: int) -> list[JobId]:
@@ -521,7 +521,7 @@ async def _chain_rows(wf_conn: asyncpg.Connection, wf_schema: str, depth: int) -
     return ids
 
 
-class TestRv5C2bCancelCascadeIterative:
+class TestCancelCascadeIterative:
     async def test_the_1200_deep_cascade_cancels_clean_no_recursion_error(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
@@ -546,7 +546,7 @@ class TestRv5C2bCancelCascadeIterative:
         )
 
 
-class TestRv5C4OrphanWindow:
+class TestOrphanWindow:
     async def test_the_crash_orphan_child_is_cancelled_by_the_rows_law(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
@@ -592,7 +592,7 @@ class TestRv5C4OrphanWindow:
 # ── THE RETENTION-RESPAWN FAIL-CLOSE ────────────────────────────
 
 
-class TestRv5C3ChildLostFailClose:
+class TestChildLostFailClose:
     async def test_the_purged_child_never_silently_respawns_the_typed_arm(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
@@ -694,7 +694,7 @@ async def test_a_cancelled_run_s_result_is_loud(wf_pool: asyncpg.Pool, wf_schema
         await runner.result(flow_id)
 
 
-# ── RV5-C5a: THE DEV-DRIVE PARITY (the tick runs the expiry arm) ────────
+# ── THE DEV-DRIVE PARITY (the tick runs the expiry arm) ────────
 
 
 class ContinueApproval(BaseModel):
@@ -705,7 +705,7 @@ class Verdict(BaseModel):
     v: str
 
 
-class TestRv5C5DevDriveParity:
+class TestDevDriveParity:
     async def test_a_dev_drive_runs_the_expiry_arm_timeout_s_fires_expired(
         self, wf_pool: asyncpg.Pool, wf_schema: str
     ) -> None:
@@ -731,7 +731,7 @@ class TestRv5C5DevDriveParity:
         gate = GateDecl(name="ContinueApproval", payload_models=(ContinueApproval,))
 
         @app.workflow("c5a_paren")
-        def rv5_c5a() -> Promise[object]:
+        def c5a() -> Promise[object]:
             return build(step(waiter, ParentIn(doc_id="d1"), key="hold", gates=(gate,)))
 
         runner = FlowRunner(app.get("c5a_paren"), wf_pool, wf_schema)
@@ -744,10 +744,10 @@ class TestRv5C5DevDriveParity:
         assert result.v == "expired", result
 
 
-# ── RV5-C5b + RV5-C5c: THE ADMIN FACES ──────────────────────────────────
+# ── + THE ADMIN FACES ──────────────────────────────────
 
 
-class TestRv5C5AdminFaces:
+class TestDevDriveAdminFaces:
     async def test_the_run_explorer_shows_the_parent_child_links(
         self,
         wf_pool: asyncpg.Pool,

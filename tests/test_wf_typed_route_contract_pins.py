@@ -45,7 +45,7 @@ The behaviors held:
   must be EXACTLY the union member — a superclass/BaseModel param is a
   build refusal NAMING the truncation hazard.
 * the SAME-TAG TWIN COLLAPSE: ``type_tag`` =
-  ``module.qualname`` is not injective — two ``create_model("Rv4Twin")``
+  ``module.qualname`` is not injective — two ``create_model("SameQualnameTwin")``
   types share one tag; the second arm SILENTLY OVERWRITES the first in
   the normalized dict (_graph.py:663) and the tag-set totality compare
   passes both (observed: ``map_arms`` carries ONE entry, the first
@@ -511,8 +511,8 @@ def test_4_a_bare_basemodel_arm_param_is_a_build_refusal() -> None:
 #: model shape): the normalized ``map_arms`` dict keys by the tag, so the
 #: second arm SILENTLY OVERWRITES the first (observed: one entry, the
 #: first arm's body gone) and the tag-set totality compare passes both.
-TwinA = create_model("Rv4Twin", doc_id=(str, ...))
-TwinB = create_model("Rv4Twin", doc_id=(str, ...))
+TwinA = create_model("SameQualnameTwin", doc_id=(str, ...))
+TwinB = create_model("SameQualnameTwin", doc_id=(str, ...))
 
 
 async def twin_source(ctx: StepContext) -> list[Any]:  # the union rides __annotations__ below
@@ -555,13 +555,15 @@ def test_5_duplicate_type_tags_refuse_at_the_verb() -> None:
     # The contract: the verb refuses, naming the COLLIDING TAG (the
     # subject the two members share) — the collision's sentence is
     # wording, never pinned.
-    assert "Rv4Twin" in message, f"The refusal must NAME the colliding tag — got: {message}"
+    assert "SameQualnameTwin" in message, (
+        f"The refusal must NAME the colliding tag — got: {message}"
+    )
 
 
 # ── the consumer's smart-union mispick ──────────────────────────
 
 
-class Rv4SumA(BaseModel):
+class ArmSumA(BaseModel):
     """The first arm's return — field-IDENTICAL to the second's (no
     Literal discriminator, same field names + types)."""
 
@@ -569,24 +571,24 @@ class Rv4SumA(BaseModel):
     note: str
 
 
-class Rv4SumB(BaseModel):
+class ArmSumB(BaseModel):
     doc_id: str
     note: str
 
 
-async def sum_arm_a(ctx: object, item: ImageItem) -> Rv4SumA:
-    return Rv4SumA(doc_id=item.doc_id, note="from-a")
+async def sum_arm_a(ctx: object, item: ImageItem) -> ArmSumA:
+    return ArmSumA(doc_id=item.doc_id, note="from-a")
 
 
-async def sum_arm_b(ctx: object, item: AudioItem) -> Rv4SumB:
-    return Rv4SumB(doc_id=item.doc_id, note="from-b")
+async def sum_arm_b(ctx: object, item: AudioItem) -> ArmSumB:
+    return ArmSumB(doc_id=item.doc_id, note="from-b")
 
 
-async def consume_sums(ctx: object, items: list[Rv4SumA | Rv4SumB]) -> dict[str, int]:
+async def consume_sums(ctx: object, items: list[ArmSumA | ArmSumB]) -> dict[str, int]:
     """The join's consumer over the IDENTICAL-FIELD union: pydantic's
     smart union decodes the second member's values AS THE FIRST silently
     (observed live: the AudioItem-armed child carried note='from-b' and
-    the consumer received a Rv4SumA)."""
+    the consumer received the arm A's sum type)."""
     return {"n": len(items)}
 
 
@@ -617,7 +619,7 @@ def test_6_field_identical_union_members_are_a_build_diagnostic() -> None:
         message = str(exc)
     else:
         message = "\n".join(f"{d.rule}: {d.message}" for d in validate_compiled(compiled))
-    assert "Rv4SumA" in message and "Rv4SumB" in message, (
+    assert "ArmSumA" in message and "ArmSumB" in message, (
         f"No build-time diagnostic named the field-identical members "
         f"— the consumer's silent mispick ships. Build surfaces said: {message!r}"
     )
@@ -629,14 +631,14 @@ def test_6_field_identical_union_members_are_a_build_diagnostic() -> None:
 # ── the arm-held HITL compile-blindness ─────────────────────────
 
 
-class Rv4Approval(BaseModel):
+class ArmApproval(BaseModel):
     ok: bool
 
 
 async def waiting_image_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
     """THE ARM-HELD WAIT: the route's child HOLDS on a human — invisible
     to every compile surface today (E14's walk skips map_arms)."""
-    approval = await ctx.wait_signal(Rv4Approval, timeout_s=30.0)
+    approval = await ctx.wait_signal(ArmApproval, timeout_s=30.0)
     return ImageResult(doc_id=item.doc_id, ocr=f"answered:{type(approval).__name__}")
 
 
@@ -681,7 +683,7 @@ def test_7b_the_source_gate_covers_the_arms_waits() -> None:
         src = step(
             media_source,
             key="media",
-            gates=(GateDecl(name="Rv4Approval", payload_models=(Rv4Approval,), timeout_s=30.0),),
+            gates=(GateDecl(name="ArmApproval", payload_models=(ArmApproval,), timeout_s=30.0),),
         )
         return build(
             route(
@@ -750,13 +752,13 @@ def test_8_every_double_attach_direction_speaks_the_designed_message() -> None:
     for label, wire in wirers.items():
         app = WorkflowApp()
 
-        @app.workflow(f"rv4_8_{label.replace('-', '_')}")
+        @app.workflow(f"typed_route_refusal_{label.replace('-', '_')}")
         def the_double_attach(wire=wire):  # type: ignore[no-untyped-def]  # Why: the leg's wirer rides the closure — the loop's parametrization seam.
             src = step(media_source, key="media")
             return build(wire(src))
 
         with pytest.raises(WorkflowBuildError) as exc_info:
-            app.get(f"rv4_8_{label.replace('-', '_')}")
+            app.get(f"typed_route_refusal_{label.replace('-', '_')}")
         message = str(exc_info.value)
         # The contract: the double-attach refusal fires on the DOUBLED
         # SOURCE node — never on its join child (the accidental door's
@@ -780,10 +782,10 @@ def _make_unresolvable_source() -> tuple[Any, type[BaseModel]]:
     (no closure cell) and the name is no module global, so
     ``get_type_hints`` cannot resolve the DECLARED annotation —
     ``body_hints`` returns {} and the verb cannot read the union."""
-    model = create_model("Rv4HiddenDoc", doc_id=(str, ...))
+    model = create_model("UnresolvableDoc", doc_id=(str, ...))
 
-    async def factory_source(ctx: StepContext) -> "list[Rv4HiddenDoc]":  # noqa: F821, UP037  # Why: the quoted, never-resolvable name IS the scenario — a declared annotation the compile cannot resolve (the factory-built model's shape); a resolvable spelling would defeat the probe.  # pyright: ignore[reportUndefinedVariable, reportUnknownParameterType]  # Why: the same scenario — the undefined name is the probe's subject, not a defect.
-        return cast("list[Rv4HiddenDoc]", [{"doc_id": "d1"}])  # noqa: F821  # Why: the same deliberate unresolved name — the body's code references no value (no closure cell), so the hint-resolution seam finds nothing.  # pyright: ignore[reportUndefinedVariable]  # Why: the same scenario.
+    async def factory_source(ctx: StepContext) -> "list[UnresolvableDoc]":  # noqa: F821, UP037  # Why: the quoted, never-resolvable name IS the scenario — a declared annotation the compile cannot resolve (the factory-built model's shape); a resolvable spelling would defeat the probe.  # pyright: ignore[reportUndefinedVariable, reportUnknownParameterType]  # Why: the same scenario — the undefined name is the probe's subject, not a defect.
+        return cast("list[UnresolvableDoc]", [{"doc_id": "d1"}])  # noqa: F821  # Why: the same deliberate unresolved name — the body's code references no value (no closure cell), so the hint-resolution seam finds nothing.  # pyright: ignore[reportUndefinedVariable]  # Why: the same scenario.
 
     return factory_source, model
 
@@ -793,7 +795,7 @@ async def hidden_arm(ctx: object, item: BaseModel) -> dict[str, str]:
 
 
 def test_9_the_unresolvable_return_is_distinguished_from_undeclared() -> None:
-    """The source DECLARED ``list[Rv4HiddenDoc]`` — the compile cannot
+    """The source DECLARED ``list[UnresolvableDoc]`` — the compile cannot
     RESOLVE it. The refusal must say so — the DECLARED-but-unresolvable
     face and the NO-annotation face are DIFFERENT refusals (the same
     door, the cause distinguished), and both name the offending source

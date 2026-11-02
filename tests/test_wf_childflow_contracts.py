@@ -53,7 +53,7 @@ reconciliation weakens the pin: the fixed shape carries every property
 the safe behavior asked, and the reconciled assertions read the ROWS.
 
 THE FIXTURE STACK (the pack's own, per the lane's prefix law): the
-module-minted ``chp_rv5_*`` schema on ``TASKQ_TEST_PG_DSN``, truncated +
+module-minted ``chp_*`` schema on ``TASKQ_TEST_PG_DSN``, truncated +
 reseeded per test (the house ``clean_pg_conn`` pattern), dropped CASCADE
 at module teardown. The module-local ``wf_conn`` / ``wf_schema`` /
 ``wf_sql`` / ``wf_pool`` names deliberately shadow the conftest-registered
@@ -112,7 +112,7 @@ from taskq.workflows.engine import render_workflow_sql
 
 @pytest_asyncio.fixture(scope="module")
 async def chp_schema(pg_dsn: str) -> AsyncIterator[str]:
-    """The pack's own schema: ``chp_rv5_<token>`` on the lane's DSN —
+    """The pack's own schema: ``chp_<token>`` on the lane's DSN —
     created migrated, dropped CASCADE at module teardown (the residue
     is attributable and self-cleaning). The token mixes the house's
     RUN-ISOLATION token (the invocation-unique basetemp path —
@@ -125,7 +125,7 @@ async def chp_schema(pg_dsn: str) -> AsyncIterator[str]:
 
     from taskq.testing.fixtures import run_isolation_token
 
-    name = "chp_rv5_" + hashlib.sha256(f"chp_rv5:{run_isolation_token()}".encode()).hexdigest()[:10]
+    name = "chp_" + hashlib.sha256(f"chp:{run_isolation_token()}".encode()).hexdigest()[:10]
     conn = await asyncpg.connect(pg_dsn)
     try:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{name}" CASCADE')

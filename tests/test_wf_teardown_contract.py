@@ -153,8 +153,9 @@ def test_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
     the broadcast all work). What is lost is the COMPILE visibility —
     the Mermaid hold node, W1's timeout read — so this face is the
     WARNING: validate() reports it, the build does NOT refuse. The
-    DANGEROUS face (declared-never-waited — 4a) stays the error: that
-    one ships 'we have an approval step' with no approval in it."""
+    DANGEROUS face (the gate declared, the body never waits) stays the
+    error: that one ships 'we have an approval step' with no approval in
+    it."""
     app = WorkflowApp()
 
     async def approver(ctx: StepContext, params: _Ingest) -> _Decision:
@@ -317,7 +318,7 @@ async def test_2_the_packaged_run_names_the_unmigrated_schema(
         return build(p)
 
     compiled = app.get("-2-unmigrated-contac")
-    bare = f"{wf_schema}_rv3_bare"
+    bare = f"{wf_schema}_teardown_bare"
     await wf_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{bare}"')
     try:
         with pytest.raises(SchemaNotMigratedError, match=bare):
