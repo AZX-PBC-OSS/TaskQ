@@ -2548,29 +2548,61 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         DECODED — never a raw jsonb string. ``None`` before the terminal
         node finalizes.
 
-        THE FAILURE FACE (the teardown fix): a FAILED run's
-        read raises the typed :class:`WorkflowRunError` carrying the
-        failing node row's error class + message — the failed run's
-        first question (WHAT failed, and why) answered AT the read face,
-        never the empty read that made failed and running
+        THE FAILURE AND CANCEL FACES: a FAILED run's read raises the
+        typed :class:`WorkflowRunError` carrying the failing node row's
+        error class + message; a CANCELLED run's read raises the typed
+        :class:`WorkflowRunCancelledError` (the same family) carrying
+        the terminal status and the cancel reason — the run's first
+        question (WHAT ended it, and why) answered AT the read face,
+        never the empty read that made ended and running
         indistinguishable."""
-        status = await self._flow_status(flow_id)
-        if status == "failed":
-            raise await self._failure_verdict(flow_id)
-        if status == "cancelled":
-            raise await self._cancellation_verdict(flow_id)
         terminal = self.compiled.terminal
         if terminal is None:
             raise WorkflowRunError(
                 f"workflow {self.compiled.name!r} names no terminal — "
                 "wire one (wf.build(p)) to read a result"
             )
+        # THE TERMINAL ROW READS FIRST: the status poll and this read are
+        # two statements, and a cancel or a failure can commit between
+        # them — the row's own status is the verdict's witness, and an
+        # empty read is what the status must then explain. Either way a
+        # cancel or a failure landing anywhere inside the read surfaces
+        # as its verdict, never as the plausible empty read.
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 render_sql(TERMINAL_RESULT_SQL_TEMPLATE, self.schema), terminal, flow_id
             )
-            if row is None:
-                return None
+        # THE ROW'S OWN STATUS NAMES THE VERDICT: a terminalised node row
+        # (cancelled/failed) IS the run's end, its result column NULL —
+        # the verdict raises from the row, never an empty read.
+        if row is not None and row["status"] == "cancelled":
+            raise await self._cancellation_verdict(flow_id)
+        if row is not None and row["status"] == "failed":
+            raise await self._failure_verdict(flow_id)
+        if row is None or row["status"] != "succeeded":
+            # THE READ'S RACE: the row's face said live/held — a cancel
+            # or a failure may commit between the two statements. The
+            # status read explains the face; a run the status still
+            # calls live gets ONE bounded re-read of the row (no polling
+            # loop) — the flip that committed during the read shows
+            # there — and the re-read's verdict raises. A run that is
+            # genuinely still working (held or queued) keeps the honest
+            # None.
+            status = await self._flow_status(flow_id)
+            if status == "cancelled":
+                raise await self._cancellation_verdict(flow_id)
+            if status == "failed":
+                raise await self._failure_verdict(flow_id)
+            async with self.pool.acquire() as conn:
+                reread = await conn.fetchrow(
+                    render_sql(TERMINAL_RESULT_SQL_TEMPLATE, self.schema), terminal, flow_id
+                )
+            if reread is not None and reread["status"] == "cancelled":
+                raise await self._cancellation_verdict(flow_id)
+            if reread is not None and reread["status"] == "failed":
+                raise await self._failure_verdict(flow_id)
+            return None
+        async with self.pool.acquire() as conn:
             # THE BOUNDED COLLECT'S DETAIL RE-READ (the F4 read-side
             # reconciliation): a truncating JOIN as the terminal node
             # reads the full collect off the children's rows — the

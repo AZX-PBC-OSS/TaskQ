@@ -422,7 +422,7 @@ SELECT count(*) FROM flipped
 """
 
 TERMINAL_RESULT_SQL_TEMPLATE = """
-SELECT id, step_key, result FROM {schema}.jobs WHERE step_key = $1
+SELECT id, step_key, result, status FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
 """
 
