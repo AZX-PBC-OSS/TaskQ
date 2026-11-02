@@ -13,13 +13,13 @@ claim predicate — no status write.
 FINALIZE = TWO TRANSACTIONS (P1 FINAL, verbatim):
 * **tx1** — the result write, carrying the TERMINAL-MARK FENCE
   (``status='running' AND locked_by_worker=… AND attempt=… AND
-  claim_epoch=…`` — the attempt is the fencing token, hardening H8). A row
+  claim_epoch=…`` — the attempt is the fencing token, the attempt-fencing law). A row
   the reclaim flipped, or a cancelled flow, updates nothing. The fork's
   child INSERTs + edge rows + join node share tx1 (FORK ATOMICITY —
   :mod:`taskq.workflows._fork`: a kill at any statement boundary rolls the
   whole tx back; the reclaim re-forks — exactly N children + 1 join, never
   partial, never double). The step ledger's terminal write rides tx1 (the
-  ledger-terminal-atomic rule, hardening H9), and the failure IO-capture
+  ledger-terminal-atomic rule, the terminal-atomicity rule), and the failure IO-capture
   rides tx1 (a row already being updated; the success path writes NOTHING
   extra).
   **tx2 runs ONLY when tx1's fenced UPDATE returned a row** — the ROWCOUNT
@@ -119,7 +119,7 @@ __all__ = [
 #: the engine-side contract.
 DISPATCH_EXCLUSION_CLAUSE: Final[str] = "deps_pending = 0"
 
-#: Deadlock-retry budget (hardening H7): BOTH operators (this finalize side
+#: Deadlock-retry budget : BOTH operators (this finalize side
 #: and T10's cancel side) retry — the aborted TX had no effect, so the
 #: retry preserves linearization. Jittered backoff between attempts.
 _DEADLOCK_RETRIES: Final[int] = 4
@@ -127,7 +127,7 @@ _DEADLOCK_BACKOFF_BASE_S: Final[float] = 0.05
 
 
 class DeadlockRetriesExhaustedError(RuntimeError):
-    """The deadlock-retry budget exhausted (hardening H7's loud failure)."""
+    """The deadlock-retry budget exhausted (the loud failure)."""
 
 
 def render_workflow_sql(schema: str) -> WorkflowSql:
@@ -195,11 +195,11 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
     return node_id
 
 
-# ── The deadlock retry (hardening H7) ───────────────────────────────────
+# ── The deadlock retry  ───────────────────────────────────
 
 
 async def _deadlock_retry[T](coro_factory: Callable[[], Awaitable[T]]) -> T:
-    """Run *coro_factory* retrying on a real Postgres deadlock (H7).
+    """Run *coro_factory* retrying on a real Postgres deadlock .
 
     Each attempt builds a fresh coroutine (the aborted TX had no effect;
     the retry is linearization-preserving). Backoff: jittered exponential —
@@ -657,7 +657,7 @@ async def finalize_node(
     The attempt-fence: *attempt* is the fencing token — the terminal-mark
     CAS requires ``attempt = $n`` (and the worker + claim-epoch fences), so
     a zombie's write from an abandoned attempt loses to the reclaim +
-    re-claim's fresh attempt (hardening H8). A fenced finalize records the
+    re-claim's fresh attempt (the attempt-fencing law). A fenced finalize records the
     attempt 'fenced' on the ledger () and reports ``applied=False``.
 
     The LEDGER TERMINAL's key: *ledger_id* (the claim's own RETURNING id —

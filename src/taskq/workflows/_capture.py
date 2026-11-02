@@ -198,7 +198,7 @@ def redact_hold_context(
 ) -> dict[str, Any]:
     """THE HOLD CONTEXT through the redact pipeline (chain → the
     token-head pass → the workflow's hook), BEFORE persistence
-    (REDACT-BEFORE-PERSIST extended to the hold row — attack-3 H3's
+    (REDACT-BEFORE-PERSIST extended to the hold row — the attack-3
     fix): reason/tool/args never reach the ``wf_signals`` payload raw,
     so the default ``HitlClient`` surface cannot leak what the row never
     carried. The composition is the capture pipeline's own verdict

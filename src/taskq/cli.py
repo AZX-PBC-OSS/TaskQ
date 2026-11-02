@@ -3378,7 +3378,7 @@ _JOB_SHOW_COLUMNS: Final = (
     # (the lost-worker probe's "the worker died" vs "the work is slow"
     # distinction — the reclaim sweep's input is lock_expires_at) + the
     # metadata jsonb (the cross-run cache hit's receipt lives at
-    # metadata.wf_cache_hit; the audit drill's provenance face). The
+    # metadata.wf_cache_hit; the provenance face). The
     # RENDER stays conditional: a terminal row's lease face is history,
     # not liveness, and only the receipt is ever printed from metadata.
     "locked_by_worker",
@@ -3548,7 +3548,7 @@ _LEASE_LIVE_STATUSES: Final[frozenset[str]] = frozenset({"pending", "scheduled",
 
 
 def _render_lease_face(row: Any) -> None:
-    """THE LEASE FACE (the lost-worker drill's fix — ``job show``'s
+    """THE LEASE FACE (the lost-worker probe's fix — ``job show``'s
     liveness section): who holds the row, when the holder last breathed,
     when the lease lapses — and, past the lapse, the LAPSED verdict: the
     holder is presumed dead and the reclaim sweep repends the row within

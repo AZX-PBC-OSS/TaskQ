@@ -53,7 +53,7 @@ worker bootstrap and the CLI). Four values, case-insensitive:
     pass at every method. (The first cut of this filter dropped every
     INFO/DEBUG-method event at ``off``, classified or not — which
     silently failed CLOSED on unclassified INFO events and broke this
-    contract. Found by red-team; fixed: the INFO-method drop now applies
+    contract. Found by adversarial review; fixed: the INFO-method drop now applies
     only to names the classification table has actually met.)
 ``debug``
     Everything ``info`` emits PLUS the DEBUG_ONLY per-tick internals:
@@ -228,7 +228,7 @@ Boundary cases, argued:
   DEBUG (worker/_leader_sweeps.py), so the root INFO level gates it
   before this filter ever sees it — at ``warning``, at ``off``, and
   even at ``debug`` (the knob never raises the root level). A
-  red-team kill -9/reclaim run proved it: the surviving worker's
+  the adversarial kill -9/reclaim run proved it: the surviving worker's
   stream shows nothing about the reclaim at any knob setting. The
   ``job_events`` ledger rows are the reclaim's audit trail; the
   failed-reclaim WARNING (``sweep-drain-pending-reservation-reclaims-
@@ -307,7 +307,7 @@ _HAPPY_PATH_EVENTS: frozenset[str] = frozenset(
         # completion lines are "prune-completed" and "batches pruned"
         # (worker/_leader_sweeps.py), the archive-expiry family's is
         # "archive-expiry-completed"; a table entry under a name no call
-        # site emits is a dead classification (found by red-team).
+        # site emits is a dead classification (found by adversarial review).
         "prune-completed",
         "batches pruned",
         "archive-expiry-completed",
@@ -506,7 +506,7 @@ def _events_level_filter(
     # holds at every level, not just at warning. (This arm previously
     # dropped EVERY info/debug-method event, classified or not, which
     # silently failed CLOSED on unclassified INFO events: a real event
-    # the table had not met yet vanished at off. Found by red-team.)
+    # the table had not met yet vanished at off. Found by adversarial review.)
     if name in _ANOMALY_EVENTS and method in ("info", "debug"):
         raise structlog.DropEvent
     return event_dict

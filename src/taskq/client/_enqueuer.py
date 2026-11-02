@@ -322,7 +322,7 @@ class SubJobEnqueuer:
         ``_batch_id`` is a library-internal parameter used by
         :meth:`enqueue_batch` to stamp ``batch_id`` into metadata after
         :func:`build_enqueue_args` has stripped any caller-supplied
-        ``batch_id`` (H5 security boundary). Callers MUST NOT pass it.
+        ``batch_id`` (the security boundary). Callers MUST NOT pass it.
         """
         resolved_queue = actor_ref.queue
         identity_key_str = str(identity_key) if identity_key is not None else ""
@@ -374,7 +374,7 @@ class SubJobEnqueuer:
                 parent_id=current_parent_id(),
             )
             if _batch_id is not None:
-                # H5: stamp batch_id AFTER build_enqueue_args, which strips
+                #  stamp batch_id AFTER build_enqueue_args, which strips
                 # any caller-supplied batch_id as a security boundary.
                 args = replace(
                     args,

@@ -71,7 +71,7 @@ RETURNING p.occurrences, p.dropped
 # COUNTED (the dropped counter lands on the record in the same flush —
 # the honest emitted-vs-delivered pair, the coalesce fence). The trim is
 # rank-based per node (the global seq-window trim was rejected: it
-# under-retains under interleave — the PoC's red-team note).
+# under-retains under interleave — the PoC's adversarial note).
 PROGRESS_STREAM_APPEND_TRIM_SQL = """\
 WITH ins AS (
     INSERT INTO {schema}.wf_node_stream (node_id, flow_id, class, kind, payload)

@@ -180,7 +180,7 @@ async def defer_row_law(
     ledger_id: JobId | None,
     ledger_claimed_at: Any,
 ) -> str:
-    """THE ROW LAW + THE LEDGER'S TRUTH, one transaction (the H9 law's own
+    """THE ROW LAW + THE LEDGER'S TRUTH, one transaction (the terminal-atomicity law's own
     shape — a split write leaves the row 'scheduled' with the ledger
     'running': the phantom the fence prevents) — the SHARED phase of both
     verdict routes (the STEP's and the LOOP's; the two mixins' own

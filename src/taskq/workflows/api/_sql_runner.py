@@ -132,7 +132,6 @@ RETURNING id
 #     deferral's cancel_faced shape;
 #   * None — the ZOMBIE (the claim fence matched nothing, a newer
 #     attempt owns the row): the caller records the ledger's 'fenced',
-#     H1.
 #
 # THE CLAIM IDENTITY'S FENCE (the fence legs bind the caller's own claim
 # — the NODE_DEFER_SQL's own shape): the deadline's disposition carries the

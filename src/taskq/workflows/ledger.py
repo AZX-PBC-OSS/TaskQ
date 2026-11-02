@@ -216,7 +216,7 @@ async def claim_step_ledger(
     shape — ``INSERT … ON CONFLICT DO UPDATE … RETURNING``, never
     check-then-insert; verified 30 reps x 10 concurrent).
 
-    THE LEDGER-CLAIM-ATOMIC RULE (hardening H6): the claim and the attempt's
+    THE LEDGER-CLAIM-ATOMIC RULE : the claim and the attempt's
     ``running`` ledger row are ONE statement — a two-transaction variant
     leaves a cancel in the window fencing NOTHING (the attempt isn't on the
     record yet), the row appears POST-CANCEL as a phantom ``running``.

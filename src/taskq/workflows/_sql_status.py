@@ -49,7 +49,7 @@ def _absorbed_exists(node_alias: str) -> str:
 # are what let the planner prove the partial index (01.00.26_02 — the
 # uuid-cast expression, the workflow-rows-only partial) serves this read
 # at the fleet shape: without them the read was a Seq Scan of the whole
-# jobs table per status read (the H3 finding).
+# jobs table per status read .
 WORKFLOW_ROLLUP_SQL = """\
 SELECT status, count(*) AS count
 FROM {schema}.jobs
@@ -200,7 +200,7 @@ GROUP BY p.id, p.step_key
 # (FOR UPDATE SKIP LOCKED, LIMIT $2), and the per-root node scan rides
 # jobs_wf_flow_nodes_idx (01.00.26_02) — never a seq scan.
 #
-# THE ROWS ARE TRUTH, THE ROOT ROW IS A CACHE (the phase-2 attack's H1
+# THE ROWS ARE TRUTH, THE ROOT ROW IS A CACHE (the
 # fix): the maintenance leg derives the root's terminal state from THE
 # NODE ROWS — the same reconstruction the debug view uses — and finalizes
 # the root IN THE SAME TX when the derivation is terminal and the root
@@ -260,7 +260,7 @@ per_flow AS (
            -- root while the other chains are pending — the dispatch
            -- fence (workflow children of a terminal flow are
            -- unclaimable) would strand them forever. THE EXCLUSION IS
-           -- LOAD-BEARING: a blocked-with-reason row (the H1 wedge's
+           -- LOAD-BEARING: a blocked-with-reason row (the wedge's
            -- stamped join) is RESOLVED — it must not hold the run, or
            -- the original wedge returns.
            bool_or(n.status = 'running'

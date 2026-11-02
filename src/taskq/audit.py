@@ -53,7 +53,7 @@ engine's. When the shim is not loaded (the base install) this module's
 own body is the writer. The resolution is a dictionary read, never an
 import: a base install never touches the fastapi extra.
 
-THE SEAM'S TWO DEFENSES (both born red — the red-team's CHANGES-
+THE SEAM'S TWO DEFENSES (both born failing — the adversarial review's CHANGES-
 REQUIRED; the teeth pins in ``tests/test_wf_attack_cancel.py`` exercise
 each live): the FROZEN canonical identity (``_CANONICAL_RECORD`` — a
 module-attr rebind of this module's own ``record_admin_action`` cannot
@@ -188,7 +188,7 @@ def bound_reason(reason: str | None, limit: int = REASON_MAX_LENGTH) -> str | No
     (the NUL byte dies as its ``\\x00`` escape — the poison is inert at
     the write), bounded length (the never-pruned table's per-row bound).
     Truncation is the honest bound, per :func:`_bound_subject` — and it
-    is NAMED (the rv2 fix): an over-cap reason carries the
+    is NAMED: an over-cap reason carries the
     house's "... (N more characters)" marker, the same honesty the
     display caps keep, so a bounded row never masquerades as a whole
     one.
@@ -217,7 +217,7 @@ def _bound_reason(reason: str | None) -> str | None:
 
 
 #: The detail column's shape bound — the jsonb free-text field's law
-#: (the rv2 fix): ``admin_audit`` is the NEVER-PRUNED table
+#: ``admin_audit`` is the NEVER-PRUNED table
 #: and the detail rode the jsonb bind VERBATIM — a 5MB ``detail`` dict
 #: landed whole (unbounded retention per row). The serialized record
 #: above the bound is replaced by the house's named-truncation record:
@@ -359,7 +359,7 @@ _FOLD_CANCEL_PRINCIPAL_SQL = (
 #: None and this module's own body is the writer.
 _ADMIN_AUDIT_SHIM = "taskq.web.admin._audit"
 
-#: THE RE-ENTRANCY GUARD (the red-team's 1c fix): True while THIS call
+#: THE RE-ENTRANCY GUARD (the adversarial review's 1c fix): True while THIS call
 #: chain is routing through the loaded shim's writer. A CONTEXTVAR —
 #: the re-entrancy domain is the async call chain: asyncio copies the
 #: context per Task (and per thread), so two concurrent cancels never
@@ -447,10 +447,9 @@ async def _record_admin_action(
     a rebinding can flip mid-chain). The reason AND the detail are
     shape-pinned HERE (the leaf — every writer path inherits the bound):
     the never-pruned table's per-row cap, the NUL byte escaped before
-    the text bind, and the truncation NAMED on the row (the rv2
-    fix — an unbounded reason/detail was unbounded retention,
-    and a poisoned reason rolled back a whole cancel — finding 10's
-    finding)."""
+    the text bind, and the truncation NAMED on the row (an
+    unbounded reason/detail was unbounded retention,
+    and a poisoned reason rolled back a whole cancel)."""
     await conn.execute(
         _INSERT_SQL.format(schema=schema),
         principal_subject(principal),
@@ -488,19 +487,19 @@ async def record_admin_action(
     there — a test double, a host's instrumentation — bites every writer
     in the process).
 
-    TWO DEFENSES, both born red (the red-team's CHANGES-REQUIRED; the
+    TWO DEFENSES, both born failing (the adversarial review's CHANGES-REQUIRED; the
     teeth pins ``test_wf_attack_cancel.py`` reject each, live):
 
     * THE FROZEN IDENTITY (``_CANONICAL_RECORD``, bound once AFTER this
       def): the fall-through guard compares the shim's attr against the
       FROZEN function object, never the module global. The global IS
-      rebindable (the red-team's 1e — the newcomer's natural patch
+      rebindable (the adversarial review's finding — the newcomer's natural patch
       target: a delegating spy on ``taskq.audit.record_admin_action``);
       a global comparison made the body route back to itself — unbounded
       RecursionError poisoning the whole cancel.
     * THE RE-ENTRANCY GUARD (``_routing``, a :class:`contextvars.ContextVar`):
       while THIS call chain is routing through the loaded shim's writer,
-      a RE-ENTRY (the red-team's 1c — a delegating wrapper on the shim's
+      a RE-ENTRY (the adversarial review's finding — a delegating wrapper on the shim's
       attr calling the canonical body) lands its row DIRECTLY — no
       re-routing, no loop; the wrapper's call chain terminates with
       EXACTLY ONE row. THE CONTEXTVAR IS THE CHOICE, deliberately: the
@@ -568,7 +567,7 @@ async def record_admin_action(
 
 
 #: THE FROZEN CANONICAL IDENTITY — bound ONCE, after the def (the
-#: red-team's 1e fix): the routing guard compares the shim's attr
+#: the adversarial review's fix): the routing guard compares the shim's attr
 #: against THIS object, never the module global (which any rebinding
 #: flips). A delegating spy patched over the module global terminates:
 #: the body sees the shim's attr still carrying THIS object and falls

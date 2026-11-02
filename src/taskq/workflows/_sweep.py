@@ -125,7 +125,7 @@ class SweepResult:
     #: T06's heal: fail_closed joins whose parent terminal-failed while
     #: their own tx2 never ran — blocked-with-reason by this pass.
     blocked_required: int = 0
-    #: The H2 fix: never-fired join rows whose resolution the FLOW'S own
+    #: The flow-fenced fix: never-fired join rows whose resolution the FLOW'S own
     #: death fenced (the fire's flow-status leg refuses a terminal flow) —
     #: stamped blocked-with-reason by this pass, never a hanging claimable
     #: join on a dead flow.
@@ -294,7 +294,7 @@ async def drain_outbox(
     default_max_attempts: int = 3,
     default_retry_kind: str = "transient",
 ) -> int:
-    """The delivery half of the exactly-once fire (re-red-team F6).
+    """The delivery half of the exactly-once fire (the re-review, F6).
 
     Read undelivered outbox rows (lock-first), insert the consumer rows
     IDEMPOTENTLY on the consumer step key (the composite

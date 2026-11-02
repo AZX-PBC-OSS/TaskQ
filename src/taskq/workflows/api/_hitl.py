@@ -902,7 +902,7 @@ async def deliver_payload(
         if cas["node_key"]:
             # THE WAKE ADDRESSES THE HOLD'S OWN NODE (the F2 fix —
             # the resume-addressing face, the same stamp both lanes
-            # cured): the node's ``metadata->>'hold'`` IS the resolved
+            # carry): the node's ``metadata->>'hold'`` IS the resolved
             # hold's id (register_hold stamps it in the hold-mint's own
             # tx), so the wake resolves by the STAMP — one hold, one
             # node, one resume. The pre-fix read matched step_key + flow
@@ -1337,7 +1337,7 @@ class HitlClient:
         consumed, and the refusal is AUDITED (the operator sees WHY).
         The transition + THE AUDIT + THE KNOCK share ONE transaction
         whose linearization point is the DELIVER CAS ITSELF (attack-3
-        H4's fix): the loser matches no rows and writes NOTHING — 0
+        the fix): the loser matches no rows and writes NOTHING — 0
         audit rows, 0 knocks for a lost race (the guard-tx shape wrote
         both BEFORE the CAS and doubled under concurrency). An
         already-resolved hold is the DEFINED no-op (the idempotence

@@ -723,7 +723,7 @@ class LoopOps(_LoopHost):
     async def _reclaim_loop(
         self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception
     ) -> None:
-        """The MACHINERY reclaim (attack-3 H5's other half): an infra
+        """The MACHINERY reclaim (the attack-3 contract's other half): an infra
         fault raised by the DRIVER'S OWN statements — never by the body
         — records 'crashed' and re-pends WITHOUT burning the ladder
         (the vanilla lease machinery re-claims from the ledger). The

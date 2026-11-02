@@ -61,7 +61,7 @@ WITH upd AS (
     WHERE id = $1
       -- THE TERMINAL-MARK FENCE (P3 rule 6: the CAS IS the shape guard) —
       -- status + worker + ATTEMPT + claim_epoch. The attempt is the fencing
-      -- token (hardening H8): a status-only CAS loses to the zombie on the
+      -- token (the attempt-fencing law): a status-only CAS loses to the zombie on the
       -- next attempt's re-claim, corrupting the result AND the counter. A
       -- fenced-out write updates nothing, and tx2 never executes (the rowcount
       -- gate — 50 duplicate finalizes → 1 decrement).
@@ -644,7 +644,7 @@ RETURNING j.id, j.deps_pending
 #   * THE CLAIM FENCE (the finalize's own CAS vocabulary: status +
 #     worker + attempt + claim_epoch): a zombie's deferral matches
 #     NOTHING — no verdict row — and the runner records the attempt
-#     'fenced' on the ledger (H1: never a running row left forever);
+#     'fenced' on the ledger (never a running row left forever);
 #   * THE BUDGET GATE (the consuming arm's only vanilla exit —
 #     mark_retry_after_consume_true's max_attempts fence): a consuming
 #     retry past the budget answers the EXHAUSTED verdict — the runner

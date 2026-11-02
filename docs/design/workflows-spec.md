@@ -77,7 +77,7 @@ counter ON the row the dispatch claim already touches.
 1. **The two-transaction finalize** (P1 FINAL; erratum 6): tx1 = the
    result write + the TERMINAL-MARK FENCE (`status='running' AND
    locked_by_worker=… AND attempt=… AND claim_epoch=…` — the attempt is
-   the fencing token, H8) + the ledger's terminal + the fork's
+   the fencing token) + the ledger's terminal + the fork's
    children/edges/join; tx2 (rowcount-gated) = the guarded decrement +
    the `join_fire` insert + the outbox. Exactly-once = the fence + the
    `join_fire` PK + the status-predicate transition.

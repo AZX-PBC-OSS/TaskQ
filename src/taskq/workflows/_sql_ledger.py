@@ -53,7 +53,7 @@ LIMIT 1
 
 
 # The ledger's terminal-outcome write — rides the finalize's OWN transaction
-# (the ledger-terminal-atomic rule, hardening H9): a split write leaves
+# (the ledger-terminal-atomic rule, the terminal-atomicity rule): a split write leaves
 # node=succeeded with ledger=running, the phantom the fence prevents.
 #
 # TWO keyings, one invariant — the write touches EXACTLY the claimed row:
@@ -106,7 +106,7 @@ RETURNING id
 
 
 # A fenced-out attempt is recorded outcome='fenced' — never a running ledger
-# row left forever on a terminal flow (hardening H1: "neither landed nor
+# row left forever on a terminal flow ("neither landed nor
 # refused" is the state the linearization doctrine forbids). The same two
 # keyings as the terminal write (the arbiter tuple / the claim's own id);
 # both guard status = 'running' so a terminal row is never re-fenced.

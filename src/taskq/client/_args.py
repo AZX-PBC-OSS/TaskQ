@@ -442,7 +442,7 @@ def build_batch_args(
             start_to_close=item.start_to_close,
             max_pending=item_max_pending,
             tags=item.tags,
-            # The H5 strip-then-stamp boundary runs inside
+            # The strip-then-stamp boundary runs inside
             # build_enqueue_args: any batch_id on item.metadata is stripped
             # before the library's own batch_id is stamped.
             stamp_batch_id=batch_id_str,

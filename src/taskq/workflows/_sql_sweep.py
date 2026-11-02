@@ -623,7 +623,7 @@ RETURNING o.content_address
 # THE PERSISTED CURSOR (the persisted-cursor fix — the walk that never
 # advanced at a live PK front): ``ORDER BY pk LIMIT batch`` re-visits
 # the SAME first batch every pass when that batch's probes all answer
-# "live root" — the red-team's proof: a 3,000-row live front, batch
+# "live root" — the adversarial proof: a 3,000-row live front, batch
 # 1,000, five passes, deleted=0, the orphans beyond the front stranded
 # forever. The fix is the estate's own watermark precedent
 # (``job_events_prune_state``, 01.00.20_02): a persisted cursor row per
