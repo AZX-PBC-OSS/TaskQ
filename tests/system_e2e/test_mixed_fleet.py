@@ -171,7 +171,7 @@ async def test_sync_systemexit_is_an_attempt_outcome_not_worker_death(
         # Probe the defect directly before settling: a worker that died
         # serving the SystemExit strands its claimed rows forever, and
         # the settle backstop would report that only as generic limbo.
-        # The named failure below is the failing proof this scenario owes on main;
+        # The named failure below is the red this scenario owes on main;
         # once fix/459-sync-actor-systemexit lands, poll() is None and
         # the full contract runs.
         for _ in range(40):

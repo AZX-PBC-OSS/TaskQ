@@ -1,9 +1,9 @@
 """T19 — THE LOOP PINS: the two walls, the carry, the ladder classes.
 
 Failing-first: each pin's REJECTED VARIANT was run against the mutated guard
-(the mutation test — the build protocol), the observed red captured to
-`the recorded capture`; the unfenced CONSUME-BUDGET variant
-stays failing on purpose (it is the named defect, not an incidental bug).
+(the mutation test — BUILD-PROTOCOL §2), the observed red captured to
+``.measurements/t19-pin-reds.json``; the unfenced CONSUME-BUDGET variant
+stays RED FOREVER (it is the dragon, not a bug to fix).
 
 Pins (the ticket's failing-first numbering, the ones this suite carries):
   #1  the CONSUME-BUDGET dragon — recorded via the mutation test (the
@@ -122,7 +122,7 @@ async def test_carry_advanced_exactly_once_per_iteration(
     assert await runner.drive(flow_id) == "terminal"
     # The carry advanced EXACTLY ONCE per iteration: [1, 2, 3].
     assert iterations == [1, 2, 3], iterations
-    # The TIMELINE (the section.3 trace shape): three iteration rows, all
+    # The TIMELINE (the §13.3 trace shape): three iteration rows, all
     # terminal, ordered by id (uuid7 = creation order).
     timeline = await wf_conn.fetch(
         f'SELECT step_key, status FROM "{wf_schema}".wf_step_ledger '
@@ -478,7 +478,7 @@ async def test_iteration_memo_is_the_one_tx_shape(
         assert memo.result == {"done": False, "feedback": {"acc": 1}}
 
 
-# ── the CONSUME-BUDGET dragon (pin #1 — kept failing on purpose, the mutation test) ─
+# ── the CONSUME-BUDGET dragon (pin #1 — RED FOREVER, the mutation test) ─
 
 
 async def test_consume_budget_dragon_red_forever(
@@ -492,7 +492,7 @@ async def test_consume_budget_dragon_red_forever(
     by the mutation test: remove ``AND NOT budget_paused``, watch THIS
     suite fail, restore. The scenario's red is RECORDED here."""
     # The scenario ran (the arm mutated, the paused row fired, the suite
-    # failed, the guard restored); the defect's failing proof lives in the failure log
+    # failed, the guard restored); the dragon's red lives in the failure log
     # + the guide's warning. This pin documents the DRAGON's shape and
     # keeps its recorded finding in the suite (a reader who removes the leg
     # and re-runs sees THIS file's paused-row pin red).
@@ -536,7 +536,7 @@ async def test_carry_optimistic_apply_dragon_red_forever(
     second apply) or loses the apply (the crash BEFORE the optimistic
     write). The shipped law: THE CARRY IS FROZEN AT SPAWN and advanced
     EXACTLY ONCE per iteration, in the ADVANCE STATEMENT, one atomic
-    write shared with THE CAP GUARD (the guide the section's own words). The
+    write shared with THE CAP GUARD (the guide §9's own words). The
     variant is kept failing by the mutation test: an advance issued at
     hold-release time (outside the advance statement) double-applies —
     observed: the carry's counter jumped 2 for one iteration's work.

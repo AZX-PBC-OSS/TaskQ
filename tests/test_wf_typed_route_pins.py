@@ -24,8 +24,8 @@ no-match element dies loudly — the skip-silent shape is DEAD).
 
 Failing-first: every pin below ran against the base head ``d0491207`` BEFORE
 the surface existed (the lazy imports raise ``ImportError`` — the red
-receipt: `the recorded capture`); the greens are the
-built code's evidence. Captured: `the recorded capture`.
+receipt: ``.measurements/t27-typed-route-reds.txt``); the greens are the
+built code's evidence. Captured: ``.measurements/t27-*.txt``.
 """
 
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.

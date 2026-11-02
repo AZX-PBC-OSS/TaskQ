@@ -27,8 +27,8 @@ THE FIX'S SHAPE (ONE mechanism, the authoring face added):
   budget-free, LOUD — never a silent pass-through, the admitted-never-
   limited lie).
 
-Failing-first: the pins failed at the pre-fix head; the failures are captured
-in `the recorded capture`.
+Failing-first: the pins ran RED at the pre-fix head; the reds are captured
+in ``.measurements/cons-cure2-reds.json``.
 """
 
 from __future__ import annotations
@@ -387,7 +387,7 @@ def test_the_boot_collection_registers_the_instances_and_names_the_unknowns(
             "the authoring face's buckets would never register",
             {},
         )
-        pytest.fail("collect_workflow_rate_limits is absent — the failing proof is the pin")
+        pytest.fail("collect_workflow_rate_limits is absent — the red is the pin")
 
     bucket = TokenBucket("cons2-collected", 5, 1.0)
     app = WorkflowApp()

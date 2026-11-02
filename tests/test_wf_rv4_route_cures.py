@@ -2,8 +2,8 @@
 
 The routing spine certified; seven live recorded findings + the estate red;
 this file carries the pins — failing-first (each pin ran against the base
-head ``94996174`` and REJECTED before its fix landed; the failing proof receipts
-live beside the pins in `the recorded capture`), every fix WITH
+head ``94996174`` and REJECTED before its fix landed; the red receipts
+live beside the pins in ``.measurements/rv4-*.txt``), every fix WITH
 its pin.
 
 * **F1** — the empty-corpus wedge (``_runner.py``'s ``_route_fork``

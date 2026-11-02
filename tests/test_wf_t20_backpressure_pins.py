@@ -26,10 +26,10 @@ re-claim resumes FROM THE CURSOR, and the blocked page emits fresh (it
 never ran — nothing was written). The degradation is the dispatch band's
 latency, never unbounded materialization.
 
-Failing-first: the bound pins failed against the tree before the fence
+Failing-first: the bound pins ran RED against the tree before the fence
 existed (the declared surface absent — the TypeError IS the red); the
 unbounded variant's blow-out is the rejected red, captured live.
-Captured: `the recorded capture`.
+Captured: ``.measurements/t20-backpressure-*.txt``.
 """
 
 from __future__ import annotations
@@ -277,7 +277,7 @@ async def test_t20_unbounded_emit_is_the_convicted_red(
     wf_sql: WorkflowSql,
     t20_redlog: RedLog,
 ) -> None:
-    """THE CAPTURED FAILURE (the bound's obligation): the SAME fast source with the
+    """THE CAPTURED RED (DH9's obligation): the SAME fast source with the
     bound REMOVED (``max_in_flight=None`` — the explicit unbounded) blows
     the count the bounded pins hold: two pages back-to-back with no
     worker → 8 outstanding against the 6 the bounded variant never

@@ -6,8 +6,8 @@ face's operator surfaces), pinned asserting the SAFE behavior.
 Provenance: the rv5 internals review's live recorded findings, each reproduced
 against this head BEFORE pinning (the pre-pin repro shapes + outputs were captured at the pinning run.) Per the
 doctrine, a LIVE finding is pinned under ``pytest.mark.xfail(strict=True,
-reason="LIVE FINDING: …")`` asserting the SAFE behavior — the fix
-flips the pin XPASS-strict (a failure that says: remove the marker WITH the
+reason="LIVE FINDING rv5-t<id>: …")`` asserting the SAFE behavior — the fix
+flips the pin XPASS-strict (a red that says: remove the marker WITH the
 fix).
 
 The findings (each rejected live; the receipts carry the verbatim reds):
@@ -55,7 +55,7 @@ The findings (each rejected live; the receipts carry the verbatim reds):
   the render-level pin keeps the HUMAN affordance intact).
 * F-T5 — THE DRIFT-INVISIBLE OPERATOR: zero ``code_version`` references
   in the CLI/admin surfaces — a run redeployed mid-flight (two distinct
-  the section.1 hashes on one run's rows — the stamps EXIST,
+  §22.1 hashes on one run's rows — the stamps EXIST,
   ``jobs.code_version``) is flagged nowhere (observed: the mixed-version
   run's ``taskq flows status <run>`` output carries no version line at
   all). THE PIN: ``flows status <run>`` surfaces the version drift when
@@ -74,7 +74,7 @@ The findings (each rejected live; the receipts carry the verbatim reds):
 
 THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
 receipts law — the pack is the acceptance record; every flip green x2
-at the lane head; the failures' verbatim pre-flip captures):
+at the lane head; the reds' verbatim pre-flip captures in (the pinning run's record):
 
 * T1, T2, T3a — the markers are REMOVED WITH THE FIXES (the
   timer-fixes lane's landed shapes: the E17 mint refusal, the broadcast
@@ -92,7 +92,7 @@ at the lane head; the failures' verbatim pre-flip captures):
   render harness rides the PRODUCTION enrichment (``_normalize_hold``)
   — the raw-dict harness predates the field.
 * T5 — THE CLI DRIFT FACE'S OWN FIX (this lane): ``flows status``
-  reads the run's rows' the section.1 stamps and renders the drift line when
+  reads the run's rows' §22.1 stamps and renders the drift line when
   they are >1 distinct — the drifted nodes named with their hashes,
   ONE coherent drift section with the stranded face.
 * T6 — THE VANISHED-NODE WEDGE'S OWN FIX (this lane): the typed
@@ -138,7 +138,7 @@ class TDoc(BaseModel):
 
 
 # ── the pinned graph's bodies (module-level: the annotations must resolve —
-#    the compile's hint resolution + the section.1 stamper read the body's own
+#    the compile's hint resolution + the §22.1 stamper read the body's own
 #    SOURCE, which a function-scope body does not reproducibly carry). ──
 
 
@@ -162,7 +162,7 @@ async def _t5_second_v1(ctx: StepContext, params: str) -> str:
 
 
 async def _t5_second_v2(ctx: StepContext, params: str) -> str:
-    # THE REDEPLOY's new body (different source → a different the section.1 stamp).
+    # THE REDEPLOY's new body (different source → a different §22.1 stamp).
     return f"second:v2:{params}!"
 
 
@@ -349,7 +349,7 @@ async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
         )
     finally:
         # the pin's own hygiene: the held timer dies with the flow even on
-        # the failing proof path (the module's schema is shared across the file).
+        # the red path (the module's schema is shared across the file).
         await runner.cancel_workflow(flow_id, reason="the pin's cleanup")
 
 
@@ -435,7 +435,7 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
     statements: list[str] = []
     for path in sorted(migrations.glob("*.sql")):
         statements += re.findall(
-            # THE HONEST MATCHER (the reconciled flip — the pinning run's receipt):
+            # THE HONEST MATCHER (the reconciled flip — rv5-t3b's receipt):
             # the shipped index is the PARTIAL index leading expires_at
             # with the timer predicate, written CREATE INDEX IF NOT
             # EXISTS — the original regex's `\w+` choked on the "IF NOT
@@ -469,7 +469,7 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
     in the pin's docstring.
 
     THE HARNESS RIDES THE PRODUCTION ENRICHMENT (the reconciled flip —
-    the pinning run's receipt): the fixed template branches on the ``is_timer``
+    rv5-t4's receipt): the fixed template branches on the ``is_timer``
     field the holds projection enriches (``web/admin/_wf_rows.py``'s
     ``_normalize_hold`` — the row's own truth, derived from the signal
     name), so the harness passes its hold rows through THE SAME

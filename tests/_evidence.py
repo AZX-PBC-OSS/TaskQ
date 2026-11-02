@@ -2,7 +2,7 @@
 lives on ``evidence/taskqflow``, the reviewable PR stops carrying it):
 the pins that read the measurement estate's FILES read them from the
 branch (the same files, the same paths, one indirection). The sha
-cross-check stays the verifier's and the recorded finding's law — these helpers are
+cross-check stays the verifier's and rv2-13's law — these helpers are
 the file-read face only."""
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ def evidence_ref() -> str:
 
 def evidence_show(rel_path: str) -> str:
     """One estate file's content, read from the evidence branch (the
-    repo-relative path — `the recorded capture` — as the pins name it)."""
+    repo-relative path — ``.measurements/...`` — as the pins name it)."""
     ref = evidence_ref()
     proc = subprocess.run(  # noqa: S603  # Why: as above.
         ["git", "show", f"{ref}:{rel_path}"],  # noqa: S607

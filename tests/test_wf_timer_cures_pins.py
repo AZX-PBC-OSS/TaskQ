@@ -1,6 +1,6 @@
 """THE TIMER-FIXES LANE'S PINS — the timer attack front's five
 recorded findings + the doc-deep gap, each fixed WITH its failing-first pin (the
-recorded finding's live repro is the failing proof receipt BEFORE the fix).
+recorded finding's live repro is the red receipt BEFORE the fix).
 
 The six fixes, and what each pin holds shut:
 
@@ -11,7 +11,7 @@ The six fixes, and what each pin holds shut:
   forgery), never fail-closing (the expiry arm never abandons the
   prefix), and fired at the deadline into a ``SignalPayloadError``
   death. The live scenario (``scripts/_timer_cures_red_drill.py``, capture
-  `the recorded capture`) reproduced all four
+  ``.measurements/timer-fixes-mutation pin-pre.txt``) reproduced all four
   legs at the base tree. THE FIX: the refusal is at the MINT —
   ``wait_signal`` (and ``wait_until``'s key) raise the typed
   E17-reserved-timer-prefix error naming the fix, no row is written.
@@ -45,7 +45,7 @@ The six fixes, and what each pin holds shut:
 * FIX 5 — THE VERSIONING WEDGE'S SURFACE: rename/remove a node in a
   redeploy → in-flight runs at that node zombie forever, and ``flows
   status`` showed NOTHING. THE FIX (the surface, not the semantics —
-  the registry-is-truth contract entails the mixing): the docs' the section
+  the registry-is-truth contract entails the mixing): the docs' §6
   carries the wedge paragraph, and ``flows status --app`` compares the
   run's node inventory against the CURRENT registry and NAMES the
   stranded nodes.
@@ -55,8 +55,8 @@ The six fixes, and what each pin holds shut:
 
 Failing-first evidence: the pins ran against the BASE tree 08dccb92d (the
 timers lane's head) BEFORE the fixes — the captures ride
-`the recorded capture` and the scenario's
-`the recorded capture`; the fixes flipped them
+``.measurements/timer-fixes-pin-reds-pre.txt`` and the scenario's
+``.measurements/timer-fixes-mutation pin-pre.txt``; the fixes flipped them
 green.
 """
 
@@ -188,7 +188,7 @@ class MintProbe(CtxWaitOps, CtxTimerOps):
 @pytest.fixture(autouse=True)
 def _cures_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """The dev posture (the admin render's resolve affordance must be
-    ENABLED for the failing proof to be the form itself)."""
+    ENABLED for the red to be the form itself)."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
     monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
@@ -800,7 +800,7 @@ def test_the_naive_datetime_law_is_documented_at_the_api_face(
     )
     assert "never re-bases" in doc, "the docstring must name the DB's never-re-bases law"
     guide = (Path(__file__).parent.parent / "docs" / "guides" / "workflows.md").read_text()
-    section = " ".join(guide.split("## the section", 1)[1].split("## the section", 1)[0].split())
+    section = " ".join(guide.split("## §4b", 1)[1].split("## §5", 1)[0].split())
     assert "interpreted as UTC" in section, (
         "the guide's timer section does not carry the naive-datetime law"
     )

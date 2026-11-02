@@ -1,11 +1,11 @@
-"""THE CHILD-FLOW FIXES' PINS — the recorded finding's pin pack (the child-flows
+"""THE CHILD-FLOW FIXES' PINS — the rv5-child pin pack (the child-flows
 attack front's recorded findings, fixed failing-first on the
 ``feat/taskqflow-child-fixes`` branch off the child line's head
 ``f8bfc5033``).
 
-THE FAILING STATE RECEIPTS (all captured live BEFORE the fixes, on the base head
+THE RED RECEIPTS (all captured live BEFORE the fixes, on the base head
 against the lane's :5812 — the capture rides
-`the recorded capture`):
+``.measurements/child-fixes/rv5-child-failing-first.txt``):
 
 * RV5-C1 (THE ASYNCIO.GATHER DRAGON — GRAND-MERGE BLOCKER): the natural
   fan-out spelling ``gather(*[ctx.spawn_flow(...) for t in tenants])``
@@ -37,8 +37,8 @@ against the lane's :5812 — the capture rides
 
 The fix choices are the reads' choices, and the pins hold them. Pin
 names carry the rv5 stem (the attack front's pack: these ARE the flip
-targets — the recorded finding's branch's pins were not visible at fix time,
-so the fixes' pins name themselves the recorded finding's).
+targets — the rv5-child branch's pins were not visible at fix time,
+so the fixes' pins name themselves rv5-consistently).
 """
 
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
@@ -537,9 +537,7 @@ class TestRv5C2bCancelCascadeIterative:
         the operator's face honest (no RecursionError, no 500)."""
         ids = await _chain_rows(wf_conn, wf_schema, _CASCADE_DEPTH)
 
-        await cancel_workflow_run(
-            wf_pool, schema=wf_schema, flow_id=ids[0], reason="the recorded finding's"
-        )
+        await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=ids[0], reason="rv5-c2b")
 
         left_running = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".jobs '
@@ -584,9 +582,7 @@ class TestRv5C4OrphanWindow:
         )
         assert child_status == "running", child_status
 
-        await cancel_workflow_run(
-            wf_pool, schema=wf_schema, flow_id=flow_id, reason="the recorded finding's"
-        )
+        await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=flow_id, reason="rv5-c4")
 
         child_status = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1::uuid', child_id
@@ -676,9 +672,7 @@ class TestRv5C5DevDriveParity:
         @app.actor(queue="cpu", max_attempts=3)
         async def waiter(ctx: StepContext, params: ParentIn) -> Verdict:
             _ = params
-            outcome = await ctx.wait_signal(
-                (ContinueApproval,), reason="the recorded finding's", timeout_s=0.05
-            )
+            outcome = await ctx.wait_signal((ContinueApproval,), reason="rv5-c5a", timeout_s=0.05)
             match outcome:
                 case ContinueApproval():
                     return Verdict(v="approved")

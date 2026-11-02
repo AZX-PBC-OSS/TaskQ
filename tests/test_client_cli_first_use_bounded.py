@@ -66,7 +66,7 @@ runner = CliRunner()
 _PROD_BOUND_SECS = 0.5
 _PROD_PING_BOUND_SECS = 0.05
 # 10x the configured production bound - generous. This budget firing is
-# the failing proof result: production never bounded the await on its own.
+# the red result: production never bounded the await on its own.
 _TEST_BUDGET_SECS = 5.0
 
 
@@ -214,7 +214,7 @@ async def _call_ready_endpoint(app: Any) -> Any:
     The route is mounted inside the lifespan, so the app must be inside
     ``app.router.lifespan_context(app)`` when this is called. The raw
     endpoint is the smallest real seam the CLI exposes for the probe -
-    driving it directly bounds the mutated state with a test-side budget.
+    driving it directly bounds the RED state with a test-side budget.
 
     Why the ``original_router`` traversal: this FastAPI mounts routers
     through its ``_IncludedRouter`` lazy wrapper, whose ``original_router``

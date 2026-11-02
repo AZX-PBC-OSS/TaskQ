@@ -4,10 +4,10 @@ PORTED TO the engine-fixes lane and FLIPPED GREEN by its fixes.
 
 Provenance: the rv6 front's live recorded findings, each reproduced against the
 pinned head BEFORE pinning. Per the doctrine, a LIVE finding is pinned
-under ``pytest.mark.xfail(strict=True, reason="LIVE FINDING: …")``
+under ``pytest.mark.xfail(strict=True, reason="LIVE FINDING rv6-e<id>: …")``
 asserting the SAFE behavior — the fix flips the pin to XPASS-strict (a
 red that says: remove the marker WITH the fix). THE FLIP IS DONE: both
-pins ran xfail-strict at the base (the failing proof receipts are in this pack's
+pins ran xfail-strict at the base (the red receipts are in this pack's
 RECEIPTS file and the lane's captures) and the fixes
 (``_sql_runner.py``'s terminal-flow fence on BOTH claim seats;
 ``_hitl.py``'s hold-stamp-addressed wake) flipped them — the markers are
@@ -65,7 +65,7 @@ _E1_SENTINEL: list[str] = []
 
 
 # ── the pinned graph's bodies (module-level: the annotations must resolve —
-#    the compile's hint resolution + the section.1 stamper read the body's own
+#    the compile's hint resolution + the §22.1 stamper read the body's own
 #    SOURCE, which a function-scope body does not reproducibly carry). ──
 
 
@@ -157,7 +157,7 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
     register_hold writes; the map_index-addressed fix's semantic) — and
     must leave the other siblings' held representations intact. The
     siblings are inserted in order so the arbitrary first-match wake
-    lands on sibling 0: the failing proof is deterministic."""
+    lands on sibling 0: the red is deterministic."""
     flow_id = await seed_flow(wf_conn, wf_schema, status="running")
     hold_ids: list[JobId] = []
     node_by_hold: dict[str, str] = {}

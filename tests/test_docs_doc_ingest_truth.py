@@ -1,7 +1,7 @@
 # ruff: noqa: S608, S102  # Why: the schema is a fixture-derived test identifier and the doc fence IS the under-test artifact (exec'd — the docs lane's own pattern, test_doc_ingest_example.py).
 """DOC-TRUTH PINS — F-DEMO-4: the doc-ingest fence (docs/examples/
 doc-ingest.md) is CODE THAT RUNS, and its OUTPUT claims are pinned where
-they are executable (the hostile review of the consolidated head, demo lane).
+they are executable (the hostile review of af1b8779, demo lane).
 
 The fence ships four doc-vs-code divergences; three are executable
 claims and pin here, strict-xfail until the fence is fixed (the fix

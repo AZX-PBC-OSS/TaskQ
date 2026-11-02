@@ -118,7 +118,7 @@ def _configure(backend: InMemoryBackend, ref: ActorRef[Any, Any]) -> None:
 
 
 async def test_strict_submit_to_unknown_queue_raises_and_stores_nothing() -> None:
-    """THE FAILING STATE: strict on, a one-character typo'd queue name raised
+    """THE RED: strict on, a one-character typo'd queue name raised
     NOTHING and stored the row anyway -- pending forever, no worker
     claims it, silent data non-delivery. The green: the refusal fires
     at the submit site and the row is NOT stored.

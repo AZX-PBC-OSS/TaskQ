@@ -5,7 +5,7 @@
 Provenance: the rv5 reviewer's live-rejected findings, this lane's pack.
 Per the doctrine, a LANDED finding is pinned asserting the SAFE behavior
 under ``pytest.mark.xfail(strict=True)`` — the fix flips the pin to
-XPASS-strict (a failure that says: remove the marker WITH the fix); the pin
+XPASS-strict (a red that says: remove the marker WITH the fix); the pin
 then stands as the green guard. Every pin ran UNMARKED first (the red
 captured at the pinning run) before the marker went on.
 
@@ -47,11 +47,11 @@ harness shapes at the recorded findings' root):
   nothing; the operator's decision is a dead letter).
 
 THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
-receipts law — the rows were captured at the pinning run; every flip green x2
+receipts law — the receipt rows were captured at the pinning run; every flip green x2
 at the lane head): C1, C4, C5, C6, C7's markers are REMOVED WITH THE
 FIXES (the child-fixes lane's landed shapes — the pins were xpass-strict
 at the reconciliation ground); C2 and C3 are RECONCILED to the fixed
-shapes (the fail-close AT THE RESPAWN ATTEMPT — the typed
+shapes (C2: the fail-close AT THE RESPAWN ATTEMPT — the typed
 ``ChildFlowLostError`` on the parent node, the root failed, the census
 zero; C3: the DEPTH BOUND — the ancestor-chain walk, the typed
 ``SpawnDepthExceededError``, the bounded tree terminalizing). Neither
@@ -107,7 +107,7 @@ from taskq.workflows.engine import render_workflow_sql
 #: external cluster keeps working: the shared fixture honors
 #: ``TASKQ_TEST_PG_DSN`` as-is when it is set. The dead
 #: ``localhost:5891`` literal a previous constant defaulted to was the
-#: pack's never-executed-in-CI face (the recorded run: 7 connection-
+#: pack's never-executed-in-CI face (run 38351644136: 7 connection-
 #: refused errors per leg — the review cluster the pack was authored
 #: against does not exist on a runner, and the import-time read
 #: bypassed the fixture seam no matter what CI set).
@@ -592,7 +592,7 @@ async def test_rv5_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
     cancelled: int | None
     try:
         cancelled = await cancel_workflow_run(
-            wf_pool, schema=wf_schema, flow_id=JobId(ids[0]), reason="the recorded finding's depth"
+            wf_pool, schema=wf_schema, flow_id=JobId(ids[0]), reason="rv5-c4 depth"
         )
     except RecursionError:
         cancelled = None
@@ -687,9 +687,7 @@ async def test_rv5_c5_the_cascade_walks_both_directions_no_child_escapes(
     fresh_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
     assert "child_flows" not in fresh_node["metadata"]
 
-    await cancel_workflow_run(
-        wf_pool, schema=wf_schema, flow_id=flow_id, reason="the recorded finding's"
-    )
+    await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=flow_id, reason="rv5-c5")
 
     child_root = await wf_conn.fetchrow(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', child_flow_id
@@ -835,7 +833,7 @@ async def test_rv5_c7_resolving_a_child_join_hold_is_a_named_boundary_refusal(
     # The decision payload FITS the hold's declared contract (the child's
     # result model) — the boundary's shape-check alone cannot refuse it.
     result = await client.resolve(
-        str(hold["id"]), {"findings": ["injected-by-hand"]}, reason="the recorded finding's"
+        str(hold["id"]), {"findings": ["injected-by-hand"]}, reason="rv5-c7"
     )
     assert result.status == "refused", (
         f"F-C7: resolving a child-join hold returned {result.status!r} — the "

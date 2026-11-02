@@ -5,7 +5,7 @@ door's runtime boundary, the timeout face, the driver's held check.
 
 Each probe states the contract it attacks (the module docstrings' own
 words). RED = the observed half contradicts it. Captured to
-the recorded capture
+.measurements/attack3/.
 """
 
 from __future__ import annotations

@@ -26,7 +26,7 @@ Papered defects and pins
    Redis subscription, the asyncio task and the SSE slot stay pinned.
    ``test_wedged_broker_read_must_be_app_bounded`` pins the desired
    observable: the loop must own an app-level deadline around the broker
-   wait. Failing today.
+   wait. RED today.
 
 2. GREEN PIN - broker death mid-stream is fail-visible and fully cleaned
    up: the generator terminates (exception propagates - no silent eternal
@@ -123,7 +123,7 @@ def _pg_row(*, status: str = "running", seq: int = 0) -> dict[str, Any]:
 class _WedgedPubSub:
     """Pubsub double whose ``get_message`` never returns (wedged broker read).
 
-    ``unsubscribe``/``aclose`` stay fast so the mutated state isolates the
+    ``unsubscribe``/``aclose`` stay fast so the RED state isolates the
     unbounded *read*, not the (already bounded) teardown.
     """
 
@@ -322,7 +322,7 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
             "the asyncio task and the SSE slot."
         )
     finally:
-        # Bounded teardown so the mutated state can never hang the test run.
+        # Bounded teardown so the RED state can never hang the test run.
         task.cancel()
         with contextlib.suppress(BaseException):
             await task

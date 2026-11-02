@@ -2,8 +2,8 @@
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
-home), the red-output sink flushes to `the recorded capture` (a
-file that gets READ — the build protocol), the shipped invariants green,
+home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
+file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
 the unfenced variants kept in this file forever as the rejected shapes.
 """
 
@@ -175,7 +175,7 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
     a fixture hook touching the new columns on the hot path (extra
     round-trip reads of the five columns per enqueue — the scenario's dose
     widened to out-signal a loaded box's noise floor) must move the
-    band — the pin can fail. Both measurements land in the recorded capture"""
+    band — the pin can fail. Both measurements land in .measurements/."""
     from taskq.backend._protocol import EnqueueArgs
     from taskq.backend.postgres import PostgresBackend
 

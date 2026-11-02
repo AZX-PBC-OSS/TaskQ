@@ -36,7 +36,7 @@ CRITICAL - crash-reclamation outbox.  ``job_events`` rows with
 outbox consumed by ``poll_reclaim_events`` driving ``TaskQ.watch_reclaims()``.
 Any age-based retention MUST exempt that slice or crash reclamation silently
 stops.  ``test_lock_expired_reclaim_outbox_is_exempt_from_retention`` pins
-that exemption and is as critical as the failing proof tests.
+that exemption and is as critical as the red tests.
 """
 
 from datetime import UTC, datetime, timedelta

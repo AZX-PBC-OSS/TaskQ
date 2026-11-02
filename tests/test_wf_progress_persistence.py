@@ -6,8 +6,8 @@ port its obligations onto the BUILT surface, in the estate's pin idiom.
 
 The failing-first evidence: each pin's REJECTED VARIANT (the spike's dragons)
 is named in the docstring and — where the variant is observable — exercised
-with the failing proof captured to `the recorded capture`. The unfenced
-variants stay failing on purpose (they are the named defects, not incidental bugs).
+with the red captured to ``.measurements/t21-pin-reds.json``. The unfenced
+variants stay RED FOREVER (they are the dragons, not bugs).
 
 THE CHANNELS (T21 decision d):
 * the STATE channel — ``wf_node_progress``: ONE row per (node, channel),
@@ -278,7 +278,7 @@ async def test_ring_prune_arm_prunes_leaked_ring(
     progress_redlog: RedLog,
 ) -> None:
     """THE RETENTION ARM (DH1's "prunes on schedule"): rings that leaked
-    past the bound — the failing proof world's shape, seeded here by bypassing the
+    past the bound — the red world's shape, seeded here by bypassing the
     append-trim — are pruned back to the bound in ONE pass. The LEAK is
     observed first (the red): rows growing past the bound with no trim."""
     flow = await seed_flow(wf_conn, wf_schema)
@@ -298,7 +298,7 @@ async def test_ring_prune_arm_prunes_leaked_ring(
     )
     progress_redlog.red(
         "ring_prune_arm_prunes_leaked_ring",
-        "the append-trim bypassed (the failing proof world's unpruned ring)",
+        "the append-trim bypassed (the red world's unpruned ring)",
         {"rows_before": before, "bound": PROGRESS_RING_BOUND},
     )
     assert before == leak, "the leak did not leak"
@@ -409,7 +409,7 @@ def test_zero_finalize_changes_probe() -> None:
     )
 
 
-# ── THE FAILING STATE (DH1's rejected variant — kept failing FOREVER) ─────────────────
+# ── THE RED (DH1's rejected variant — kept failing FOREVER) ─────────────────
 
 
 async def test_red_every_emission_a_row_grows_unbounded(
@@ -418,7 +418,7 @@ async def test_red_every_emission_a_row_grows_unbounded(
     """DH1's red, observed on the BUILT substrate: the rejected variant —
     one row PER EMISSION (the 6.5M-row incident's shape) — grows the store
     with emissions; the two-channel design holds it at nodes x channels +
-    the ring bound. The unfenced variant stays failing on purpose (the scenario
+    the ring bound. The unfenced variant stays RED FOREVER (the scenario
     writes a scratch log table, never the shipped tables)."""
     flow = await seed_flow(wf_conn, wf_schema)
     node = await seed_running_node(wf_conn, wf_schema, flow)

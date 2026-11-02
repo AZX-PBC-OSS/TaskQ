@@ -286,7 +286,7 @@ def unexpected_error_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricRe
     reads only THIS test's emissions, and ``_otel_enabled`` is forced on
     because ``record_sweep_unexpected_error`` is a no-op while it is off.
     ``raising=False`` so the suite can run against a build where the
-    instrument does not exist yet (the failing proof state: nothing emits, the
+    instrument does not exist yet (the red state: nothing emits, the
     counter assertion fails on its own).
     """
     from opentelemetry.sdk.metrics import MeterProvider

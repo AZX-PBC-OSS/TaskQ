@@ -1,5 +1,5 @@
 """The T06 failed-parent propagation pins — the FAIL-CLOSED peer-cascade and
-the COLLECT fan-in, failing-first per the doctrine (the build protocol: every
+the COLLECT fan-in, failing-first per the doctrine (BUILD-PROTOCOL §2: every
 pin's red is a REAL mutation of the shipped rule, observed and recorded).
 
 THE PROPAGATION RULE (T06's two semantics, per the ticket):
@@ -8,7 +8,7 @@ THE PROPAGATION RULE (T06's two semantics, per the ticket):
   exhausted or a non-retryable class) fails the join CLOSED by a
   flow-scoped transition set: the joined node blocks with
   ``blocking_reason='failed_parent'`` naming the failed parent, the
-  workflow fails (the section.2's cascade — the flow root's flip), and the running
+  workflow fails (§17.2's cascade — the flow root's flip), and the running
   peers are PEER-CANCELLED with the record
   ``by='peer_failure', cascade_from=<node>`` (the cancel-origin marker +
   ``metadata.peer_cancel``). The record never shows a hanging join.
@@ -23,8 +23,8 @@ terminal — the fan-in/cascade happens ONLY at exhaustion, strictly after
 the last ladder attempt (the ts-ordered pin).
 
 Driven against a live Postgres through the REAL engine; the seed helpers
-live in ``tests/_wf_fixtures.py``; the failing proof sink flushes to
-`the recorded capture` (a file that gets READ).
+live in ``tests/_wf_fixtures.py``; the red sink flushes to
+``.measurements/t06-propagation-reds.json`` (a file that gets READ).
 """
 
 from __future__ import annotations
@@ -168,7 +168,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     assert state["metadata"].get("failed_step") == "c0"
     assert state["status"] == "pending", "blocked is a pending-row representation"
 
-    # THE FLOW FAILED (the section.2's cascade): the root's flip is the
+    # THE FLOW FAILED (§17.2's cascade): the root's flip is the
     # linearization point.
     flow_state = await node_state(wf_conn, wf_schema, flow_id)
     assert flow_state["status"] == "failed", "the workflow fails closed"

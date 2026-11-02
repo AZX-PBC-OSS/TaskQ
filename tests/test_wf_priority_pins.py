@@ -807,7 +807,7 @@ async def test_map_body_handle_priority_reaches_the_children(
     variant: the runner's only priority readers were the four
     ``_resolve_priority`` sites — a handle body's declaration dropped
     SILENTLY (the identical shape fails CLOSED for capacity terms —
-    the never-a-silent-drop law). The handle's value NEVER folds into
+    H-A4's never-a-silent-drop law). The handle's value NEVER folds into
     the source node: the source's own row and the JOIN stay at the
     source's resolution."""
     app = WorkflowApp()

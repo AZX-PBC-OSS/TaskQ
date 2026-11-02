@@ -14,15 +14,15 @@ served by the partial index ``jobs_running_heartbeat_deadline_idx``
 ``tests/test_index_audit.py``.
 
 This file attacks what those pins do not reach. Verdicts expected at
-commit time (the failures are the deliverable - they stay failing until fixed):
+commit time (the reds are the deliverable - they stay failing until fixed):
 
-* Failing on the unfixed tree: ``test_heartbeat_reclaim_attempt_row_must_not_claim_the_lock_expired``
+* RED ``test_heartbeat_reclaim_attempt_row_must_not_claim_the_lock_expired``
   - the batched ``job_attempts`` INSERT hardcodes
   ``'lock expired before worker reported terminal state'`` for BOTH arms,
   so the audit row for a heartbeat reclaim asserts a lock expiry that the
   sweep itself disproved when it selected the row
   (``lock_expires_at >= statement_timestamp()``).
-* Failing on the unfixed tree: ``test_twin_mirrors_the_sqls_past_beat_conjunct`` - the in-memory
+* RED ``test_twin_mirrors_the_sqls_past_beat_conjunct`` - the in-memory
   twin's heartbeat arm (``src/taskq/testing/_sweeps.py``) omits the SQL's
   ``last_heartbeat_at < statement_timestamp()`` conjunct, so a row the SQL
   provably never reclaims (a future-stamped beat plus a degenerate
@@ -780,7 +780,7 @@ async def test_heartbeat_timeout_above_the_lease_never_governs_the_reclaim(
     )
 
 
-# ── PG PROOF: the attempt row's error_message ──────────────────────────
+# ── PG RED: the attempt row's error_message ──────────────────────────
 
 
 @pytest.mark.integration
@@ -788,7 +788,7 @@ async def test_heartbeat_reclaim_attempt_row_must_not_claim_the_lock_expired(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """FAILS at commit time before the fix (expected, the deliverable): the batched
+    """RED at commit time (expected, the deliverable): the batched
     ``job_attempts`` INSERT (``_SWEEP_1_ATTEMPTS_BATCH_SQL``) hardcodes
     ``'lock expired before worker reported terminal state'`` for BOTH
     arms, so the audit row for a heartbeat-arm reclaim asserts a lock
@@ -1060,7 +1060,7 @@ async def test_twin_batch_caps_are_per_arm() -> None:
 
 
 async def test_twin_mirrors_the_sqls_past_beat_conjunct() -> None:
-    """FAILS at commit time before the fix (expected, the deliverable): the twin's
+    """RED at commit time (expected, the deliverable): the twin's
     heartbeat arm (``src/taskq/testing/_sweeps.py``) omits the SQL's
     ``last_heartbeat_at < statement_timestamp()`` conjunct - for
     positive timeouts the deadline arithmetic implies it, but for the
@@ -1109,7 +1109,7 @@ async def test_twin_mirrors_the_sqls_past_beat_conjunct() -> None:
     )
 
 
-# ── docs PROOF: the ops footgun registry's missing row ─────────────────
+# ── docs RED: the ops footgun registry's missing row ─────────────────
 
 
 def test_ops_footgun_registry_names_the_inversion_trap() -> None:

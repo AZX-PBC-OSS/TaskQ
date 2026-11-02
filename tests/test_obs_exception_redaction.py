@@ -1173,7 +1173,7 @@ def test_detail_scrub_stays_bounded_on_a_rendered_exception_group() -> None:
     linear render+scrub of these groups measures ~0.3 ms locally, but the
     matrix lane's co-tenancy (two xdist workers plus their containers on a
     4-core runner) descheduled the run's thread inside the measured window
-    and read 405 ms on healthy code (CI the recorded run) -- the budget
+    and read 405 ms on healthy code (CI run 36815836388) -- the budget
     measured the environment, not the matcher, and no budget that could
     catch a super-linear matcher survives that deschedule. Red on demand:
     a per-call tracer park (the ``--cov`` cost class) lands the same
@@ -2063,7 +2063,7 @@ def test_benign_dotted_and_base64_like_strings_survive_scrubbing(benign: str) ->
 # ── adversarial review round two: what the #317 masks still missed ─────────────────
 #
 # Every test below was run against the d1cebcf1 shape of the fix and FAILED
-# there before its source change landed here (failing/green). The holes:
+# there before its source change landed here (red/green). The holes:
 #
 # * a bearer header rendered with QUOTES around it -- the JSON and Python
 #   repr shapes (``"Authorization": "Bearer ..."``, ``{'Authorization':

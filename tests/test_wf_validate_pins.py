@@ -1,11 +1,11 @@
 """T09 — THE VALIDATE PINS: the checker-independent validator's mutation
 matrix. A valid graph pins CLEAN; ONE mutation at a time flips EXACTLY
-the intended rule and nothing else (the section.6's discipline) — the
+the intended rule and nothing else (§15.6's discipline) — the
 zero-false-positive budget is the pin, not an aspiration.
 
-Every pin here fails-then-greens by construction: the mutation IS the failing proof
+Every pin here RED-then-GREENs by construction: the mutation IS the red
 (the diagnostic fires), the clean graph the green — both verdicts read
-back from the captured run (the build protocol/the section).
+back from the captured run (BUILD-PROTOCOL §2/§3).
 """
 
 from __future__ import annotations

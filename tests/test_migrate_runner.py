@@ -584,7 +584,7 @@ async def test_apply_pending_locked_bounds_hung_conn_close(monkeypatch: Any) -> 
     monkeypatch.setattr(migrate_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, apply_pending_locked awaited c.close()
-    # unbounded in its finally, so the mutated state hangs forever instead of
+    # unbounded in its finally, so the RED state hangs forever instead of
     # failing fast. Mirrors the CLI bounded-close tests.
     async with asyncio.timeout(5):
         applied = await migrate_mod.apply_pending_locked(
@@ -607,7 +607,7 @@ async def test_apply_pending_locked_bounds_hung_unlock_execute(monkeypatch: Any)
     monkeypatch.setattr(migrate_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, the unlock execute was awaited
-    # unbounded in the finally, so the mutated state hangs forever instead of
+    # unbounded in the finally, so the RED state hangs forever instead of
     # failing fast.
     async with asyncio.timeout(5):
         applied = await migrate_mod.apply_pending_locked(

@@ -142,7 +142,7 @@ def test_explicit_step_params_override_the_handle_terms() -> None:
 
 def test_handle_term_conflict_message_names_reservation_buckets_not_instances() -> None:
     """The wiring conflict's message renders the two sides' BUCKET NAMES
-    (the identity the whole capacity law speaks — name-keyed, the), never
+    (the identity the whole capacity law speaks — name-keyed, H-A3), never
     the raw ``<ConcurrencyReservation object at 0x…>`` dump the default
     repr gives: the operator reading the refusal must see WHICH buckets
     disagree, and a pointer cannot be acted on."""
@@ -212,7 +212,7 @@ def test_the_collect_reads_the_recorded_graphs_not_a_recompile() -> None:
 
 def test_actor_carrier_carries_the_caps() -> None:
     """The handle's F3 carrier (``actor_config``) — the REAL projection's
-    ONE vocabulary , the same shape the config sync + the guards
+    ONE vocabulary (H-A12), the same shape the config sync + the guards
     consume — carries the declared caps (the reservations do NOT ride
     it: no field; the ensure-slots pass owns their materialization)."""
     app = WorkflowApp()
@@ -258,7 +258,9 @@ def test_projection_rows_carry_the_declared_caps() -> None:
 
     row = next(c for c in project_workflow_actor_configs() if c.actor == "wf-cap")
     assert row.max_concurrent == 2
-    assert row.max_pending is None  # the: the dead knob is off the surface — the row seeds it UNSET
+    assert (
+        row.max_pending is None
+    )  # H-A6: the dead knob is off the surface — the row seeds it UNSET
     assert row.result_ttl == 60.0
     assert row.queue == "gpu"
     assert row.metadata == {"workflow_actor": True}
@@ -491,7 +493,7 @@ def test_collect_workflow_reservations_ignores_non_reservation_entries() -> None
 def test_unconsumed_workflow_queue_refuses_the_boot() -> None:
     """A projected cohort's queue outside the worker's consumed set
     refuses the boot LOUDLY under the STRICT gate (the vanilla twin's
-    own opt-in law — the): the silent strand (rows pending forever, no
+    own opt-in law — H-A8): the silent strand (rows pending forever, no
     error, anywhere) named, the strict knob + the remedy spelled."""
     from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
     from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
@@ -726,11 +728,11 @@ def test_heterogeneous_fleet_child_keeps_the_warning_arm() -> None:
     assert warnings[0]["cohorts"] == {"wf-sibling": "remote"}, warnings[0]
 
 
-# ── (f) the round-1 recorded findings' pins  ────────────────────────────
+# ── (f) the round-1 recorded findings' pins ────────────────────────────
 
 
 def test_shared_reservation_boots_clean_on_a_non_default_schema() -> None:
-    """the: ONE module-level reservation, declared once, passed to BOTH
+    """H-A2: ONE module-level reservation, declared once, passed to BOTH
     a vanilla ``@actor`` and a wf step — the boot registers it twice
     (the vanilla pass AND the wf pass's rebind at the SAME registry) and
     must stay CLEAN on a non-default schema: ONE rebind doctrine (the
@@ -807,7 +809,7 @@ def test_shared_reservation_boots_clean_on_a_non_default_schema() -> None:
 
 
 def test_collect_dedup_ignores_schema_but_heeds_keyed_and_lock_lease() -> None:
-    """the: the collect's dedup equality is the identity that SURVIVES
+    """H-A9: the collect's dedup equality is the identity that SURVIVES
     the rebind — ``(name, slots, lease, keyed, lock_lease)``, the schema
     EXCLUDED (the boot's rebind owns it: two same-name same-config
     differing-schema declarations are ONE registration). The differing
@@ -846,7 +848,7 @@ def test_collect_dedup_ignores_schema_but_heeds_keyed_and_lock_lease() -> None:
 
 
 def test_collect_dedup_refuses_differing_keyed_and_lock_lease() -> None:
-    """the teeth: the dedup's identity HEEDS ``keyed`` — two same-name
+    """H-A9's teeth: the dedup's identity HEEDS ``keyed`` — two same-name
     declarations differing on it are the refused defect (ValueError,
     both configs named). The pre-fix dedup ignored it (and compared the
     rebind-away schema)."""
@@ -881,7 +883,7 @@ def test_collect_dedup_refuses_differing_keyed_and_lock_lease() -> None:
 
 
 def test_collect_dedup_refuses_differing_lock_lease() -> None:
-    """the teeth, the lock_lease arm: two same-name declarations
+    """H-A9's teeth, the lock_lease arm: two same-name declarations
     differing ONLY on ``lock_lease`` are the refused defect — the lease
     the heartbeat extends by is part of the reservation's identity."""
     from datetime import timedelta
@@ -915,7 +917,7 @@ def test_collect_dedup_refuses_differing_lock_lease() -> None:
 
 
 def test_keyed_reservation_ref_refused_at_the_wiring() -> None:
-    """the: a ``KeyedReservationRef`` in ``reservations=`` is the LOUD
+    """H-A10: a ``KeyedReservationRef`` in ``reservations=`` is the LOUD
     door at the wiring (``rate_limit_names``' own pattern — the keyed
     shape names no concrete bucket, and a row stamped with a name it
     cannot carry is the admitted-never-limited lie). Never silently
@@ -945,7 +947,7 @@ def test_keyed_reservation_ref_refused_at_the_wiring() -> None:
 
 
 def test_keyed_reservation_ref_refused_at_the_decorator() -> None:
-    """the decorator arm: ``@app.actor(reservations=[ref])`` refuses
+    """H-A10's decorator arm: ``@app.actor(reservations=[ref])`` refuses
     the keyed shape at the declaration site — the same loud door, the
     other entry."""
     from datetime import timedelta
@@ -969,7 +971,7 @@ def test_keyed_reservation_ref_refused_at_the_decorator() -> None:
 
 
 def test_max_pending_is_off_the_wf_surface() -> None:
-    """the (the honest scope): ``max_pending`` is REMOVED from the wf
+    """H-A6 (the honest scope): ``max_pending`` is REMOVED from the wf
     surface — the engine's inserts bypass the enqueue admission and the
     claim SQL cannot bound a backlog (claiming is the only drain: a
     claim-side gate would wedge the backlog forever), so the declared
@@ -1003,7 +1005,7 @@ def test_actor_carrier_matches_the_projection_vocabulary() -> None:
 
 
 def test_equal_terms_different_reservation_instances_do_not_conflict() -> None:
-    """the: the one-cap law compares the ROW-CARRIED fields only — two
+    """H-A3: the one-cap law compares the ROW-CARRIED fields only — two
     nodes, one actor name, equal ``max_concurrent``/``result_ttl``,
     DIFFERENT reservation instances of the SAME (name, slots, lease):
     NO conflict (the reservation's identity is the collect's own
@@ -1041,7 +1043,7 @@ def test_equal_terms_different_reservation_instances_do_not_conflict() -> None:
 
 
 def test_differing_row_fields_conflict_names_the_fields() -> None:
-    """the teeth: differing ROW fields still conflict, and the error
+    """H-A3's teeth: differing ROW fields still conflict, and the error
     NAMES the differing fields (never a values-only tuple dump)."""
     from taskq.workflows._worker_execution import (
         WorkflowActorCapacityConflictError,
@@ -1062,7 +1064,7 @@ def test_differing_row_fields_conflict_names_the_fields() -> None:
 
 
 def test_within_workflow_capacity_conflict_refuses_the_boot() -> None:
-    """the: the within-workflow capacity conflict is NEVER skippable —
+    """H-A7: the within-workflow capacity conflict is NEVER skippable —
     the skip stranded the workflow's rows forever (no cohort projected,
     nothing claims them) and blinded the queue-trap door. The
     across-apps arm's semantics apply within one workflow TOO: the boot
@@ -1083,7 +1085,7 @@ def test_within_workflow_capacity_conflict_refuses_the_boot() -> None:
 
 
 def test_a_raising_build_fn_still_skips_loudly() -> None:
-    """the isolation arm, kept: a RAISING build fn (a capacity
+    """H-A7's isolation arm, kept: a RAISING build fn (a capacity
     conflict's sibling — any non-capacity failure class) skips THAT
     workflow loudly and the healthy workflows still project. Only the
     CAPACITY conflict refuses the boot."""
@@ -1102,7 +1104,7 @@ def test_a_raising_build_fn_still_skips_loudly() -> None:
 
 
 def test_non_strict_foreign_cohort_warns_not_refuses() -> None:
-    """the: the queue-consumed refusal is the STRICT gate's own arm —
+    """H-A8: the queue-consumed refusal is the STRICT gate's own arm —
     the vanilla twin's opt-in law. NON-strict + a foreign cohort (a
     heterogeneous fleet's sibling worker owns the queue) is the WARNING
     arm (the aggregated event, the remedy named), never the refusal."""
@@ -1128,7 +1130,7 @@ def test_non_strict_foreign_cohort_warns_not_refuses() -> None:
     assert "TASKQ_QUEUES" in str(warnings[0].get("remedy", "")), warnings[0]
 
 
-# ── (g) the: the silent cap-drop by the placement override ────────────
+# ── (g) H-A4: the silent cap-drop by the placement override ────────────
 
 
 class ImageItem(BaseModel):
@@ -1149,7 +1151,7 @@ async def _audio_arm(ctx: StepContext, item: AudioItem) -> Report:
 
 
 def test_route_arm_actor_override_refuses_a_capped_body() -> None:
-    """the refusal: a CAPPED handle wired as a route arm whose
+    """H-A4's refusal: a CAPPED handle wired as a route arm whose
     placement OVERRIDES the actor (``RouteArm(actor=…)``) — the arm's
     cohort would project NULL (uncapped): the handle's capacity terms
     dropped by the override, the guard failing open by rename. The
@@ -1187,7 +1189,7 @@ def test_route_arm_actor_override_refuses_a_capped_body() -> None:
 
 
 def test_route_arm_declares_its_own_terms() -> None:
-    """the fix: the arm's OWN declaration (the RouteArm passthrough)
+    """H-A4's fix: the arm's OWN declaration (the RouteArm passthrough)
     covers the capped handle's terms — no refusal, and the arm's terms
     RIDE: the projection carries them onto the arm's effective cohort
     and the reservations collect (the ensure-slots pass's input)."""
@@ -1234,7 +1236,7 @@ def test_route_arm_declares_its_own_terms() -> None:
 
 
 def test_map_queue_only_override_is_not_refused() -> None:
-    """the same-actor arm: a capped handle wired as the MAP body —
+    """H-A4's same-actor arm: a capped handle wired as the MAP body —
     the map's placement keeps the source node's actor (the map spells no
     actor override), so the terms are NOT dropped and NOT refused: they
     flow into the node's unset term slots (the handle-terms flow's own
@@ -1264,7 +1266,7 @@ def test_map_queue_only_override_is_not_refused() -> None:
 
 
 def test_chain_step_capped_body_refused() -> None:
-    """the chain arm: a capped handle as a CHAIN step body — the
+    """H-A4's chain arm: a capped handle as a CHAIN step body — the
     chain's rows ride the CHAIN's own actor (the placement override the
     chain spells), and the chain surface has no terms passthrough: the
     handle's capacity terms would be dropped. The wiring REFUSES."""
@@ -1292,11 +1294,11 @@ def test_chain_step_capped_body_refused() -> None:
         app.get("chain-capped-body-flow")
 
 
-# ── (h) the: the loop escalation's cohort projects ────────────────────
+# ── (h) H-A11: the loop escalation's cohort projects ────────────────────
 
 
 def test_escalation_cohort_projects() -> None:
-    """the: an ``on_exhausted="escalate"`` loop's ESCALATION rows stamp
+    """H-A11: an ``on_exhausted="escalate"`` loop's ESCALATION rows stamp
     the registered definition's own (actor, queue) — the
     ``WorkflowDef.actor``/``queue`` defaults ("workflow"/"default") — and
     the projection never walked that cohort: the escalation rows parked
@@ -1878,7 +1880,7 @@ def test_route_arm_body_handle_flows_the_code_owner_per_arm() -> None:
     folded into the source node (the sibling arm and the join must not
     inherit it). The arm's own ``RouteArm.capacity_owner`` declaration
     honors it (the priority surface's per-arm shape); WITHOUT it the
-    wiring refuses, NAMING the owner (the law's extension — the
+    wiring refuses, NAMING the owner (the H-A4 law's extension — the
     override would drop it)."""
     from taskq.workflows._worker_execution import project_workflow_actor_configs as project
     from taskq.workflows.api._graph import RouteArm, WorkflowBuildError
@@ -1967,7 +1969,7 @@ def test_the_join_node_stays_at_the_source_terms() -> None:
 
 
 def test_a_node_already_carrying_a_different_owner_conflicts() -> None:
-    """The the shape on the owner axis: a node that already carries an
+    """The H-A4 shape on the owner axis: a node that already carries an
     owner (the step's code-owned handle) met at the map/route wiring by
     a handle carrying a DIFFERENT owner — the named conflict refusal,
     never a silent overwrite."""

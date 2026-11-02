@@ -62,7 +62,7 @@ def test_plain_cli_output_strips_full_escape_grammar() -> None:
 def test_cli_help_markers_survive_ci_colorization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The recorded reproduction: typer force-colorizes help output
+    """The run-36369327985 reproduction: typer force-colorizes help output
     whenever ``GITHUB_ACTIONS`` is set - which is EVERY GitHub runner - so
     the same CLI test that is green locally meets ANSI escapes interleaved
     inside its markers in CI. ``FORCE_COLOR`` and ``PY_COLORS`` trigger the

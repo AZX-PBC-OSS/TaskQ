@@ -8,7 +8,7 @@ threshold semantics. Nothing else.
 
 Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
 
-1. THE GRANT GAP (the recorded failure).  ``complete_batch``'s bounded handshake takes the
+1. THE GRANT GAP (RED).  ``complete_batch``'s bounded handshake takes the
    batches row FOR UPDATE inside ``_bounded_batches_row_wait``'s
    transaction and the completion write runs as the NEXT statement. On
    the transactional-caller shape the lock survives to the caller's
@@ -28,7 +28,7 @@ Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
    gap, and the unbounded holder class the bounded wait exists for (the
    streaming append) parks the completion write unbounded.
 
-2. THE DROPPED REISSUE (the recorded failure).  ``apply_batch_terminal_outcome`` returns
+2. THE DROPPED REISSUE (RED).  ``apply_batch_terminal_outcome`` returns
    whether the caller owes a post-commit re-arbitration, and its
    docstring says "the caller honors it by calling complete_batch
    (batch_id) again". The production caller -- ``worker/dispatch.py``,
@@ -198,7 +198,7 @@ class _GrantGate:
 
 
 async def test_completion_write_races_an_append_into_the_grant_gap(pg_dsn: str) -> None:
-    """The recorded failure: on the autonomous shape the handshake's lock used to be released
+    """RED: on the autonomous shape the handshake's lock used to be released
     before the completion write ran, so an appender that took the row in the
     gap committed a member the completion write's snapshot never saw. The
     batch must not reach 'complete' with a non-terminal member -- the
@@ -301,7 +301,7 @@ class _Payload(BaseModel):
 
 
 async def test_dispatch_honors_the_reissue_owed_flag() -> None:
-    """The recorded failure: the hook's reissue-owed return must survive the caller. The
+    """RED: the hook's reissue-owed return must survive the caller. The
     recorder stands in for the hook returning True (a gated-out attempt on
     the transactional-caller shape) and the backend records every
     ``complete_batch`` reissue issued WITHOUT a connection -- the

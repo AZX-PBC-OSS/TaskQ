@@ -454,7 +454,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "RETRY_SKIP_REARM_SQL_TEMPLATE": (
         "AND result @> '{\"skipped\": true}'::jsonb",
-        "the skip envelope's re-arm : its write set is ONE run's "
+        "the skip envelope's re-arm (H-C4): its write set is ONE run's "
         "exit-skipped rows (flow_id-bound, the engine's own "
         "SKIPPED_RESULT containment predicate — the round-2 recorded finding "
         'replaced bare key-existence so a foreign writer\'s {"skipped": '
@@ -525,7 +525,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     "_SPAWN_SLOT_CLAIM_SQL": (
         "WHERE id = $1",
         "keyed single node row (the spawning node's own spawn-cursor "
-        "slot claim — the ATOMIC increment-and-return, the recorded finding's fix; the "
+        "slot claim — the ATOMIC increment-and-return, rv5-C1's fix; the "
         "write set is the ONE row the attempt claims)",
     ),
     "_HOLD_AWAITED_LEDGER_SQL": (

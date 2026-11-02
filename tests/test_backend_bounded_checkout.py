@@ -157,7 +157,7 @@ async def test_reads_get_release_is_bounded_against_a_silently_dead_server(
     release, sent into a server that never answers, must cost the shrunk
     bound: a typed, bounded outcome instead of parking the caller (and
     ``pool.close()``) forever. The unbounded shape this replaces waited
-    the full park: the test's own 2 s budget firing IS the failing proof result."""
+    the full park: the test's own 2 s budget firing IS the red result."""
     shrunk_bound = 0.2
     pool = _DeadServerPool(park_secs=_PARK_SECS)
 

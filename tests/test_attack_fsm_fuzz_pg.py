@@ -237,7 +237,7 @@ async def test_the_convicted_reopen_plan(pg_dsn: str) -> None:
     """The rejected counterexample, replayed DETERMINISTICALLY - now GREEN.
 
     The 2026-10-10 recorded finding (the consolidator's fast tier, red receipted
-    the recorded capture) held that this plan
+    .measurements/fsm-red/red-20261010-fsm-mirror.txt) held that this plan
     (enqueue, cancel_request, retry_job, cancel_request) "emits a
     state_change AFTER a terminal event".  The reads decided in the
     invariant's own favor: the retry-after-cancel path's re-pend is the

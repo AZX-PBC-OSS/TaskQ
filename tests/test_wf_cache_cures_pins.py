@@ -2,7 +2,7 @@
 
 The lane's red receipts (all captured live BEFORE the fixes, on the base
 head ``0e2f5cc09`` against :5810 — the files live in
-`the recorded capture`):
+``.measurements/cache-fixes/``):
 
 * FIX 1 (P8f, the ROUTE-SOURCE WEDGE): ``route_wedge_repro.py`` — run 1
   stores, run 2 HITS and the hit path never rebuilds the route fork →
@@ -169,7 +169,7 @@ def test_route_source_cache_refuses_at_the_route_attachment() -> None:
     cannot rebuild the fork: the arm dispatch reads the element's runtime
     type) and the ALTERNATIVE (cache the arms' work, not the
     fork-spawning source). The pre-fix shape wired clean and wedged
-    forever at the first hit — the failing proof receipt is the lane's live repro."""
+    forever at the first hit — the red receipt is the lane's live repro."""
     app = WorkflowApp()
 
     @app.workflow("wedge_flow")
@@ -339,7 +339,7 @@ def test_unverifiable_source_cache_refuses_at_the_wiring() -> None:
     """THE SILENCE'S DOOR (AMENDMENT B — the import-probe's #3): an
     unverifiable body source made the step SILENTLY uncached — the
     wiring accepted cache=True, every run re-executed the body, the only
-    trace a log line (the failing proof receipt). The operator must never learn
+    trace a log line (the red receipt). The operator must never learn
     the face from a MISSING HIT: the precondition refuses here, by
     name."""
     ns: dict[str, object] = {"Report": Report, "StepContext": StepContext}
@@ -459,7 +459,7 @@ async def test_hit_finalize_fault_is_infra_never_a_body_failure(
     path's finalize faults own (the escape-point contract: the
     classifier reads WHERE the error escaped). The pre-fix seat routed
     the blip through the body ladder: the node terminal-FAILED on a
-    max_attempts=1 step whose body NEVER ran (the failing proof receipt — the
+    max_attempts=1 step whose body NEVER ran (the red receipt — the
     live repro's exact shape). The fix: the blip ESCAPES the claim tail
     (the reclaim-eligible transport fault — the ledger says crashed, the
     ladder unburned, no error record, the node reclaimable)."""

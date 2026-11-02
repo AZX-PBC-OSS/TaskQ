@@ -2,8 +2,8 @@
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
-home), the red-output sink flushes to `the recorded capture` (a
-file that gets READ — the build protocol), the shipped invariants green,
+home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
+file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
 the unfenced variants kept in this file forever as the rejected shapes.
 """
 
@@ -126,7 +126,7 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
         {"fired_post_cancel": len(winners)},
     )
     assert len(winners) == 1, (
-        "the unfenced variant did not fire post-cancel — the failing proof comparator "
+        "the unfenced variant did not fire post-cancel — the red comparator "
         "is broken (the leg must be load-bearing)"
     )
 
@@ -169,8 +169,8 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     the flow-status EXISTS (the fence's second leg; the fire guard's leg
     and the finalize fence are the other two). The leg refuses cleanly and
     the sweep re-derives (the asymmetry doctrine: a refused claim is
-    re-derivable, a claimed one is not un-runnable). The failing scenario is the
-    fence dropped (recorded: `the recorded capture`
+    re-derivable, a claimed one is not un-runnable). The RED scenario is the
+    fence dropped (recorded: ``.measurements/attack/B2-red-dispatch-fence.txt``
     — the shipped claim re-claims the dead flow's child); the attack file
     ``tests/attack_wf_dispatch_fence.py`` keeps the same recorded finding on the
     REAL backend path (``dispatch_batch`` over ``clean_jobs_app``).
@@ -363,10 +363,10 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     # the RENDERED statement (the same shape the production dispatch
     # runs). The unregistered worker then CLAIMS the still-pending
     # ``live2`` row: the leg is load-bearing, the damage observed and
-    # recorded to the failing proof sink. (The external source-level scenario — the
-    # mutation in ``_WF_EXEC_CAPABLE_CTE`` itself, this pin fails at the
+    # recorded to the red sink. (The external source-level scenario — the
+    # mutation in ``_WF_EXEC_CAPABLE_CTE`` itself, this pin RED at the
     # refusal above — is captured in
-    # `the recorded capture`.)
+    # ``.measurements/attack/R2-red-exec-capable-leg.txt``.)
     mutated_sql = DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema).replace(
         "           false\n         ) AS capable",
         "           true\n         ) AS capable",
@@ -396,7 +396,7 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
 
     # THE PLAN RECORD: the fenced claim's shape (the fence's EXISTS rides
     # as a per-row subplan that vanilla rows never evaluate) — the FULL
-    # plan, every row of it, recorded to the failing proof sink (a file that gets
+    # plan, every row of it, recorded to the red sink (a file that gets
     # READ; the async-safe path — no blocking file IO in the event loop).
     # ``fetchval`` returns only the FIRST plan line — the bare top-level
     # ``Update`` summary proves nothing about plan shape; the subplan's
@@ -427,7 +427,7 @@ def test_pin_21_sweep_arms_wired_into_the_maintenance_loop() -> None:
     ``taskq.workflows._sweep`` and nothing outside the package called
     them, so the healing was unreachable in production. The pin rejects
     an unwired arm (a spec deleted from the tick table reds) AND the
-    the section.1 import law (importing the worker module never imports
+    §16.1 import law (importing the worker module never imports
     ``taskq.workflows`` at module scope — the arms' imports stay lazy,
     inside the spec calls)."""
     import subprocess  # Why: the pin IS the ticket's grep shape.
@@ -536,7 +536,7 @@ async def test_pin_8_misnamed_child_blocked_with_reason(
         {"orphan_fired": len(winners)},
     )
     assert len(winners) == 1, (
-        "the rejected variant did not fire the orphan — the failing proof comparator "
+        "the rejected variant did not fire the orphan — the red comparator "
         "is broken (the missing-parent twin fires silently)"
     )
 

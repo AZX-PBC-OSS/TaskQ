@@ -4,7 +4,7 @@ arms are keyed by the source's union MEMBERS' TYPES.
 The graph-level face of the type-tagged Route's discipline (the chain
 corpus's ``wf_type_tagged_route_negative_types.py``, at the wiring verbs):
 a raw STRING key on a route dict — neither a union member nor any type —
-fails at the call site; the declaration-time totality refusal (the verb's
+reds at the call site; the declaration-time totality refusal (the verb's
 own door) would refuse it too. The green face: a route keyed by the
 union's member types passes UNMARKED (the type IS the tag; the arms'
 placement rides ``RouteArm``).
@@ -137,7 +137,7 @@ def probe_the_homogeneous_barrier_type(app: WorkflowApp) -> None:
     """THE FAN-IN'S EDITOR FACE (T27's barrier — fork, fan back in at the
     chunking step): HOMOGENEOUS arms (both return ``ExtractedText``) —
     the route's promise solves to the flat ``Promise[list[ExtractedText]]``
-    (the build fn's declared return pins the solve: a drifted ARM fails
+    (the build fn's declared return pins the solve: a drifted ARM reds
     the RETURN — the list's invariance cannot smuggle the wrong element
     list past it, on pyright; ty's solving is looser here — the honest
     boundary — and the RUNTIME decode (the arm's param, the barrier's

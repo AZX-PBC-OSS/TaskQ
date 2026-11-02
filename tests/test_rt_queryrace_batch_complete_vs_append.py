@@ -5,7 +5,7 @@ member-append window.
 Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:
 
 1. ``_COMPLETE_BATCH_SQL``'s NOT EXISTS guard vs a CONCURRENT MEMBER APPEND
-   (the recorded failure).  The guard arbitrates "in this statement's own snapshot", and a
+   (RED).  The guard arbitrates "in this statement's own snapshot", and a
    READ COMMITTED snapshot cannot see another transaction's uncommitted
    member INSERT.  The appender is real: ``enqueue_batch_streaming``
    without a connection commits members chunk by chunk in separate pool
@@ -126,7 +126,7 @@ async def _teardown(stack: Any, pg_dsn: str, schema: str) -> None:
 async def test_complete_batch_lands_while_member_append_is_uncommitted(
     pg_dsn: str,
 ) -> None:
-    """The recorded failure: the complete CAS cannot see an in-flight member INSERT, so it
+    """RED: the complete CAS cannot see an in-flight member INSERT, so it
     completes the batch; once the append commits, a 'complete' batch holds a
     pending member - the premature completion complete_batch's docstring
     promises can never happen."""

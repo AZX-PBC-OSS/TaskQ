@@ -81,7 +81,7 @@ async def _boot_until_idle_or_raise(
 async def test_worker_boot_refuses_while_denial_counter_migration_is_pending(
     pg_dsn: str,
 ) -> None:
-    """THE FAILING CONTRACT: boot must refuse while migrations are pending.
+    """RED contract: boot must refuse while migrations are pending.
 
     The queue-cap guard refuses a schema missing 01.00.04; the same doctrine
     must cover ANY pending migration - a schema missing the newest one boots

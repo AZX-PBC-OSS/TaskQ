@@ -3,10 +3,10 @@
 THE RECORDED FINDING (today, twice): main's head-stamp lint job reds on EVERY
 merge — including #696's DOCS-ONLY merge (``LEDGER.md`` alone) — because
 the off-by-one rule's diff half (``scripts/verify_evidence_heads.py``'s
-``_source_changes_since``) exempted only `the recorded capture` (``.github/``
+``_source_changes_since``) exempted only ``.measurements/`` (``.github/``
 beside it) from the staleness walk. ``LEDGER.md`` and ``docs/**`` sit
 outside that set, so a documentation edit re-staled every live claim:
-red main for a docs-only change (the recorded CI runs).
+red main for a docs-only change (CI runs 41133332137 + 41140297312).
 
 THE LAW'S EDGE (as the review corrected it): the claims verify the
 SOURCE + TEST tree — EXCEPT THE DOCS-DERIVED STEMS
@@ -27,7 +27,7 @@ migrations, ``examples/`` (imported by the smoke tests — behavior),
 ``scripts/`` (the gates themselves), ``benchmarks/`` (the measurement
 pins read them).
 
-THE METHOD (new for this pack, the recorded finding's subprocess seam): the
+THE METHOD (new for this pack, the rv2-13 subprocess seam): the
 off-by-one rule's diff half is judged against the REPO'S OWN HEAD, and a
 script's ``REPO`` is its own home — so each pin builds a THROWAWAY GIT
 REPO in a tmp dir, copies the verifier into it BYTE-IDENTICAL (the copy
@@ -70,7 +70,7 @@ fix's own receipt):
   IS a source change: the exemption set falls back to the NARROW one
   and the claim goes STALE. FAILING-FIRST: the round-1 fix's verifier
   applied the docs exemption to EVERY stem and called these fresh —
-  the failures are this fix's receipt.
+  the reds are this fix's receipt.
 * F-X5 — THE ROUND-1 FIX'S LEG KEEPS: the SAME docs-only merge
   against a PLAIN stem (no docs-sensitive prefix) stays FRESH — the
   fallback narrows the exemption for the docs-derived stems only,
@@ -94,7 +94,7 @@ import importlib.util
 import json
 import os
 import shutil
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the recorded finding's pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the rv2-13 pin's own shape).
 import sys
 from pathlib import Path
 from typing import cast
@@ -265,7 +265,7 @@ def test_a_docs_only_merge_of_one_member_does_not_stalify(
     edit and the capture land together). Every member is a path that
     CANNOT change what the capture verifies — the source + test tree is
     content-identical — so the off-by-one rule must hold the claim
-    FRESH (rc=0). The first cut's rule exempted only `the recorded capture`:
+    FRESH (rc=0). The first cut's rule exempted only ``.measurements/``:
     each leg red here before the fix (the failing-first tails are the
     commit's receipt)."""
     repo, base = _init_repo(tmp_path)
@@ -396,7 +396,7 @@ def test_a_docs_only_merge_stalifies_a_docs_derived_stem(
     exemption must not apply: the exclusion set falls back to the
     NARROW one and a docs-only merge goes STALE, exactly as a src/
     merge would. FAILING-FIRST: the round-1 fix's verifier applied the
-    docs exemption to EVERY stem and called these fresh — the failures are
+    docs exemption to EVERY stem and called these fresh — the reds are
     this fix's receipt."""
     repo, base = _init_repo(tmp_path)
     _stamp_estate(repo, base, stem=stem)

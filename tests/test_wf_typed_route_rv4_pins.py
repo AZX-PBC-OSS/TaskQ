@@ -5,10 +5,11 @@ SAFE behavior.
 
 Provenance: the rv4 internals review's live recorded findings, each reproduced
 against this head BEFORE pinning (the pre-pin repro shapes + outputs are
-at the pinning run). Per the doctrine, a LIVE finding is
-pinned under ``pytest.mark.xfail(strict=True, reason="LIVE FINDING: …")`` asserting the SAFE behavior — the fix flips the pin
-XPASS-strict (a failure that says: remove the marker WITH the fix). The one
-GREEN guard (the recorded finding's undeclared leg) pins the behavior that is already
+in the pin pack's (the pinning run's record). Per the doctrine, a LIVE finding is
+pinned under ``pytest.mark.xfail(strict=True, reason="LIVE FINDING
+rv4-<id>: …")`` asserting the SAFE behavior — the fix flips the pin
+XPASS-strict (a red that says: remove the marker WITH the fix). The one
+GREEN guard (rv4-9's undeclared leg) pins the behavior that is already
 correct and must survive the fix.
 
 The findings (each rejected live; the receipts carry the verbatim reds):
@@ -320,7 +321,7 @@ async def test_rv4_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
 
     runner = FlowRunner(app.get("rv4_2_fan_in_refusal"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
     flow_id = (await runner.create_flow()).flow_id
-    # THE FAILURE LANDS HERE: drive() raises the raw ValueError out of the
+    # THE RED LANDS HERE: drive() raises the raw ValueError out of the
     # finalize tx (untyped, unladdered) instead of returning 'terminal'
     # over a terminal-FAILED source.
     verdict = await runner.drive(flow_id, tick=0.02, max_ticks=120)
@@ -703,7 +704,7 @@ def test_rv4_7b_the_source_gate_covers_the_arms_waits() -> None:
             )
         )
 
-    # THE FAILURE LANDS HERE: app.get raises WorkflowValidationError (E14's
+    # THE RED LANDS HERE: app.get raises WorkflowValidationError (E14's
     # declared-never-waited ERROR) though the arm WAITS on the declared gate.
     compiled = app.get("rv4_7b_arm_wait_gated_source")
     e14 = [d for d in validate_compiled(compiled) if d.rule == "E14-gate-wiring"]

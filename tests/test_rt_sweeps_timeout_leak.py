@@ -15,7 +15,7 @@ execution environment was changed underneath it.
 The asymmetry is real and worth pinning both ways:
 
 * RELEASE (sweep success): the timeout LEAKS unless the sweep restores
-  the previous value - the failing proof finding this file exists to prove;
+  the previous value - the red finding this file exists to prove;
 * ROLLBACK TO SAVEPOINT (sweep failure): PostgreSQL's subtransaction
   GUC stack restores the previous value automatically - pinned here as
   existing behaviour so a future refactor away from savepoints (or to a

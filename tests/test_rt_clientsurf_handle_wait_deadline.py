@@ -115,7 +115,7 @@ def _handle(backend: Any) -> JobHandle[None]:  # type: ignore[type-var]  # Why: 
 
 
 async def test_wait_deadline_is_enforced_while_a_fetch_hangs() -> None:
-    """THE FAILING CONTRACT: wait(timeout=0.3) must raise its own TimeoutError even
+    """RED contract: wait(timeout=0.3) must raise its own TimeoutError even
     when the very first backend.get never returns.
 
     Current behavior violates the docstring contract

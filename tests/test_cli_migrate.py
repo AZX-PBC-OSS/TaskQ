@@ -136,9 +136,9 @@ async def test_migrate_status_terminates_hung_conn_close(monkeypatch: Any) -> No
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, _status awaits conn.close() unbounded,
-    # so the run would hang forever instead of failing fast. Driven via
+    # so the RED state would hang forever instead of failing fast. Driven via
     # the command coroutine directly (not runner.invoke) so asyncio.timeout
-    # can bound the mutated state.
+    # can bound the RED state.
     async with asyncio.timeout(5):
         await cli_mod._status(TaskQSettings.load())
 
@@ -159,7 +159,7 @@ async def test_migrate_status_hung_close_does_not_mask_body_error(monkeypatch: A
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, _status awaits conn.close() unbounded,
-    # so the mutated state would hang forever (masking "boom") instead of
+    # so the RED state would hang forever (masking "boom") instead of
     # failing fast.
     async with asyncio.timeout(5):
         with pytest.raises(RuntimeError, match="boom"):
@@ -608,9 +608,9 @@ async def test_migrate_up_terminates_hung_conn_close(monkeypatch: Any) -> None:
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_SECS", 0.05)
 
     # Why the outer timeout: unguarded, _up awaits conn.close() unbounded,
-    # so the run would hang forever instead of failing fast. Driven via
+    # so the RED state would hang forever instead of failing fast. Driven via
     # the command coroutine directly (not runner.invoke) so asyncio.timeout
-    # can bound the mutated state.
+    # can bound the RED state.
     async with asyncio.timeout(5):
         await cli_mod._up(TaskQSettings.load(), phase=None, target=None, max_steps=None)
 

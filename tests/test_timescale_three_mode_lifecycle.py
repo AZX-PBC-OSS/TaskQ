@@ -716,7 +716,7 @@ async def _force_retention_policies_now(conn: asyncpg.Connection, schema: str) -
 #: OUTSIDE the wait (the migrate subprocess, the fold, the sweeps, the
 #: disable round-trip — the solo leg runs 23s end to end). The budget
 #: bounds FAILURE only: a healthy policy lands the drop in seconds and
-#: the poll pays nothing, while a never-dropping policy must still fail
+#: the poll pays nothing, while a never-dropping policy must still RED
 #: (the teeth leg below pins exactly that — it passes its own short
 #: bound, because with the policy job disabled no dispatch can ever
 #: land the drop, so any positive budget proves the red).
@@ -768,7 +768,7 @@ async def test_tsl_policy_job_disabled_the_drop_wait_still_reds(
     dispatch can ever take the chunk. The wait is then required to RAISE
     on its own bound, and the row must still be there. The teeth budget
     is short by construction (``_NEVER_DROPS_TEETH_BUDGET_SECS``): with
-    the job disabled ANY positive budget proves the failing proof — the full
+    the job disabled ANY positive budget proves the red — the full
     derived :data:`_POLICY_DROP_BUDGET_SECS` is the lifecycle leg's to
     pay, never this leg's.
     """
@@ -816,7 +816,7 @@ async def test_tsl_policy_job_disabled_the_drop_wait_still_reds(
         # And the prey SURVIVED the whole window: nothing but the policy
         # could have taken it, and the policy was disabled.
         assert not await _row_gone(conn, schema, aged_jid)(), (
-            "the aged row must survive the never-drops window: the failing proof above "
+            "the aged row must survive the never-drops window: the red above "
             "is the wait's own bound, not a missing seed"
         )
     finally:

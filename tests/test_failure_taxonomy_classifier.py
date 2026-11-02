@@ -36,7 +36,7 @@ in the factory's docstring and pinned here:
 4. unsure → ``None``.
 
 429 is deliberately carved out of the default non-retryable band (the
-PR's own the section table: 429 is the single most important status to retry) so
+PR's own §4 table: 429 is the single most important status to retry) so
 this classifier never claims it and composes safely with
 rate_limit_aware_classifier in EITHER order.
 """
@@ -338,7 +338,7 @@ def test_other_4xx_claims_non_retryable(status: int) -> None:
 
 
 def test_429_is_carved_out_of_the_default_non_retryable_band() -> None:
-    """The carve-out the PR's own the section table demands: 429 is the single most
+    """The carve-out the PR's own §4 table demands: 429 is the single most
     important status to RETRY. The taxonomy returns None for it — the
     rate-limit classifier's signal, or the declared policy's if that
     built-in is not composed in."""
@@ -533,7 +533,7 @@ def test_default_transient_statuses_constant() -> None:
 
 
 def test_default_non_retryable_statuses_constant_is_4xx_minus_carve_outs() -> None:
-    """The 4xx band minus {408, 425, 429}: exactly the statuses the section
+    """The 4xx band minus {408, 425, 429}: exactly the statuses the §4
     table calls non-retryable."""
     for status in range(400, 500):
         expected = status not in {408, 425, 429}

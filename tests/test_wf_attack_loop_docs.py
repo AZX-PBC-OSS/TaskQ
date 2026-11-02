@@ -1,5 +1,5 @@
 """DOCS-HONESTY PINS — the loop front's doc-truth recorded findings (the
-hostile review of the consolidated head, the consolidated head; the front's REPORT.md
+hostile review of the consolidated head, af1b8779; the front's REPORT.md
 surface B carries the audit table).
 
 Pure file-system pins (no PG): each parses the doc/artifact it rejects
@@ -10,7 +10,7 @@ the marker WITH the fix. The full defect list with the exact fix per
 item: DEFECTS.md beside this file in the pin pack.
 
 The receipts law these pins enforce: a measured number cited by the
-repo's docs resolves to a run-scoped artifact in `the recorded capture` — or
+repo's docs resolves to a run-scoped artifact in ``.measurements/`` — or
 the number is a claim with no evidence. ("A red is machine-generated or
 it doesn't exist"; a figure is artifact-backed or it doesn't ship.)
 """
@@ -37,7 +37,7 @@ def _evidence_measurements_dir() -> Path:
 # locally without the estate (the partial-local-dir race). No local
 # registry → the pins walk the EVIDENCE BRANCH's staged copy — the same
 # files, one indirection; the sha cross-check stays the verifier's and
-# the recorded finding's law.
+# rv2-13's law.
 MEASUREMENTS = (
     REPO / ".measurements"
     if (REPO / ".measurements" / "runs" / "CLAIMS.json").is_file()
@@ -116,7 +116,7 @@ def _measurements_bases() -> list[Path]:
 
 
 def _artifact_pool() -> dict[str, list[float]]:
-    """Every numeric value in every `the recorded capture`
+    """Every numeric value in every ``.measurements/**/*.json``
     artifact, per file (bare names, ``runs/`` run-scoped captures, and
     the dated subdirectories) — across EVERY base corpus (the union
     law: the staged estate + the local overlay)."""
@@ -184,7 +184,7 @@ def _perf_doc_figures(text: str) -> list[tuple[int, str, str]]:
 def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
     """THE DOCS-NUMBERS LAW: every measured point figure in
     ``perf-evidence-workflows.md`` resolves to an artifact in
-    `the recorded capture`.
+    ``.measurements/``.
 
     Two layers, one verdict:
 
@@ -379,8 +379,8 @@ def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> Non
         drift.append(
             "the guide carries its own count arithmetic — the one-home law says the ledger is the only home"
         )
-    if "the recorded capture" not in guide:
-        drift.append("the guide lost its pointer to the disposition ledger (the one home)")
+    if "nowhere else" not in guide:
+        drift.append("the guide lost its one-home statement for the disposition counts")
     assert not drift, (
         "T17 disposition count drift (one count, one home):\n  - "
         + "\n  - ".join(drift)
@@ -406,7 +406,7 @@ def test_docs_the_api_reference_documents_the_loop_surface() -> None:
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the guide the section spells the shipped verb's own signature (every parameter, the bare names) [the guide-signature fix]; the marker was removed per the designed flip (the confirmation).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the guide §9 spells the shipped verb's own signature (every parameter, the bare names) [the guide-signature fix]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     """The guide's spelled signature must carry every parameter the
     shipped verb takes (a param the guide never names — carry_type,
@@ -421,7 +421,7 @@ def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     shipped = set(inspect.signature(loop_verb).parameters)
     missing = shipped - spelled
     assert not missing, (
-        f"the guide the section loop signature is stale: it spells {sorted(spelled)} but "
+        f"the guide §9 loop signature is stale: it spells {sorted(spelled)} but "
         f"the shipped verb takes {sorted(shipped)} — missing from the guide: "
         f"{sorted(missing)}"
     )
@@ -458,7 +458,7 @@ def test_docs_the_pin_inventory_names_the_families_the_guide_relies_on() -> None
 # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the carry dragon's scenario receipt recorded (the machine-generated red)]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
     """The receipts law, applied to the carry dragon: the claim stands
-    in two homes (the guide's the section carry paragraph and the advance
+    in two homes (the guide's §9 carry paragraph and the advance
     statement's own comment), so the run-scoped reds ledger must carry
     the carry scenario's receipt. If the claim is deleted instead (the
     honest-shrink fix), the pin passes vacuously — the law binds claims
@@ -484,7 +484,7 @@ def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
                 receipts.append(f"{entry.get('pin', '')} — {entry.get('mutation', '')}")
     carry_receipts = [r for r in receipts if re.search(r"carry|optimistic", r, re.I)]
     assert carry_receipts or not claim_present, (
-        "the carry dragon's 'red forever' claim stands (guide the section + "
+        "the carry dragon's 'red forever' claim stands (guide §9 + "
         "LOOP_ADVANCE_SQL's comment) but t19-pin-reds.json carries NO "
         f"carry-mutation receipt ({len(receipts)} receipts on file, none for the "
         "carry scenario) — a red is machine-generated or it doesn't exist (the "

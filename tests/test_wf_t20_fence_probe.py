@@ -1,5 +1,5 @@
 """T20's FENCE PROBE — the source-terminal fence + the premature-terminal
-fence (the spike's 30-sweep probe's shape, PROOF.md the section, translated).
+fence (the spike's 30-sweep probe's shape, PROOF.md §2, translated).
 
 The no-fan-in design has NO join, so the original premature-FIRE fence
 has no subject; its successor is the PREMATURE TERMINAL: the run's root
@@ -19,7 +19,7 @@ The mutation scenario is the failing-first tooth: the maintenance leg with its
 LIVENESS GATE MUTATED OUT finalizes the root mid-stream on the same
 shape of rows — the fence is load-bearing, not decorative.
 
-Captured: `the recorded capture`.
+Captured: ``.measurements/t20-probe-*.txt``.
 """
 
 from __future__ import annotations

@@ -12,7 +12,7 @@ the assertions stand as the permanent green pins. F-DOCS-4's cited text
 (the holdmap fix's runbook paragraph) does NOT exist in this tree — it
 lives on the unmerged ``feat/taskqflow-holdmap-fixes`` lane — so that
 pin stands GREEN as the anti-rot guard: the docs-numbers law it asserts
-rejects the text the day the lane lands with the mismatch (the recorded finding's
+rejects the text the day the lane lands with the mismatch (the rv2-11
 posture: a guard that keeps the resolution from rotting, here pre-seeded
 for the incoming paragraph). All four pins are STATIC (the estate's own
 text, never a container).
@@ -196,11 +196,11 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
     /``wf_join_fire``/``wf_node_progress``) beside ``jobs``.
 
     AT THIS HEAD (6e2297fe8): NO such claim exists — the cited paragraph
-    lives on the unmerged holdmap-fixes lane (the guide's the section here carries
+    lives on the unmerged holdmap-fixes lane (the guide's §7 here carries
     no table-count sentence). This pin stands GREEN as the anti-rot
     guard: the day the lane's paragraph lands with the mismatch, the pin
     reds. Zero matches is a lawful green (the law rejects claims, not
-    absence); the section witness keeps the read honest."""
+    absence); the §7 witness keeps the read honest."""
     assert _GUIDE.is_file(), "the workflows guide is missing"
     offenders: list[str] = []
     for doc in sorted((_REPO / "docs").rglob("*.md")):

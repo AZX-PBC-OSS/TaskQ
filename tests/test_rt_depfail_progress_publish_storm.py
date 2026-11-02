@@ -1,4 +1,4 @@
-"""RED-team: progress-publish failure emission and task lifetime under Redis death.
+"""adversarial-review pin: progress-publish failure emission and task lifetime under Redis death.
 
 The bounded-never-raise contract of the publish helpers is pinned elsewhere
 (tests/test_progress_publish.py). This file hunts the two unpinned sides of

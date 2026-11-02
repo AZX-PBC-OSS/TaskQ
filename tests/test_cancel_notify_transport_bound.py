@@ -1,6 +1,6 @@
 """THE CANCEL NOTIFY TRANSPORT'S BOUND — the system-e2e PG17 lane's recorded findings.
 
-The CI recorded finding (the recorded run, the ``system-e2e (17)`` leg at
+The CI recorded finding (run 38053606389, the ``system-e2e (17)`` leg at
 f7155214; PG15/16/18 green on the same commit): one silently-dead PG
 socket under the runner's weather converted ONE infrastructure event
 into THREE legs of the matrix:

@@ -1135,7 +1135,7 @@ async def test_call_window_leak_report_names_test_end_residue() -> None:
     guard's teardown check (the live diff's case) or finished during the
     teardown window (the shape the live diff cannot see: a worker bootstrap
     left mid-drain at test end, reaped by an awaiting teardown fixture,
-    the exact shape the recorded run's leak report demanded land on the
+    the exact shape run 35648058316's leak report demanded land on the
     leaking test).  An empty window reports nothing."""
     window_dead: list[asyncio.Task[object]] = []
     finished = asyncio.create_task(_hygiene_noop(), name="hygiene-window-finished")

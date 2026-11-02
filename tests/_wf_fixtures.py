@@ -307,7 +307,7 @@ TERMINAL_SQL = "('succeeded','failed','cancelled','crashed','abandoned')"
 
 
 class RedLog:
-    """The red-output sink: a file that gets READ (the build protocol).
+    """The red-output sink: a file that gets READ (BUILD-PROTOCOL §2).
     Every pin's rejected variant appends its observed dragon here; the
     fixture flushes on teardown.
 
@@ -336,8 +336,8 @@ class RedLog:
     module-level constant walked past it) — the receipt chain inspects
     the SINK, never the call's shape, and recorded findings are by provenance.
 
-    The captures' home (`the recorded capture`) is
-    deliberately UNIGNORED-adjacent residue: `the recorded capture` is
+    The captures' home (``.measurements/failure log-captures/<run>/``) is
+    deliberately UNIGNORED-adjacent residue: ``.measurements/`` is
     gitignored, the sinks live there as run records, and the guard
     verifies captures of records still alive on this tree.
     """
@@ -495,7 +495,7 @@ def timer_cures_redlog() -> Iterator[RedLog]:
     log.flush()
 
 
-#: The G7 always-on assertion's mapping: the section.5 derivation's workflow
+#: The G7 always-on assertion's mapping: the §17.5 derivation's workflow
 #: status → the flow ROOT row's job_status (the root's legal vocabulary).
 #: The mapping is the TERMINAL states' expectation; the LAW is stated in
 #: :func:`g7_check` (the root row is a cache, and each terminal root has
@@ -517,7 +517,7 @@ async def wf_g7_status_truth(
     """G7 (T08): the ALWAYS-ON metamorphic assertion — at test end, the
     REPORTED workflow status (the flow root row's own status, the
     linearization point the engine's maintenance leg writes) equals the
-    status RECONSTRUCTED FROM ROWS ALONE (the section.5 derivation over the
+    status RECONSTRUCTED FROM ROWS ALONE (the §17.5 derivation over the
     node rows + the ledger — D4's two-source rule). Registered for every
     workflow integration test via the collection hook (tests/conftest.py
     adds it to the wf-family files); catches status-drift continuously,
@@ -598,7 +598,7 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
             # root must agree. (The maintain statement's own derivation
             # re-derives the root from the node rows — a disagreement
             # AFTER the pass is the two derivations' drift or a wedging
-            # sweep.) ONE HONEST LAG SURVIVES the leg: the section.5
+            # sweep.) ONE HONEST LAG SURVIVES the leg: the §17.5
             # cancelled/failed PRECEDENCE derives a terminal verdict OVER
             # live rows (a fired-but-unclaimed join row is claimable
             # work the derivation's cancelled row outranks) — the root

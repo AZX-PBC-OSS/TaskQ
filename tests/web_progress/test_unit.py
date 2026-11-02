@@ -1,4 +1,4 @@
-"""Unit tests for taskq.web.progress SSE bridge and poll-state endpoint (the section.7, the section.3).
+"""Unit tests for taskq.web.progress SSE bridge and poll-state endpoint (§3.7, §10.3).
 
 Uses stub PG and Redis mocks - no testcontainers required.
 
@@ -211,7 +211,7 @@ def _make_stream_endpoint(
 
     Driving the handler body directly (instead of via TestClient) lets async
     tests wrap the call in ``asyncio.timeout`` so a hung cleanup wedges the
-    failing state fast instead of blocking a portal thread.
+    RED state fast instead of blocking a portal thread.
     """
     redis = _StubRedis(pubsub)
     router = create_router(
@@ -1281,9 +1281,9 @@ async def test_sse_missing_terminal_key_defaults_to_progress() -> None:
 # has no counterexamples. The shrink seam is the same module-global
 # monkeypatch convention as the other teardown tests. Why raising=False on
 # the setattr: unguarded the module has no CLOSE_TIMEOUT_SECS seam, so the
-# The failing state must demonstrate the cleanup wedge (outer timeout), not an
+# RED state must demonstrate the cleanup wedge (outer timeout), not an
 # AttributeError from the shrink. Why the outer asyncio.timeout(5): unguarded
-# each path awaited pubsub.aclose() unbounded, so the mutated state wedges
+# each path awaited pubsub.aclose() unbounded, so the RED state wedges
 # instead of failing fast.
 
 

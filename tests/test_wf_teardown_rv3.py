@@ -6,9 +6,9 @@ interface).
 Provenance: the teardown reviewer's offered cut, this lane's pack. Per
 the doctrine, a LANDED finding is pinned asserting the SAFE behavior
 under ``pytest.mark.xfail(strict=True)`` — the fix flips the pin to
-XPASS-strict (a failure that says: remove the marker WITH the fix); the
+XPASS-strict (a red that says: remove the marker WITH the fix); the
 pin then stands as the green guard. Every finding here was run
-UNMARKED first (the failing proof captured in RECEIPTS — the
+UNMARKED first (the red captured in RECEIPTS — the
 the pinning protocol) before the marker
 went on.
 
@@ -46,7 +46,7 @@ The findings (each rejected live at the pin head):
 * F-RV3-8 — the ``@app.actor`` canonical path defeats the code-version
   stamper: the node's body is the ``WorkflowActor`` WRAPPER, so the
   stamp hashes the wrapper's identity (every node the same constant —
-  the section.1's deploy-drift feature dead where the docs teach).
+  §22.1's deploy-drift feature dead where the docs teach).
 * F-RV3-9 — the hold's reason has TWO homes: the wait site's
   ``reason=`` lands in the row's ``payload['reason']`` (populated) and
   ``HoldContext.reason`` reads ``None`` — always.
@@ -142,7 +142,7 @@ def test_rv3_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> Non
     async def reviewer(ctx: StepContext, params: _Ingest) -> _Decision:
         return _Decision(ok=True)
 
-    @app.workflow("the recorded finding's-gate-never-waited")
+    @app.workflow("rv3-4a-gate-never-waited")
     def build_wf() -> Promise[_Decision]:
         p = step(
             reviewer,
@@ -152,7 +152,7 @@ def test_rv3_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> Non
         return build(p)
 
     with pytest.raises(WorkflowValidationError, match="E14"):
-        app.get("the recorded finding's-gate-never-waited")
+        app.get("rv3-4a-gate-never-waited")
 
 
 def test_rv3_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
@@ -175,12 +175,12 @@ def test_rv3_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
             case Expired():
                 return _Decision(ok=False)  # the fail-close arm — the checker's own forcing
 
-    @app.workflow("the recorded finding's-wait-never-declared")
+    @app.workflow("rv3-4b-wait-never-declared")
     def build_wf() -> Promise[_Decision]:
         p = step(approver, _Ingest(doc_id="d"))
         return build(p)
 
-    compiled = app.get("the recorded finding's-wait-never-declared")  # the build does NOT refuse
+    compiled = app.get("rv3-4b-wait-never-declared")  # the build does NOT refuse
     diagnostics = validate_compiled(compiled)
     e14 = [d for d in diagnostics if d.rule == "E14-gate-wiring"]
     assert e14, "the compile-invisible hold lost its warning — the face went dark"
@@ -205,7 +205,7 @@ def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> Non
                     return _Decision(ok=False)
         return _Decision(ok=True)
 
-    @app.workflow("the recorded finding's-conditional-wait-declared")
+    @app.workflow("rv3-4c-conditional-wait-declared")
     def build_wf() -> Promise[_Decision]:
         p = step(
             maybe_gated,
@@ -214,7 +214,7 @@ def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> Non
         )
         return build(p)
 
-    compiled = _compile_quietly(app, "the recorded finding's-conditional-wait-declared")
+    compiled = _compile_quietly(app, "rv3-4c-conditional-wait-declared")
     diagnostics = validate_compiled(compiled)
     assert not [d for d in diagnostics if d.rule.startswith("E14")], (
         "E14 rejected a conditional-interior wait — the static walk "
@@ -238,12 +238,12 @@ async def test_rv3_7_a_failed_run_s_result_read_names_the_failure(
     async def doomed(ctx: StepContext, params: _Ingest) -> _Decision:
         raise RuntimeError("boom-the-teardown")
 
-    @app.workflow("the recorded finding's-failed-read")
+    @app.workflow("rv3-7-failed-read")
     def build_wf() -> Promise[_Decision]:
         p = step(doomed, _Ingest(doc_id="d"), max_attempts=1, retry_kind="permanent")
         return build(p)
 
-    compiled = app.get("the recorded finding's-failed-read")
+    compiled = app.get("rv3-7-failed-read")
     runner = FlowRunner(compiled, wf_pool, wf_schema)
     claim = await runner.create_flow(input=_Ingest(doc_id="d"))
     await runner.drive(claim.flow_id)
@@ -321,12 +321,12 @@ async def test_rv3_2_the_packaged_run_names_the_unmigrated_schema(
     async def ok_body(ctx: StepContext, params: _Ingest) -> _Decision:
         return _Decision(ok=True)
 
-    @app.workflow("the recorded finding's-unmigrated-contact")
+    @app.workflow("rv3-2-unmigrated-contact")
     def build_wf() -> Promise[_Decision]:
         p = step(ok_body, _Ingest(doc_id="d"))
         return build(p)
 
-    compiled = app.get("the recorded finding's-unmigrated-contact")
+    compiled = app.get("rv3-2-unmigrated-contact")
     bare = f"{wf_schema}_rv3_bare"
     await wf_conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{bare}"')
     try:
@@ -361,7 +361,7 @@ async def test_rv3_3_apply_pending_names_the_connection_it_refuses() -> None:
 async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
-    """the section.1's deploy-drift record: a node claimed through the
+    """§22.1's deploy-drift record: a node claimed through the
     ``@app.actor`` canonical path stamps the INNER function's canonical
     hash — two different bodies stamp DIFFERENT versions, each equal to
     the body's own ``compute_code_version``. The wrapper's identity
@@ -378,7 +378,7 @@ async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
     async def beta_body(ctx: StepContext, params: _Ingest) -> _Decision:
         return _Decision(ok=False)
 
-    @app.workflow("the recorded finding's-inner-stamps")
+    @app.workflow("rv3-8-inner-stamps")
     def build_wf() -> (
         Promise[object]
     ):  # the handle's call face erases R (the actor wrapper's __call__ returns object) — the STAMPS are the pin's subject, not the generic
@@ -387,7 +387,7 @@ async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
         sink(a)
         return build(p)
 
-    compiled = app.get("the recorded finding's-inner-stamps")
+    compiled = app.get("rv3-8-inner-stamps")
     outcome = await run(compiled, wf_pool, wf_schema)
     assert outcome.outcome == "terminal"
     rows = await wf_pool.fetch(
@@ -449,7 +449,7 @@ async def test_rv3_9_the_hold_s_reason_rides_its_own_field(
             case Expired():
                 return _Decision(ok=False)
 
-    @app.workflow("the recorded finding's-hold-reason")
+    @app.workflow("rv3-9-hold-reason")
     def build_wf() -> Promise[_Decision]:
         p = step(
             gated,
@@ -458,7 +458,7 @@ async def test_rv3_9_the_hold_s_reason_rides_its_own_field(
         )
         return build(p)
 
-    compiled = app.get("the recorded finding's-hold-reason")
+    compiled = app.get("rv3-9-hold-reason")
     outcome = await run(compiled, wf_pool, wf_schema, until="held")
     assert outcome.outcome == "held"
     client = HitlClient(wf_pool, wf_schema)
@@ -492,7 +492,7 @@ def test_rv3_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
             case Expired():
                 return _Decision(ok=False)
 
-    @app.workflow("the recorded finding's-timeout-drift")
+    @app.workflow("rv3-10-timeout-drift")
     def build_wf() -> Promise[_Decision]:
         p = step(
             gated,
@@ -501,7 +501,7 @@ def test_rv3_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
         )
         return build(p)
 
-    compiled = _compile_quietly(app, "the recorded finding's-timeout-drift")
+    compiled = _compile_quietly(app, "rv3-10-timeout-drift")
     diagnostics = validate_compiled(compiled)
     drift = [d for d in diagnostics if d.rule == "W4-gate-timeout-split"]
     assert drift, (
@@ -564,7 +564,7 @@ def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     async def stop() -> bool:
         return False
 
-    @app.workflow("the recorded finding's-conditional-loop-wait")
+    @app.workflow("rv3-12-conditional-loop-wait")
     def build_wf() -> Promise[_Carry]:
         p = loop(
             "march",
@@ -576,7 +576,7 @@ def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
         )
         return build(p)
 
-    compiled = _compile_quietly(app, "the recorded finding's-conditional-loop-wait")
+    compiled = _compile_quietly(app, "rv3-12-conditional-loop-wait")
     diagnostics = validate_compiled(compiled)
     shape = [d for d in diagnostics if d.rule == "W5-loop-wait-shape"]
     assert shape, (
@@ -604,7 +604,7 @@ def test_rv3_12b_the_unconditional_loop_wait_stays_clean() -> None:
     async def stop() -> bool:
         return False
 
-    @app.workflow("the recorded finding's-unconditional-loop-wait")
+    @app.workflow("rv3-12b-unconditional-loop-wait")
     def build_wf() -> Promise[_Carry]:
         p = loop(
             "march",
@@ -616,7 +616,7 @@ def test_rv3_12b_the_unconditional_loop_wait_stays_clean() -> None:
         )
         return build(p)
 
-    compiled = _compile_quietly(app, "the recorded finding's-unconditional-loop-wait")
+    compiled = _compile_quietly(app, "rv3-12b-unconditional-loop-wait")
     diagnostics = validate_compiled(compiled)
     assert not [d for d in diagnostics if d.rule == "W5-loop-wait-shape"], (
         "the unconditional loop wait was rejected — the shape law only "

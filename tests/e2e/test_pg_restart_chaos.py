@@ -120,7 +120,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.timeout(900)]
 # worst case is bounded and narrow: leadership handover (up to ~72 s) +
 # reclaim + re-dispatch (~13 s) + the actor's 30 s sleep puts the
 # starved worst case AT ~180 s - the old wall guessed exactly the bound
-# it sat on, and the failing proof tail (1/5 contended repeats locally, run
+# it sat on, and the red tail (1/5 contended repeats locally, run
 # 35748283472 in CI) is what crossing it looks like. The wait is now
 # split into one poll per observable recovery event, each with its own
 # budget derived from the settings that bound that phase (so the test

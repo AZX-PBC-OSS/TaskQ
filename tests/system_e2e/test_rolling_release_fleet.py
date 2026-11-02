@@ -336,7 +336,7 @@ class CapSampler:
       inside a running window, and the starved test process's sparse
       ticks cannot promise one - at the retired cap of 2 the loaded CI
       runner read ``peak.capped_queue`` = 1 across a whole 13-minute
-      scenario (the recorded run, attempt 1) while the fleet served
+      scenario (run 37092146919, attempt 1) while the fleet served
       fine. The exercise proof is therefore the RECEIPT this sampler
       records across the WHOLE scenario and the scenarios assert at
       their tail (``assert_cap_receipt``): a running row on the capped
@@ -485,8 +485,8 @@ class CapSampler:
           the stop flag between ticks, so the join costs at most one
           tick + the 0.1s cadence - and no cancel ever lands MID-QUERY.
           That is the leak class the two shard reds share (the PG16
-          shard's overlapping-pairs error-at-teardown, the recorded run,
-          and the PG18 shard's grace-edge flap's, the recorded run): a
+          shard's overlapping-pairs error-at-teardown, run 37504960221,
+          and the PG18 shard's grace-edge flap's, run 37504950651): a
           cancel meeting a query in flight on the wire makes asyncpg
           mint a fire-and-forget ``Connection._cancel`` task (a fresh
           server connection whose whole life is the PG cancel request),
@@ -751,7 +751,7 @@ async def _diagnose_queue_cap_exercise(
     ``sampler.peak.capped_queue >= _QUEUE_CAP`` - a peak over 100ms
     ticks from this (starved) test process, which at cap 2 needed two
     capped claims to coincide inside a 2s body and read 1 on the loaded
-    CI runner across a whole 13-minute scenario (the recorded run,
+    CI runner across a whole 13-minute scenario (run 37092146919,
     attempt 1): the exercise is a throughput property there, voided by
     runner weather on a fleet that was serving fine. A dedicated cohort
     is enqueued HERE so the backlog is live at probe time regardless of
@@ -1349,7 +1349,7 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
             # wait through. At cap 1 the departed victim held the ONLY
             # slot, so between its release and the next admitted claim
             # (a denial backoff + a claim poll) the probe legitimately
-            # reads no holder - the CI red (the recorded run) was the
+            # reads no holder - the CI red (run 37114445963) was the
             # first probe landing in that ordinary window, reding a
             # healthy fleet on a byte-identical assert that cap 2's
             # second slot had masked on base. The probe re-checks the
@@ -1741,8 +1741,8 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
 ) -> None:
     """The sampler's close must never leave a task pending on the module
     event loop - the leak class behind BOTH shard reds (the PG16 shard's
-    error-at-teardown of the overlapping-pairs scenario, the recorded run,
-    and the PG18 shard's of the grace-edge flap, the recorded run: "test
+    error-at-teardown of the overlapping-pairs scenario, run 37504960221,
+    and the PG18 shard's of the grace-edge flap, run 37504950651: "test
     left asyncio task(s) still pending on the module event loop ...
     coroutine: Connection._cancel", 37/40 passed, 1 error each).
 
@@ -1825,8 +1825,8 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
         )
     finally:
         # The lock's release is not part of the snapshot's story: the
-        # leaked task (on the failing proof shape) heals or not BEFORE this runs,
-        # and the pin's own assertion is the failing proof either way.
+        # leaked task (on the red shape) heals or not BEFORE this runs,
+        # and the pin's own assertion is the red either way.
         await releaser
 
 

@@ -4,7 +4,7 @@ Every test here is an executed attack against the pushed branch state,
 asserted through the public surfaces a client/consumer/operator observes:
 the job read model (``list_jobs``), the attempt history (``get_attempts``),
 the event log (``get_events``), the reclaim feed (``poll_reclaim_events``)
-and cancellation visibility (``poll_cancel_flags``). A failure is a recorded defect.
+and cancellation visibility (``poll_cancel_flags``). A failure is a RED.
 """
 
 import asyncio

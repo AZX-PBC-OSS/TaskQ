@@ -1,4 +1,4 @@
-"""RED-team pin: the PG fallback's own death during rate-limit acquire.
+"""adversarial-review pin: the PG fallback's own death during rate-limit acquire.
 
 The Redis-outage instances of the dependency-failure contract are pinned
 in tests/test_rt_depfail_ratelimit_acquire.py: a limiter whose store

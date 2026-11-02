@@ -351,5 +351,5 @@ async def test_attack_drain_consumer_payload_is_the_envelope(
     )
     assert consumer["trace_id"] is not None, (
         "the drained consumer's trace_id is NULL — the fork's trace never "
-        "reaches the outbox's consumer rows (the section.2's stamp-at-enqueue rule)"
+        "reaches the outbox's consumer rows (§18.2's stamp-at-enqueue rule)"
     )

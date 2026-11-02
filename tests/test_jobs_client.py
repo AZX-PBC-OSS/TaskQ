@@ -1786,7 +1786,7 @@ class TestRedisCloseBounded:
 
         fake.aclose_wait.clear()  # aclose() blocks forever from now on
         # Why the outer timeout: unguarded, close() awaited aclose() unbounded
-        # (via Redis.__aexit__), so the mutated state would hang forever instead
+        # (via Redis.__aexit__), so the RED state would hang forever instead
         # of failing fast.
         with structlog.testing.capture_logs() as captured:
             async with asyncio.timeout(5):

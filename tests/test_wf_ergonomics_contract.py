@@ -1,15 +1,15 @@
 """T17 — THE ERGONOMICS-CONTRACT PINS (the authoring session's paper cuts).
 
 The BLOCKER/CRITICAL fixes landed with T09's flow API: these probes were
-captured failing against the pre-API tree (strict-xfail — the cut IS the red;
-the failing proof evidence: `the recorded capture`) and are
+captured RED against the pre-API tree (strict-xfail — the cut IS the red;
+the red evidence: ``.measurements/t17-contract-first-run.txt``) and are
 GREEN here — the marker's removal in THIS commit is the flip. The bar-walk
 compiles the authoring agent's original graph (unchanged shapes) with
 ZERO boilerplate: the bar is "first-try correct, no boilerplate, IDE
 autocompletion resolves the wiring."
 
 The disposition ledger — cut → severity → disposition → where it landed →
-the re-test — lives in `the recorded capture`.
+the re-test — lives in ``.measurements/t17-dispositions.md``.
 """
 
 from __future__ import annotations

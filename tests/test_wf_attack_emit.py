@@ -1,11 +1,11 @@
 """ATTACK PINS — the T20 emit/chain subsystem's landed findings.
 
 Provenance: the T20/T21 attack front's live reproductions against the
-consolidated head (the consolidated head; pinned here at the review tree's
-``b2a1c122``). Every pin below was run failing-first — written as the SAFE
+consolidated head (``af1b8779``; pinned here at the review tree's
+``b2a1c122``). Every pin below was run RED FIRST — written as the SAFE
 behavior, executed against the real PG, the failure captured — then
 marked ``xfail(strict=True)``. The fix flips the pin to XPASS-strict
-(a failure that tells you to remove the marker WITH the fix).
+(a red that tells you to remove the marker WITH the fix).
 
 The surfaces under recorded finding: ``taskq/workflows/_emit.py`` (the emit
 tx) and ``taskq/workflows/chain.py`` (the router's record identity).
@@ -129,7 +129,7 @@ async def committed_children(conn: asyncpg.Connection, schema: str, source_id: J
 # ── F-EMIT-1: the page divergence is never typed nor named ───────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-EMIT-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at that head) F-EMIT-1: a resume that …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-EMIT-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1: a resume that …
 async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -186,7 +186,7 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
     assert await read_cursor(wf_conn, wf_schema, source_id) == {"page": 0}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-EMIT-1(second face)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at that head) F-EMIT-1 (second face): …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-EMIT-1(second face)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1 (second face): …
 async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:

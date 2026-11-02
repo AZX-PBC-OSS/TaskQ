@@ -1,9 +1,9 @@
-"""THE CAPACITY OWNER'S SYNC PINS .
+"""THE CAPACITY OWNER'S SYNC PINS (C15 — the code-deploy opt-in).
 
 ``sync_actor_config``'s UPSERT deliberately omits the capacity columns
 from the ``DO UPDATE SET`` clause: an existing row's
 ``max_concurrent``/``max_pending``/``result_ttl`` survive every
-subsequent boot (the operator-owns law). Consequence :
+subsequent boot (the operator-owns law). Consequence (C15's recorded finding):
 for an actor whose capacity terms ride the CODE — TAStack's best-effort
 dampers ride ``max_concurrent`` — a changed literal deploys NOTHING after
 first boot; editing code silently does nothing.

@@ -5,7 +5,7 @@ Run:  uv run --no-sync python tests/typeprobe/_gate.py
       THIS directory's own pyrightconfig.json — NOT the root pyproject)
 
 Each ``MUST_ERROR(rules)`` marker names a call the typed-doors law
-(the build protocol: "the negative probes (wrong-shape inputs failing on both
+(BUILD-PROTOCOL §7b: "the negative probes (wrong-shape inputs RED on both
 checkers) ship WITH the API") requires to be a checker error, PLUS the
 EXACT rule-ids the pinned checkers must emit (the gate asserts the ids —
 a stray unrelated error must not satisfy a probe). A probe the checkers
@@ -75,7 +75,7 @@ async def probe_sync_reducer_accepted(pool: asyncpg.Pool, wsql: WorkflowSql) -> 
     # MUST_ERROR(reportArgumentType, invalid-argument-type): reducers are
     # ``dict[str, Callable[[], Awaitable[None]]]``; a SYNC callable is the
     # wrong shape (the body's await is the tx2-boundary contract). Every
-    # other kwarg is WELL-TYPED — only the violation fails (both checkers).
+    # other kwarg is WELL-TYPED — only the violation reds (both checkers).
     await finalize_node(
         pool,
         wsql,

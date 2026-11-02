@@ -143,7 +143,7 @@ def test_asyncpg_data_error_is_classified_as_terminal_write_infra() -> None:
 
 
 async def test_error_message_with_lone_surrogate_must_not_strand(pg_env: _PgEnv) -> None:
-    """The recorded failure: the terminal failure write for an actor whose exception
+    """RED: the terminal failure write for an actor whose exception
     message/traceback carries a lone surrogate (built EXACTLY as
     ``_handle_generic_exception`` builds it: sanitize_nul_str(str(exc)))
     must LAND -- job failed, defect visible -- because asyncpg instead

@@ -1,14 +1,14 @@
 """ATTACK PINS — the CLI adversarial review front (`taskq flows`), the rejected shapes
-at the consolidated head.
+at af1b8779.
 
 Provenance: the CLI adversarial review's findings against the consolidated head
-(the consolidated head), pinned so each attack is a permanent test. Attacks that LANDED
+(af1b8779), pinned so each attack is a permanent test. Attacks that LANDED
 are encoded strict-xfail asserting the SAFE behavior — the fix flips them
-XPASS-strict (a failure that forces unmarking WITH the fix). Attacks the fence
+XPASS-strict (a red that forces unmarking WITH the fix). Attacks the fence
 held against are green guard pins so the door cannot rot.
 
 THE REJECTED SHAPES (all reproduced live against the harness before
-marking — the failing proofs are the pack's (the pinning run's record):
+marking — the red receipts are the pack's (the pinning run's record):
 
 * F-CLI-1 (LANDED, two faces): ``flows list`` derives run status from
   DEGRADED inputs — its FlowNodeRows never populate ``held``/``absorbed``

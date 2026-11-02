@@ -1,12 +1,12 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
 """ATTACK PINS — the demo/examples front (the hostile review of the
-consolidated head the consolidated head, demo lane).
+consolidated head af1b8779, demo lane).
 
 The demo's own machinery was rejected on four LIVE findings and the
 evidence law on a fifth; the ergonomics contract carries an inflated
 claim. Each pin asserts the SAFE behavior, red against the shipped tree,
 strict-xfail until the fix lands (the fix flips the pin to XPASS-
-strict — a failure that tells you to remove the marker; the scenario is
+strict — a red that tells you to remove the marker; the scenario is
 test_wf_attack_cancel.py's face C).
 
 * F-DEMO-1 — the demo's drive loop is poisonable by a FOREIGN run:
@@ -279,7 +279,7 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
     it is not — are the BELT, scanned when present, never the subject:
     in CI the estate does not ride the checkout, and the band writers'
     runtime-created registry must not mask the guard's own teeth (the
-    lost-subject red of the recorded run's 3.14 leg)."""
+    lost-subject red of run 38351644136's 3.14 leg)."""
     from tests import _evidence as _evidence
 
     violations: list[str] = []

@@ -3,8 +3,8 @@ cancel cascade, the reply handle.
 
 The failing-first evidence: each pin's REJECTED VARIANT (the spike's
 dragons) is named in the docstring and — where the variant is a
-guard-flip — exercised with the failing proof captured to
-`the recorded capture`. The unfenced variants stay failing
+guard-flip — exercised with the red captured to
+``.measurements/t10-pin-reds.json``. The unfenced variants stay RED
 FOREVER (they are the dragons, not bugs).
 
 The provenance: P3's cancel matrix (spikes 1-2), the hitl-proof's four
@@ -422,7 +422,7 @@ async def test_hold_context_reason_is_none_after_delivery(
     ``HitlClient._context`` and this pin REDS — the decision's
     ``reason`` field (a field this pin's gate deliberately declares)
     would ride the context as if it were the author's wait reason.
-    The red's receipt: `the recorded capture`.
+    The red's receipt: ``.measurements/docs-pin-reason-after-delivery.json``.
     """
 
     class Decision(BaseModel):

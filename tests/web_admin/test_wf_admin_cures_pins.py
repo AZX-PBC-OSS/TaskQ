@@ -7,7 +7,7 @@ the fast lane:
   parents (the map-source nodes the fork/emit INSERT parented every
   child at), never the root — the hexagon + counter fire, the render is
   BOUNDED (a 10k fan-out renders one hexagon, never 10k raw node
-  lines), and the section.5 derivation still reads EVERY row (the collapse
+  lines), and the §17.5 derivation still reads EVERY row (the collapse
   never hides a failure from the verdict).
 - Q3 THE INVISIBLE PROBE: the typed door's 422 refusal writes its
   ``admin_audit`` row (refused + the reason) — the attacker's
@@ -264,7 +264,7 @@ async def test_10k_fan_out_renders_one_hexagon_never_10k_lines(
     mermaid = rows_mermaid(view)
     assert len(mermaid.splitlines()) <= 5, (
         "CONTRACT: the collapsed render must not scale with the fan-out "
-        f"({len(mermaid.splitlines())} lines for 10k children — the failing proof was 10k+)"
+        f"({len(mermaid.splitlines())} lines for 10k children — the red was 10k+)"
     )
     assert view.root_map_children == 10_000
     state = run_state_json(view, seq=1)
@@ -277,7 +277,7 @@ async def test_the_collapse_never_hides_a_failure_from_the_derivation(
     cure_app_module: Any,
 ) -> None:
     """THE ROWS-ARE-TRUTH GUARD on the collapse: a FAILED map child
-    still derives the run FAILED (the section.5 derivation reads every row)
+    still derives the run FAILED (the §17.5 derivation reads every row)
     while the RENDER stays collapsed — the hexagon must not become a
     place for a failure to hide."""
     schema = module_pg_schema.schema_name

@@ -63,7 +63,7 @@ def test_cancellation_guide_abandoned_row_carries_the_operator_verdict_contract(
         "forced), the same fenced write the unwinding consumer races"
     )
     assert "is abandoned during release" not in text, (
-        "cancellation.md's the section `abandoned` status row still teaches the "
+        "cancellation.md's §8 `abandoned` status row still teaches the "
         "PRE-#596 contract (a row whose operator cancel was in flight when "
         "the process died 'is abandoned during release'). The shipped code "
         "writes mark_cancelled at RELEASING (the operator's own verdict, the "

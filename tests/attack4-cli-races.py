@@ -467,7 +467,7 @@ async def test_the_stale_app_resolve_is_the_named_refusal_never_a_traceback(
     module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
 ) -> None:
     """F-P4-CLI-KEYERROR-TRACEBACK's PIN (the attack-4 report's MEDIUM;
-    the failing proof was the attacker's race repro — attack4-cli-races-run1): a
+    the red was the attacker's race repro — attack4-cli-races-run1): a
     run whose workflow is NOT declared on the --app module (the
     stale-deploy world) meets 'flows resolve' — the typed door must
     refuse with the NAMED error + exit 1, never a rich traceback. The

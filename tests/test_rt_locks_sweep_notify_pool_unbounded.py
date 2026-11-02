@@ -10,9 +10,9 @@ prune drain holds for its whole multi-batch drain
 ``prune_terminal_jobs``). With that pool exhausted, a sweep queues
 indefinitely: no bound, no classified failure.
 
-The failing contract: the sweep entrypoints must bound their notify-pool
+The RED contract: the sweep entrypoints must bound their notify-pool
 acquire (and classify the failure) instead of queueing indefinitely.
-Every wait in this test is bounded so the failing state failure can never hang the
+Every wait in this test is bounded so the RED failure can never hang the
 suite.
 """
 
@@ -52,7 +52,7 @@ class _NotifyOnlyDeps:
 async def test_sweep_notify_pool_acquire_must_be_bounded_under_held_dispatcher_conn(
     pg_dsn: str,
 ) -> None:
-    """The recorded failure: with the single-conn dispatcher pool held (the prune-drain
+    """RED: with the single-conn dispatcher pool held (the prune-drain
     shape), the sweep entrypoint must fail (or succeed) within a bound -
     not queue indefinitely.
 

@@ -163,7 +163,7 @@ async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: 
     resolution returns NO body for a graph that resolves (the row's own
     claim owns the execution, the wired args), and the LOUD face is
     reserved for the name that resolves NOWHERE (the R2-2 deployment
-    defect). The recorded evidence (the pin's own history): the
+    defect). The RED evidence (the pin's own recorded history): the
     adapter's observed TypeError."""
 
     del wf_pool, wf_schema  # the registry is process-level; no DB here

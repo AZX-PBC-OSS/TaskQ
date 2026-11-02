@@ -5,7 +5,7 @@ THE COUPLING: result-expiry must not eat a map's children before the join
 fires (EXPIRY-EATS-CHILDREN); retention must not prune a live run's
 parent rows (PRUNED-PARENT — the sweep's ledger recount reads parent rows
 as truth); the guards are WHERE-class conditions on the EXISTING arms
-(no new sweep process, the section.6 exclusivity preserved); the guards must NOT
+(no new sweep process, §22.6 exclusivity preserved); the guards must NOT
 over-hold (a terminal run prunes on the normal schedule); and the
 collect's FailureInfo JSONB is BOUNDED (UNBOUNDED-JSONB: the cap + the
 compaction — the full detail stays on the ledger).
@@ -191,7 +191,7 @@ async def test_t18_pin1_expiry_eats_children(
         child2,
     )
     assert holes == 1, (
-        "the unguarded variant did not eat the child's result — the failing proof "
+        "the unguarded variant did not eat the child's result — the red "
         "comparator is broken (the guard must be load-bearing)"
     )
 

@@ -6,16 +6,16 @@ Run:  uv run --no-sync python tests/typeprobe/_gate.py
       THIS directory's own pyrightconfig.json — NOT the root pyproject)
 
 Each ``MUST_ERROR(rules)`` marker names a wrong-shape call the typed-doors
-law (the build protocol: "the negative probes (wrong-shape inputs failing on
+law (BUILD-PROTOCOL §7b: "the negative probes (wrong-shape inputs RED on
 both checkers) ship WITH the API") requires to be a checker error, PLUS
 the EXACT rule-ids the pinned checkers must emit (the gate asserts the
 ids — a stray unrelated error must not satisfy a probe). A probe the
 checkers do NOT flag is a finding: the Any leak the probe demonstrates.
 
 T09's doors probed here: the Promise is WIRING, not a future (awaiting
-it — the wrong-nesting mistake — fails); a promise does not satisfy a
+it — the wrong-nesting mistake — reds); a promise does not satisfy a
 plain-data parameter (the direct unit-call form wants the DATA —
-passing the wiring handle fails). The TypedGate's wrong-model delivery
+passing the wiring handle reds). The TypedGate's wrong-model delivery
 door ships with T10's runtime (its probe lands with that surface).
 """
 

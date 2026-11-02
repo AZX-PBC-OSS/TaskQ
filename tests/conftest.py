@@ -968,7 +968,7 @@ def pg_container(
     databases are still created and dropped on it (the caller owns the
     cluster's lifecycle).
     """
-    # The LOCAL DEV LOOP's override (the build protocol: the dev loop is
+    # The LOCAL DEV LOOP's override (BUILD-PROTOCOL §7b: the dev loop is
     # local): an externally-provisioned cluster (e.g. the phase worktree's
     # own warm container on a fixed port) is used AS-IS — no container boot,
     # no teardown sweep, the DSN is the whole contract. Default-inert: unset

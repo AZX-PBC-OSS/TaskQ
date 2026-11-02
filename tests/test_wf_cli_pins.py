@@ -3,7 +3,7 @@
 The failing-first evidence: the three pins (taxonomy-drift, empty-snapshot,
 read-only) are collected with their REJECTED VARIANTS — each scenarios the
 mutated shape and captures the observed red to
-`the recorded capture`. The surface-walk + output-contract
+``.measurements/t12-pin-reds.json``. The surface-walk + output-contract
 pins ride the REAL engine (a live run on the migrated schema): every
 command's exit code + output shape is pinned against a run the FlowRunner
 drove, not a canned fixture.
@@ -245,7 +245,7 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
 ) -> None:
     """THE MANUAL RESUME: the ladder-exhausted node re-pends, the run
-    completes after the operator's retry (the section.6's manual leg)."""
+    completes after the operator's retry (§22.6's manual leg)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
     flow_id = (await flow_runner.create_flow()).flow_id
@@ -279,10 +279,10 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
 async def test_retry_not_applied_copy_drops_the_impossible_cause_and_names_the_root_law(
     cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
 ) -> None:
-    """the copy honesty, the CLI's face: the not-applied remedy names
+    """H-C9's copy honesty, the CLI's face: the not-applied remedy names
     only causes the CAS can actually hit — the attempt ceiling is NOT
     one (the ordinal continues; no ceiling is consulted) — and the
-    ROOT-KEY law is on the record (the run's root is not a node; the
+    ROOT-KEY law is on the record (the run's root is not a node; H-C1's
     verb-level guard)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
@@ -420,7 +420,7 @@ def test_parse_decision_contract() -> None:
 
 
 def test_derive_flow_status_is_the_shared_derivation() -> None:
-    """The CLI's derivation IS the section.5 derivation (one engine): the
+    """The CLI's derivation IS the §17.5 derivation (one engine): the
     same input the engine's NodeViews take yields the same status."""
     assert derive_flow_status([_held_row()]) == "blocked"
     assert derive_flow_status([FlowNodeRow(step_key="a", status="running")]) == "running"

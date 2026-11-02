@@ -1,10 +1,10 @@
-"""The workflow schema round's structural + measured pins (T03, the section.4).
+"""The workflow schema round's structural + measured pins (T03, §16.4).
 
 Structural (the lock-scope family's form): the three-file single-lock-class
 split, the seam-only id generation in the DDL, the phase-obligations
 header, the additive-only rule (every file is a ``pre_`` file — no
 workflow ``post_`` ever ships for v1), and the dispatch-claim exclusion
-clause's presence at every claimable-row site. The IMPORT pin (the section.1's
+clause's presence at every claimable-row site. The IMPORT pin (§16.1's
 law) runs on the AST harness (``tests/_import_discipline.py``) + a fresh
 interpreter, with the mutated-``__init__`` red scenario.
 
@@ -170,7 +170,7 @@ def test_dispatch_claim_carries_the_join_wait_exclusion() -> None:
     assert "AND j.deps_pending = 0" in dispatch
 
 
-# ── Pin 3: the IMPORT pin (the section.1 law, on the AST harness) ────────────
+# ── Pin 3: the IMPORT pin (the §16.1 law, on the AST harness) ────────────
 
 
 def test_import_law_taskq_never_imports_workflows() -> None:
@@ -183,7 +183,7 @@ def test_import_law_taskq_never_imports_workflows() -> None:
     offenders = _import_discipline.couples_to_at_import_time(taskq, "taskq.workflows")
     assert not offenders, (
         f"taskq/__init__.py imports taskq.workflows at module scope: {offenders} "
-        "(the section.1 import law: import taskq never imports the package)"
+        "(the §16.1 import law: import taskq never imports the package)"
     )
 
     out = subprocess.run(  # Why: the fresh-interpreter probe runs the same venv's interpreter with a fixed argv.
@@ -201,7 +201,7 @@ def test_import_law_taskq_never_imports_workflows() -> None:
     assert '"violates": false' in out, out
 
 
-#: the section.1's BOOT SURFACES (F-R5's widening): every process entry the
+#: §16.1's BOOT SURFACES (F-R5's widening): every process entry the
 #: package ships — the library root, the worker's boot entry (the
 #: intercept seam), the CLI, the web assembly, and the admin's workflow
 #: PAGES module. The pin's old probe checked ONLY ``taskq/__init__``, so
@@ -221,7 +221,7 @@ _IMPORT_LAW_SURFACES = (
 
 @pytest.mark.parametrize("surface", _IMPORT_LAW_SURFACES)
 def test_import_law_every_boot_surface_never_imports_workflows(surface: str) -> None:
-    """The the section.1 law, widened (F-R5): importing ANY boot surface must
+    """The §16.1 law, widened (F-R5): importing ANY boot surface must
     leave ``taskq.workflows`` unloaded — a module-scope workflows import
     anywhere in the surface's transitive tree is rejected. The admin's
     page modules are the proven violator (lazy-discovery loads them only
@@ -246,7 +246,7 @@ def test_import_law_every_boot_surface_never_imports_workflows(surface: str) -> 
 def test_import_law_red_drill(tmp_path: Path) -> None:
     """The revert scenario: the pin CAN fail — a module-level import of the
     workflows package in ``taskq/__init__.py`` is rejected by the same AST
-    harness (the fixture mutation, parsed in isolation; the failing state output is
+    harness (the fixture mutation, parsed in isolation; the RED output is
     the offender list). The mutated fixture module's scratch file rides
     pytest's ``tmp_path`` — never the repo tree (a stray untracked module
     turns a repo-wide lint red)."""
@@ -272,7 +272,7 @@ def test_import_law_red_drill(tmp_path: Path) -> None:
         if isinstance(node, ast.Import | ast.ImportFrom)
         for name in _import_discipline._imported_names(node)  # pyright: ignore[reportPrivateUsage]  # Why: the scenario reuses the harness's own parser on a synthetic tree.
     }
-    # The recorded failure: the mutated module-level import is present — the same check that
+    # RED: the mutated module-level import is present — the same check that
     # stays clean (zero offenders) on the real package above.
     assert "taskq.workflows" in names
     assert not _import_discipline.couples_to_at_import_time(taskq, "taskq.workflows"), (
@@ -427,7 +427,7 @@ async def test_pin_1_row_width_residual(width_schemas: dict[str, str]) -> None:
 async def test_pin_1_red_drill_misaligned_padding(width_schemas: dict[str, str]) -> None:
     """THE ROW-WIDTH PIN'S REVERT PROOF: a deliberately-misaligned padding
     fixture (three boolean columns — forced attribute headers) MUST blow
-    the bound — the pin can fail. The failing run's output is the scenario's measurement
+    the bound — the pin can fail. The RED output is the scenario's measurement
     file; the shipped shape above stays green."""
     conn = await asyncpg.connect(width_schemas["dsn"])
     try:
@@ -522,7 +522,7 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
             )
         partial_sizes["_red_drill"] = {
             "note": "the full control index against the smallest partial is the "
-            "rejected shape; its ratio is the failing state the pin exists to flag"
+            "rejected shape; its ratio is the RED the pin exists to flag"
         }
         _write_measurement("pin2-partial-index.json", partial_sizes)
     finally:

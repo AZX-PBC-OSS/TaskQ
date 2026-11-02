@@ -79,7 +79,7 @@ def _sink_records() -> tuple[list[tuple[Path, dict[str, Any]]], str]:
     the law's records are the live claims.
 
     The sinks' root resolves local-FIRST, the evidence branch as the
-    fallback: the local `the recorded capture` when it exists (a battery run
+    fallback: the local ``.measurements/`` when it exists (a battery run
     on this tree appends to the LOCAL sinks — they are the live tree's
     own records, anchored at THIS tree's head), else — a fresh clone
     where the extraction left no local estate — the evidence branch's
@@ -148,7 +148,7 @@ def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: 
     if not capture.is_file():
         return (
             f"pin={entry.get('pin')!r}: the cited capture {capture_rel} does "
-            "not EXIST — the receipt chain's link (c) is broken (a failure that "
+            "not EXIST — the receipt chain's link (c) is broken (a red that "
             "never ran, or a capture deleted since)"
         )
     digest = sha256(capture.read_bytes()).hexdigest()
@@ -236,11 +236,11 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
 
 def test_the_captures_are_not_tracked_in_the_product_repo() -> None:
     """The repo carries code, tests, and docs; the measurement artifacts
-    (including `the recorded capture`) live on the evidence
+    (including ``.measurements/failure log-captures/``) live on the evidence
     branch, not in this index. This pin holds that: ``git ls-files``
     must list nothing under the captures' home."""
     listed = subprocess.run(
-        ["git", "ls-files", "--", "the recorded capture log-captures"],
+        ["git", "ls-files", "--", ".measurements/failure log-captures"],
         cwd=MEASUREMENTS.parent,
         capture_output=True,
         text=True,
@@ -248,10 +248,10 @@ def test_the_captures_are_not_tracked_in_the_product_repo() -> None:
     ).stdout
     assert not listed.strip(), (
         "THE FAILURE LOG CAPTURES ARE TRACKED IN THE PRODUCT REPO: "
-        f"{len(listed.split())} paths under the recorded capture log-captures/ "
+        f"{len(listed.split())} paths under .measurements/failure log-captures/ "
         "ride the index. The measurement artifacts belong to the evidence "
         "branch — remove them from the index "
-        "(git rm -r --cached the recorded capture log-captures)."
+        "(git rm -r --cached .measurements/failure log-captures)."
     )
 
 

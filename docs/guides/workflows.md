@@ -1193,7 +1193,10 @@ and `tests/test_wf_perf_bands.py` (the T03 bands); no pin was dropped.
 
 The API's bar is **"first-try correct, no boilerplate, IDE
 autocompletion resolves the wiring."** The authoring session's paper
-cuts are standing law. Each remedy's CONTRACT, and where to read it:
+cuts are standing law. The disposition ledger — every cut, its
+disposition, and the re-test that proves it closed — is recorded with
+the engine's evidence runs; the counts live there and nowhere else
+(this page carries no arithmetic of its own). Each remedy's CONTRACT:
 
 | Paper cut (the stumble) | The remedy's contract | Landed in |
 | --- | --- | --- |

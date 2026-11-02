@@ -32,7 +32,7 @@ Then the fire-units math: a mid-lag period change, a DST fold and a DST
 gap, and the exactness of the catch-up cutoff boundary.
 
 Finally the mutation pin: the runaway shape's fires-survive contract must
-stay failing against a change that "fixes" the drop by re-queuing dropped
+stay RED against a change that "fixes" the drop by re-queuing dropped
 history as jobs.
 
 Pure-Python against the recording fakes; the real-PG proof that the gate

@@ -1,7 +1,7 @@
 """Regression guards for four verified "silent failure" defects.
 
 Each test asserts the DESIRABLE behaviour, so it goes GREEN once the
-corresponding defect is fixed and failing on ``16c991d``.
+corresponding defect is fixed and RED on ``16c991d``.
 
 1. ``heartbeat_timeout`` is accepted on the public enqueue API, stored on
    ``EnqueueArgs``/``JobRow``, written to PG and hydrated back, but is

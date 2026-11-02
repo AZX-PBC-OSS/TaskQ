@@ -158,7 +158,7 @@ async def _run_doctor(monkeypatch: pytest.MonkeyPatch, pg_dsn: str, schema: str)
         detail = repr(result.exception) if result.exception else "(no exception)"
         return result.exit_code, f"{result.output}\n[{detail}]"
     # CI's runner env force-colorizes typer's rich-rendered surfaces (the
-    # the recorded run's class); the report's markers must be matched against
+    # run-36369327985 class); the report's markers must be matched against
     # the plain bytes, never the colored ones.
     return result.exit_code, plain_cli_output(result.output)
 

@@ -311,7 +311,7 @@ async def test_reconcile_never_refunds_an_executed_attempt_the_ladder_owns(
 ) -> None:
     """A cancel-flagged unheld row must stay the LADDER's: no reconcile refund.
 
-    Failing on main: the reconcile refunds the executed attempt and un-stamps
+    RED on main: the reconcile refunds the executed attempt and un-stamps
     the claim on the very first tick after the fenced exit, the walk then
     abandons the row at the refunded number, and the executed attempt has
     no ``job_attempts`` row anywhere.

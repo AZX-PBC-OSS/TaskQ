@@ -5,7 +5,7 @@ F1-2) — the honest shapes:
   UNION (`Promise[list[Report | Config]]` — sound, the element type
   preserved as the union); the doc's "degrades to Promise[list[object]]"
   claim was FALSE in both directions (the union is what infers, and a
-  `list[object]` consumer never fails through the wiring's codec walk —
+  `list[object]` consumer never reds through the wiring's codec walk —
   the coerce boundary re-validates). The GREEN probe pins the union
   shape; the DOC carries the corrected claim.
 * F1-2: the residual slot's door — a REAL promise in the residual slot
@@ -77,14 +77,14 @@ async def probe_heterogeneous_gather_explicit_upcast() -> None:
         return build(joined)
 
 
-# ── F1-2: the residual slot NEVER takes a real promise (the recorded failure) ────────────
+# ── F1-2: the residual slot NEVER takes a real promise (RED) ────────────
 
 
 async def probe_residual_takes_real_promise() -> None:
     """The residual slot's door: a REAL promise in the residual slot is
     the checker's error (the residual wants produces-nothing —
     ``Exit[DoneT] <= Never`` is false). The honest accounting is
-    ``sink(p)``. The trailing marker BELOW asserts the failing proof — this prose
+    ``sink(p)``. The trailing marker BELOW asserts the red — this prose
     names the convention without carrying the marker's literal (a
     docstring line is never a marker; the gate asserts trailing-code
     comments only)."""

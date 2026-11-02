@@ -17,7 +17,7 @@ flows through verbatim — only the documented ``max_retry_backoff`` ceiling and
 the ``MIN_DEFERRAL_INTERVAL`` floor still bound it. Jitter keeps spreading the
 computed curve (that is what jitter is for); ``jitter=0.0`` stays the exact
 identity on both paths. A user who wants fleet-spread on a hint applies it in
-their own classifier (``apply_jitter``), documented in retries.md the section.
+their own classifier (``apply_jitter``), documented in retries.md §5.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -485,7 +485,7 @@ def test_override_kind_indefinite_lifts_the_attempt_ceiling_explicitly() -> None
     attempt-ceiling guard runs, so at ``max_attempts=1`` the delay IS
     honored and the job retries past its declared ceiling — bounded then
     only by ``schedule_to_close`` (the indefinite hazard the classifier
-    docstrings and retries.md the section both warn about: a transient actor has no
+    docstrings and retries.md §5 both warn about: a transient actor has no
     deadline stamped, so composing an indefinite-returning classifier into
     one has no stopping condition). Pinned as contract: the ceiling lift
     is the override's documented job, never a silent default's choice."""

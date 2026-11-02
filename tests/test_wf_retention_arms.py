@@ -4,7 +4,7 @@
 Five workflow tables grew monotone-forever — no retention arm, no FK
 for the job prune to cascade: ``wf_edge``, ``wf_step_ledger``,
 ``wf_join_fire``, ``wf_signals``, ``wf_node_progress``. These pins hold
-the fix's shape (THE TWO-PASS LAW — the rewrite): every arm runs
+the fix's shape (THE TWO-PASS LAW — the H-B1 rewrite): every arm runs
 
 * a FLOWS-SIDE pass — the TERMINAL-AGED ROOTS are selected FIRST from
   the tiny jobs side (``step_key='__flow__'`` + a terminal status +
@@ -545,7 +545,7 @@ async def test_a_flow_whose_root_row_was_pruned_is_still_swept(
         assert remaining == 0, f"{table} kept {remaining} orphaned row(s) of a pruned flow"
 
 
-# ── (f) the: the scale pin — the loaded pass, the drain, the zero-doomed
+# ── (f) H-B1: the scale pin — the loaded pass, the drain, the zero-doomed
 #    steady state — every pass completes under the dispatcher command
 #    timeout and deletes at most the batch ────────────────────────────────
 
@@ -601,7 +601,7 @@ async def _bulk_node(conn: asyncpg.Connection, schema: str, flow_id: JobId, *, s
 async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """PIN (f) — the scale proof: 20k edge rows across 400 AGED
+    """PIN (f) — H-B1's scale proof: 20k edge rows across 400 AGED
     terminal flows (plus 20 live flows' 1k rows as the survival control).
 
     * the LOADED pass completes under ``dispatcher_command_timeout`` AND
@@ -651,7 +651,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     assert deleted <= batch, f"the loaded pass deleted {deleted} > batch {batch}"
     assert loaded_elapsed < settings.dispatcher_command_timeout, (
         f"the loaded pass took {loaded_elapsed:.2f}s — past the dispatcher "
-        "command timeout the leader's pool runs under (the recorded finding: "
+        "command timeout the leader's pool runs under (H-B1's recorded finding: "
         "the arm Times Out and PERMANENTLY stops pruning)"
     )
 
@@ -683,7 +683,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     assert deleted == 0
     assert steady_elapsed < settings.dispatcher_command_timeout, (
         f"the ZERO-DOOMED steady-state pass took {steady_elapsed:.2f}s — the "
-        "full-table walk is the rejected shape "
+        "full-table walk is the rejected shape (H-B1)"
     )
     start = time.monotonic()
     rootless = await prune_wf_edge_rootless(wf_pool, wsql, batch_size=batch)
@@ -691,7 +691,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     assert rootless == 0
     assert rootless_elapsed < settings.dispatcher_command_timeout, (
         f"the rootless pass's bounded walk took {rootless_elapsed:.2f}s at "
-        "zero-doomed — its scan is not batch-bounded (the second leg)"
+        "zero-doomed — its scan is not batch-bounded (H-B1's second leg)"
     )
 
     # THE FULL BATTERY at the zero-doomed steady state: all five arms'
@@ -707,7 +707,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     )
 
 
-# ── (g) the: the root identity — a row pointing at a live NON-root job
+# ── (g) H-B3: the root identity — a row pointing at a live NON-root job
 #    is rootless-class; a live ROOT's rows survive; a terminal-aged
 #    root's rows belong to the flows-side pass ────────────────────────────
 
@@ -789,7 +789,7 @@ async def test_non_root_pointee_rows_prune_and_live_root_rows_survive(
     )
 
 
-# ── (h) the: the node_progress legs — a node WITHOUT the flow_id stamp
+# ── (h) H-B3: the node_progress legs — a node WITHOUT the flow_id stamp
 #    is prune-eligible; the node-gone leg; the live-root pointee survives ─
 
 
@@ -849,7 +849,7 @@ async def test_node_progress_orphan_legs_are_honest(
     assert kept == 1, "the LIVE ROOT's node progress deleted — the identity leg is dishonest"
 
 
-# ── (i) the / R2: the NULL-stamp leg's CONSERVATIVE shape — the
+# ── (i) H-B4 / R2: the NULL-stamp leg's CONSERVATIVE shape — the
 #    NULL-stamped terminal roots are SKIPPED (never doomed: the delete is
 #    never eager), the pass OBSERVES them and the named warning fires in
 #    BOTH the busy and the idle shapes (the tripwire always live) ────────
@@ -872,7 +872,7 @@ async def test_null_stamp_idle_shape_rows_survive_and_warning_fires(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: Any
 ) -> None:
     """PIN (i-idle) — R2's IDLE shape: a JUST-terminalized flow whose
-    ``finished_at`` stamp never landed, an otherwise-idle estate. THE FAILING STATE
+    ``finished_at`` stamp never landed, an otherwise-idle estate. THE RED
     (the 'aged by nothing' leg): the flow's ENTIRE history deleted under
     a 30-day period while the flow was seconds old — the delete eager,
     the period meaningless. THE GREEN (the conservative shape): the
@@ -912,7 +912,7 @@ async def test_null_stamp_busy_shape_warning_not_starved(
 ) -> None:
     """PIN (i-busy) — R2's BUSY shape: a busy estate's aged STAMPED roots
     fill the batch (``ORDER BY finished_at NULLS LAST`` put the
-    NULL-stamped roots last, past the LIMIT) — THE FAILING STATE: the tripwire
+    NULL-stamped roots last, past the LIMIT) — THE RED: the tripwire
     NEVER fired and the NULL root was never selected, silently, forever.
     THE GREEN: the observation is NOT the selection — it cannot starve
     behind the batch; the warning fires while the NULL root's rows
@@ -952,7 +952,7 @@ async def test_null_stamp_busy_shape_warning_not_starved(
     assert warnings[0]["table"] == "wf_edge"
 
 
-# ── (j) the: the arms' batch derives from the prune family's own knob ──
+# ── (j) H-B2: the arms' batch derives from the prune family's own knob ──
 
 
 def test_arms_batch_derives_from_the_prune_family_knob() -> None:
@@ -1018,9 +1018,9 @@ def test_arms_batch_derives_from_the_prune_family_knob() -> None:
                     borrowed += 1
         assert knob_calls >= 1, (
             f"{name} does not take the prune family's own batch knob "
-            "(the: the borrowed event_writer_batch_size is the recorded finding)"
+            "(H-B2: the borrowed event_writer_batch_size is the recorded finding)"
         )
-        assert borrowed == 0, f"{name} still borrows event_writer_batch_size "
+        assert borrowed == 0, f"{name} still borrows event_writer_batch_size (H-B2)"
         assert rootless_calls == 1, (
             f"{name} never calls {rootless} — the rootless leg is not "
             "wired (the registration-was-the-gap class)"
@@ -1034,7 +1034,7 @@ def test_outbox_and_step_cache_arms_derive_from_the_prune_family_knob() -> None:
     """PIN (j2) — the mirror of (j) for the two DERIVED-DATA retention
     arms: the delivered outbox's TTL arm and the step cache's
     expired-corpses arm borrowed ``event_writer_batch_size`` (100) the
-    same way the five flow-history arms did (the recorded finding class —
+    same way the five flow-history arms did (H-B2's recorded finding class —
     a monotone population drained 100 rows per pass). Their wiring is
     the prune family's own knob (``prune_batch_size``, the
     deletion-sweep family's batch both arms' docstrings already
@@ -1070,12 +1070,12 @@ def test_outbox_and_step_cache_arms_derive_from_the_prune_family_knob() -> None:
                     borrowed += 1
         assert knob_calls >= 1, (
             f"{name} does not take the prune family's own batch knob "
-            "(the borrowed event_writer_batch_size is the recorded finding class)"
+            "(the borrowed event_writer_batch_size is H-B2's recorded finding class)"
         )
-        assert borrowed == 0, f"{name} still borrows event_writer_batch_size "
+        assert borrowed == 0, f"{name} still borrows event_writer_batch_size (H-B2)"
 
 
-# ── (k) the: one clock face across the five arms' statements ───────────
+# ── (k) H-B7: one clock face across the five arms' statements ───────────
 
 
 def test_the_five_arms_tell_one_clock() -> None:
@@ -1107,10 +1107,10 @@ def test_the_five_arms_tell_one_clock() -> None:
         sql = getattr(sql_mod, name)
         if name != "EDGE_ROOTLESS_RETENTION_SQL":
             assert "statement_timestamp()" in sql, (
-                f"{name} does not carry the family's statement_timestamp() face "
+                f"{name} does not carry the family's statement_timestamp() face (H-B7)"
             )
         assert "clock_timestamp()" not in sql, (
-            f"{name} still compares on the volatile clock_timestamp() (the: "
+            f"{name} still compares on the volatile clock_timestamp() (H-B7: "
             "one face, the STABLE selection bound)"
         )
 
@@ -1297,7 +1297,7 @@ async def test_rootless_walk_advances_past_a_live_pk_front(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, table: str
 ) -> None:
     """PIN (l) — R1's exact story: a 3,000-row live PK front, batch 1,000,
-    five passes. THE FAILING STATE (the pre-fix walk): every pass re-visited the
+    five passes. THE RED (the pre-fix walk): every pass re-visited the
     SAME first 1,000 rows — the probes answered 'live root', nothing
     deleted, the cursor nowhere — five passes, deleted=0, the 50 orphans
     above the front stranded forever. THE GREEN: pass 1 still deletes 0
@@ -1425,7 +1425,7 @@ _WF_TABLES = (
 
 def test_truncate_list_names_every_wf_table() -> None:
     """PIN (r, structural): the reset's table list names EVERY wf table
-    the schema ships. THE FAILING STATE: wf_node_stream was in neither the arms nor
+    the schema ships. THE RED: wf_node_stream was in neither the arms nor
     the list — a dead node's ring survived the reset, the last test's
     rows leaked into the next test's counts (and the production face:
     nodes x 64 ring rows unbounded, R3's recorded finding)."""

@@ -185,7 +185,7 @@ async def test_singleton_preflight_refusal_keeps_caller_transaction_usable(
 async def test_singleton_violation_refusal_keeps_caller_transaction_usable(
     pg_dsn: str,
 ) -> None:
-    """The recorded failure: the unique-violation-catch singleton refusal aborts the caller's tx.
+    """RED: the unique-violation-catch singleton refusal aborts the caller's tx.
 
     The caller holds the transaction; a racing transaction inserts the
     singleton row UNCOMMITTED (invisible to our READ COMMITTED

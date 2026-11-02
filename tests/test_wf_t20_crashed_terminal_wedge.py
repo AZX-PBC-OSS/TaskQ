@@ -28,14 +28,14 @@ THE FIXES PINNED HERE:
 * the maintenance leg's liveness predicates exclude the terminal-crash
   class and its failed arm INCLUDES it (the wedged root heals on ONE
   sweep pass);
-* the G7 assertion can fail on a wedge: a live root whose rows reconstruct
+* the G7 assertion can RED a wedge: a live root whose rows reconstruct
   a TERMINAL verdict contradicts the rows — the assertion runs the
   one-pass heal itself and reds when the reported state still disagrees
   (the corpse-stays-green blind spot, closed).
 
-Failing-first: the corpse pins failed against the pre-fix tree
+Failing-first: the corpse pins ran RED against the pre-fix tree
 (reconstruction derived ``running``; the maintenance pass left the root
-``running``) — captured in `the recorded capture`.
+``running``) — captured in ``.measurements/wedge-pin-reds.json``.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ async def test_the_wedged_corpse_derives_terminal(
 ) -> None:
     """THE WEDGE'S DERIVATION FACE: {succeeded, crashed} derives
     ``failed`` — the terminal-crash class is the failed-class terminal,
-    never liveness. The recorded failure (the pre-fix tree): the corpse derived
+    never liveness. RED (the pre-fix tree): the corpse derived
     ``running`` — G7 green on a dead run, retention held forever."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     ok = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")
@@ -139,7 +139,7 @@ async def test_the_wedged_root_heals_on_one_sweep_pass(
 ) -> None:
     """THE EVIDENCE ROOTS' HEAL (the att_t20 corpses' fix): the wedged
     root + one maintenance pass → the failed terminal, finished_at
-    stamped, retention eligible. The recorded failure (the pre-fix tree): the pass left
+    stamped, retention eligible. RED (the pre-fix tree): the pass left
     the root ``running`` forever."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     ok = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")

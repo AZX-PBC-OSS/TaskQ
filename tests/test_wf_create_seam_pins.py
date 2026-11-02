@@ -3,7 +3,7 @@ fixed): the create's atomicity, the run-key claim's honesty, the
 root-marker dispatch fence, the nodeless-root reap belt, and the packaged
 one-call run.
 
-THE RECORDED FINDINGS THE PINS HOLD FAILING ON PURPOSE:
+THE RECORDED FINDINGS THE PINS HOLD RED FOREVER:
 
 1. **THE CREATE ATOMICITY** — the pre-fix create was N+M+2 auto-committed
    statements: the root insert COMMITTED ALONE and the static nodes +

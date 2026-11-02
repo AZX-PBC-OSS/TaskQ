@@ -7,14 +7,14 @@ Provenance: the rv6 front's live recorded findings, each reproduced against this
 head BEFORE pinning (the pre-pin repro script + output are in the pin
 pack's ``repro/``; the receipts carry the verbatim verdicts). Per the
 doctrine, the pack landed ``pytest.mark.xfail(strict=True, reason="LIVE
-FINDING the recorded finding's<id>: …")`` asserting the SAFE behavior — failing-first at the
-door-edges lane's base (58faf52b7: all five xfail, the recorded evidence in
-`the recorded capture`) — and the FIX ON THIS BRANCH flipped all
+FINDING rv6-d<id>: …")`` asserting the SAFE behavior — failing-first at the
+door-edges lane's base (58faf52b7: all five xfail, the failure log receipt in
+``.measurements/door-edges/``) — and the FIX ON THIS BRANCH flipped all
 five to XPASS-strict, so the markers are REMOVED WITH the fix (the
 doctrine's flip): these pins now run GREEN and guard the five edges
 permanently.
 
-The method is the recorded finding's pin's own: every pin builds a SYNTHETIC ESTATE in
+The method is the rv2-13 pin's own: every pin builds a SYNTHETIC ESTATE in
 a tmp dir (a ``runs/`` with a hand-written ``CLAIMS.json`` + the tampered
 capture) and runs the verifier as a subprocess against it
 (``--runs-dir``). Every claim is FRESH (``head_sha`` = the worktree's own
@@ -25,7 +25,7 @@ working tree's residue never enters.
 The findings (each WAS a live recorded finding — every estate exited rc=0
 before this branch's fix):
 
-The method is the recorded finding's pin's own: every pin builds a SYNTHETIC ESTATE in
+The method is the rv2-13 pin's own: every pin builds a SYNTHETIC ESTATE in
 a tmp dir (a ``runs/`` with a hand-written ``CLAIMS.json`` + the tampered
 capture) and runs the verifier as a subprocess against it
 (``--runs-dir``). Every claim is FRESH (``head_sha`` = the worktree's own
@@ -109,7 +109,7 @@ def _write_estate(runs_dir: Path, claims: list[dict[str, str]], files: dict[str,
 
 
 def _run_verifier(runs_dir: Path, *, env_extra: dict[str, str] | None = None) -> str:
-    """The verifier as a subprocess (the recorded finding's pin's own seam), the
+    """The verifier as a subprocess (the rv2-13 pin's own seam), the
     worktree's ``src`` on PYTHONPATH (the venv's editable install points
     at another tree — the import-resolution seam the pack's receipts
     document). Returns the combined output; the ambient
@@ -161,7 +161,7 @@ def test_d1_the_door_convicts_a_red_verdict_anywhere_in_the_capture(tmp_path: Pa
     )
     output = _run_verifier(runs_dir)
     assert "d1-stem" in output and "the head-stamp law holds" not in output, (
-        "F-D1: the failing proof verdict mid-capture was never read — the door greens a "
+        "F-D1: the red verdict mid-capture was never read — the door greens a "
         "capture whose own content records failure because the verdict sits "
         "outside the first-3/last-12 edge window. The output:\n" + output
     )

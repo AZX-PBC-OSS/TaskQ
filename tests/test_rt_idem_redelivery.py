@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""RED-TEAM pins: crash redelivery is at-least-once, side effects stay fenced (S5).
+"""The adversarial-review pins: crash redelivery is at-least-once, side effects stay fenced (S5).
 
 The documented delivery contract (``docs/guides/ops.md``: "Delivery is
 at-least-once. A worker that dies mid-job has its jobs reclaimed after the

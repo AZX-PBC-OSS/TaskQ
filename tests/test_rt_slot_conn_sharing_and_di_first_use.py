@@ -87,7 +87,7 @@ _SLOT_POOL_SIZE = 3
 # ── Budgets ─────────────────────────────────────────────────────────────
 #
 # Every budget below is sized so the production bound it watches fires
-# well inside it: a budget firing (budget.expired()) is the failing state result -
+# well inside it: a budget firing (budget.expired()) is the RED result -
 # production never bounded the operation on its own.
 
 # Surface B: reload_factory_timeout shrunk so a production-side bound on
@@ -741,7 +741,7 @@ async def test_teardown_mid_slot_is_bounded_and_preserves_the_job_outcome(
     exception: the row stays running and lock-lease expiry reclaims it,
     the same loud, retryable outcome a rotation-terminate produces.
 
-    The failure this attack caught on the release candidate: the
+    RED finding this attack caught on the release candidate: the
     terminated dispatch ESCAPES ``dispatch_one_job`` with
     ``InterfaceError('pool is closed')`` - the generic handler's fallback
     terminal write goes through the worker pool that the SAME unwind

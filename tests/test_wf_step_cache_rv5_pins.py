@@ -6,9 +6,9 @@ SAFE behavior.
 Provenance: the rv5 internals review's live recorded findings, each reproduced
 against this head BEFORE pinning (the pre-pin repro shapes + outputs were captured at the pinning run.) Per the
 doctrine, a LIVE finding is pinned under ``pytest.mark.xfail(strict=True,
-reason="LIVE FINDING: …")`` asserting the SAFE behavior — the fix
-flips the pin XPASS-strict (a failure that says: remove the marker WITH the
-fix). The one GREEN guard (the recorded finding's) pins the behavior that is already
+reason="LIVE FINDING rv5-k<id>: …")`` asserting the SAFE behavior — the fix
+flips the pin XPASS-strict (a red that says: remove the marker WITH the
+fix). The one GREEN guard (rv5-k2) pins the behavior that is already
 correct (the address IS input-sensitive) and must survive the fixes — it is
 the pack's own hole closed (the mutation that drops the input leg reds it;
 the scenario's capture is recorded).
@@ -136,7 +136,7 @@ from taskq.workflows import (
 from taskq.workflows.api._validate import WorkflowValidationError
 
 # ── the pinned graph's bodies (module-level: the annotations must resolve —
-#    the compile's hint resolution reads the defining globals; the section.1
+#    the compile's hint resolution reads the defining globals; the §22.1
 #    stamper + the cache's address read the body's own SOURCE, which a
 #    function-scope body does not reproducibly carry). CALLS counts BODY
 #    EXECUTIONS — the cache's entire point. ──

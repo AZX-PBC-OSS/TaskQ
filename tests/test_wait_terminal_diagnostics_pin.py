@@ -1,7 +1,7 @@
 """Pin: ``wait_terminal_with_diagnostics``'s timeout carries its evidence.
 
 The PG-restart chaos test's recovery wait (``handle.wait(timeout=180)``)
-failed once in CI (the recorded run) as a bare ``TimeoutError`` from
+failed once in CI (run 35748283472) as a bare ``TimeoutError`` from
 ``JobHandle._fetch_row_bounded_by`` - and the failure carried nothing that
 could attribute it: no worker logs, no last observed row, so "the reclaim
 never happened", "the attempt starved mid-run", and "the replacement
@@ -57,7 +57,7 @@ def _handle(row: Any) -> JobHandle[None]:  # type: ignore[type-var]  # Why: JobH
 
 
 async def test_timeout_reports_last_observed_row_and_context() -> None:
-    """THE FAILING CONTRACT: the RuntimeError must name the row the poll loop last
+    """RED contract: the RuntimeError must name the row the poll loop last
     observed (status AND attempt - the reclaim-never-happened vs
     attempt-starved discriminator) and the caller's context dump."""
     handle = _handle(make_job_row(status="running", attempt=1))
@@ -82,7 +82,7 @@ async def test_timeout_reports_last_observed_row_and_context() -> None:
 
 
 async def test_diagnostics_failure_never_masks_the_timeout() -> None:
-    """THE FAILING CONTRACT: a context dump that raises (PG pool still wedged,
+    """RED contract: a context dump that raises (PG pool still wedged,
     Docker daemon gone) is downgraded to report content - the re-raised
     error is still the wait timeout's RuntimeError, never the dump's
     exception."""
@@ -108,7 +108,7 @@ async def test_diagnostics_failure_never_masks_the_timeout() -> None:
 
 
 async def test_happy_path_is_a_bare_wait() -> None:
-    """THE FAILING CONTRACT: on terminal state the wrapper IS ``handle.wait`` -
+    """RED contract: on terminal state the wrapper IS ``handle.wait`` -
     the result passes through unwrapped, no RuntimeError, no residue."""
     row = make_job_row(status="succeeded", attempt=1)
     handle = _handle(row)

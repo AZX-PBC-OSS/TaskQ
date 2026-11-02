@@ -390,7 +390,8 @@ async def _scrape_port() -> str:
 async def _poll_fetch_port(port: int, *, deadline_s: float = 45.0) -> str:
     """POLL, don't knock once: the worker's boot (interpreter start, PG
     connect, the first election attempt) has outrun any fixed wait under
-    co-tenancy — the follower arm's own recorded finding (3.14 leg, the recorded run: the lone connect got Errno 111 and the missing file
+    co-tenancy — the follower arm's own recorded finding (3.14 leg, run
+    36629891786: the lone connect got Errno 111 and the missing file
     failed three otherwise-green tests as PROBE_TASK_FAILED). The
     LIVE arm raced the SAME boot the same way (the -n 8 consolidated
     proof: the worker's PG connects queued behind eight workers' storm,

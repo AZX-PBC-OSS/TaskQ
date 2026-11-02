@@ -18,9 +18,9 @@ THE FIX'S SHAPE (the read face carries the node's identity):
   ``map_index`` (``"fetch.item[3]"``) — keying bare would silently
   collapse N children into one entry (last-wins, the lie).
 
-Failing-first: the pins failed at the pre-fix head (the identity keys
+Failing-first: the pins ran RED at the pre-fix head (the identity keys
 absent → the assert fires; the keyed view absent → ImportError); the
-reds are captured in `the recorded capture`.
+reds are captured in ``.measurements/cons-cure1-reds.json``.
 """
 
 from __future__ import annotations

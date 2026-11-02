@@ -77,7 +77,7 @@ async def test_the_validated_dump_lands_not_the_pre_validation_dict(
     """THE LAX-PYDANTIC HOLE, pinned shut: a body emits ``{"page": "42"}``
     (a STRING) against the declared ``page: int`` — pydantic's lax
     validation coerces, and the VALIDATED dump (page == 42, the int) is
-    what lands in the STATE row and the STREAM payload. The recorded failure (the
+    what lands in the STATE row and the STREAM payload. RED (the
     pre-fix tree): the raw dict was stored and the string landed where
     the int is declared — the schema was decoration, the storage lied."""
     app = WorkflowApp()
@@ -210,7 +210,7 @@ async def test_the_auto_class_drop_count_is_on_the_record(
     """THE DISCARDED RECEIPT, pinned shut: the auto projection's appends
     past the ring bound are COUNTED on the node's STREAM-channel counters
     row (occurrences == the projections, dropped == the trims — the
-    honest appended == retained + dropped pair, BOTH classes). The recorded failure (the
+    honest appended == retained + dropped pair, BOTH classes). RED (the
     pre-fix tree): the drop count was discarded — the auto class had no
     receipt."""
     from tests._wf_fixtures import seed_running_node
@@ -328,7 +328,7 @@ async def test_routing_progress_refused_is_the_named_terminal_not_a_flake(
     """THE ROUTING RULE, deterministic leg (pinned per class): a
     ``ProgressRefusedError`` — a DETERMINISTIC authoring bug — finalizes
     the node on the FIRST attempt with the named class; the ladder is
-    unburned (no re-pends, ONE ledger failed row). The recorded failure (the pre-fix
+    unburned (no re-pends, ONE ledger failed row). RED (the pre-fix
     tree): the deterministic death laddered as transient — three
     identical failures pretending to be a flake, the retry budget spent
     on a bug no retry can fix."""
@@ -446,7 +446,7 @@ async def test_map_index_poison_record_its_mates_commit(
     poison record (map_index past the smallint ceiling) emits the VALID
     page-mates — their tx COMMITS, the valid work survives on the
     record — then raises :class:`MapIndexExhaustedError` NAMING the
-    offender. The recorded failure (the pre-fix tree): the raw DataError escaped
+    offender. RED (the pre-fix tree): the raw DataError escaped
     MID-TX and the whole page rolled back — the valid mates died with
     the poison record (the accidental untyped ceiling)."""
     from taskq.workflows._emit import MapIndexExhaustedError, emit_batch

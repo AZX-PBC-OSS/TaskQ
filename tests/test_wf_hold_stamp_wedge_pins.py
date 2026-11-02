@@ -154,7 +154,7 @@ async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
     )
     await _plant_wedge(wf_pool, wf_schema, node_id, hold_id, signal_status="delivered")
 
-    # The failing shape on the ungated row: the claimable fence excludes it.
+    # RED shape on the ungated row: the claimable fence excludes it.
     claimable = await wf_pool.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND status IN ('pending','scheduled') "

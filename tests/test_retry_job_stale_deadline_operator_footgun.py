@@ -77,7 +77,7 @@ async def test_retry_job_past_deadline_produces_a_dispatchable_row(
 
     ``dispatch_batch``'s own WHERE clause excludes any row whose
     ``schedule_to_close`` has passed (this is the documented, correct
-    behaviour for ordinary dispatch - see docs/guides/retries.md the section).
+    behaviour for ordinary dispatch - see docs/guides/retries.md §6).
     The bug is that ``retry_job`` hands back exactly such a row: status
     'pending', but a `schedule_to_close` already in the past, so this
     freshly 'retried' row is dispatch-excluded from the moment the

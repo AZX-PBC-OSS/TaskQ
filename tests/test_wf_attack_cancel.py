@@ -1,6 +1,6 @@
 """ATTACK PINS — the torn-cancel faces + the cancel import law.
 
-Provenance: the hostile review of the consolidated head (the consolidated head). The
+Provenance: the hostile review of the consolidated head (af1b8779). The
 attack is F-P4-TORN-CANCEL's two faces — the cancel cascade's signal leg
 riding a SECOND pool connection in autocommit (fixed at 2ada9d33: the
 leg runs on the caller's connection inside the caller's transaction).
@@ -12,14 +12,14 @@ The law this file pins (T10/P3 rule 4, verbatim): cancel is ONE
 transaction — the flow flip is the linearization point; the nodes, the
 held signals, and the audit row commit together or not at all.
 
-Face C is the IMPORT LAW (the section.1's sibling): the cancel path is workflow
+Face C is the IMPORT LAW (§16.1's sibling): the cancel path is workflow
 engine (core deps only) — it must never reach the admin package (whose
-``__init__`` imports the ``fastapi`` extra). Rejected LIVE at the consolidated head:
+``__init__`` imports the ``fastapi`` extra). Rejected LIVE at af1b8779:
 ``FlowRunner.cancel_workflow``'s lazy ``from taskq.web.admin._audit
 import …`` makes ``cancel_workflow`` raise ``ModuleNotFoundError`` on a
 base ``taskq[flows]`` install. The pin is strict-xfail until the lane
 moves the audit seam to a deps-free home; the fix flips this to XPASS-
-strict (a failure that tells you to remove the marker), which is the scenario.
+strict (a red that tells you to remove the marker), which is the scenario.
 """
 
 from __future__ import annotations

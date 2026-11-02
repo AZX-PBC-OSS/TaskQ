@@ -532,7 +532,7 @@ class TestComputeSuccessRate:
 def test_history_marks_max_attempts_inert_for_indefinite_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An indefinite-kind row ignores max_attempts entirely (retries.md the section):
+    """An indefinite-kind row ignores max_attempts entirely (retries.md §2):
     the stored ceiling is inert, so the /history Attempt cell renders the
     shared ``attempt_budget`` marker - the real attempt count with the
     ceiling shown as inert - exactly as /jobs and /jobs/{id} already do.

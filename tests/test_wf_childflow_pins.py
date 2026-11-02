@@ -14,7 +14,7 @@ The failing-first receipt: this suite ran against the PRE-T28 tree — every
 import of the child-flow surface reds (``ChildHandle``/``ChildOk``/
 ``ChildFailed``/``ChildCancelled`` do not exist; ``ctx.spawn_flow`` is
 not on the context); the capture rides
-`the recorded capture`.
+``.measurements/t28-childflow-failing-first.txt``.
 """
 
 from __future__ import annotations

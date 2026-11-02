@@ -650,7 +650,7 @@ async def test_retry_guard_checkout_bounds_a_parked_release_and_frees_the_pool(
             pass  # the op's statements all acknowledged; its work is committed
         return "committed"
 
-    # The TEST budget is the failing proof result for a regression to the unbounded
+    # The TEST budget is the red result for a regression to the unbounded
     # handoff: a checkout that stops passing the bound parks for the full
     # 10 s and the test budget fires at 2 s instead of the shrunk bound.
     budget = asyncio.timeout(2.0)

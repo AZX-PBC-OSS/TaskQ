@@ -1,4 +1,4 @@
-"""RED-team: dependency-failure posture of the Redis rate-limit acquire path.
+"""adversarial-review pin: dependency-failure posture of the Redis rate-limit acquire path.
 
 Constitution: fail closed where a check cannot complete; a degraded outcome
 must be distinguishable, never a silent wrong answer. An infrastructure

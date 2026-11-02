@@ -4,7 +4,7 @@ rules, the wiring verbs' doors, the Mermaid byte-stability.
 No PG: every probe compiles or validates. RED = the observed half
 contradicts the documented contract (the capture file names it).
 
-Captured to the recorded capture per the build protocol.
+Captured to .measurements/attack3/ per BUILD-PROTOCOL §7b.
 """
 
 from __future__ import annotations

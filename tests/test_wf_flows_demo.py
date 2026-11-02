@@ -233,7 +233,7 @@ async def test_capacity_terms_land_in_actor_config(
     assert pub.max_concurrent == 1
     assert (
         pub.max_pending is None
-    )  # the: max_pending is off the wf surface — the row seeds it UNSET
+    )  # H-A6: max_pending is off the wf surface — the row seeds it UNSET
     assert pub.result_ttl == 3600.0
     assert pub.metadata.get("workflow_actor") is True, pub.metadata
 
@@ -250,7 +250,9 @@ async def test_capacity_terms_land_in_actor_config(
     assert row is not None, "the capped cohort's actor_config row is missing"
     assert row["queue"] == "flows-pub"
     assert row["max_concurrent"] == 1
-    assert row["max_pending"] is None  # the: the dead knob is off the surface — the row seeds UNSET
+    assert (
+        row["max_pending"] is None
+    )  # H-A6: the dead knob is off the surface — the row seeds UNSET
     assert row["result_ttl"] == 3600.0
     meta = _decoded(row["metadata"])
     assert meta.get("workflow_actor") is True, meta

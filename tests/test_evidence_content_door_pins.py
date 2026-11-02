@@ -3,7 +3,7 @@
 The head-stamp verifier's law checked the claims registry against HEAD
 (freshness + the supersession chain) but NEVER READ THE CAPTURE'S
 CONTENT. The rejected shape (the estate's REAL instances,
-``wf-battery-the recorded finding'sT043000Z.txt`` and
+``wf-battery-rv4-20261011T043000Z.txt`` and
 ``deslop-pin-packs-20261011T042947Z.txt``): a live capture whose own
 header records ``rc=1`` — the run FAILED, in the capture's own words —
 while the claim greens the stem. The verifier read the stamp's SHA, not
@@ -35,14 +35,14 @@ And the HONESTY edges, pinned both ways:
   silence (the defect class this fix kills) is never the outcome.
 
 Each pin runs the verifier script as a subprocess against a synthetic
-runs-dir (the recorded finding's precedent: the script is the subject, its rc is
+runs-dir (the rv2-13 precedent: the script is the subject, its rc is
 the verdict).
 """
 
 from __future__ import annotations
 
 import json
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the recorded finding's pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the rv2-13 pin's own shape).
 import sys
 from pathlib import Path
 
@@ -151,15 +151,15 @@ def test_the_rc1_stamp_convicts(tmp_path: Path) -> None:
     the mismatch — named, with the file and the line."""
     runs = _estate(
         tmp_path,
-        [_e("wf-battery-rv4", "wf-battery-the recorded finding's.txt", "t0")],
-        {"wf-battery-the recorded finding's.txt": _RC1_CAPTURE.format(head=HEAD)},
+        [_e("wf-battery-rv4", "wf-battery-rv4-cap.txt", "t0")],
+        {"wf-battery-rv4-cap.txt": _RC1_CAPTURE.format(head=HEAD)},
     )
     proc = _verify(runs)
     assert proc.returncode == 1, (
         "the rc=1 stamp under a green claim must red the verifier:\n" + proc.stdout + proc.stderr
     )
     assert "CONTENT-VERDICT MISMATCH" in proc.stdout
-    assert "wf-battery-the recorded finding's.txt" in proc.stdout  # the file, named
+    assert "wf-battery-rv4-cap.txt" in proc.stdout  # the file, named
     assert "rc=1" in proc.stdout  # the capture's own failing word, quoted
 
 

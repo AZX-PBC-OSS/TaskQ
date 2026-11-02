@@ -12,11 +12,11 @@ silently while the connection SURVIVES - the session keeps the lock, the
 conn returns to the pool, and every later prune attempt on any pod logs
 ``prune-skipped-advisory-lock-held`` until that session dies.
 
-The failing contract: a failed unlock on a still-live session must terminate
+The RED contract: a failed unlock on a still-live session must terminate
 the session (or otherwise not strand the fleet's lock). The real
 ``_prune_loop`` is driven end-to-end against real PG with its unlock
 statement failing on the pooled conn; the leak is asserted from a second
-raw session. Every wait is bounded so the failing state failure can never hang the
+raw session. Every wait is bounded so the RED failure can never hang the
 suite.
 """
 
@@ -136,7 +136,7 @@ class _StubBackend:
 async def test_failed_unlock_leaks_prune_lock_on_live_pooled_session(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch, fail_with: type[BaseException], label: str
 ) -> None:
-    """The recorded failure: a failed pg_advisory_unlock on a still-live pooled session must
+    """RED: a failed pg_advisory_unlock on a still-live pooled session must
     not leave the fleet's prune lock stranded.
 
     Contract: when the unlock statement fails while the connection

@@ -617,7 +617,7 @@ async def test_t08_rollup_cost_gate_index_driven(
     shape (the pre-fix index: the raw-TEXT key the reads' uuid cast
     broke, measured p50 21.2 ms for the rollup and 20.7 ms for the
     per-node read at this very shape —
-    the recorded capture) REDS the plan assert.
+    .measurements/fix2/index-before-text-index.txt) REDS the plan assert.
     The ride: jobs_wf_flow_nodes_idx (01.00.26_02 — the index expression
     carries the same uuid cast the reads carry; the partial covers the
     workflow rows only)."""
@@ -737,7 +737,7 @@ async def test_t08_rollup_cost_gate_index_driven(
                 "pre-fix index (01.00.26_01's raw-TEXT key) served NO "
                 "flow-scoped read: the rollup read p50 21.2 ms and the "
                 "per-node read 20.7 ms, BOTH Seq Scans, linear in the "
-                "fleet table (the recorded capture"
+                "fleet table (.measurements/fix2/index-before-text-"
                 "index.txt). The fix (01.00.26_02: the uuid-cast "
                 "expression + the metadata?'flow_id' partial, the "
                 "reads carrying the proving clauses) puts every "

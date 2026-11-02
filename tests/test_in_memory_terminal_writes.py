@@ -1323,7 +1323,7 @@ class TestSnoozeRefundsAttempt:
 
 class TestSnoozeClearsLastHeartbeatAt:
     """G-6: mark_snoozed clears last_heartbeat_at on both arms (
-    the section.2 lines 1517-1521).
+    §6.2 lines 1517-1521).
     """
 
     async def test_in_memory_snooze_clears_last_heartbeat_at(self) -> None:

@@ -331,7 +331,7 @@ class TestCloseBounded:
         tq._pool = cast(asyncpg.Pool, fake_pool)
 
         # Why the outer timeout: unguarded, close() awaits pool.close()
-        # unbounded, so the mutated state would hang forever instead of failing
+        # unbounded, so the RED state would hang forever instead of failing
         # fast.
         async with asyncio.timeout(5):
             await tq.close()

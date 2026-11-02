@@ -22,7 +22,7 @@ a RUNNABLE path + the captured output:
   dead_letter; the totals are the fence (a non-total route is refused
   at declaration).
 
-Each leg's capture lands in `the recorded capture` (the capture
+Each leg's capture lands in ``.measurements/demo-legs/`` (the capture
 law: the file that gets READ).
 """
 

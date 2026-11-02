@@ -28,10 +28,10 @@ The operator/user question each test answers:
   not (the cancel NOTIFY names the job only) — identically?"
 * live refresh (4): "when a new job is enqueued while I watch, does it reach
   the RENDERED table through the poll's swap?" — the swap is driven with the
-  real HX partial each engine serves. This test failed against the stock
+  real HX partial each engine serves. This test was RED against the stock
   page: the served HX fragment carried no ``#job-table-container`` element
   for ``refreshTable`` to find, so the live poll fetched forever and
-  rendered never — the failing proof behind the template fix that puts the
+  rendered never — the red proof behind the template fix that puts the
   container id on the fragment's own root.
 * progress cadence (5): "is the detail page's poll calm on hypertable-served
   bodies — 304 when nothing changed, zero DOM writes on a re-flushed
@@ -488,7 +488,7 @@ _BASE_PATH_RE = re.compile(r'window\.TASKQ_BASE_PATH = "([^"]*)"')
 # "elapsed since started_at, measured against the database clock at render
 # time" (job_table.html) — through duration_fmt's compact arms, and the
 # fragment differentials red on a minute-tick straddling the two engines'
-# sequential fetches (the recorded run: "226h 42m" vs "226h 41m"). The
+# sequential fetches (run 36658651637: "226h 42m" vs "226h 41m"). The
 # paired forms are the _humantime cascade's shapes; bare "13m"/"45s" are
 # not stripped — no diffed surface renders them volatile.
 _VOLATILE_PROSE_RE = re.compile(
@@ -509,7 +509,7 @@ class TestTheVolatileProseStripStripsWholePhrases:
     module's TestTheVolatileStripStripsWholePhrases contract, mirrored
     here because this module's regex is its own copy (no absolute-stamp
     arm). The duration forms are the ones that re-flaked the differentials
-    (the recorded run); an incomplete strip here is what let them
+    (run 36658651637); an incomplete strip here is what let them
     through."""
 
     @pytest.mark.parametrize(
@@ -1157,10 +1157,10 @@ async def test_live_refresh_delivers_new_rows_through_the_poll_swap(lab: _Lab) -
     row is inserted into BOTH engines (identical id, identical fixed
     stamps); each engine's fresh HX fragment is captured and fed to the
     harness as the poll response; the swap must carry the new row,
-    engine-identically. This is the test that failed against the stock
+    engine-identically. This is the test that was RED against the stock
     page: the served HX fragment carried no ``#job-table-container`` element
     for ``refreshTable`` to find, so the live poll fetched forever and
-    rendered never — the failing proof behind the template fix that puts the
+    rendered never — the red proof behind the template fix that puts the
     container id on the fragment's own root."""
     new_id = new_job_id()
     created = _BASE + timedelta(hours=10)

@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""RED-TEAM pins: archived keys free at prune (S3) and batch exactly-once (S4).
+"""The adversarial-review pins: archived keys free at prune (S3) and batch exactly-once (S4).
 
 Scenario 3 - an ARCHIVED job re-enqueued with the same idempotency key. The
 product decision, from the docs (``docs/guides/jobs-clients.md``:
@@ -265,7 +265,7 @@ async def test_twin_in_batch_duplicate_and_archived_key_fast_path() -> None:
     The mirror must agree with Postgres on the in-batch duplicate (dedupe to
     one job) AND on the archived key (free after the archive: the fast path
     accepts it and the cap preflight does not discount against it). The stale
-    index entry is the failing proof this pin exists to hold: a phantom
+    index entry is the red this pin exists to hold: a phantom
     ``DuplicateIdempotencyKeyError`` for a key Postgres has already freed,
     and an over-admission past a capped actor's ``max_pending``.
     """

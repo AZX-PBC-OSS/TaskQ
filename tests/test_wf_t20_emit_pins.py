@@ -1,4 +1,4 @@
-"""T20's EMIT-TX pins — the design's ONE new primitive (PROOF.md the section).
+"""T20's EMIT-TX pins — the design's ONE new primitive (PROOF.md §6a).
 
 The shipped fork inserts children ONLY inside the parent's terminal-mark
 tx1 (fork-at-finalize). A STREAMING source must emit children while
@@ -7,7 +7,7 @@ re-bound (the children INSERT + the edge rows) PLUS the cursor checkpoint
 on the source row's own metadata under the FULL claim fence — ONE
 transaction (the fork-atomicity law at page granularity).
 
-THE REFUTED-CLAIM DISCIPLINE (the spike's own refuted claim, PROOF.md the section —
+THE REFUTED-CLAIM DISCIPLINE (the spike's own refuted claim, PROOF.md §6 —
 198 UniqueViolations in the first run): the per-record identity rides
 ``map_index`` — the fork's idempotency key AND the step-ledger's arbiter
 BOTH discriminate siblings by it; emit stamps ``map_index`` + ``trace_id``
@@ -18,10 +18,10 @@ server-side termination, no graceful path) at each statement window of the
 emit tx — the spike's storm shape: zero re-emitted children, zero lost
 children, the cursor == the last committed page.
 
-Failing-first: this file failed against the tree before the emit primitive
+Failing-first: this file ran RED against the tree before the emit primitive
 existed (the ImportError IS the missing surface); the greens below are
 the built code's evidence. Captured:
-`the recorded capture`.
+``.measurements/t20-emit-*.txt``.
 """
 
 from __future__ import annotations

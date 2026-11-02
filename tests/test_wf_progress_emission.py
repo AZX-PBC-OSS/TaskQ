@@ -3,7 +3,7 @@ asymmetry.
 
 The provenance: the PoC's PROOF (PROOF 1/2/4) — the chain, the fan-out,
 the chatty body — ported onto the BUILT surface. Each pin's REJECTED
-VARIANT is named; the unfenced variants stay failing on purpose (recorded in the failure log).
+VARIANT is named; the unfenced variants stay RED FOREVER (the failure log).
 
 THE LAW (T21 decision e): observability degrades FIRST, never
 correctness. The emission is best-effort — never in the finalize path

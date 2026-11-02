@@ -34,7 +34,7 @@ async def test_drive_until_held_sees_a_no_deadline_hold(wf_pool: object, wf_sche
     marker is the question — `metadata ? 'hold'` replaced
     `scheduled_at > now()` in the driver's held-count). The RED
     evidence (the pre-fix spin, 126.82 s / 5000 ticks) is captured in
-    `the recorded capture`; this test
+    ``.measurements/p4-attack-held-drive-null-deadline.md``; this test
     was strict-xfail until the fix flipped it — it stays a REGULAR pin
     so a regression re-reds the suite."""
     app = WorkflowApp()

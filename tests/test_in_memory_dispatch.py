@@ -377,7 +377,7 @@ class TestInitialStatusBifurcation:
         """enqueue two jobs: one with scheduled_at = clock.now()
                (immediate), one with scheduled_at = clock.now() + 1h (future).
                Assert the immediate job has status == "pending" and the future
-        job has status == "scheduled". Validates / the section.5.
+        job has status == "scheduled". Validates / §3.5.
         """
         clock = FakeClock(_START)
         backend = _make_backend(clock)
@@ -988,7 +988,7 @@ async def test_property_identity_invariant(
 
 
 async def test_dispatch_batch_respects_schedule_to_close_interval() -> None:
-    """the section.3 mirror of PG dispatch filter: enqueue an indefinite-tier job
+    """§11.3 mirror of PG dispatch filter: enqueue an indefinite-tier job
     with schedule_to_close_interval=timedelta(seconds=1), advance clock
     past the deadline, call dispatch_batch → empty result.
     """

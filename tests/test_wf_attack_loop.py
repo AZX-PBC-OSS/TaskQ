@@ -1,10 +1,10 @@
 """ATTACK PINS — the loop machinery front (the heaviest front of the
-hostile review of the consolidated head, the consolidated head).
+hostile review of the consolidated head, af1b8779).
 
 Provenance: the att_loop adversarial review's probes (a1a through a5, REPORT.md) run live
 against PG. Each LANDED finding is pinned here asserting the SAFE
 behavior and marked ``pytest.mark.xfail(strict=True)``: the fix flips
-the pin to XPASS-strict (a failure that says: remove the marker WITH the
+the pin to XPASS-strict (a red that says: remove the marker WITH the
 fix). The GUARDS at the foot are the attacks the front FAILED — the
 machinery held; they run green so the fence cannot rot silently.
 
@@ -89,7 +89,7 @@ class Carry(BaseModel):
 # ── F-LOOP-1: the typed carry never reaches the body ────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-CARRY0]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the consolidated head): loop(initial=Counter()) jsonables the model to a …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-CARRY0]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): loop(initial=Counter()) jsonables the model to a …
 async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -131,7 +131,7 @@ async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     assert await runner.result(flow_id) == {"acc": 3}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-CARRY]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the consolidated head): the crash-window resume replays the carry as a …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-CARRY]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): the crash-window resume replays the carry as a …
 async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -197,7 +197,7 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
 # ── F-LOOP-2: the advance/exhaust statements carry no claim fence ───────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-FENCE]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the consolidated head): LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL fence on …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-FENCE]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL fence on …
 def test_f_loop_2_the_advance_and_exhaust_statements_carry_the_claim_fence() -> None:
     """The statement face of the unfenced writes (the behavioral face is
     the zombie pin below). The estate's fence vocabulary is fixed — the
@@ -225,7 +225,7 @@ def test_f_loop_2_the_advance_and_exhaust_statements_carry_the_claim_fence() -> 
 # ── F-LOOP-4: the non-union return is recorded as success, then laundered ─
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-UNION]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the consolidated head): a body returning neither Done nor Refine is …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-UNION]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): a body returning neither Done nor Refine is …
 async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -558,7 +558,7 @@ async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
         f'SELECT count(*) FROM "{wf_schema}".wf_outbox WHERE flow_id = $1', flow_id
     )
     # Let B finish; capture everything, assert at the end (the teardown
-    # stays clean on the failing proof path).
+    # stays clean on the red path).
     gate_b.set()
     verdict_b = await asyncio.wait_for(drive_b, timeout=30)
     final_root = await wf_conn.fetchval(

@@ -50,7 +50,7 @@ Five hypotheses, one test each (plus one divergence pin):
    counts, same survivors, same watermark. The sweeps' contracts hold on
    both storage engines.
 
-Plus one pinned divergence : the archive write's NOT EXISTS fold guard
+Plus one pinned divergence (H6): the archive write's NOT EXISTS fold guard
 ("a job id is archived at most once") is keyed on the archive row's
 EXISTENCE, and a chunk drop removes that witness — after the ghost's chunk
 drops, the hypertable mode re-archives a retried job where vanilla would
@@ -775,7 +775,7 @@ async def test_sweep_script_agrees_across_both_engines(timescale_dsn: str, pg_ds
     hypertable, the aged range is the policy's and the outcomes
     legitimately diverge (the sweeps skip what the policy will drop);
     that composition's end-state parity is H9's proof, and the floor's
-    failing/green is H7/H8.
+    red/green is H7/H8.
     """
     outcomes: dict[str, dict[str, Any]] = {}
     for label, dsn in (("vanilla", pg_dsn), ("timescale", timescale_dsn)):
@@ -791,7 +791,7 @@ async def test_sweep_script_agrees_across_both_engines(timescale_dsn: str, pg_ds
                     conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650)
                 )
             # The full-range wiring on both engines: pin the SQL's
-            # mode-agnosticism, not the floor's composition (owns that).
+            # mode-agnosticism, not the floor's composition (H9 owns that).
             with _no_floor_patch():
                 outcomes[label] = await _parity_scenario(conn, schema)
         finally:
@@ -984,7 +984,7 @@ def _no_floor_patch() -> Generator[None, None, None]:
 async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
     ts_conn: asyncpg.Connection, ts_schema: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """H7, FAILING/GREEN: with the archive policy armed, the expiry sweep's
+    """H7, RED/GREEN: with the archive policy armed, the expiry sweep's
     deleted-count over the BELOW-FLOOR range is zero — and the counterfactual
     (floor off, the unguarded wiring) shows the sweep paying to delete exactly
     those rows.
@@ -992,7 +992,7 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
     Three bands, all with ``expire_at`` in the past except the fresh one:
 
     * aged (``finished_at`` 3.5d, below the 2-day floor): policy-owned.
-      The unguarded sweep deletes them (4 total); the guarded sweep deletes none of them.
+      RED deletes them (4 total); GREEN deletes none of them.
     * inside the window (``finished_at`` 1d, above the floor): the
       sweep's row-exact work below the policy's horizon — deleted in
       BOTH runs. The floor never touches the young range.
@@ -1018,7 +1018,7 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
 
     aged_at = now - _AGED_ARCHIVE_FINISHED_AT
     expired_at = now - timedelta(hours=1)
-    # ── the unguarded arm: the floor off — the unguarded sweep deletes the aged rows too.
+    # ── RED: the floor off — the unguarded sweep deletes the aged rows too.
     aged_red = [await _seed(finished_at=aged_at, expire_at=expired_at) for _ in range(3)]
     inside_red = await _seed(finished_at=now - timedelta(days=1), expire_at=expired_at)
     monkeypatch.setattr(_leader_shared, "retention_policy_floor", _no_floor)
@@ -1064,7 +1064,7 @@ async def test_policy_floor_keeps_the_expiry_sweep_out_of_the_policy_range(
 async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exact(
     ts_conn: asyncpg.Connection, ts_schema: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """H8, FAILING/GREEN on the event TTL sweep, with the floor read from a
+    """H8, RED/GREEN on the event TTL sweep, with the floor read from a
     policy whose ``drop_after`` (3 days) is deliberately LARGER than the
     sweep's retention (1 day): the floor must come from the policy's
     registered config, not from the sweep's retention argument —
@@ -1072,7 +1072,7 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
     would coincide and the window would be empty).
 
     The outbox arm carries the floor too: below it the policy's chunk
-    drop defeats the carve-out anyway , so the sweep does not pay to
+    drop defeats the carve-out anyway (H2), so the sweep does not pay to
     re-delete what the policy owns, and above it the carve-out keeps its
     full strength (pinned by the H2 test). The inside-window deletion
     still advances the watermark — below the floor the sweep deletes
@@ -1098,7 +1098,7 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
     # policy RE-ARMS the policy's background job at ~now — undoing the
     # ts_conn fixture's far-future deferral. The bgw then races the test:
     # its drop_chunks takes AccessExclusiveLock on the below-floor chunk
-    # while this connection holds row locks from the seeds and the failing state
+    # while this connection holds row locks from the seeds and the RED
     # sweep — PG answers the mutual wait with DeadlockDetectedError on
     # the GREEN-phase seed (deterministic 3/3, the policy's first run
     # lands within the test's own window every time). The test reads the
@@ -1125,7 +1125,7 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
     below_red = await _seed_event(ts_conn, ts_schema, occurred_at=below_at, detail={})
     inside_red = await _seed_event(ts_conn, ts_schema, occurred_at=inside_at, detail={})
 
-    # ── the unguarded arm: the floor off — the unguarded sweep deletes the below-floor
+    # ── RED: the floor off — the unguarded sweep deletes the below-floor
     # event too.
     monkeypatch.setattr(pg_sweeps, "retention_policy_floor", _no_floor)
     try:
@@ -1245,7 +1245,7 @@ async def test_policy_run_plus_floor_composes_to_todays_end_state(timescale_dsn:
             # floor scenario it does the deleting (chunk drops), in the
             # no-floor scenario the sweeps already did it row-exactly and
             # the run finds aged chunks holding only the outbox row —
-            # which it drops too .
+            # which it drops too (H2).
             await _force_policies_now(conn, schema)
 
             async def _aged_gone() -> bool:

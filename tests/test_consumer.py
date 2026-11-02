@@ -119,7 +119,7 @@ async def test_indefinite_deadline_emits_lifecycle_scheduled(
 ) -> None:
     """indefinite-tier job failing near its deadline emits
     `lifecycle.scheduled` and passes a retry DELAY - the classifier is not
-    a deadline arbiter .  Whether the deadline actually kills the
+    a deadline arbiter (C2).  Whether the deadline actually kills the
     retry is decided by the SQL guard in mark_failed_or_retry and pinned
     at the backend layer (tests/test_clock_domain_isolation.py::
     test_retry_deadline_arbitrated_server_side)."""

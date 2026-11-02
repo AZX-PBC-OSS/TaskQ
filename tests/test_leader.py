@@ -3318,7 +3318,7 @@ async def test_close_leader_owned_conns_terminates_hung_close(
     monitor.close_wait.clear()  # close() blocks forever from now on
 
     # Why the outer timeout: unguarded, this awaits conn.close() unbounded, so
-    # the mutated state would hang forever instead of failing fast.
+    # the RED state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         await leader._close_leader_owned_conns()
 
@@ -3391,7 +3391,7 @@ async def test_close_leader_owned_conns_clears_is_leader_before_closes_complete(
     monitor.close_wait.clear()
 
     # Why the outer timeout: unguarded, the clear runs only after BOTH bounded
-    # closes finish, so the mutated state's assertion window is bounded by the
+    # closes finish, so the RED state's assertion window is bounded by the
     # 0.05s shrink seam; the guard keeps a regression from hanging.
     async with asyncio.timeout(5):
         task = asyncio.create_task(leader._close_leader_owned_conns())
@@ -3535,7 +3535,7 @@ async def test_drop_leader_conn_terminates_hung_taskq_owned_close(
     leader_conn.close_wait.clear()  # close() blocks forever from now on
 
     # Why the outer timeout: unguarded, this awaits conn.close() unbounded, so
-    # the mutated state would hang forever instead of failing fast.
+    # the RED state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         await leader._drop_leader_conn(reason="test_hung_close")
 

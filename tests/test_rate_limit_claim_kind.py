@@ -5,7 +5,7 @@ The adoption blocker this fixes: ``rate_limit_aware_classifier`` returned
 ``RetryOverride(kind="indefinite")`` UNCONDITIONALLY on a claimed 429, so
 a consumer whose actors are ``transient`` with no ``time_budget`` (the
 warden's six media jobs) met a sustained 429 storm with indefinite
-retries and no deadline — the haunt the section danger block documents — and
+retries and no deadline — the haunt the §5 danger block documents — and
 could not say "429 → BOUNDED retry" without hand-rolling a classifier.
 The factory makes the claim a construction-time knob:
 
@@ -16,7 +16,7 @@ The factory makes the claim a construction-time knob:
   composition).
 
 The parsing, the garbage rules, and the bounds are SHARED across modes
-(never forked). This file pins: the warden-shaped failing/green storm, every
+(never forked). This file pins: the warden-shaped red/green storm, every
 mode's exact override shape, the identity of the built-in with the
 factory at defaults, the verbatim-delay invariant, and the parser's
 finite-hint grammar (huge-but-finite clamps to the operator's ceiling —
@@ -112,11 +112,11 @@ def _warden_policy() -> RetryPolicy:
     return RetryPolicy(kind="transient", max_attempts=3, jitter=0.0)
 
 
-# ── the warden-shaped failing/green: the storm, bounded at last ────────
+# ── the warden-shaped red/green: the storm, bounded at last ────────
 
 
 def test_warden_red_builtin_cannot_bound_the_storm() -> None:
-    """The recorded failure (the adoption blocker, the haunt pin's shape replayed as a
+    """RED (the adoption blocker, the haunt pin's shape replayed as a
     storm walk): warden-shaped config — a transient policy, no
     time_budget, the BUILT-IN — meets a sustained 429 storm and the
     decision ladder NEVER terminates. The built-in cannot express

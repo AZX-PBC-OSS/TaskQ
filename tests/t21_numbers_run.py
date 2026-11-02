@@ -1,7 +1,7 @@
 """THE T21 NUMBERS RUN — the PoC's numbers re-proven ON THE BUILT CODE.
 
 The capture law: this run writes a timestamped JSON file into
-the recorded capture — the verdicts read back in minutes, the file is the
+`.measurements/` — the verdicts read back in minutes, the file is the
 record. Not a pytest pin (the timing bands live in the pins as
 boundaries); THIS is the measured evidence the report cites.
 

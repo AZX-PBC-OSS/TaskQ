@@ -24,9 +24,9 @@ dedup):
   interval, never correctness — the seq-cursor read stays the source of
   truth).
 
-Failing-first: the pins failed at the pre-fix head (no notify, no
-listener, no ``listener=`` param); the failures are captured in
-`the recorded capture`.
+Failing-first: the pins ran RED at the pre-fix head (no notify, no
+listener, no ``listener=`` param); the reds are captured in
+``.measurements/cons-cure3-reds.json``.
 """
 
 from __future__ import annotations

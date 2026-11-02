@@ -1067,7 +1067,7 @@ async def test_drain_batch_cost_does_not_grow_as_the_backlog_is_cancelled(
     each other, and a mid-drain statistics refresh moves the coin: on a
     shared CI cluster autovacuum landed between batches and the drive
     statement flipped to the re-walk shape for the rest of the drain
-    (measured on the failing proof leg: ``[0, 0, 0, 0, 0, 0, 0, 141, 161, 181]`` -- the
+    (measured on the red leg: ``[0, 0, 0, 0, 0, 0, 0, 141, 161, 181]`` -- the
     ``+ batch_size`` per batch and the +1 probe row are the seq scan visiting
     every already-cancelled row). Re-ANALYZE between batches is not the fix
     but the trigger at that scale: injecting ``VACUUM (ANALYZE)`` before

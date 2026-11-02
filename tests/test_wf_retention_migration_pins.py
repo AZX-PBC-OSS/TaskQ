@@ -1,7 +1,7 @@
-"""THE FLOW-HISTORY RETENTION MIGRATION'S PINS — the
+"""THE FLOW-HISTORY RETENTION MIGRATION'S PINS (H-B5, H-B6) — the
 01.00.35 index round's shape, structurally and on real PG.
 
-the (the boot-time SHARE locks → the boot-race deadlock): the file
+H-B5 (the boot-time SHARE locks → the boot-race deadlock): the file
 ORIGINALLY shipped in the runner's no-transaction +
 ``CREATE INDEX CONCURRENTLY`` shape and was REVERTED to the plain
 transactional shape — the 01.00.06_01 law, re-proven by the
@@ -20,7 +20,7 @@ statement anywhere, the re-run clean, and the by-hand CONCURRENTLY note
 for too-large deployments present (the maintenance-window escape that
 keeps the huge-table SHARE-lock window off the boot).
 
-the (the redundant index): ``wf_step_ledger_flow_idx`` is pure write
+H-B6 (the redundant index): ``wf_step_ledger_flow_idx`` is pure write
 amplification on the family's hottest table — the claim arbiter
 (``flow_id, step_key, COALESCE(map_index,-1), attempt``) already leads
 with the flow probe. The file ships exactly TWO indexes (the edge and
@@ -54,7 +54,7 @@ def _migration() -> migrate_mod.Migration:
     return discovered[0]
 
 
-# ── the: the transactional plain shape (the boot-race deadlock law) ─────
+# ── H-B5: the transactional plain shape (the boot-race deadlock law) ─────
 
 
 def test_migration_is_transactional_no_directive() -> None:
@@ -110,7 +110,7 @@ def test_migration_statements_are_the_plain_shape() -> None:
 
 
 def test_migration_ships_exactly_the_two_flow_indexes() -> None:
-    """the: the file builds wf_edge_flow_idx + wf_join_fire_flow_idx
+    """H-B6: the file builds wf_edge_flow_idx + wf_join_fire_flow_idx
     (the two tables with no flow_id-led index) and does NOT build
     ``wf_step_ledger_flow_idx`` — the claim arbiter's leading column
     serves the flow probe; the redundant index was pure write
@@ -120,7 +120,7 @@ def test_migration_ships_exactly_the_two_flow_indexes() -> None:
     assert "wf_join_fire_flow_idx" in sql
     assert "wf_step_ledger_flow_idx" not in sql, (
         "wf_step_ledger_flow_idx is REDUNDANT (the claim arbiter's leading "
-        "flow_id column serves the probe) — pure write amplification "
+        "flow_id column serves the probe) — pure write amplification (H-B6)"
     )
     # The by-hand note for the TOO-LARGE deployments stays.
     assert "maintenance window" in sql.lower() or "by hand" in sql.lower(), (

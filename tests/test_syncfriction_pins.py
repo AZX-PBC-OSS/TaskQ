@@ -1,4 +1,4 @@
-"""The sync-friction lane's pins: each test fails at the audited tip and
+"""The sync-friction lane's pins: each test is RED at the audited tip and
 GREEN after its fix. One test per pinnable friction item.
 
 - item 4: ``taskq worker --queues a b c`` — the space-separated form fails

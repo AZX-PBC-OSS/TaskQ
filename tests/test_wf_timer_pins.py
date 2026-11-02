@@ -11,7 +11,7 @@ continuation, never the fail-close.
 
 Failing-first evidence: the pins ran against the PRE-IMPLEMENTATION tree
 (no ``wait_until``, no timer arm — the captures:
-`the recorded capture`), then the implementation
+``.measurements/t28-timer-pin-reds-pre.txt``), then the implementation
 flipped them green. The rejected variants recorded through
 ``timer_redlog`` name the dragon each pin's guard holds shut.
 """

@@ -1,7 +1,7 @@
 """T20's CORE FIX pins (the spike's live finding): the maintenance leg's
 failed arm gates on live UNRESOLVED work.
 
-THE FINDING (observed live in the T20 concept-proof spike, PROOF.md the section):
+THE FINDING (observed live in the T20 concept-proof spike, PROOF.md §6b):
 the shipped ``WORKFLOW_ROOT_MAINTAIN_SQL`` failed arm gated on
 ``has_active`` = running/crashed/abandoned ONLY — pending/scheduled
 siblings did NOT hold a failing run. A streaming source's FIRST chain
@@ -24,10 +24,10 @@ fixed: a resolved-blocked join row (``blocking_reason`` stamped) is
 RESOLVED — it must not hold the run; a pending CHAIN row (no stamp) is
 UNRESOLVED work — it must.
 
-Failing-first: the 149-siblings pin failed against the shipped leg (the root
+Failing-first: the 149-siblings pin ran RED against the shipped leg (the root
 flipped ``failed`` with 149 live siblings — the stranding reproduced);
 the greens below are the fix's evidence. Captured:
-`the recorded capture`.
+``.measurements/t20-maintain-liveness-*.txt``.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ async def test_t20_failed_arm_waits_for_live_siblings(
     """ONE failed chain + 149 pending siblings: the failed arm must NOT
     finalize the root while live UNRESOLVED work is on the floor.
 
-    The recorded failure (the shipped leg, the spike's observation): the root flipped
+    RED (the shipped leg, the spike's observation): the root flipped
     ``failed`` at the first maintenance pass while the 149 siblings were
     pending — and the certified dispatch fence then made them unclaimable
     FOREVER (the 149-stranded-chains wedge). GREEN (the fix): the root

@@ -1,4 +1,4 @@
-"""Integration and negative tests for the SSE progress bridge (the section.7, the section.3).
+"""Integration and negative tests for the SSE progress bridge (§3.7, §10.3).
 
 Runs against real Postgres (testcontainers) and real
 Redis (testcontainers).  SSE streams are consumed via ``httpx.AsyncClient``

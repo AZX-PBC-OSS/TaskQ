@@ -1,8 +1,8 @@
 """T20's ROUTER pins — the typed-outcome Chain/Step/Route surface
-(PROOF.md the section + the section).
+(PROOF.md §3 + §4).
 
 TOTALITY IS THE FENCE, at TWO doors (the asymmetry doctrine — the spike's
-the section): the DECLARATION-time refusal (a non-total route is a coding error,
+§3): the DECLARATION-time refusal (a non-total route is a coding error,
 rejected before any row exists) and the RUNTIME loud refusal
 (``RouterNotTotal`` — the step terminal-FAILS with
 ``error_class='RouterNotTotal'``, the record names the defect; the
@@ -13,10 +13,10 @@ chain step's finalize forks AT MOST ONE child (no fan-in, no join), the
 record's ``map_index`` + trace riding forward — the per-record lineage is
 one query (the drill-down by trace).
 
-Failing-first: the declaration-refusal and the runtime-refusal pins failed
+Failing-first: the declaration-refusal and the runtime-refusal pins ran RED
 against the tree before the chain surface existed; the greens below are
 the built code's evidence. Captured:
-`the recorded capture`.
+``.measurements/t20-router-*.txt``.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ async def manual_review(ctx: object, item: dict[str, object]) -> ReviewOutcome:
 
 
 def the_chain() -> Chain:
-    """The spike's the section chain: screen routes flagged → manual_review,
+    """The spike's §4 chain: screen routes flagged → manual_review,
     clean → enrich; enrich OK → score... reduced to the two-hop shape the
     pins drive (the route DICT is the subject, not the chain's length)."""
     return Chain(
@@ -460,7 +460,7 @@ async def test_t20_router_not_total_fails_the_row_loudly(
     assert "corrupted" in (row["error_message"] or ""), "the refusal names the outcome"
 
 
-# ── THE AUTHOR SURFACE, END TO END (PROOF the section's shape, on the runner) ────
+# ── THE AUTHOR SURFACE, END TO END (PROOF §4's shape, on the runner) ────
 
 
 class T20ScreenOutcome(enum.Enum):
@@ -525,7 +525,7 @@ async def test_t20_chain_end_to_end_through_the_runner(
     wf_sql: Any,
     t20_redlog: RedLog,
 ) -> None:
-    """THE WHOLE AUTHOR SURFACE (PROOF the section's ergonomics bar), lived: a
+    """THE WHOLE AUTHOR SURFACE (PROOF §4's ergonomics bar), lived: a
     ``chain_source`` node whose paged body emits the chain starts; the
     chain's steps route on their TYPED OUTCOMES; the run drains and the
     root derives from the rows (no join anywhere). One query per record's

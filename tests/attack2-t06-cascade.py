@@ -91,7 +91,7 @@ async def test_attack_t06_crash_window_fail_closed_root_and_peers(
 ) -> None:
     """The crash window: the child's tx1 marked it failed, the cascade
     (tx2) never ran. The sweep heal stamps the join. THE ROOT: the
-    the section.2 cascade's flip is also lost — the maintenance leg must heal
+    §17.2 cascade's flip is also lost — the maintenance leg must heal
     it. PREDICTION UNDER ATTACK: has_live counts the blocked join row
     (pending forever) — the root wedges 'running'; and the peers keep
     running on the dead flow."""

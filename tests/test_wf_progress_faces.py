@@ -4,7 +4,7 @@ progress-lie fence, the gauge's cardinality.
 The provenance: the PoC's PROOF 1/2/5/6 — the chain, the fan-out
 aggregation, the lie/crash dragons, the bounds — ported onto the BUILT
 surfaces. Each pin's REJECTED VARIANT is named and — where observable —
-exercised with the failing proof captured to `the recorded capture`.
+exercised with the red captured to ``.measurements/t21-pin-reds.json``.
 
 THE FENCE (DH4/DH7, the law of the display): the node's STATUS derives
 from the LEDGER; the progress renders INSIDE the terminal state, never
@@ -191,7 +191,7 @@ async def test_silent_gap_variant_is_structurally_impossible(
     wf_sql: WorkflowSql,
     progress_redlog: RedLog,
 ) -> None:
-    """The recorded failure, kept as a pin: the silent-gap face — a replay that
+    """DH6's RED, kept forever: the silent-gap face — a replay that
     returns nothing over a pruned window while claiming success — is the
     rejected variant. The BUILT face's mode logic refuses the shape:
     whenever the cursor predates the retained window the mode is
@@ -233,7 +233,7 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
 ) -> None:
     """DH4 on the BUILT display: a body reports pct=99 'almost done' then
     FAILS → the explorer shows FAILED with pct=99 rendered INSIDE it —
-    never 99%-running. THE LIAR The recorded failure (the counterfactual display deriving
+    never 99%-running. THE LIAR RED (the counterfactual display deriving
     the state from the progress events) shows running/99 on the dead node
     — observed, kept failing on purpose."""
     app = WorkflowApp()
@@ -274,7 +274,7 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
     assert d["pct"] == 99 and d["message"] == "almost done", (
         "the last progress must render INSIDE the terminal state (advisory)"
     )
-    # THE LIAR PROOF: the counterfactual — the state derived from the
+    # THE LIAR RED: the counterfactual — the state derived from the
     # emissions naively (an emission means alive; the terminal only read
     # when no progress exists) — shows the lie.
     liar_display: dict[str, Any] = {"status": None, "pct": None}

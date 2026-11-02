@@ -6,13 +6,13 @@ in-flight runs adopt the NEW code at their NEXT node claim** — the
 compile's STRUCTURE is the create-time snapshot (the nodes, the edges,
 the wiring), but every BODY resolves from the CURRENT registry at the
 claim seam (D1's resolution is per-claim, never per-run), and the
-the section.1 stamp (``jobs.code_version`` — the per-node canonical content
+§22.1 stamp (``jobs.code_version`` — the per-node canonical content
 hash written at claim) records WHICH code ran each row.
 
 Failing-first evidence: the pins ran against the PRE-IMPLEMENTATION tree —
 the doc's TODAY was the silent behavior change (no contract text, no
 stamp read taught); the captures ride
-`the recorded capture`. These pins are the
+``.measurements/t29-versioning-pin-reds-pre.txt``. These pins are the
 contract's OWN proof (the adoption + the stamp are the shipped
 semantics, now named and taught), not mutation scenarios.
 """
@@ -80,7 +80,7 @@ async def test_redeploy_adopts_the_new_body_at_the_next_node_claim(
       its NEXT node claim, the run never restarted, never wedged.
     * THE STAMP — ``jobs.code_version`` records WHICH code ran each
       row: the first row's stamp is the v1 body's canonical hash, the
-      second row's is the v2 body's — the section.1 deploy-drift read is
+      second row's is the v2 body's — the §22.1 deploy-drift read is
       the rows telling the truth about the drift.
 
     THE CONTRACT's edge cases the guide names (each re-enters the NEW
@@ -141,7 +141,7 @@ async def test_redeploy_adopts_the_new_body_at_the_next_node_claim(
         "the pre-contract tree (the doc's TODAY): a mid-flow deploy changed the "
         "behavior SILENTLY — no contract text, no taught stamp read",
         {
-            "recorded finding": "the stamps landed with T03/the section.1; THIS pin pins the adopt + the stamp together"
+            "recorded finding": "the stamps landed with T03/§22.1; THIS pin pins the adopt + the stamp together"
         },
     )
 

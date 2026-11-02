@@ -2,7 +2,7 @@
 T07/T08/T18). Every ``MUST_ERROR(rules...)`` marker line must produce at
 least one ERROR diagnostic from EACH checker (pyright 1.1.414 + ty
 0.0.85) whose rule-id is in the marker's DECLARED set — the gate
-(``_gate.py``, this corpus wired in) fails on a marker that fails under
+(``_gate.py``, this corpus wired in) fails on a marker that reds under
 the WRONG rule or on any error outside the markers. Runs under
 tests/typeprobe's own pyrightconfig.json (reportArgumentType ON, never
 the root's false).

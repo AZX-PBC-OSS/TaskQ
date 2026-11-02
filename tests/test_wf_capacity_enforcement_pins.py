@@ -1,6 +1,6 @@
-"""THE CAPACITY ENFORCEMENT PINS (the claim-path + finalize faces):
+"""THE CAPACITY ENFORCEMENT PINS (§H-A's claim-path + finalize faces):
 
-* the — THE WF RESERVATIONS ARE ACQUIRED: the flow rows carry the
+* H-A1 — THE WF RESERVATIONS ARE ACQUIRED: the flow rows carry the
   step's declared reservation NAMES on their metadata (the static node
   inserts + the fork's children, the ``rate_limits`` stamp's own
   five-point ride: stamp → resolve → acquire → release → the fail-closed
@@ -12,7 +12,7 @@
   second gate DENIES (the row snoozed budget-free, its release_reason
   naming the reservation), and the release re-opens the gate. The
   overlap-guard tripwire (the flows demo's pattern) never fires.
-* the — result_ttl IS A LIVE KNOB: the wf finalize's terminal mark
+* H-A5 — result_ttl IS A LIVE KNOB: the wf finalize's terminal mark
   writes ``result_expires_at`` on the SUCCEEDED terminal rows from the
   cohort's stored ``actor_config.result_ttl`` (the vanilla
   ``mark_succeeded``'s lateral equivalent); a cohort with no TTL writes
@@ -180,7 +180,7 @@ class OverlapGuard:
             self.in_flight -= 1
 
 
-# ── the: the stamp ──────────────────────────────────────────────────────
+# ── H-A1: the stamp ──────────────────────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -237,14 +237,14 @@ def _meta(raw: Any) -> dict[str, Any]:
     return decoded
 
 
-# ── the: the acquire — exactly ONE body at a time ──────────────────────
+# ── H-A1: the acquire — exactly ONE body at a time ──────────────────────
 
 
 @pytest.mark.integration
 async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ACQUIRE (the recorded finding): two flow rows sharing a slots=1
+    """THE ACQUIRE (H-A1's recorded finding): two flow rows sharing a slots=1
     reservation, both CLAIMED concurrently — exactly ONE body runs at a
     time. The second gate DENIES (the row snoozed budget-free, its
     release_reason naming the reservation), and the release RE-OPENS the
@@ -399,7 +399,7 @@ async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
     assert guard.tripped == [], "THE TRIPWIRE: two bodies overlapped — the reservation did not hold"
 
 
-# ── the: the fail-closed arms ──────────────────────────────────────────
+# ── H-A1: the fail-closed arms ──────────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -448,14 +448,14 @@ async def test_malformed_reservation_metadata_parks_fail_closed(
     assert gate.dependency_failure is not None, "the metadata lies — the row parks"
 
 
-# ── the: result_ttl is a live knob ─────────────────────────────────────
+# ── H-A5: result_ttl is a live knob ─────────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_terminal_node_writes_result_expires_at_from_the_cohort_ttl(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """the (the (a) fix): the wf finalize's terminal mark writes
+    """H-A5 (the (a) fix): the wf finalize's terminal mark writes
     ``result_expires_at`` on the SUCCEEDED terminal rows from the
     cohort's stored ``actor_config.result_ttl`` — the vanilla
     ``mark_succeeded``'s lateral equivalent. A cohort with no TTL writes

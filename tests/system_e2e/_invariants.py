@@ -385,7 +385,7 @@ async def delete_tagged_resilient(
 ) -> None:
     """Teardown that survives the ledger connection's own death.
 
-    The system-e2e (17) leg's recorded finding (the recorded run at f7155214):
+    The system-e2e (17) leg's recorded finding (run 38053606389 at f7155214):
     a silently-dead PG socket turned ONE infrastructure event into
     THREE legs — the scenario hung past its pytest-timeout, the test's
     ``finally`` hung on the SAME dead socket (the test task was left

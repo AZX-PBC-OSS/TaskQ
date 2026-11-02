@@ -83,7 +83,7 @@ def _detail_job_data(**overrides: object) -> dict[str, object]:
 def test_job_detail_marks_max_attempts_inert_for_indefinite_retry(
     monkeypatch: pytest.MonkeyPatch, stub_pool: _StubPool
 ) -> None:
-    """An indefinite-kind job ignores max_attempts entirely (retries.md the section):
+    """An indefinite-kind job ignores max_attempts entirely (retries.md §2):
     the stored ceiling is inert, so the Attempt cell must not advertise it
     as a live budget - a row can legitimately sit at attempt 168 over a
     stored 3, and "168 / 3" reads as a lie about what is enforced."""

@@ -217,7 +217,7 @@ def _node_row(**overrides: Any) -> dict[str, Any]:
         "failed_parent": None,
         "lock_expires_at": real_now + timedelta(minutes=5),
         "last_heartbeat_at": started,
-        # THE the section.1 STAMP (the pinning run's fix — the drift face's data): the
+        # THE CODE-VERSION STAMP (the drift face's data): the
         # node row's code_version rides the row; the stamps' read names
         # a run whose rows straddle a redeploy.
         "code_version": None,

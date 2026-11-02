@@ -5,9 +5,9 @@ d24f17b9; the second hostile pass over the consolidated head).
 Provenance: the rv2 front's live recorded findings, one pin each. Per the
 doctrine, a LANDED finding (a live defect at d24f17b9) is pinned
 asserting the SAFE behavior under ``pytest.mark.xfail(strict=True)`` —
-the fix flips the pin to XPASS-strict (a failure that says: remove the
+the fix flips the pin to XPASS-strict (a red that says: remove the
 marker WITH the fix); a finding whose RESOLVED behavior already holds
-at the head (the recorded finding's — the battery's deterministic red, rejected as a
+at the head (rv2-11 — the battery's deterministic red, rejected as a
 bad declaration in the BATTERY's own test) stands GREEN as the guard
 that keeps the resolution from rotting.
 
@@ -74,7 +74,7 @@ The findings (the front's receipts carried each recorded finding live):
   nowhere (not in ``_gate.py``'s ``_CORPUS``, so not in the CI gate).
 * F-RV2-13 — the head-stamp law's own verifier
   (``scripts/verify_evidence_heads.py``) reds on the committed
-  `the recorded capture` at the head (unstamped + stale live claims).
+  ``.measurements/runs`` at the head (unstamped + stale live claims).
 * F-RV2-14 — ``perf-evidence-workflows-streaming.md``'s emit paragraph
   cites "max 10.4\u201314.5 ms across the five captured runs"; the capture
   ``t20-streaming-bands-20261008-052519.json`` carries max 20.569 —
@@ -709,7 +709,7 @@ def test_rv2_9_e10_counts_the_actual_params() -> None:
     * a REAL mismatch refuses AND the message names the REAL arity
       ("takes 2 param(s)"), never the annotated count.
 
-    THE WIRING NOTE (the recorded finding's lane's reconciliation): leg 2's body
+    THE WIRING NOTE (the rv2-fix lane's reconciliation): leg 2's body
     wired ONE arg was a real mismatch when this pin was cut, but the
     consolidated head's E10/E12 partition (5402a4b8) reclassified the
     exactly-one-param-beyond-the-wiring shape as the DEPS class — E12's
@@ -876,7 +876,7 @@ def test_rv2_11_the_split_placement_declaration_resolved() -> None:
 
     app = WorkflowApp()
     chain = Chain(
-        name="the recorded finding's-chain",
+        name="rv2-split-chain",
         start="screen",
         steps={
             "screen": Step(
@@ -889,7 +889,7 @@ def test_rv2_11_the_split_placement_declaration_resolved() -> None:
         queue="gpu",
     )
 
-    @app.workflow("the recorded finding's")
+    @app.workflow("rv2-split")
     def _workflow() -> object:
         src = chain_source(chain, _source_ctx_only, key="doc_source")
         return build(src)
@@ -907,7 +907,7 @@ def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
     rule id in the record, and no cohort for it projects. A fix that
     instead SILENCED the arity rules would flip this red.
 
-    THE RULE ID (the recorded finding's lane's reconciliation): at the pack's cut
+    THE RULE ID (the rv2-fix lane's reconciliation): at the pack's cut
     the record named ``E10-arity``; the consolidated head's E10/E12
     partition (5402a4b8) reclassified the exactly-one-param-beyond-the-
     wiring shape as the DEPS class — the refusal now names
@@ -933,7 +933,7 @@ def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
 
     bad = WorkflowApp()
     chain = Chain(
-        name="the recorded finding's-chain-bad",
+        name="rv2-split-chain-bad",
         start="screen",
         steps={
             "screen": Step(
@@ -946,7 +946,7 @@ def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
         queue="gpu",
     )
 
-    @bad.workflow("the recorded finding's-bad")
+    @bad.workflow("rv2-split-bad")
     def _workflow() -> object:
         src = chain_source(chain, _source_with_params, key="doc_source")
         return build(src)
@@ -1026,8 +1026,8 @@ def test_rv2_14_every_ranged_figure_covers_its_captures() -> None:
     range is the cherry-pick/dead-figure class this law exists to
     reject."""
     captures = sorted(_evidence.evidence_glob("t20-streaming-bands-*.json"))
-    if _evidence.evidence_exists("the recorded capture"):
-        captures.append("the recorded capture")
+    if _evidence.evidence_exists(".measurements/t20-streaming-bands.json"):
+        captures.append(".measurements/t20-streaming-bands.json")
     assert captures, "no streaming captures exist at all"
     families: dict[str, dict[str, list[float]]] = {}
     for rel in captures:

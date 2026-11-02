@@ -2,8 +2,8 @@
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
-home), the red-output sink flushes to `the recorded capture` (a
-file that gets READ — the build protocol), the shipped invariants green,
+home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
+file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
 the unfenced variants kept in this file forever as the rejected shapes.
 """
 
@@ -65,14 +65,14 @@ def test_pin_11_redact_before_persist(
     refused — intent is undetectable — it is structurally powerless on its
     OWN input (already scrubbed), and the pin asserts the chain's masks
     are present on the persisted capture REGARDLESS of an honest hook's
-    return. THE MUTATION is a real mutation of the shipped pipeline: the
+    return. THE RED is a real mutation of the shipped pipeline: the
     chain→hook composer mutated to HOOK-ONLY (the writer variant that lets
     the hook run instead of the chain) — the canary reaches the row."""
     import taskq.workflows._capture as capture_module
 
     canary = "AKIAIOSFODNN7EXAMPLE"  # the canonical AWS access-key example
 
-    # THE MUTATION — A REAL ENGINE MUTATION: the composer runs the hook INSTEAD
+    # THE RED — A REAL ENGINE MUTATION: the composer runs the hook INSTEAD
     # OF the chain (the rejected writer); the capture is built through the
     # SHIPPED build_capture with the mutation in place — the canary lands.
     def hook_only(text: str, *, redact: Callable[[str], str] | None = None) -> str:
@@ -93,7 +93,7 @@ def test_pin_11_redact_before_persist(
         {"canary_persisted": canary in json.dumps(rejected)},
     )
     assert canary in json.dumps(rejected), (
-        "the mutated pipeline no longer leaks the canary — the failing proof "
+        "the mutated pipeline no longer leaks the canary — the red "
         "comparator is broken (the chain must be load-bearing)"
     )
 
@@ -118,7 +118,7 @@ def test_pin_11_redact_before_persist(
 def test_pin_12_canonical_hash(engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch) -> None:
     """A dict-ordering mutation of the same args must NOT change the
     code-version hash (a false invalidation is the silent failure). THE
-    THE MUTATION is a real mutation of the shipped hash site: the module's
+    RED is a real mutation of the shipped hash site: the module's
     serializer swapped for a non-canonical one (json.dumps,
     insertion-ordered) — the same args under a different insertion order
     hash DIFFERENTLY through the shipped compute_code_version."""
@@ -147,7 +147,7 @@ def test_pin_12_canonical_hash(engine_redlog: RedLog, monkeypatch: pytest.Monkey
         {"left": left, "right": right},
     )
     assert right != left, (
-        "the non-canonical serializer must move the hash — the failing proof "
+        "the non-canonical serializer must move the hash — the red "
         "comparator is broken (canonical ordering is load-bearing)"
     )
 
@@ -164,7 +164,7 @@ def test_pin_16_body_from_definition(
     """Two overlapping dispatches of one pending node — one with a MUTATED
     per-call body map — must resolve BOTH bodies from the REGISTERED
     definition (the claim-CAS loser runs the defined body, never the
-    per-call variant). THE MUTATION is a real mutation of the shipped resolver:
+    per-call variant). THE RED is a real mutation of the shipped resolver:
     the dispatch's body resolution swapped for a per-call MAP lookup (the
     D1 hazard) — the loser of the claim CAS runs the WRONG body."""
     import taskq.workflows.definitions as definitions_module
@@ -188,7 +188,7 @@ def test_pin_16_body_from_definition(
     loser = resolve_step_body("pin16-flow", "step_a")
     assert winner is defined_body and loser is defined_body
 
-    # THE MUTATION — A REAL ENGINE MUTATION: the dispatch's body resolution
+    # THE RED — A REAL ENGINE MUTATION: the dispatch's body resolution
     # reads a per-call map (the rejected shape) — the CAS loser runs the
     # WRONG body.
     per_call_map: dict[str, Any] = {"step_a": mutated_body}
@@ -204,7 +204,7 @@ def test_pin_16_body_from_definition(
     )
     assert loser_mutated is mutated_body, (
         "the per-call-map mutation must hand the dispatch the WRONG body — "
-        "the failing proof comparator is broken (D1's registry resolution is load-bearing)"
+        "the red comparator is broken (D1's registry resolution is load-bearing)"
     )
 
 

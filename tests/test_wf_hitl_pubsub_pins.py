@@ -8,9 +8,9 @@ The failing-first evidence: P1's rejected variant (the knock sent OUTSIDE
 the transaction — a rolled-back hold-create that still broadcasts) is
 captured as the mutation test through ``hitl_redlog``; the shipped
 legs are transactional by construction (``pg_notify`` inside the
-caller's tx — PG delivers on commit only). P6/P7/P9 were failing at the
+caller's tx — PG delivers on commit only). P6/P7/P9 were RED at the
 pre-fix head (the reconnect hole, the partitioned stream, the unnamed
-cap — the failures captured in `the recorded capture`);
+cap — the reds captured in ``.measurements/t26-fix-pins-red.txt``);
 P8/P10 reject their variant as a PERMANENT scenario (the unfiltered
 channel ear; the lying resolve knock — reproducible forever, recorded
 through ``hitl_redlog``).
@@ -150,7 +150,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
     signal, node_key, created_at), never the payload content; and a
     rolled-back hold-create emits NO notification.
 
-    THE FAILING STATE (the rejected variant, captured): the knock sent OUTSIDE
+    THE RED (the rejected variant, captured): the knock sent OUTSIDE
     the tx (autocommit) outlives its row — the scenario rolls the INSERT
     back under a knock that already fired, and the broadcast LIES (a
     hold the rows disown). The shipped leg cannot lie: the NOTIFY
@@ -683,7 +683,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
 
     THE FIX: the FOURTH union member — ``Backfilled(open_hold_ids=…)``
     — emitted after EVERY (re)backfill; the consumer drops anything not
-    in the snapshot. THE FAILING STATE (captured at the pre-fix head): after the
+    in the snapshot. THE RED (captured at the pre-fix head): after the
     reconnect the stream carried NOTHING that closes the card — the
     consume-until-reconcile timed out; the stale history even REPLAYED
     the dead hold's create (the ghost) into the new subscriber.
@@ -1190,7 +1190,7 @@ async def test_rolled_back_resolve_emits_no_notification(
 async def test_wait_signals_timeout_arms_the_sweep_not_the_gate_declaration(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Pin : BOTH faces declare a timeout — ``GateDecl(timeout_s=…)``
+    """Pin (C8): BOTH faces declare a timeout — ``GateDecl(timeout_s=…)``
     AND ``ctx.wait_signal(timeout_s=…)`` — and the precedence is: THE
     WAIT'S VALUE ARMS THE SWEEP (``register_hold`` writes ``expires_at``
     from the wait site's ``timeout_s``); the gate's ``timeout_s`` is the

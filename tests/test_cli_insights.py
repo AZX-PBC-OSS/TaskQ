@@ -1014,7 +1014,7 @@ def test_help_contract_covers_every_rendered_column_and_marker(
     help_result = runner.invoke(app, ["insights", "--help"])
     assert help_result.exit_code == 0
     # CI's environment makes rich colorize the help even without a TTY
-    # (the recorded run's lesson: the words arrive interleaved with
+    # (the run-36369327985 lesson: the words arrive interleaved with
     # \x1b[..m escapes, and a whitespace-only normalization still misses
     # every marker). Presentation is not contract: strip the FULL escape
     # grammar (SGR, private-mode CSI, two-byte escapes, OSC) through the

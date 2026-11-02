@@ -240,7 +240,7 @@ async def test_isolate_survives_sweep_winning_one_row_mid_flight(
     rt_schema: tuple[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The recorded failure: a PK conflict on the sweep-won row must not abort the whole isolate.
+    """RED: a PK conflict on the sweep-won row must not abort the whole isolate.
 
     Interleaving: isolate has SELECTed X and Y when the leader's Sweep 1
     reclaims X (its lease was long expired) - X's guarded UPDATE no-ops,

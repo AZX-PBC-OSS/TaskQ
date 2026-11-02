@@ -1,13 +1,13 @@
 """ATTACK PINS — THE CRASHED-TERMINAL WEDGE + THE RUN-CREATION SEAM
 (engine half).
 
-Provenance: the hostile review of the consolidated head (the consolidated head) —
+Provenance: the hostile review of the consolidated head (af1b8779) —
 FINDING PACK 1 (the round's most severe engine finding; attacker
 evidence in schema ``att_t20``) and the migrations front's F-CREATE-1 /
 F-CREATE-3. The pins assert the SAFE behavior; each carries its
 unmarked red run in the pinning run's record.
 
-THE WEDGE (pack 1, rejected LIVE at the consolidated head): a run whose nodes are
+THE WEDGE (pack 1, rejected LIVE at af1b8779): a run whose nodes are
 ``{succeeded|failed, crashed}`` wedges ``running`` FOREVER. The chain:
 
 * the jobs-level reclaim (``backend._sweeps._SWEEP_1_BODY``) reads
@@ -133,7 +133,7 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
 # ── Pack 1, pin (a): THE DERIVATION MUST TERMINALIZE THE CORPSE ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [pack-1(a)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING pack-1(a) at the attack head: a run whose nodes are …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [pack-1(a)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING pack-1(a) @ af1b8779: a run whose nodes are …
 async def test_wedge_derivation_terminalizes_the_dead_run(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
@@ -159,7 +159,7 @@ async def test_wedge_derivation_terminalizes_the_dead_run(
 # ── Pack 1, pin (b): THE WEDGE IS SURFACED, NOT HIDDEN (the G7 face) ───
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [pack-1(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING pack-1(b) at the attack head: the maintenance leg's …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [pack-1(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING pack-1(b) @ af1b8779: the maintenance leg's …
 async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql, wf_pool: asyncpg.Pool
 ) -> None:
@@ -201,7 +201,7 @@ async def _create_body(ctx: StepContext, params: _CreateIn) -> Any:
     return {"doc_id": params.doc_id}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-1 at the attack head: create_flow commits the …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-1 @ af1b8779: create_flow commits the …
 async def test_interrupted_create_leaves_no_live_orphan(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -219,7 +219,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
       sweep within 3 maintenance passes.
 
     Today's shape fails both: the root row sits ``pending`` with zero
-    nodes forever (the failing proof at the pinning run)."""
+    nodes forever (the red in (the pinning run's record)."""
     app = WorkflowApp()
 
     @app.workflow("create_seam_orphan")
@@ -260,7 +260,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
 # ── F-CREATE-3: THE CLAIM PATH NEVER HANDS OUT THE __flow__ ROW ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-3]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-3 at the attack head: the dispatch fence …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-3]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-3 @ af1b8779: the dispatch fence …
 async def test_dispatch_never_claims_the_flow_root_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:

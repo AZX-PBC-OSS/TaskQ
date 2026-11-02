@@ -3,7 +3,7 @@
 The live finding this pin settles: "every task sits idle yet timers fire
 7x late, ALTERNATING". The 2026-10-08 investigation measured the cadence
 in FIVE regimes on the probe box and could not reproduce the pathology —
-the numbers, every one captured in `the recorded capture`:
+the numbers, every one captured in ``.measurements/``:
 
 | regime | HB max delta | bare-timer max lateness |
 |---|---|---|
@@ -48,8 +48,8 @@ THE ALTERNATING CHECK: a beat past the bound OUTSIDE the pinned block's
 window would be the reported pathology's signature; the raw deltas ride
 the failure message, so a red names the distribution, not just the
 count. The pin carries the load_sensitive marker: its subject is a
-wall-clock cadence, so it runs in the exclusive lane (the build protocol
-the section) where its measurement is trustworthy — exactly where the finding
+wall-clock cadence, so it runs in the exclusive lane (BUILD-PROTOCOL
+§7b) where its measurement is trustworthy — exactly where the finding
 was made.
 """
 

@@ -1492,7 +1492,7 @@ async def test_stream_pump_failure_is_logged_and_task_completes() -> None:
 
     with structlog.testing.capture_logs() as captured:
         pump = asyncio.create_task(_stream_output(_ExplodingReader(), "w1", "warning"))  # type: ignore[arg-type]  # Why: structural StreamReader double - readuntil is the only member _read_line touches.
-        # On the unguarded shape this await raises RuntimeError and the
+        # RED on the unguarded shape: this await raises RuntimeError and the
         # task's exception is never retrieved anywhere.
         await asyncio.wait_for(pump, timeout=5.0)
 
@@ -1764,7 +1764,7 @@ async def test_run_forever_terminates_hung_health_pool_close(
 
         signal_handlers[signal.SIGTERM]()
         # Why wait_for: unguarded, shutdown awaits pg_pool.close() unbounded,
-        # so the run would hang forever instead of failing fast.
+        # so the RED state would hang forever instead of failing fast.
         await asyncio.wait_for(task, timeout=5)
 
     assert fake_pool.terminated is True
@@ -1977,7 +1977,7 @@ async def test_health_check_query_timeout_counts_as_transient_failure(
 ) -> None:
     """A black-holed health query is bounded and errs on the healthy side.
 
-    Unguarded: the fetchrow had no client-side deadline, so the check
+    RED unguarded: the fetchrow had no client-side deadline, so the check
     (and the restart_lock its caller holds) parked forever - bounded
     only by TCP keepalives, minutes out. The timeout must land in the
     same transient accounting as any other query failure: logged,
@@ -1985,7 +1985,7 @@ async def test_health_check_query_timeout_counts_as_transient_failure(
     """
     import taskq.worker.workgroup as workgroup_mod
 
-    # Why raising=False: the mutated run must fail on the missing bound
+    # Why raising=False: the RED run must fail on the missing bound
     # itself (the outer wait_for timing out), not on an AttributeError
     # for the constant the fix introduces.
     monkeypatch.setattr(workgroup_mod, "_HEALTH_QUERY_TIMEOUT_SECS", 0.05, raising=False)
@@ -1994,7 +1994,7 @@ async def test_health_check_query_timeout_counts_as_transient_failure(
     pool = _BlackHolePool(hang_label="test_worker")
     cfg = WorkerHealthConfig(enabled=True, consecutive_failure_limit=3)
 
-    # Why the outer wait_for: the mutated state hangs, and a hung test
+    # Why the outer wait_for: the RED state hangs, and a hung test
     # proves nothing - it must fail fast instead.
     result = await asyncio.wait_for(
         _child_health_check(child, pool, "taskq", cfg, UUID(int=1)), timeout=1.0
@@ -2016,7 +2016,7 @@ async def test_health_check_query_timeout_at_limit_declares_unhealthy(
 
     monkeypatch.setattr(
         workgroup_mod, "_HEALTH_QUERY_TIMEOUT_SECS", 0.05, raising=False
-    )  # Why raising=False: same failing-honesty seam as the first test in this section.
+    )  # Why raising=False: same RED-honesty seam as the first test in this section.
     child = _make_child()
     child.process = _proc(FakeProcess(returncode=None))
     child.health_failures = 2
@@ -2047,7 +2047,7 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
 
     monkeypatch.setattr(
         workgroup_mod, "_HEALTH_QUERY_TIMEOUT_SECS", 0.05, raising=False
-    )  # Why raising=False: same failing-honesty seam as the first test in this section.
+    )  # Why raising=False: same RED-honesty seam as the first test in this section.
     config = WorkgroupConfig(
         actors="myapp.actors:registry",
         supervisor=SupervisorConfig(

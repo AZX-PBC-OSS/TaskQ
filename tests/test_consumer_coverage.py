@@ -595,7 +595,7 @@ async def test_transactional_generic_exception_discards_buffer() -> None:
     assert len(backend.mark_failed_or_retry_calls) == 1
 
 
-# ── consume_one_job: re-raise CancelledError when already succeeded  ─
+# ── consume_one_job: re-raise CancelledError when already succeeded (C3) ─
 
 
 async def test_transactional_completed_then_cancel_re_raises() -> None:

@@ -5,7 +5,7 @@ scoped-coverage gate's least-tested seam is its most important new one).
 the app registry (the capability predicate's input), the boot projection
 (F3 — the cohorts the fleet's dispatch LATERAL reads), and the execution
 door (a claimed row EXECUTES on the claiming worker, exactly once). The
-execution-fix's probes (`the recorded capture`) proved the
+execution-fix's probes (``.measurements/execution-probe/*``) proved the
 seam on a live deployment; these pins hold it on every battery run:
 
 * **THE REGISTRY** — weak membership, the reset seam, the capability
@@ -576,7 +576,7 @@ async def test_the_door_refuses_an_uncompiled_workflow_name(
 
 
 def test_the_intercepts_lazy_seam_resolves_and_maps_the_outcomes() -> None:
-    """The worker's intercept resolves the seam LAZILY (the section.1 law:
+    """The worker's intercept resolves the seam LAZILY (the §16.1 law:
     ``import taskq`` never imports the package) and maps the execution
     tail's outcome labels onto the consumed-messages vocabulary."""
     from taskq.worker.run import _workflow_execution_seam

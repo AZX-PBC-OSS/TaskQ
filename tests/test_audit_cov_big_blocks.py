@@ -1,8 +1,9 @@
 """Audit-coverage pins: the remaining >5-line uncovered blocks.
 
-Every test here was written against a specific uncovered block; each
-documents the block it closes, and each was mutation-proven (flipping a
-target line makes the test fail).
+Every test here was written failing-first against a specific uncovered block
+(the audit-cov census, branch feat/audit-coverage); each documents the
+block it closes, and each was mutation-proven (flipping a target line
+makes the test fail).
 
 Closed blocks:
   - ``client._jobs._nul_rejected_field``: the metadata and tags arms of

@@ -105,7 +105,7 @@ def test_audit_admin_terminal_set_equals_the_old_hand_copy() -> None:
     """The derived TERMINAL set IS the old hand-copied literal set.
 
     A status added to the state machine's terminal literal changes this
-    set — the failing proof forces the admin consumers' explicit notification.
+    set — the red forces the admin consumers' explicit notification.
     """
     assert TERMINAL_STATUSES == _OLD_HAND_TERMINAL
 

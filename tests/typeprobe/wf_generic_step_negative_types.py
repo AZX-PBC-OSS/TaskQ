@@ -114,7 +114,7 @@ def probe_consumer_handle_mismatch() -> None:
 def probe_gather_element_type_mismatch() -> None:
     """gather PRESERVES the element type (no erase to ``Promise[Any]``):
     a join over Report promises is ``Promise[list[Report]]``, so a
-    consumer wanting ``Promise[list[Config]]`` fails — the join's element
+    consumer wanting ``Promise[list[Config]]`` reds — the join's element
     type is part of the handle-flow contract."""
     app = WorkflowApp()
 

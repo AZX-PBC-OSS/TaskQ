@@ -3,7 +3,7 @@ contract, driven against a live Postgres through the REAL engine.
 
 Method: every pin's rejected variant is made to manifest its dragon (the
 double-run, the two-transaction claim, the replay that launches a second
-run), the failing proof output recorded to `the recorded capture`,
+run), the red output recorded to ``.measurements/ledger-pin-reds.json``,
 the shipped shape green. The contract the pins state: EXACTLY-ONCE for
 DB-local effects (the ledger claim + the ON CONFLICT path), AT-LEAST-ONCE
 for external effects with the ledger dedup — join/reducer bodies covered
@@ -46,7 +46,7 @@ async def test_pin_1_double_run_red_and_memoized_green(
 ) -> None:
     """A step re-delivered gets the recorded result rather than
     re-executing — the memoized replay through the SHIPPED claim path. THE
-    THE MUTATION is a real mutation of the engine: the memoized lookup's statement
+    RED is a real mutation of the engine: the memoized lookup's statement
     mutated to return nothing (the replay lookup broken — the ledger
     forgets) and the re-delivery RE-EXECUTES through the very same shipped
     body: the double-run dragon manifests on the engine, not on a local
@@ -88,7 +88,7 @@ async def test_pin_1_double_run_red_and_memoized_green(
     assert replay == {"v": 42}, "the recorded result returns"
     assert executions == 1, "the memoized replay must not re-execute"
 
-    # THE MUTATION — A REAL ENGINE MUTATION: the memoized-lookup statement
+    # THE RED — A REAL ENGINE MUTATION: the memoized-lookup statement
     # mutated to match nothing (the replay lookup broken), the SAME body
     # re-delivered re-EXECUTES: the double-run dragon, on the shipped path.
     import taskq.workflows._sql as sql_module
@@ -118,7 +118,7 @@ async def test_pin_1_double_run_red_and_memoized_green(
         {"executions_after_redelivery": executions},
     )
     assert second == "ran" and executions == 1, (
-        "the mutated replay must re-execute — the failing proof comparator is broken "
+        "the mutated replay must re-execute — the red comparator is broken "
         "(the lookup is load-bearing)"
     )
     monkeypatch.undo()
@@ -252,7 +252,7 @@ async def test_pin_4_run_key_replay_one_run(
     )
     assert int(rows) == 1, "one run row, forever"
 
-    # THE MUTATION — A REAL ENGINE MUTATION: the arbiter's scope reverted to the
+    # THE RED — A REAL ENGINE MUTATION: the arbiter's scope reverted to the
     # bare GLOBAL 'workflow-run' (the pre-F4 shape, the founding incident's
     # scope): a DIFFERENT flow with the same key is silently deduped onto
     # THIS flow's run — created=False, someone else's run id, nothing
@@ -280,7 +280,7 @@ async def test_pin_4_run_key_replay_one_run(
     )
     assert not cross.created and cross.flow_id == first_global.flow_id, (
         "the global-scope mutation must silently dedup the other flow's run "
-        "— the failing proof comparator is broken (the scope is load-bearing)"
+        "— the red comparator is broken (the scope is load-bearing)"
     )
     # The SHIPPED scope namespaces per flow: the same key, the OTHER flow,
     # creates ITS OWN run.
@@ -485,7 +485,7 @@ async def test_pin_6_ledger_terminal_atomic(
         {"node": split_status, "ledger": split_ledger},
     )
     assert split_status == "succeeded" and split_ledger == "running", (
-        "the mutated terminal must drift from the node — the failing proof comparator "
+        "the mutated terminal must drift from the node — the red comparator "
         "is broken (the tx1 co-location is load-bearing)"
     )
 
@@ -500,7 +500,7 @@ async def test_pin_7_map_children_own_ledger_rows(
     """Two map children of ONE step key (map_index 0 and 1, first attempt
     each) claim DIFFERENT ledger rows and terminalize WITHOUT overwrite:
     each replay returns ITS OWN child's result (T05's key contract; the
-    recorded finding — an arbiter omitting map_index — is the failing scenario, the
+    recorded finding — an arbiter omitting map_index — is the RED scenario, the
     shipped statements are what the scenario mutates)."""
     flow_id = new_uuid()
     node_0, node_1 = new_uuid(), new_uuid()

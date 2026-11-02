@@ -12,12 +12,12 @@ fixes the attack-3 probes proved red first:
   shipped code, never hand-crafted).
 * H2's audit leg: the REFUSED resolve writes the audit row that names
   the refusal, and the hold still stands.
-* The EXIT sentinel (the section.1) and the MANUAL RESUME (the section.2) — the
+* The EXIT sentinel (§17.1) and the MANUAL RESUME (§17.2) — the
   alignment-audit's Missing #1, landed failing-first.
 * E8: the loop CARRIER-TYPE declaration enforced (pin 5's teeth).
 
-Each pin states the fix's law; the failing proof evidence is the attack-3 corpus
-(`the recorded capture`) plus this file's own captured first run.
+Each pin states the fix's law; the red evidence is the attack-3 corpus
+(``.measurements/attack3/``) plus this file's own captured first run.
 """
 
 from __future__ import annotations
@@ -511,13 +511,13 @@ async def test_the_final_iteration_runs_and_the_counter_reaches_the_cap(
     assert node_row["status"] == "failed"
 
 
-# ── the EXIT sentinel (the section.1) end-to-end ────────────────────────────────
+# ── the EXIT sentinel (§17.1) end-to-end ────────────────────────────────
 
 
 async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TYPED EARLY-EXIT (the section.1): a body returns ``Exit(payload)`` —
+    """THE TYPED EARLY-EXIT (§17.1): a body returns ``Exit(payload)`` —
     the node terminal-succeeds with the typed payload (the envelope
     records the exit), every non-terminal DOWNSTREAM node is marked
     skipped-WITH-THE-RECORD (the record never lies about the nodes that
@@ -575,13 +575,13 @@ async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     assert ledger == 1
 
 
-# ── the MANUAL RESUME (the section.2) end-to-end ────────────────────────────────
+# ── the MANUAL RESUME (§17.2) end-to-end ────────────────────────────────
 
 
 async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE OPERATOR'S MANUAL RESUME (the section.2, the section.6 redispatch row 3):
+    """THE OPERATOR'S MANUAL RESUME (§17.2, the §22.6 redispatch row 3):
     the audited, CAS-guarded re-arm of a terminal-FAILED node — the
     attempt ordinal CONTINUES (never resets), the blocked closure
     re-opens, the flow re-opens, and the re-run is safe by the step

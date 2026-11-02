@@ -2,8 +2,8 @@
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
-home), the red-output sink flushes to `the recorded capture` (a
-file that gets READ — the build protocol), the shipped invariants green,
+home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
+file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
 the unfenced variants kept in this file forever as the rejected shapes.
 """
 
@@ -53,7 +53,7 @@ async def test_pin_18_no_id_collision(
     distinct children, each with its own (parent_id, map_index)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
 
-    # THE MUTATION — A REAL ENGINE MUTATION: the fork's id mint site swapped
+    # THE RED — A REAL ENGINE MUTATION: the fork's id mint site swapped
     # for the rejected string-shape convention (ids derived from a
     # {parent}.{child}-style convention with no per-fork discriminator —
     # 10 distinct ids TOTAL): the second fork's children collide with the
@@ -185,7 +185,7 @@ async def test_pin_19_fork_atomicity(
     )
     assert state["status"] == "succeeded" and int(split_children) == 0, (
         "the split variant's dragon (terminal parent, fork debt) must be "
-        "observable — the failing proof comparator is broken"
+        "observable — the red comparator is broken"
     )
 
     # THE ATOMIC FORK (the shipped shape): the same kill, mid-fork — the
@@ -328,7 +328,7 @@ async def test_pin_20_outbox_drain_exactly_once(
     )
     assert len(outbox_rows) == 1, outbox_rows  # the consumer's outbox row
 
-    # THE STRANDED-JOIN The recorded failure (the crash window): before the drain, the
+    # THE STRANDED-JOIN RED (the crash window): before the drain, the
     # fired join's consumers never dispatched — the state the drain exists
     # to prevent.
     stranded = await wf_conn.fetchval(

@@ -18,7 +18,7 @@ Papered defects and pins
    rejects ``\\u0000`` inside jsonb strings (verified against PG 18:
    ``UntranslatableCharacterError: unsupported Unicode escape sequence``),
    so ``POST /jobs/{id}/cancel?reason=…%00…`` is an opaque 500 instead of
-   the family's clean 400. The recorded failure: ``test_cancel_reason_nul_is_400_not_500``.
+   the family's clean 400. RED: ``test_cancel_reason_nul_is_400_not_500``.
    (Since the #324/#337 audit-trail change, ``reason`` is a FORM field
    posted from the cancel form's reason input; the NUL guard at the route
    is unchanged and still pinned.)
@@ -35,7 +35,7 @@ Papered defects and pins
    payload/metadata) render at full stored size. ``result_max_bytes`` is a
    *configurable storage* cap, not a render cap, so any deployment that
    raises it turns one job-detail click into a multi-MB HTML response.
-   The recorded failure: ``test_job_detail_result_render_is_bounded``.
+   RED: ``test_job_detail_result_render_is_bounded``.
 
 3. REAL DEFECT (log framing) - the rate-limit reset route logs the
    URL-controlled ``bucket_name`` verbatim (ops.py:650-653)::
@@ -48,7 +48,7 @@ Papered defects and pins
    under any line-oriented renderer (structlog console/KV) that forges a
    whole log line. The route family's own validation convention
    (parse_text_filter) is not applied to this route at all.
-   The recorded failure: ``test_rate_limit_reset_log_framing_no_raw_control_chars``.
+   RED: ``test_rate_limit_reset_log_framing_no_raw_control_chars``.
 
 4. GREEN PIN - the SSO group allowlist gates *mutations*, not only reads:
    a signed session outside ``allowed_groups`` is refused (401) on

@@ -769,7 +769,7 @@ def test_every_series_name_the_shipped_text_cites_is_registered() -> None:
 
 
 def test_ops_md_claimed_rule_count_matches_the_shipped_files() -> None:
-    """ops.md the section tells operators the shipped rule set carries a specific
+    """ops.md §8 tells operators the shipped rule set carries a specific
     number of rules ("(N rules: ...)"); that count must equal what both
     files actually ship. A stale count is how an operator importing the
     file concludes a rule family went missing (or that the docs describe a

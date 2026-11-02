@@ -1,8 +1,8 @@
 """ATTACK-3 — the phase-3 public surface's NEGATIVE type probes.
 
 Each ``MUST_ERROR(rules...)`` marker names a wrong-shape call that must
-FAILING on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
-from the marker's DECLARED set — the typed-doors law (the build protocol
+RED on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
+from the marker's DECLARED set — the typed-doors law (BUILD-PROTOCOL
 §7b). THE EVIDENCE-INTEGRITY ROUND'S WIRING: this file ran DIRECTLY
 under the attacker's own invocation and ROTTED OFF the gate (the markers
 carried NO rule-id declaration — the gate refuses a bare MUST_ERROR, the

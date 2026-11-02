@@ -2,8 +2,8 @@
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
-home), the red-output sink flushes to `the recorded capture` (a
-file that gets READ — the build protocol), the shipped invariants green,
+home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
+file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
 the unfenced variants kept in this file forever as the rejected shapes.
 """
 
@@ -84,7 +84,7 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     after = await node_state(wf_conn, wf_schema, join_id)
     assert after["deps_pending"] == 0, after  # the decrement committed
 
-    # THE MUTATION — A REAL ENGINE MUTATION: the shipped rederive's reconcile
+    # THE RED — A REAL ENGINE MUTATION: the shipped rederive's reconcile
     # WRITE-GUARD flipped (`<>` → `=`, the arm never writes a correction):
     # the drifted row's counter NEVER returns to the ledger's truth — the
     # join stays in join-wait forever on a terminal parent (the snapshot
@@ -112,7 +112,7 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
         {"deps_pending_after_mutated_sweep": unhealed["deps_pending"], "ledger_truth": 0},
     )
     assert unhealed["deps_pending"] == 1, (
-        "the mutated arm must NOT heal the drift — the failing proof comparator is "
+        "the mutated arm must NOT heal the drift — the red comparator is "
         "broken (the reconcile write is load-bearing)"
     )
 
@@ -377,7 +377,7 @@ async def test_pin_25_concurrent_fire_window_one_row(
     flips it), so the belt is the ONLY thing between the race and the
     double fire — this scenario stages it, and the belt's removal REDS (the
     in-suite twin below; the source-level capture:
-    `the recorded capture`)."""
+    ``.measurements/attack/R4-red-fire-belt.txt``)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
@@ -509,7 +509,7 @@ async def test_pin_13_attempt_fence(
         {"status": corrupted["status"], "zombie_attempt": 1, "row_attempt": 2},
     )
     assert corrupted["status"] == "succeeded", (
-        "the status-only variant did not lose to the zombie — the failing proof comparator is broken"
+        "the status-only variant did not lose to the zombie — the red comparator is broken"
     )
 
     # THE SHIPPED FENCE: the same choreography — the zombie's finalize
@@ -628,7 +628,7 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
     annotation is a string under the future-import), and the front's
     local definition reds at the AttributeError, never at the size
     assert — an unfaithful repro. Module level = the annotation
-    resolves, the body runs, the map forks, and the failing proof names THE
+    resolves, the body runs, the map forks, and the red names THE
     ENVELOPE'S BYTES (the finding's actual face)."""
     import taskq.workflows as wf
     from taskq.workflows import Promise, WorkflowApp, build, map_source, step
