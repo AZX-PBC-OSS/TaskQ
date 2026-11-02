@@ -2990,6 +2990,15 @@ mirror, and the per-node truth lives in the rows and the run page.
 
 The admin UI's **Workflows** tab is the run explorer: the runs list (the inventory question — newest first, capped at 200), and the run page (`/taskq/workflows/{run_id}`):
 
+**Setup**: the admin router mounts with the auth posture configured
+(`TASKQ_ENVIRONMENT=dev` for local, or an `auth_dependency` — the
+fail-closed check refuses an unauthenticated mount otherwise). The run
+explorer's RESOLVE/DELIVER/CANCEL actions need
+`TASKQ_ADMIN_ACTIONS_ENABLED=true` (the default `false` answers `403` on
+those actions); the actions answer `501` when the admin's process mounts
+no `WorkflowApp` — the resolve/deliver doors need the definitions
+imported in THAT process to validate and drive the hold's payload.
+
 - **The graph** — the run's Mermaid, emitted FROM THE ROWS (the live graph is a row fact; the admin never imports the workflow's module): the collapsed map renders as ONE hexagon with a `done/total` counter — zero child boxes (the counter reads the children's TRUE parent — the map source the fork parented them at — and the run header carries the SUM across sources); the render does not scale with the fan-out (a 10k map renders one hexagon, never 10k lines). The child detail lives in the node panel. Rendered ONCE by the vendored mermaid (no bundler, no React, no CDN — the air-gapped-ops argument); every later update is a classList patch on `data-node-key` — zero re-renders (the node keys and statuses are sanitized/escaped against the legend's closed vocabulary — a poisoned row key cannot blind the live updates). The state colors: green succeeded, blue running, red failed, amber HELD (a human is waiting).
 - **The node panel** — click a node (or Tab to it and press Enter): the status header, the attempts + the retry kind, the trace id, the captured error (errors-only by default; the panel's read is DISPLAY-CAPPED with the dropped-count named — the full detail stays in the rows), one upstream hop (the causal chain via parent_id), and the attempt ledger.
 - **The deferral line** — a step sitting on a body-raised [`Snooze`/`RetryAfter`](#the-control-flow-signals-the-same-typed-signals-the-vanilla-bodies-raise) renders the line beside its status chip: the signal that deferred it, the NEXT FIRE TIME, and the node's snooze count — the operator's "why is this step sitting here" answer without leaving the page. The line is the ROW's truth (the deferral stamp's own discriminator): it appears when the node arrives at the snoozed state and clears when the step re-claims or a later ladder repend lands (never a stale decoration), in the server snapshot and on the live SSE frames alike.

@@ -45,6 +45,12 @@ async def summarize(ctx: StepContext, reports: list[Report]) -> dict[str, int]:
 
 @app.workflow("doc_ingest")  # the per-workflow declaration
 def doc_ingest() -> Promise[object]:  # SYNC and PURE — the compile-time wiring
+    # THE PLACEMENT LAW: the NODE's queue is the wiring's decision —
+    # `step(queue=…)` — defaulting to "default". The decorator's
+    # `queue="cpu"` declares the handle's own cohort (what the boot
+    # projection and a workflow-only worker register); it does not place
+    # the node. Pass `step(..., queue="cpu")` to run a node on the cpu
+    # queue.
     fetched = step(fetch, Ingest(doc_id="d1"))  # Promise[Report]
     both = gather([fetched])  # the ALL-upstream join
     return build(step(summarize, both))  # the completeness point

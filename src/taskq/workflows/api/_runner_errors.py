@@ -11,7 +11,15 @@ __all__ = ["VanishedNodeError", "WorkflowRunCancelledError", "WorkflowRunError"]
 
 class WorkflowRunError(RuntimeError):
     """The run cannot proceed — the graph is not registered, or the flow
-    row is missing (a caller bug, refused loudly)."""
+    row is missing (a caller bug, refused loudly).
+
+    ``claim_verdict`` rides the packaged ``run()``'s replay face: when a
+    terminal run's key is replayed, the prior run's re-raised error
+    carries the claim's verdict (``"existing-terminal"``) — the handler
+    reads the refusal as the replay, not a fresh failure. ``None`` (the
+    default) on every raise that is not the replay face."""
+
+    claim_verdict: str | None = None
 
 
 class WorkflowRunCancelledError(WorkflowRunError):

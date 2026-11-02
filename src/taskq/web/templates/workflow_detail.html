@@ -224,7 +224,7 @@
                 {% else %}
                 <span class="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">{{ h.status }}</span>
                 {% endif %}
-                <span>gate {{ h.signal }} · node {{ h.node }} · epoch {{ h.epoch }}</span>
+                <span>hold {{ h.signal }} · node {{ h.node }} · epoch {{ h.epoch }}</span>
             </div>
             {% if h.reason or h.tool or h.args %}
             <div class="mt-1 text-xs text-slate-600 dark:text-slate-300">

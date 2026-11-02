@@ -44,13 +44,20 @@ This is a deliberate tradeoff, not a missing feature:
    applied, without changing anything.
 
 4. **Apply migrations explicitly**, from a pre-deploy job or init container,
-   before any worker starts:
+   before any worker starts — in the phased order the rolling-deploy law
+   defines ([Deployment](deployment.md): the pre phase while the workers
+   roll, the post phase once by hand after the last worker is up):
 
    ```shell
-   taskq migrate up
+   taskq migrate up --phase pre      # the pre-deploy job, before the roll
+   # ... roll the workers ...
+   taskq migrate up --phase post     # once, by hand, after the roll completes
    ```
 
-   Workers never self-migrate. `TASKQ_MIGRATE_ON_START=true` is honoured only
+   A bare `taskq migrate up` applies BOTH phases at once: the post phase
+   lands immediately, and an old worker still running at that moment
+   cannot write the workflow rows the new schema requires. Workers never
+   self-migrate. `TASKQ_MIGRATE_ON_START=true` is honoured only
    by `taskq ui serve`; a worker warns and ignores it, and refuses to boot
    while a pre-phase migration is pending, so relying on it there produces a
    crash-loop rather than a migrated schema. N replicas racing to migrate is
@@ -539,9 +546,29 @@ unstamped insert is refused by the database itself.
 the pre-deploy job while the workers roll (the pre phase for this
 feature is empty — the stamp rides the existing column); apply
 `taskq migrate up --phase post` once, by hand, AFTER THE LAST WORKER IS
-UP; then `VALIDATE CONSTRAINT jobs_wf_fairness_cohort_check` (the
-same two-phase pattern the denial-counters and retry-curve migrations
-document). THE BREAKAGE, PLAINLY: once the post phase is applied, an
+UP. The new CHECK constraint lands `NOT VALID` and needs one validation
+pass (the same two-phase pattern the denial-counters and retry-curve
+migrations document):
+
+```sql
+-- find a violator before validating (the constraint's own predicate,
+-- reversed): a workflow row whose cohort stamp does not match its run
+SELECT j.id, j.metadata->>'flow_id' AS run_id, j.fairness_key
+FROM jobs j
+WHERE j.step_key <> '__flow__'
+  AND j.metadata ? 'flow_id'
+  AND j.fairness_key IS DISTINCT FROM j.metadata->>'flow_id';
+
+-- fix a violator by restamping it from its run (the backfill's own shape):
+UPDATE jobs j
+SET fairness_key = j.metadata->>'flow_id'
+WHERE j.step_key <> '__flow__'
+  AND j.metadata ? 'flow_id'
+  AND j.fairness_key IS DISTINCT FROM j.metadata->>'flow_id';
+
+-- validate (shares the table briefly; safe once no violator remains):
+ALTER TABLE jobs VALIDATE CONSTRAINT jobs_wf_fairness_cohort_check;
+``` THE BREAKAGE, PLAINLY: once the post phase is applied, an
 old worker cannot write workflow WORK — the flow ROOT row is exempt
 (its insert passes), but the STATIC NODE INSERTS are refused, so the
 old worker's `create_flow` still fails, and its forks and emits refuse
@@ -2887,6 +2914,22 @@ and keep that flag in its deploy pipeline — every run logs the drift as a
 warning, which is the honest state: that database's ledger refers to SQL
 that no longer exists anywhere.
 
+## The workflow round's leader-sweep arms, on by default
+
+Two leader-sweep arms switch ON with this upgrade and start acting at
+the first post-upgrade sweep — no flag, no migration step:
+
+- the **workflow outbox arm** (the fired joins' consumer deliveries):
+  delivered outbox rows past the retention period prune, one bounded
+  batch per pass — the period defaults to 24h;
+- the **step-cache sweep**: the cross-run cache's expired results prune
+  on the leader's cadence — the sweep period defaults to 1h.
+
+The other five flow-history retention arms stay OFF until an operator
+sets their retention period (the zero-means-off setting: nothing is
+armed until a period is declared). The two on-by-default arms delete
+only EXPIRED or DELIVERED data — never a run's history.
+
 ## The workflow round (01.00.24) — the DAG engine's schema
 
 Migrations `01.00.24_01/_02/_03` ship the workflow engine's DDL: the five
@@ -2909,23 +2952,18 @@ definition is not registered in the healer's process delivers its
 declared consumers off an un-reduced join — keep the definitions
 imported in every worker.
 
-**The round was amended in place before landing.** The step ledger's
-claim arbiter keys `(flow_id, step_key, COALESCE(map_index, -1), attempt)`
-— map children of one step key are different claims — which is an
-expression index (`wf_step_ledger_claim_uniq`, in `_03`; a UNIQUE
-constraint cannot carry an expression), so the table's bare
-`UNIQUE (flow_id, step_key, attempt)` constraint was removed from `_02`'s
-`CREATE TABLE`. Because **none of these files ever shipped in a release**
-(the branch is the round's first publication), no `_variants/` entry is
-owed: variant history exists for databases that applied PREVIOUSLY
-PUBLISHED bytes, and no database ever applied these. If you applied a
-pre-release build that carried the older constraint: the files' checksums
-changed, and `taskq migrate status` will name the drift — the remedy is the
-same as the published-variants discipline below, except the honest
-bookkeeping here is "this pre-release build's ledger refers to a draft of
-01.00.24 that was never published"; re-run the round's files on a fresh
-schema (they are idempotent-ordered, additive DDL) rather than
-legitimising a draft checksum with a variant.
+**The migration header says "no `post_` phase ever ships for v1 (a
+forever rule)" — the header is checksum-frozen and can no longer be
+edited, and the statement it makes is now out of date: the workflow
+round's own `01.00.37_01_post_wf_fairness_cohort_check` IS a `post_`
+phase. The exception in full: the no-post rule protects the row shape a
+pre-workflow worker reads; the fairness cohort's post phase writes ONLY
+the `fairness_key` column's values (the stamp the pre-upgrade rows read
+as NULL) and a CHECK constraint — no column added, no row shape
+changed — so the rule's guarantee (old workers read the row unchanged)
+holds while the post phase lands. The header's own deployment sequence
+(pre → the code roll → the post phase) is the sequence this guide's
+steps above spell.
 
 Two indexes the sweep arms lean on: `wf_step_ledger_running_idx` (the
 phantom reaper's `status='running'` partial) and
@@ -2974,3 +3012,28 @@ database that applied the original bytes: the drift warning fires on that
 database's next `migrate` and never stops. A documentation scrub that cannot
 preserve bytes does not touch migrations; prose fixes ride the next
 migration that touches the same tables, or not at all.
+
+## The adoption checklist
+
+The whole sequence, in order — each step's failure stops the upgrade at
+the step that can still fix it:
+
+1. **Bump the pin** (`taskq-py==<new version>`), sync, and confirm the
+   app imports.
+2. **`taskq migrate status`** — expect the new round's count pending and
+   **zero drift**. A drift line here means a database applied bytes this
+   tree no longer ships: stop and reconcile before anything else.
+3. **The pre-phase job**: `taskq migrate up --phase pre` — additive DDL,
+   safe against every running worker.
+4. **Roll the workers.** The mixed fleet is safe in this window: old
+   workers read the new row shape unchanged; new workers read the old
+   rows unchanged.
+5. **The post phase, once, by hand**: `taskq migrate up --phase post` —
+   after the LAST worker is up. Never a bare `taskq migrate up` ahead of
+   the roll: the post phase lands immediately and old workers lose the
+   ability to write workflow rows.
+6. **Validate the backfill** (the round's VALIDATE step above): find a
+   violator, fix it, `ALTER TABLE ... VALIDATE CONSTRAINT`.
+7. **`taskq migrate status` again** — zero pending, zero drift — then
+   one smoke flow end to end (`taskq flows list` shows the run; the run
+   page renders its graph).
