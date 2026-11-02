@@ -322,6 +322,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         self,
         *,
         input: object = None,
+        key: str | None = None,
         run_key: str | None = None,
         root_metadata_extra: dict[str, object] | None = None,
         priority: int | None = None,
@@ -388,9 +389,19 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
          accepts a priority).
         """
         from taskq.constants import check_priority_domain
+        from taskq.workflows.api._graph import WorkflowBuildError
 
         if priority is not None:
             check_priority_domain(priority, what="the run's priority override")
+        # THE RUN KEY'S ONE CANONICAL NAME: ``key=``; ``run_key=`` rides
+        # as the alias (either accepted, one name in the docs).
+        if run_key is None:
+            run_key = key
+        elif key is not None and key != run_key:
+            raise WorkflowBuildError(
+                f"create_flow: key={key!r} and run_key={run_key!r} are both given "
+                "and disagree — the run key is ONE value; pass key= only"
+            )
         if priority is not None:
             root_metadata_extra = {**(root_metadata_extra or {}), "wf_priority": priority}
         try:

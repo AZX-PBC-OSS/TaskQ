@@ -114,7 +114,7 @@ AND-join):
 
 ```python no-exec — not executed: verbatim fragment of examples/workflows.py (verified: tests/test_wf_demo_legs.py drives this file)
 barrier = gather([summaries, entities], on_failure="fail_closed")
-maybe_labels = gather([labels], on_failure="maybe")
+collected_labels = gather([labels], on_failure="collect")
 sink(routed)
 
 review = loop(
@@ -130,7 +130,7 @@ published = step(
     publish_body,
     review,
     barrier,
-    maybe_labels,
+    collected_labels,
     enriched,
     key="publish",
     actor="wf-demo-publish",

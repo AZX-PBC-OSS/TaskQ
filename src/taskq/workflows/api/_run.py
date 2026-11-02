@@ -76,6 +76,7 @@ async def run(
     *,
     input: object = None,
     key: str | None = None,
+    run_key: str | None = None,
     until: Literal["terminal", "held"] = "terminal",
     max_ticks: int = 5000,
     execute: bool = True,
@@ -122,6 +123,12 @@ async def run(
 
     if priority is not None:
         check_priority_domain(priority, what="the run's priority override")
+    # THE RUN KEY'S ONE CANONICAL NAME: ``key=``; ``run_key=`` rides as
+    # the alias.
+    if key is None:
+        key = run_key
+    elif run_key is not None and run_key != key:
+        raise ValueError("run(): key= and run_key= are both given and disagree — pass key= only")
     runner = FlowRunner(flow, pool, schema, deps=deps if deps is not None else flow.deps)
     # THE RUN SPAN (the wf's own face of the vanilla obs law — the
     # contract lives in ``workflows/_obs.py``): a ROOT (``new_root=True``,
@@ -163,7 +170,7 @@ async def run(
             # the REFUSED-TO-REUSE face (the existing-terminal replay),
             # not a fresh failure; the documented remedy (a new key) is
             # the caller's informed choice.
-            exc.claim_verdict = claim.kind  # type: ignore[attr-defined] # Why: the replay verdict rides the caller's error object; the attribute is the door's documented contract.
+            exc.claim_verdict = claim.kind
             raise
         # The drive's label vocabulary IS the Literal (terminal/held/max_ticks —
         # drive's own docstring); the cast names the boundary, never a lie.
@@ -183,6 +190,6 @@ async def run(
             try:
                 result = await runner.result(claim.flow_id)
             except WorkflowRunError as exc:
-                exc.claim_verdict = claim.kind  # type: ignore[attr-defined] # Why: same replay-verdict contract as the drive face above.
+                exc.claim_verdict = claim.kind
                 raise
         return WorkflowRunResult(claim=claim, outcome=outcome, result=result)

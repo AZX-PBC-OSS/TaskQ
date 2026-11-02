@@ -34,7 +34,7 @@ from taskq.ratelimit.refs import KeyedRateLimitRef, KeyedReservationRef
 from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.ratelimit.sliding_window import SlidingWindow
 from taskq.ratelimit.token_bucket import TokenBucket
-from taskq.workflows._types import EdgeFailurePolicy
+from taskq.workflows._types import EdgeFailurePolicy, duration_seconds
 from taskq.workflows.api._hints import body_hints, ctx_input_reads, inner_fn, own_source
 from taskq.workflows.chain import Chain
 
@@ -435,8 +435,8 @@ def _wire_handle_terms_into_node(node: NodeDecl, handle: WorkflowActor, *, what:
             )
     if handle.reservations:
         if not node.reservations:
-            node.reservations = tuple(handle.reservations)
-        elif not _same_reservation_names(node.reservations, tuple(handle.reservations)):
+            node.reservations = tuple(handle.reservations or ())
+        elif not _same_reservation_names(node.reservations, tuple(handle.reservations or ())):
             # THE MESSAGE SPEAKS THE NAME LAW (the dump finding): the
             # reservation instances have no __repr__ — rendering them
             # raw gives the operator two pointers and no bucket. The
@@ -445,7 +445,7 @@ def _wire_handle_terms_into_node(node: NodeDecl, handle: WorkflowActor, *, what:
             conflicts.append(
                 f"reservations: {reservation_names(node.reservations, what='reservations')!r} "
                 "vs the handle's "
-                f"{reservation_names(tuple(handle.reservations), what='reservations')!r}"
+                f"{reservation_names(tuple(handle.reservations or ()), what='reservations')!r}"
             )
     if handle.result_ttl is not None:
         if node.result_ttl is None:
@@ -554,7 +554,7 @@ class RouteArm[R]:
     #: ``reservations`` / ``result_ttl``; ``max_pending`` is off the wf
     #: surface).
     max_concurrent: int | None = None
-    reservations: tuple[object, ...] = ()
+    reservations: tuple[object, ...] | list[object] | None = ()
     result_ttl: float | None = None
     #: THE ARM'S PRIORITY OVERRIDE (the priority surface — the enqueue
     #: face the vanilla rows always had): the arm's children's rows land
@@ -627,7 +627,7 @@ class GateDecl:
 
     name: str
     payload_models: tuple[type[BaseModel], ...]
-    timeout_s: float | None = None
+    timeout_s: timedelta | float | None = None
     on_timeout: str = "fail"
 
 
@@ -954,12 +954,12 @@ def step[R](
     progress_schema: type[BaseModel] | None = None,
     rate_limits: tuple[RateLimitDecl, ...] | list[RateLimitDecl] = (),
     max_concurrent: int | None = None,
-    reservations: tuple[object, ...] | list[object] = (),
-    result_ttl: float | None = None,
+    reservations: tuple[object, ...] | list[object] | None = (),
+    result_ttl: timedelta | float | None = None,
     priority: int | None = None,
     start_to_close: timedelta | None = None,
     cache: bool = False,
-    cache_ttl: float | None = None,
+    cache_ttl: timedelta | float | None = None,
 ) -> Promise[R]:
     """Wire ONE node: ``p = step(fetch_body, params)`` — the promise is
     ``Promise[R]`` where ``R`` is the BODY's declared return (inferred —
@@ -1153,7 +1153,8 @@ def step[R](
             "a TTL on a cache that does not exist is a silent no-op "
             "(the cache is a decision, never a surprise): pass cache=True"
         )
-    if cache and cache_ttl is not None and cache_ttl <= 0:
+    cache_ttl_s = duration_seconds(cache_ttl)
+    if cache and cache_ttl_s is not None and cache_ttl_s <= 0:
         raise WorkflowBuildError(
             f"node {node_key!r} declares cache_ttl={cache_ttl} — a "
             "non-positive TTL is an always-expired cache (the lie): a "
@@ -1256,7 +1257,7 @@ def step[R](
     # the node (the boot's collect pass registers the instances, the
     # fork stamps the per-child names).
     rate_limit_names(tuple(rate_limits), what=f"step {node_key!r}'s rate_limits")
-    reservation_names(tuple(reservations), what=f"step {node_key!r}'s reservations")
+    reservation_names(tuple(reservations or ()), what=f"step {node_key!r}'s reservations")
     # THE KEYED FACE'S RESOLVABILITY LAW: a keyed ref resolves from the
     # row's DECLARED payload. A node with parents resolves its body args
     # from the parent RESULTS at dispatch — no payload exists at create,
@@ -1266,7 +1267,7 @@ def step[R](
     # own payload resolves the key).
     if keys and any(
         isinstance(entry, KeyedRateLimitRef | KeyedReservationRef)
-        for entry in (*rate_limits, *reservations)
+        for entry in (*rate_limits, *(reservations or ()))
     ):
         raise WorkflowBuildError(
             f"step {node_key!r}: a keyed admission term (KeyedRateLimitRef/"
@@ -1293,13 +1294,13 @@ def step[R](
             progress_schema=progress_schema,
             rate_limits=tuple(rate_limits),
             max_concurrent=max_concurrent,
-            reservations=tuple(reservations),
-            result_ttl=result_ttl,
+            reservations=tuple(reservations or ()),
+            result_ttl=duration_seconds(result_ttl),
             priority=priority,
             start_to_close=start_to_close,
             capacity_owner=capacity_owner,
             cache=cache,
-            cache_ttl=cache_ttl,
+            cache_ttl=duration_seconds(cache_ttl),
             kind="gather" if len(keys) > 1 else "step",
         )
     )
@@ -1578,7 +1579,7 @@ def _attach_route[S](
         # cohort law never stamps). Refused at the wiring, the rule
         # stated: the source step's own face resolves the run's cohort,
         # the arms ride it.
-        for entry in arm.reservations:
+        for entry in arm.reservations or ():
             if isinstance(entry, KeyedReservationRef):
                 raise WorkflowBuildError(
                     f"route arm {tag!r}: a KeyedReservationRef(base_name="

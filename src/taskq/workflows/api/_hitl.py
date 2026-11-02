@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID
 
@@ -51,6 +51,7 @@ from taskq.backend._protocol import ConnLike, JobId
 from taskq.exceptions import ReservedTimerNamespaceError
 from taskq.obs import get_logger
 from taskq.workflows._capture import redact_hold_context
+from taskq.workflows._types import duration_seconds
 
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
@@ -277,12 +278,12 @@ def resolve_payload_fit(
             return chosen
         raise SignalPayloadAmbiguousError(
             f"the payload fits {len(fitting)} declared models ({names}) "
-            f"and the gate's discriminator picked {chosen.__name__!r}, "
+            f"and the hold's discriminator picked {chosen.__name__!r}, "
             "which is not one of them — the delivery is refused"
         )
     raise SignalPayloadAmbiguousError(
         f"the delivered payload fits {len(fitting)} declared models "
-        f"({names}) and the gate declared no discriminator — narrowing by "
+        f"({names}) and the hold declared no discriminator — narrowing by "
         "declaration order is the rejected mis-narrowing; declare a "
         "discriminator on the wait site or deliver an unambiguous shape"
     )
@@ -519,7 +520,7 @@ async def register_hold(
     hold_epoch: int,
     call_id: str,
     payload_schema: dict[str, object] | None,
-    timeout_s: float | None,
+    timeout_s: timedelta | float | None,
     context: dict[str, object] | None = None,
     redact: Callable[[str], str] | None = None,
     expires_at: datetime | None = None,
@@ -654,7 +655,7 @@ async def register_hold(
 
 
 async def _deadline_expr(
-    conn: ConnLike, timeout_s: float | None, *, expires_at: datetime | None = None
+    conn: ConnLike, timeout_s: timedelta | float | None, *, expires_at: datetime | None = None
 ) -> Any:
     """The deadline FROM PG'S CLOCK (the DB-clock doctrine): None → NULL
     (the explicit eternal wait — the W1 warning's subject). The TIMER'S
@@ -664,6 +665,7 @@ async def _deadline_expr(
     relative arm whose base is the DB's own now)."""
     if expires_at is not None:
         return expires_at
+    timeout_s = duration_seconds(timeout_s)
     if timeout_s is None:
         return None
     return await conn.fetchval(
@@ -1303,7 +1305,9 @@ class HitlClient:
         self._schema = schema
         self._redact = redact
 
-    async def list(self, run: JobId | str) -> list[HoldContext]:
+    async def list(
+        self, run: JobId | str | None = None, *, flow_id: JobId | str | None = None
+    ) -> list[HoldContext]:
         """The pending holds for ONE run — a run with MULTIPLE
         concurrent holds lists ALL of them distinctly; the multi-
         workflow property: the filter is BY RUN, resolves never cross.
@@ -1311,9 +1315,13 @@ class HitlClient:
         source holding on one signal name are TWO rows — the hold
         identity carries the map index, each sibling's hold is
         addressable (its own ``hold_id``) and resolvable
-        INDIVIDUALLY."""
+        INDIVIDUALLY. ``run=`` and ``flow_id=`` name the same id (the
+        run identity's one mapping); ``run=`` is the canonical spelling."""
+        run_id = run if run is not None else flow_id
+        if run_id is None:
+            raise TypeError("list(): name the run — list(run=<run id>)")
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(_render(_LIST_SQL, self._schema), run)
+            rows = await conn.fetch(_render(_LIST_SQL, self._schema), run_id)
         return [self._context(r) for r in rows]
 
     async def get(self, hold_id: JobId | str) -> HoldContext | None:

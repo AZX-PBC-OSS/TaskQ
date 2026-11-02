@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
 __all__ = ["CtxWaitOps", "LoopWaitShapeError", "SignalUnavailableError", "WaitHost"]
 
+from datetime import timedelta
+
 import structlog
 
 from taskq.obs import get_logger
@@ -141,7 +143,7 @@ class CtxWaitOps(WaitHost):
         self,
         signals: type[M] | tuple[type[M], ...],
         *,
-        timeout_s: float | None = None,
+        timeout_s: timedelta | float | None = None,
         reason: str | None = None,
         tool: str | None = None,
         args: dict[str, object] | None = None,
