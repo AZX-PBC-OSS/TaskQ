@@ -73,7 +73,7 @@ from typing import TYPE_CHECKING, Final
 from opentelemetry.trace import StatusCode
 from tors import scrub_secrets
 
-from taskq._json import sanitize_nul_str
+from taskq._json import sanitize_nul_str, sanitize_surrogates
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span
@@ -710,6 +710,25 @@ class ScrubbedText(str):
         """
         return ScrubbedText(sanitize_nul_str(self))
 
+    def log_escaped(self) -> "ScrubbedText":
+        """The same text made renderable by every log sink: NUL rewritten to
+        the visible ``\\x00`` and lone surrogates to their backslash form.
+
+        A log line's text is derived from an uncontrolled exception and
+        crosses every renderer the active structlog chain can install. A
+        JSON chain renders through a strict UTF-8 encoder (orjson), and a
+        lone surrogate -- a legal ``str`` no UTF-8 encoder accepts -- makes
+        that render raise inside the failure handler, killing the
+        classification and the terminal write behind it; the job is left
+        running. ``str.encode("utf-8", "backslashreplace")`` is the
+        identity for any string a UTF-8 encoder already accepts, so clean
+        text passes byte-for-byte. Like ``nul_escaped``, this runs on
+        already-scrubbed text: the escape introduces only backslash, ``x``
+        and hex digits, which cannot reassemble a credential the scrub
+        removed.
+        """
+        return ScrubbedText(sanitize_surrogates(sanitize_nul_str(self)))
+
 
 @dataclass(frozen=True, slots=True)
 class ExceptionText:
@@ -753,9 +772,14 @@ def render_exception(exc: BaseException) -> ExceptionText:
     row values -- but a secret written as a literal in application code would
     appear. Do not put credentials in source.
     """
-    raw_stacktrace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    raw_stacktrace = safe_traceback_text(exc)
     return ExceptionText(
-        type_name=type(exc).__qualname__,
+        # Why _safe_type_attr, not the raw attribute: the qualname, unlike
+        # the name, CAN carry a lone surrogate (CPython locks type names to
+        # UTF-8 but accepts any string in __qualname__), a metaclass can
+        # raise on the access itself, and the render is the one conversion
+        # every sink of the exception's identity shares.
+        type_name=_safe_type_attr(exc, "__qualname__"),
         raw_stacktrace=raw_stacktrace,
         # Why safe_str: the exception is uncontrolled (an actor raises it);
         # a __str__ that raises must degrade to the constant marker, not
@@ -880,6 +904,54 @@ def _resolve_exc_info(value: _ExcInfoInput) -> _ResolvedExcInfo | None:
     return None
 
 
+def _safe_type_attr(owner: object, attr: str) -> str:
+    """Read a class name attribute (``__name__``/``__qualname__``) safely.
+
+    A hostile class can carry a lone surrogate in the attribute (a legal
+    ``str`` no UTF-8 encoder accepts) or raise from a metaclass property on
+    the access itself; either defect would kill the very write that reports
+    the failure and strand the job. The surrogate is rewritten to its
+    backslash form and a raising or non-string value degrades to a constant
+    marker, mirroring :func:`safe_str`'s convention.
+    """
+    try:
+        name = getattr(type(owner), attr)
+    except BaseException:
+        return "<exception type name failed>"
+    if not isinstance(name, str):
+        try:
+            name = str(name)
+        except BaseException:
+            return "<exception type name failed>"
+    return sanitize_surrogates(name)
+
+
+def safe_type_name(exc: BaseException) -> str:
+    """The exception's class name, renderable everywhere it is stored.
+
+    The class name lands in the durable row's ``error_class``, on log lines
+    and in span attributes; see :func:`_safe_type_attr` for the defects this
+    guards.
+    """
+    return _safe_type_attr(exc, "__name__")
+
+
+def safe_traceback_text(exc: BaseException) -> str:
+    """``traceback.format_exception`` that cannot raise on a hostile class.
+
+    The formatter reads the exception's identity attributes itself (the
+    header line's ``__qualname__``), and a metaclass can raise on that
+    access - the render would die inside the failure handler that was
+    classifying the exception and strand the row it was reporting. The
+    traceback is diagnostic; the classification behind it must survive, so
+    a raising render degrades to a constant marker.
+    """
+    try:
+        return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    except BaseException:
+        return "<exception traceback rendering failed>"
+
+
 def safe_exception_parts(exc_info: _ExcInfoInput) -> dict[str, str] | None:
     """Render structlog-style ``exc_info`` into scrubbed ``exception.*`` parts.
 
@@ -894,9 +966,11 @@ def safe_exception_parts(exc_info: _ExcInfoInput) -> dict[str, str] | None:
         return None
     _cls, exc, _tb = resolved
     return {
-        "exception.type": type(exc).__qualname__,
-        "exception.message": safe_exception_message(exc),
-        "exception.stacktrace": _scrub_text("".join(traceback.format_exception(*resolved))),
+        "exception.type": _safe_type_attr(exc, "__qualname__"),
+        "exception.message": ScrubbedText(sanitize_surrogates(safe_exception_message(exc))),
+        "exception.stacktrace": ScrubbedText(
+            sanitize_surrogates(_scrub_text(safe_traceback_text(exc)))
+        ),
     }
 
 
@@ -904,21 +978,31 @@ def add_exception_event(span: "Span", text: ExceptionText) -> None:
     """Attach *text* to *span* as the OTel semantic-convention ``exception`` event.
 
     The event shape is the one the conventions define, so backends that
-    special-case it still render an exception.
+    special-case it still render an exception. The attribute values are
+    surrogate-escaped and nothing more: the OTLP exporter
+    protobuf-encodes attribute strings, and a lone surrogate in an actor
+    exception's text would drop the whole span at export - the attempt's
+    own record of its failure must survive the text that describes it.
+    NUL handling is the log channel's recipe and stays there; the span
+    keeps the raw NUL.
     """
     span.add_event(
         "exception",
         attributes={
-            "exception.type": text.type_name,
-            "exception.message": text.message,
-            "exception.stacktrace": text.stacktrace,
+            "exception.type": sanitize_surrogates(text.type_name),
+            "exception.message": sanitize_surrogates(text.message),
+            "exception.stacktrace": sanitize_surrogates(text.stacktrace),
         },
     )
 
 
 def record_exception_text(span: "Span", text: ExceptionText) -> None:
-    """Mark *span* failed by *text*: ERROR status described by the message, plus the event."""
-    span.set_status(StatusCode.ERROR, text.message)
+    """Mark *span* failed by *text*: ERROR status described by the message, plus the event.
+
+    The status description is surrogate-escaped like the event's
+    attributes, and keeps the raw NUL the same way.
+    """
+    span.set_status(StatusCode.ERROR, sanitize_surrogates(text.message))
     add_exception_event(span, text)
 
 
@@ -963,14 +1047,21 @@ def scrub_exception_field(field: str, value: object) -> object:
     Exception objects render as the scrubbed safe message (unhandled, they
     reach the orjson fallback and drop the whole log line). Strings in
     message-style fields get the message scrub; strings in traceback-style
-    fields get the line-wise stacktrace scrub. A :class:`ScrubbedText` has
-    already had the treatment its type promises and passes through, as do
-    non-string, non-exception values (ints, bools, None).
+    fields get the line-wise stacktrace scrub; both also get the surrogate
+    escape, so the line renders under a strict-UTF-8 chain however hostile
+    the exception text was. A :class:`ScrubbedText` has already had the
+    scrub its type promises - it is not scrubbed a second time, but it IS
+    escaped here unconditionally: the escape is idempotent, and a value
+    that arrived from a seam predating the escape still closes at the one
+    seam every log field passes through. Non-string, non-exception values
+    (ints, bools, None) pass through.
     """
     if isinstance(value, BaseException):
-        return safe_exception_message(value)
-    if not isinstance(value, str) or isinstance(value, ScrubbedText):
+        return ScrubbedText(sanitize_surrogates(safe_exception_message(value)))
+    if not isinstance(value, str):
         return value
+    if isinstance(value, ScrubbedText):
+        return ScrubbedText(sanitize_surrogates(value))
     if field in EXCEPTION_TRACEBACK_FIELDS:
-        return _scrub_text(value)
-    return _bound_message(_scrub_text(value))
+        return ScrubbedText(sanitize_surrogates(_scrub_text(value)))
+    return ScrubbedText(sanitize_surrogates(_bound_message(_scrub_text(value))))
