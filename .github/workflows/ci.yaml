@@ -282,6 +282,48 @@ jobs:
         # pytest-timeout's graceful per-test failure into a lost worker.
         run: uv run --no-sync pytest -n 2 -m "not slow and not load_sensitive" -o faulthandler_timeout=300
 
+      # THE ADVERSARIAL PROBES' GATE (the constitution's law: a regression
+      # test outside your gate is not a defense). The probes are
+      # collect-ignored (tests/conftest.py's collect_ignore_glob) — they
+      # never ride the fill lane above — so this explicit-path step is
+      # their ONLY gate, and it runs the same invocation the heavy gates
+      # run: the paths explicit, serial (the chaos probes' calibrated
+      # density). The restart probe's cluster is provisioned HERE —
+      # initdb + pg_ctl on the runner host (the probe restarts the
+      # database mid-round, a shape a service container cannot serve) —
+      # so the lane runs ZERO-SKIP. The count floor + the no-skip assert
+      # refuse the silent-collection regression: a green lane that
+      # collected fewer probes than the estate holds, or skipped one, is
+      # the gate lying by omission.
+      - name: Run the adversarial probes (explicit paths, serial, zero-skip)
+        run: |
+          set -euo pipefail
+          pgroot="$RUNNER_TEMP/probe-pg"
+          rm -rf "$pgroot"; mkdir -p "$pgroot"
+          printf 'postgres\n' > "$pgroot/pwfile"
+          initdb -D "$pgroot/data" -U postgres --pwfile="$pgroot/pwfile" -A scram-sha-256 >/dev/null
+          {
+            echo "port = 5711"
+            echo "unix_socket_directories = '$pgroot'"
+            echo "listen_addresses = '127.0.0.1'"
+          } >> "$pgroot/data/postgresql.conf"
+          pg_ctl -D "$pgroot/data" -l "$pgroot/pg.log" -w start >/dev/null
+          export ATTACK4_PG_DATA="$pgroot/data" ATTACK4_PG_PORT=5711
+          rc=0
+          uv run --no-sync pytest tests/probes_*.py tests/progress_numbers_run.py --timeout=900 -q 2>&1 | tee "$RUNNER_TEMP/probes.log" || rc=$?
+          pg_ctl -D "$pgroot/data" stop -m fast >/dev/null || true
+          passed="$(grep -oE '[0-9]+ passed' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1)"
+          skipped="$(grep -oE '[0-9]+ skipped' "$RUNNER_TEMP/probes.log" | grep -oE '[0-9]+' | head -1)"
+          echo "probes green: ${passed:-0}, skipped: ${skipped:-0}"
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::the probes lane ran red (rc=$rc) — a probe failed"
+            exit 1
+          fi
+          if [ "${passed:-0}" -lt 76 ] || [ "${skipped:-0}" -ne 0 ]; then
+            echo "::error::the probes lane expected 76 green zero-skip probes, saw ${passed:-0} passed / ${skipped:-0} skipped — a probe stopped being collected (the gate lying by omission) or could not run"
+            exit 1
+          fi
+
   test-extras:
     # The extra-gated families, one leg per extra: install the extra, run
     # ONLY its tagged tests. Each leg is small (seconds to minutes), so it
@@ -1113,13 +1155,13 @@ jobs:
         run: |
           uv venv test-env
           uv pip install --python test-env/bin/python dist/*.whl
-          cd /tmp && $GITHUB_WORKSPACE/test-env/bin/python -c "import taskq; print(taskq.__version__)"
+          cd /tmp && "$GITHUB_WORKSPACE/test-env/bin/python" -c "import taskq; print(taskq.__version__)"
 
       - name: Test installation from source distribution
         run: |
           uv venv test-src-env
           uv pip install --python test-src-env/bin/python dist/*.tar.gz
-          cd /tmp && $GITHUB_WORKSPACE/test-src-env/bin/python -c "import taskq; print(taskq.__version__)"
+          cd /tmp && "$GITHUB_WORKSPACE/test-src-env/bin/python" -c "import taskq; print(taskq.__version__)"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7.0.1
