@@ -127,3 +127,50 @@ ACTORS = {}
     err = capsys.readouterr().err
     assert "broken-first" in err
     assert "broken-second" in err
+
+
+def test_a_capacity_conflict_refuses_with_the_reason_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The projection's cross-workflow capacity refusal is a named error
+    (one actor, two caps). The loader wraps it: the operator reads the
+    reason and exits 1 — never the raw exception traceback the pre-cure
+    loader propagated from the projection."""
+    monkeypatch.syspath_prepend(str(tmp_path))
+    module = _write_module(
+        tmp_path,
+        "wf_boot_capacity_conflict_module",
+        """from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
+
+app = WorkflowApp()
+
+
+async def one(ctx: StepContext) -> dict[str, str]:
+    return {}
+
+
+async def two(ctx: StepContext) -> dict[str, str]:
+    return {}
+
+
+@app.workflow("conflict-one")
+def conflict_one() -> Promise[object]:
+    return build(step(one, key="one", actor="shared-actor", max_concurrent=1))
+
+
+@app.workflow("conflict-two")
+def conflict_two() -> Promise[object]:
+    return build(step(two, key="two", actor="shared-actor", max_concurrent=2))
+
+
+ACTORS = {}
+""",
+    )
+
+    with pytest.raises(typer.Exit):
+        _load_actor_registry(f"{module}:ACTORS")
+
+    err = capsys.readouterr().err
+    assert "conflict" in err
+    assert "shared-actor" in err
+    assert "Traceback" not in err
