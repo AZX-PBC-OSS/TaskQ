@@ -26,9 +26,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Generator
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from functools import cache
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -36,6 +39,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import ConnLike, EnqueueArgs, JobRow
 from taskq.backend.clock import SystemClock
 from taskq.backend.postgres import PostgresBackend
+from taskq.cron import repeated_range_bounds
 from taskq.settings import WorkerSettings
 
 _HOURLY = "0 * * * *"
@@ -574,6 +578,121 @@ def next_ten_min_boundary(after: datetime) -> datetime:
     """The first 10-minute grid point strictly after *after*."""
     floored = ten_min_floor(after)
     return floored if floored > after else floored + timedelta(minutes=10)
+
+
+# ── DST fall-back discovery: the drives' dates from the zone's own rules ──
+
+
+@dataclass(frozen=True, slots=True)
+class FallbackTransition:
+    """One fall-back transition of a zone, with the repeated wall range the
+    scheduler's own :func:`taskq.cron.repeated_range_bounds` answers for it.
+
+    The walls are naive and dated (``range_end`` may sit on the date after
+    ``range_start`` - a repeated range that crosses local midnight), the
+    instants are UTC.  A repeated range plays twice: every wall inside
+    ``[range_start, range_end)`` occurs once at the pre-transition offset
+    (fold 0) and once at the post-transition offset (fold 1).
+    """
+
+    zone: str
+    transition_utc: datetime
+    range_start: datetime
+    range_end: datetime
+    width_minutes: int
+
+    def fold_instant(self, wall: datetime, fold: int) -> datetime:
+        """The UTC instant a naive wall inside the repeated range resolves to
+        at *fold* (0 = pre-transition offset, 1 = post-transition offset)."""
+        return wall.replace(tzinfo=ZoneInfo(self.zone), fold=fold).astimezone(UTC)
+
+    @property
+    def range_start_fold0_utc(self) -> datetime:
+        """The repeated range's first wall at the pre-transition offset."""
+        return self.fold_instant(self.range_start, fold=0)
+
+    @property
+    def range_start_fold1_utc(self) -> datetime:
+        """The repeated range's first wall at the post-transition offset -
+        the fold-1 pass's first slot."""
+        return self.fold_instant(self.range_start, fold=1)
+
+    @property
+    def last_fold0_slot_utc(self) -> datetime:
+        """The repeated range's last wall at the pre-transition offset."""
+        return self.fold_instant(self.range_end - timedelta(minutes=1), fold=0)
+
+    @property
+    def range_end_utc(self) -> datetime:
+        """The first wall past the repeated range - unambiguous, so it
+        resolves at the post-transition offset."""
+        return self.fold_instant(self.range_end, fold=0)
+
+
+def _offset_at(instant: datetime, tz: ZoneInfo) -> timedelta:
+    """The zone's UTC offset at *instant* - the offset of an aware datetime
+    is never None, narrowed here once for the scan's comparisons."""
+    offset = instant.astimezone(tz).utcoffset()
+    assert offset is not None, "an aware datetime's utcoffset is never None"
+    return offset
+
+
+@cache
+def fallback_transitions(zone: str, first_year: int, last_year: int) -> list[FallbackTransition]:
+    """The zone's fall-back transitions whose repeated wall range starts
+    inside the fixed window ``[first_year, last_year)``, discovered from the
+    installed zoneinfo.
+
+    The DST drives date their instants from a zone's OWN rules rather than
+    hardcoded calendar dates: a zone's rule is a fact of the installed zone
+    database, and that database moves between vintages - a rule change can
+    remove a transition a hardcoded date was built on, leaving the drive's
+    premise false and the pin red on every vintage that no longer contains
+    it.  Discovery over a fixed window keeps the premise true on any vintage
+    carrying the zone's history, reads nothing but the named zone, and never
+    consults the runner's clock or ``TZ`` environment.  The ranges are
+    characterized by the scheduler's own ``repeated_range_bounds`` so a
+    drive's walls are the same bounds the tick's delivery hop walks.
+    """
+    tz = ZoneInfo(zone)
+    found: list[FallbackTransition] = []
+    step = timedelta(days=1)
+    minute = timedelta(minutes=1)
+    window_end = datetime(last_year, 1, 1, tzinfo=UTC)
+    cursor = datetime(first_year, 1, 1, tzinfo=UTC)
+    offset_before = _offset_at(cursor, tz)
+    while cursor < window_end:
+        probe = cursor + step
+        offset_after = _offset_at(probe, tz)
+        if offset_after != offset_before:
+            # A day-granularity scan cannot miss a transition (real
+            # transitions are months apart); this binary search pins it to
+            # the minute.
+            lo, hi = cursor, probe
+            while hi - lo > minute:
+                mid = lo + (hi - lo) / 2
+                if _offset_at(mid, tz) == offset_before:
+                    lo = mid
+                else:
+                    hi = mid
+            transition_utc = hi.replace(second=0, microsecond=0)
+            if offset_after < offset_before:
+                bounds = repeated_range_bounds(transition_utc.astimezone(tz), tz)
+                if bounds is not None:
+                    range_start, range_end = bounds
+                    width = int((range_end - range_start).total_seconds() // 60)
+                    found.append(
+                        FallbackTransition(
+                            zone=zone,
+                            transition_utc=transition_utc,
+                            range_start=range_start,
+                            range_end=range_end,
+                            width_minutes=width,
+                        )
+                    )
+            offset_before = offset_after
+        cursor = probe
+    return found
 
 
 # ── The wedge: planning-time pause inside the tick's transaction ───────

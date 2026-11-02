@@ -56,9 +56,11 @@ from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.cron_loop import ActorFirePolicy, tick_cron
 
 from .test_rt_cron_harness import (
+    FallbackTransition,
     InjectedClockConn,
     count_jobs,
     cron_settings,
+    fallback_transitions,
     make_backend,
     schedule_row,
     seed_actor_config,
@@ -1731,29 +1733,124 @@ class TestTwinAtRangeEndIsNotCoverage:
         assert fired == 1, "the 02:00 local occurrence is owed on its own tick"
 
 
+_DISCOVERY_FIRST_YEAR = 2018
+_DISCOVERY_LAST_YEAR = 2038
+"""The DST drives' fixed discovery window.
+
+A zone's fall-back dates are facts of the installed zone database, not of the
+test: the window is scanned in the zone itself so every drive's premise is
+checked against the runner's own zoneinfo, and the earliest matching
+transition is the pick (a transition in the zone's recorded history is stable
+across zone-database vintages; a rule-derived future date is not).
+"""
+
+
+def _first_midnight_starting_fallback(zone: str) -> FallbackTransition:
+    """The zone's earliest fall-back whose repeated range starts exactly at
+    local midnight (01:00 DST -> 00:00 standard): the fold-0 pass crosses the
+    local date boundary and both passes' walls carry the same local date."""
+    matches = [
+        transition
+        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
+        if transition.range_start.hour == 0 and transition.range_start.minute == 0
+    ]
+    assert matches, (
+        f"{zone}: the installed zoneinfo holds no fall-back whose repeated "
+        f"range starts at local midnight in [{_DISCOVERY_FIRST_YEAR}, "
+        f"{_DISCOVERY_LAST_YEAR}) - the drive's premise is false in this "
+        "environment"
+    )
+    return matches[0]
+
+
+def _first_midnight_ending_fallback(zone: str) -> FallbackTransition:
+    """The zone's earliest fall-back whose repeated range ends exactly at
+    local midnight (24:00 DST -> 23:00 standard): the range's end is the next
+    local date's first wall."""
+    matches = [
+        transition
+        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
+        if transition.range_end.hour == 0 and transition.range_end.minute == 0
+    ]
+    assert matches, (
+        f"{zone}: the installed zoneinfo holds no fall-back whose repeated "
+        f"range ends at local midnight in [{_DISCOVERY_FIRST_YEAR}, "
+        f"{_DISCOVERY_LAST_YEAR}) - the drive's premise is false in this "
+        "environment"
+    )
+    return matches[0]
+
+
+def _first_same_day_fallback(zone: str) -> FallbackTransition:
+    """The zone's earliest fall-back whose repeated range stays inside one
+    local date - the same-day shape the New York drives anchor on."""
+    matches = [
+        transition
+        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
+        if transition.range_start.hour != 0 and transition.range_end.hour != 0
+    ]
+    assert matches, (
+        f"{zone}: the installed zoneinfo holds no fall-back whose repeated "
+        f"range stays inside one local date in [{_DISCOVERY_FIRST_YEAR}, "
+        f"{_DISCOVERY_LAST_YEAR}) - the drive's premise is false in this "
+        "environment"
+    )
+    return matches[0]
+
+
+def _first_non_hour_fallback(zone: str) -> FallbackTransition:
+    """The zone's earliest fall-back whose repeated range is not a whole
+    number of hours wide - the non-hour repeat width the minute walk of
+    ``repeated_range_bounds`` exists for."""
+    matches = [
+        transition
+        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
+        if transition.width_minutes % 60 != 0
+    ]
+    assert matches, (
+        f"{zone}: the installed zoneinfo holds no fall-back whose repeated "
+        f"range is a non-hour width in [{_DISCOVERY_FIRST_YEAR}, "
+        f"{_DISCOVERY_LAST_YEAR}) - the drive's premise is false in this "
+        "environment"
+    )
+    return matches[0]
+
+
 class TestFoldParityBeyondNewYork:
     """The coverage walk's parity family beyond America/New_York.
 
-    The fix's drives all use the New York 2026-11-01 fall-back; the walk
-    itself is timezone-generic wall arithmetic (``repeated_range_bounds``
-    walks the ambiguous wall minute by minute), and these three zones
-    stress the shapes New York cannot reach:
+    The walk itself is timezone-generic wall arithmetic
+    (``repeated_range_bounds`` walks the ambiguous wall minute by minute),
+    and these zones stress the shapes New York's own drives cannot reach:
 
-    - **America/Havana** falls back AT local midnight (01:00 CDT ->
-      00:00 CST): the repeated range ``[00:00, 01:00)`` starts exactly on
-      a local date boundary, so the fold-0 pass crosses local midnight
+    - **America/Havana** falls back AT local midnight (01:00 DST ->
+      00:00 standard): the repeated range ``[00:00, 01:00)`` starts exactly
+      on a local date boundary, so the fold-0 pass crosses local midnight
       and both passes' walls carry the SAME local date.
-    - **Australia/Sydney** falls back in APRIL (03:00 AEDT -> 02:00
-      AEST, repeated range ``[02:00, 03:00)``): the southern-hemisphere
-      season the northern-hemisphere drives never exercise.
-    - **Australia/Lord_Howe** falls back by HALF AN HOUR (02:00 +11 ->
-      01:30 +10:30, repeated range ``[01:30, 02:00)``): a non-hour
-      repeat width - 30 fold slots per pass, not 60.
+    - **America/Santiago** falls back at 24:00 -> 23:00: the repeated range
+      ``[23:00, 00:00)`` ENDS exactly on a local date boundary, so the
+      range's end is the next local date's first wall.
+    - **Australia/Sydney** falls back in APRIL (03:00 -> 02:00, repeated
+      range ``[02:00, 03:00)``): the southern-hemisphere season the
+      northern-hemisphere drives never exercise.
+    - **Australia/Lord_Howe** falls back by HALF AN HOUR (02:00 -> 01:30,
+      repeated range ``[01:30, 02:00)``): a non-hour repeat width - 30 fold
+      slots per pass, not 60.
 
-    Each drive runs the NATURAL steady state (no seeded twins): the
-    fold-0 pass fires every slot exactly once and pre-schedules the
-    fold-1 twins, ``next_fire_at`` lands on the range end, every fold-1
-    tick fires nothing, and no instant holds two jobs.
+    Every drive dates its instants from the zone's OWN transition,
+    discovered from the installed zoneinfo over a fixed window. A hardcoded
+    calendar date is a premise about a zone RULE, and a rule is the zone
+    database's fact: vintages disagree (Cuba stopped returning to standard
+    time, removing fall-backs its older vintages held), so a date built by
+    hand pins the shape only on the vintages that still contain that
+    particular transition. The discovered date is stable
+    across vintages (the zone's recorded history) and reads neither the
+    runner's clock nor its ``TZ`` environment.
+
+    The steady-state drives run the NATURAL state (no seeded twins): the
+    fold-0 pass fires every slot exactly once and pre-schedules the fold-1
+    twins, ``next_fire_at`` lands on the range end, every fold-1 tick fires
+    nothing, and no instant holds two jobs.
     """
 
     async def _drive_steady_state_fold(
@@ -1843,23 +1940,114 @@ class TestFoldParityBeyondNewYork:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """America/Havana 2026-11-01: 01:00 CDT -> 00:00 CST, the repeated
-        range ``[00:00, 01:00)`` starts exactly on the local date boundary.
-        """
+        """America/Havana falls back at local midnight (01:00 DST -> 00:00
+        standard), so the repeated range ``[00:00, 01:00)`` starts exactly on
+        the local date boundary: the fold-0 pass crosses local midnight (the
+        drive's seed sits on the previous date's walls) and both passes'
+        walls carry the same local date."""
+        fold = _first_midnight_starting_fallback("America/Havana")
         await self._drive_steady_state_fold(
             clean_pg_conn,
             module_pg_schema,
-            zone="America/Havana",
+            zone=fold.zone,
             identity="parity-havana-midnight-fold",
-            # 23:58 CDT Oct 31 - two pre-fold slots cross local midnight.
-            seed_utc=datetime(2026, 11, 1, 3, 58, tzinfo=UTC),
-            # 00:59 CDT, the last fold-0 slot.
-            last_fold0_tick_utc=datetime(2026, 11, 1, 4, 59, tzinfo=UTC),
-            # 00:00 CST, the fold-1 pass's first slot.
-            fold1_first_utc=datetime(2026, 11, 1, 5, 0, tzinfo=UTC),
-            fold1_slots=60,
-            # 01:00 CST.
-            after_range_utc=datetime(2026, 11, 1, 6, 0, tzinfo=UTC),
+            # Two pre-fold slots cross local midnight.
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
+        )
+
+    @pytest.mark.integration
+    async def test_havana_fold1_seed_inside_the_midnight_crossing_range_advances_to_its_end(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The fold-1 mirror of the midnight-crossing range: the schedule's
+        own ``next_fire_at`` sits ON the range's first fold-1 occurrence with
+        the pass's remainder delivered by its own pre-queued twins. The
+        uncovered prefix fires on its own ticks, the covered remainder never
+        re-fires, and the walk lands ``next_fire_at`` on the range's end -
+        the twin-skip's window spans the range even though the range's start
+        is the local date boundary itself."""
+        fold = _first_midnight_starting_fallback("America/Havana")
+        schema = module_pg_schema.schema_name
+        settings = cron_settings(schema)
+        await seed_actor_config(clean_pg_conn, schema, _OPEN_ACTOR)
+        schedule_id = await seed_schedule(
+            clean_pg_conn,
+            schema,
+            actor=_OPEN_ACTOR,
+            name="parity-havana-fold1-seed",
+            cron_expr=_MINUTELY,
+            timezone=fold.zone,
+            dst_strategy="allof",
+            next_fire_at=fold.range_start_fold1_utc,
+            identity_key="parity-havana-fold1-seed",
+        )
+        covered_from = 5  # the pass's first five occurrences stay uncovered
+        for offset in range(covered_from, fold.width_minutes):
+            await _seed_scheduled_twin(
+                clean_pg_conn,
+                schema,
+                _OPEN_ACTOR,
+                fold.range_start_fold1_utc + timedelta(minutes=offset),
+                schedule_id,
+            )
+        no_policies: Mapping[str, ActorFirePolicy] = {}
+
+        fired_total = 0
+        for offset in range(fold.width_minutes):
+            due = fold.range_start_fold1_utc + timedelta(minutes=offset)
+            fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
+            row = await schedule_row(clean_pg_conn, schema, schedule_id)
+            assert row["next_fire_at"] > due, (
+                f"{fold.zone}: after the {due.isoformat()} tick the schedule "
+                f"sits due in the past (next_fire_at={row['next_fire_at']}) - "
+                "it would re-fire an already-played slot on every later tick"
+            )
+            if offset < covered_from:
+                assert fired == 1, (
+                    f"{fold.zone}: the {due.isoformat()} tick owes the "
+                    "uncovered fold-1 occurrence - an owed occurrence may "
+                    "never be silently skipped"
+                )
+                fired_total += 1
+            else:
+                assert fired == 0, (
+                    f"{fold.zone}: the {due.isoformat()} tick re-fired a "
+                    "fold-1 slot its pre-scheduled twin already delivers"
+                )
+        row = await schedule_row(clean_pg_conn, schema, schedule_id)
+        assert row["next_fire_at"] == fold.range_end_utc, (
+            f"{fold.zone}: the uncovered prefix is spent and the covered "
+            "remainder is twin-delivered, so the schedule owes nothing until "
+            f"the range end ({fold.range_end_utc.isoformat()}), got "
+            f"{row['next_fire_at'].isoformat()}"
+        )
+        assert fired_total == covered_from, (
+            f"{fold.zone}: the uncovered fold-1 prefix is {covered_from} "
+            f"occurrences, got {fired_total} fires"
+        )
+        assert await count_jobs(clean_pg_conn, schema, _OPEN_ACTOR) == fold.width_minutes, (
+            f"{fold.zone}: {covered_from} schedule-delivered occurrences + "
+            f"{fold.width_minutes - covered_from} pre-queued twins - every "
+            "fold-1 occurrence of the repeated range delivered exactly once"
+        )
+        duplicates = await clean_pg_conn.fetch(
+            f'SELECT scheduled_at, count(*) AS n FROM "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier; the only interpolation is the fixture identifier.
+            "WHERE actor = $1 "
+            "  AND scheduled_at >= $2 AND scheduled_at < $3 "
+            "GROUP BY scheduled_at HAVING count(*) > 1",
+            _OPEN_ACTOR,
+            fold.range_start_fold0_utc,
+            fold.range_end_utc + timedelta(hours=2),
+        )
+        assert duplicates == [], (
+            f"{fold.zone}: no instant may hold two jobs - duplicates mean a "
+            f"fold slot was scheduled twice: {duplicates}"
         )
 
     @pytest.mark.integration
@@ -1868,23 +2056,20 @@ class TestFoldParityBeyondNewYork:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Australia/Sydney 2026-04-05: 03:00 AEDT -> 02:00 AEST, the
-        southern-hemisphere April fall-back, repeated range ``[02:00,
-        03:00)``."""
+        """Australia/Sydney falls back in April (03:00 -> 02:00, repeated
+        range ``[02:00, 03:00)``): the southern-hemisphere season the
+        northern-hemisphere drives never exercise."""
+        fold = _first_same_day_fallback("Australia/Sydney")
         await self._drive_steady_state_fold(
             clean_pg_conn,
             module_pg_schema,
-            zone="Australia/Sydney",
+            zone=fold.zone,
             identity="parity-sydney-april-fold",
-            # 00:58 AEDT Apr 5.
-            seed_utc=datetime(2026, 4, 4, 13, 58, tzinfo=UTC),
-            # 02:59 AEDT, the last fold-0 slot.
-            last_fold0_tick_utc=datetime(2026, 4, 4, 15, 59, tzinfo=UTC),
-            # 02:00 AEST, the fold-1 pass's first slot.
-            fold1_first_utc=datetime(2026, 4, 4, 16, 0, tzinfo=UTC),
-            fold1_slots=60,
-            # 03:00 AEST.
-            after_range_utc=datetime(2026, 4, 4, 17, 0, tzinfo=UTC),
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
         )
 
     @pytest.mark.integration
@@ -1893,22 +2078,68 @@ class TestFoldParityBeyondNewYork:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Australia/Lord_Howe 2026-04-05: 02:00 +11 -> 01:30 +10:30, a
+        """Australia/Lord_Howe falls back by HALF AN HOUR (02:00 -> 01:30, a
         HALF-HOUR repeated range ``[01:30, 02:00)`` - 30 fold slots per
         pass, the non-hour width ``repeated_range_bounds``' minute walk
         exists for."""
+        fold = _first_non_hour_fallback("Australia/Lord_Howe")
         await self._drive_steady_state_fold(
             clean_pg_conn,
             module_pg_schema,
-            zone="Australia/Lord_Howe",
+            zone=fold.zone,
             identity="parity-lord-howe-half-hour-fold",
-            # 01:28 +11.
-            seed_utc=datetime(2026, 4, 4, 14, 28, tzinfo=UTC),
-            # 01:59 +11, the last fold-0 slot.
-            last_fold0_tick_utc=datetime(2026, 4, 4, 14, 59, tzinfo=UTC),
-            # 01:30 +10:30, the fold-1 pass's first slot.
-            fold1_first_utc=datetime(2026, 4, 4, 15, 0, tzinfo=UTC),
-            fold1_slots=30,
-            # 02:00 +10:30.
-            after_range_utc=datetime(2026, 4, 4, 15, 30, tzinfo=UTC),
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
+        )
+
+    @pytest.mark.integration
+    async def test_santiago_range_end_crosses_local_midnight(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """America/Santiago falls back at 24:00 -> 23:00, so the repeated
+        range ``[23:00, 00:00)`` ENDS exactly on the local date boundary:
+        both passes' walls carry the earlier local date and the range's end
+        is the NEXT local date's first wall. The walk must land
+        ``next_fire_at`` on that midnight boundary, not stall short of it or
+        step past the date."""
+        fold = _first_midnight_ending_fallback("America/Santiago")
+        await self._drive_steady_state_fold(
+            clean_pg_conn,
+            module_pg_schema,
+            zone=fold.zone,
+            identity="parity-santiago-midnight-end",
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
+        )
+
+    @pytest.mark.integration
+    async def test_new_york_same_day_fold_advances_to_the_range_end(
+        self,
+        clean_pg_conn: asyncpg.Connection,
+        module_pg_schema: ModulePgSchema,
+    ) -> None:
+        """The same-day control: America/New_York's fall-back (02:00 ->
+        01:00, repeated range ``[01:00, 02:00)``) keeps both passes' walls
+        inside one local date, away from any date boundary. Pinned on a
+        date discovered from the zone's own rules so the family's control
+        holds on every zone-database vintage."""
+        fold = _first_same_day_fallback("America/New_York")
+        await self._drive_steady_state_fold(
+            clean_pg_conn,
+            module_pg_schema,
+            zone=fold.zone,
+            identity="parity-new-york-same-day",
+            seed_utc=fold.range_start_fold0_utc - timedelta(minutes=2),
+            last_fold0_tick_utc=fold.last_fold0_slot_utc,
+            fold1_first_utc=fold.range_start_fold1_utc,
+            fold1_slots=fold.width_minutes,
+            after_range_utc=fold.range_end_utc,
         )
