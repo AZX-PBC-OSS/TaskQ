@@ -872,7 +872,7 @@ def test_heterogeneous_fleet_child_keeps_the_warning_arm() -> None:
     assert warnings[0]["cohorts"] == {"wf-sibling": "remote"}, warnings[0]
 
 
-# ── (f) the round-1 recorded findings' pins ────────────────────────────
+# ── (f) the hold round recorded findings' pins ────────────────────────────
 
 
 def test_shared_reservation_boots_clean_on_a_non_default_schema() -> None:
@@ -1534,7 +1534,7 @@ async def test_a_workflow_reservation_rebinds_its_schema_at_registration() -> No
     assert rebound is not res
 
 
-# ══ ROUND-2 ADVERSARIAL REVIEW'S RECORDED FINDINGS ═════════════
+# ══ THE RECORDED FINDINGS' PINS ═════════════
 
 
 # ── the registry's duplicate-name law ────────────────────────────────
@@ -1853,7 +1853,7 @@ def _declare_the_doomed_app() -> None:
     """Declare the doomed app in THIS frame: the projection records its
     compile (the D1 cache), and on return the app object itself dies
     (the registry is weak) — its graph survives in ``_compiled`` as the
-    ORPHAN the round-3 recorded finding names (the cache has no eviction)."""
+    ORPHAN the hold round recorded finding names (the cache has no eviction)."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
     doomed = WorkflowApp()

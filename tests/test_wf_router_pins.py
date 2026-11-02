@@ -13,7 +13,7 @@ chain step's finalize forks AT MOST ONE child (no fan-in, no join), the
 record's ``map_index`` + trace riding forward — the per-record lineage is
 one query (the drill-down by trace).
 
-Failing-first: the declaration-refusal and the runtime-refusal pins ran RED
+The rejected shape: the declaration-refusal and the runtime-refusal pins ran RED
 against the tree before the chain surface existed; the greens below are
 the built code's evidence. Captured:
 ``.measurements/t20-router-*.txt``.

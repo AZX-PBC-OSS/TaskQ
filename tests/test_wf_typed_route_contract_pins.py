@@ -178,8 +178,8 @@ async def test_1a_the_empty_route_fires_the_join_with_the_empty_list(
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_1a_empty_route_consumer")
-    def rv4_1a_empty_route_consumer() -> Promise[object]:
+    @app.workflow("1a_empty_route_consume")
+    def n1a_empty_route_consume() -> Promise[object]:
         src = step(empty_route_source, key="media")
         routed = route(
             src,
@@ -190,7 +190,7 @@ async def test_1a_the_empty_route_fires_the_join_with_the_empty_list(
         )
         return build(step(consume, routed, key="consume"))
 
-    runner = FlowRunner(app.get("rv4_1a_empty_route_consumer"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the house fixtures are object-typed (the route pins' convention) — the runner's own params are the contract.
+    runner = FlowRunner(app.get("1a_empty_route_consume"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the house fixtures are object-typed (the route pins' convention) — the runner's own params are the contract.
     flow_id = (await runner.create_flow()).flow_id
     verdict = await runner.drive(flow_id, tick=0.02, max_ticks=120)
     assert verdict == "terminal", (
@@ -234,8 +234,8 @@ async def test_1b_the_empty_route_terminal_join_returns_the_empty_sum(
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_1b_empty_route_terminal")
-    def rv4_1b_empty_route_terminal() -> Promise[object]:
+    @app.workflow("1b_empty_route_termina")
+    def n1b_empty_route_termina() -> Promise[object]:
         src = step(empty_route_source, key="media")
         return build(
             route(
@@ -247,7 +247,7 @@ async def test_1b_the_empty_route_terminal_join_returns_the_empty_sum(
             )
         )
 
-    runner = FlowRunner(app.get("rv4_1b_empty_route_terminal"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures (the house convention).
+    runner = FlowRunner(app.get("1b_empty_route_termina"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures (the house convention).
     flow_id = (await runner.create_flow()).flow_id
     verdict = await runner.drive(flow_id, tick=0.02, max_ticks=120)
     assert verdict == "terminal", f"The empty route wedged the run (drive returned {verdict!r})"
@@ -296,8 +296,8 @@ async def test_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_2_fan_in_refusal")
-    def rv4_2_fan_in_refusal() -> Promise[object]:
+    @app.workflow("2_fan_in_refusa")
+    def n2_fan_in_refusa() -> Promise[object]:
         src = step(
             oversized_source, key="media", max_attempts=1
         )  # one attempt: the named refusal terminal-fails without burning retries
@@ -310,7 +310,7 @@ async def test_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
         )
         return build(step(consume, routed, key="consume"))
 
-    runner = FlowRunner(app.get("rv4_2_fan_in_refusal"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
+    runner = FlowRunner(app.get("2_fan_in_refusa"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
     flow_id = (await runner.create_flow()).flow_id
     # THE RED LANDS HERE: drive() raises the raw ValueError out of the
     # finalize tx (untyped, unladdered) instead of returning 'terminal'
@@ -388,8 +388,8 @@ def test_3_a_zero_param_arm_is_a_build_refusal() -> None:
     arm is a wiring-time lie the validator refuses, naming the arm."""
     app = WorkflowApp()
 
-    @app.workflow("rv4_3_zero_arity_arm")
-    def rv4_3_zero_arity_arm() -> Promise[object]:
+    @app.workflow("3_zero_arity_ar")
+    def n3_zero_arity_ar() -> Promise[object]:
         src = step(media_source, key="media")
         return build(
             route(
@@ -398,7 +398,7 @@ def test_3_a_zero_param_arm_is_a_build_refusal() -> None:
         )
 
     with pytest.raises(WorkflowValidationError) as exc_info:
-        app.get("rv4_3_zero_arity_arm")
+        app.get("3_zero_arity_ar")
     _assert_arm_arity_refusal(exc_info)
 
 
@@ -408,15 +408,15 @@ def test_3_a_two_param_arm_is_a_build_refusal() -> None:
     refusal, the arm named."""
     app = WorkflowApp()
 
-    @app.workflow("rv4_3_two_arity_arm")
-    def rv4_3_two_arity_arm() -> Promise[object]:
+    @app.workflow("3_two_arity_ar")
+    def n3_two_arity_ar() -> Promise[object]:
         src = step(media_source, key="media")
         return build(
             route(src, {ImageItem: RouteArm(body=arm_two), AudioItem: RouteArm(body=process_audio)})
         )
 
     with pytest.raises(WorkflowValidationError) as exc_info:
-        app.get("rv4_3_two_arity_arm")
+        app.get("3_two_arity_ar")
     _assert_arm_arity_refusal(exc_info)
 
 
@@ -465,15 +465,15 @@ def test_4_a_superclass_arm_param_is_a_build_refusal() -> None:
     refusal names the arm AND the truncation hazard."""
     app = WorkflowApp()
 
-    @app.workflow("rv4_4_superclass_arm")
-    def rv4_4_superclass_arm() -> Promise[object]:
+    @app.workflow("4_superclass_ar")
+    def n4_superclass_ar() -> Promise[object]:
         src = step(doc_source, key="docs")
         return build(
             route(src, {TextDoc: RouteArm(body=base_arm), ImageDoc: RouteArm(body=image_arm)})
         )
 
     with pytest.raises(WorkflowValidationError) as exc_info:
-        app.get("rv4_4_superclass_arm")
+        app.get("4_superclass_ar")
     message = str(exc_info.value)
     # The contract: E15 fires, naming the offending arm AND the member
     # type it must be EXACT to — the hazard's sentence is wording, never
@@ -491,15 +491,15 @@ def test_4_a_bare_basemodel_arm_param_is_a_build_refusal() -> None:
     refusal face, the arm named."""
     app = WorkflowApp()
 
-    @app.workflow("rv4_4_basemodel_arm")
-    def rv4_4_basemodel_arm() -> Promise[object]:
+    @app.workflow("4_basemodel_ar")
+    def n4_basemodel_ar() -> Promise[object]:
         src = step(doc_source, key="docs")
         return build(
             route(src, {TextDoc: RouteArm(body=basemodel_arm), ImageDoc: RouteArm(body=image_arm)})
         )
 
     with pytest.raises(WorkflowValidationError) as exc_info:
-        app.get("rv4_4_basemodel_arm")
+        app.get("4_basemodel_ar")
     message = str(exc_info.value)
     assert "E15-route-totality" in message, message
     assert "basemodel_arm" in message or "BaseModel" in message, message
@@ -542,15 +542,15 @@ def test_5_duplicate_type_tags_refuse_at_the_verb() -> None:
     runtime, or die RouterNotTotal on the body's lie)."""
     app = WorkflowApp()
 
-    @app.workflow("rv4_5_twin_collapse")
-    def rv4_5_twin_collapse() -> Promise[object]:
+    @app.workflow("5_twin_collaps")
+    def n5_twin_collaps() -> Promise[object]:
         src = step(twin_source, key="twins")
         return build(
             route(src, {TwinA: RouteArm(body=twin_arm_a), TwinB: RouteArm(body=twin_arm_b)})
         )
 
     with pytest.raises(WorkflowBuildError) as exc_info:
-        app.get("rv4_5_twin_collapse")
+        app.get("5_twin_collaps")
     message = str(exc_info.value)
     # The contract: the verb refuses, naming the COLLIDING TAG (the
     # subject the two members share) — the collision's sentence is
@@ -598,8 +598,8 @@ def test_6_field_identical_union_members_are_a_build_diagnostic() -> None:
     maintainer's, it is flagged) names BOTH members and the hazard."""
     app = WorkflowApp()
 
-    @app.workflow("rv4_6_smart_union_hazard")
-    def rv4_6_smart_union_hazard() -> Promise[object]:
+    @app.workflow("6_smart_union_hazar")
+    def n6_smart_union_hazar() -> Promise[object]:
         src = step(media_source, key="media")
         routed = route(
             src,
@@ -612,7 +612,7 @@ def test_6_field_identical_union_members_are_a_build_diagnostic() -> None:
 
     message = ""
     try:
-        compiled = app.get("rv4_6_smart_union_hazard")
+        compiled = app.get("6_smart_union_hazar")
     except (WorkflowBuildError, WorkflowValidationError) as exc:
         message = str(exc)
     else:
@@ -648,8 +648,8 @@ def test_7a_an_arm_wait_with_no_declared_gate_is_warned() -> None:
     route's source node."""
     app = WorkflowApp()
 
-    @app.workflow("rv4_7a_arm_wait_no_gate")
-    def rv4_7a_arm_wait_no_gate() -> Promise[object]:
+    @app.workflow("7a_arm_wait_no_gat")
+    def n7a_arm_wait_no_gat() -> Promise[object]:
         src = step(media_source, key="media")
         return build(
             route(
@@ -661,7 +661,7 @@ def test_7a_an_arm_wait_with_no_declared_gate_is_warned() -> None:
             )
         )
 
-    compiled = app.get("rv4_7a_arm_wait_no_gate")
+    compiled = app.get("7a_arm_wait_no_gat")
     e14 = [d for d in validate_compiled(compiled) if d.rule == "E14-gate-wiring"]
     assert any(d.severity == "warning" and "media" in d.message for d in e14), (
         f"The arm's wait_signal raised no E14 warning (the arm-held "
@@ -676,8 +676,8 @@ def test_7b_the_source_gate_covers_the_arms_waits() -> None:
     seat is the arms' seat). No E14 diagnostic fires either direction."""
     app = WorkflowApp()
 
-    @app.workflow("rv4_7b_arm_wait_gated_source")
-    def rv4_7b_arm_wait_gated_source() -> Promise[object]:
+    @app.workflow("7b_arm_wait_gated_sourc")
+    def n7b_arm_wait_gated_sourc() -> Promise[object]:
         src = step(
             media_source,
             key="media",
@@ -695,7 +695,7 @@ def test_7b_the_source_gate_covers_the_arms_waits() -> None:
 
     # THE RED LANDS HERE: app.get raises WorkflowValidationError (E14's
     # declared-never-waited ERROR) though the arm WAITS on the declared gate.
-    compiled = app.get("rv4_7b_arm_wait_gated_source")
+    compiled = app.get("7b_arm_wait_gated_sourc")
     e14 = [d for d in validate_compiled(compiled) if d.rule == "E14-gate-wiring"]
     assert not e14, (
         f"The source's declared gate covers the arms' waits — E14 "
@@ -804,13 +804,13 @@ def test_9_the_unresolvable_return_is_distinguished_from_undeclared() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_9_unresolvable_return")
-    def rv4_9_unresolvable_return() -> Promise[object]:
+    @app.workflow("9_unresolvable_retur")
+    def n9_unresolvable_retur() -> Promise[object]:
         src = step(source_body, key="docs")
         return build(route(src, {hidden_model: RouteArm(body=hidden_arm)}))
 
     with pytest.raises(WorkflowBuildError) as exc_info:
-        app.get("rv4_9_unresolvable_return")
+        app.get("9_unresolvable_retur")
     unresolvable = str(exc_info.value)
     assert "docs" in unresolvable, (
         f"The refusal must NAME the offending source node — got: {unresolvable}"
@@ -826,13 +826,13 @@ def test_9_the_unresolvable_return_is_distinguished_from_undeclared() -> None:
     async def bare_source(ctx: StepContext):  # pyright: ignore[reportUnknownParameterType]  # Why: the deliberately UNANNOTATED body IS the contrast face (the undeclared refusal's subject).
         return []
 
-    @app2.workflow("rv4_9_undeclared_return")
-    def rv4_9_undeclared_return() -> Promise[object]:
+    @app2.workflow("9_undeclared_retur")
+    def n9_undeclared_retur() -> Promise[object]:
         src = step(bare_source, key="docs")
         return build(route(src, {ImageItem: RouteArm(body=process_image)}))
 
     with pytest.raises(WorkflowBuildError) as undeclared_info:
-        app2.get("rv4_9_undeclared_return")
+        app2.get("9_undeclared_retur")
     undeclared = str(undeclared_info.value)
     assert "docs" in undeclared, (
         f"The undeclared face must ALSO name the source node — got: {undeclared}"
@@ -856,8 +856,8 @@ def test_10_the_queue_vocabulary_warning_covers_arm_queues(
     monkeypatch.setenv("TASKQ_QUEUES", "gpu,io")
     app = WorkflowApp()
 
-    @app.workflow("rv4_10_arm_queue_vocabulary")
-    def rv4_10_arm_queue_vocabulary() -> Promise[object]:
+    @app.workflow("10_arm_queue_vocabular")
+    def n10_arm_queue_vocabular() -> Promise[object]:
         src = step(media_source, key="media")
         return build(
             route(
@@ -869,7 +869,7 @@ def test_10_the_queue_vocabulary_warning_covers_arm_queues(
             )
         )
 
-    compiled = app.get("rv4_10_arm_queue_vocabulary")
+    compiled = app.get("10_arm_queue_vocabular")
     w2 = [d for d in validate_compiled(compiled) if d.rule == "W2-unknown-queue"]
     assert any("gpuu-typo" in d.message for d in w2), (
         f"The typo'd ARM queue raised no W2 warning — the "

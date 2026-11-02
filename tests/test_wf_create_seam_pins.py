@@ -450,7 +450,7 @@ async def test_pin_nodeless_root_reap_count_is_the_true_count(
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """FINDING 14's PIN (FAILING-FIRST): the reaper's RETURN was
+    """the reaper's RETURN was
     ``RETURNING f.id`` read through ``fetchval`` — the FIRST reaped row's
     128-BIT UUID — and ``int(uuid)`` converted the identity into a garbage
     "count" (measured on this tree: ``265174781926550178777984214673248076994``)

@@ -1330,7 +1330,7 @@ async def test_rootless_walk_advances_past_a_live_pk_front(
         f"{table}: the walk never advanced at the live front (R1's story): {per_pass}"
     )
     assert await _count(wf_conn, wf_schema, table, live_root) == _FRONT_N, (
-        f"{table}: the LIVE front's rows were eaten — the walk must visit "
+        f"{table}: the recorded rows were eaten — the walk must visit "
         "them, answer 'live root', and move ON"
     )
     assert await _orphan_remaining(wf_conn, wf_schema, table, orphan_keys) == 0, (

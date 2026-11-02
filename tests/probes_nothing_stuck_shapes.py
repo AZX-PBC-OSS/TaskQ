@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""ATTACK4 — the NOTHING-STUCK clause (the maintainer's addendum): the
+"""the NOTHING-STUCK clause (the maintainer's addendum): the
 livelock / deadlock / lost-job probes over the phase-3/4 arms.
 
 (a) THE LIVELOCK: two nodes each waiting on the other's edge — the cycle

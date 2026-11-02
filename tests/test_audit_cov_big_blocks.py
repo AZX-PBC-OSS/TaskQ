@@ -1,6 +1,6 @@
 """Audit-coverage pins: the remaining >5-line uncovered blocks.
 
-Every test here was written failing-first against a specific uncovered block
+Every test here was written against a specific uncovered block
 (the audit-cov census, branch feat/audit-coverage); each documents the
 block it closes, and each was mutation-proven (flipping a target line
 makes the test fail).

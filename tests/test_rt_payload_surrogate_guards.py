@@ -307,7 +307,7 @@ async def test_failure_log_lines_survive_json_rendering() -> None:
 
 async def test_failure_error_class_survives_hostile_type_name() -> None:
     """The class name rides the durable row's ``error_class``, log lines and
-    span attributes, and the actor's own exception class is attacker-adjacent
+    span attributes, and the actor's own exception class sits next to hostile input
     code: a metaclass can raise on the ``__name__`` access itself or return
     a non-string, and either defect would kill the failure write and strand
     the job. (A surrogate in the name itself is impossible - CPython

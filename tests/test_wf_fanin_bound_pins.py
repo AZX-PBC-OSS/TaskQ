@@ -52,7 +52,7 @@ def new_id() -> object:
     return new_uuid()
 
 
-# ── Failing-first 1: the UNBOUNDED FAN-IN is refused at validate ────────────
+# ── the UNBOUNDED FAN-IN is refused at validate ────────────
 
 
 def test_pin_bound_refuses_above_the_maximum_naming_the_alternative() -> None:
@@ -96,7 +96,7 @@ def test_pin_bound_at_the_maximum_is_accepted() -> None:
     validate_join_spec("edge_join", parents, len(parents))
 
 
-# ── Failing-first 2: the CHILD-DRIVEN shape fires exactly once ──────────────
+# ── the CHILD-DRIVEN shape fires exactly once ──────────────
 
 
 @pytest.mark.integration

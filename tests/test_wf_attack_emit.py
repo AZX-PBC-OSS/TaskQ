@@ -1,4 +1,4 @@
-"""ATTACK PINS — the emit/chain subsystem's landed findings.
+"""the emit/chain subsystem's landed findings.
 
 Each pin's rejected shape was reproduced live against the real
 database. Every pin below was written as the SAFE behavior, executed
@@ -186,7 +186,7 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
 async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """The non-deterministic re-paging shape (the front's F2d): the
+    """The non-deterministic re-paging shape (the probe's finding): the
     cursor checkpoint says page 0 committed at width 3; the resumed body
     re-derives its pages DIFFERENTLY (one width-6 page). The emit must
     NAME the divergence against the emitted history — today the fresh

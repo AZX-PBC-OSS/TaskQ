@@ -24,7 +24,7 @@ dedup):
   interval, never correctness — the seq-cursor read stays the source of
   truth).
 
-Failing-first: the pins ran RED at the pre-fix head (no notify, no
+The rejected shape: the pins ran RED at the pre-fix head (no notify, no
 listener, no ``listener=`` param); the reds are captured in
 ``.measurements/cons-cure3-reds.json``.
 """

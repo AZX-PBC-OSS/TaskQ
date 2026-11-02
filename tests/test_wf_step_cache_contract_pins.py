@@ -274,14 +274,14 @@ async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
     """
     app = WorkflowApp()
 
-    @app.workflow("rv5k1_route_cache")
+    @app.workflow("route_cach")
     def k1_flow() -> Promise[object]:
         src = step(_k_route_source, KDoc(doc_id="d1"), key="docs", cache=True)
         routed = route(src, {KText: _k_arm_text, KAudio: _k_arm_audio})
         return build(step(_k_sum, routed, key="sum"))
 
     try:
-        compiled = app.get("rv5k1_route_cache")
+        compiled = app.get("route_cach")
     except (WorkflowBuildError, WorkflowValidationError) as exc:
         # THE REFUSAL FIX: the why named (the combination + the cache).
         message = str(exc)
@@ -351,15 +351,15 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
 
     app = WorkflowApp()
 
-    @app.workflow("rv5k2_x")
+    @app.workflow("2")
     def k2_x() -> Promise[object]:
         return build(step(_k2_work, KDoc(doc_id="X"), key="work", cache=True))
 
-    @app.workflow("rv5k2_y")
+    @app.workflow("probe")
     def k2_y() -> Promise[object]:
         return build(step(_k2_work, KDoc(doc_id="Y"), key="work", cache=True))
 
-    compiled_x = app.get("rv5k2_x")
+    compiled_x = app.get("2")
     # The address's halves, computed through the RUNNER's OWN seam (the
     # versioning pins' read — the row's record answers the runner's own
     # hash, never the pin's parallel construction).
@@ -378,7 +378,7 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
     assert CALLS["k2_work"] == 1
     # THE SECOND INPUT: a MISS — the body RE-EXECUTES (never the X entry
     # served for the Y call).
-    await _run_flow(app.get("rv5k2_y"), wf_pool, wf_schema, run_key="rv5k2:y")
+    await _run_flow(app.get("probe"), wf_pool, wf_schema, run_key="rv5k2:y")
     assert CALLS["k2_work"] == 2, (
         "The second input HIT the first's entry — the address is blind "
         "to the wired input (the cross-input leak)"
@@ -408,12 +408,12 @@ def test_k3_a_cached_body_reading_ctx_input_is_a_build_diagnostic() -> None:
     with an UNcached upstream step)."""
     app = WorkflowApp()
 
-    @app.workflow("rv5k3_ctx_input_cache")
+    @app.workflow("ctx_input_cach")
     def k3_flow() -> Promise[object]:
         return build(step(_k3_tenant_reader, key="read", cache=True))
 
     with pytest.raises((WorkflowBuildError, WorkflowValidationError)) as exc_info:
-        app.get("rv5k3_ctx_input_cache")
+        app.get("ctx_input_cach")
     message = str(exc_info.value)
     assert "cache" in message and "input" in message, (
         f"The E18 refusal does not name the cache+ctx.input hazard: {message!r}"
@@ -472,13 +472,13 @@ def test_k5_cache_on_an_exit_returning_body_refuses() -> None:
     alternative is flagged in the pin's own docstring."""
     app = WorkflowApp()
 
-    @app.workflow("rv5k5_exit_cache")
+    @app.workflow("exit_cach")
     def k5_flow() -> Promise[object]:
         e = step(_k5_exit_body, KDoc(doc_id="d1"), key="exit", cache=True)
         return build(step(_k5_tail, e, key="tail"))
 
     with pytest.raises((WorkflowBuildError, WorkflowValidationError)) as exc_info:
-        app.get("rv5k5_exit_cache")
+        app.get("exit_cach")
     message = str(exc_info.value)
     assert "cache" in message and ("Exit" in message or "exit" in message), (
         f"The refusal does not name the Exit+cache combination: {message!r}"
@@ -522,11 +522,11 @@ async def test_k6_the_cache_purge_verb_evicts(
 
     app = WorkflowApp()
 
-    @app.workflow("rv5k6_purge_flow")
+    @app.workflow("purge_flo")
     def k6_flow() -> Promise[object]:
         return build(step(_k2_work, KDoc(doc_id="purge-me"), key="work", cache=True))
 
-    compiled = app.get("rv5k6_purge_flow")
+    compiled = app.get("purge_flo")
     await _run_flow(compiled, wf_pool, wf_schema, run_key="rv5k6:a")
     assert CALLS["k2_work"] == 1
     rows = await _cache_rows(wf_conn, wf_schema)
@@ -592,12 +592,12 @@ async def test_k7_the_hit_finalize_infra_fault_is_the_reclaim_class(
     """
     app = WorkflowApp()
 
-    @app.workflow("rv5k7_classifier_flow")
+    @app.workflow("classifier_flo")
     def k7_flow() -> Promise[object]:
         o = step(_k7_ocr, KDoc(doc_id="d1"), key="ocr", cache=True, max_attempts=1)
         return build(step(_k7_consume, o, key="consume"))
 
-    compiled = app.get("rv5k7_classifier_flow")
+    compiled = app.get("classifier_flo")
     runner = FlowRunner(compiled, wf_pool, wf_schema)
     # The seed run (the clean miss): the body pays for the entry.
     claim_a = await runner.create_flow(input=None, run_key="rv5k7:a")

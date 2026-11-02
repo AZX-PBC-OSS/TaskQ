@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE WF SNOOZE/RETRY-AFTER PINS — the body's control-flow signals, failing-first.
+"""THE WF SNOOZE/RETRY-AFTER PINS — the body's control-flow signals, .
 
 THE RECORDED FINDING (the OCR-429 exhaustion): a workflow body raising the
 vanilla surface's typed control-flow signals —

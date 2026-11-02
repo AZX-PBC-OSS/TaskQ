@@ -4,12 +4,11 @@
 * F3-1 → **E9-ctx-annotation**: a LYING ctx annotation (a fabricated
   stand-in) is the BUILD refusal (the PICKED door: the annotation is
   verification, not documentation — the docs' claim "the checker
-  verifies the body's ctx.* reads" is now unconditional). FAILING-FIRST:
-  the rejected shape validate()s clean on the pre-rule tree (the pin's
+  verifies the body's ctx.* reads" is now unconditional). the rejected shape validate()s clean on the pre-rule tree (the pin's
   red is the base's behavior, the finding's receipt).
 * F3-2 → **E10-arity**: a body taking MORE params than wired is the
   BUILD refusal (the mismatch rode the retry ladder mid-flow; the
-  ladder never sees it now). FAILING-FIRST: the same.
+  ladder never sees it now). the same.
 * F3-4 → **E5's signature-ordered map**: the LEGITIMATE mixed signature
   (``step(body, p, 3)`` for ``body(ctx, item: Report, page: int)``)
   GREENS (the cross-product's false positive is dead) AND the genuine
@@ -177,7 +176,7 @@ def test_e5_the_genuine_mismatch_still_refuses() -> None:
 
 
 def test_e10_the_message_states_the_signature_actually_declared() -> None:
-    """FINDING 13's PIN (de-slopped): the arity rule fires on the
+    """(de-slopped): the arity rule fires on the
     signature the body ACTUALLY declares — never the resolved-hints
     count. The pre-fix message counted ANNOTATED params only: a
     partially-annotated body (``def body(ctx, params: Ingest, page)``)
@@ -264,7 +263,7 @@ def test_e12_owns_the_single_param_beyond_the_wiring() -> None:
 
 
 def test_e11_the_nested_promise_carry_is_refused() -> None:
-    """FINDING 12's PIN (FAILING-FIRST): a promise handle NESTED inside the
+    """a promise handle NESTED inside the
     initial carry — a dict's value — died the same mid-flow death the
     bare handle does (the rehydration's walk passes the handle through
     unchanged into the jsonb write; the claim→crash→reclaim loop died

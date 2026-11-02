@@ -132,7 +132,7 @@ async def _resolve_review_holds(
             await asyncio.sleep(0.3)
 
 
-# load_sensitive (PR #698's recorded finding, the round-1 law): the march's
+# load_sensitive (PR #698's recorded finding, the hold round law): the march's
 # verdict is its settle windows — the cron-kickoff loop (_KICKOFF_BOUND_S),
 # the map-fork loop (MARCH_SETTLE_BOUND_S), and wait_flow_terminal's
 # settle bound — and PR #698's run expired the settle with the rows STILL

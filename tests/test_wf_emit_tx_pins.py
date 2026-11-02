@@ -18,7 +18,7 @@ server-side termination, no graceful path) at each statement window of the
 emit tx — the spike's storm shape: zero re-emitted children, zero lost
 children, the cursor == the last committed page.
 
-Failing-first: this file ran RED against the tree before the emit primitive
+The rejected shape: this file ran RED against the tree before the emit primitive
 existed (the ImportError IS the missing surface); the greens below are
 the built code's evidence. Captured:
 ``.measurements/t20-emit-*.txt``.

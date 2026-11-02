@@ -13,7 +13,7 @@ fixes whose failures the probes demonstrated first:
 * H2's audit leg: the REFUSED resolve writes the audit row that names
   the refusal, and the hold still stands.
 * The EXIT sentinel (§17.1) and the MANUAL RESUME (§17.2) — the
-  alignment-audit's Missing #1, landed failing-first.
+  alignment-audit's Missing #1, landed .
 * E8: the loop CARRIER-TYPE declaration enforced (pin 5's teeth).
 
 Each pin states the fix's law; the red evidence is the pin's own failure on the unfixed tree
@@ -863,7 +863,7 @@ def test_loop_key_with_a_dot_is_refused() -> None:
         app.get("a3cure_dot_loop_flow")  # the build runs at COMPILE
 
 
-# ── E7 / W2's committed pins (the attack probes prove them failing-first;
+# ── E7 / W2's committed pins (the attack probes prove them ;
 #    the validate pins file's exact-one-rule matrix gains the new rules) ──
 
 

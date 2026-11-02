@@ -582,7 +582,7 @@ async def test_the_node_panel_bounds_the_error_fields_it_serves(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# The GREEN guards — attacks the front verified SAFE; encoded so the
+# The GREEN guards — attacks the machinery held; encoded so the
 # safe behavior can never rot silently.
 # ──────────────────────────────────────────────────────────────────────
 

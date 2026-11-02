@@ -2060,7 +2060,7 @@ def test_benign_dotted_and_base64_like_strings_survive_scrubbing(benign: str) ->
     assert _scrub_text(benign) == benign
 
 
-# ── adversarial review round two: what the #317 masks still missed ─────────────────
+# ── the masks' second pass: what the #317 masks still missed ─────────────────
 #
 # Every test below was run against the d1cebcf1 shape of the fix and FAILED
 # there before its source change landed here (red/green). The holes:

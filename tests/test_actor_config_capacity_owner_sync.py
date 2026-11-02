@@ -471,7 +471,7 @@ async def _read_row(conn: asyncpg.Connection, schema: str, actor: str) -> dict[s
 async def test_code_owned_capacity_change_deploys_after_first_boot(
     pg_conn: asyncpg.Connection,
 ) -> None:
-    """C15's CORE PIN (failing-first): a code-owned actor's capacity change
+    """C15's CORE PIN (): a code-owned actor's capacity change
     deploys by code AFTER first boot. Boot 1 seeds the row from the
     literal; boot 2 carries a CHANGED literal — the stored row READS the
     new values. The pre-fix shape left the row at boot 1's values

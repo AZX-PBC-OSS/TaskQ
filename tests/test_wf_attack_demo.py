@@ -464,7 +464,7 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
 async def test_two_drivers_one_schema_one_run_stay_exactly_once(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """GREEN GUARD (verified by the front, encoded so it can't rot): two
+    """GREEN GUARD (verified, encoded so it can't rot): two
     FlowRunner processes' worth of driver — one schema, one run, driven
     CONCURRENTLY through the hold and the resolve to terminal — the
     ledger's claim arbiter and the join-fire arbiter hold: ZERO

@@ -84,8 +84,8 @@ async def test_f1_the_empty_corpus_run_terminalizes_result_is_the_empty_list(
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_f1_empty_corpus")
-    def rv4_f1_empty_corpus() -> Promise[object]:
+    @app.workflow("f1_empty_corpu")
+    def f1_empty_corpu() -> Promise[object]:
         src = step(empty_corpus_source, key="media")
         routed = route(
             src,
@@ -96,7 +96,7 @@ async def test_f1_the_empty_corpus_run_terminalizes_result_is_the_empty_list(
         )
         return build(routed)  # the route's join IS the terminal: result() IS the typed sum
 
-    runner = FlowRunner(app.get("rv4_f1_empty_corpus"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
+    runner = FlowRunner(app.get("f1_empty_corpu"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
     flow_id = (await runner.create_flow()).flow_id
     verdict = await runner.drive(flow_id)
     assert verdict == "terminal", (
@@ -137,15 +137,15 @@ async def test_f1_the_empty_map_corpus_fires_the_join_with_the_empty_list(
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_f1_empty_map")
-    def rv4_f1_empty_map() -> Promise[object]:
+    @app.workflow("f1_empty_ma")
+    def f1_empty_ma() -> Promise[object]:
         src = step(tiny_source, key="tiny")
         mapped = map_source(src, per_item)
         summary = step(summarize, mapped, key="summary")
         sink(mapped)
         return build(summary)
 
-    runner = FlowRunner(app.get("rv4_f1_empty_map"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
+    runner = FlowRunner(app.get("f1_empty_ma"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
     flow_id = (await runner.create_flow()).flow_id
     verdict = await runner.drive(flow_id)
     assert verdict == "terminal", f"the empty MAP wedged (drive returned {verdict!r})"
@@ -182,14 +182,14 @@ def test_f8_the_fan_in_refusal_at_build_names_the_bound_and_the_escape() -> None
     async def leaf(ctx: object) -> int:
         return 1
 
-    @app.workflow("rv4_f8_fan_in")
-    def rv4_f8_fan_in() -> Promise[object]:
+    @app.workflow("f8_fan_i")
+    def f8_fan_i() -> Promise[object]:
         sources = [step(leaf, key=f"leaf_{i}") for i in range(1001)]
         joined = gather(sources)
         return build(joined)
 
     with pytest.raises(WorkflowValidationError) as exc_info:
-        app.get("rv4_f8_fan_in")
+        app.get("f8_fan_i")
     message = str(exc_info.value)
     assert "1000" in message, f"the refusal must name the bound: {message}"
     assert "child_driven" in message, f"the refusal must name the escape: {message}"
@@ -264,14 +264,14 @@ def test_e15_a_superclass_arm_param_refuses_at_build() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_e15_superclass")
-    def rv4_e15_superclass() -> Promise[object]:
+    @app.workflow("e15_superclas")
+    def e15_superclas() -> Promise[object]:
         src_p = step(doc_src, key="media")
         routed = route(src_p, {DocItem: RouteArm(body=superclass_arm)})
         return build(routed)
 
     with pytest.raises(WorkflowValidationError, match="DocBase"):
-        app.get("rv4_e15_superclass")
+        app.get("e15_superclas")
 
 
 def test_e15_an_unrelated_arm_param_refuses_at_build() -> None:
@@ -286,14 +286,14 @@ def test_e15_an_unrelated_arm_param_refuses_at_build() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_e15_unrelated")
-    def rv4_e15_unrelated() -> Promise[object]:
+    @app.workflow("e15_unrelate")
+    def e15_unrelate() -> Promise[object]:
         src_p = step(doc_src, key="media")
         routed = route(src_p, {DocItem: RouteArm(body=unrelated_arm)})
         return build(routed)
 
     with pytest.raises(WorkflowValidationError):
-        app.get("rv4_e15_unrelated")
+        app.get("e15_unrelate")
 
 
 # ── the consumer discriminator law (E16) ────────────────────────────────
@@ -356,13 +356,13 @@ def test_e16_field_identical_union_members_are_the_hard_refusal() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_e16_identical")
-    def rv4_e16_identical() -> Promise[object]:
+    @app.workflow("e16_identica")
+    def e16_identica() -> Promise[object]:
         src_p = step(_thin_source, key="src")
         sink(src_p)
         return build(step(_identical_consumer, src_p, key="sum"))
 
-    compiled = app._compile("rv4_e16_identical")
+    compiled = app._compile("e16_identica")
     rules = _rules_of(compiled)
     assert ("E16-union-discriminator", "error") in rules, rules
 
@@ -374,13 +374,13 @@ def test_e16_subset_union_members_warn_the_mispick_risk() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_e16_subset")
-    def rv4_e16_subset() -> Promise[object]:
+    @app.workflow("e16_subse")
+    def e16_subse() -> Promise[object]:
         src_p = step(_thin_source, key="src")
         sink(src_p)
         return build(step(_thin_consumer, src_p, key="sum"))
 
-    compiled = app._compile("rv4_e16_subset")
+    compiled = app._compile("e16_subse")
     rules = _rules_of(compiled)
     assert ("E16-union-discriminator", "warning") in rules, rules
 
@@ -391,13 +391,13 @@ def test_e16_distinct_union_members_are_clean() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_e16_distinct")
-    def rv4_e16_distinct() -> Promise[object]:
+    @app.workflow("e16_distinc")
+    def e16_distinc() -> Promise[object]:
         src_p = step(_thin_source, key="src")
         sink(src_p)
         return build(step(_distinct_consumer, src_p, key="sum"))
 
-    compiled = app._compile("rv4_e16_distinct")
+    compiled = app._compile("e16_distinc")
     rules = _rules_of(compiled)
     assert not [r for r in rules if r[0] == "E16-union-discriminator"], rules
 
@@ -427,8 +427,8 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_twin")
-    def rv4_twin() -> Promise[object]:
+    @app.workflow("twi")
+    def twi() -> Promise[object]:
         src_p = step(twin_src, key="media")
         routed = route(
             src_p,  # type: ignore[arg-type]  # Why: the twin union IS the pin's subject — the arms' keys collapse to one tag.
@@ -440,7 +440,7 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
         return build(routed)
 
     with pytest.raises(WorkflowBuildError, match="tag"):
-        app.get("rv4_twin")
+        app.get("twi")
 
 
 async def _waiting_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
@@ -464,8 +464,8 @@ def test_the_arm_held_hitl_is_compile_visible() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_arm_hitl")
-    def rv4_arm_hitl() -> Promise[object]:
+    @app.workflow("arm_hit")
+    def arm_hit() -> Promise[object]:
         src_p = step(src, key="media")
         routed = route(
             src_p,
@@ -476,7 +476,7 @@ def test_the_arm_held_hitl_is_compile_visible() -> None:
         )
         return build(routed)
 
-    compiled = app._compile("rv4_arm_hitl")
+    compiled = app._compile("arm_hit")
     from taskq.workflows.api._validate import _run_rules
 
     diags = [d for d in _run_rules(compiled) if d.rule == "E14-gate-wiring"]
@@ -496,8 +496,8 @@ def test_the_typod_arm_queue_warns_w2() -> None:
         WorkflowApp()
     )  # no actors: the declared universe is {"default"} — both arm queues are outside it
 
-    @app.workflow("rv4_typo_queue")
-    def rv4_typo_queue() -> Promise[object]:
+    @app.workflow("typo_queu")
+    def typo_queu() -> Promise[object]:
         src_p = step(src, key="media")
         routed = route(
             src_p,
@@ -508,7 +508,7 @@ def test_the_typod_arm_queue_warns_w2() -> None:
         )
         return build(routed)
 
-    compiled = app._compile("rv4_typo_queue")
+    compiled = app._compile("typo_queu")
     from taskq.workflows.api._validate import _run_rules
 
     diags = [d for d in _run_rules(compiled) if d.rule == "W2-unknown-queue"]
@@ -528,8 +528,8 @@ def test_the_mermaid_arms_render() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_mermaid")
-    def rv4_mermaid() -> Promise[object]:
+    @app.workflow("mermai")
+    def mermai() -> Promise[object]:
         src_p = step(src, key="media")
         routed = route(
             src_p,
@@ -540,7 +540,7 @@ def test_the_mermaid_arms_render() -> None:
         )
         return build(routed)
 
-    text = app.get("rv4_mermaid").mermaid()
+    text = app.get("mermai").mermaid()
     assert "media([" in text, text  # the map-source stadium, not the plain rectangle
     assert "ImageItem→process_image" in text, text
     assert "AudioItem→process_audio" in text, text
@@ -561,8 +561,8 @@ def test_the_double_attach_lie_is_fixed() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_double_attach")
-    def rv4_double_attach() -> Promise[object]:
+    @app.workflow("double_attac")
+    def double_attac() -> Promise[object]:
         src_p = step(src, key="media")
         _routed = route(
             src_p,
@@ -576,7 +576,7 @@ def test_the_double_attach_lie_is_fixed() -> None:
         return build(mapped)
 
     with pytest.raises(WorkflowBuildError, match="typed route"):
-        app.get("rv4_double_attach")
+        app.get("double_attac")
 
 
 def test_the_cannot_resolve_message_is_truthful() -> None:
@@ -596,10 +596,10 @@ def test_the_cannot_resolve_message_is_truthful() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv4_unresolvable")
-    def rv4_unresolvable() -> Promise[object]:
+    @app.workflow("unresolvabl")
+    def unresolvabl() -> Promise[object]:
         src_p = step(local_src, key="media")
         return build(route(src_p, {ImageItem: RouteArm(body=local_arm)}))
 
     with pytest.raises(WorkflowBuildError, match="CANNOT RESOLVE"):
-        app.get("rv4_unresolvable")
+        app.get("unresolvabl")

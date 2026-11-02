@@ -623,7 +623,7 @@ def _run_nets_in_scratch(
     connections mid-test; the parent's next test dies on
     ``InvalidCatalogNameError: database "tq_db_..." does not exist`` and
     the failure rotates with which worker ran the scenario
-    (round-1/recon evidence: the misfold scenario on gw7 dropped the parent
+    (the recon evidence: the misfold scenario dropped the parent
     module's db at 22:17). The fix: every scratch run mints its OWN
     token (drill-unique, derived from the parent's worker id so parallel
     scenarios on different workers can never collide with each other

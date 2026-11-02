@@ -26,7 +26,7 @@ re-claim resumes FROM THE CURSOR, and the blocked page emits fresh (it
 never ran — nothing was written). The degradation is the dispatch band's
 latency, never unbounded materialization.
 
-Failing-first: the bound pins ran RED against the tree before the fence
+The rejected shape: the bound pins ran RED against the tree before the fence
 existed (the declared surface absent — the TypeError IS the red); the
 unbounded variant's blow-out is the rejected red, captured live.
 Captured: ``.measurements/t20-backpressure-*.txt``.

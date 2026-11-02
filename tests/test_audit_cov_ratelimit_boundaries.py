@@ -1,6 +1,6 @@
 """Audit-coverage pins: the ratelimit boundary arms the suite never ran.
 
-Every test here was written failing-first against a specific uncovered line
+Every test here was written against a specific uncovered line
 (the `audit-cov` census, branch feat/audit-coverage): each documents the
 arm it closes in its docstring, and each was mutation-proven (flipping
 the target line makes the test fail).

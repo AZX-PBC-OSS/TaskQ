@@ -7,10 +7,10 @@ Each ``MUST_ERROR(rules...)`` marker names a wrong-shape body that must
 RED on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
 from the marker's DECLARED set.
 
-THE FAILING-FIRST RECEIPT: the bare-unwrap marker ran against the pre-child-flow
+THE RECEIPT: the bare-unwrap marker ran against the pre-child-flow
 tree — ``spawn_flow`` did not exist, the parent's join had no typed
 union to force anything; the capture rides
-``.measurements/t28-typegate-failing-first.txt`` and the union's landing is
+``.measurements/t28-typegate-.txt`` and the union's landing is
 the flip."""
 
 from __future__ import annotations

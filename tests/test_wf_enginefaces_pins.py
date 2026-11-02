@@ -1,5 +1,5 @@
-"""THE ENGINE-FACES PINS — the observability front's reported ENGINE
-findings, fenced failing-first (the engine lane's evidence).
+"""THE ENGINE-FACES PINS — the recorded reported ENGINE
+findings, fenced (the engine lane's evidence).
 
 The 3am pins (``tests/test_wf_3am_pins.py``) fenced the CLI/explorer
 faces; the ENGINE findings behind them ride here:

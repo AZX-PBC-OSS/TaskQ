@@ -60,7 +60,7 @@ def _client(app: Any) -> TestClient:
 
 def test_replaying_the_same_cookieless_assertion_twice_mints_only_one_session() -> None:
     """A captured, correctly-signed assertion answering a real pending
-    AuthnRequest must not be usable twice - the second POST (attacker
+    AuthnRequest must not be usable twice - the second POST (a hostile replay of
     replaying a sniffed/logged assertion) must be rejected even though the
     first legitimately spent the pending-request gate."""
     config = _config()

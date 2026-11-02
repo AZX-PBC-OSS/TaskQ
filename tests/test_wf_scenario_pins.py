@@ -6,7 +6,7 @@ MAP-RETRY-BARRIER: a list map over N=8 children; K=3 fail intermittently
 succeeding via the normal retry ladder); the other N-K succeed first try.
 Five assertions, each its own check: (a) NO EARLY FIRE, (b)
 ATTEMPT-FAILURE != NODE-FAILURE, (c) RETRY ISOLATION, (d) THE BARRIER, (e)
-THE COLLECT IS THE SUCCESSFUL PAYLOADS. The failing-first fingerprints (the
+THE COLLECT IS THE SUCCESSFUL PAYLOADS. The fingerprints (the
 rejected shapes, each pinned by its own scenario): the join firing on
 first-success-count mismatch (counting ATTEMPTS instead of CHILDREN); the
 over-eager parent-fail; the retry-storm contagion.

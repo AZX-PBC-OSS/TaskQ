@@ -1,6 +1,6 @@
 """THE FAIL-CLOSED PEER-CASCADE'S WINDOWS.
 
-The attacker's probes, each an independent test (RED = a finding):
+The probes, each an independent test (RED = a finding):
 
 1. THE CRASH-WINDOW ROOT WEDGE: the fail_closed child's tx1 committed,
    tx2 (the cascade) never ran — the sweep's blocked_required heal

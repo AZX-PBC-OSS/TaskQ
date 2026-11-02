@@ -747,7 +747,7 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     parent session and its own subprocess pytest - the scratch scenarios) hashing
     (worker, module) landed the SAME database name on one cluster, and each
     side's ``DROP DATABASE ... WITH (FORCE)`` killed the other's live
-    connections mid-test - the round-4 ``InvalidCatalogNameError`` at the
+    connections mid-test - the hold round ``InvalidCatalogNameError`` at the
     fuzz pins, every victim green solo. A subprocess pytest also mints its
     own fresh ``pytest-M`` root (the lowest free number), so its basetemp
     path is distinct from its parent's by construction - the scratch child

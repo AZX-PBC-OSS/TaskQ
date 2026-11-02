@@ -1,7 +1,7 @@
 """THE HOLD/MAP FIXES LANE'S PINS — the LedgerWatch adoption team's
-engine findings, fixed failing-first (F2, F3, F4, F6).
+engine findings, fixed (F2, F3, F4, F6).
 
-The failing-first evidence: each pin's REJECTED VARIANT was captured
+The evidence: each pin's REJECTED VARIANT was captured
 against the pre-fix tree (the wedge/theft repro, the lying ladder, the
 pool-boundary collapse, the warning storm's config) and recorded to the
 failure log sink; the pins assert the FIXED behavior — the rejected shape

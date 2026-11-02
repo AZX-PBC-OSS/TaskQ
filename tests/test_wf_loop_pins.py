@@ -1,11 +1,11 @@
 """THE LOOP PINS: the two walls, the carry, the ladder classes.
 
-Failing-first: each pin's REJECTED VARIANT was run against the mutated guard
+The rejected shape: each pin's REJECTED VARIANT was run against the mutated guard
 (the mutation test — BUILD-PROTOCOL §2), the observed red captured to
 ``.measurements/t19-pin-reds.json``; the unfenced CONSUME-BUDGET variant
 stays RED FOREVER (it is the dragon, not a bug to fix).
 
-Pins (the ticket's failing-first numbering, the ones this suite carries):
+Pins (the ticket's numbering, the ones this suite carries):
   #1  the CONSUME-BUDGET dragon — recorded via the mutation test (the
       arm WITHOUT ``AND NOT budget_paused`` kills a held loop and refuses
       the operator's approval — the scenario's red, kept forever)

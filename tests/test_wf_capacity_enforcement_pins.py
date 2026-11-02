@@ -537,7 +537,7 @@ async def test_terminal_node_writes_result_expires_at_from_the_cohort_ttl(
     assert failed_row["result_expires_at"] is None, "a FAILED terminal stamps no expiry"
 
 
-# ══ ROUND-2 ADVERSARIAL REVIEW'S RECORDED FINDINGS ═════════════
+# ══ THE RECORDED FINDINGS' PINS ═════════════
 
 
 # ── C1: the fail-closed park snoozes (never disowns) ─────────────────────

@@ -565,14 +565,14 @@ async def test_pin_13_attempt_fence(
 
 
 # ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
-# (ported verbatim from the perf front's recorded finding —
+# (ported verbatim from the recorded recorded finding —
 # feat/verify-perf @ c8822df4a, tests/perf/test_wf_overhead_ledger.py —
 # into the finalize-family pack: the bypassed write is THIS family's
 # TERMINAL_MARK face. The fixtures are this tree's own wf faces.)
 
 
 # ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
-# (ported from the perf front's recorded finding — feat/verify-perf @
+# (ported from the recorded recorded finding — feat/verify-perf @
 # c8822df4a, tests/perf/test_wf_overhead_ledger.py — into the
 # finalize-family pack: the bypassed write is THIS family's
 # TERMINAL_MARK face. The model + the bodies live at module level so the
@@ -601,7 +601,7 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
     wf_schema: str,
 ) -> None:
     """THE FAN-IN ENVELOPE'S SIZE DISCIPLINE (the payload-bloat finding,
-    MEASURED at the perf front's head): a NO-aggregate map's join row
+    MEASURED at the recorded head): a NO-aggregate map's join row
     collects every child's result into ONE jsonb envelope through the wf
     finalize's TERMINAL_MARK — and that write checks NO
     ``result_max_bytes``: the estate's 64 KiB terminal cap (the plain
@@ -622,7 +622,7 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
     pin FLIPS GREEN the day it lands.
 
     THE PORT'S ONE DEVIATION (the repro's fidelity fix): the model and
-    the bodies live at MODULE level (above) — the perf front's
+    the bodies live at MODULE level (above) — the recorded
     function-local ``ItemsIn`` is invisible to the body-hints walk (the
     closure cell carries only the body's own free variables; the
     annotation is a string under the future-import), and the walk's

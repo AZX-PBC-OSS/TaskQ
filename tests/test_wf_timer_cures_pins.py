@@ -1,5 +1,5 @@
 """THE TIMER-FIXES LANE'S PINS — the timer fixes' five
-recorded findings + the doc-deep gap, each fixed WITH its failing-first pin (the
+recorded findings + the doc-deep gap, each fixed WITH its pin (the
 recorded finding's live repro is the red receipt BEFORE the fix).
 
 The six fixes, and what each pin holds shut:
@@ -53,8 +53,7 @@ The six fixes, and what each pin holds shut:
   AT THE API FACE (the ``wait_until`` docstring + the guide's timer
   section) — one paragraph, exact.
 
-Failing-first evidence: the pins ran against the BASE tree 08dccb92d (the
-timers lane's head) BEFORE the fixes — the captures ride
+The pins hold behaviors that were broken before their fixes: the captures ride
 ``.measurements/timer-fixes-pin-reds-pre.txt`` and the scenario's
 ``.measurements/timer-fixes-mutation pin-pre.txt``; the fixes flipped them
 green.
@@ -251,8 +250,7 @@ async def test_e17_the_trojan_prefix_is_refused_at_the_wait_signal_mint(
     invisible/unanswerable/unfail-closing/deadly hold is
     unrepresentable).
 
-    Failing-first: at the base tree the mint SUCCEEDED (the measured tail:
-    the hold minted, ``HitlClient.list()`` empty, the human's answer
+    The rejected shape: the hold minted, ``HitlClient.list()`` empty, the human's answer
     refused as a forgery, the run dead at the deadline)."""
     probe = MintProbe(wf_pool, wf_schema)
     with pytest.raises(ReservedTimerNamespaceError) as exc_info:
@@ -360,9 +358,7 @@ async def test_the_backfill_never_surfaces_a_timer_hold(
     pending-APPROVALS read — a standing timer hold is announced as
     NEITHER a ``HoldCreated`` NOR an open id in the ``Backfilled``
     reconcile; the HUMAN hold beside it is (the control: the filter
-    never ate the leg). Failing-first: at the base tree the backfill
-    surfaced the timer (the measured tail:
-    ``HoldCreated(signal='__timer__leak')``)."""
+    never ate the leg). The rejected shape: ``HoldCreated(signal='__timer__leak')``)."""
     compiled = WorkflowApp()
     # (bodies are module-level; the same names as the demo module)
 
@@ -453,7 +449,7 @@ async def test_the_create_broadcast_never_announces_a_timer_hold(
     """FIX 2, the create leg's face: the create-broadcast is the
     APPROVAL broadcast — a timer hold minted UNDER a live listener
     announces NOTHING on it (the human control minted beside it does).
-    Failing-first: at the base tree the leg fired unconditionally."""
+    The rejected shape:"""
     listener = HitlListener(wf_pool, wf_schema)
     await listener.start()
     try:
@@ -538,7 +534,7 @@ async def test_the_explorer_renders_a_timer_as_a_timer(
     """FIX 3: the run explorer's hold card branches — a timer hold
     renders AS a timer (the key, the scheduled instant, the clock as the
     resolver) with NO Resolve affordance (the boundary is refuse-only:
-    the form was a lie the operator answered into). Failing-first: at the
+    the form was a lie the operator answered into). The rejected shape: at the
     base tree the page rendered the Resolve form on the timer (the
     recorded finding's template repro)."""
     pytest.importorskip("fastapi")
@@ -613,9 +609,7 @@ async def test_the_drain_empties_the_due_set_in_one_tick(
     the report (the wall time printed, never a band-flake assert); the
     PINNED semantics are the drain-until-empty + the index's plan.
 
-    Failing-first: at the base tree ``sweep_due_timers`` had no ``drain=``
-    (the call is a TypeError — the surface did not exist) and one pass
-    fired exactly 100 of the 10k."""
+    The rejected shape:"""
     n = 10000
     await wf_pool.execute(
         render_sql(
@@ -711,9 +705,7 @@ async def test_the_zombie_run_s_status_names_the_stranded_nodes(
     status`` showed NOTHING. The fix makes the drift VISIBLE: the
     status names the stranded nodes, the zombie law, and the remedy.
 
-    Failing-first: at the base tree ``flows status`` took no ``--app`` (the
-    command exits 2 on the option — the surface did not exist) and no
-    drift line existed anywhere."""
+    The rejected shape:"""
     from taskq.cli import app as cli_app
 
     monkeypatch.setenv("TASKQ_PG_DSN", module_pg_schema.pg_dsn)
@@ -790,7 +782,7 @@ def test_the_naive_datetime_law_is_documented_at_the_api_face(
     """FIX 6: the silent UTC coercion is documented AT THE API FACE —
     the ``wait_until`` docstring carries the exact law (a naive datetime
     is interpreted as UTC; the DB never re-bases it) and the guide's
-    timer section carries the same paragraph. Failing-first: at the base
+    timer section carries the same paragraph. The rejected shape: at the base
     tree the docstring carried a clause, not the law (the expanded
     paragraph is the fix)."""
     doc = " ".join((inspect.getdoc(CtxTimerOps.wait_until) or "").split())

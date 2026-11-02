@@ -10,11 +10,11 @@ slot held — while the child's work sits in its OWN rows), and the
 crash-mid-wait (the wake arm delivers; the successor's reclaim joins;
 the hold-stamp reconcile is the belt for a lost resume).
 
-The failing-first receipt: this suite ran against the pre-child-flow tree — every
+The receipt: this suite ran against the pre-child-flow tree — every
 import of the child-flow surface reds (``ChildHandle``/``ChildOk``/
 ``ChildFailed``/``ChildCancelled`` do not exist; ``ctx.spawn_flow`` is
 not on the context); the capture rides
-``.measurements/t28-childflow-failing-first.txt``.
+``.measurements/t28-childflow-.txt``.
 """
 
 from __future__ import annotations

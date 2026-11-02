@@ -1,5 +1,5 @@
 # ruff: noqa: S603, S607, S608, ASYNC221, ASYNC230  # Why: the dash-named attack4-* module; the restart probe runs pg_ctl with the env-pinned data dir and reads/writes the cluster's own conf between restarts.
-"""ATTACK4 — THE NOTHING-STUCK PROBES' TEETH (the attacker's own shapes —
+"""THE NOTHING-STUCK PROBES' TEETH (the hostile shapes —
 NOT the builder's; tests/probes_nothing_stuck_shapes.py owns those).
 
 * THE SELF-CANCELLING BODY: a map's source body cancels ITS OWN run
@@ -282,7 +282,7 @@ async def test_a_hold_with_payload_schema_in_the_warm_process_still_refuses_garb
 @pytest.mark.skipif(
     not os.environ.get("ATTACK4_PG_DATA"),
     reason="needs a restartable cluster (ATTACK4_PG_DATA + the port; the "
-    "capture ran with the attacker's own PG on :5711)",
+    "capture ran with the probe's own PG on :5711)",
 )
 async def test_the_lost_job_probe_with_the_db_restarted_mid_round(
     module_pg_schema: ModulePgSchema,
