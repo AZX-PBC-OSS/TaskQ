@@ -14,7 +14,7 @@ decodes the SAME typed shape — R3's face), carries THE RECEIPT on the
 node row's metadata (the address + the producing run's id), and expires
 in-DB (the TTL's freshness leg; the sweep's retention arm prunes the
 expired rows). The address is the Nix-style recursive hash: the body's
-§22.1 code-version canon + the decoded input's canonical jsonb — a
+the section.1 code-version canon + the decoded input's canonical jsonb — a
 body's code change IS a new address (the stale-code face is dead by
 construction). The cache dedups TEMPORAL, never CONCURRENT: two
 concurrent misses both run their bodies and the CAS (ON CONFLICT — a
@@ -327,7 +327,7 @@ async def test_concurrent_miss_one_winner(
     # payload (the winner's receipt rides it).
     #
     # THE BODY-COUNT DISCRIMINATION READS STATE, NOT THE CLOCK (the
-    # CI cure): the pin's `calls == 2` assumed BOTH concurrent bodies
+    # CI fix): the pin's `calls == 2` assumed BOTH concurrent bodies
     # ran — the two-claims law's own premise — but the lookup-before-
     # body is not atomic with the OTHER run's store: on a slow runner
     # the winner's body+store can complete INSIDE the loser's
@@ -389,7 +389,7 @@ async def test_code_change_is_a_new_address(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """THE ADDRESS'S SENSITIVITY: the body's code change = a NEW address
-    (§22.1's stamper's canon in the hash) — a different body over the
+    (the section.1's stamper's canon in the hash) — a different body over the
     same input NEVER hits the first body's entry: the stale-code face is
     dead by construction."""
     from taskq.workflows._cache import cache_address

@@ -1,16 +1,16 @@
 """The T18 workflow-aware-pruner pins — the retention/result-expiry
-coupling (B4's owner), red-first per the doctrine.
+coupling (B4's owner), failing-first per the doctrine.
 
 THE COUPLING: result-expiry must not eat a map's children before the join
 fires (EXPIRY-EATS-CHILDREN); retention must not prune a live run's
 parent rows (PRUNED-PARENT — the sweep's ledger recount reads parent rows
 as truth); the guards are WHERE-class conditions on the EXISTING arms
-(no new sweep process, §22.6 exclusivity preserved); the guards must NOT
+(no new sweep process, the section.6 exclusivity preserved); the guards must NOT
 over-hold (a terminal run prunes on the normal schedule); and the
 collect's FailureInfo JSONB is BOUNDED (UNBOUNDED-JSONB: the cap + the
 compaction — the full detail stays on the ledger).
 
-THE CLOCK MECHANISM, NAMED (GAPS-ESTATE F13): the fixture SHORTENS
+THE CLOCK MECHANISM, NAMED (): the fixture SHORTENS
 ``result_expires_at`` on the rows (an UPDATE) — a FakeClock advance moves
 nothing the expiry sweep reads (the sweep's clock is the DATABASE's own
 ``statement_timestamp()``; the two-clock doctrine); advancing the DB
@@ -147,7 +147,7 @@ async def test_t18_pin1_expiry_eats_children(
         "the reduce must never read a hole: the expiry held until the join fired"
     )
 
-    # THE UNGUARDED VARIANT (the revert drill, live): the expiry WITHOUT
+    # THE UNGUARDED VARIANT (the revert scenario, live): the expiry WITHOUT
     # the guard eats the children — the survivors assert reds.
     unguarded = wf_sql_unguarded_expiry(wf_sql)
     flow2 = await seed_flow(wf_conn, wf_schema)
@@ -181,7 +181,7 @@ async def test_t18_pin1_expiry_eats_children(
         flow2,
     )
     # Drain to empty: the unguarded sweep eats the guard-held rows too —
-    # the child2 row must fall (the conviction: the expiry applies mid-run).
+    # the child2 row must fall (the recorded finding: the expiry applies mid-run).
     for _ in range(10):
         tag = await module_pg_pool.execute(unguarded, 500)
         if tag == "UPDATE 0":
@@ -191,17 +191,17 @@ async def test_t18_pin1_expiry_eats_children(
         child2,
     )
     assert holes == 1, (
-        "the unguarded variant did not eat the child's result — the red "
+        "the unguarded variant did not eat the child's result — the failing proof "
         "comparator is broken (the guard must be load-bearing)"
     )
 
 
 def wf_sql_unguarded_expiry(wf_sql: WorkflowSql) -> str:
-    """THE CONVICTED SHAPE: the expiry arm WITHOUT the workflow-liveness
-    guard — the pre-T18 shipped statement (the revert drill's target)."""
+    """THE REJECTED SHAPE: the expiry arm WITHOUT the workflow-liveness
+    guard — the pre-T18 shipped statement (the revert scenario's target)."""
     from taskq.backend import _sweeps
 
-    mutated = _sweeps._SWEEP_RESULT_TTL_SQL.replace(  # pyright: ignore[reportPrivateUsage]  # Why: the convicted variant is the SHIPPED statement minus its guard — the mutation is the drill.
+    mutated = _sweeps._SWEEP_RESULT_TTL_SQL.replace(  # pyright: ignore[reportPrivateUsage]  # Why: the rejected variant is the SHIPPED statement minus its guard — the mutation is the scenario.
         """      AND NOT EXISTS (
           SELECT 1
           FROM "{schema}".wf_edge e
@@ -215,7 +215,7 @@ def wf_sql_unguarded_expiry(wf_sql: WorkflowSql) -> str:
         "",
     )
     assert mutated != _sweeps._SWEEP_RESULT_TTL_SQL, (  # pyright: ignore[reportPrivateUsage]
-        "the mutation drill did not arm"
+        "the mutation test did not arm"
     )
     return mutated.format(schema=wf_sql.schema)
 

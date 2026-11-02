@@ -216,7 +216,7 @@ async def test_hold_wake_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.P
     assert [deps, deps] == SEEN
 
 
-# ── the E12 refusals (the build-time convictions) ────────────────────────
+# ── the E12 refusals (the build-time recorded findings) ────────────────────────
 
 
 def test_e12_refuses_deps_declared_where_the_app_binds_none() -> None:

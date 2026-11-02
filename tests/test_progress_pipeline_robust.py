@@ -1,4 +1,4 @@
-"""Red-team pins for the progress pipeline: buffer, flush surfaces, publish gate.
+"""Adversarial review pins for the progress pipeline: buffer, flush surfaces, publish gate.
 
 Every test here attacks one hypothesis about the coalesced-flush machinery
 and pins the invariant that survived (or the defect that did not):

@@ -1,30 +1,30 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE ROUND-2 RED-TEAM CURES' PINS — the §H-C ROUND-2 subsection's
-convictions, each cured and pinned (red-first against the unfixed tree):
+"""THE ROUND-2 ADVERSARIAL REVIEW'S FIXES' PINS — the ROUND-2 subsection's
+recorded findings, each fixed and pinned (failing-first against the unfixed tree):
 
 - R2-1 THE DEADLOCK'S NAME: the retry CLI (``flows retry``) and the
   admin retry routes caught only ``WorkflowRunError`` — a laggard
   writer's deadlock landed a rich traceback (CLI) or a 500 wall (route).
-  The cure: BOTH faces catch the SAME named pair the cancel/resolve
+  The fix: BOTH faces catch the SAME named pair the cancel/resolve
   verbs carry (``DeadlockDetectedError``/``SerializationError``) → the
   named refusal (the CLI) / the audited refusal row + the ``rerun-raced``
   banner (the route — the audited-refusal law).
 - R2-2 THE CAPTURE FACE'S DISPLAY MASK: the input/result faces re-run
   ``_redact_io_doc`` at display; the capture face trusted the write. The
-  cure: the capture face runs the SAME display-time chain (a
+  fix: the capture face runs the SAME display-time chain (a
   pre-chain-release write's raw canary renders masked).
 - R2-3 THE BOUNDED WALK: the result face walked/dumped the ENTIRE doc
   before the 10k display bound (a multi-MB row = a multi-MB walk per
-  drill-down). The cure: ``_bounded_io_projection`` pre-trims the doc
+  drill-down). The fix: ``_bounded_io_projection`` pre-trims the doc
   (depth/node/char budgets) BEFORE the redaction walk, the served text
   stays POST-redaction (the honesty law), and the named size arm rides
   the face (``walk_note``) — never a silent discard.
 - R2-4 THE SKIP-REARM'S PREDICATE: ``result ? 'skipped'`` was
   key-existence — a foreign writer's ``{"skipped": false}`` matched and
-  had its result DELETED. The cure: the engine's own SKIPPED_RESULT
+  had its result DELETED. The fix: the engine's own SKIPPED_RESULT
   containment (``result @> '{"skipped": true}'::jsonb``).
 - R2-5 THE NITS: (a) the dead ``ExitOps.retry_node`` parallel
-  implementation delegates to the ONE verb (the H-C3/H-C4 laws ride the
+  implementation delegates to the ONE verb (the/the laws ride the
   compiled face); (b) masked-key collisions disambiguate ``***[2]`` —
   no entry silently overwrites; (c) the rerun's audit row carries the
   ROWS count (the verb's returned row count summed) and the partial
@@ -114,7 +114,7 @@ def r2_app_module() -> Iterator[types.ModuleType]:
 
     @app_obj.workflow("r2_three_doomed_flow")
     def three_doomed_flow() -> Promise[object]:
-        # THREE PARALLEL doomed keys (the H-C5 pin's own shape): the
+        # THREE PARALLEL doomed keys (the pin's own shape): the
         # rerun composition's failed-key census, with the FIRST sorted
         # key's rows scripted by the spy (the route sums the verb's
         # returned rows — that counting law is the pin's subject).
@@ -397,7 +397,7 @@ async def test_the_capture_face_masks_the_raw_canary_at_display(
         f"canary byte rides the panel, got {dumped}"
     )
     assert "***" in dumped, "the masked form is what the operator reads"
-    # THE H-C6 LABELS SURVIVE THE MASK (the chain masks the strings, not
+    # THE the LABELS SURVIVE THE MASK (the chain masks the strings, not
     # the attempt's identity).
     assert resp.json()["io"]["capture_attempt"] == 1
 
@@ -418,7 +418,7 @@ def test_the_walk_projection_bounds_a_multi_mb_doc() -> None:
     _projected, note, stats = _wf_actions._bounded_io_projection({"blob": blob})
     assert stats["chars"] <= _wf_actions._WALK_CHAR_BUDGET, (
         f"CONTRACT: the walk is CHAR-bounded — processed {stats['chars']} for a "
-        f"2MB doc (the red walked all of it)"
+        f"2MB doc (the failing proof walked all of it)"
     )
     assert stats["nodes"] <= _wf_actions._WALK_NODE_BUDGET
     assert note is not None and "walk budget" in note, f"the trim is NAMED, never silent: {note!r}"
@@ -473,7 +473,7 @@ async def test_the_result_face_answers_bounded_with_the_named_arm(
     assert resp.status_code == 200
     assert len(resp.content) < 100_000, (
         f"CONTRACT: the 2MB row's drill-down answers BOUNDED — got "
-        f"{len(resp.content)} bytes (the red walked and dumped the whole doc)"
+        f"{len(resp.content)} bytes (the failing proof walked and dumped the whole doc)"
     )
     face = resp.json()["io"]["result"]
     assert face is not None
@@ -569,7 +569,7 @@ async def test_the_skip_rearm_predicate_is_the_true_skipped_true_shape(
         f"CONTRACT: the TRUE skipped envelope re-arms (the exit's own mark), "
         f"got {tail_after['status']}"
     )
-    assert tail_after["result"] is None, "the envelope is CLEARED on re-open (H-C4's law)"
+    assert tail_after["result"] is None, "the envelope is CLEARED on re-open (the law)"
 
     for row_id, key in ((false_id, "false_skip"), (no_id, "no_skip")):
         row = await module_pg_pool.fetchrow(
@@ -580,7 +580,7 @@ async def test_the_skip_rearm_predicate_is_the_true_skipped_true_shape(
             f"existence is not the true shape), got {row}"
         )
         assert row["result"] is not None, (
-            f"CONTRACT: the foreign writer's {key!r} result SURVIVES (the red "
+            f"CONTRACT: the foreign writer's {key!r} result SURVIVES (the failing proof "
             f"deleted a {key!r} envelope)"
         )
 
@@ -596,7 +596,7 @@ async def test_the_compiled_retry_face_delegates_to_the_verb(
 ) -> None:
     """R2-5a: the compiled face's ``retry_node`` DELEGATES to the one
     id-addressed verb (the parallel implementation was stale — it lacked
-    the H-C3 FOR-UPDATE serialization and the H-C4 skip re-arm). The pin
+    the FOR-UPDATE serialization and the skip re-arm). The pin
     proves the call-through (the SAME public seam the CLI/routes ride —
     one name to patch) and the bool mapping of the verb's row count.
     Hermetic: the spy touches no rows."""
@@ -745,13 +745,13 @@ async def test_the_rerun_audit_row_gains_the_rows_count_and_the_banner_says_rows
         f"row count summed), got {detail}"
     )
     assert detail.get("applied") == 1 and detail.get("total") == 3, (
-        f"the KEY counts still ride (H-C5's shape preserved): {detail}"
+        f"the KEY counts still ride (the shape preserved): {detail}"
     )
 
 
 def test_the_partial_banner_copy_says_rows_only_where_honest() -> None:
     """R2-5c's copy law, both arms: the row/key counts AGREE → the plain
-    "N of M" (the H-C5 pin's shape preserved); they DIVERGE → the copy
+    "N of M" (the pin's shape preserved); they DIVERGE → the copy
     names the rows."""
     from types import SimpleNamespace
 
@@ -785,7 +785,7 @@ def test_masked_key_collisions_keep_every_entry() -> None:
     out = _redact_io_doc(doc)
     assert isinstance(out, dict)
     assert len(out) == 3, (
-        f"CONTRACT: both masked entries SURVIVE (the red kept only the last overwrite), got {out}"
+        f"CONTRACT: both masked entries SURVIVE (the failing proof kept only the last overwrite), got {out}"
     )
     keys = sorted(out)
     assert keys[0] == "***" or keys[0].startswith("***"), keys
@@ -806,7 +806,7 @@ async def test_the_csrf_mismatch_refusal_names_the_reload(
     r2_app_module: Any,
 ) -> None:
     """R2-5d: the CSRF-mismatch 403's remedy text names the reload (the
-    cookie-loss 403 loop's cure — the page's token is stale; the
+    cookie-loss 403 loop's fix — the page's token is stale; the
     operator's only fix is a fresh page, and the refusal SAYS so instead
     of looping the submit)."""
     schema = module_pg_schema.schema_name
@@ -824,7 +824,7 @@ async def test_the_csrf_mismatch_refusal_names_the_reload(
         detail = stale.json()["detail"]
         assert "the page's token is stale" in detail and "reload the page" in detail, (
             f"CONTRACT: the mismatch refusal names the remedy (the cookie-loss "
-            f"403 loop's cure), got {detail!r}"
+            f"403 loop's fix), got {detail!r}"
         )
 
         # THE MISSING-COOKIE ARM (the loop's other door): a client with

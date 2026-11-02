@@ -1,4 +1,4 @@
-"""Red-team attacks on the SSE progress bridge's broker-facing waits.
+"""Adversarial review attacks on the SSE progress bridge's broker-facing waits.
 
 Hunt scope: ``src/taskq/web/progress.py`` - the streaming loop's Redis
 dependency, connection lifetime, and the SSE slot cap.
@@ -26,7 +26,7 @@ Papered defects and pins
    Redis subscription, the asyncio task and the SSE slot stay pinned.
    ``test_wedged_broker_read_must_be_app_bounded`` pins the desired
    observable: the loop must own an app-level deadline around the broker
-   wait. RED today.
+   wait. Failing today.
 
 2. GREEN PIN - broker death mid-stream is fail-visible and fully cleaned
    up: the generator terminates (exception propagates - no silent eternal
@@ -69,7 +69,7 @@ from taskq.constants import progress_channel
 from taskq.testing.assertions import wait_for_condition
 from taskq.web.progress import (
     _BROKER_READ_GRACE_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin derives its budget from the loop's own read deadline.
-    _event_generator,  # pyright: ignore[reportPrivateUsage]  # Why: red-team tests exercise the production generator directly rather than reimplementing it.
+    _event_generator,  # pyright: ignore[reportPrivateUsage]  # Why: adversarial review tests exercise the production generator directly rather than reimplementing it.
     _resolve_last_event_id,  # pyright: ignore[reportPrivateUsage]  # Why: pins the malformed Last-Event-ID branch, which no existing test covers.
     create_router,
 )
@@ -123,7 +123,7 @@ def _pg_row(*, status: str = "running", seq: int = 0) -> dict[str, Any]:
 class _WedgedPubSub:
     """Pubsub double whose ``get_message`` never returns (wedged broker read).
 
-    ``unsubscribe``/``aclose`` stay fast so the RED state isolates the
+    ``unsubscribe``/``aclose`` stay fast so the mutated state isolates the
     unbounded *read*, not the (already bounded) teardown.
     """
 
@@ -322,7 +322,7 @@ async def test_wedged_broker_read_must_be_app_bounded() -> None:
             "the asyncio task and the SSE slot."
         )
     finally:
-        # Bounded teardown so the RED state can never hang the test run.
+        # Bounded teardown so the mutated state can never hang the test run.
         task.cancel()
         with contextlib.suppress(BaseException):
             await task

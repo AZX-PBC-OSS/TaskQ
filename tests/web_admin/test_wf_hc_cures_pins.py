@@ -1,44 +1,44 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE H-C WAVE'S PINS — the ledger §H-C's convicted admin-UI defects,
-each pinned red-first against the unfixed tree, then cured:
+"""THE H-C WAVE'S PINS — the ledger the's rejected admin-UI defects,
+each pinned failing-first against the unfixed tree, then fixed:
 
-- H-C1 THE BRICKED RUN: ``POST /nodes/__flow__/retry`` re-armed the
+- the THE BRICKED RUN: ``POST /nodes/__flow__/retry`` re-armed the
   RUN'S ROOT — the CAS had no root guard, the root flipped failed→
   pending with the verdict ERASED, the maintenance rollup never saw it
-  again. The cure: the CAS gains ``AND step_key <> '__flow__'`` (the
+  again. The fix: the CAS gains ``AND step_key <> '__flow__'`` (the
   verb-level guard — the CLI's flow-retry rides it free); the route
   answers the not-applied banner; the verb's docstring states the law
   (the root's re-run is the RUN-rerun's own concern).
-- H-C2 THE REDACTION SYMMETRY: the I/O panel's RESULT face rendered
+- the THE REDACTION SYMMETRY: the I/O panel's RESULT face rendered
   token-head secrets RAW (the input face's chain includes the token-head
-  pass; the result face's was chain-only). The cure: BOTH faces run the
+  pass; the result face's was chain-only). The fix: BOTH faces run the
   SAME chain (mask_credentials → the token-head pass), over VALUES and
   KEY NAMES both — the canary shapes (deep-nested, list-element,
   key-name) mask symmetrically.
-- H-C3 THE CANCEL/RETRY TOCTOU: the verb's root status read was a bare
+- the THE CANCEL/RETRY TOCTOU: the verb's root status read was a bare
   SELECT — a cancel committing between the read and the CAS left a
-  pending node under a cancelled root, wedged forever. The cure: the
+  pending node under a cancelled root, wedged forever. The fix: the
   read takes FOR UPDATE (the CAS serializes behind the cancel's flip).
-- H-C4 THE EXIT-SKIPPED BRANCH: the run-rerun's census re-arms the
+- the THE EXIT-SKIPPED BRANCH: the run-rerun's census re-arms the
   skip-envelope rows (``result ? 'skipped'``) — the envelope cleared on
   re-open — so the resumed run re-runs the cut-short work the confirm
   copy promised.
-- H-C5 THE HALF-RERUN'S BANNER: the rerun composition tracks the
+- the THE HALF-RERUN'S BANNER: the rerun composition tracks the
   applied/refused counts; a mid-composition refusal names the partial
   state ("N of M re-opened before the refusal") and lands its audit row.
-- H-C6 THE CAPTURE READ: the panel prefers the LATEST FAILED attempt's
+- the THE CAPTURE READ: the panel prefers the LATEST FAILED attempt's
   capture (a later success's NULL capture no longer hides it), and the
   panel labels WHICH attempt's capture it shows.
-- H-C7 THE RETENTION-vs-READER HONESTY: the panel distinguishes
+- the THE RETENTION-vs-READER HONESTY: the panel distinguishes
   policy-suppressed from RETENTION-PRUNED (the run's step history gone,
   the root terminal) — the honest "pruned" arm, never the suppression
   lie.
-- H-C8 THE COMPILE'S KEY LAW: the wiring key refuses the
+- the THE COMPILE'S KEY LAW: the wiring key refuses the
   affordance-hostile charset (/, ?, #, %, quotes, control chars, edge
   whitespace) with the remedy named; the mermaid label writer escapes
   ``"`` and newlines (the render-death + the injected-structure fix)
   byte-stably.
-- H-C9 THE NITS: the not-applied copy drops the impossible attempt-
+- the THE NITS: the not-applied copy drops the impossible attempt-
   ceiling cause; the SSE snapshot carries the Error column's class and
   the JS adds/removes the Retry affordance live; the truncated flag
   computes POST-redaction; a refused rerun writes its audit row; the
@@ -116,11 +116,11 @@ async def _early_exit(ctx: Any, params: Any) -> Exit[str]:
 
 
 async def _canary_body(ctx: Any, params: IngestDoc) -> dict[str, object]:
-    # THE CANARY SHAPES (H-C2's pin): a bare token-head VALUE, a
+    # THE CANARY SHAPES (the pin): a bare token-head VALUE, a
     # DEEP-NESTED one, a LIST-ELEMENT one, and a token-head KEY NAME —
     # plus the bulk band whose PRE-redaction text crosses the panel's
-    # display cap while the POST-redaction text does not (H-C9's
-    # truncated-flag conviction).
+    # display cap while the POST-redaction text does not (the
+    # truncated-flag recorded finding).
     return {
         "note": "sk-canary-value-1234567890",
         "nested": {"deep": ["sk-canary-list-9876543210"]},
@@ -261,7 +261,7 @@ async def _map_child_row(
     return dict(row)
 
 
-# ── H-C1: the root key is not a node ────────────────────────────────────
+# ── the: the root key is not a node ────────────────────────────────────
 
 
 async def test_retry_verb_refuses_the_run_root_key_and_moves_nothing(
@@ -269,7 +269,7 @@ async def test_retry_verb_refuses_the_run_root_key_and_moves_nothing(
     module_pg_schema: ModulePgSchema,
     hc_app_module: Any,
 ) -> None:
-    """H-C1, VERB LEVEL: ``retry_workflow_node`` with the RUN'S OWN ROOT
+    """the, VERB LEVEL: ``retry_workflow_node`` with the RUN'S OWN ROOT
     key (``__flow__``) grants NOTHING — returns 0 and leaves the root
     row BYTE-IDENTICAL (the status, the verdict, the finished stamp).
     The red: the unguarded CAS flipped the root failed→pending with the
@@ -320,10 +320,10 @@ async def test_retry_route_answers_the_not_applied_banner_for_the_root_key(
     clean_pg_conn: asyncpg.Connection,
     hc_app_module: Any,
 ) -> None:
-    """H-C1, ROUTE LEVEL: ``POST /api/runs/{id}/nodes/__flow__/retry``
+    """the, ROUTE LEVEL: ``POST /api/runs/{id}/nodes/__flow__/retry``
     redirects with the not-applied banner (the defined refusal state —
     never a clean 303), the root row keeps its verdict, and the refusal
-    is AUDITED (H-C9's audited-refusal law at the rerun door)."""
+    is AUDITED (the audited-refusal law at the rerun door)."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_run(module_pg_pool, schema, name="hc_doomed_flow")
     rid = uuid.UUID(run_id)
@@ -361,7 +361,7 @@ async def test_retry_route_answers_the_not_applied_banner_for_the_root_key(
         f"the route's refusal must move no byte — before={tuple(root_before)} "
         f"after={tuple(root_after)}"
     )
-    # THE AUDITED REFUSAL (H-C9): a refused rerun writes its audit row.
+    # THE AUDITED REFUSAL : a refused rerun writes its audit row.
     refusal_row = await clean_pg_conn.fetchrow(
         f'SELECT action, target_id, detail FROM "{schema}".admin_audit '
         "WHERE action = 'workflow.retry_node' AND target_id = $1 "
@@ -375,7 +375,7 @@ async def test_retry_route_answers_the_not_applied_banner_for_the_root_key(
     assert detail.get("refused"), f"the refusal's reason rides the row: {detail}"
 
 
-# ── H-C2: the I/O redaction symmetry ────────────────────────────────────
+# ── the: the I/O redaction symmetry ────────────────────────────────────
 
 
 async def test_the_node_io_faces_mask_the_canary_shapes_symmetrically(
@@ -383,7 +383,7 @@ async def test_the_node_io_faces_mask_the_canary_shapes_symmetrically(
     module_pg_schema: ModulePgSchema,
     hc_app_module: Any,
 ) -> None:
-    """H-C2: the RESULT face runs the INPUT face's full chain (the
+    """the: the RESULT face runs the INPUT face's full chain (the
     token-head pass included) and KEY NAMES mask on BOTH faces — the
     canary shapes (bare value, deep-nested, list-element, key-name) are
     masked symmetrically. The red: the result face's chain was
@@ -426,9 +426,9 @@ async def test_the_truncated_flag_computes_post_redaction(
     module_pg_schema: ModulePgSchema,
     hc_app_module: Any,
 ) -> None:
-    """H-C9 (the truncated flag): the result face's ``truncated`` bit
+    """the (the truncated flag): the result face's ``truncated`` bit
     describes the text ACTUALLY SERVED — computed POST-redaction. The
-    red: the flag measured the pre-redaction length, so a redaction-
+    red: the flag measured the pre-proofaction length, so a redaction-
     heavy payload reported TRUNCATED while the served text was whole."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_run(module_pg_pool, schema, name="hc_canary_flow")
@@ -446,12 +446,12 @@ async def test_the_truncated_flag_computes_post_redaction(
     assert result["truncated"] is False, (
         f"CONTRACT: the truncated flag measures the POST-redaction text — the "
         f"served text is {len(result['text'])} chars (under the cap once the "
-        f"canaries masked), yet the flag said truncated (the red measured the "
+        f"canaries masked), yet the flag said truncated (the failing proof measured the "
         f"pre-redaction length)"
     )
 
 
-# ── H-C3: the cancel/retry TOCTOU ───────────────────────────────────────
+# ── the: the cancel/retry TOCTOU ───────────────────────────────────────
 
 
 class _SpyAcquire:
@@ -477,13 +477,13 @@ class _SpyConn:
     first ``SELECT status`` read) fires the cancel on a SECOND connection
     the moment the read returns, then gives the cancel a BOUNDED window
     to commit before the CAS runs — the interleaving the TOCTOU
-    conviction names: the cancel commits BETWEEN the read and the CAS.
+    recorded finding names: the cancel commits BETWEEN the read and the CAS.
 
     THE WINDOW'S TWO OUTCOMES (why this is deterministic, not a race):
     the bare read (the red) holds no lock — the cancel's whole cascade
     commits inside the window, and the CAS then re-arms the node under
     the cancelled root (the wedge, deterministic); the FOR UPDATE read
-    (the cure) HOLDS the root's row lock — the cancel's root flip blocks
+    (the fix) HOLDS the root's row lock — the cancel's root flip blocks
     for the whole window (the task stays parked, expected), the CAS
     commits first, and the cancel's own cascade flips the re-armed node
     (no wedge, deterministic)."""
@@ -503,7 +503,7 @@ class _SpyConn:
             assert self.cancel_task is not None
             # THE BOUNDED WINDOW: the cancel either commits inside it
             # (the red's interleaving) or is BLOCKED on the verb's own
-            # lock (the cure's serialization — the window expires).
+            # lock (the fix's serialization — the window expires).
             await asyncio.wait({self.cancel_task}, timeout=0.5)
         return value
 
@@ -522,14 +522,14 @@ async def test_the_retry_serializes_behind_a_concurrent_cancel_no_pending_under_
     module_pg_schema: ModulePgSchema,
     hc_app_module: Any,
 ) -> None:
-    """H-C3: the verb's root read takes FOR UPDATE — a cancel committing
+    """the: the verb's root read takes FOR UPDATE — a cancel committing
     between the read and the CAS can no longer strand a PENDING node
     under a CANCELLED root (the wedged-forever shape). The pin drives
     the TRUE interleaving on two connections: the verb's root read
     returns, the cancel commits (its own connection), THEN the CAS runs.
 
     The red (the bare read): the cancel wins the gap — the node re-arms
-    under the cancelled root and wedges. The cured verb: the FOR UPDATE
+    under the cancelled root and wedges. The fixed verb: the FOR UPDATE
     lock serializes the cancel BEHIND the retry's commit, and the
     cancel's own cascade flips the re-armed node — nothing pending under
     a cancelled root."""
@@ -574,13 +574,13 @@ async def test_the_retry_serializes_behind_a_concurrent_cancel_no_pending_under_
     assert root_after == "cancelled", f"the cancel wins the race's tail: {root_after}"
     assert mid_after["status"] != "pending", (
         f"CONTRACT: NO pending node under a cancelled root — the wedged-forever "
-        f"shape the TOCTOU conviction names. Got mid={mid_after['status']} "
+        f"shape the TOCTOU recorded finding names. Got mid={mid_after['status']} "
         f"(the red: the bare root read let the cancel land between the read "
         f"and the CAS)"
     )
 
 
-# ── H-C4: the exit-skipped branch re-arms on the run rerun ──────────────
+# ── the: the exit-skipped branch re-arms on the run rerun ──────────────
 
 
 async def test_the_run_rerun_re_arms_the_exit_skipped_rows(
@@ -588,7 +588,7 @@ async def test_the_run_rerun_re_arms_the_exit_skipped_rows(
     module_pg_schema: ModulePgSchema,
     hc_app_module: Any,
 ) -> None:
-    """H-C4: the run-rerun's census gains the skip-envelope leg — the
+    """the: the run-rerun's census gains the skip-envelope leg — the
     rows carrying ``result ? 'skipped'`` re-arm (pending + the envelope
     CLEARED) when the run re-opens. The red: the exit-skipped branch
     stayed succeeded-with-envelope forever — cut-short work rendered
@@ -632,7 +632,7 @@ async def test_the_run_rerun_re_arms_the_exit_skipped_rows(
     assert root_after == "running", "the run re-opens"
 
 
-# ── H-C5: the half-rerun's honest banner ────────────────────────────────
+# ── the: the half-rerun's honest banner ────────────────────────────────
 
 
 async def test_a_mid_composition_refusal_names_the_partial_state(
@@ -642,7 +642,7 @@ async def test_a_mid_composition_refusal_names_the_partial_state(
     hc_app_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """H-C5: a refusal landing MID-composition (the verb raising on the
+    """the: a refusal landing MID-composition (the verb raising on the
     2nd of 3 failed keys) redirects with the banner that NAMES the
     partial state — "1 of 3 re-opened before the refusal" — and the
     audit row agrees (the counts on the record). The red: the banner
@@ -691,7 +691,7 @@ async def test_a_mid_composition_refusal_names_the_partial_state(
         page = await http.get(location)
         assert page.status_code == 200
         assert "1 of 3 re-opened before the refusal" in page.text, (
-            f"the banner names the counts (the red implied nothing moved): {page.text[:2000]}"
+            f"the banner names the counts (the failing proof implied nothing moved): {page.text[:2000]}"
         )
 
     # THE AUDIT ROWS AGREE: one granted row for f1 + the refusal's own
@@ -716,7 +716,7 @@ async def test_a_mid_composition_refusal_names_the_partial_state(
     )
 
 
-# ── H-C6: the failed attempt's capture surfaces, labeled ────────────────
+# ── the: the failed attempt's capture surfaces, labeled ────────────────
 
 
 async def test_the_capture_read_surfaces_the_failed_attempt_labeled(
@@ -724,7 +724,7 @@ async def test_the_capture_read_surfaces_the_failed_attempt_labeled(
     module_pg_schema: ModulePgSchema,
     hc_app_module: Any,
 ) -> None:
-    """H-C6: a node whose attempt 1 TERMINAL-FAILED with a capture and
+    """the: a node whose attempt 1 TERMINAL-FAILED with a capture and
     whose (manual-resumed) attempt 2 succeeded shows the FAILED
     attempt's capture (the diagnostic's whole point — "what did the
     failure look like?"), LABELED with which attempt it shows. The red:
@@ -783,7 +783,7 @@ async def test_the_capture_read_surfaces_the_failed_attempt_labeled(
     assert io["capture_status"] == "failed", io
 
 
-# ── H-C7: the pruned-history arm, not the suppression lie ───────────────
+# ── the: the pruned-history arm, not the suppression lie ───────────────
 
 
 async def test_the_panel_names_retention_pruned_history_not_policy_suppression(
@@ -791,7 +791,7 @@ async def test_the_panel_names_retention_pruned_history_not_policy_suppression(
     module_pg_schema: ModulePgSchema,
     hc_app_module: Any,
 ) -> None:
-    """H-C7 (the UI side): when the run's step history is GONE (the
+    """the (the UI side): when the run's step history is GONE (the
     retention arms' prune — simulated by the row delete) while the ROOT
     row is terminal, the panel's capture block names the PRUNED arm —
     never the suppression lie (``capture_suppressed`` asserted a policy
@@ -831,11 +831,11 @@ async def test_the_panel_names_retention_pruned_history_not_policy_suppression(
     assert io["capture"] is None
 
 
-# ── H-C8: the compile's key charset law + the mermaid label escape ──────
+# ── the: the compile's key charset law + the mermaid label escape ──────
 
 
 def test_the_wiring_key_refuses_the_affordance_hostile_charset() -> None:
-    """H-C8 (the compile half): the wiring key's charset law — the dot
+    """the (the compile half): the wiring key's charset law — the dot
     precedent's own shape — refuses ``/``, ``?``, ``#``, ``%``, both
     quotes, control characters, and leading/trailing whitespace, with
     the remedy NAMED. The red: every one of these compiled and then 404'd
@@ -885,7 +885,7 @@ def test_the_wiring_key_refuses_the_affordance_hostile_charset() -> None:
 
 
 def test_the_mermaid_label_writer_escapes_quotes_and_newlines() -> None:
-    """H-C8 (the rows half): the mermaid label writer escapes ``"`` and
+    """the (the rows half): the mermaid label writer escapes ``"`` and
     newlines in labels — a hostile row's key can neither KILL the render
     (the raw quote inside the quoted label) nor inject structure through
     the label's own bytes. The emission stays byte-stable for identical
@@ -924,11 +924,11 @@ def test_the_mermaid_label_writer_escapes_quotes_and_newlines() -> None:
     assert rows_mermaid(newline_view) == newline_text
 
 
-# ── H-C9: the nits ──────────────────────────────────────────────────────
+# ── the: the nits ──────────────────────────────────────────────────────
 
 
 def test_the_not_applied_copy_drops_the_impossible_attempt_ceiling_cause() -> None:
-    """H-C9 (the copy): the not-applied banner no longer names the
+    """the (the copy): the not-applied banner no longer names the
     attempt-ceiling refusal — the CAS never consults a ceiling (the
     attempt ordinal CONTINUES); an impossible cause on the record sent
     operators hunting a knob that does not exist."""
@@ -947,7 +947,7 @@ async def test_the_run_page_renders_the_error_cell_and_action_hooks(
     module_pg_schema: ModulePgSchema,
     hc_app_module: Any,
 ) -> None:
-    """H-C9 (the SSE patch's server half + the affordances' hooks): the
+    """the (the SSE patch's server half + the affordances' hooks): the
     page's Error cell and Actions cell carry the patch hooks (``data-wf-
     node-error`` / ``data-wf-node-actions``) and the node table stamps
     the CSRF token the JS's live-built retry form needs."""
@@ -970,7 +970,7 @@ async def test_the_run_page_renders_the_error_cell_and_action_hooks(
 
 
 def test_the_sse_snapshot_carries_the_error_class() -> None:
-    """H-C9 (the SSE patch): the snapshot's node entries carry the
+    """the (the SSE patch): the snapshot's node entries carry the
     bounded error class — the Error column patches live (the red: a node
     that failed while you watched showed its class only after a
     reload)."""
@@ -1000,7 +1000,7 @@ def test_the_sse_snapshot_carries_the_error_class() -> None:
 
 
 def test_the_page_js_patches_the_error_column_and_the_retry_affordance_live() -> None:
-    """H-C9 (the SSE patch's client half): the page script (1) patches
+    """the (the SSE patch's client half): the page script (1) patches
     the Error cell from the frame's error_class, (2) adds the Retry
     affordance to a row that ARRIVES at failed and removes it from a row
     that LEAVES failed, and (3) renders the children census's "N more"
@@ -1156,7 +1156,7 @@ console.log(JSON.stringify(out));
 
 
 def test_the_retry_affordance_adds_and_removes_live_under_node() -> None:
-    """H-C9 (the affordance's BEHAVIOR, driven under Node): a row that
+    """the (the affordance's BEHAVIOR, driven under Node): a row that
     ARRIVES at failed gains the retry form (native POST, the stamped
     CSRF, the retry action); a row that LEAVES failed loses it; the
     Error cell patches from the frame's class both ways. The red: the
@@ -1195,7 +1195,7 @@ async def test_the_panel_children_render_is_capped_with_the_more_arm(
     hc_app_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """H-C9 (the bounded render): the panel's children census is CAPPED
+    """the (the bounded render): the panel's children census is CAPPED
     (the red: an unbounded render — a 10k fan-out shipped 10k rows per
     panel read) and the response carries the total so the JS can render
     the "N more" arm."""

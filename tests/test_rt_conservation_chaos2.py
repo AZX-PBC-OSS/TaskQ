@@ -303,7 +303,7 @@ async def _run_unheld_walk_composition(
             job_ids = await _wait_running(conn, schema, tag, want=jobs, cap_secs=20.0)
 
             # THE STATE-KEYED ARM (the condition-not-clock discipline —
-            # the contended leg's flake cure): the flag arms when the
+            # the contended leg's flake fix): the flag arms when the
             # body's OWN record lands in the effects table, not when the
             # CLAIM is observed. The claim-keyed arm raced the body's
             # own progress: under load, the arming UPDATEs could land
@@ -342,7 +342,7 @@ async def _run_unheld_walk_composition(
             await stack.aclose()
 
         # THE OWNERSHIP DISCRIMINATION READS STATE, NOT THE CLOCK (the
-        # contended leg's flake cure - the tight-lease timing window
+        # contended leg's flake fix - the tight-lease timing window
         # widened to the BEHAVIORAL bound). The composition's premise is
         # a lease tight enough that the reconcile's started_at age test
         # comes due before the walk's graces have run; WHICH owner

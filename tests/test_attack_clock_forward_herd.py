@@ -103,8 +103,8 @@ _PRUNE_BATCH = 10_000
 # ~4 s: a 10x warm gap, NOT the 100x a glance suggests. CI's congestion
 # tail then multiplies statement work without bound: the archive write
 # (the drain's biggest statement) was cancelled at 4 s on 2 of 4 legs
-# (run 36016634595), at 30 s on 1 of 4 (run 36023222736), and at 120 s on
-# 1 of 4 (run 36029506016) - three budgets, the same statement, always
+# (the recorded run), at 30 s on 1 of 4 (the recorded run), and at 120 s on
+# 1 of 4 (the recorded run) - three budgets, the same statement, always
 # cancelling AT the budget. A statement that dies at whatever bound is
 # set is not slow, it is BLOCKED: every worker's module teardown
 # checkpoints the shared test cluster, and the resulting writeback stalls
@@ -145,8 +145,8 @@ _EVENTS_BATCH = 10_000
 # job_events_occurred_at_idx with the age bound as an Index Cond (67 ms
 # first pass, Heap Fetches the only tax), no seq scan, no post-scan
 # Filter. There is no plan defect to fix: on CI the same passes landed
-# 2.5-5 minutes apart (run 36067201212's 3.12 leg: count=10000 logged at
-# 22:32:48 and again at 22:35:30; run 36018340466, the same 300 s
+# 2.5-5 minutes apart (the recorded run's 3.12 leg: count=10000 logged at
+# 22:32:48 and again at 22:35:30; the recorded run, the same 300 s
 # pytest-timeout) - a statement that crawls at ANY multiplier of its warm
 # cost while every dumped thread stack sits idle in epoll is BLOCKED by
 # the shared runner's weather, not slow, and a wall-clock budget cannot
@@ -834,7 +834,7 @@ async def test_deadline_herd_batches_stay_bounded_and_ledger_conserved(
 # deadline-family cancellations (a cancelled batch is a pause) but the
 # weather has measured LONGER than the re-drive's whole five-attempt
 # budget (the 30s statements cancelled five times = 2.5+ minutes of
-# block, run 36103478108's legs), so on the parallel legs the pin ends
+# block, the recorded run's legs), so on the parallel legs the pin ends
 # red by its own wedged-drain design. The serial lane is the one place
 # the budget is a backstop (the #523 precedent, which this pin carried
 # before the #532 rebase resolution wrongly dropped it); the shape and
@@ -1001,7 +1001,7 @@ async def test_event_ttl_herd_batch_bounded_and_outbox_carveout_holds(
     drain is measured in wall-clock passes. Its shape and conservation
     assertions are not load-fragile, but its pass cadence is: on the shared
     runners' parallel legs the passes measured 2.5-5 minutes apart (run
-    36018340466, run 36067201212's 3.12 leg - the 300 s pytest-timeout
+    36018340466, the recorded run's 3.12 leg - the 300 s pytest-timeout
     killed a still-pending coroutine both times), a co-tenancy BLOCK the
     warm plan never shows (the measured plan is index-served at 20-52 ms
     per pass, see _EVENTS_TIMEOUT_MS). The serial load_sensitive lane is

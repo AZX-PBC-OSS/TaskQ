@@ -37,7 +37,7 @@ levels):
    estimates stay healthy while the index rots) - dominate at depth
    and are cursor-blind by construction. The gauges
    (taskq.claim.degradation_ratio) see the whole truth; the runbook's
-   primary cure (kill the pinning transaction, let VACUUM drain) is
+   primary fix (kill the pinning transaction, let VACUUM drain) is
    what they page for; the cursor is the bounded, measured mitigation
    on the candidate surface.
 

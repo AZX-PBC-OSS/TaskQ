@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a test-fixture identifier, every user value is $-bound.
-"""Red-team probe (Postgres): can a TERMINAL batch row gain a new
+"""Adversarial review probe (Postgres): can a TERMINAL batch row gain a new
 non-terminal member through a public sequential surface?
 
 The concurrent half of this invariant is already pinned (``test_rt_

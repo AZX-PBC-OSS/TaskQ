@@ -1,11 +1,11 @@
 """THE PER-STEP TOKEN BUCKET ON THE AUTHORING SURFACE (the consumer-face
-lane's CURE 2 — the verified gap): the workflow authoring face had NO
+lane's FIX 2 — the verified gap): the workflow authoring face had NO
 rate limit at all — ``taskq.actor``'s ``rate_limits=[TokenBucket(...)]``
 is vanilla-only, ``WorkflowApp.actor()``/``step()``/``RouteArm`` carried
 nothing, and "5 concurrent" (the queue cap) is not "50/min" under the
 LLM fleet's varying latency.
 
-THE CURE'S SHAPE (ONE mechanism, the authoring face added):
+THE FIX'S SHAPE (ONE mechanism, the authoring face added):
 
 * the authoring surface: ``step(body, rate_limits=[TokenBucket(...)])``,
   ``RouteArm(body=..., rate_limits=[...])`` (the typed route's per-arm
@@ -27,8 +27,8 @@ THE CURE'S SHAPE (ONE mechanism, the authoring face added):
   budget-free, LOUD — never a silent pass-through, the admitted-never-
   limited lie).
 
-Red-first: the pins ran RED at the pre-cure head; the reds are captured
-in ``.measurements/cons-cure2-reds.json``.
+Failing-first: the pins failed at the pre-fix head; the failures are captured
+in `the recorded capture`.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def cons2_redlog() -> RedLog:
-    """The red sink for the consumer-face lane's CURE 2 pins."""
+    """The red sink for the consumer-face lane's FIX 2 pins."""
     log = RedLog("cons-cure2-reds.json")
     return log
 
@@ -387,7 +387,7 @@ def test_the_boot_collection_registers_the_instances_and_names_the_unknowns(
             "the authoring face's buckets would never register",
             {},
         )
-        pytest.fail("collect_workflow_rate_limits is absent — the red is the pin")
+        pytest.fail("collect_workflow_rate_limits is absent — the failing proof is the pin")
 
     bucket = TokenBucket("cons2-collected", 5, 1.0)
     app = WorkflowApp()

@@ -1,4 +1,4 @@
-"""Red-team attacks on the cron tick's time bound vs a hung payload factory.
+"""Adversarial review attacks on the cron tick's time bound vs a hung payload factory.
 
 The contract under attack: one cron tick over a due schedule whose
 ``payload_factory`` hangs must END - return or raise - within a bound the

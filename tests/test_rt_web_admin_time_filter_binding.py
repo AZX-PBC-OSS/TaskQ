@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on the admin jobs list's absolute time filters (PG tier).
+"""Adversarial review attacks on the admin jobs list's absolute time filters (PG tier).
 
 Hunt scope: ``src/taskq/web/admin/jobs.py`` - ``/jobs`` and ``/jobs/count``
 input validation for ``time_from``/``time_to``.
@@ -31,7 +31,7 @@ unhandled in ``jobs_list``/``jobs_count``, so:
   family's own convention (history.py:178-184, queues.py cursor
   validation) is a clean 400 for unparseable timestamps.
 
-Desired observables pinned below (all RED today):
+Desired observables pinned below (all failing today):
 * ``test_jobs_list_absolute_time_filter_binds`` - a well-formed window
   returns 200 with the in-window row visible and the out-of-window row
   excluded (the route must parse the strings to datetimes, or otherwise
@@ -90,7 +90,7 @@ def _mount_admin(pool: asyncpg.Pool, schema: str) -> httpx.AsyncClient:
     ``raise_app_exceptions=False`` so an unhandled route exception is
     observable as the HTTP 500 the deployment would serve (Starlette's
     ServerErrorMiddleware answer) instead of exploding out of the
-    transport - the RED state must be an asserted status, not a traceback.
+    transport - the mutated state must be an asserted status, not a traceback.
     """
     bundle = create_router(pool, schema=schema, redis_client=None)
     app = FastAPI()

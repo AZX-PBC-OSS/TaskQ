@@ -1,4 +1,4 @@
-"""Red-team attacks on sweep-1 parity between Postgres and the in-memory twin.
+"""Adversarial review attacks on sweep-1 parity between Postgres and the in-memory twin.
 
 The parity contract for the bounded sweeps is observable outcome, not
 row order: for the same seeded corpus (same eligibility, same branch

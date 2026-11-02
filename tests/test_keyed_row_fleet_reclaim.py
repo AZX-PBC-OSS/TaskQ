@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 
-"""Red-team pins: fleet-wide reclamation of keyed rate-limit/reservation rows.
+"""Adversarial review pins: fleet-wide reclamation of keyed rate-limit/reservation rows.
 
 The residual these pins close: keyed ``reservation_slots`` /
 ``rate_limit_buckets`` rows orphan when the worker that materialised them

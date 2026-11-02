@@ -52,7 +52,7 @@ from taskq.worker.notify import (
 # Production's documented bound for this loop family's executes, shrunk so
 # a production-side bound fires well inside the test budget below.
 _PROD_BOUND_SECS = 0.05
-# Generous vs the production bound: this budget firing is the red result.
+# Generous vs the production bound: this budget firing is the failing proof result.
 _TEST_BUDGET_SECS = 5.0
 
 _WORKER_ID = uuid.UUID("00000000-0000-0000-0000-000000000003")

@@ -1,11 +1,11 @@
-"""ATTACK-3 (phase-3 red team) — T10's HITL surface: the hold identity
+"""ATTACK-3 (phase-3 adversarial review) — T10's HITL surface: the hold identity
 under concurrent deliver, the epoch on a retried hold-site, the redact
 chain on the list() surface, the knock's pointer-only law, the typed
 door's runtime boundary, the timeout face, the driver's held check.
 
 Each probe states the contract it attacks (the module docstrings' own
 words). RED = the observed half contradicts it. Captured to
-.measurements/attack3/.
+the recorded capture
 """
 
 from __future__ import annotations

@@ -44,7 +44,7 @@ _TMP_MODULE_NAME = "tmp_actor_module"
 def _taskq_exe_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Put THIS environment's own ``taskq`` console script on PATH.
 
-    THE AMBIENT-PATH CLASS (named and cured 2026-10-08): the watch-loop
+    THE AMBIENT-PATH CLASS (named and fixed 2026-10-08): the watch-loop
     tests drive the REAL ``_start_worker``, which resolves the worker
     command with ``shutil.which("taskq")`` — an ambient-environment read.
     Invoked as ``.venv/bin/pytest`` (how make runs it, how CI runs it,

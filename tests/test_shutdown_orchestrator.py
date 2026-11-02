@@ -1606,7 +1606,7 @@ async def test_orchestrate_shutdown_terminates_hung_leader_close(
     shut_event = asyncio.Event()
 
     # Why the outer timeout: unguarded, orchestrate_shutdown awaited
-    # leader_conn.close() unbounded, so the RED state would hang forever
+    # leader_conn.close() unbounded, so the mutated state would hang forever
     # instead of failing fast.
     async with asyncio.timeout(5):
         result = await orchestrate_shutdown(
@@ -1680,7 +1680,7 @@ async def test_orchestrate_shutdown_does_not_null_swapped_leader_conn(
     )
 
     # Why the outer timeout: the close gate parks the orchestrator, so a
-    # broken RED state must fail fast rather than hang the suite.
+    # broken mutated state must fail fast rather than hang the suite.
     async with asyncio.timeout(5):
         await close_began.wait()
         # Simulate the election loop's health probe dropping the closing
@@ -1734,7 +1734,7 @@ async def test_orchestrate_shutdown_sets_shutdown_event_before_leader_close(
     monkeypatch.setattr(shutdown_mod, "drain_local_queue_to_pending", AsyncMock(return_value=0))
 
     # Why the outer timeout: matches the hung-close test convention so a
-    # RED state fails fast instead of hanging.
+    # The failing state fails fast instead of hanging.
     async with asyncio.timeout(5):
         await orchestrate_shutdown(
             deps,

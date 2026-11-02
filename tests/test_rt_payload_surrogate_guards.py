@@ -1,5 +1,5 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: lone-surrogate strings at the progress and result boundaries.
+"""Adversarial review: lone-surrogate strings at the progress and result boundaries.
 
 A lone surrogate (e.g. ``"\\udcff"``, exactly what ``os.fsdecode`` of a
 non-UTF-8 filename byte produces) is a legal Python ``str`` that can NEVER
@@ -21,7 +21,7 @@ PG tier twins live in tests/test_rt_payload_pg_jsonb.py):
    in the in-memory mirror but strands the job on PG (asyncpg DataError
    is a PostgresError subclass, so the terminal-write classification
    misreads it as transient infra) -- the mirror divergence is pinned
-   here as the desired observable; the PG failure is the RED twin.
+   here as the desired observable; the PG failure is the failing state twin.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ async def test_progress_data_with_surrogate_raises_at_publish() -> None:
 
 
 async def test_progress_detail_with_surrogate_must_be_rejected_at_publish() -> None:
-    """RED: ``detail=`` with the SAME unencodable string must be rejected
+    """The recorded failure: ``detail=`` with the SAME unencodable string must be rejected
     at publish exactly like ``data=`` -- context.py serializes only
     ``data`` before buffering, so a surrogate detail silently enters
     pending_state and detonates later at the terminal write's jsonb_param
@@ -114,7 +114,7 @@ async def test_progress_detail_with_surrogate_must_be_rejected_at_publish() -> N
 
 
 async def test_surrogate_detail_must_not_break_the_terminal_write() -> None:
-    """RED (end-to-end): an actor that publishes a surrogate detail and
+    """The recorded failure (end-to-end): an actor that publishes a surrogate detail and
     returns a storable result must still land 'succeeded' with the defect
     visible in the stored progress -- today the poisoned pending_state
     makes mark_succeeded's jsonb_param raise a bare TypeError that
@@ -166,7 +166,7 @@ async def test_surrogate_detail_must_not_break_the_terminal_write() -> None:
 
 
 async def test_unencodable_result_is_non_retryable_like_result_too_large() -> None:
-    """RED: an actor result containing a lone surrogate is a
+    """The recorded failure: an actor result containing a lone surrogate is a
     DETERMINISTIC serialization defect -- the actor already ran and a
     re-run returns the same unencodable value -- so it must fail
     non-retryably after exactly ONE execution (ResultTooLarge's exact
@@ -208,7 +208,7 @@ async def test_mirror_marks_failed_for_surrogate_exception_message() -> None:
     """GREEN pin (in-memory half): an actor raising an exception whose
     message carries a lone surrogate still lands 'failed' with the
     message preserved -- the mirror never UTF-8-encodes, so no strand.
-    (The PG twin is RED: the same write raises asyncpg DataError, a
+    (The PG twin fails the same way: the same write raises asyncpg DataError, a
     PostgresError subclass the terminal-write classification misreads as
     transient infra -- see test_rt_payload_pg_jsonb.py.)"""
     backend = InMemoryBackend(clock=FakeClock(datetime(2026, 1, 1, tzinfo=UTC)))

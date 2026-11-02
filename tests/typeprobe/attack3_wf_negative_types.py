@@ -1,8 +1,8 @@
 """ATTACK-3 — the phase-3 public surface's NEGATIVE type probes.
 
 Each ``MUST_ERROR(rules...)`` marker names a wrong-shape call that must
-RED on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
-from the marker's DECLARED set — the typed-doors law (BUILD-PROTOCOL
+FAILING on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
+from the marker's DECLARED set — the typed-doors law (the build protocol
 §7b). THE EVIDENCE-INTEGRITY ROUND'S WIRING: this file ran DIRECTLY
 under the attacker's own invocation and ROTTED OFF the gate (the markers
 carried NO rule-id declaration — the gate refuses a bare MUST_ERROR, the
@@ -52,7 +52,7 @@ def probe_exhaustion_policy_literal() -> None:
 
 def probe_sync_until_predicate() -> None:
     """The until= predicate's type: a SYNC closure (returning bool) is
-    the convicted dragon — the API demands Callable[[], Awaitable[bool]]."""
+    the rejected dragon — the API demands Callable[[], Awaitable[bool]]."""
     app = WorkflowApp()
 
     def sync_until() -> bool:

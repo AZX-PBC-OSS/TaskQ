@@ -1,4 +1,4 @@
-"""Red-team: wait_for_batch's pool acquire has no bound (PG/client path).
+"""Adversarial review: wait_for_batch's pool acquire has no bound (PG/client path).
 
 The blocking form of :func:`taskq.batch.wait_for_batch`
 (``snooze_via_exception=False`` - "Use this form from scripts and
@@ -78,7 +78,7 @@ async def tcs_schema(pg_dsn: str) -> AsyncIterator[str]:
 async def test_blocking_wait_for_batch_pool_acquire_is_bounded(
     pg_dsn: str, tcs_schema: str
 ) -> None:
-    """RED: when the pool cannot yield a connection, wait_for_batch
+    """The recorded failure: when the pool cannot yield a connection, wait_for_batch
     (blocking mode) must raise TimeoutError within a bounded window -
     not park forever inside db.acquire().
 
@@ -138,7 +138,7 @@ async def test_blocking_wait_for_batch_pool_acquire_is_bounded(
 async def test_blocking_wait_for_batch_returns_on_a_free_pool(pg_dsn: str, tcs_schema: str) -> None:
     """GREEN control: the same call on a FREE pool completes promptly with
     the empty status (on_empty='ok'), proving the SQL templates and the
-    loop are healthy and the only failing variable in the RED test is
+    loop are healthy and the only failing variable in the failing state test is
     the unbounded acquire."""
     pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=1)
     try:

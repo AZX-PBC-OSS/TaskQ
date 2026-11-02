@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a per-test fixed identifier, not user input; every value is $-bound.
 
-"""Red-team: isolate_self racing the leader's Sweep 1 over the same rows.
+"""Adversarial review: isolate_self racing the leader's Sweep 1 over the same rows.
 
 ``isolate_self``'s per-row sequence is: plain ``SELECT`` the running rows
 locked by this worker (no locks taken), then for each row an
@@ -240,7 +240,7 @@ async def test_isolate_survives_sweep_winning_one_row_mid_flight(
     rt_schema: tuple[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """RED: a PK conflict on the sweep-won row must not abort the whole isolate.
+    """The recorded failure: a PK conflict on the sweep-won row must not abort the whole isolate.
 
     Interleaving: isolate has SELECTed X and Y when the leader's Sweep 1
     reclaims X (its lease was long expired) - X's guarded UPDATE no-ops,

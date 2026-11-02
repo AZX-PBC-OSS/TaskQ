@@ -1460,7 +1460,7 @@ class TestBoundedConnClose:
         deps.notify_conn_factory = factory
 
         # Why the outer timeout: unguarded, the cleanup awaited conn.close()
-        # unbounded, so the RED state would hang forever instead of failing
+        # unbounded, so the mutated state would hang forever instead of failing
         # fast.
         async with asyncio.timeout(5):
             with pytest.raises(RuntimeError, match="listener setup failed"):
@@ -1518,7 +1518,7 @@ class TestBoundedConnClose:
 
         # Why the outer timeout: unguarded, the background close awaited
         # old_conn.close() unbounded, so terminate is never reached and the
-        # poll below would spin forever in the RED state.
+        # poll below would spin forever in the mutated state.
         async with asyncio.timeout(5):
             await reconnect_notify_conn(deps, backend, channels, close_old=True)
             assert deps.notify_conn is new_conn
@@ -1586,7 +1586,7 @@ class TestBoundedConnClose:
         try:
             # Why the outer timeout: unguarded, the error path awaited
             # conn.close() unbounded, so the swap never happens and the
-            # poll below would spin forever in the RED state.
+            # poll below would spin forever in the mutated state.
             async with asyncio.timeout(5):
                 for _ in range(500):
                     if deps.notify_conn is new_conn:

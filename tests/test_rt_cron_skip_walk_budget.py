@@ -1,4 +1,4 @@
-"""Red-team attack: the catch-up skip-count walk versus the tick's deadline.
+"""Adversarial review attack: the catch-up skip-count walk versus the tick's deadline.
 
 ``_plan_fire``'s beyond-window branch counts the dropped slots by hopping
 the schedule forward one ``compute_next_fire_after`` call per occurrence,

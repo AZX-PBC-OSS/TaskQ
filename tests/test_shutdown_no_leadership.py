@@ -112,7 +112,7 @@ def _worker_settings() -> WorkerSettings:
         "TASKQ_LOCK_LEASE": "3.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "1.2",
         # The lag lattice's order: check < warn < budget (the warn-vs-
-        # check refusal — the warning storm's cure — fires otherwise).
+        # check refusal — the warning storm's fix — fires otherwise).
         "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.25",
         "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "0.6",
         "TASKQ_MAX_HEARTBEAT_FAILURES": "3",

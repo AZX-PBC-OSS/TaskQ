@@ -1,4 +1,4 @@
-"""The pre-workflow-schema tolerance pins (the phase-2 attack's M1 cure):
+"""The pre-workflow-schema tolerance pins (the phase-2 attack's M1 fix):
 the T18 workflow-liveness guard probes ``wf_edge`` — a schema the
 workflow round has NOT landed on has no such table, and an untolerated
 miss is the leader's death (a non-transient error class fatal to the
@@ -18,7 +18,7 @@ prune watermark; NO workflow tables — ``wf_edge`` lands one file later):
 * the per-actor prune arm survives it the same way (a pre-workflow
   schema with ``actor_overrides`` configured killed the leader before
   the tolerance);
-* the convicted variant (the tolerance dropped: the guarded statement
+* the rejected variant (the tolerance dropped: the guarded statement
   run raw) REDS with the exact ``UndefinedTableError`` — the crash the
   tolerance exists to prevent, observed on this very schema.
 """
@@ -31,7 +31,7 @@ import asyncpg
 import pytest
 
 from taskq.backend._sweeps import (
-    _SWEEP_RESULT_TTL_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the convicted variant IS the guarded statement run raw — the mutation is the drill.
+    _SWEEP_RESULT_TTL_SQL,  # pyright: ignore[reportPrivateUsage]  # Why: the rejected variant IS the guarded statement run raw — the mutation is the scenario.
     sweep_expired_results,
 )
 from taskq.migrate import apply_pending
@@ -78,7 +78,7 @@ async def test_wf_pre_workflow_expiry_tolerance(
 ) -> None:
     """The result-expiry arm on a schema with NO workflow tables: the arm
     RUNS (the unguarded fallback — exact there) and expires the row; the
-    convicted variant (the guarded statement raw — the tolerance dropped)
+    rejected variant (the guarded statement raw — the tolerance dropped)
     raises the leader-killing miss."""
     pre = module_pg_schema.schema_name + "_prewf"
     schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
@@ -92,7 +92,7 @@ async def test_wf_pre_workflow_expiry_tolerance(
     )
     assert left == 0, "the unguarded fallback expires the row (exact on this schema)"
 
-    # THE CONVICTED VARIANT (the tolerance dropped): the guarded statement
+    # THE REJECTED VARIANT (the tolerance dropped): the guarded statement
     # run raw on this schema — the leader-killing miss, observed.
     with pytest.raises(asyncpg.UndefinedTableError):
         await clean_pg_conn.execute(_SWEEP_RESULT_TTL_SQL.format(schema=schema_name), 100)
@@ -105,7 +105,7 @@ async def test_wf_pre_workflow_actor_prune_tolerance(
     """The per-actor prune arm on a schema with NO workflow tables and an
     actor_overrides entry: the arm survives (the per-batch unguarded
     fallback — the pre-tolerance shape was the leader's death) and prunes
-    the actor's aged rows; the convicted variant (the guarded actor
+    the actor's aged rows; the rejected variant (the guarded actor
     candidate raw) raises the miss."""
     pre = module_pg_schema.schema_name + "_prewf2"
     schema_name = await _pre_workflow_schema(clean_pg_conn, pre)
@@ -121,7 +121,7 @@ async def test_wf_pre_workflow_actor_prune_tolerance(
     )
     assert result.total_deleted >= 1, f"the actor arm must survive and prune: {result}"
 
-    # THE CONVICTED VARIANT (the tolerance dropped): the guarded ACTOR
+    # THE REJECTED VARIANT (the tolerance dropped): the guarded ACTOR
     # candidate run raw on this schema — the pre-tolerance leader-killer.
     from taskq.worker._leader_shared import (
         _ARCHIVE_CANDIDATE_ACTOR_SQL,  # pyright: ignore[reportPrivateUsage]

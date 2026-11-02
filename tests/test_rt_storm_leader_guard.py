@@ -1,4 +1,4 @@
-"""Red-team storm: the leader's guard-fatal backstop vs the storm that
+"""Adversarial review storm: the leader's guard-fatal backstop vs the storm that
 caused it.
 
 The question: when a slow/overloaded database makes every sweep tick

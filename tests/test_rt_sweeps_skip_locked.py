@@ -1,4 +1,4 @@
-"""Red-team attacks on SKIP LOCKED semantics and batch atomicity.
+"""Adversarial review attacks on SKIP LOCKED semantics and batch atomicity.
 
 The bounded snaps use ``FOR UPDATE SKIP LOCKED`` so a sweep running
 against a worker that holds a row lock (an open transaction on one of

@@ -440,7 +440,7 @@ def test_ui_serve_lifespan_creates_pool_and_redirects_root(
 # timeout) applied via ``close_pool_bounded``; the shrink seam is the
 # same module-global monkeypatch convention as
 # tests/test_worker_deps_teardown.py. The lifespan is driven directly
-# (not via TestClient) so ``asyncio.timeout`` can bound the RED state.
+# (not via TestClient) so ``asyncio.timeout`` can bound the mutated state.
 
 
 def _capture_app_for_lifespan(
@@ -503,7 +503,7 @@ async def test_ui_serve_lifespan_terminates_hung_pool_close(
 
     assert isinstance(app, FastAPI)
     # Why the outer timeout: unguarded, lifespan exit awaits Pool.__aexit__
-    # (unbounded close), so the RED state would hang forever instead of
+    # (unbounded close), so the mutated state would hang forever instead of
     # failing fast.
     async with asyncio.timeout(5):
         async with app.router.lifespan_context(app):
@@ -542,7 +542,7 @@ async def test_ui_serve_lifespan_fast_pool_close_not_terminated(
 # via ``close_redis_bounded``, and the preserved eager-initialize
 # semantics of ``Redis.__aenter__``. The shrink seam is the same
 # module-global monkeypatch convention as the pool tests above; the
-# lifespan is driven directly so ``asyncio.timeout`` can bound the RED
+# lifespan is driven directly so ``asyncio.timeout`` can bound the failing state
 # state.
 
 
@@ -565,7 +565,7 @@ async def test_ui_serve_lifespan_bounds_hung_redis_close(
 
     assert isinstance(app, FastAPI)
     # Why the outer timeout: unguarded, lifespan exit awaits Redis.__aexit__
-    # (shielded, unbounded aclose), so the RED state would hang forever
+    # (shielded, unbounded aclose), so the mutated state would hang forever
     # instead of failing fast.
     with structlog.testing.capture_logs() as captured:
         async with asyncio.timeout(5):

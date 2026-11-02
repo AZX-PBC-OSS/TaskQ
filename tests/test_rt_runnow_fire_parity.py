@@ -1,4 +1,4 @@
-"""Red-team parity pins for the admin run-now fire path (real PG).
+"""Adversarial review parity pins for the admin run-now fire path (real PG).
 
 Run-now (``POST /schedules/{id}/run``) is a fire path for a schedule: it
 resolves the schedule's payload and enqueues a job for its actor.  The

@@ -654,7 +654,7 @@ async def test_isolate_self_terminates_hung_conn_close(
     deps = _make_deps()
     shutdown = asyncio.Event()
     # Why the outer timeout: unguarded, the finally awaited conn.close()
-    # unbounded, so the RED state would hang forever instead of failing fast.
+    # unbounded, so the mutated state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         await isolate_self(deps, new_uuid(), shutdown)
 

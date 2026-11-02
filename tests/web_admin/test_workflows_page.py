@@ -3,9 +3,9 @@
 SSE node_state stream + the typed actions, against a REAL run on a real
 migrated schema (the fastapi marker tier: server-rendered pytest, no
 browser — the DoD's primary lane; the browser-level probe replay is the
-red-team's lane).
+adversarial review's lane).
 
-The pins (each with its convicted variant named in the docstring):
+The pins (each with its rejected variant named in the docstring):
 - suppress_refresh (the meta-refresh killer — the page without it reds
   the live-state pin by construction);
 - the boot JSON's graph is the ROWS-ALONE emission (the admin never
@@ -20,7 +20,7 @@ The pins (each with its convicted variant named in the docstring):
   501 (no untyped deliver surface ships); with it, the wrong payload is
   the named pydantic refusal and the RIGHT one delivers + lands its
   audit row;
-- the G7 rows==DOM check: the page's rendered node states == the §17.5
+- the G7 rows==DOM check: the page's rendered node states == the section.5
   derivation over the same rows.
 """
 
@@ -216,7 +216,7 @@ async def test_run_page_renders_the_rows_alone_graph_and_suppresses_refresh(
     )
     assert boot["runId"] == run_id
     assert "review" in boot["mermaid"]
-    assert boot["state"]["status"] == "blocked"  # the §17.5 derivation over the rows
+    assert boot["state"]["status"] == "blocked"  # the section.5 derivation over the rows
     # The held node's state rides the snapshot (the amber pin's data).
     node_states = {n["key"]: n for n in boot["state"]["nodes"]}
     assert node_states["review"]["hold"] is True
@@ -410,7 +410,7 @@ async def test_sse_reconnect_last_event_id_continues_the_cursor(
 async def test_sse_unknown_run_is_a_404_at_subscribe(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """THE STATES MATRIX (3), Q7's cure superseding the empty-snapshot
+    """THE STATES MATRIX (3), Q7's fix superseding the empty-snapshot
     pin: a stream for an UNKNOWN run id is a 404 AT SUBSCRIBE — the
     estate's own ``/sse/{topic}`` convention (an unknown topic is
     refused at subscribe; the empty-snapshot-forever stream was an
@@ -672,7 +672,7 @@ async def test_g7_rows_equal_the_rendered_state(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """G7 (T08's always-on law) exercised on the REAL page: the §17.5
+    """G7 (T08's always-on law) exercised on the REAL page: the section.5
     derivation over the rows == the status the page renders; the boot
     JSON's per-node states == the node rows, seq for seq."""
     schema = module_pg_schema.schema_name
@@ -712,7 +712,7 @@ async def test_panel_latency_band(
     """THE LATENCY BAND (set from the measurement, pinned — the G11
     method): the panel route's full read ≤ 50 ms p95 on this stack (the
     measured p95 is 3.2 ms — 15x headroom; the file:
-    .measurements/t11-latency-band.json)."""
+    the recorded capture)."""
     import time as time_mod
 
     schema = module_pg_schema.schema_name
@@ -1347,7 +1347,7 @@ async def test_the_node_panel_honors_the_capture_policies(
 
 def test_the_page_js_carries_the_base_path_and_rerun_laws() -> None:
     """THE JS LAW' S SOURCE PIN: the page script builds every URL on the
-    boot's mounted prefix (the relative-URL 404 bug's conviction), asks
+    boot's mounted prefix (the relative-URL 404 bug's recorded finding), asks
     once before the rerun forms submit (form[data-confirm] →
     window.confirm), and escapes the row key before it touches a
     node-table selector (the poisoned-row defense)."""

@@ -6,7 +6,7 @@ The admin fix wave gave the history page (the archive+live union over the
 table already walks with: a Previous turn fetches the rows NEAREST the
 cursor from the other side of the seam, re-sorts them into display order,
 and truncates from the cursor-near end. The failure mode this pins is the
-same one #564's red-team found on the jobs page: a backward walk that
+same one #564's adversarial review found on the jobs page: a backward walk that
 drops or duplicates the seam row, or a prev turn that silently serves the
 forward page again.
 

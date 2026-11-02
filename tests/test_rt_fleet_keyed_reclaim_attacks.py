@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 
-"""Red-team attacks on the fleet keyed-row reclamation wave (e5d2154).
+"""Adversarial review attacks on the fleet keyed-row reclamation wave (e5d2154).
 
 The feature under attack: keyed ``reservation_slots`` /
 ``rate_limit_buckets`` rows carry their own staleness (the ``keyed``
@@ -43,7 +43,7 @@ those pins cannot reach - each test names the hypothesis it drives:
   fallback's preseed/upsert must keep the row unmarked, and the sweep
   must never reset mid-outage fallback state.
 
-An attack that lands red stays red - it is the finding, reported with
+An attack that lands red stays failing - it is the finding, reported with
 the design's own words it contradicts. A green attack is a refutation
 the suite keeps as a pin.
 """

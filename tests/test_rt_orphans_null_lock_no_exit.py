@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on the no-exit cell: ``running`` x ``lock_expires_at IS NULL`` x dead holder.
+"""Adversarial review attacks on the no-exit cell: ``running`` x ``lock_expires_at IS NULL`` x dead holder.
 
 Every maintenance path that can exit a ``running`` row is gated on something
 this cell cannot satisfy:

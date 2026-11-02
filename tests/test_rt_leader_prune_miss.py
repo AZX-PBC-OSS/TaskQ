@@ -1,4 +1,4 @@
-"""Red-team pin: the prune loop's fire-second leadership gate must not cost a day.
+"""Adversarial review pin: the prune loop's fire-second leadership gate must not cost a day.
 
 ``_prune_loop`` (``src/taskq/worker/_leader_sweeps.py``) wakes at the once-daily
 cron fire and gates on ``is_leader`` BEFORE attempting: a wake that finds the pod

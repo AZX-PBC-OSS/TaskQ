@@ -24,7 +24,7 @@ sequence-bump oracle ``test_dispatch_backlog_depth_bound.py`` and
 actually reads, not EXPLAIN text, so it is exact and cannot flake on plan
 shape or PG version.
 
-History: this pin was written RED against the original shape - a plain
+History: this pin was written failing against the original shape - a plain
 ``GROUP BY actor, queue`` over the whole pending set, which visited ~10x
 more rows at a 100k pending backlog than at 10k (measured 2026-09-15,
 local Postgres 18, `jit=off`: ~1.6ms p50 at 10k growing to ~13-15ms p50

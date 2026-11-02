@@ -118,7 +118,7 @@ def _configure(backend: InMemoryBackend, ref: ActorRef[Any, Any]) -> None:
 
 
 async def test_strict_submit_to_unknown_queue_raises_and_stores_nothing() -> None:
-    """THE RED: strict on, a one-character typo'd queue name raised
+    """THE FAILING STATE: strict on, a one-character typo'd queue name raised
     NOTHING and stored the row anyway -- pending forever, no worker
     claims it, silent data non-delivery. The green: the refusal fires
     at the submit site and the row is NOT stored.
@@ -475,7 +475,7 @@ async def test_strict_fail_open_makes_no_retry_storm() -> None:
 
 
 async def test_batch_finalizer_refuses_unknown_queue_atomic() -> None:
-    """THE FINALIZER BYPASS (the red-team's blocking find): the
+    """THE FINALIZER BYPASS (the adversarial review's blocking find): the
     finalizer's args write through their OWN sites after the per-item
     verdict loop, which iterates items only — a finalizer routed to an
     unregistered queue stored the orphan SILENTLY (no refusal, no note)
@@ -733,7 +733,7 @@ async def test_empty_snapshot_never_refuses_first_deploy() -> None:
     stored-assignment snapshot that is EMPTY — no worker has ever
     started — carries ZERO evidence of stranding, so strict DISABLES
     itself (advisory posture, the note still fires) and the job is
-    ACCEPTED. Red-first: this exact submit raised at the base before the
+    ACCEPTED. Failing-first: this exact submit raised at the base before the
     rule landed."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))  # fresh store: nothing registered
     client = JobsClient(backend, settings=_strict_settings())

@@ -788,7 +788,7 @@ async def test_windowed_metrics_query_runs_on_vanilla(pg_dsn: str) -> None:
         await conn.close()
 
 
-# ── Red-team edges: re-run convergence, mid-population conversion, failure
+# ── Adversarial review edges: re-run convergence, mid-population conversion, failure
 #    atomicity, widened uniqueness, and the deliberately dropped FK ─────────
 
 
@@ -2720,7 +2720,7 @@ async def test_disable_round_trip_after_refusal_path_enable(timescale_dsn: str) 
     conn = await asyncpg.connect(timescale_dsn)
     try:
         await _migrate(conn, schema)
-        # Two debris rows, refused loudly, then the documented cure.
+        # Two debris rows, refused loudly, then the documented fix.
         for _ in range(2):
             await conn.execute(
                 f"""INSERT INTO {schema}.jobs_archive (

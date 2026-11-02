@@ -1,4 +1,4 @@
-"""Red-team calendar-correctness vectors for the cron parser.
+"""Adversarial review calendar-correctness vectors for the cron parser.
 
 Target: ``taskq.cron.compute_next_fire_after`` (croniter-backed, plus custom
 DST gap/overlap handling). ``tests/test_cron.py`` has no Feb-29 / leap-year,

@@ -1,9 +1,9 @@
 """T12 — THE CLI PINS: ``taskq flows`` — one question, one surface.
 
-The red-first evidence: the three pins (taxonomy-drift, empty-snapshot,
-read-only) are collected with their CONVICTED VARIANTS — each drills the
+The failing-first evidence: the three pins (taxonomy-drift, empty-snapshot,
+read-only) are collected with their REJECTED VARIANTS — each scenarios the
 mutated shape and captures the observed red to
-``.measurements/t12-pin-reds.json``. The surface-walk + output-contract
+`the recorded capture`. The surface-walk + output-contract
 pins ride the REAL engine (a live run on the migrated schema): every
 command's exit code + output shape is pinned against a run the FlowRunner
 drove, not a canned fixture.
@@ -245,7 +245,7 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
 ) -> None:
     """THE MANUAL RESUME: the ladder-exhausted node re-pends, the run
-    completes after the operator's retry (§22.6's manual leg)."""
+    completes after the operator's retry (the section.6's manual leg)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
     flow_id = (await flow_runner.create_flow()).flow_id
@@ -279,10 +279,10 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
 async def test_retry_not_applied_copy_drops_the_impossible_cause_and_names_the_root_law(
     cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
 ) -> None:
-    """H-C9's copy honesty, the CLI's face: the not-applied remedy names
+    """the copy honesty, the CLI's face: the not-applied remedy names
     only causes the CAS can actually hit — the attempt ceiling is NOT
     one (the ordinal continues; no ceiling is consulted) — and the
-    ROOT-KEY law is on the record (the run's root is not a node; H-C1's
+    ROOT-KEY law is on the record (the run's root is not a node; the
     verb-level guard)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
@@ -300,7 +300,7 @@ async def test_retry_not_applied_copy_drops_the_impossible_cause_and_names_the_r
     assert "live" in copy and "unknown" in copy, copy
 
     # The RUN'S OWN ROOT key: refused by the verb-level guard's CAS leg —
-    # the copy names the root-key law and the cure.
+    # the copy names the root-key law and the fix.
     root = await to_thread(runner.invoke, app, ["flows", "retry", str(flow_id), "__flow__"])
     assert root.exit_code == 1, root.output
     root_copy = plain_cli_output(root.output)
@@ -420,7 +420,7 @@ def test_parse_decision_contract() -> None:
 
 
 def test_derive_flow_status_is_the_shared_derivation() -> None:
-    """The CLI's derivation IS the §17.5 derivation (one engine): the
+    """The CLI's derivation IS the section.5 derivation (one engine): the
     same input the engine's NodeViews take yields the same status."""
     assert derive_flow_status([_held_row()]) == "blocked"
     assert derive_flow_status([FlowNodeRow(step_key="a", status="running")]) == "running"
@@ -428,7 +428,7 @@ def test_derive_flow_status_is_the_shared_derivation() -> None:
     assert derive_flow_status([FlowNodeRow(step_key="a", status="failed")]) == "failed"
 
 
-# ── the taxonomy pin (red-first 1) ───────────────────────────────────────
+# ── the taxonomy pin (failing-first 1) ───────────────────────────────────────
 
 
 def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
@@ -444,7 +444,7 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
 
     derived = set(typing.get_args(WorkflowStatus))
     # THE DERIVED SET IS EXACTLY THE G7 MAPPING'S KEYS (a new derived
-    # status without a root-row mapping row = the drift). The convicted
+    # status without a root-row mapping row = the drift). The rejected
     # variant: drop one mapping row → this assert reds.
     if derived != set(G7_DERIVED_TO_ROOT):
         engine_redlog.red(
@@ -475,7 +475,7 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
     engine_redlog.flush()
 
 
-# ── the read-only pin (red-first 3) ─────────────────────────────────────
+# ── the read-only pin (failing-first 3) ─────────────────────────────────────
 
 
 def test_read_only_pin_the_read_verbs_have_no_write_path() -> None:

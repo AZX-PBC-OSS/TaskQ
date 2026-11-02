@@ -1,6 +1,6 @@
-"""Docs-contract pins for the retry-sniffing feature (§5 extension).
+"""Docs-contract pins for the retry-sniffing feature (the section extension).
 
-``docs/guides/retries.md`` §5 must keep the two things the retry-sniffing
+``docs/guides/retries.md`` the section must keep the two things the retry-sniffing
 feature promises its users: the signal → override → bounds table (the
 "what bounds it" column is the haunt lesson rendered as documentation —
 every indefinite-returning path's docstring restates the deadline hazard,
@@ -23,7 +23,7 @@ def _normalized(path: Path) -> str:
 def test_retries_guide_keeps_the_signal_override_bounds_table() -> None:
     text = _normalized(_DOCS / "guides" / "retries.md")
     assert "What bounds it" in text and "curve fallback" in text, (
-        "retries.md §5 must keep the signal → override → bounds table: the "
+        "retries.md the section must keep the signal → override → bounds table: the "
         "header-sniffing feature's contract (what a Retry-After hint "
         "changes, what still bounds it) must stay discoverable"
     )
@@ -40,7 +40,7 @@ def test_retries_guide_keeps_the_signal_override_bounds_table() -> None:
 def test_retries_guide_keeps_the_taxonomy_conservative_default_contract() -> None:
     text = _normalized(_DOCS / "guides" / "retries.md")
     assert "failure_taxonomy_classifier" in text, (
-        "retries.md §5 must document the taxonomy classifier"
+        "retries.md the section must document the taxonomy classifier"
     )
     assert "over-claiming is the haunt class" in text, (
         "retries.md must state the conservative default: unsure → None"
@@ -56,13 +56,13 @@ def test_retries_guide_keeps_the_taxonomy_conservative_default_contract() -> Non
 
 
 def test_retries_guide_keeps_the_claim_kind_knob_contract() -> None:
-    """The claim-kind knob's contract (the §5 extension): the factory
+    """The claim-kind knob's contract (the section extension): the factory
     name, the three modes with their bounds, and the haunt hazard per
     mode must stay discoverable — a doc edit that drifts from the
     shipped modes fails here."""
     text = _normalized(_DOCS / "guides" / "retries.md")
     assert "make_rate_limit_aware_classifier" in text, (
-        "retries.md §5 must document the factory behind the built-in"
+        "retries.md the section must document the factory behind the built-in"
     )
     assert 'claim_kind="transient"' in text and "max_attempts" in text, (
         "retries.md must document the bounded mode: max_attempts stays the "
@@ -82,7 +82,7 @@ def test_retries_guide_keeps_the_claim_kind_knob_contract() -> None:
 
     parameters = inspect.signature(taskq.retry.make_rate_limit_aware_classifier).parameters
     assert "claim_kind" in parameters, (
-        "retries.md §5 names claim_kind as the factory's knob: renaming the "
+        "retries.md the section names claim_kind as the factory's knob: renaming the "
         "parameter without updating the guide fails this pin rather than "
         "shipping a doc that promises a keyword that isn't there"
     )
@@ -95,7 +95,7 @@ def test_retries_guide_keeps_the_claim_kind_knob_contract() -> None:
 
 
 def test_retries_guide_keeps_the_parser_alignment_contract() -> None:
-    """The parser's finite-hint rules (the §5 extension): a finite hint
+    """The parser's finite-hint rules (the section extension): a finite hint
     clamps to the operator's ceiling (never garbage), the decimal-fraction
     grammar is documented, and the HTTP-date divergence choice point is
     stated."""
@@ -119,7 +119,7 @@ def test_retries_guide_keeps_the_parser_alignment_contract() -> None:
 
 
 def test_retries_guide_keeps_the_taxonomy_matching_rule_contract() -> None:
-    """§5's matching rule is a CONTRACT, not prose: exact curated names by
+    """the section's matching rule is a CONTRACT, not prose: exact curated names by
     default, the suffix inference opt-in behind
     ``infer_timeout_by_suffix`` with the ``ExecutionTimeout``
     counterexample, and the curated constant named. The code-side sniff
@@ -127,7 +127,7 @@ def test_retries_guide_keeps_the_taxonomy_matching_rule_contract() -> None:
     together with the doc it documents (the docs-contract pin pattern)."""
     text = _normalized(_DOCS / "guides" / "retries.md")
     assert "exact curated names by default" in text and "infer_timeout_by_suffix" in text, (
-        "retries.md §5 must state the taxonomy's matching rule as the shipped "
+        "retries.md the section must state the taxonomy's matching rule as the shipped "
         "contract: the default path matches exact curated names only, and the "
         "suffix inference is opt-in — a doc edit that drifts back to describing "
         "suffix-on-by-default behavior (or drops the flag's existence) fails here"

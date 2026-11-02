@@ -1,20 +1,20 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""ATTACK PINS — the RE-REVIEW round's convictions (feat/taskqflow @
+"""ATTACK PINS — the RE-REVIEW round's recorded findings (feat/taskqflow @
 d24f17b9; the second hostile pass over the consolidated head).
 
-Provenance: the rv2 front's live convictions, one pin each. Per the
+Provenance: the rv2 front's live recorded findings, one pin each. Per the
 doctrine, a LANDED finding (a live defect at d24f17b9) is pinned
 asserting the SAFE behavior under ``pytest.mark.xfail(strict=True)`` —
-the cure flips the pin to XPASS-strict (a red that says: remove the
-marker WITH the cure); a finding whose RESOLVED behavior already holds
-at the head (rv2-11 — the battery's deterministic red, convicted as a
+the fix flips the pin to XPASS-strict (a failure that says: remove the
+marker WITH the fix); a finding whose RESOLVED behavior already holds
+at the head (the recorded finding's — the battery's deterministic red, rejected as a
 bad declaration in the BATTERY's own test) stands GREEN as the guard
 that keeps the resolution from rotting.
 
-The findings (the front's receipts carried each conviction live):
+The findings (the front's receipts carried each recorded finding live):
 
 * F-RV2-1 — the admin panel/run-page bound ``error_message`` /
-  ``error_traceback`` / ``captured_error`` (the Q5 read-side cure) but
+  ``error_traceback`` / ``captured_error`` (the Q5 read-side fix) but
   ``error_class`` (unbounded text) still round-trips WHOLE:
   ``_wf_rows.py``'s ``_run_view_from_rows`` (node + root) and
   ``_wf_actions.py``'s node-panel route (the detail AND the children
@@ -60,21 +60,21 @@ The findings (the front's receipts carried each conviction live):
 * F-RV2-10 — the deploy-matrix header (tests/system_e2e/
   test_wf_deploy_matrix.py) lists 9 cells; cells 4 (OUTAGE), 6
   (REDISPATCH OWNERSHIP) and 9 (RETENTION MID-FLIGHT) have no test
-  function anywhere, and the header cites a red-drills file and a
+  function anywhere, and the header cites a mutation pins file and a
   deployment.md "operator table" that do not exist.
 * F-RV2-11 — the battery's deterministic red
   (``test_wf_execution_py.py::test_projection_the_split_placement_
   cohorts``): the test's chain-source declaration wires a
   ``(ctx, params)`` body with ZERO args — the runtime invokes source
   bodies with ctx alone, so the declaration IS a wiring lie and E10's
-  conviction is correct; the RESOLVED behavior (a ctx-only source
+  recorded finding is correct; the RESOLVED behavior (a ctx-only source
   body) is pinned green.
 * F-RV2-12 — ``tests/typeprobe/wf_gather_negative_types.py`` is a
   ZOMBIE probe: on disk, carrying live MUST_ERROR markers, wired
   nowhere (not in ``_gate.py``'s ``_CORPUS``, so not in the CI gate).
 * F-RV2-13 — the head-stamp law's own verifier
   (``scripts/verify_evidence_heads.py``) reds on the committed
-  ``.measurements/runs`` at the head (unstamped + stale live claims).
+  `the recorded capture` at the head (unstamped + stale live claims).
 * F-RV2-14 — ``perf-evidence-workflows-streaming.md``'s emit paragraph
   cites "max 10.4\u201314.5 ms across the five captured runs"; the capture
   ``t20-streaming-bands-20261008-052519.json`` carries max 20.569 —
@@ -115,16 +115,16 @@ from tests import _evidence
 from tests._wf_fixtures import seed_flow
 
 #: The estate's own display-bound conventions (the panel's
-#: ``_PANEL_FIELD_CAP_CHARS``): the SAFE bound any cure of the
+#: ``_PANEL_FIELD_CAP_CHARS``): the SAFE bound any fix of the
 #: error_class/audit binds lands under. The pin asserts the CEILING of
 #: the house's bounded conventions, never a specific one — a tighter
-#: cure (the 512 of the cancel form's maxlength, the 2000 of the rows
+#: fix (the 512 of the cancel form's maxlength, the 2000 of the rows
 #: traceback cap) satisfies it too.
 _BOUND_CEILING_CHARS = 10_000
 
 #: The honesty marker's shape, both house spellings (the panel's
 #: "… [truncated: +N characters stay in the row]" and the rows cap's
-#: "... (N more characters)") — the cure must NAME the truncation.
+#: "... (N more characters)") — the fix must NAME the truncation.
 _TRUNCATION_MARKER = re.compile(r"truncat|more characters", re.IGNORECASE)
 
 
@@ -709,7 +709,7 @@ def test_rv2_9_e10_counts_the_actual_params() -> None:
     * a REAL mismatch refuses AND the message names the REAL arity
       ("takes 2 param(s)"), never the annotated count.
 
-    THE WIRING NOTE (the rv2-cure lane's reconciliation): leg 2's body
+    THE WIRING NOTE (the recorded finding's lane's reconciliation): leg 2's body
     wired ONE arg was a real mismatch when this pin was cut, but the
     consolidated head's E10/E12 partition (5402a4b8) reclassified the
     exactly-one-param-beyond-the-wiring shape as the DEPS class — E12's
@@ -717,7 +717,7 @@ def test_rv2_9_e10_counts_the_actual_params() -> None:
     so leg 2 wires ZERO args: still a real mismatch, still the
     signature's numbers in the message.
 
-    TODAY both legs convict: the runnable shape is refused, and the
+    TODAY both legs reject: the runnable shape is refused, and the
     refusal's message reports 0 params for a 2-param body."""
 
     # The pin's SUBJECT is the unannotated-but-runnable shape (E5's
@@ -773,11 +773,11 @@ def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
     * the header's "operator table" citation names the cells in the
       cited doc (the table the cells claim to be rows of).
 
-    THE FLOOR (the rv2 cure's reconciliation): the pack pinned the
+    THE FLOOR (the rv2 fix's reconciliation): the pack pinned the
     header's NINE claimed cells; three (OUTAGE, REDISPATCH OWNERSHIP,
     RETENTION MID-FLIGHT) named no test function anywhere — header
-    fiction. The cure regenerated the header to the SIX cells this
-    file actually tests, so the floor is the tested count at the cure
+    fiction. The fix regenerated the header to the SIX cells this
+    file actually tests, so the floor is the tested count at the fix
     (6): a further shrink — a cell dropped or de-tested — re-checks
     this pin by name, never silently.
     """
@@ -848,7 +848,7 @@ def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
 # is ctx-only. The pin asserts the RESOLVED behavior both ways, GREEN:
 # the corrected declaration projects both cohorts, and the bad
 # declaration keeps refusing LOUDLY (the projection skip names E10; the
-# healthy fleets' projection is untouched). The battery's red is cured
+# healthy fleets' projection is untouched). The battery's red is fixed
 # by fixing the DECLARATION in the battery's test — this pin guards the
 # resolution, so it cannot rot in either direction.
 
@@ -876,7 +876,7 @@ def test_rv2_11_the_split_placement_declaration_resolved() -> None:
 
     app = WorkflowApp()
     chain = Chain(
-        name="rv2-split-chain",
+        name="the recorded finding's-chain",
         start="screen",
         steps={
             "screen": Step(
@@ -889,7 +889,7 @@ def test_rv2_11_the_split_placement_declaration_resolved() -> None:
         queue="gpu",
     )
 
-    @app.workflow("rv2-split")
+    @app.workflow("the recorded finding's")
     def _workflow() -> object:
         src = chain_source(chain, _source_ctx_only, key="doc_source")
         return build(src)
@@ -904,10 +904,10 @@ def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
     """The other half of the resolution: the battery test's OWN shape
     (a params-taking chain-source body wired with zero args) stays a
     NAMED refusal — the projection skips the workflow LOUDLY with the
-    rule id in the record, and no cohort for it projects. A cure that
+    rule id in the record, and no cohort for it projects. A fix that
     instead SILENCED the arity rules would flip this red.
 
-    THE RULE ID (the rv2-cure lane's reconciliation): at the pack's cut
+    THE RULE ID (the recorded finding's lane's reconciliation): at the pack's cut
     the record named ``E10-arity``; the consolidated head's E10/E12
     partition (5402a4b8) reclassified the exactly-one-param-beyond-the-
     wiring shape as the DEPS class — the refusal now names
@@ -933,7 +933,7 @@ def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
 
     bad = WorkflowApp()
     chain = Chain(
-        name="rv2-split-chain-bad",
+        name="the recorded finding's-chain-bad",
         start="screen",
         steps={
             "screen": Step(
@@ -946,7 +946,7 @@ def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
         queue="gpu",
     )
 
-    @bad.workflow("rv2-split-bad")
+    @bad.workflow("the recorded finding's-bad")
     def _workflow() -> object:
         src = chain_source(chain, _source_with_params, key="doc_source")
         return build(src)
@@ -1024,10 +1024,10 @@ def test_rv2_14_every_ranged_figure_covers_its_captures() -> None:
     ``t20-streaming-bands-*.json`` plus the rolled artifact), compared
     at the figure's own cited precision. A capture outside the cited
     range is the cherry-pick/dead-figure class this law exists to
-    convict."""
+    reject."""
     captures = sorted(_evidence.evidence_glob("t20-streaming-bands-*.json"))
-    if _evidence.evidence_exists(".measurements/t20-streaming-bands.json"):
-        captures.append(".measurements/t20-streaming-bands.json")
+    if _evidence.evidence_exists("the recorded capture"):
+        captures.append("the recorded capture")
     assert captures, "no streaming captures exist at all"
     families: dict[str, dict[str, list[float]]] = {}
     for rel in captures:

@@ -691,7 +691,7 @@ async def test_transport_bounds_hung_pubsub_close(monkeypatch: pytest.MonkeyPatc
     from taskq.client._transport import redis_event_stream
 
     # Why raising=False: unguarded the module has no CLOSE_TIMEOUT_SECS seam,
-    # so the RED state must demonstrate the finalizer wedge (outer timeout),
+    # so the mutated state must demonstrate the finalizer wedge (outer timeout),
     # not an AttributeError from the shrink.
     monkeypatch.setattr(transport_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
     pubsub = _HungPubSub()
@@ -715,7 +715,7 @@ async def test_transport_bounds_hung_pubsub_close(monkeypatch: pytest.MonkeyPatc
         return terminal_event
 
     # Why the outer timeout: unguarded, the finally awaited pubsub.aclose()
-    # unbounded, so the RED state wedges here instead of failing fast.
+    # unbounded, so the mutated state wedges here instead of failing fast.
     with structlog.testing.capture_logs() as captured:
         async with asyncio.timeout(5):
             async for _ in redis_event_stream(

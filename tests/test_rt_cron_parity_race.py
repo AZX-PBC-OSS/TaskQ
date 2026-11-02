@@ -1,4 +1,4 @@
-"""Red-team attack on the concurrent singleton race mid-tick (real PG).
+"""Adversarial review attack on the concurrent singleton race mid-tick (real PG).
 
 The tick's policy preflight and its batched INSERT are two statements in
 one transaction, so a client singleton enqueue can COMMIT between them -

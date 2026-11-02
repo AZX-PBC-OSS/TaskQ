@@ -1,4 +1,4 @@
-"""Red-team: workgroup TOML validation gaps beyond the known provider opt-out.
+"""Adversarial review: workgroup TOML validation gaps beyond the known provider opt-out.
 
 Two config shapes pass ``WorkgroupConfig.from_toml`` validation today
 that cannot produce a working child:
@@ -72,7 +72,7 @@ def _write_config(tmp_path: Path, body: str) -> Path:
 
 
 def test_rejects_worker_name_that_overflows_the_health_socket_path(tmp_path: Path) -> None:
-    """RED: a name whose health socket path exceeds every supported
+    """The recorded failure: a name whose health socket path exceeds every supported
     platform's sun_path must be rejected at load - not accepted by
     validation and then killed at child spawn by ``OSError: AF_UNIX
     path too long``.
@@ -102,7 +102,7 @@ queues = ["default"]
 
 
 def test_rejects_empty_queues_list(tmp_path: Path) -> None:
-    """RED: ``queues = []`` produces a child that dispatches nothing - the
+    """The recorded failure: ``queues = []`` produces a child that dispatches nothing - the
     project's own classification of that state is 'a certain
     misconfiguration' (tests/test_worker_unconsumed_queue_warning.py::
     test_empty_queues_with_actors_warns_worker_consumes_nothing). The
@@ -128,7 +128,7 @@ queues = []
 def test_accepts_short_name_and_explicit_queues(tmp_path: Path) -> None:
     """GREEN control against over-rejection: a short name (socket path well
     inside every platform budget) with an explicit queue list loads
-    cleanly - the RED tests above must be fixed by tightening the two
+    cleanly - the failing state tests above must be fixed by tightening the two
     specific gaps, not by refusing configs wholesale."""
     cfg = _write_config(
         tmp_path,

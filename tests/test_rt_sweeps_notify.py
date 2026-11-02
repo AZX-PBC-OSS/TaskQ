@@ -1,4 +1,4 @@
-"""Red-team attacks on the sweeps' pg_notify channel semantics.
+"""Adversarial review attacks on the sweeps' pg_notify channel semantics.
 
 Sweep 1's single-notify-per-call contract is pinned
 (``test_postgres_sweeps.py``'s ``test_single_pg_notify_per_sweep_with_rows``);

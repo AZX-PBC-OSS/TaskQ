@@ -3,7 +3,7 @@
 """THE STEP DEADLINE'S ADMIN FACE — the run page shows the bound where
 declared, and the deadline's reality for a RUNNING node.
 
-The wf start_to_close cure (``tests/test_wf_start_to_close_pins.py``)
+The wf start_to_close fix (``tests/test_wf_start_to_close_pins.py``)
 stamps the row's EXISTING ``jobs.start_to_close`` column at the node
 INSERTs and enforces it at the runner's body seam; the run page's
 usefulness bar: the operator SEES the bound on the node panel — the
@@ -164,7 +164,7 @@ async def test_the_running_face_renders_the_deadline_reality(
     remaining/age is the READ's own ``clock_timestamp()`` computation
     (``RunNode.deadline_remaining_s``) — the label never measures the
     DB-written ``started_at`` against the APP clock, so a DB two minutes
-    ahead of the app no longer self-contradicts (the pre-cure shape: the
+    ahead of the app no longer self-contradicts (the pre-fix shape: the
     DB-written instant read against the app clock as ``expired 120s
     ago`` on a step that just started). The derivation is the view's own
     (``RunNode.deadline_label`` — one spelling, the page's and the SSE

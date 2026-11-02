@@ -25,7 +25,7 @@ Pins, one per hot path:
   tab's ``finished_at DESC NULLS LAST, id DESC`` ordering (every page
   top-N sorted the whole archive — the committed sweep artifact's
   3.81 ms/page @ 10k → 135.82 ms/page @ 2M plain points; the 10M
-  red/green legs in archive-scale.json's pagination_pathology: 690 ms
+  failing/green legs in archive-scale.json's pagination_pathology: 690 ms
   vs 0.47 ms), and before the builder's UNION split the OR-wrapped
   cursor predicate defeated index-condition extraction (23.9 ms per
   cursor page, 58k rows removed by filter, at a 100k archive; the bare
@@ -357,7 +357,7 @@ async def test_archive_first_page_is_index_served(
     Before migration 01.00.21_01 no shipped index served the tab's
     ``finished_at DESC NULLS LAST, id DESC`` ordering: every page — the
     first page included — top-N sorted the whole archive (16.6 ms at
-    100k, the red probe in the campaign artifact; the committed sweep's
+    100k, the failing proof probe in the campaign artifact; the committed sweep's
     3.81→135.82 ms/page over 10k→2M rows is this shape at scale).
     """
     conn = await asyncpg.connect(pg_dsn)

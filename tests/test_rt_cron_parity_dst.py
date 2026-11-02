@@ -1,4 +1,4 @@
-"""Red-team attacks on the singleton DST-``allof`` deferral claim (real PG).
+"""Adversarial review attacks on the singleton DST-``allof`` deferral claim (real PG).
 
 The singleton parity change deliberately deviates from the client enqueue
 path in one place: a cron fire whose ``dst_strategy='allof'`` slot falls

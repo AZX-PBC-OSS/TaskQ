@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 
-"""Red-team attacks on ``enqueue_with_conn``'s caller-owned connection.
+"""Adversarial review attacks on ``enqueue_with_conn``'s caller-owned connection.
 
 The caller owns the connection handed to ``enqueue_with_conn``; the
 contract under attack is what TaskQ hands BACK on a typed refusal.
@@ -185,7 +185,7 @@ async def test_singleton_preflight_refusal_keeps_caller_transaction_usable(
 async def test_singleton_violation_refusal_keeps_caller_transaction_usable(
     pg_dsn: str,
 ) -> None:
-    """RED: the unique-violation-catch singleton refusal aborts the caller's tx.
+    """The recorded failure: the unique-violation-catch singleton refusal aborts the caller's tx.
 
     The caller holds the transaction; a racing transaction inserts the
     singleton row UNCOMMITTED (invisible to our READ COMMITTED

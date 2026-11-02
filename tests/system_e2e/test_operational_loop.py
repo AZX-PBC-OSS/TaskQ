@@ -202,7 +202,7 @@ _RECLAIM_SETTLE_S = (DEPLOYMENT_LOCK_LEASE_S + 2 * _CLAIM_CYCLE_S + _SLOW_SLEEP)
 #: COUNT. Four attempts ≈ 12s of tolerance lost the DEPLOY-phase probes
 #: on the cross-contended runner (the review's contended runs: F, F, P
 #: with the worker logs clean — the box, not the fleet; the same
-#: 1.3-2x runner-bet the recover-phase bounds cured, left un-cured
+#: 1.3-2x runner-bet the recover-phase bounds fixed, left un-fixed
 #: here). The attempts price off the tier doctrine: the base 4 stretched
 #: by the tier's load factor, ceil'd — 8 attempts ≈ 24s of tolerance,
 #: the probe's window moving with the fleet's own weather knob.

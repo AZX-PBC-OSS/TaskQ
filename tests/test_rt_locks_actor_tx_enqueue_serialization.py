@@ -1,5 +1,5 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team locks: an open actor-body transaction's hold on cross-actor enqueue serialization.
+"""Adversarial review locks: an open actor-body transaction's hold on cross-actor enqueue serialization.
 
 The transactional consumer runs the actor inside its transaction
 connection's transaction (``worker/_consumer.py`` - ``async with
@@ -26,7 +26,7 @@ holder's transaction stays open and uncommitted:
 * idempotency: the same-key INSERT blocks on the uncommitted
   speculative token with NO bound at all - not the advisory budget, not
   ``lock_timeout``, nothing - until the holder's transaction resolves.
-  The RED contract: an unbounded actor body must not hold cross-actor
+  The failing contract: an unbounded actor body must not hold cross-actor
   enqueue serialization; the desired behavior needs either a documented
   bound or decoupling.
 """
@@ -206,7 +206,7 @@ async def test_idempotency_enqueue_blocked_until_holder_tx_commits_then_dedups(p
     Contract being pinned: the dedup outcome itself is correct - once the
     holder's transaction commits, the blocked racer's ON CONFLICT fires and
     the follow-up SELECT hands back the winner's row. This pin documents the
-    mechanism the RED twin above attacks: the block ends only at the
+    mechanism the failing state twin above attacks: the block ends only at the
     holder's transaction resolution, which for an unbounded actor
     transaction is the actor's whole runtime.
     """

@@ -6,8 +6,8 @@ MAP-RETRY-BARRIER: a list map over N=8 children; K=3 fail intermittently
 succeeding via the normal retry ladder); the other N-K succeed first try.
 Five assertions, each its own check: (a) NO EARLY FIRE, (b)
 ATTEMPT-FAILURE != NODE-FAILURE, (c) RETRY ISOLATION, (d) THE BARRIER, (e)
-THE COLLECT IS THE SUCCESSFUL PAYLOADS. The red-first fingerprints (the
-convicted shapes, each pinned by its own drill): the join firing on
+THE COLLECT IS THE SUCCESSFUL PAYLOADS. The failing-first fingerprints (the
+rejected shapes, each pinned by its own scenario): the join firing on
 first-success-count mismatch (counting ATTEMPTS instead of CHILDREN); the
 over-eager parent-fail; the retry-storm contagion.
 
@@ -225,7 +225,7 @@ async def test_map_retry_barrier(
     propagation_redlog: RedLog,
 ) -> None:
     """N=8; K=3 intermittent (M = 1, 2, 3); the five assertions, each its
-    own check. The convicted shapes are the drills inside: the
+    own check. The rejected shapes are the scenarios inside: the
     attempt-counting join (fires K attempts early), the over-eager
     parent-fail, the retry-storm contagion."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -250,7 +250,7 @@ async def test_map_retry_barrier(
         "no decrement mid-ladder: the join counts children, not attempts"
     )
     assert await fire_count(wf_conn, wf_schema, join_id) == 0, (
-        "the attempt-counting variant fires here (the conviction)"
+        "the attempt-counting variant fires here (the recorded finding)"
     )
 
     # (b) ATTEMPT-FAILURE != NODE-FAILURE — the parent does NOT fail when a
@@ -560,7 +560,7 @@ async def test_join_failure_policy_timeout_arm_both_policies(
     # capped at cap, with jitter) — the ladder's worst-case wall clock for
     # M attempts is the SUM of its delays + each attempt's own runtime
     # (start_to_close). A join's child carrying a deadline below this sum
-    # is the convicted race (the documented interaction, named in the
+    # is the rejected race (the documented interaction, named in the
     # docs): the deadline must be SET ABOVE it.
     retry_base_s = 5.0
     retry_cap_s = 3600.0

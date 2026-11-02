@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team storm: pool-contention GEOMETRY at full saturation.
+"""Adversarial review storm: pool-contention GEOMETRY at full saturation.
 
 The question (distinct from the pinned per-site reds): with EVERY
 dimension of the worker's connection budget loaded at once - both

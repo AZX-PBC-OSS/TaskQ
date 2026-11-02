@@ -1,4 +1,4 @@
-"""Red-team scratch: does the rotation stamp also protect CAPPED actors
+"""Adversarial review scratch: does the rotation stamp also protect CAPPED actors
 (max_concurrent set)?
 
 The dispatch CTE splits capped and uncapped actors into two different

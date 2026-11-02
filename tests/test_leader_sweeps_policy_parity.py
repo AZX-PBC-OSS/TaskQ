@@ -435,7 +435,7 @@ def test_both_loops_keep_the_date_latch_unstamped_on_a_demotion_cut() -> None:
             "the check_lane bypass is the retention-cadence decoupling's "
             "own: a sub-daily schedule is a retention policy, checked "
             "every tick, never latched — the D2 soak's at-most-daily "
-            "conviction)"
+            "recorded finding)"
         )
         gate_idx = lines.index(day_gate)
         # Invariants, not token shapes: a mirrored edit inside the gate

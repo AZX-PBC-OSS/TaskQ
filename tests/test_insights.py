@@ -718,13 +718,13 @@ async def test_worker_busy_ratio_and_drilldown(matrix: tuple[asyncpg.Connection,
     assert 0.0 < by_id[busy_worker]["busy_ratio"] < 0.01
     assert by_id[idle_worker]["busy_ratio"] == 0.0
     # The drill-down: one worker's row only, same numbers.
-    drill = await fetch_worker_busy_ratio(
+    scenario = await fetch_worker_busy_ratio(
         conn, schema=schema, window=timedelta(hours=1), worker_id=busy_worker
     )
-    assert len(drill) == 1
-    assert drill[0]["worker_id"] == busy_worker
-    assert drill[0]["busy_ms"] == 3000
-    assert set(drill[0]) == {
+    assert len(scenario) == 1
+    assert scenario[0]["worker_id"] == busy_worker
+    assert scenario[0]["busy_ms"] == 3000
+    assert set(scenario[0]) == {
         "worker_id",
         "hostname",
         "pid",

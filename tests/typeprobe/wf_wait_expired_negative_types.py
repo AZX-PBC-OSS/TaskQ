@@ -3,20 +3,20 @@ returns the TYPED UNION (the declared decision models joined with the
 house ``Expired`` member), so the CHECKER forces the fail-close arm.
 
 Each ``MUST_ERROR(rules...)`` marker names a wrong-shape body that must
-RED on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
+FAILING on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
 from the marker's DECLARED set.
 
-THE RED-FIRST RECEIPT (the amendment's own): the bare-unwrap marker ran
+THE FAILING-FIRST RECEIPT (the amendment's own): the bare-unwrap marker ran
 against the PRE-UNION tree — ``wait_signal`` returned ``Any``, the
 checker was SILENT on the exact shape that hangs an operator (a body
 reading the decision off an outcome that may be the expiry); the
-capture rides ``.measurements/t26-typegate-red-first.txt`` and the
+capture rides the recorded capture and the
 union's landing is the flip. The exception face
 (``SignalTimeoutError``) could never be forced: a body that never
 catches it compiles clean.
 
-The fall-through marker reds through the BODY's own declared return —
-the loop-shape law's forcing — and stays as the second arm's drill.
+The fall-through marker fails through the BODY's own declared return —
+the loop-shape law's forcing — and stays as the second arm's scenario.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ async def probe_bare_unwrap_ignores_expired(ctx: StepContext, params: Params) ->
     """THE BARE UNWRAP: the body reads the decision straight off the
     outcome — but the outcome may be the EXPIRY member (the deadline
     passed the DB clock). The union's forcing: ``Expired`` carries no
-    ``verdict``; the checker reds the attribute."""
+    ``verdict``; the checker fails the attribute."""
     _ = params
     outcome = await ctx.wait_signal((Approval,), timeout_s=30.0)
     return Approval(
@@ -65,7 +65,7 @@ async def probe_match_ignores_expired(
 async def probe_the_green_door(ctx: StepContext, params: Params) -> Approval:
     """THE GREEN DOOR (the shape the docs teach): BOTH arms handled —
     the decision arm continues, the expiry arm is the fail-close. This
-    function must stay CLEAN (the gate reds on any error outside the
+    function must stay CLEAN (the gate fails on any error outside the
     markers — a green-surface regression is a failure)."""
     _ = params
     outcome = await ctx.wait_signal((Approval,), timeout_s=30.0)
@@ -87,14 +87,14 @@ async def probe_the_green_door(ctx: StepContext, params: Params) -> Approval:
 # ── T28's TIMER PROBES — the durable timer's typed wake ─────────────────
 # ``ctx.wait_until`` returns the TYPED ``TimerWake`` (never a union, never
 # Any): the wake's fields (key/scheduled/fired_at) narrow, a wrong
-# ``when`` argument reds, and a body reading a foreign attribute off the
-# wake reds — the clock's receipt is a typed value the checker sees.
+# ``when`` argument fails, and a body reading a foreign attribute off the
+# wake fails — the clock's receipt is a typed value the checker sees.
 
 
 async def probe_timer_green_door(ctx: StepContext, params: Params) -> str:
     """THE TIMER'S GREEN DOOR (the shape the docs' §4b teaches): the
     wake is consumed as the typed value it is. This function must stay
-    CLEAN (the gate reds on any error outside the markers)."""
+    CLEAN (the gate fails on any error outside the markers)."""
     _ = params
     wake = await ctx.wait_until(30.0, key="probe")
     return f"{wake.key}:{wake.lateness_s >= 0.0}"
@@ -115,9 +115,9 @@ async def probe_timer_when_must_be_temporal(
 
 async def probe_timer_wake_bare_unwrap(
     ctx: StepContext, params: Params
-) -> str:  # MUST_ERROR(reportAttributeAccessIssue, unresolved-attribute): the wake carries NO decision fields — a body reading a human gate's verdict off the clock's receipt reds
+) -> str:  # MUST_ERROR(reportAttributeAccessIssue, unresolved-attribute): the wake carries NO decision fields — a body reading a human gate's verdict off the clock's receipt fails
     """THE WAKE IS NOT A DECISION: a body that treats the timer's
-    receipt as a human gate's answer (reading a `verdict` off it) reds
+    receipt as a human gate's answer (reading a `verdict` off it) fails
     — the timer's face has no fail-close to borrow fields from."""
     _ = params
     wake = await ctx.wait_until(30.0, key="probe")

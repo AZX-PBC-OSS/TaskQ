@@ -1,11 +1,11 @@
-"""FV-DELIVERABLE — THE REDLOG LAW GUARD, RE-WRITTEN TO PROVENANCE (the
-findings-validation round; the evidence-integrity round's cure 3).
+"""FV-DELIVERABLE — THE FAILURE LOG LAW GUARD, RE-WRITTEN TO PROVENANCE (the
+findings-validation round; the evidence-integrity round's fix 3).
 
-THE LAW (the new evidence law this round enforces): **a redlog entry
+THE LAW (the new evidence law this round enforces): **a failure log entry
 CITES ITS RECEIPT CHAIN, or it doesn't exist.**
 
 The guard's first body (the shape rule) AST-walked every test module and
-convicted ``.red(...)`` calls whose ``observed`` payload was composed
+rejected ``.red(...)`` calls whose ``observed`` payload was composed
 entirely of syntactic constants — a hand-written literal is prose
 wearing an evidence file's clothes. THE SHAPE RULE WAS DEFEATABLE, twice
 over, live:
@@ -19,25 +19,25 @@ over, live:
    payload node is an ``ast.Name``, not a literal — the scan passed it.
    The lie moved one hop up the module and the guard went blind.
 
-THE CURE IS THE PROVENANCE RULE, NOT A SHAPE RULE: the guard no longer
+THE FIX IS THE PROVENANCE RULE, NOT A SHAPE RULE: the guard no longer
 inspects the CALL at all — it verifies the SINK's RECEIPT CHAIN. Every
-entry a law-stamped run recorded must cite (a) its drill's RUN-ID, (b)
-the drill's captured output FILE PATH, (c) the capture's sha256 — and
+entry a law-stamped run recorded must cite (a) its scenario's RUN-ID, (b)
+the scenario's captured output FILE PATH, (c) the capture's sha256 — and
 the guard RE-VERIFIES at guard time: the cited file EXISTS, its digest
 matches, and its content IS the recorded red. An entry whose cited
 capture is missing or mismatching FAILS the guard — whatever syntactic
 shape produced it. The two bypasses are re-tested below and both are
-convicted BY PROVENANCE: the keyword form and the laundered name now
+rejected BY PROVENANCE: the keyword form and the laundered name now
 produce receipts like any other call (the old blind spots are verified
-entries), and the conviction of a FABRICATED entry is its broken receipt
+entries), and the recorded finding of a FABRICATED entry is its broken receipt
 — a missing capture, a digest mismatch, a content mismatch — never the
 payload's grammar.
 
 (A mechanical guard cannot read minds: a pin that writes the same lie
-into its drill capture AND its entry leaves a self-consistent artifact —
-which is why the mutation drills' teeth are BEHAVIORAL pins
+into its scenario capture AND its entry leaves a self-consistent artifact —
+which is why the mutation tests' teeth are BEHAVIORAL pins
 (``test_wf_sweep_pins.py`` pin 23's law): the lie flips a green test the
-moment the mutation ships. The receipt chain's convictions are the
+moment the mutation ships. The receipt chain's recorded findings are the
 mechanical half: hand-edited sinks, fabricated citations, stale
 captures, cross-tree identity confusion.)
 """
@@ -52,7 +52,7 @@ from typing import Any
 
 from tests._wf_fixtures import MEASUREMENTS, REDLOG_LAW, head_sha, source_changes_since
 
-#: The redlog sinks (the fixtures' filenames — every RedLog instance).
+#: The failure log sinks (the fixtures' filenames — every RedLog instance).
 _SINKS: tuple[str, ...] = (
     "pin-reds.json",
     "ledger-pin-reds.json",
@@ -79,7 +79,7 @@ def _sink_records() -> tuple[list[tuple[Path, dict[str, Any]]], str]:
     the law's records are the live claims.
 
     The sinks' root resolves local-FIRST, the evidence branch as the
-    fallback: the local ``.measurements/`` when it exists (a battery run
+    fallback: the local `the recorded capture` when it exists (a battery run
     on this tree appends to the LOCAL sinks — they are the live tree's
     own records, anchored at THIS tree's head), else — a fresh clone
     where the extraction left no local estate — the evidence branch's
@@ -126,8 +126,8 @@ def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: 
     """The receipt chain's verdict for ONE entry: ``None`` = the chain
     holds; otherwise the FIRST broken link, named. The three links:
 
-    (a) the entry cites its drill's run-id (the record's own run);
-    (b) the entry cites the drill's captured output file path;
+    (a) the entry cites its scenario's run-id (the record's own run);
+    (b) the entry cites the scenario's captured output file path;
     (c) the file EXISTS, its sha256 matches, and its content contains
         the recorded red (the capture's own observed, byte-equal).
     """
@@ -135,7 +135,7 @@ def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: 
     if not capture_rel:
         return (
             f"pin={entry.get('pin')!r}: the entry cites NO capture — the "
-            "provenance law's link (b) is missing (a redlog entry without "
+            "provenance law's link (b) is missing (a failure log entry without "
             "a cited capture doesn't exist)"
         )
     if entry.get("run") != record.get("run"):
@@ -148,7 +148,7 @@ def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: 
     if not capture.is_file():
         return (
             f"pin={entry.get('pin')!r}: the cited capture {capture_rel} does "
-            "not EXIST — the receipt chain's link (c) is broken (a red that "
+            "not EXIST — the receipt chain's link (c) is broken (a failure that "
             "never ran, or a capture deleted since)"
         )
     digest = sha256(capture.read_bytes()).hexdigest()
@@ -172,12 +172,12 @@ def verify_receipt(record: dict[str, Any], entry: dict[str, Any], measurements: 
 
 def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
     """THE PROVENANCE LAW, SCOPED BY THE HEAD-STAMP LAW: every entry a
-    law-stamped run recorded ON A LIVE TREE cites its drill's run-id +
+    law-stamped run recorded ON A LIVE TREE cites its scenario's run-id +
     captured output file, the file exists, its digest matches, and its
     content IS the recorded red. A broken chain on a live record = the
     guard FAILS, the entry named.
 
-    THE LIVE/HISTORY SCOPING (the severed-receipt cure, 2026-10-09):
+    THE LIVE/HISTORY SCOPING (the severed-receipt fix, 2026-10-09):
     a record whose ``head_sha`` is the CURRENT head — or whose tree
     differs from the claimed head by MEASUREMENT-ONLY changes (the
     off-by-one rule, the head-stamp verifier's own) — is a LIVE claim:
@@ -186,14 +186,14 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
     verdict ("a capture against a stale head is history, never the
     live claim") — never deleted (the sinks are append-only, zero rows
     dropped), never demanded a file the tree no longer carries. The
-    convicted shape that forced the scoping: the batteries' drill runs
+    rejected shape that forced the scoping: the batteries' scenario runs
     append their rows to the TRACKED sinks while the captures land
     under the (then-)gitignored captures' home — a carry that shipped
     the sinks without the captures left a THOUSAND rows whose receipts
     died with the ephemeral lanes' worktrees. The rows are history;
     the LAW's teeth are unchanged: every live record's chain is fully
-    re-verified here, and the drills' convictions re-derive on every
-    battery (the behavioral pins — a mutation's red whose cure shipped
+    re-verified here, and the scenarios' recorded findings re-derive on every
+    battery (the behavioral pins — a mutation's red whose fix shipped
     flips a green test, the receipt's real half)."""
     violations: list[str] = []
     live_records = 0
@@ -217,7 +217,7 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
             if broken is not None:
                 violations.append(f"{sink.name}: {broken}")
     assert not violations, (
-        "THE REDLOG PROVENANCE LAW: a redlog entry cites its receipt chain "
+        "THE FAILURE LOG PROVENANCE LAW: a failure log entry cites its receipt chain "
         "(run-id + capture file + digest) or it doesn't exist — these "
         "entries' chains are broken:\n" + "\n".join(violations)
     )
@@ -227,7 +227,7 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
     # time (the newest battery's rows stamp the current head; the
     # off-by-one keeps them live across the sink's own landing commit).
     assert live_records > 0 or history_records == 0, (
-        f"THE REDLOG PROVENANCE LAW'S SCOPING: {history_records} history "
+        f"THE FAILURE LOG PROVENANCE LAW'S SCOPING: {history_records} history "
         "records and ZERO live records — the guard verified nothing. A "
         "battery must have run at this head (or a measurement-only delta "
         "of it) before the guard's verdict means anything."
@@ -236,22 +236,22 @@ def test_every_law_stamped_redlog_entry_cites_a_live_capture() -> None:
 
 def test_the_captures_are_not_tracked_in_the_product_repo() -> None:
     """The repo carries code, tests, and docs; the measurement artifacts
-    (including ``.measurements/redlog-captures/``) live on the evidence
+    (including `the recorded capture`) live on the evidence
     branch, not in this index. This pin holds that: ``git ls-files``
     must list nothing under the captures' home."""
     listed = subprocess.run(
-        ["git", "ls-files", "--", ".measurements/redlog-captures"],
+        ["git", "ls-files", "--", "the recorded capture log-captures"],
         cwd=MEASUREMENTS.parent,
         capture_output=True,
         text=True,
         check=True,
     ).stdout
     assert not listed.strip(), (
-        "THE REDLOG CAPTURES ARE TRACKED IN THE PRODUCT REPO: "
-        f"{len(listed.split())} paths under .measurements/redlog-captures/ "
+        "THE FAILURE LOG CAPTURES ARE TRACKED IN THE PRODUCT REPO: "
+        f"{len(listed.split())} paths under the recorded capture log-captures/ "
         "ride the index. The measurement artifacts belong to the evidence "
         "branch — remove them from the index "
-        "(git rm -r --cached .measurements/redlog-captures)."
+        "(git rm -r --cached the recorded capture log-captures)."
     )
 
 
@@ -264,11 +264,11 @@ def test_the_guard_convicts_the_two_shape_bypasses_by_provenance(
     * the KEYWORD-FORM payload (the old scan read ``args[2]`` and
       skipped) — records like any call now, its entry VERIFIED by
       receipt; break the receipt (delete the capture) and the guard
-      convicts the entry, whatever syntax produced it;
+      rejects the entry, whatever syntax produced it;
     * the NAME-LAUNDERED CONSTANT (the old scan saw an ``ast.Name`` and
       passed) — same: the entry is verified by its CAPTURE's content,
       not by resolving the name's grammar; mutate the capture behind the
-      digest and the guard convicts (the content check).
+      digest and the guard rejects (the content check).
     """
     from tests._wf_fixtures import RedLog
 
@@ -281,7 +281,7 @@ def test_the_guard_convicts_the_two_shape_bypasses_by_provenance(
     # BYPASS 1, the keyword form — the old guard's blind spot:
     log.red("bypass-keyword-form", "the payload rides observed=", observed={"zombie_wake": True})
     # BYPASS 2, the name-laundered constant — the old guard saw a Name:
-    fabricated_constant = {"zombie_wake": True, "note": "never drilled"}
+    fabricated_constant = {"zombie_wake": True, "note": "never exercised"}
     log.red("bypass-laundered-constant", "the payload is a module constant", fabricated_constant)
     log.flush()
 
@@ -290,19 +290,19 @@ def test_the_guard_convicts_the_two_shape_bypasses_by_provenance(
     for entry in records[0]["entries"]:
         # THE PROVENANCE VERDICT: both entries' receipts HOLD (each cites
         # a live, digest-matching, content-matching capture) — the
-        # conviction is by the chain, never the shape.
+        # recorded finding is by the chain, never the shape.
         assert verify_receipt(records[0], entry, measurements_root) is None, entry
 
-    # THE CONVICTIONS (both by provenance):
+    # THE RECORDED FINDINGS (both by provenance):
     keyword_entry, laundered_entry = records[0]["entries"]
-    # 1. The keyword-form entry whose capture VANISHED: convicted.
+    # 1. The keyword-form entry whose capture VANISHED: rejected.
     capture_of = lambda entry: measurements_root / entry["capture"]  # noqa: E731
     capture_of(keyword_entry).unlink()
     broken = verify_receipt(records[0], keyword_entry, measurements_root)
     assert broken is not None and "does not EXIST" in broken, broken
     # 2. The laundered-constant entry whose capture MISMATCHES its
     #    recorded red (the capture rewritten behind the digest — the
-    #    stale/mutated receipt): convicted.
+    #    stale/mutated receipt): rejected.
     capture_path = capture_of(laundered_entry)
     capture_path.write_text(
         json.dumps(
@@ -326,7 +326,7 @@ def test_the_guard_convicts_the_two_shape_bypasses_by_provenance(
 def test_a_fabricated_sink_entry_without_a_citation_is_convicted(tmp_path: Path) -> None:
     """THE HAND-EDITED SINK (the fabrication vector the shape rule could
     never see — it lived outside the source): an entry appended to a
-    sink WITHOUT its receipt chain is convicted at guard time. The red
+    sink WITHOUT its receipt chain is rejected at guard time. The red
     that was never run doesn't exist."""
     fabricated = {
         "run": "19700101T000000-0-deadbeef",
@@ -334,7 +334,7 @@ def test_a_fabricated_sink_entry_without_a_citation_is_convicted(tmp_path: Path)
         "law": REDLOG_LAW,
         "entries": [
             {
-                "pin": "fabricated-without-a-drill",
+                "pin": "fabricated-without-a-scenario",
                 "mutation": "nothing was mutated",
                 "red": '{"zombie_wake": true}',
             }

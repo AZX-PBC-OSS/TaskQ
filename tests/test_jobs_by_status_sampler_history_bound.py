@@ -40,7 +40,7 @@ engine actually reads, so it is exact and cannot flake on plan shape or PG
 version. The SQL under test is the production template itself, rendered,
 never a copy.
 
-This pin was written RED against the original full-table ``GROUP BY status``:
+This pin was written failing against the original full-table ``GROUP BY status``:
 with the fixed live set and 10k seeded terminal rows it returned
 ``{'pending': 600, 'succeeded': 10000, 'running': 15, 'scheduled': 40}`` -
 terminal history counted and reported by a series whose alert operands are

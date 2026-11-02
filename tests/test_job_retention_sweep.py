@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is fixture-derived (module_pg_schema), not user input; every value is $-bound.
 
-"""Red-team pins for age-based ``job_events`` retention.
+"""Adversarial review pins for age-based ``job_events`` retention.
 
 ``job_events`` has 16 INSERT sites and no DELETE anywhere in the package;
 its only exit is the ``ON DELETE CASCADE`` when the leader prune removes a
@@ -12,7 +12,7 @@ terminal parent job. Two consequences, both confirmed:
 * Even for terminal jobs, event volume is bounded by job retention
   (30-90 days), not by anything proportional to what operators read.
 
-The attached design (``docs/design/sql-hotpath-followups.md`` §2) settles
+The attached design (``docs/design/sql-hotpath-followups.md`` the section) settles
 the shape: a leader-gated, batched ``DELETE`` by ``occurred_at`` -
 ``sweep_expired_events()`` in ``taskq/backend/_sweeps.py``, mirroring
 ``sweep_expired_results`` - driven by a worker-configurable
@@ -74,7 +74,7 @@ def _event_retention_sweep() -> _SweepFn:
             "16 INSERT sites and zero DELETEs; its only exit is the ON "
             "DELETE CASCADE from a terminal parent, so events of a "
             "never-terminal job live forever. The attached design "
-            "(docs/design/sql-hotpath-followups.md §2) names the seam: "
+            "(docs/design/sql-hotpath-followups.md the section) names the seam: "
             "sweep_expired_events() in taskq/backend/_sweeps.py, a bounded "
             "batched DELETE by occurred_at, leader-gated per sweep tick."
         )

@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream; every value is $-bound.
-"""Red-team pins: every count-bounded statement under TWO concurrent workers.
+"""Adversarial review pins: every count-bounded statement under TWO concurrent workers.
 
 The hunt class: a statement whose cap arithmetic is per-worker but whose
 semantics are fleet-wide (or vice versa). The dispatch claim's capped-actor

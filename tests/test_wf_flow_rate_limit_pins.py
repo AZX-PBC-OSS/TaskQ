@@ -1,5 +1,5 @@
 """THE QUEUE'S RATE LIMIT ON THE WORKFLOW PATH (the DI lane's blocker
-#2 cure): a workflow row's claim honors the SAME queue rate limits the
+#2 fix): a workflow row's claim honors the SAME queue rate limits the
 vanilla actors honor — ONE mechanism, not a second one.
 
 The vanilla path's queue rate limit: a queue whose ``max_concurrent``
@@ -13,7 +13,7 @@ acquire: every claimed flow row executed unconditionally — a
 rate-limited queue's flow BURST past the cap its vanilla siblings
 honored.
 
-The cure pins (the intercept's gate — ``taskq.worker.run.
+The fix pins (the intercept's gate — ``taskq.worker.run.
 _flow_rate_limit_gate`` — and the door's slot release):
 
 * THE DENY — the cap's slots held, the gate denies, the counter bumps

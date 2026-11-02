@@ -1,7 +1,7 @@
 """T20's CORE FIX pins (the spike's live finding): the maintenance leg's
 failed arm gates on live UNRESOLVED work.
 
-THE FINDING (observed live in the T20 concept-proof spike, PROOF.md §6b):
+THE FINDING (observed live in the T20 concept-proof spike, PROOF.md the section):
 the shipped ``WORKFLOW_ROOT_MAINTAIN_SQL`` failed arm gated on
 ``has_active`` = running/crashed/abandoned ONLY — pending/scheduled
 siblings did NOT hold a failing run. A streaming source's FIRST chain
@@ -20,14 +20,14 @@ gates on live UNRESOLVED work —
                 AND NOT (metadata ? 'blocking_reason')))
 
 The blocked-stamp exclusion is exactly what keeps the phase-2 H1 wedge
-cured: a resolved-blocked join row (``blocking_reason`` stamped) is
+fixed: a resolved-blocked join row (``blocking_reason`` stamped) is
 RESOLVED — it must not hold the run; a pending CHAIN row (no stamp) is
 UNRESOLVED work — it must.
 
-Red-first: the 149-siblings pin ran RED against the shipped leg (the root
+Failing-first: the 149-siblings pin failed against the shipped leg (the root
 flipped ``failed`` with 149 live siblings — the stranding reproduced);
 the greens below are the fix's evidence. Captured:
-``.measurements/t20-maintain-liveness-*.txt``.
+`the recorded capture`.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ async def test_t20_failed_arm_waits_for_live_siblings(
     """ONE failed chain + 149 pending siblings: the failed arm must NOT
     finalize the root while live UNRESOLVED work is on the floor.
 
-    RED (the shipped leg, the spike's observation): the root flipped
+    The recorded failure (the shipped leg, the spike's observation): the root flipped
     ``failed`` at the first maintenance pass while the 149 siblings were
     pending — and the certified dispatch fence then made them unclaimable
     FOREVER (the 149-stranded-chains wedge). GREEN (the fix): the root
@@ -185,7 +185,7 @@ async def test_t20_failed_arm_wedge_cure_stands(
     t20_redlog: RedLog,
 ) -> None:
     """THE BLOCKED-STAMP EXCLUSION IS LOAD-BEARING: the phase-2 H1 wedge's
-    cure must survive the fix — a resolved-blocked join row
+    fix must survive the fix — a resolved-blocked join row
     (``blocking_reason='failed_parent'`` stamped by the crash-window heal)
     must NOT hold a failing run. With the fix, a stamped pending row is
     not 'unresolved work' — the root terminals 'failed' in the same pass

@@ -233,7 +233,7 @@ async def test_capacity_terms_land_in_actor_config(
     assert pub.max_concurrent == 1
     assert (
         pub.max_pending is None
-    )  # H-A6: max_pending is off the wf surface — the row seeds it UNSET
+    )  # the: max_pending is off the wf surface — the row seeds it UNSET
     assert pub.result_ttl == 3600.0
     assert pub.metadata.get("workflow_actor") is True, pub.metadata
 
@@ -250,9 +250,7 @@ async def test_capacity_terms_land_in_actor_config(
     assert row is not None, "the capped cohort's actor_config row is missing"
     assert row["queue"] == "flows-pub"
     assert row["max_concurrent"] == 1
-    assert (
-        row["max_pending"] is None
-    )  # H-A6: the dead knob is off the surface — the row seeds UNSET
+    assert row["max_pending"] is None  # the: the dead knob is off the surface — the row seeds UNSET
     assert row["result_ttl"] == 3600.0
     meta = _decoded(row["metadata"])
     assert meta.get("workflow_actor") is True, meta
@@ -340,7 +338,7 @@ def test_retention_env_is_the_demo_launch_surface(monkeypatch: pytest.MonkeyPatc
     for name in run_demo_module.RETENTION_ENV:
         # THE HYGIENE LAW: the monkeypatch's undo owns the restore (a bare
         # os.environ write has no teardown; the direct-mutation pin
-        # convicts exactly this shape).
+        # rejects exactly this shape).
         monkeypatch.delenv(name, raising=False)
     run_demo_module._arm_env()
     for name, value in run_demo_module.RETENTION_ENV.items():

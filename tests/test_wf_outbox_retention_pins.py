@@ -1,9 +1,9 @@
-"""THE DELIVERED OUTBOX'S TTL — the D2 soak's P3 cure's pins (integration:
+"""THE DELIVERED OUTBOX'S TTL — the D2 soak's P3 fix's pins (integration:
 real PG).
 
 The soak's evidence (REPORT-D2-soak): the delivered ``wf_outbox``
 population grew monotonically forever — 5.9k at close, no pruner touched
-it. These pins hold the cure: delivered rows past the TTL delete (the
+it. These pins hold the fix: delivered rows past the TTL delete (the
 retention policy's own row), undelivered rows are NEVER touched (a
 deleted undelivered row is a lost delivery — the drain owns those), and
 ``timedelta(0)`` is the disable sentinel (the deletion-sweep family's

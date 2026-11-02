@@ -1,4 +1,4 @@
-"""Red-team attacks on the two newest `taskq.cron` branches.
+"""Adversarial review attacks on the two newest `taskq.cron` branches.
 
 Both target code added after the bounded-sweep fix, and both were
 verified red by direct run before being written here - neither is

@@ -1,7 +1,7 @@
 """The refund-then-reclaim ledger race: the counter and the ledger must
 move TOGETHER across the claim-loss reconcile's refund.
 
-The soak's grand mixin red on CI (run 36175331443, ``grand_mixin[1]``) at
+The soak's grand mixin red on CI (the recorded run, ``grand_mixin[1]``) at
 the reconciliation pin: ``attempt counter 1 vs 2 attempt rows``. The
 mechanism, frozen here one writer at a time (the writers genuinely run
 concurrently in production - the heartbeat tick on the worker's loop, the

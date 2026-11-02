@@ -1,7 +1,7 @@
 """THE T21 NUMBERS RUN — the PoC's numbers re-proven ON THE BUILT CODE.
 
 The capture law: this run writes a timestamped JSON file into
-`.measurements/` — the verdicts read back in minutes, the file is the
+the recorded capture — the verdicts read back in minutes, the file is the
 record. Not a pytest pin (the timing bands live in the pins as
 boundaries); THIS is the measured evidence the report cites.
 
@@ -203,7 +203,7 @@ async def main() -> dict[str, Any]:
         "rows": red_rows,
         "write_s": round(red_s, 3),
         "writes_per_s": int(2000 / red_s),
-        "verdict": "the every-emission-a-row shape grows with emissions — kept red",
+        "verdict": "the every-emission-a-row shape grows with emissions — kept failing",
     }
 
     await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')

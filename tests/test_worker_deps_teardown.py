@@ -217,7 +217,7 @@ async def test_teardown_terminates_pool_when_close_hangs(
         leader_conn_factory=_make_conn_factory([leader]),
     )
     # Why the outer timeout: unguarded, teardown closes pools unbounded, so the
-    # RED state would hang forever instead of failing fast.
+    # the mutated state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns):
             dispatcher.close_wait.clear()  # close() blocks forever from now on
@@ -377,7 +377,7 @@ async def test_teardown_terminates_notify_conn_when_close_hangs(
         leader_conn=_FakeConn("leader"),  # type: ignore[arg-type]
     )
     # Why the outer timeout: unguarded, teardown awaits conn.close() unbounded,
-    # so the RED state would hang forever instead of failing fast.
+    # so the run would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
             notify.close_wait.clear()  # close() blocks forever from now on
@@ -404,7 +404,7 @@ async def test_teardown_terminates_leader_conn_when_close_hangs(
         leader_conn_factory=_make_conn_factory([leader]),
     )
     # Why the outer timeout: unguarded, teardown awaits conn.close() unbounded,
-    # so the RED state would hang forever instead of failing fast.
+    # so the run would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
             leader.close_wait.clear()  # close() blocks forever from now on
@@ -438,7 +438,7 @@ async def test_teardown_bounds_hot_swapped_pool_after_reload(
     )
     # Why the outer timeout: unguarded, reload registered new pools via
     # enter_async_context (unbounded __aexit__ close), so a hanging close in
-    # the RED state would wedge teardown forever instead of failing fast.
+    # the mutated state would wedge teardown forever instead of failing fast.
     async with asyncio.timeout(5):
         async with open_worker_deps(settings, connections=conns) as deps:
             assert deps.dispatcher_pool is old_dispatcher
@@ -485,7 +485,7 @@ async def test_teardown_bounds_redis_close(
         redis_client_factory=redis_factory,
     )
     # Why the outer timeout: unguarded, teardown awaits redis_client.aclose()
-    # unbounded, so the RED state would hang forever instead of failing fast.
+    # unbounded, so the mutated state would hang forever instead of failing fast.
     with structlog.testing.capture_logs() as captured:
         async with asyncio.timeout(5):
             async with open_worker_deps(settings, connections=conns) as deps:

@@ -1,4 +1,4 @@
-"""Red-team locks: unbounded terminal-write pool acquires starve the heartbeat loop.
+"""Adversarial review locks: unbounded terminal-write pool acquires starve the heartbeat loop.
 
 ``backend/_terminal.py``'s ``_mark_cancelled`` acquires from its pool with
 NO timeout (``async with pool.acquire() as conn:``) and
@@ -13,7 +13,7 @@ self-shutdown.
 A cancel storm (``heartbeat_pool_size`` - default 4, ``settings.py`` -
 concurrent consumer ``mark_cancelled`` writes holding/gating the pool)
 therefore starves the heartbeat loop into self-shutdown while the worker
-was merely cancelling jobs. The RED contract: terminal-write pool
+was merely cancelling jobs. The failing contract: terminal-write pool
 acquires must be bounded (or routed off the heartbeat pool).
 """
 
@@ -163,7 +163,7 @@ def _deps(pool: ChaosPool, *, max_heartbeat_failures: int) -> WorkerDeps:
 
 
 async def test_mark_cancelled_pool_acquire_must_be_bounded() -> None:
-    """RED: mark_cancelled's pool acquire must not queue indefinitely on an
+    """The recorded failure: mark_cancelled's pool acquire must not queue indefinitely on an
     exhausted pool.
 
     Contract: terminal-write pool acquires must be bounded (or routed off
@@ -223,7 +223,7 @@ async def test_cancel_storm_starves_heartbeat_loop_into_isolate_self(
     writes starve the heartbeat loop's bounded acquire past the failure
     threshold into isolate_self - worker self-shutdown.
 
-    Contract this pin motivates (the RED twin above asserts it):
+    Contract this pin motivates (the failing state twin above asserts it):
     terminal writes routed to the heartbeat pool with unbounded acquires
     (backend/_terminal.py - no timeout on pool.acquire) let a cancel storm
     of heartbeat_pool_size (default 4, settings.py) writes hold the whole

@@ -2,7 +2,7 @@
 PER JOIN refused at validate with the child-driven alternative named, the
 escape recorded on the joined node, and the exactly-once pins on the
 child-driven shape (50 duplicate finalizes → 1 decrement; the PK rejects
-the double-fire — the shipped drills re-run on the child-driven join).
+the double-fire — the shipped scenarios re-run on the child-driven join).
 
 THE BOUND'S HONEST DERIVATION (F7, restated — the docs carry the same
 text; the pin asserts the derivation's PROCEDURE, never a false line):
@@ -52,7 +52,7 @@ def new_id() -> object:
     return new_uuid()
 
 
-# ── Red-first 1: the UNBOUNDED FAN-IN is refused at validate ────────────
+# ── Failing-first 1: the UNBOUNDED FAN-IN is refused at validate ────────────
 
 
 def test_t07_pin_bound_refuses_above_the_maximum_naming_the_alternative() -> None:
@@ -96,7 +96,7 @@ def test_t07_pin_bound_at_the_maximum_is_accepted() -> None:
     validate_join_spec("edge_join", parents, len(parents))
 
 
-# ── Red-first 2: the CHILD-DRIVEN shape fires exactly once ──────────────
+# ── Failing-first 2: the CHILD-DRIVEN shape fires exactly once ──────────────
 
 
 @pytest.mark.integration
@@ -107,9 +107,9 @@ async def test_t07_pin_child_driven_join_fires_exactly_once(
     wf_sql: WorkflowSql,
 ) -> None:
     """Past the bound (the child-driven escape): the join must STILL fire
-    exactly once — the shipped duplicate-finalize drill re-run on the
+    exactly once — the shipped duplicate-finalize scenario re-run on the
     child-driven join: 50 duplicate finalizes → 1 decrement; the
-    wf_join_fire PK rejects the double-fire. The convicted variant (a
+    wf_join_fire PK rejects the double-fire. The rejected variant (a
     child-driven join whose count double-fires) reds on the PK."""
     from taskq.workflows._types import NodeSpec
     from taskq.workflows.engine import insert_node
@@ -158,7 +158,7 @@ async def test_t07_pin_child_driven_join_fires_exactly_once(
 
     assert await fire_count(wf_conn, wf_schema, join_id) == 1
 
-    # THE DUPLICATE-FINALIZE DRILL: 50 more terminal writes on an already-
+    # THE DUPLICATE-FINALIZE PROOF: 50 more terminal writes on an already-
     # terminal child — every one fenced (the rowcount gate); no second
     # decrement, no second fire.
     for _ in range(50):

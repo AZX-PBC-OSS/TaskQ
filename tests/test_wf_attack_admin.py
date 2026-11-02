@@ -1,11 +1,11 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (module_pg_schema); every value is $-bound — the estate's test-SQL precedent (test_workflows_page.py).
 """ATTACK PINS — the admin workflow-run page's attack front.
 
-Provenance: the hostile review of the consolidated head (af1b8779), the
+Provenance: the hostile review of the consolidated head (the consolidated head), the
 admin-workflow-page attack front. Five findings LANDED and are pinned
 strict-xfail, each asserting the SAFE behavior against the live defect —
-the cure flips each to XPASS-strict (a red that tells you to remove the
-marker WITH the cure, the same drill test_wf_attack_cancel.py's Face C
+the fix flips each to XPASS-strict (a failure that tells you to remove the
+marker WITH the fix, the same scenario test_wf_attack_cancel.py's Face C
 documents). Three attacks FAILED and are pinned as green guards so the
 verified-safe behavior can never rot silently.
 
@@ -267,7 +267,7 @@ async def _seed_node(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-1]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-1, landed @af1b8779): fetch_run_view passes the run ROOT id …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-1, landed @the consolidated head): fetch_run_view passes the run ROOT id …
 async def test_the_map_collapse_counts_the_real_children(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -325,7 +325,7 @@ async def test_the_map_collapse_counts_the_real_children(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-2]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-2, landed @af1b8779): _validate_through_gates raises the …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-2]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-2, landed @the consolidated head): _validate_through_gates raises the …
 async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -376,11 +376,11 @@ async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
 
 # ──────────────────────────────────────────────────────────────────────
 # F-ADM-3 — the run SSE stream has no mid-stream session re-check (the
-# #316 cure reached /sse/{topic}, never this stream).
+# #316 fix reached /sse/{topic}, never this stream).
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-4]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-3, landed @af1b8779): _wf_actions.run_stream authenticates …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-4]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-3, landed @the consolidated head): _wf_actions.run_stream authenticates …
 async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -439,9 +439,9 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
 
         auth_state["session_valid"] = False
         tail = len(received)
-        # A revision change AFTER the revocation: the pre-cure stream SERVES
+        # A revision change AFTER the revocation: the pre-fix stream SERVES
         # the frame to the dead session (the finding's own words: it keeps
-        # receiving frames); the cured stream has already ended.
+        # receiving frames); the fixed stream has already ended.
         await module_pg_pool.execute(
             f'INSERT INTO "{module_pg_schema.schema_name}".wf_signals '
             "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, status) "
@@ -478,7 +478,7 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-4]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-4, landed @af1b8779): run_cancel's refusal redirect targets …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-4]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-4, landed @the consolidated head): run_cancel's refusal redirect targets …
 async def test_the_refused_cancel_redirect_lands_on_a_rendered_refusal(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -527,7 +527,7 @@ async def test_the_refused_cancel_redirect_lands_on_a_rendered_refusal(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-ADM-5: the panel's read-side bound (_bound_for_panel, the shipped 10k cap with the shipped truncation marker)]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-ADM-5: the panel's read-side bound (_bound_for_panel, the shipped 10k cap with the shipped truncation marker)]; the marker was removed per the designed flip (the confirmation).
 async def test_the_node_panel_bounds_the_error_fields_it_serves(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -571,7 +571,7 @@ async def test_the_node_panel_bounds_the_error_fields_it_serves(
             "reached the node panel"
         )
         # THE MARKER'S SHIPPED VOCABULARY: the panel's own
-        # '[truncated: +N characters stay in the row]' suffix (Q5's cure),
+        # '[truncated: +N characters stay in the row]' suffix (Q5's fix),
         # or the estate's older '... (N more characters)' shape — a silent
         # cut reads as the whole value.
         assert (
@@ -600,7 +600,7 @@ async def test_the_boot_json_escapes_a_hostile_step_key(
     module_pg_schema: ModulePgSchema,
     wf_conn: asyncpg.Connection,
 ) -> None:
-    """GUARD-1 (verified safe @af1b8779): a step key carrying a
+    """GUARD-1 (verified safe @the consolidated head): a step key carrying a
     ``</script>`` breakout renders INERT — Jinja's ``tojson`` escapes
     the boot JSON's markup bytes, so the key is NAMED in the graph data
     (fidelity) while the wire never carries the raw breakout (the XSS
@@ -640,7 +640,7 @@ async def test_the_run_page_renders_a_run_stamped_with_a_never_importable_module
     module_pg_schema: ModulePgSchema,
     wf_conn: asyncpg.Connection,
 ) -> None:
-    """GUARD-2 (verified safe @af1b8779): the graph is built FROM THE
+    """GUARD-2 (verified safe @the consolidated head): the graph is built FROM THE
     ROWS — a run whose ``metadata.workflow`` stamp names a module that
     does not exist ANYWHERE renders fully (200); the render never
     imports the workflow's module (an import attempt would raise
@@ -674,7 +674,7 @@ async def test_the_node_panel_binds_the_node_key_as_a_value(
     module_pg_schema: ModulePgSchema,
     wf_conn: asyncpg.Connection,
 ) -> None:
-    """GUARD-3 (verified safe @af1b8779): a node key carrying a SQLi
+    """GUARD-3 (verified safe @the consolidated head): a node key carrying a SQLi
     payload (``x' OR '1'='1' --``) answers 404 — the key binds as a
     VALUE ($1), never interpolates into the predicate. A 200 here means
     the WHERE clause was string-built and the injection matched."""

@@ -1,7 +1,7 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 """The batch terminal path's per-job reset cost is not a batches-row lock queue.
 
-The latency red-team's batch-shape profile (`attack-hotpath-findings.md`)
+The latency adversarial review's batch-shape profile (`attack-hotpath-findings.md`)
 measured `reset_batch_failures` - the `UPDATE batches SET
 consecutive_failures = 0` every successful job of a batch pays through
 `apply_batch_terminal_outcome` - at **8.2 ms/job, 24x the terminal UPDATE's
@@ -457,7 +457,7 @@ async def test_concurrent_all_succeeded_tail_completes_the_batch(pg_dsn: str) ->
             await cleanup.close()
 
 
-# ── the red-team regression pins: the transactional-caller stuck-batch class ──
+# ── the adversarial review regression pins: the transactional-caller stuck-batch class ──
 #
 # The tail gate's early return is UNORDERED with its caller's own commit: a
 # writer whose gate probe saw more open members than the tail bound never

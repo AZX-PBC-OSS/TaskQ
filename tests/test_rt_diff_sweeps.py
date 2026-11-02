@@ -189,7 +189,7 @@ async def test_diff_sweep2_deadline_after_retry_attempt_pk(pg_dsn: str) -> None:
 
 
 async def test_diff_sweep2_deadline_retried_job_does_not_wedge(pg_dsn: str) -> None:
-    """Red-team test: S2 must fail an overdue job that already
+    """Adversarial review test: S2 must fail an overdue job that already
     ran an attempt (retry arm wrote a job_attempts row at the same attempt
     number) WITHOUT raising ``UniqueViolationError`` on the ``job_attempts_pkey``
     and without leaving the job wedged at 'scheduled' forever.

@@ -1,4 +1,4 @@
-"""Red-team attacks on the bounded bulk cancel's drain-time races (real PG).
+"""Adversarial review attacks on the bounded bulk cancel's drain-time races (real PG).
 
 Three properties of ``_cancel_where``'s bounded drain that the two-statement
 design promises but no pinned test exercises at DRAIN scale (≥2 batches):

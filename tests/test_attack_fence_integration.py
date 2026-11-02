@@ -30,7 +30,7 @@ attacks the SEAMS — the same statements carrying every fix at once:
    cancel after terminal — each through public surfaces, each ending in
    exactly one legal state with a truthful origin.
 
-A failure anywhere below is a RED.
+A failure anywhere below is the recorded defect.
 """
 
 import asyncio

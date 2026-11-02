@@ -1,4 +1,4 @@
-"""Red-team pins for the tick's SUCCESS-write races (the failure-write
+"""Adversarial review pins for the tick's SUCCESS-write races (the failure-write
 half is `test_rt_cron_failure_domains.py`'s C3 pin; this file attacks the
 other two arms of the same race window).
 

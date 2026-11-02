@@ -1,4 +1,4 @@
-"""Red-team: concurrent handback calls for the same worker must not double-refund.
+"""Adversarial review: concurrent handback calls for the same worker must not double-refund.
 
 Hypothesis under test: the design doc for drain_local_queue_to_pending claims
 "a second pass matches no rows, so the two passes together are exactly-once"

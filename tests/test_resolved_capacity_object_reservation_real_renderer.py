@@ -1,4 +1,4 @@
-"""Red-team check for issue coverage on resolved-capacity boot lines.
+"""Adversarial review check for issue coverage on resolved-capacity boot lines.
 
 ``_emit_resolved_capacity_startup_lines`` (src/taskq/worker/run.py) extracts
 plain names/slot counts from object-shaped reservation entries

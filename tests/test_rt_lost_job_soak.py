@@ -618,7 +618,7 @@ async def stop_worker_and_reap_bootstrap(
     happy path alike.  The module's event loop is module-scoped (the
     suite's pytest-asyncio config), so a bootstrap task left pending here
     advances at every later test's await points - the exact shape that
-    starved the following tests in run 35648058316.
+    starved the following tests in the recorded run.
 
     Two stages, both non-raising except where marked:
 

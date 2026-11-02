@@ -31,7 +31,7 @@ Surfaces:
    illegal outcome or reason raises ValueError on the boundary before any
    write (never half-written).
 
-4. Fence-fragment misfold drill: a fence conjunct misfolded in a scratch
+4. Fence-fragment misfold scenario: a fence conjunct misfolded in a scratch
    copy of the tree must be caught by the standing nets (differential
    fencing scenarios / bind-arity / terminal-write pins). A guard that
    cannot fire is a red finding.
@@ -566,7 +566,7 @@ async def test_atk_stale_epoch_write_never_applies_to_the_live_attempt(
     assert row is not None and row.status == "succeeded"
 
 
-# ── fence-fragment misfold drill ───────────────────────────────────────────
+# ── fence-fragment misfold scenario ───────────────────────────────────────────
 
 
 _MISFOLDS: dict[str, tuple[str, str]] = {
@@ -612,7 +612,7 @@ def _run_nets_in_scratch(
 ) -> subprocess.CompletedProcess[str]:
     """Run the standing nets in a scratch-copy subprocess pytest.
 
-    THE SCRATCH-TOKEN LAW (the mutual-DROP class, named and cured
+    THE SCRATCH-TOKEN LAW (the mutual-DROP class, named and fixed
     2026-10-08): the scratch run inherits ``os.environ`` — including
     ``TASKQ_TEST_PG_DSN`` (it needs the cluster) AND the parent session's
     run-isolation token (the publisher's ``TASKQ_TEST_RUN_TOKEN`` rides
@@ -622,11 +622,11 @@ def _run_nets_in_scratch(
     ``DROP DATABASE ... WITH (FORCE)`` — killing the parent's live
     connections mid-test; the parent's next test dies on
     ``InvalidCatalogNameError: database "tq_db_..." does not exist`` and
-    the failure rotates with which worker ran the drill
-    (round-1/recon evidence: the misfold drill on gw7 dropped the parent
-    module's db at 22:17). The cure: every scratch run mints its OWN
+    the failure rotates with which worker ran the scenario
+    (round-1/recon evidence: the misfold scenario on gw7 dropped the parent
+    module's db at 22:17). The fix: every scratch run mints its OWN
     token (drill-unique, derived from the parent's worker id so parallel
-    drills on different workers can never collide with each other
+    scenarios on different workers can never collide with each other
     either), so the scratch names live beside — never on top of — the
     parent's.
     """
@@ -636,7 +636,7 @@ def _run_nets_in_scratch(
         "TASKQ_TEST_RUN_TOKEN": (
             # The sanctioned seam (run_isolation_token's own input, NOT the
             # raw worker id the suite-hygiene pin bans): under xdist this IS
-            # the worker id, so parallel drills on different workers mint
+            # the worker id, so parallel scenarios on different workers mint
             # distinct tokens.
             f"scratch_{os.environ.get('TASKQ_TEST_RUN_TOKEN', 'main')}_{token_suffix}"
         ),
@@ -667,7 +667,7 @@ def _copy_scratch(repo: Path, tmp_path: Path) -> Path:
 @pytest.mark.parametrize("misfold", list(_MISFOLDS))
 def test_atk_fence_misfold_is_caught_by_the_standing_nets(misfold: str, tmp_path: Path) -> None:
     """Copy the tree to a scratch dir, misfold ONE fence fragment, run the
-    standing nets there. The drill's control (the sibling test) proves the
+    standing nets there. The scenario's control (the sibling test) proves the
     same harness runs green unmutated, so any failure below is the misfold
     firing a net. A misfold NO net catches is a red finding."""
     repo = Path(__file__).resolve().parent.parent
@@ -688,7 +688,7 @@ def test_atk_fence_misfold_is_caught_by_the_standing_nets(misfold: str, tmp_path
 
 
 def test_atk_fence_drill_control_unmutated_copy_passes(tmp_path: Path) -> None:
-    """The control for the drill: the same scratch-copy harness with NO
+    """The control for the scenario: the same scratch-copy harness with NO
     misfold runs the standing nets green, so the failures above are
     attributable to the misfold alone."""
     repo = Path(__file__).resolve().parent.parent

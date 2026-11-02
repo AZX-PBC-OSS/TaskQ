@@ -59,7 +59,7 @@ async def test_the_archive_sweep_cascades_job_events_away(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """RED PROOF (attack #3): the production archive sweep destroys the
+    """THE RECORDED FAILURE (attack #3): the production archive sweep destroys the
     archived job's event rows via the jobs FK cascade, so the fix's
     archive-arm claim ('event retention is archive-aligned') is false --
     by the time the detail page's archive arm can serve a job, job_events
@@ -107,7 +107,7 @@ async def test_the_archived_detail_page_renders_the_cascade_truth(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """RED PROOF (attack #3, page level): a job archived by the production
+    """THE RECORDED FAILURE (attack #3, page level): a job archived by the production
     sweep reaches the detail route's archive arm with an EMPTY ledger, and
     the page renders the misleading 'No events recorded.' -- the exact
     rendering the fix's commit message claims cannot happen."""
@@ -128,7 +128,7 @@ async def test_the_archived_detail_page_renders_the_cascade_truth(
         resp = await client.get(f"/jobs/{jid}")
     assert resp.status_code == 200
     assert "Event Log" in resp.text
-    # The honest contract (RED until the page says so): production's
+    # The honest contract (failing until the page says so): production's
     # archive sweep cascade-removes the events -- the page must say the
     # history was removed AT ARCHIVE, not "No events recorded." (which
     # claims the job never emitted any).

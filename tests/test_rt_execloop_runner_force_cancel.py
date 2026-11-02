@@ -1,4 +1,4 @@
-"""Red-team: the in-memory runner has no force-cancel seam (E4).
+"""Adversarial review: the in-memory runner has no force-cancel seam (E4).
 
 Contract under attack: after both cancel graces elapse, the in-memory test
 runner must TERMINATE a non-cooperative attempt - ``run_until_drained``

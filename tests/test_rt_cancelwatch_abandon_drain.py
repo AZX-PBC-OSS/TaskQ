@@ -1,4 +1,4 @@
-"""Red-team: phase-3 abandonment drain failure modes in ``_CancelController``.
+"""Adversarial review: phase-3 abandonment drain failure modes in ``_CancelController``.
 
 Two attacking interleavings around ``run_post_tx``'s drain of
 ``_pending_abandons``:

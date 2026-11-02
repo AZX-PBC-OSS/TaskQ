@@ -2,7 +2,7 @@
 (forward-then-backward, backward-then-forward) drops no row, duplicates
 no row, and never reorders one.
 
-Ported red from the #564 red-team finding (their
+Ported red from the #564 adversarial review finding (their
 ``test_archive_cursor_union_seam_attacks.py`` xfail pin, on the branch
 that carries the UNION archive shape): the backward (``cursor_dir=prev``)
 fetch takes the ``_FETCH_SIZE`` rows NEAREST the cursor, re-sorts them

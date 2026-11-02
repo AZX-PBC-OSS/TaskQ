@@ -1,4 +1,4 @@
-"""Red-team audit of the accepted-checksums fix (#594, e0bc9bbd).
+"""Adversarial review audit of the accepted-checksums fix (#594, e0bc9bbd).
 
 Written by an adversarial reviewer, not the fix's author. Every class here
 attacks one claim of the fix and pins the answer with an executed proof:

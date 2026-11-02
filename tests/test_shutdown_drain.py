@@ -350,7 +350,7 @@ async def test_drain_exclusion_captures_a_take_that_lands_during_the_pool_acquir
     acquire's park let land.
 
     The fake pool marks the take inside ``acquire`` - the take's exact
-    timing, deterministically. RED on a capture-before-acquire tree: the
+    timing, deterministically. Failing on a capture-before-acquire tree: the
     exclusion binds empty and the UPDATE runs with no ``<> ALL`` predicate.
     """
     worker_id = new_uuid()

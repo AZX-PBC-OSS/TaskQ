@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a per-test fixed identifier, not user input; every value is $-bound.
 
-"""Red-team pin: a stale attempt's terminal write must not terminate a
+"""Adversarial review pin: a stale attempt's terminal write must not terminate a
 re-dispatched attempt on the same worker.
 
 Our terminal writes carry ownership fencing - ``WHERE id = $1 AND

@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on the outbox slice's immortality (event retention exemption).
+"""Adversarial review attacks on the outbox slice's immortality (event retention exemption).
 
 The crash-reclaim outbox - ``kind='state_change' AND detail.reason='lock_expired'``
 - is exempt from the event-retention sweep at EVERY age

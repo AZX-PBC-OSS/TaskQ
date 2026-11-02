@@ -386,7 +386,7 @@ def test_no_exec_fragment_checker_population_has_not_collapsed() -> None:
 
 def test_the_checker_reds_on_a_missing_export() -> None:
     """The checker is not vacuously green: fed a name the package does not
-    export, it fails (this is the red-first proof, kept as a pin)."""
+    export, it fails (this is the failing-first proof, kept as a pin)."""
     missing = "NameTaskqHasNeverExported"
     assert missing not in _DECLARED_EXPORTS
     mod = importlib.import_module("taskq")

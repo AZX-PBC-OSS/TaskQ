@@ -3,7 +3,7 @@ API's compile lowers into the ENGINE's rows and drives through the
 engine's own finalize/sweep machinery — every pin here exercises the REAL
 path (create → drive → read), never a local re-implementation.
 
-The paper-cut cures' re-tests (the T17 disposition ledger's "re-test"
+The paper-cut fixes' re-tests (the T17 disposition ledger's "re-test"
 column) live here:
   #1  test_join_user_body_cascades_downstream
   #2  test_sequenced_maps_depth3_one_flow
@@ -66,7 +66,7 @@ async def _double(ctx: StepContext, report: Report) -> dict[str, int]:
 
 
 async def _total(ctx: StepContext, a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
-    """THE JOIN'S USER BODY (cut #1's cure): receives the DECODED parent
+    """THE JOIN'S USER BODY (cut #1's fix): receives the DECODED parent
     results — its result cascades downstream."""
     return {"total": a["n"] + b["n"]}
 
@@ -99,7 +99,7 @@ async def wf_pool(module_pg_schema: Any) -> Any:
 async def test_create_flow_carries_input_and_drives(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Cut #7's cure + the happy path: create_flow(spec, INPUT) → the
+    """Cut #7's fix + the happy path: create_flow(spec, INPUT) → the
     input rides the ROOT ROW (a restart reads it back) → drive to
     terminal → the result decodes."""
     app = WorkflowApp()
@@ -124,7 +124,7 @@ async def test_create_flow_carries_input_and_drives(
 async def test_join_user_body_cascades_downstream(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Cut #1's cure (the BLOCKER): the fan-in's USER body receives the
+    """Cut #1's fix (the BLOCKER): the fan-in's USER body receives the
     decoded parents, and its result cascades — the downstream node
     dispatches as a NORMAL step with the reducer's OUTPUT as its parent
     result. No out-of-engine decode, no multi-flow glue."""
@@ -147,7 +147,7 @@ async def test_join_user_body_cascades_downstream(
 async def test_sequenced_maps_depth3_one_flow(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Cut #2's cure (the BLOCKER): sequencing — a map whose source is a
+    """Cut #2's fix (the BLOCKER): sequencing — a map whose source is a
     step's promise, in ONE flow (the spike needed three flows + glue)."""
     app = WorkflowApp()
 
@@ -174,7 +174,7 @@ async def test_sequenced_maps_depth3_one_flow(
 async def test_skip_predicate_decided_at_dispatch(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Cut #4's cure: the guard reads the flow's state AT DISPATCH — the
+    """Cut #4's fix: the guard reads the flow's state AT DISPATCH — the
     sibling's COMPLETED result decides it (inexpressible in the spike;
     the dependency is SPELLED: the guarded node consumes the chooser's
     promise, so its dispatch strictly follows the chooser's terminal)."""
@@ -218,7 +218,7 @@ async def test_skip_predicate_decided_at_dispatch(
 async def test_retry_classifier_routes_by_kind(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Cut #12's cure: the retry knob routes by kind — a ``permanent``
+    """Cut #12's fix: the retry knob routes by kind — a ``permanent``
     body failure takes NO ladder (one terminal, immediately)."""
     app = WorkflowApp()
 
@@ -288,7 +288,7 @@ async def test_transient_ladder_emits_no_terminal_until_exhaustion(
 async def test_flow_result_read_decodes_once(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Cuts #14/#19's cures: the result read DECODES (never a raw jsonb
+    """Cuts #14/#19's fixes: the result read DECODES (never a raw jsonb
     string) and reads the terminal by id; the un-named terminal is the
     LOUD refusal."""
     app = WorkflowApp()
@@ -334,7 +334,7 @@ async def test_dispatch_resolves_bodies_from_the_definition_registry(
     # THE REGISTRY IS THE TRUTH: the compile registered the bodies.
     definition = get_registry().get("d1_flow")
     assert "only" in definition.bodies
-    # The D1 conviction: resolve from an UNREGISTERED name → the KeyError
+    # The D1 recorded finding: resolve from an UNREGISTERED name → the KeyError
     # (dispatch resolves by the ROOT's stamped workflow name — the
     # durable leg the sweep's healer uses).
     with pytest.raises(KeyError, match="not registered"):
@@ -345,7 +345,7 @@ async def test_dispatch_resolves_bodies_from_the_definition_registry(
 async def test_map_children_ledger_identity_and_max_attempts(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Cuts #2/#15's cures at the ledger: the map's children are FRESH
+    """Cuts #2/#15's fixes at the ledger: the map's children are FRESH
     jobs with per-child ledger identity (map_index distinct) and their
     own max_attempts — the retry ladder never collapses them onto one
     row."""

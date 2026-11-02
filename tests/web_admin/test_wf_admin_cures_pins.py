@@ -1,13 +1,13 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE ADMIN-SURFACE CURES' PINS — the red-team's convicted findings,
-each cured and pinned red-first where the rig's red is reproducible in
+"""THE ADMIN-SURFACE FIXES' PINS — the adversarial review's rejected findings,
+each fixed and pinned failing-first where the rig's red is reproducible in
 the fast lane:
 
 - Q1d THE DEAD MAP-COLLAPSE: the map progress read feeds the TRUE
   parents (the map-source nodes the fork/emit INSERT parented every
   child at), never the root — the hexagon + counter fire, the render is
   BOUNDED (a 10k fan-out renders one hexagon, never 10k raw node
-  lines), and the §17.5 derivation still reads EVERY row (the collapse
+  lines), and the section.5 derivation still reads EVERY row (the collapse
   never hides a failure from the verdict).
 - Q3 THE INVISIBLE PROBE: the typed door's 422 refusal writes its
   ``admin_audit`` row (refused + the reason) — the attacker's
@@ -161,10 +161,10 @@ async def test_map_hexagon_counter_feeds_from_the_true_parent(
     module_pg_schema: ModulePgSchema,
     cure_app_module: Any,
 ) -> None:
-    """THE CONVICTION (Q1d): the map children are born parented at the
+    """THE RECORDED FINDING (Q1d): the map children are born parented at the
     MAP SOURCE node; the old read passed the ROOT's id to
     ``parent_id = $1`` — no row ever parents at the root, every counter
-    read zero, the hexagon could never fire. The cured read aggregates
+    read zero, the hexagon could never fire. The fixed read aggregates
     PER MAP SOURCE: the source node's map_done/map_children carry the
     children's true counts, the child rows collapse (``map_child``),
     and the ROOT's counter is the SUM across sources."""
@@ -264,7 +264,7 @@ async def test_10k_fan_out_renders_one_hexagon_never_10k_lines(
     mermaid = rows_mermaid(view)
     assert len(mermaid.splitlines()) <= 5, (
         "CONTRACT: the collapsed render must not scale with the fan-out "
-        f"({len(mermaid.splitlines())} lines for 10k children — the red was 10k+)"
+        f"({len(mermaid.splitlines())} lines for 10k children — the failing proof was 10k+)"
     )
     assert view.root_map_children == 10_000
     state = run_state_json(view, seq=1)
@@ -277,7 +277,7 @@ async def test_the_collapse_never_hides_a_failure_from_the_derivation(
     cure_app_module: Any,
 ) -> None:
     """THE ROWS-ARE-TRUTH GUARD on the collapse: a FAILED map child
-    still derives the run FAILED (the §17.5 derivation reads every row)
+    still derives the run FAILED (the section.5 derivation reads every row)
     while the RENDER stays collapsed — the hexagon must not become a
     place for a failure to hide."""
     schema = module_pg_schema.schema_name
@@ -306,10 +306,10 @@ async def test_wrong_shaped_resolve_writes_the_refused_audit_row(
     clean_pg_conn: asyncpg.Connection,
     cure_app_module: Any,
 ) -> None:
-    """THE CONVICTION (Q3): the shape-refused resolves (the typed door's
+    """THE RECORDED FINDING (Q3): the shape-refused resolves (the typed door's
     422s) wrote ZERO audit rows while the page claims every
     Resolve/cancel/deliver is audited — the attacker's probing was
-    INVISIBLE. THE CURE'S PIN: the wrong-shaped resolve → the audit row
+    INVISIBLE. THE FIX'S PIN: the wrong-shaped resolve → the audit row
     EXISTS (refused + the reason) AND the hold survives."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
@@ -338,7 +338,7 @@ async def test_wrong_shaped_resolve_writes_the_refused_audit_row(
     )
     assert audit is not None, (
         "CONTRACT: the shape-refused resolve is AUDITED — the invisible-probe "
-        "conviction's cure (a 422 with zero audit rows reds)"
+        "recorded finding's fix (a 422 with zero audit rows reds)"
     )
     assert audit["action"] == "hitl.resolve"
     detail = audit["detail"]
@@ -399,9 +399,9 @@ async def test_run_stream_ends_when_the_session_is_revoked_mid_stream(
     cure_app_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE CONVICTION (Q4): the run stream lacked the mid-stream
+    """THE RECORDED FINDING (Q4): the run stream lacked the mid-stream
     session re-check ``/sse/{topic}`` got for #316 — a revoked admin
-    session kept receiving frames. THE CURE'S PIN: the revoked
+    session kept receiving frames. THE FIX'S PIN: the revoked
     session's stream TERMINATES at the next tick."""
     monkeypatch.setattr(
         "taskq.web.admin._wf_actions._STREAM_POLL_S", _TICK
@@ -470,7 +470,7 @@ async def test_run_stream_ends_when_the_session_is_revoked_mid_stream(
         await asyncio.sleep(0.01)
     assert task.done(), (
         "CONTRACT: a run stream whose session is revoked must END at the "
-        "next re-check tick (the #316 gap's cure) — a stream that "
+        "next re-check tick (the #316 gap's fix) — a stream that "
         "authenticates only at subscribe keeps delivering frames"
     )
     await stream_pool.close()
@@ -545,9 +545,9 @@ async def test_refused_cancel_lands_on_the_banner_never_a_400_wall(
     module_pg_schema: ModulePgSchema,
     cure_app_module: Any,
 ) -> None:
-    """THE CONVICTION (the extra): run_cancel's refusal redirects to
+    """THE RECORDED FINDING (the extra): run_cancel's refusal redirects to
     ``?error=cancel-not-applied`` but the detail page refused ALL query
-    params (400) — the operator landed on a wall. THE CURE'S PIN: the
+    params (400) — the operator landed on a wall. THE FIX'S PIN: the
     redirect renders 200 WITH the refused-op banner; an undeclared
     param still 400s (the refuse-undeclared law keeps its teeth)."""
     schema = module_pg_schema.schema_name
@@ -587,9 +587,9 @@ async def test_node_panel_error_fields_are_display_capped(
     module_pg_schema: ModulePgSchema,
     clean_pg_conn: asyncpg.Connection,
 ) -> None:
-    """THE CONVICTION (Q5): the panel returned error_message/traceback/
+    """THE RECORDED FINDING (Q5): the panel returned error_message/traceback/
     metadata->>'error' WHOLE — a foreign row's 5MB fields made a 15MB
-    response. THE CURE'S PIN: the read is display-capped with the
+    response. THE FIX'S PIN: the read is display-capped with the
     dropped-count named (``error_truncated``); the ROW keeps the full
     detail."""
     from taskq._ids import new_uuid
@@ -702,9 +702,9 @@ def test_the_status_chip_maps_carry_every_node_status() -> None:
 async def test_unknown_run_stream_is_a_404_at_subscribe(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """THE CONVICTION (Q7, LOW): an unknown run id streamed the empty
+    """THE RECORDED FINDING (Q7, LOW): an unknown run id streamed the empty
     'unknown' snapshot forever — an existence oracle behind the auth
-    gate and a poll task per probe. THE CURE'S PIN: the 404 AT
+    gate and a poll task per probe. THE FIX'S PIN: the 404 AT
     SUBSCRIBE (the estate's own ``/sse/{topic}`` convention: an unknown
     topic is refused at subscribe; the same law, one level up)."""
     app = _make_admin_app(module_pg_pool, module_pg_schema.schema_name)

@@ -88,7 +88,7 @@ _RECOVERY_TIMEOUT = 120.0
 # 0.1s, 1 attempt - see taskq._redis_client.RETRY_RETRIES for why one) and
 # the job completes in one rate window. Without them the acquisition fails
 # closed (snoozed 5s) AND the dependency-failure WARNING fires - the
-# warning is the red/green discriminator, the window is the
+# warning is the failing/green discriminator, the window is the
 # operator-facing promise.
 _DROP_RECOVERY_WINDOW = 30.0
 

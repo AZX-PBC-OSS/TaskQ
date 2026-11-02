@@ -1,4 +1,4 @@
-"""THE EMBEDDING DEMO'S WEB HALF, VERIFIED (T26's cure lane — C10):
+"""THE EMBEDDING DEMO'S WEB HALF, VERIFIED (T26's fix lane — C10):
 ``examples/deep_research_web.py`` — the app-lifespan listener → the
 per-user SSE endpoint (authz scoped by the run) → the HoldCreated
 handler reading the ROW for the display facts → the resolve POST → the
@@ -197,7 +197,7 @@ async def test_the_web_half_lives_and_clears(
 async def test_the_board_reconciles_after_an_outage(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE WEB HALF'S RECONCILE (C1's consumer face on the demo): a
+    """THE WEB HALF'S RECONCILE : a
     hold resolved while the app's listener was DOWN never clears its
     card from a notify — the Backfilled frame does the clearing on the
     next subscribe. The board's law, exercised through the demo's

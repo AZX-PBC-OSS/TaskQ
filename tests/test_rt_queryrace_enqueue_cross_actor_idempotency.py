@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team pin: the idempotency ON CONFLICT path with NO advisory-lock hit.
+"""Adversarial review pin: the idempotency ON CONFLICT path with NO advisory-lock hit.
 
 The unique_for preflight serializes same-(actor, identity_key) enqueues with
 a transaction-scoped advisory lock keyed on

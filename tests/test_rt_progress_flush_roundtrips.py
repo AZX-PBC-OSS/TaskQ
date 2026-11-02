@@ -1,4 +1,4 @@
-"""Red-team pins: the progress flush tick's round-trip shape, and the
+"""Adversarial review pins: the progress flush tick's round-trip shape, and the
 mid-await coalescing invariant.
 
 Two contracts, one per test:

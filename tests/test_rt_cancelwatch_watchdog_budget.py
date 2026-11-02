@@ -1,4 +1,4 @@
-"""Red-team: watchdog budget arithmetic in the heartbeat/cancel interplay.
+"""Adversarial review: watchdog budget arithmetic in the heartbeat/cancel interplay.
 
 Two attacks:
 

@@ -1,4 +1,4 @@
-"""End-to-end red-team pins for the admin audit trail (attack review of
+"""End-to-end adversarial review pins for the admin audit trail (attack review of
 #324's fix), against a real migrated Postgres.
 
 These attack the fix for what it missed, at the transaction boundary the

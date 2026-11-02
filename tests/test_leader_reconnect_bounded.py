@@ -40,7 +40,7 @@ from taskq.worker.leader import MaintenanceLeader
 _PROD_BOUND_SECS = 0.05
 # The loop's retry cadence, shrunk so several retry cycles fit in the budget.
 _HEARTBEAT_SECS = 0.01
-# Generous vs the production bound: this budget firing is the red result.
+# Generous vs the production bound: this budget firing is the failing proof result.
 _TEST_BUDGET_SECS = 5.0
 
 _WORKER_ID = UUID("00000000-0000-0000-0000-000000000002")

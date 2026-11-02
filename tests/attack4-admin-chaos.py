@@ -17,7 +17,7 @@ transport — that honesty is this file's premise):
 * a KILLED connection mid-stream (the socket is closed at its poll —
   the server survives, the reconnect replays);
 * the rows==DOM check under a resolve landing CONCURRENTLY with the page
-  render (the boot JSON must be INTERNALLY consistent — the §17.5
+  render (the boot JSON must be INTERNALLY consistent — the section.5
   derivation over its own nodes == its status — whichever side of the
   race it caught);
 * the XSS surface: a node's error text carrying HTML / script / a
@@ -28,7 +28,7 @@ transport — that honesty is this file's premise):
 * the audit trail's completeness: the resolve and the cancel each land
   their admin_audit row and the page's trail renders them;
 * the panel latency band re-measured on a 200-child map (my own
-  measurement, captured to .measurements/attack4/).
+  measurement, captured to the recorded capture).
 
 This file FIXES NOTHING: a red here is a finding, reported.
 """
@@ -405,7 +405,7 @@ async def test_the_rows_dom_check_holds_under_a_resolve_landing_mid_render(
 ) -> None:
     """A resolve lands WHILE the page renders (10 renders racing one
     resolve): every rendered page's boot JSON must be INTERNALLY
-    consistent — the §17.5 derivation over ITS OWN node states == its
+    consistent — the section.5 derivation over ITS OWN node states == its
     status, and no render 500s mid-race."""
     schema = module_pg_schema.schema_name
     run_id = await _run_seed(module_pg_pool, schema)
@@ -638,7 +638,7 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
     """THE PINNED 50 ms BAND, re-measured on the ADVERSARIAL shape: a
     run whose map has 200 children (the builder's band was measured on a
     small run — the collapsed hexagon must keep the panel cheap at map
-    scale). MY OWN numbers, captured to .measurements/attack4/."""
+    scale). MY OWN numbers, captured to the recorded capture"""
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("attack4a_map_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
@@ -677,7 +677,7 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
         f"\n[attack4] 200-child map: panel p95 {p95_panel:.1f} ms "
         f"(band 50 ms), run-page median {med_page:.1f} ms"
     )
-    with open(".measurements/attack4/attack4-panel-latency-200map.json", "w") as f:
+    with open("the recorded capture", "w") as f:
         json.dump(
             {"children": 200, "panel_ms_sorted": panel_ms, "page_ms_sorted": page_ms}, f, indent=2
         )

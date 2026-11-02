@@ -1,4 +1,4 @@
-"""Red-team attacks on the occurred_at ladder and mixed-writer co-monotonicity.
+"""Adversarial review attacks on the occurred_at ladder and mixed-writer co-monotonicity.
 
 ``job_events.occurred_at`` must be non-decreasing in ``id`` order across
 ALL rows - that is the property ``poll_reclaim_events``' trailing

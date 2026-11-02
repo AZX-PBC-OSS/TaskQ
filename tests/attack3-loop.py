@@ -1,9 +1,9 @@
-"""ATTACK-3 (phase-3 red team) — T19's loop machinery under adversarial
+"""ATTACK-3 (phase-3 adversarial review) — T19's loop machinery under adversarial
 load: the escalation path, the ladder classes, the answer-queue cursor
 through a retry, the body-controlled infra classifier.
 
 Each probe states the contract it attacks (the docs' own words); RED =
-the observed half contradicts it. Captured to .measurements/attack3/.
+the observed half contradicts it. Captured to the recorded capture
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ async def _runner_of(
 
 
 # ── A3-L1: the DRIVER's exhaustion never enqueues the escalation ────────
-# The docs (guides §9): "`on_exhausted="escalate"` writes the escalation
+# The docs (guides the section): "`on_exhausted="escalate"` writes the escalation
 # enqueue through the SAME outbox the fired joins use." The sweep's arm
 # writes it (_sweep.py) — but the DRIVER's own arms (the advance guard's
 # refusal, the body failure) call _exhaust_loop, which never touches the

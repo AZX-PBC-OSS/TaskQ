@@ -464,7 +464,7 @@ async def test_bulk_cancel_recovers_typed_after_the_database_drops_its_connectio
             try:
                 cancel_results.append(
                     await pod.backend.cancel_where(
-                        JobFilter(unfinished=True), reason="fleet interruption drill"
+                        JobFilter(unfinished=True), reason="fleet interruption scenario"
                     )
                 )
             except asyncpg.InternalClientError as exc:

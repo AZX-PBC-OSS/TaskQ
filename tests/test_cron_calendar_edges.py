@@ -1,4 +1,4 @@
-"""Red-team calendar-edge attacks on the cron machinery.
+"""Adversarial review calendar-edge attacks on the cron machinery.
 
 * **Never-landing day-of-month forms (the finding)** - ``croniter.is_valid``
   certifies expressions no calendar date can ever satisfy (``0 0 30 2 *``:

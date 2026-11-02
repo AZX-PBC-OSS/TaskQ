@@ -316,7 +316,7 @@ class TestTransactionRollbackOnMidFlightFailure:
     the executable proof that the fused UPDATE cannot commit without its
     attempt/event INSERTs. Single-statement atomicity itself is a
     PostgreSQL engine guarantee with no unfenced application seam to run
-    red against; the red discriminators are the injection self-checks
+    red against; the failing proof discriminators are the injection self-checks
     below (the victim must be observed lock-waiting, the terminate must
     report a backend was killed, and the death must be connection-level,
     not a statement/lock timeout) plus the nothing-landed assertions,

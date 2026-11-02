@@ -4,7 +4,7 @@ engine's REAL code paths — each pair either performs its table-defined
 transition or is REFUSED by the guard with the row untouched. **0 undefined
 cells is a TESTED property** ("no gaps, nothing missed").
 
-THE COUNT IS THE REPO MACHINE'S, not a forever number (re-red-team F9):
+THE COUNT IS THE REPO MACHINE'S, not a forever number (re-adversarial review F9):
 the hardening proto's machine measured 104 node pairs (8 states x 13
 events) + 12 flow pairs — THE REPO's vocabulary differs by design (no
 `waiting_signal` status — the hold is a pending-row representation; the

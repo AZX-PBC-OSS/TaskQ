@@ -48,7 +48,7 @@ def example_fence() -> str:
     """The example's code (ONE source of truth — the fence IS the
     module; the smoke renders it, the full run executes it).
 
-    THE BENCH'S ONE ACCOMMODATION (the registry-collision cure): the
+    THE BENCH'S ONE ACCOMMODATION (the registry-collision fix): the
     fence's workflow name is substituted ``doc_ingest`` →
     ``doc_ingest_bench`` — the DEFINITIONS registry is ONE GLOBAL keyed
     by workflow name, and the LIVE demo (``examples/workflows.py``) is a
@@ -273,7 +273,7 @@ async def test_full_run_the_callers_input_is_the_corpus(
     wf_conn: Any,
     example_ns: dict[str, Any],
 ) -> None:
-    """THE INPUT IS WIRED (the fence's first-hour cure c):
+    """THE INPUT IS WIRED (the fence's first-hour fix c):
     ``create_flow(input=…)`` is CONSUMED — the map fans the CALLER's
     batch, not the wiring's declared default. The most natural first
     experiment (hand the flow YOUR documents) must enrich YOUR

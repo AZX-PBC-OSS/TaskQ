@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team pins: the dispatch CTE under TWO concurrent dispatchers.
+"""Adversarial review pins: the dispatch CTE under TWO concurrent dispatchers.
 
 Hunted interleavings, worked out on paper from ``_DISPATCH_SQL_TEMPLATE``
 before any test was written:

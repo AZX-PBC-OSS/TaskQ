@@ -1,9 +1,9 @@
-"""THE MAX_PENDING IMPOSSIBILITY PINS (C16 — the H-A6 verdict, proven).
+"""THE MAX_PENDING IMPOSSIBILITY PINS .
 
 THE QUESTION (the repo's law: a documented omission ships only with a
 red-proven impossibility pin behind it — an assertion is not a proof):
 can a CLAIM-SIDE ``max_pending`` throttle for wf cohorts be BUILT, or is
-H-A6's removal structurally forced?
+the removal structurally forced?
 
 THE VERDICT, EARNED BELOW: **IMPOSSIBLE — a genuine deadlock.** The pin
 demonstrates the mechanism mechanically, on the real engine, with the
@@ -37,9 +37,9 @@ THE FIXED-POINT MECHANISM (each leg asserted by a pin):
   fires and the flow completes — the gate's active domain IS its wedge
   domain. A gate that never wedges (an ordering hold, a per-pass leak)
   never bounds the backlog — it is the claim's existing batch limit
-  wearing a mask, the DEAD KNOB H-A6 removed, not a max_pending (pin 4).
+  wearing a mask, the DEAD KNOB the removed, not a max_pending (pin 4).
 
-THE RED THAT PROVED IT: the build attempt's own pin — "a fan-out WIDER
+THE FAILING STATE THAT PROVED IT: the build attempt's own pin — "a fan-out WIDER
 than max_pending completes to terminal" with this exact gate installed —
 was written first and watched fail (the drive burns ``max_ticks`` with
 zero claims). That red is the anti-deadlock proof's impossibility; the
@@ -47,7 +47,7 @@ committed pins below are its inversion.
 
 THE FLEET SEAT: the same mechanism at the fleet's claim (``dispatch_batch``
 — whose per-actor arithmetic reads ``actor_config.max_concurrent``, never
-``max_pending`` — the H-A6 premise, grep-verified): the fleet claim is
+``max_pending`` — the premise, grep-verified): the fleet claim is
 the SAME drain (pending → running, the only one), so a gate keyed to the
 cohort's pending level has the same fixed point there. The runner's
 claim seat demonstrates it minimally; the seat is not the mechanism.
@@ -56,7 +56,7 @@ here — they bound inserts by stalling the source's finalize at the cost
 of the source's own lease budget, and give producers no admission seat.
 
 THE SURFACE STAYS CLOSED: ``test_max_pending_is_off_the_wf_surface``
-(the H-A6 pin) keeps passing — the omission now rides a red-proven
+(the pin) keeps passing — the omission now rides a red-proven
 impossibility instead of an assertion.
 """
 
@@ -301,7 +301,7 @@ async def test_the_gate_above_the_cap_is_inert(wf_pool: asyncpg.Pool, wf_schema:
     row count never fires, and the flow completes. With pin 2: the
     gate's active domain IS its wedge domain — a claim-side gate that
     avoids the wedge cannot bound the backlog (it is the claim's
-    existing batch limit wearing a mask, the dead knob H-A6 removed)."""
+    existing batch limit wearing a mask, the dead knob the removed)."""
     harness = _GatedFanOutApp()
     runner = harness.runner(wf_pool, wf_schema)
     claim = await runner.create_flow()

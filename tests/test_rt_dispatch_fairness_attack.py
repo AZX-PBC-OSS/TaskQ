@@ -1,4 +1,4 @@
-"""Red-team attacks on dispatch fairness: batch seriality vs cross-actor starvation (real PG).
+"""Adversarial review attacks on dispatch fairness: batch seriality vs cross-actor starvation (real PG).
 
 HYPOTHESIS (unverified suspicion): the batch-claim path silently upgrades serial
 queues to concurrent (a batch fetch might hand out multiple jobs that should

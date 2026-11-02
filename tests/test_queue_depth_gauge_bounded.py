@@ -1,4 +1,4 @@
-"""Red-team pins for the ``taskq.queue.depth`` gauge's label cardinality.
+"""Adversarial review pins for the ``taskq.queue.depth`` gauge's label cardinality.
 
 The job-side instruments bound their ``queue`` label through
 ``_bounded_queue()`` (``obs/_otel.py:361-371``): the first

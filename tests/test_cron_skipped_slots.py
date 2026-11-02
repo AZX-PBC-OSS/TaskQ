@@ -92,7 +92,7 @@ def metric_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
     monkeypatch.setattr(otel_mod, "get_meter", lambda: meter)
     monkeypatch.setattr(obs_mod, "get_meter", lambda: meter)
     # raising=False: the gauge cache and callback do not exist before the
-    # producer lands - the red run must reach each test's own assertion.
+    # producer lands - the failing proof run must reach each test's own assertion.
     monkeypatch.setattr(otel_mod, "_cron_slots_behind_cache", {}, raising=False)
     observe = getattr(otel_mod, "_observe_cron_slots_behind", None)
     if observe is not None:

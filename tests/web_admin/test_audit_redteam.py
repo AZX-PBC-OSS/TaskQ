@@ -1,4 +1,4 @@
-"""Red-team pins for the admin audit trail (attack review of #324's fix).
+"""Adversarial review pins for the admin audit trail (attack review of #324's fix).
 
 The original defect (no audit trail at all) is fixed; these tests attack
 what that fix MISSED:

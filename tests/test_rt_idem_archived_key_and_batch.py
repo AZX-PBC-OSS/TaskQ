@@ -265,7 +265,7 @@ async def test_twin_in_batch_duplicate_and_archived_key_fast_path() -> None:
     The mirror must agree with Postgres on the in-batch duplicate (dedupe to
     one job) AND on the archived key (free after the archive: the fast path
     accepts it and the cap preflight does not discount against it). The stale
-    index entry is the red this pin exists to hold: a phantom
+    index entry is the failing proof this pin exists to hold: a phantom
     ``DuplicateIdempotencyKeyError`` for a key Postgres has already freed,
     and an over-admission past a capped actor's ``max_pending``.
     """

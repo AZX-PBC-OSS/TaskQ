@@ -1,4 +1,4 @@
-"""Red-team attacks on the cron tick's operator-stored ``max_pending`` parity (real PG).
+"""Adversarial review attacks on the cron tick's operator-stored ``max_pending`` parity (real PG).
 
 The stored ``actor_config.max_pending`` value is operator-owned: once a row
 exists, a non-NULL stored value is authoritative and the ``@actor`` literal

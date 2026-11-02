@@ -1,4 +1,4 @@
-"""Red-team: job error text is unbounded on the failure terminal-write paths.
+"""Adversarial review: job error text is unbounded on the failure terminal-write paths.
 
 Hypothesis: ``error_message`` / ``error_traceback`` produced when a job
 fails are stored unbounded. Evidence for the gap: the ``jobs`` /

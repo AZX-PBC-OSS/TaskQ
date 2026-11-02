@@ -9,8 +9,8 @@ every scenario (``_invariants.assert_balanced``) plus the workflow
 invariants (the join fires exactly once, the ledger reconciles).
 
 The cells — each maps to the test function that runs it, and the
-header lists NOTHING ELSE (the rv2 finding's cure: three cells here
-named no test function anywhere, and the header cited a defect-drill
+header lists NOTHING ELSE (the rv2 finding's fix: three cells here
+named no test function anywhere, and the header cited a defect-scenario
 file and a deployment-guide table that do not exist; the header now
 carries only the cells this file actually tests — the missing
 scenarios are NEW WORK to land with their tests, never header
@@ -24,7 +24,7 @@ fiction):
 2. SCHEMA MIGRATION MID-FLIGHT — a held migration lock during a
    finalize: the transient classification ladders, the node succeeds,
    no state corruption (the sweep repairs the post-commit-pre-decrement
-   window) — the injection rides the REAL held-lock drill, never a
+   window) — the injection rides the REAL held-lock scenario, never a
    bespoke fault hack.
 3. ROLLBACK — a worker that cannot execute workflow bodies (the vanilla
    entry: the v1 deployment) meets a v2 fleet: the dispatch fence never
@@ -267,7 +267,7 @@ async def test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock(
     EXCLUSIVE on jobs) during a finalize → the transient classification
     (``LockNotAvailable``) → the ladder retries → succeeds; no state
     corruption, no orphaned counter decrement. The injection rides the
-    real held-migration-lock drill (a second session's ``LOCK TABLE``),
+    real held-migration-lock scenario (a second session's ``LOCK TABLE``),
     never a bespoke fault hack."""
     schema = module_pg_schema.schema_name
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -443,7 +443,7 @@ async def test_config_drift_cell_the_unserved_queue_is_named_not_orphaned(
 
         # The drift: the run goes live, then the operator re-routes the
         # downstream node's queue (the UPDATE is the config change the
-        # deploy drilled) — no worker serves ``nowhere_queue``.
+        # deploy exercised) — no worker serves ``nowhere_queue``.
         start = time.monotonic()
         while time.monotonic() - start < _DRIFT_OBSERVE_BOUND_S:
             pending = await conn.fetchval(

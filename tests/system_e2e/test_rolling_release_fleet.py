@@ -199,7 +199,7 @@ _SAMPLER_JOIN_BOUND_S = (_SWEEP_INTERVAL + _POLL_FLOOR) * _PROBE_STRETCH
 
 #: The flap scenario's premise hang guard: one claim cycle (the poll
 #: floor plus the leader's dispatch tick) stretched by the 20x co-tenancy
-#: factor - the same shape the #651 cure gave this file's premise waits
+#: factor - the same shape the #651 fix gave this file's premise waits
 #: (a hang guard only: the defiant job's first claim is near-instant on a
 #: healthy fleet, and a fleet that NEVER claims reds here instead of
 #: hanging). Re-anchored from a bare 30.0 so the guard derives from the
@@ -336,7 +336,7 @@ class CapSampler:
       inside a running window, and the starved test process's sparse
       ticks cannot promise one - at the retired cap of 2 the loaded CI
       runner read ``peak.capped_queue`` = 1 across a whole 13-minute
-      scenario (run 37092146919, attempt 1) while the fleet served
+      scenario (the recorded run, attempt 1) while the fleet served
       fine. The exercise proof is therefore the RECEIPT this sampler
       records across the WHOLE scenario and the scenarios assert at
       their tail (``assert_cap_receipt``): a running row on the capped
@@ -485,8 +485,8 @@ class CapSampler:
           the stop flag between ticks, so the join costs at most one
           tick + the 0.1s cadence - and no cancel ever lands MID-QUERY.
           That is the leak class the two shard reds share (the PG16
-          shard's overlapping-pairs error-at-teardown, run 37504960221,
-          and the PG18 shard's grace-edge flap's, run 37504950651): a
+          shard's overlapping-pairs error-at-teardown, the recorded run,
+          and the PG18 shard's grace-edge flap's, the recorded run): a
           cancel meeting a query in flight on the wire makes asyncpg
           mint a fire-and-forget ``Connection._cancel`` task (a fresh
           server connection whose whole life is the PG cancel request),
@@ -751,7 +751,7 @@ async def _diagnose_queue_cap_exercise(
     ``sampler.peak.capped_queue >= _QUEUE_CAP`` - a peak over 100ms
     ticks from this (starved) test process, which at cap 2 needed two
     capped claims to coincide inside a 2s body and read 1 on the loaded
-    CI runner across a whole 13-minute scenario (run 37092146919,
+    CI runner across a whole 13-minute scenario (the recorded run,
     attempt 1): the exercise is a throughput property there, voided by
     runner weather on a fleet that was serving fine. A dedicated cohort
     is enqueued HERE so the backlog is live at probe time regardless of
@@ -831,7 +831,7 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
     cadence it cannot arm: watchdog_loop_lag_budget 30 + heartbeat 0.5
     must be < lock_lease 8, a settings-validation error), so a drain
     that overruns the configured grace is NOT force-exited by the
-    worker (drilled: a 25s wind-down body held w0's drain at 28.22s,
+    worker (exercised: a 25s wind-down body held w0's drain at 28.22s,
     188% of the 15s grace, and the pod exited rc=0). The harness's
     graceful_stop SIGKILLs only at its own timeout (_GRACE + 30), so
     the rc == 0 pin reds a grace-overrun only past THAT window; inside
@@ -899,7 +899,7 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
             # arm it, see the scenario docstring), so a drain overrunning
             # the grace exits rc=0, and only the harness's SIGKILL at
             # graceful_stop's own timeout (_GRACE + 30) turns an overrun
-            # into a non-zero rc. Drilled: 25s wind-down body, drain
+            # into a non-zero rc. Exercised: 25s wind-down body, drain
             # 28.22s, rc=0, only this pin could have red.
             assert drain_secs < _GRACE + _PROBE_STALL_MARGIN, (
                 f"pod {name}'s drain ran {drain_secs:.2f}s, past its "
@@ -1349,7 +1349,7 @@ async def test_rolling_release_cap_churn_releases_departing_capacity_within_boun
             # wait through. At cap 1 the departed victim held the ONLY
             # slot, so between its release and the next admitted claim
             # (a denial backoff + a claim poll) the probe legitimately
-            # reads no holder - the CI red (run 37114445963) was the
+            # reads no holder - the CI red (the recorded run) was the
             # first probe landing in that ordinary window, reding a
             # healthy fleet on a byte-identical assert that cap 2's
             # second slot had masked on base. The probe re-checks the
@@ -1741,8 +1741,8 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
 ) -> None:
     """The sampler's close must never leave a task pending on the module
     event loop - the leak class behind BOTH shard reds (the PG16 shard's
-    error-at-teardown of the overlapping-pairs scenario, run 37504960221,
-    and the PG18 shard's of the grace-edge flap, run 37504950651: "test
+    error-at-teardown of the overlapping-pairs scenario, the recorded run,
+    and the PG18 shard's of the grace-edge flap, the recorded run: "test
     left asyncio task(s) still pending on the module event loop ...
     coroutine: Connection._cancel", 37/40 passed, 1 error each).
 
@@ -1760,7 +1760,7 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
     then mirrors the conftest guard's own baseline-diff the moment
     ``close`` returns.
 
-    The cure this pin holds: the close joins the task's NATURAL exit
+    The fix this pin holds: the close joins the task's NATURAL exit
     (the tick loop checks the stop flag between ticks - no cancel ever
     lands mid-query), and the hang-guard fallback (a backend hung past
     the join bound) reaps what its own cancel mints before returning.
@@ -1777,7 +1777,7 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
     )  # Why: fixture-validated schema identifier.
     # The lock's bounded release: 1.0s covers close()'s entry plus the
     # sampler's one blocked tick on either shape (the retired bare close
-    # and the cure), and is released long before the pin's own 60s bound.
+    # and the fix), and is released long before the pin's own 60s bound.
     lock_open_until = time.monotonic() + 1.0
 
     async def _release_lock() -> None:
@@ -1825,8 +1825,8 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
         )
     finally:
         # The lock's release is not part of the snapshot's story: the
-        # leaked task (on the red shape) heals or not BEFORE this runs,
-        # and the pin's own assertion is the red either way.
+        # leaked task (on the failing proof shape) heals or not BEFORE this runs,
+        # and the pin's own assertion is the failing proof either way.
         await releaser
 
 

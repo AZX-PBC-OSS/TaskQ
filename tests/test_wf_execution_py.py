@@ -1,5 +1,5 @@
 """THE EXECUTION MACHINERY'S DIRECT TESTS (F2-1): the Python half of the
-production-execution cure — the door (:func:`~taskq.workflows.
+production-execution fix — the door (:func:`~taskq.workflows.
 _worker_execution.execute_flow_job`), the fleet-claimed step
 (:meth:`FlowRunner.run_fleet_claimed_step`), the boot projection
 (:func:`project_workflow_actor_configs`), and the intercept's engine

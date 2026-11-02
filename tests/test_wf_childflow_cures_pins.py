@@ -1,11 +1,11 @@
-"""THE CHILD-FLOW CURES' PINS — the rv5-child pin pack (the child-flows
-attack front's convictions, cured red-first on the
-``feat/taskqflow-child-cures`` branch off the child line's head
+"""THE CHILD-FLOW FIXES' PINS — the recorded finding's pin pack (the child-flows
+attack front's recorded findings, fixed failing-first on the
+``feat/taskqflow-child-fixes`` branch off the child line's head
 ``f8bfc5033``).
 
-THE RED RECEIPTS (all captured live BEFORE the cures, on the base head
+THE FAILING STATE RECEIPTS (all captured live BEFORE the fixes, on the base head
 against the lane's :5812 — the capture rides
-``.measurements/child-cures/rv5-child-red-first.txt``):
+`the recorded capture`):
 
 * RV5-C1 (THE ASYNCIO.GATHER DRAGON — GRAND-MERGE BLOCKER): the natural
   fan-out spelling ``gather(*[ctx.spawn_flow(...) for t in tenants])``
@@ -35,10 +35,10 @@ against the lane's :5812 — the capture rides
   resolve delivered, the body re-executed, the live child re-held) —
   the typed refusal now teaches where the resolution actually lives.
 
-The cure choices are the reads' choices, and the pins hold them. Pin
+The fix choices are the reads' choices, and the pins hold them. Pin
 names carry the rv5 stem (the attack front's pack: these ARE the flip
-targets — the rv5-child branch's pins were not visible at cure time,
-so the cures' pins name themselves rv5-consistently).
+targets — the recorded finding's branch's pins were not visible at fix time,
+so the fixes' pins name themselves the recorded finding's).
 """
 
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
@@ -70,8 +70,8 @@ from taskq.workflows import (
     step,
 )
 
-#: The cascade's depth the recursion pin drives (the convicted shape's
-#: own number — the pre-cure Python-recursive walk raised
+#: The cascade's depth the recursion pin drives (the rejected shape's
+#: own number — the pre-fix Python-recursive walk raised
 #: ``RecursionError`` inside this depth).
 _CASCADE_DEPTH = 1200
 
@@ -408,7 +408,7 @@ class TestRv5C2SpawnDepthBound:
         the declared depth bound — the typed
         ``SpawnDepthExceededError`` (``FanInBoundExceededError``'s
         sibling) on the record, the child census bounded, the run
-        terminal. The pre-cure bomb minted a generation per sweep tick
+        terminal. The pre-fix bomb minted a generation per sweep tick
         forever."""
         app = WorkflowApp()
 
@@ -537,7 +537,9 @@ class TestRv5C2bCancelCascadeIterative:
         the operator's face honest (no RecursionError, no 500)."""
         ids = await _chain_rows(wf_conn, wf_schema, _CASCADE_DEPTH)
 
-        await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=ids[0], reason="rv5-c2b")
+        await cancel_workflow_run(
+            wf_pool, schema=wf_schema, flow_id=ids[0], reason="the recorded finding's"
+        )
 
         left_running = await wf_conn.fetchval(
             f'SELECT count(*) FROM "{wf_schema}".jobs '
@@ -582,7 +584,9 @@ class TestRv5C4OrphanWindow:
         )
         assert child_status == "running", child_status
 
-        await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=flow_id, reason="rv5-c4")
+        await cancel_workflow_run(
+            wf_pool, schema=wf_schema, flow_id=flow_id, reason="the recorded finding's"
+        )
 
         child_status = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1::uuid', child_id
@@ -602,7 +606,7 @@ class TestRv5C3ChildLostFailClose:
         """THE FAIL-CLOSE'S KILL PIN: purging a held child's rows +
         resuming the parent must NEVER silently re-execute the child —
         the dangling child pointer raises the typed arm, the parent's
-        run FAILS honestly (the pre-cure shape re-minted a fresh child:
+        run FAILS honestly (the pre-fix shape re-minted a fresh child:
         emails/payments twice, the parent SUCCEEDED)."""
         _child_app("rv5_c3_child").get("rv5_c3_child")
         parent_app = _parent_app("rv5_c3_child", "rv5_c3_parent")
@@ -665,14 +669,16 @@ class TestRv5C5DevDriveParity:
     ) -> None:
         """THE DEV FACE MATCHES THE LEADER'S: a ``timeout_s`` wait in a
         dev drive fires the ``Expired`` member (the tick runs the expiry
-        arm) — the pre-cure dev face parked on the hold until
+        arm) — the pre-fix dev face parked on the hold until
         ``max_ticks`` (the deadline inert)."""
         app = WorkflowApp()
 
         @app.actor(queue="cpu", max_attempts=3)
         async def waiter(ctx: StepContext, params: ParentIn) -> Verdict:
             _ = params
-            outcome = await ctx.wait_signal((ContinueApproval,), reason="rv5-c5a", timeout_s=0.05)
+            outcome = await ctx.wait_signal(
+                (ContinueApproval,), reason="the recorded finding's", timeout_s=0.05
+            )
             match outcome:
                 case ContinueApproval():
                     return Verdict(v="approved")
@@ -748,7 +754,7 @@ class TestRv5C5AdminFaces:
     ) -> None:
         """THE HONEST RESOLVE FACE: resolving a child-join hold is the
         TYPED refusal teaching where the resolution actually lives (the
-        child's terminal) — the hold SURVIVES; the pre-cure face
+        child's terminal) — the hold SURVIVES; the pre-fix face
         delivered, the body re-executed, the live child re-held (the
         no-op bounce wearing a 200)."""
         _child_app("rv5_c5c_child").get("rv5_c5c_child")

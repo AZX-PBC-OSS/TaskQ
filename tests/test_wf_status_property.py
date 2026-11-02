@@ -1,4 +1,4 @@
-"""The T08 totality PROPERTY (GAPS-ESTATE F6a): the derivation table's
+"""The T08 totality PROPERTY ( F6a): the derivation table's
 totality is a tested property — a hypothesis-driven generator over RANDOM
 multisets of node views (including the two derived pending-row shapes —
 join-wait and held — and the ABSORBED-failure class, B2's clause) asserts
@@ -99,7 +99,7 @@ class TestDerivationTotality:
             # THE PRECEDENCE: failed only ever loses to row 1 — genuine
             # liveness (a RUNNING row — the reclaim arms' only input) or
             # a cancel in flight. The terminal-crash class is NOT
-            # liveness (the crashed-terminal wedge's cure): a crashed
+            # liveness (the crashed-terminal wedge's fix): a crashed
             # row's failed-class verdict never loses to itself.
             if derived != "failed":
                 assert any(n.status == "running" for n in nodes) or any(

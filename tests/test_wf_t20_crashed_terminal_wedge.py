@@ -1,5 +1,5 @@
-"""THE CRASHED-TERMINAL WEDGE (T20/T21 fixer's cure pins) — the round's
-most severe conviction: a run whose nodes = {succeeded|failed, crashed}
+"""THE CRASHED-TERMINAL WEDGE (T20/T21 fixer's fix pins) — the round's
+most severe recorded finding: a run whose nodes = {succeeded|failed, crashed}
 WEDGED RUNNING FOREVER.
 
 THE SEMANTICS DECISION (the design law, stated once here and in
@@ -22,20 +22,20 @@ terminal is the runbook's resumable-by-rerun. A corpse that reports
 leg's liveness predicates held it forever), holds retention (the prune
 touches terminal rows only), and greened G7 on a dead run.
 
-THE CURES PINNED HERE:
+THE FIXES PINNED HERE:
 * the derivation folds the terminal-crash class into the failed-class
   terminal (the corpse derives ``failed`` — never ``running``);
 * the maintenance leg's liveness predicates exclude the terminal-crash
   class and its failed arm INCLUDES it (the wedged root heals on ONE
   sweep pass);
-* the G7 assertion can RED a wedge: a live root whose rows reconstruct
+* the G7 assertion can fail on a wedge: a live root whose rows reconstruct
   a TERMINAL verdict contradicts the rows — the assertion runs the
   one-pass heal itself and reds when the reported state still disagrees
   (the corpse-stays-green blind spot, closed).
 
-Red-first: the corpse pins ran RED against the pre-cure tree
+Failing-first: the corpse pins failed against the pre-fix tree
 (reconstruction derived ``running``; the maintenance pass left the root
-``running``) — captured in ``.measurements/wedge-pin-reds.json``.
+``running``) — captured in `the recorded capture`.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ async def test_the_wedged_corpse_derives_terminal(
 ) -> None:
     """THE WEDGE'S DERIVATION FACE: {succeeded, crashed} derives
     ``failed`` — the terminal-crash class is the failed-class terminal,
-    never liveness. RED (the pre-cure tree): the corpse derived
+    never liveness. The recorded failure (the pre-fix tree): the corpse derived
     ``running`` — G7 green on a dead run, retention held forever."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     ok = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")
@@ -137,9 +137,9 @@ async def test_the_wedged_root_heals_on_one_sweep_pass(
     wf_sql: WorkflowSql,
     wedge_redlog: RedLog,
 ) -> None:
-    """THE EVIDENCE ROOTS' HEAL (the att_t20 corpses' cure): the wedged
+    """THE EVIDENCE ROOTS' HEAL (the att_t20 corpses' fix): the wedged
     root + one maintenance pass → the failed terminal, finished_at
-    stamped, retention eligible. RED (the pre-cure tree): the pass left
+    stamped, retention eligible. The recorded failure (the pre-fix tree): the pass left
     the root ``running`` forever."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     ok = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")
@@ -184,11 +184,11 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
     wf_sql: WorkflowSql,
     wedge_redlog: RedLog,
 ) -> None:
-    """THE G7 RED-DRILL (the attacker's proof): G7 stayed green ON THE
+    """THE G7 MUTATION-PIN (the attacker's proof): G7 stayed green ON THE
     CORPSE — the anti-drift assertion could not fail on a wedged run.
-    THE CURE'S TEETH: a live root whose rows reconstruct a TERMINAL
+    THE FIX'S TEETH: a live root whose rows reconstruct a TERMINAL
     verdict contradicts the rows; the assertion runs the one-pass heal
-    and REDS when the reported state still disagrees. The drill disables
+    and REDS when the reported state still disagrees. The scenario disables
     the heal (the maintenance statement's no-op mutant — the wedging
     sweep's shape) and the check MUST red."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -207,20 +207,20 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
         # Consumes $1 (the batch arg) — the pass runs, maintains nothing.
         workflow_root_maintain="SELECT 0::int WHERE $1::int IS NOT NULL",
     )
-    with pytest.raises(AssertionError) as drill:
+    with pytest.raises(AssertionError) as scenario:
         await g7_check(wf_conn, wf_schema, noop_sql)
-    assert "WEDGE" in str(drill.value), (
-        f"the red-drill's failure is not the wedge leg naming itself: {drill.value}"
+    assert "WEDGE" in str(scenario.value), (
+        f"the mutation pin's failure is not the wedge leg naming itself: {scenario.value}"
     )
     root_after = await root_row(wf_conn, wf_schema, flow_id)
     wedge_redlog.red(
         "g7-corpses-cannot-hide",
         "the G7 assertion WITHOUT the terminal-contradiction leg: a live "
         "root over a terminal reconstruction greens the dead run (the "
-        "attacker's proof: G7 stayed green on the corpse) — the drill "
+        "attacker's proof: G7 stayed green on the corpse) — the scenario "
         "ran the mutant check and read the corpse after it",
         {
-            "raised": str(drill.value)[:300],
+            "raised": str(scenario.value)[:300],
             "root_status_after_the_mutant_pass": root_after["status"],
             "reconstructed": await reconstruct_workflow_status(wf_conn, wf_sql, flow_id),
         },

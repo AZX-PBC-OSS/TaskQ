@@ -1,4 +1,4 @@
-"""Red-team attacks on the `cron_schedule_id` provenance stamp.
+"""Adversarial review attacks on the `cron_schedule_id` provenance stamp.
 
 The fix scopes the DST twin-coverage walk to the schedule that
 enqueued the jobs: every cron fire and twin carries

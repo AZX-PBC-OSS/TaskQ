@@ -45,7 +45,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 # an open that does not parks forever and the TEST budget is what fires.
 _PROD_BOUND_SECS = "0.5"
 # 10x the configured production bound - generous. This budget firing is
-# the red result: production never bounded the bootstrap open on its own.
+# the failing proof result: production never bounded the bootstrap open on its own.
 _TEST_BUDGET_SECS = 5.0
 
 

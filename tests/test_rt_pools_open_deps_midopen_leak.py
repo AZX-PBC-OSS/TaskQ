@@ -1,4 +1,4 @@
-"""Red-team attacks on ``open_worker_deps``' mid-open failure teardown.
+"""Adversarial review attacks on ``open_worker_deps``' mid-open failure teardown.
 
 Contract under attack - ``open_worker_deps``' own docstring (deps.py):
 

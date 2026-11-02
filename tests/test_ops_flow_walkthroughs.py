@@ -5,7 +5,7 @@ the CLI steps run as real ``python -m taskq`` subprocesses against a real
 Postgres container (the shared integration pair), the library steps run the
 docs' own snippets. The docs these tests verify:
 
-- ``docs/guides/ops.md`` §12 (scaling playbook: "a queue is backed up")
+- ``docs/guides/ops.md`` the section (scaling playbook: "a queue is backed up")
 - ``docs/guides/cli.md`` (job show / cancel / retry / events / cancel-where,
   queues depth, actor-config, doctor, health, workgroup validate)
 - ``docs/guides/deployment.md`` (bootstrap → health → verify loop)
@@ -17,7 +17,7 @@ docs' own snippets. The docs these tests verify:
 A step that drifts - a renamed command, a changed output shape, a finding
 that stops appearing - fails here, so the docs' procedures cannot rot
 silently. The doctor stale-worker test (``test_flow1_doctor_ignores_stale_
-worker_row``) is the red proof for the defect it names: doctor's on-demand
+worker_row``) is the failing proof for the defect it names: doctor's on-demand
 stranded-jobs read must apply the same worker-liveness window the leader's
 sweep applies, or a dead-but-unswept worker row hides an unserved queue from
 the operator mid-incident.
@@ -172,14 +172,14 @@ async def _bootstrap_worker_registers_actors(schema_name: str, pg_dsn: str) -> N
     assert r.returncode == 0, f"bootstrap worker failed:\n{r.stdout}\n{r.stderr}"
 
 
-# ── Flow 1: "a queue is backed up" (ops.md §12) ─────────────────────────
+# ── Flow 1: "a queue is backed up" (ops.md the section) ─────────────────────────
 
 
 async def test_flow1_queue_backed_up_walkthrough(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: Any,
 ) -> None:
-    """ops.md §12 + cli.md: observe depth → diagnose (doctor) → act (raise the
+    """ops.md the section + cli.md: observe depth → diagnose (doctor) → act (raise the
     cap, add a worker) → confirm it worked (depth drains, job succeeded)."""
     schema, dsn = module_pg_schema.schema_name, module_pg_schema.pg_dsn
 
@@ -204,9 +204,9 @@ async def test_flow1_queue_backed_up_walkthrough(
     assert row is not None, f"queues depth shows no {E2E_QUEUE} row:\n{r.stdout}"
     assert row.split()[1:3] == ["5", "0"], f"expected pending=5 scheduled=0, saw: {row}"
 
-    # Step 2 - diagnose (ops.md §12: doctor is the mid-incident surface).
+    # Step 2 - diagnose (ops.md the section: doctor is the mid-incident surface).
     # Remove the exited bootstrap worker's row so nothing counts as serving
-    # the queue (the documented SQL in ops.md §8 is how an operator sees this).
+    # the queue (the documented SQL in ops.md the section is how an operator sees this).
     await clean_pg_conn.execute(f'DELETE FROM "{schema}".workers')  # noqa: S608  # Why: schema is identifier-validated upstream.
     r = await _arun_cli(schema, dsn, "doctor", "--actors", ACTORS_REF)
     assert r.returncode == 0, r.stderr  # doctor always exits 0 (documented)
@@ -320,7 +320,7 @@ async def test_flow1_act_branch_the_cap_knob_opens_and_closes_the_queue(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: Any,
 ) -> None:
-    """ops.md §12 row 1's remedy lever, driven CAUSALLY, both directions.
+    """ops.md the section row 1's remedy lever, driven CAUSALLY, both directions.
 
     The playbook's "first knob" for an actor-shaped backlog is
     ``taskq actor-config set ACTOR --max-concurrent N`` (live: "the
@@ -649,7 +649,7 @@ async def test_flow3_worker_fleet_bootstrap_health_verify(
 
 # ── Flow 4: "set up alerting" (observability.md + rules.yaml) ────────────
 #
-# The rules read WORKER-side series (ops.md §8: "the rules read worker-side
+# The rules read WORKER-side series (ops.md the section: "the rules read worker-side
 # series the admin process's /jobs/health/metrics never carries"), so the
 # documented path is: set TASKQ_METRICS_PORT on every worker, scrape /metrics,
 # import rules.yaml. This walkthrough boots a real worker with the port set

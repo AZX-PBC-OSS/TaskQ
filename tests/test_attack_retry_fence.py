@@ -5,7 +5,7 @@ re-pend resets the cancel columns and its deadline arm stamps
 DeadlineExceeded, so a phase-carrying row must never reach either arm.
 Every pin asserts behavior on the public surfaces (the job read model,
 the event log, the delivered cancel flags), on PG and on the in-memory
-twin. A failure is a RED.
+twin. A failure is a recorded defect.
 """
 
 import asyncio
@@ -42,7 +42,7 @@ async def test_operator_cancel_racing_a_failure_retry(
     'running' with the request visibly armed, or 'cancelled' with the
     origin marker on it. A job that relaunches (scheduled/pending) or
     terminalises failed/DeadlineExceeded after a successful cancel stamp
-    is a RED: the operator asked for a cancel and the retry erased it.
+    is the recorded defect: the operator asked for a cancel and the retry erased it.
     """
     deps = clean_jobs_app.deps
     backend = clean_jobs_app.backend

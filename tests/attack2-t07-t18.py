@@ -148,7 +148,7 @@ async def test_attack_t18_expiry_after_the_fire_before_the_reduce(
     # fire's tx — the sweep cannot interleave there (single tx). The
     # record's delivery contract survives the sweep eating the children.
     # If the fire did NOT happen above (fired==0), the guard must hold the
-    # results — the shipped pin's shape, already convicted there.
+    # results — the shipped pin's shape, already rejected there.
 
 
 # ── 2: the guard must not over-hold vanilla rows ────────────────────────

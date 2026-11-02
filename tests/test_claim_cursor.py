@@ -1,6 +1,6 @@
 """The claim cursor: per-worker, per-queue memory of the last
 successfully-claimed job id, the worker-side half of the MVCC-horizon
-hygiene pair (the gauges are the predictor, this is the partial cure).
+hygiene pair (the gauges are the predictor, this is the partial fix).
 
 The failure mode (brandur.org/postgres-queues, re-run by PlanetScale's
 2026 "Keeping a Postgres queue healthy"): a long or overlapping
@@ -278,7 +278,7 @@ def test_the_shipped_default_reset_is_the_documented_constant() -> None:
 def test_the_settings_default_is_the_opt_in_posture() -> None:
     """DEFAULTS row: the cursor is OPT-IN (TASKQ_CLAIM_CURSOR_RESET_SECONDS
     defaults 0 = disabled). The predictor (the degradation-ratio gauges)
-    is default-on; the cure waits for evidence on the adopting fleet."""
+    is default-on; the fix waits for evidence on the adopting fleet."""
     import os
 
     from taskq.settings import WorkerSettings

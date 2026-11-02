@@ -1,7 +1,7 @@
 """Docs-contract pin: every admin surface the ops docs point an operator at
 must exist in the shipped admin router.
 
-ops.md §12 (the scaling playbook) routes operators to admin pages -
+ops.md the section (the scaling playbook) routes operators to admin pages -
 ``/admin/actors`` to see an actor pinned at its cap, ``/admin/queues/{queue}``
 for the depth view, ``/admin/history`` for the long-running-jobs sort, and so
 on. A playbook row whose page 404s is a dead end mid-incident. The route

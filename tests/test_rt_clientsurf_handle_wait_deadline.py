@@ -1,4 +1,4 @@
-"""Red-team: JobHandle.wait's timeout contract against a fetch that never returns.
+"""Adversarial review: JobHandle.wait's timeout contract against a fetch that never returns.
 
 The project's own rule (docs/guides/ops.md, enforced across the worker
 surface): "every wait on something outside the process is bounded, and
@@ -115,7 +115,7 @@ def _handle(backend: Any) -> JobHandle[None]:  # type: ignore[type-var]  # Why: 
 
 
 async def test_wait_deadline_is_enforced_while_a_fetch_hangs() -> None:
-    """RED contract: wait(timeout=0.3) must raise its own TimeoutError even
+    """THE FAILING CONTRACT: wait(timeout=0.3) must raise its own TimeoutError even
     when the very first backend.get never returns.
 
     Current behavior violates the docstring contract

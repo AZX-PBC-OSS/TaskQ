@@ -1,4 +1,4 @@
-"""T20's EMIT-TX pins — the design's ONE new primitive (PROOF.md §6a).
+"""T20's EMIT-TX pins — the design's ONE new primitive (PROOF.md the section).
 
 The shipped fork inserts children ONLY inside the parent's terminal-mark
 tx1 (fork-at-finalize). A STREAMING source must emit children while
@@ -7,7 +7,7 @@ re-bound (the children INSERT + the edge rows) PLUS the cursor checkpoint
 on the source row's own metadata under the FULL claim fence — ONE
 transaction (the fork-atomicity law at page granularity).
 
-THE REFUTED-CLAIM DISCIPLINE (the spike's own refuted claim, PROOF.md §6 —
+THE REFUTED-CLAIM DISCIPLINE (the spike's own refuted claim, PROOF.md the section —
 198 UniqueViolations in the first run): the per-record identity rides
 ``map_index`` — the fork's idempotency key AND the step-ledger's arbiter
 BOTH discriminate siblings by it; emit stamps ``map_index`` + ``trace_id``
@@ -18,10 +18,10 @@ server-side termination, no graceful path) at each statement window of the
 emit tx — the spike's storm shape: zero re-emitted children, zero lost
 children, the cursor == the last committed page.
 
-Red-first: this file ran RED against the tree before the emit primitive
+Failing-first: this file failed against the tree before the emit primitive
 existed (the ImportError IS the missing surface); the greens below are
 the built code's evidence. Captured:
-``.measurements/t20-emit-*.txt``.
+`the recorded capture`.
 """
 
 from __future__ import annotations
@@ -479,7 +479,7 @@ async def test_t20_emit_map_index_discriminates_siblings(
     without it): two records' chain starts through ONE emit — same step
     key, DIFFERENT map_index — are TWO rows with TWO idempotency keys,
     and the step-ledger's arbiter gives them TWO independent claims. The
-    collision drill: the SAME (step, map_index) emitted twice aborts the
+    collision scenario: the SAME (step, map_index) emitted twice aborts the
     tx on the unique key (the loud refusal — never a silent dedup, never
     a partial page)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -551,7 +551,7 @@ async def test_t20_emit_map_index_discriminates_siblings(
         )
     assert c7.ledger_id != c8.ledger_id, "the siblings share a ledger claim — the collision"
 
-    # THE COLLISION DRILL: re-emitting the same record (the same
+    # THE COLLISION PROOF: re-emitting the same record (the same
     # step + map_index) aborts the tx on the unique key — the loud
     # refusal; the tx's OTHER children (a fresh sibling) roll back with
     # it (never a partial page). THE NAMED DEATH (the T20/T21 fixer's
@@ -560,7 +560,7 @@ async def test_t20_emit_map_index_discriminates_siblings(
     # from the row history; the remedy — re-sync the cursor — rides the
     # message). The ARBITER's teeth are the same teeth (the collision
     # detected, the tx rolled back, the cursor un-advanced); the
-    # raw-typed ladder death is what was cured.
+    # raw-typed ladder death is what was fixed.
     dupes = [
         EmitChild(
             step_key="screen",

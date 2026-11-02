@@ -27,7 +27,7 @@ The pin below bulk-seeds the stale-stats regime directly (fresh schema,
 window is named for) and asserts the invariant that holds under EVERY
 driver choice: no jobs-scan node of the fenced write may heap-filter more
 than the fence's own one target row.  It also pins the index definition
-(two key columns, one predicate) and, as the red control, replays the
+(two key columns, one predicate) and, as the failing proof control, replays the
 same shape against the pre-01.00.19_01 one-key index, which must exhibit
 the O(running) heap-filter walk the migration exists to remove.
 """
