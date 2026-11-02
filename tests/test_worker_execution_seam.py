@@ -85,6 +85,10 @@ async def _observed_body(ctx: Any, params: Ingest) -> Report:
 # ── the registry + the capability predicate (pure) ───────────────────────
 
 
+async def _seam_body(ctx: object) -> dict[str, str]:
+    return {}
+
+
 def test_the_app_registry_is_weak_and_resettable() -> None:
     """A registered app is observable (``iter_imported_apps`` /
     ``workflow_execution_capable``); the reset seam clears it — the
@@ -94,7 +98,20 @@ def test_the_app_registry_is_weak_and_resettable() -> None:
         app = WorkflowApp()
         seam.register_app(app)
         assert app in seam.iter_imported_apps()
-        assert seam.workflow_execution_capable() is True
+        # THE RULED CAPABILITY: an imported app is not capability — at
+        # least one RUNNABLE workflow must project. An app that declares
+        # no workflow cannot resolve a body.
+        assert seam.workflow_execution_capable() is False, (
+            "an imported app with no runnable workflow is not capability"
+        )
+
+        @app.workflow("seam-capability-probe")
+        def seam_capability_probe() -> Promise[object]:
+            return build(step(_seam_body, key="probe"))
+
+        assert seam.workflow_execution_capable() is True, (
+            "the mounted app's runnable workflow projects the capability"
+        )
         seam.reset_app_registry_for_tests()
         assert seam.iter_imported_apps() == []
         assert seam.workflow_execution_capable() is False, (

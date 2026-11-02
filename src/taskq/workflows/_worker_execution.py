@@ -444,6 +444,7 @@ def _workflow_cohorts(
 
 
 _projection_cache: tuple[list[ActorConfig], list[str]] | None = None
+_projection_cache_key: tuple[tuple[int, int], ...] | None = None
 
 
 def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
@@ -493,8 +494,14 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
     event stream read the projection — a stable order is the readable
     one.
     """
-    global _projection_cache
-    if _projection_cache is not None:
+    global _projection_cache, _projection_cache_key
+    signature = tuple(
+        sorted(
+            (id(app), len(cast("WorkflowAppFace", app).workflow_names()))
+            for app in iter_imported_apps()
+        )
+    )
+    if _projection_cache is not None and _projection_cache_key == signature:
         return _projection_cache
     totals: dict[str, tuple[str, set[str]]] = {}
     capacity_totals: dict[str, _CapacityTerms] = {}
@@ -624,6 +631,7 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
             )
         )
     _projection_cache = (configured, failures)
+    _projection_cache_key = signature
     return _projection_cache
 
 
