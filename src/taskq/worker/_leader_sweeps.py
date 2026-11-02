@@ -864,7 +864,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # flows-side join through the node rows; the node-gone /
         # no-flow_id / non-root-pointee legs on the rootless cadence),
         # prune-family batch knob: see wf_edge_retention_call's note.
-        # THE SIXTH TABLE'S FOLD (the round-2 R3's documented call): the
+        # THE SIXTH TABLE'S FOLD (the documented call): the
         # same arm's statement ALSO deletes the doomed flows'
         # wf_node_stream rows (a dead node's ring — nodes x 64 — never
         # had a pruner; the stream rows carry flow_id directly, its own

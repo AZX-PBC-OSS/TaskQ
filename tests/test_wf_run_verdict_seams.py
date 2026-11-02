@@ -259,9 +259,8 @@ async def test_the_verdict_names_the_unabsorbed_failure_not_the_absorbed_one(
     verdict naming the absorbed branch sends the operator to a failure
     that was already collected — the 3am question's answer must name
     the open wound."""
-    from tests._wf_fixtures import seed_flow, seed_join, seed_running_node
-
     from taskq.workflows import WorkflowRunError
+    from tests._wf_fixtures import seed_flow, seed_join, seed_running_node
 
     flow_id = await seed_flow(wf_pool, wf_schema, status="failed")
 

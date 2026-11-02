@@ -679,8 +679,7 @@ def _rate_limit_config_diff(existing: object, declared: object) -> str:
 
 
 def _iter_live_recorded_workflows() -> Iterator[tuple[str, str, CompiledWorkflow | None]]:
-    """THE SIBLING COLLECTS' ONE BASE (the round-3 fix — the ghost's
-    grave): the LIVE apps' workflow names (:func:`iter_imported_apps`'s
+    """THE SIBLING COLLECTS' ONE BASE: the LIVE apps' workflow names (:func:`iter_imported_apps`'s
     own walk — the reservations collect's base all along), each name
     resolved through the RECORDED compile cache (H-D1's law: the build
     fn is never re-invoked here), yielded as ``(app_face, name,
@@ -713,8 +712,9 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
     — the admission-terms surface): every imported app's compiled
     graphs walk once (the LIVE apps' names — :func:
     `_iter_live_recorded_workflows`, the reservations sibling's ONE
-    base; the orphan-inclusive ``_compiled`` walk was the round-3
-    finding — the ghost's buckets refused the boot); each
+    base; the orphan-inclusive ``_compiled`` walk registered the stale
+    cache's ghosts — buckets for workflows no live app declares — and
+    their refusals broke the boot); each
     workflow-declared rate-limit INSTANCE (``TokenBucket``/
     ``SlidingWindow`` — on a ``step``, a map_source, or a ``RouteArm``)
     registers into the worker's resolved ``RateLimitRegistry``
@@ -772,8 +772,9 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
                 try:
                     registry.register(entry)
                 except ValueError as exc:
-                    # THE RESOLVED NAMES' REFUSAL (the round-3 mirror):
-                    # re-render the registry's raw-repr message with the
+                    # THE RESOLVED NAMES' REFUSAL (the registry's own message,
+                    # re-rendered with the resolved name):
+                    # the raw-repr message with the
                     # bucket's own name + the config diff, the original
                     # chained (``from exc`` — the cause is kept).
                     try:
