@@ -108,7 +108,7 @@ from both the md and the JSON's verdict field.
   482 warmup outlier that no stated rule excludes.
 - The after arm's runs are recorded NOWHERE: no artifact carries the
   three after-tree runs; only the median "287" appears in prose (md §7,
-  fixes[0].throughput_note). The red/green artifact
+  fixes[0].throughput_note). The failing/green artifact
   (`hotpath-fix-sweep-render.json`) covers the microbenchmark only.
 - With n=3 per arm, a base spread of 482→281, and no after-arm raw data,
   the claim "unchanged within run noise" has no auditable statistical
@@ -140,5 +140,5 @@ from both the md and the JSON's verdict field.
   **0 errors**.
 
 No src changes: the batch-path serialization finding is a measurement
-disclosure, not a proven defect (no red proof was produced against it —
+disclosure, not a proven defect (no failing proof was produced against it —
 fixing it is a behavior-relevant design change that outscopes this pass).

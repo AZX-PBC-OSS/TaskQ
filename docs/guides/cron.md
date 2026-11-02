@@ -646,7 +646,7 @@ manual fire satisfies the owed occurrence, the tick does not double-deliver it.
     run-now) — schedules are declared in code (`client.create_schedule(...)` /
     `register_cron`), observed on the admin schedules page, and fired by the
     leader's tick. Run-now lives at `POST /schedules/{id}/run` and the "Run
-    now" button. A CLI-side drill proving the scheduled face therefore waits
+    now" button. A CLI-side scenario proving the scheduled face therefore waits
     out the tick (or points an HTTP client at the admin endpoint); there is no
     `taskq schedule run-now` to shortcut it.
 

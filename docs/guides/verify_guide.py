@@ -125,7 +125,7 @@ async def main() -> None:
                 await asyncio.sleep(1)
         # mirror the deployed state: the idempotency post-phase drops the
         # legacy single-column uniq (01.00.03_01_post) — the verify run's
-        # apply left it behind, and it convicts the per-run step keys.
+        # apply left it behind, and it conflicts with the per-run step keys.
         conn0 = await pool_holder(dsn)
         await conn0.execute(f'DROP INDEX IF EXISTS "{schema}".jobs_idempotency_key_uniq')
         await conn0.close()

@@ -493,7 +493,7 @@ status panel
 and the `taskq.wf_progress_nodes_total` gauge share the grouped read (one
 query per status read — the query-count pin).
 
-**The grouped status rollup (the run's status panel — the §17.5
+**The grouped status rollup (the run's status panel — the
 derivation's input):**
 
 ```sql

@@ -141,7 +141,7 @@ return build(published)
 
 The E-rules check the graph at compile: a consumer's params must match
 what its producers declare (a single-model producer feeds the param
-BARE; the list shape is the JOIN's — the mis-wiring reds as
+BARE; the list shape is the JOIN's — the mis-wiring fails as
 `E5-incompatible-consumer` before any run exists), dangling edges and
 eternal waits are named errors, and the SAME module compiles
 byte-identically (the Mermaid diagram cannot disagree with the types).

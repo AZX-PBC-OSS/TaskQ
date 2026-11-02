@@ -1,14 +1,14 @@
 # The landing doctrine: the process contract for every change
 
-How a change earns its place on `main`. Three parts: the machine (the
-process a PR passes through), the hard laws (what the codebase itself
+How a change earns its place on `main`. Three parts: the review
+process a PR passes through, the hard laws (what the codebase itself
 requires), and the incident pattern (the habits that keep state, tooling
 and environment honest). Each rule carries its one-line rationale; none
 of them is optional or subject to mood.
 
 Related docs: the debugging playbook
-([debugging-playbook.md](debugging-playbook.md)) — the method when a
-lane goes red, the hardening ledger
+([debugging-playbook.md](debugging-playbook.md)) — the method when CI
+fails, the hardening ledger
 ([hardening-ledger.md](hardening-ledger.md)) — the defect classes the
 method closed, and the [testing guide](../guides/testing.md) — lane and
 marker doctrine. Migration mechanics live in
@@ -16,46 +16,46 @@ marker doctrine. Migration mechanics live in
 
 ---
 
-## 1. The machine
+## 1. The review process
 
-The process contract. It applies to every change, including docs, CI
-workflow edits, and the maintainer's own PRs.
+It applies to every change, including docs, CI workflow edits, and the
+maintainer's own PRs.
 
-- **Red-first.** No fix lands without a failing proof that the fix turns
-  green. *A fix without a red is a hypothesis; the red is what makes it
-  a finding.*
+- **A failing proof first.** No fix lands without a failing test that
+  the fix turns green. *A fix without a failing test is a hypothesis;
+  the failing test is what makes it a finding.*
 
-- **No self-review, no self-landing.** The builder never red-teams its
-  own PR and never lands it: builder, then a different red-team agent,
-  then a third landing agent. *An author reviewing their own diff
-  reviews their intent, not the artifact.*
+- **No self-review, no self-landing.** An author never approves or
+  merges their own PR: the author writes it, a different reviewer
+  approves it, and a third party merges. *An author reviewing their own
+  diff reviews their intent, not the artifact.*
 
-- **One lane, one agent per PR.** Exactly one landing agent at a time,
-  and one agent per PR, ever. *Duplicate agents race competing unions
-  onto the same branch; the lane is serial by construction.*
+- **One reviewer per PR.** Exactly one merge at a time per PR, and one
+  reviewer per PR, ever. *Duplicate merge attempts race competing
+  unions onto the same branch.*
 
-- **The weather rule.** A 1-in-N red under load is a FINDING, not noise.
-  A rerun is a concession with conjunctive preconditions — all must
-  hold: the failing test is byte-identical to `main`, it passes locally
-  twice, and `main`'s own head is green. One named rerun per red; a
-  second reproduced red = STOP, no merge. A red your own change may
-  have caused — a cure that resizes a lane or cap, now failing a
-  sibling — is not weather: attribute it with a base control (the
+- **The flake rule.** A 1-in-N failure under load is a FINDING, not
+  noise. A rerun is a concession with conjunctive preconditions — all
+  must hold: the failing test is byte-identical to `main`, it passes
+  locally twice, and `main`'s own head is green. One named rerun per
+  failure; a second reproduced failure = STOP, no merge. A failure your
+  own change may have caused — a fix that resizes a cap, now failing a
+  sibling — is not flake: attribute it with a base control (the
   merge-base, run twice) before reaching for a rerun. *Rerunning past
-  the first red launders a real defect, and the preconditions are what
-  separate CI-local weather from the PR's own content.*
+  the first failure launders a real defect, and the preconditions are
+  what separate CI-local flake from the PR's own content.*
 
 - **Bisect, don't rerun, for load-amplified mechanisms.** When load
-  amplifies the failure, a green rerun proves luck, not weather:
+  amplifies the failure, a green rerun proves luck, not flake:
   neutralize the suspect hunk on a scratch head and let the bisect
-  convict. Bisect states are never pushed — the working branch carries
+  decide. Bisect states are never pushed — the working branch carries
   verified trees only. *Precondition checklists can pass while the
   conclusion is false; the bisect is the only decisive evidence.*
 
-- **The revert drill.** Every new pin must red when the defect it pins
-  is reverted (the drill re-introduces the defect and expects red).
-  *A pin that cannot red is decoration; the drill is the difference
-  between coverage and teeth.*
+- **The revert proof.** Every new pin must fail when the defect it pins
+  is re-introduced (the proof re-introduces the defect and expects the
+  failure). *A pin that cannot fail is decoration; the revert is the
+  difference between coverage and teeth.*
 
 ## 2. The hard laws
 
@@ -73,10 +73,10 @@ review, and the review checks for them by name.
 - **Tests assert behavior, not implementation.** A pin states the
   observable contract and is proven by mutation, not by mirroring the
   source's shape, and the evidence it accepts must not be forgeable: a
-  receipt counts only when the path the pin convicts is the only thing
+  record counts only when the path the pin exercises is the only thing
   that can stamp it. *An implementation-shaped pin greens the refactor
-  that breaks the behavior it was meant to protect; a forgeable
-  receipt greens the defect that stamps its own proof.*
+  that breaks the behavior it was meant to protect; a forgeable record
+  greens the defect that stamps its own proof.*
 
 - **No hope-sleeps, no tolerance bumps.** A timing-sensitive assertion
   is fixed by re-anchoring on state, or by a wall-clock bound carrying
@@ -119,7 +119,7 @@ apply to humans and agents alike.
 - **Attribute the environment before concluding.** A local failure may
   be a foreign service on your port — another project's container, a
   leftover stack holding your names. Identify the owner of the port,
-  container and schema before blaming the diff or calling it weather;
+  container and schema before blaming the diff or calling it flake;
   and hands off foreign services. *Misattributed environments cut both
   ways: foreign causes get charged to the code, and real defects get
   dismissed as noise.*

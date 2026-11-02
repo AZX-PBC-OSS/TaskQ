@@ -1,6 +1,6 @@
-# The batch-hot path's dominant cost: the per-job failure-counter reset — root cause, red/green proof
+# The batch-hot path's dominant cost: the per-job failure-counter reset — root cause, failing/green proof
 
-The latency red-team's batch-shape finding (`attack-hotpath-findings.md`)
+The latency attack's batch-shape finding (`attack-hotpath-findings.md`)
 measured `reset_batch_failures` — the `UPDATE batches SET
 consecutive_failures = 0` every successful job of a batch pays through
 `apply_batch_terminal_outcome` — at **8.2 ms/job, 24× the terminal UPDATE's
@@ -117,7 +117,7 @@ other (livelock — 20-way and 24-way repro, batches stayed 'active' with
 40 × 2 ms re-issues) and a mid-drain veto re-issued 40 × 2 ms would
 re-create the per-job cost the fix removes.
 
-## Red/green numbers
+## Failing/green numbers
 
 Harness `benchmarks/batch_reset_hotspot.py`: B batches × 200 members, each
 member driven through the REAL terminal path (terminal job UPDATE +
@@ -148,11 +148,11 @@ re-run pair above, taken minutes apart under identical flags.)
 
 1. **Mechanism**: `EXPLAIN (ANALYZE)` of the reset against an ACTIVE batch
    whose counter is 0 — the batches UPDATE must return 0 rows (no tuple
-   lock) and the member probe must be "(never executed)". RED on main
+   lock) and the member probe must be "(never executed)". Failing on main
    (rows=1, probe executed).
 2. **Cost**, the documented arithmetic as a same-run ratio: the hook's
    contended per-job wall ≤ 5× the bare terminal UPDATE's, both measured
-   in this run on this PG (main measured 7.56–7.87× — RED, 3/3; the
+   in this run on this PG (main measured 7.56–7.87× — failing, 3/3; the
    finding's fleet ratio is 24×; the fixed tree measures 3.2–3.3×, 3/3
    GREEN).
 3. **The trap**: a batch with REAL failures still counts (2 increments →
@@ -162,7 +162,7 @@ re-run pair above, taken minutes apart under identical flags.)
 4. Concurrent failures under contention: 8 concurrent failed outcomes →
    counter exactly 8 (the increment path is untouched).
 5. **The tail invariant**: 24 concurrent successes through the hook → the
-   batch is `'complete'` with one `completed_at` and no sweep — RED on
+   batch is `'complete'` with one `completed_at` and no sweep — failing on
    the guard alone, GREEN with the handshake.
 
 ## Gates
@@ -178,9 +178,9 @@ re-run pair above, taken minutes apart under identical flags.)
   (the sweep-audit registry gained `_LOCK_BATCH_ROW_SQL`, a SELECT FOR
   UPDATE — no write — matching the walk only through its own keyword).
 
-## Red-team addendum (the transactional-caller stuck-batch class, found and fixed)
+## Addendum: the transactional-caller stuck-batch class (found and fixed)
 
-The red-team pass over the tail gate found a hole the free-running pins
+The adversarial pass over the tail gate found a hole the free-running pins
 cannot see: the gate's early return (`open_members > 16`) is UNORDERED with
 its caller's own commit. On the transactional-caller shape
 (`apply_batch_terminal_outcome(..., transaction_conn=conn)` inside the
@@ -236,6 +236,6 @@ both. The PR's original absolute numbers (9.02 → 1.35 ms/job) do not
 reproduce on this hardware — the before/after direction and the reset
 statement's collapse (16.98 → 0.006 ms mean) do.
 
-Gates after the red-team fix: ruff/format clean; pyright 0 errors on the
+Gates after the fix: ruff/format clean; pyright 0 errors on the
 touched files; batch families + concurrency pins **169 passed ×3**; fast
 lane **8,522 passed**.

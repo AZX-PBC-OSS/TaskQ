@@ -1,6 +1,5 @@
 # T26 — THE HITL BROADCAST: PG LISTEN/NOTIFY of the approvals + the worked deep-research example
 
-Lane: `feat/taskqflow-hitl-pubsub` off `origin/feat/taskqflow` @ `c86f3990`.
 Design-first: THIS ticket is the 30-minute read's output; every claim below
 was verified against the tree at the base head before a line of code.
 
@@ -21,7 +20,7 @@ operator), and ceremony hides the one-liner. The amended design:
    `SignalTimeoutError` exception stays in the vocabulary for the
    NON-HANDLED path — the escalation ladder's own use: a body that
    WANTS the failure raises it itself off the ``Expired`` member (the
-   pin-e lane's body is exactly that shape). RED-FIRST: the
+   pin-e's body is exactly that shape). The pin comes first: the
    type-probe marker (the bare unwrap) ran against the PRE-UNION tree
    and was SILENT — the checker could not force anything; the capture
    is the receipt, the union's landing is the flip.
@@ -172,7 +171,7 @@ operator), and ceremony hides the one-liner. The amended design:
    re-execution doctrine: the resume re-runs the body from the top,
    the corpus digest replays cheap).
 
-## The pins (red-first where they convict)
+## The pins
 
 - **P0 (the checker forces the fail-close arm):** the type-probe
   marker — a body that bare-unwraps the wait's outcome (`.verdict`
@@ -183,7 +182,7 @@ operator), and ceremony hides the one-liner. The amended design:
   the body's own declared return (the fall-through None).
 - **P1 (the transactional create):** a rolled-back hold-create emits NO
   notification. The red: the notify sent OUTSIDE the tx (autocommit)
-  fires while the row rolls back — captured as the mutation drill; the
+  fires while the row rolls back — captured as the mutation proof; the
   green: the nested-savepoint rollback (outer tx, `register_hold`
   inside, raise out) leaves NO `wf_signals` row AND no `taskq_wf_hold_created`
   notify.
@@ -225,4 +224,4 @@ at `-n 8` + `mkdocs --strict` + `scripts/verify_evidence_heads.py`.
   TIMEOUT FAIL-CLOSE, with the snippet from the REAL example file.
 - `examples/README.md`: one line for the deep-research example.
 - The PR body gains one sentence + the verified snippet (delivered in
-  the lane report; the orchestrator owns the body edit).
+  the report; the body edit follows).

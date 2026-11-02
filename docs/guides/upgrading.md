@@ -1958,7 +1958,7 @@ changelog becomes the authoritative record and these notes age out.
 
 The workflow round's pending notes, moved here from hand-written
 `CHANGELOG.md` blocks (the generator owns that file — these entries were
-invisible to the release-notes pipeline there; CERT2 F-CERT2-1's cure —
+invisible to the release-notes pipeline there; CERT2 F-CERT2-1's resolution —
 nothing was lost, the move is documented here).
 
 
@@ -1966,7 +1966,7 @@ nothing was lost, the move is documented here).
 
 * **Admin (T11): the workflow-run explorer** — the runs list + the run
   page (`/taskq/workflows/{id}`): the rows-alone Mermaid graph (the
-  collapsed map = one hexagon + the done/total counter), the node drill
+  collapsed map = one hexagon + the done/total counter), the node detail
   panel (the attempts, the trace id, the captured error, one upstream
   hop, the attempt ledger), the holds & decisions panel (the waiting-on
   state + the declared payload schema + the prefilled example), the
@@ -1985,7 +1985,7 @@ nothing was lost, the move is documented here).
 * **CLI (T12): `taskq flows`** — list/status/holds/signal/resolve/
   cancel/retry: one question, one command; the analysis lives in the
   pure module (`workflows/_cli.py`, the `_doctor` seam — the shared
-  §17.5 derivation + the why-stuck arm); the typed door validates the
+  status derivation + the why-stuck arm); the typed door validates the
   shell's JSON against the bound gates (the named pydantic refusal; the
   hold survives); the write verbs ride the engine's audit rows with the
   `cli:<user>` principal; the read verbs are read-only (pinned).
@@ -2052,7 +2052,7 @@ nothing was lost, the move is documented here).
   escape (`JoinSpec(child_driven=True)`) counts terminal children from the
   edge ledger; the `maybe` edge policy (absorbed + SURFACED); the scale
   curve pinned across the boundary (the refit + the 100k-edge plan assert).
-* **Workflows (T08):** the status + progress rollup — the §17.5 derivation
+* **Workflows (T08):** the status + progress rollup — the status derivation
   table (the absorbed-failure clause stated first), the rows-only
   reconstruction (the two-source rule: the ledger for the attempted
   terminals, the node row's error jsonb for the never-granted ones), the
@@ -2373,7 +2373,7 @@ consumed set names none of a projected cohort's queues fails LOUD —
 gated on the vanilla queues' own opt-in law: strict mode
 (`TASKQ_QUEUES_STRICT=1`) REFUSES the boot —
 `WorkflowQueueUnconsumedError` (a `RuntimeError`) naming the unconsumed
-queues, the consumed set, and the two cures: add each queue to a
+queues, the consumed set, and the two remedies: add each queue to a
 worker's `TASKQ_QUEUES` / `--queues`, or route the step elsewhere
 (`step(..., queue=...)` / `@app.actor(queue=...)`). Non-strict boots
 proceed with the ONE aggregated `workflow-cohorts-on-unconsumed-queues`
@@ -2391,7 +2391,7 @@ is not a thing. One app's declaration tightens the gate for every
 co-resident app too: in a process importing several apps,
 `queues_strict=True` on ONE app makes the gate strict over the WHOLE
 projected cohort set — a co-resident app's sibling-served cohorts
-refuse as well (the refusal names the queues and the cure). The check
+refuse as well (the refusal names the queues and the remedy). The check
 runs before the cohorts'
 `actor_config` sync, so a refusing process writes nothing; a worker
 consuming nothing at all keeps the separate `worker-consumes-no-queues`
@@ -2853,7 +2853,7 @@ constraint cannot carry an expression), so the table's bare
 owed: variant history exists for databases that applied PREVIOUSLY
 PUBLISHED bytes, and no database ever applied these. If you applied a
 pre-release build that carried the older constraint: the files' checksums
-changed, and `taskq migrate status` will name the drift — the cure is the
+changed, and `taskq migrate status` will name the drift — the remedy is the
 same as the published-variants discipline below, except the honest
 bookkeeping here is "this pre-release build's ledger refers to a draft of
 01.00.24 that was never published"; re-run the round's files on a fresh
