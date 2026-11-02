@@ -20,6 +20,7 @@ import asyncpg
 import pytest
 from pydantic import BaseModel
 
+from taskq._ids import new_uuid
 from taskq.workflows import (
     Expired,
     FlowRunner,
@@ -31,6 +32,7 @@ from taskq.workflows import (
     build,
     cancel_workflow_run,
     route,
+    sink,
     step,
 )
 
@@ -187,3 +189,159 @@ async def test_a_route_arm_declaring_no_reservations_forks_its_children(
         f"the route with a reservations=None arm did not produce its two "
         f"children's results: {result!r}"
     )
+
+
+async def test_a_succeeded_terminal_beside_a_failed_sink_branch_still_raises_the_failure(
+    wf_pool: asyncpg.Pool, wf_schema: str
+) -> None:
+    """THE ENDED-RUN VERDICT IS THE RUN'S, NOT THE TERMINAL NODE'S: a
+    flow may finish its terminal node while a fire-and-forget branch
+    (`sink(...)`) is still live; the branch's failure terminalises the
+    RUN as failed (an unabsorbed failure). The read must raise that
+    failure, not decode the succeeded terminal row and present the run as
+    a success — a failed run whose read returns a result is the
+    failure-looks-like-success shape the read face exists to prevent.
+    """
+    from taskq.workflows import WorkflowRunError
+
+    app = WorkflowApp()
+
+    async def main(ctx: StepContext) -> Report:
+        return Report(ref="the terminal's own result")
+
+    async def side(ctx: StepContext) -> Report:
+        raise RuntimeError("the fire-and-forget branch failed")
+
+    @app.workflow("terminal_ok_side_branch_failed")
+    def wf() -> Promise[object]:
+        finished = step(main, key="finished")
+        sink(step(side, key="side", max_attempts=1))
+        return build(finished)
+
+    runner = FlowRunner(app.get("terminal_ok_side_branch_failed"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id) == "terminal"
+    # The precondition: the run itself derived FAILED (the side branch is
+    # unabsorbed) even though the terminal node row succeeded.
+    run_status = await runner._flow_status(flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: the run's derived status is the precondition this pin reads; the read face's own verdict is the assertion.
+    assert run_status == "failed", (
+        f"the side branch's failure did not terminalise the run: {run_status!r}"
+    )
+
+    with pytest.raises(WorkflowRunError):
+        await runner.result(flow_id)
+
+
+async def test_a_cancelled_run_whose_terminal_succeeded_still_raises_cancelled(
+    wf_pool: asyncpg.Pool, wf_schema: str
+) -> None:
+    """THE TERMINAL NODE IS NOT THE RUN: a flow's terminal step can
+    succeed while a sibling branch is still held; the operator then
+    cancels the run. The read must raise the cancelled verdict — the
+    cure's own property — not return the succeeded terminal's result and
+    present a cancelled run as a completed one.
+    """
+    from taskq.workflows import WorkflowRunCancelledError
+
+    app = WorkflowApp()
+
+    async def main(ctx: StepContext) -> Report:
+        return Report(ref="the terminal finished first")
+
+    @app.actor(queue="default")
+    async def waiter(ctx: StepContext, params: Ingest) -> Report:
+        outcome = await ctx.wait_signal((Approval,), reason="sibling-hold", timeout_s=None)
+        match outcome:
+            case Approval():
+                return Report(ref=params.doc_id)
+            case Expired():
+                return Report(ref="expired")
+        raise AssertionError("unreachable: the wait's union is closed")  # pragma: no cover
+
+    gate = GateDecl(name="Approval", payload_models=(Approval,))
+
+    @app.workflow("terminal_ok_run_cancelled")
+    def wf() -> Promise[object]:
+        finished = step(main, key="finished")
+        sink(step(waiter, Ingest(doc_id="d1"), key="side", gates=(gate,), max_attempts=1))
+        return build(finished)
+
+    runner = FlowRunner(app.get("terminal_ok_run_cancelled"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    assert await runner.drive(flow_id, until="held", max_ticks=10) == "held"
+    await cancel_workflow_run(
+        wf_pool, flow_id=flow_id, schema=wf_schema, reason="the operator cancelled", principal=None
+    )
+
+    with pytest.raises(WorkflowRunCancelledError):
+        await runner.result(flow_id)
+
+
+async def test_an_adopted_live_run_s_failure_wears_no_replay_verdict(
+    wf_pool: asyncpg.Pool, wf_schema: str
+) -> None:
+    """THE OTHER NON-REPLAY CLAIM VERDICT: a re-drive of a still-live run
+    claims it ``existing-running`` and then executes it. When that drive's
+    step fails, the raise is a FRESH failure of this drive — not the
+    terminal replay — so it carries no ``claim_verdict`` either. Only
+    ``existing-terminal`` is the replay face.
+    """
+    from taskq.workflows import WorkflowRunError, run
+
+    app = WorkflowApp()
+
+    async def doomed(ctx: StepContext, params: Ingest) -> Report:
+        raise RuntimeError("the adopted run's step failed")
+
+    @app.workflow("adopted_live_run_failure")
+    def wf() -> Promise[object]:
+        return build(step(doomed, Ingest(doc_id="d1"), key="only", max_attempts=1))
+
+    compiled = app.get("adopted_live_run_failure")
+    key = f"adopted-live-{new_uuid()}"
+    first = FlowRunner(compiled, wf_pool, wf_schema)
+    await first.create_flow(run_key=key)
+
+    with pytest.raises(WorkflowRunError) as exc_info:
+        await run(compiled, wf_pool, wf_schema, key=key)
+
+    assert exc_info.value.claim_verdict is None, (
+        "an adopted LIVE run's own failure wore the replay marker: "
+        f"claim_verdict={exc_info.value.claim_verdict!r}"
+    )
+
+
+async def test_a_replayed_cancelled_run_carries_the_replay_verdict(
+    wf_pool: asyncpg.Pool, wf_schema: str
+) -> None:
+    """THE REPLAY FACE, CANCELLED FAMILY: replaying a terminal CANCELLED
+    run's key re-raises the cancelled verdict with the claim verdict
+    attached — the same replay contract the failed-run replay carries,
+    across the new error family.
+    """
+    from taskq.workflows import WorkflowRunCancelledError, run
+
+    app = WorkflowApp()
+
+    async def main(ctx: StepContext) -> Report:
+        return Report(ref="never reached")
+
+    @app.workflow("replayed_cancelled_run")
+    def wf() -> Promise[object]:
+        return build(step(main, key="only", max_attempts=1))
+
+    compiled = app.get("replayed_cancelled_run")
+    key = f"replayed-cancelled-{new_uuid()}"
+    first = FlowRunner(compiled, wf_pool, wf_schema)
+    flow_id = (await first.create_flow(run_key=key)).flow_id
+    await cancel_workflow_run(
+        wf_pool,
+        flow_id=flow_id,
+        schema=wf_schema,
+        reason="cancelled before the replay",
+        principal=None,
+    )
+
+    with pytest.raises(WorkflowRunCancelledError) as exc_info:
+        await run(compiled, wf_pool, wf_schema, key=key)
+    assert exc_info.value.claim_verdict == "existing-terminal"
