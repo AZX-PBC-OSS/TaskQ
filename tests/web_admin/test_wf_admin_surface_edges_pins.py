@@ -1,4 +1,4 @@
-"""THE HOLD ROUND'S FIXES' PINS — the hold round subsection's
+"""THE ADMIN SURFACE'S EDGES' PINS — the hold surface's
 residues on the admin surface, each fixed and pinned:
 
 - THE WALK BUDGET'S UNIT: ``_bounded_io_projection``'s size budget
