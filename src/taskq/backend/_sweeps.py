@@ -966,7 +966,7 @@ SET result = NULL,
     -- erase even the TTL-elapsed fact. The sweep's own eligibility
     -- guard (result IS NOT NULL) keeps the kept stamp from
     -- re-eligibility: a swept row never matches this statement again.
-    -- A retried job cannot inherit a stale receipt:
+    -- A retried job cannot inherit a stale expiry stamp:
     -- retry_job re-pends with result_expires_at = NULL, and
     -- mark_succeeded recomputes from the actor's TTL at the new
     -- completion.

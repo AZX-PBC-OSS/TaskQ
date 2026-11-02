@@ -1812,7 +1812,7 @@ async def _enqueue_batch(
             retry_caps,
             retry_backoffs,
             retry_jitters,
-            # Trailing, matching enqueue_batch's $27::uuid[] (the LIB-2
+            # Trailing, matching enqueue_batch's $27::uuid[] (the
             # fan-out ledger stamp, one column per item).
             parent_ids,
         ]
@@ -2177,7 +2177,7 @@ async def _enqueue_batch_fast(
                 # label rather than by the actor's stored assignment (the
                 # routing contract in taskq/backend/_dispatch_sql.py).
                 False,
-                # LIB-2: the fan-out ledger, COPY_ENQUEUE_COLUMNS' trailing
+                # The fan-out ledger, COPY_ENQUEUE_COLUMNS' trailing
                 # member (COPY_FROM_COLUMNS carries parent_id last and the
                 # enqueue omit-list does not drop it).
                 args.parent_id,
