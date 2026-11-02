@@ -164,13 +164,16 @@ async def run(
                 claim.flow_id, until=until, max_ticks=max_ticks, execute=execute
             )
         except WorkflowRunError as exc:
-            # THE REPLAY'S VERDICT RIDES THE ERROR: a terminal run's key
-            # replay re-raises the prior run's error at the read face —
-            # the claim verdict attached tells the caller this raise is
-            # the REFUSED-TO-REUSE face (the existing-terminal replay),
-            # not a fresh failure; the documented remedy (a new key) is
-            # the caller's informed choice.
-            exc.claim_verdict = claim.kind
+            # THE REPLAY'S VERDICT RIDES THE ERROR — the replay face
+            # ONLY: a terminal run's key replay re-raises the prior
+            # run's error at the read face, and the claim verdict
+            # attached tells the caller this raise is the
+            # REFUSED-TO-REUSE face (existing-terminal), not a fresh
+            # failure. A first run's failure carries NO verdict (the
+            # class contract: None on every raise that is not the
+            # replay face).
+            if claim.kind == "existing-terminal":
+                exc.claim_verdict = claim.kind
             raise
         # The drive's label vocabulary IS the Literal (terminal/held/max_ticks —
         # drive's own docstring); the cast names the boundary, never a lie.
@@ -190,6 +193,7 @@ async def run(
             try:
                 result = await runner.result(claim.flow_id)
             except WorkflowRunError as exc:
-                exc.claim_verdict = claim.kind
+                if claim.kind == "existing-terminal":
+                    exc.claim_verdict = claim.kind
                 raise
         return WorkflowRunResult(claim=claim, outcome=outcome, result=result)
