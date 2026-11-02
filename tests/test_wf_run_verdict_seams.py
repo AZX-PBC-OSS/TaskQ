@@ -246,6 +246,94 @@ async def test_a_succeeded_terminal_beside_a_failed_sink_branch_still_raises_the
     )
 
 
+async def test_the_verdict_names_the_unabsorbed_failure_not_the_absorbed_one(
+    wf_pool: asyncpg.Pool, wf_schema: str
+) -> None:
+    """THE VERDICT NAMES THE FAILURE THAT FAILED THE RUN: in a fan-out,
+    one branch's failure may be ABSORBED — its edge declares
+    ``collect``, the join fired with the typed report, the failure never
+    reached the run — while a sibling's unabsorbed failure terminalises
+    the run as failed. The read's verdict must name the UNABSORBED
+    failure: the newest failed ROW is not the failure that failed the
+    RUN when the row's own edge ledger shows the absorption ran. A
+    verdict naming the absorbed branch sends the operator to a failure
+    that was already collected — the 3am question's answer must name
+    the open wound."""
+    from tests._wf_fixtures import seed_flow, seed_join, seed_running_node
+
+    from taskq.workflows import WorkflowRunError
+
+    flow_id = await seed_flow(wf_pool, wf_schema, status="failed")
+
+    # THE ABSORPTION RECORD: the collected branch's edge to the join
+    # declares 'collect', and the join FIRED (succeeded — the absorption
+    # RAN; the fence's blocked-pending join shapes are what keep a
+    # failure unabsorbed).
+    join_id = await seed_join(wf_pool, wf_schema, flow_id, step_key="collector", deps=1)
+    await wf_pool.execute(
+        f'UPDATE "{wf_schema}".jobs SET status = $2, finished_at = now() WHERE id = $1',
+        join_id,
+        "succeeded",
+    )
+
+    app = WorkflowApp()
+
+    async def any_body(ctx: StepContext) -> Report:
+        return Report(ref="x")  # pragma: no cover - the rows are seeded
+
+    @app.workflow("absorbed_vs_open_verdict")
+    def wf() -> Promise[object]:
+        return build(step(any_body, key="solo"))
+
+    runner = FlowRunner(app.get("absorbed_vs_open_verdict"), wf_pool, wf_schema)
+
+    absorbed_id = await seed_running_node(wf_pool, wf_schema, flow_id, step_key="collected")
+    open_id = await seed_running_node(wf_pool, wf_schema, flow_id, step_key="open")
+    await wf_pool.execute(
+        f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
+        "VALUES ($1, $2, $3, 'collect')",
+        join_id,
+        absorbed_id,
+        flow_id,
+    )
+    # THE ORDER: the ABSORBED failure is the run's newest failed row —
+    # the newest-failed selection reads IT first.
+    await wf_pool.execute(
+        f'UPDATE "{wf_schema}".jobs SET status = $2, error_class = $3, '
+        "error_message = $4, finished_at = now() WHERE id = $1",
+        absorbed_id,
+        "failed",
+        "CollectedBoom",
+        "the collected branch failed",
+    )
+    await wf_pool.execute(
+        f'UPDATE "{wf_schema}".jobs SET status = $2, error_class = $3, '
+        "error_message = $4, finished_at = now() - interval '10 seconds' WHERE id = $1",
+        open_id,
+        "failed",
+        "OpenBoom",
+        "the open branch failed",
+    )
+
+    # THE PRECONDITION (the record, not a heuristic): the derivation's
+    # own absorption read marks the collected branch absorbed and the
+    # open one not — the scenario's shape is the real one.
+    rows = await wf_pool.fetch(runner.wsql.workflow_nodes, flow_id)
+    absorbed_by_key = {r["step_key"]: r["absorbed"] for r in rows}
+    assert absorbed_by_key["collected"] is True, absorbed_by_key
+    assert absorbed_by_key["open"] is False, absorbed_by_key
+
+    with pytest.raises(WorkflowRunError) as exc_info:
+        await runner.result(flow_id)
+    message = str(exc_info.value)
+    assert "the open branch failed" in message, (
+        f"the verdict does not name the unabsorbed failure: {message[:300]}"
+    )
+    assert "the collected branch failed" not in message, (
+        f"the verdict names the ABSORBED failure: {message[:300]}"
+    )
+
+
 async def test_a_cancelled_run_whose_terminal_succeeded_still_raises_cancelled(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:

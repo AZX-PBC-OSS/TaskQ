@@ -25,7 +25,7 @@ from __future__ import annotations
 # variant marked every mixed-policy failure absorbed, and the derivation
 # could NEVER say 'failed' for a failed-closed run — the envelope lied
 # (T07's C). ``{node}`` is the failed node's row alias.
-def _absorbed_exists(node_alias: str) -> str:
+def absorbed_exists(node_alias: str) -> str:
     return (
         "EXISTS (\n"
         "            SELECT 1\n"
@@ -80,7 +80,7 @@ GROUP BY status
 # marker's derivation input). Every status surface reads THIS query; the
 # columns at the source are ONE read — the CLI's own supplement read
 # (two reads where one suffices) is retired by them.
-# The absorption record is _absorbed_exists's POLICY-vs-
+# The absorption record is absorbed_exists's POLICY-vs-
 # FENCE predicate — the edge's declaration alone absorbs nothing (the
 # envelope never lies, T07's C).
 WORKFLOW_NODES_SQL = (
@@ -120,7 +120,7 @@ SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        j.lock_expires_at, j.last_heartbeat_at,
        j.code_version,
        """
-    + _absorbed_exists("j")
+    + absorbed_exists("j")
     + """ AS absorbed,
        j.metadata->>'error' AS error_jsonb,
        j.error_class, j.error_message
@@ -231,14 +231,14 @@ WITH roots AS (
 ),
 per_flow AS (
     SELECT r.id AS flow_id,
-           -- THE ABSORPTION RECORD (the same _absorbed_exists POLICY-vs-
+           -- THE ABSORPTION RECORD (the same absorbed_exists POLICY-vs-
            -- FENCE predicate the per-node rollup serves — the derivation
            -- and the root finalize can never drift): a failed node whose
            -- failure the flow's fence never delivered is NOT absorbed.
            bool_or(
                n.status IN ('failed', 'crashed', 'abandoned')
                AND NOT """
-    + _absorbed_exists("n")
+    + absorbed_exists("n")
     + """
            ) AS has_failed,
            -- THE FAILED ARM'S LIVENESS (T20, the spike's live finding;

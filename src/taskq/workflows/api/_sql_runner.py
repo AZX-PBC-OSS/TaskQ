@@ -17,6 +17,7 @@ import asyncpg
 
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
+from taskq.workflows._sql_status import absorbed_exists
 from taskq.workflows.api._runner_defer import WORKFLOW_CANCELLED_CLASS
 
 __all__ = ["wf_conn_fetchval"]
@@ -435,14 +436,28 @@ WHERE r.id = $2 AND r.step_key = '__flow__'
 #: terminal-FAILED NODE row (the root's own row carries the propagation
 #: verdict — UnabsorbedNodeFailure — but the NODE row carries the body's
 #: error class + message: the failed run's first question's ANSWER).
-FLOW_FAILURE_SQL_TEMPLATE = """
-SELECT step_key, error_class, error_message FROM {schema}.jobs
-WHERE (metadata->>'flow_id')::uuid = $1
-  AND status = 'failed'
-  AND step_key <> '__flow__'
-ORDER BY finished_at DESC NULLS LAST
+#: THE VERDICT NAMES THE FAILURE THAT FAILED THE RUN: the ABSORBED
+#: failures are excluded — the same POLICY-vs-FENCE predicate the
+#: derivation and the maintenance leg read (the three can never drift):
+#: a branch whose failure its join's collect policy absorbed (the join
+#: fired with the typed report) did NOT fail the run, and a newest-first
+#: selection that read it sent the operator to a failure that was
+#: already collected. When every node failure was absorbed the run did
+#: not fail from a node — the no-row face speaks (the root carries the
+#: verdict).
+FLOW_FAILURE_SQL_TEMPLATE = (
+    """
+SELECT j.step_key, j.error_class, j.error_message FROM {schema}.jobs j
+WHERE (j.metadata->>'flow_id')::uuid = $1
+  AND j.status = 'failed'
+  AND j.step_key <> '__flow__'
+  AND NOT """
+    + absorbed_exists("j")
+    + """
+ORDER BY j.finished_at DESC NULLS LAST
 LIMIT 1
 """
+)
 
 #: THE EXIT'S DOWNSTREAM MARK (§17.1): the compiled descendants the exit
 #: resolved — skipped WITH the record (the envelope never lies about the

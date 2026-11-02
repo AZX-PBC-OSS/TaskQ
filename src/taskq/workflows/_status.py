@@ -241,7 +241,7 @@ async def reconstruct_workflow_status(
     # consistency: the derivation folds crashed/abandoned into the
     # failed-class terminal, so an absorbing edge absorbs the crash the
     # way it absorbs the failure — the SQL maintenance leg's
-    # _absorbed_exists predicate is status-blind on the parent for
+    # absorbed_exists predicate is status-blind on the parent for
     # exactly this reason).
     absorbed_keys = {r["step_key"] for r in node_rows if r["absorbed"] and r["status"] in _TERMINAL}
     ledger_by_key: dict[str, str] = {}
