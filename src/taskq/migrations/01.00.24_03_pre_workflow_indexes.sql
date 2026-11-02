@@ -2,14 +2,14 @@
 -- To revert, restore from backup. The literal "{schema}" token is substituted
 -- at apply time by the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE CREATE INDEX STATEMENTS (SHARE lock class —
 -- blocks writes for each build's duration, never reads; no ALTERs and no
 -- CREATE TABLEs mixed into the window). See 01.00.24_01's header for the
 -- round's three-file split and the deployment sequence.
 --
--- THE PARTIAL-INDEX DOCTRINE (§16.4, the measured truth): every workflow
+-- THE PARTIAL-INDEX DOCTRINE (the measured truth): every workflow
 -- index is PARTIAL — scoped to workflow rows only — so the vanilla
 -- maintenance exemption is the point: the measured partial is 0.5% of the
 -- same-column full index (194×; the pin asserts ≤ 1%).
@@ -48,7 +48,7 @@ CREATE INDEX IF NOT EXISTS jobs_wf_children_idx
 -- The edge ledger's parent probe: the sweep's set-based re-derive counts
 -- un-terminal parents per child by walking this index (the child side is
 -- wf_edge's PK prefix). A Seq Scan here is the 83.7 ms unscoped monster
--- shape — the scope pin convicts it.
+-- shape — the scope pin rejects it.
 CREATE INDEX IF NOT EXISTS wf_edge_parent_idx
     ON "{schema}".wf_edge (parent_id);
 

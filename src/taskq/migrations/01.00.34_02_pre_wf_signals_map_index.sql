@@ -4,7 +4,7 @@
 -- literal "{schema}" token is substituted at apply time by the
 -- migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONE ADD COLUMN + ONE DROP/CREATE INDEX PAIR against
 -- wf_signals (an existing table; the ADD COLUMN is a catalog-only
@@ -30,7 +30,7 @@
 -- the natural moderation/approval pipeline shape — wedged a run
 -- silently.
 --
--- THE CURE: the identity gains the map index — the same COALESCE
+-- THE FIX: the identity gains the map index — the same COALESCE
 -- discipline the ledger claim arbiter carries
 -- (wf_step_ledger_claim_uniq: (flow_id, step_key, COALESCE(map_index,
 -- -1), attempt)). A map sibling's hold is addressable and resolvable
@@ -40,15 +40,15 @@
 -- node lookup addresses the hold's OWN node by the hold id the
 -- register stamped into that node's metadata (metadata->>'hold') —
 -- one hold, one node, one resume. A plain step's hold carries
--- map_index NULL; COALESCE(map_index, -1) keeps the pre-cure
+-- map_index NULL; COALESCE(map_index, -1) keeps the pre-fix
 -- identity's uniqueness exactly for it.
 --
 -- THE REPLY HANDLE IS UNCHANGED: `id` (uuid7) stays THE reference —
 -- HitlClient.resolve(id, …) addresses ONE hold. The identity tuple is
 -- the UNRESOLVED-uniqueness ARBITER, never the addressing.
 --
--- NO BACKFILL: the column is nullable; every pre-cure row carries
--- map_index NULL — a pre-cure hold was necessarily a PLAIN step's (a
+-- NO BACKFILL: the column is nullable; every pre-fix row carries
+-- map_index NULL — a pre-fix hold was necessarily a PLAIN step's (a
 -- map sibling could never hold: the collision forbade it), so NULL is
 -- the truthful historical value, not a guess.
 
@@ -61,4 +61,4 @@ CREATE UNIQUE INDEX wf_signals_hold_identity_uniq
     WHERE resolved_at IS NULL;
 
 COMMENT ON TABLE "{schema}".wf_signals IS
-    'The HITL hold rows (T10): the row IS the truth (the notification is a knock). The hold identity is (workflow_id, node_key, signal_name, COALESCE(map_index, -1), hold_epoch) — partial-unique over UNRESOLVED holds (multi-hold: a second hold mints a NEW epoch; map siblings hold CONCURRENTLY as distinct rows — the LedgerWatch F2 cure); the id (uuid7) is THE reply handle; the payload rides the row (deliver-no-drop); the epoch + call_id kill the stale-payload dragon (the wait site answering a call it never made).';
+    'The HITL hold rows (T10): the row IS the truth (the notification is a knock). The hold identity is (workflow_id, node_key, signal_name, COALESCE(map_index, -1), hold_epoch) — partial-unique over UNRESOLVED holds (multi-hold: a second hold mints a NEW epoch; map siblings hold CONCURRENTLY as distinct rows — the LedgerWatch F2 fix); the id (uuid7) is THE reply handle; the payload rides the row (deliver-no-drop); the epoch + call_id kill the stale-payload dragon (the wait site answering a call it never made).';

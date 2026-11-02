@@ -199,7 +199,7 @@ class CtxTimerOps(WaitHost):
         )
 
         absolute, relative = normalize_timer_when(when)
-        # E17 — THE CALLER'S KEY (the timer-cures lane's cure 1): a key
+        # E17 — THE CALLER'S KEY (the timer hardening's fix 1): a key
         # beginning with the reserved prefix would mint a DOUBLE-prefixed
         # row (this method composes the prefix itself) whose wake's
         # key-strip mis-names it — the caller's key stays outside the
@@ -220,7 +220,7 @@ class CtxTimerOps(WaitHost):
             # The cursor/kind read — the wait machinery's own shape (the
             # answer queue is THIS SITE'S OWN — the timer's reserved
             # name filters the queue; the loop's counter is the ADVANCE
-            # statement's own write). THE PER-SITE CURSOR (the I5c cure
+            # statement's own write). THE PER-SITE CURSOR (the per-site cursor fix
             # — E13's discipline generalized to the plain kind): the
             # timer counts ITS OWN consumptions under ITS OWN key, never
             # a per-attempt key shared with the body's signal sites —
@@ -302,7 +302,7 @@ class CtxTimerOps(WaitHost):
             # PAST THE QUEUE: the standing timer hold is THIS wait's
             # wait — the held row stands (idempotent re-hold, never a
             # second registration of one wait). THE MAP INDEX FILTER
-            # (the holdmap lane's identity cure, the timer's leg): a
+            # (the map-index identity fix, the timer's leg): a
             # sibling's held row is NOT this sibling's — a plain
             # step's NULL keeps exact via IS NOT DISTINCT FROM.
             held_row = await conn.fetchrow(

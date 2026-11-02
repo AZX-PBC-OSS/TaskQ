@@ -4,7 +4,7 @@ answer-queue replay, the timeout face, and the delivered-payload read.
 The deliver boundary itself (the admin/hitl client's side) lives in
 ``api/_hitl``; THIS module is the ctx's side of the same contract.
 
-THE RESUME CONTRACT (documented ON the wait method — cut #18's
+THE RESUME CONTRACT (documented ON the wait method —
 disposition): **the body re-executes FROM THE TOP on resume** — make it
 idempotent; pre-wait side effects are ``ctx.step``-ledgered and replay
 cheap.
@@ -57,7 +57,7 @@ class SignalUnavailableError(RuntimeError):
 
 
 class LoopWaitShapeError(RuntimeError):
-    """THE E13 RULE (T26's cure lane — the hostile review's C9): a
+    """THE E13 RULE (the hostile review's contract): a
     LOOP-kind body's wait site found the iteration cursor PAST the
     answer queue — the state a CONDITIONAL wait mints (some iterations
     wait, others don't). The loop's answer-queue cursor IS the
@@ -65,7 +65,7 @@ class LoopWaitShapeError(RuntimeError):
     mis-aligned state means: an earlier iteration's answer is stranded
     (it can never be consumed again — the cursor indexes answers BY
     ITERATION), and a retry of a waited iteration would replay the
-    WRONG slot (the retry-replay law, silently broken). Pre-cure the
+    WRONG slot (the retry-replay law, silently broken). Pre-fix the
     mis-index was SILENT (the wait minted a fresh hold; the operator
     was asked again; the stranded answer rotted on the rows) — the rule
     gives the loop-shape law ("ONE wait per iteration") TEETH: the
@@ -116,14 +116,14 @@ class WaitHost(Protocol):
     _wsql: WorkflowSql
     _is_loop: bool
     _ledger_id: JobId | None
-    #: The map item's index (the F2 cure's identity leg: a map
+    #: The map item's index (the F2 fix's identity leg: a map
     #: sibling's holds read and mint per sibling).
     _map_index: int | None
     #: The REGISTERED workflow's name (D1 — the signal-model catalog's
     #: key; the hold-context redact hook's resolution).
     _workflow_name: str
     #: The workflow's redact hook (chain → hook — the hold context's
-    #: persist-time redact; attack-3 H3's cure).
+    #: persist-time redact; the crash-window fix).
     _redact: Callable[[str], str] | None
 
 
@@ -186,12 +186,12 @@ class CtxWaitOps(WaitHost):
         and never arms the runtime. Where both are statically readable
         and they disagree, validate() names the drift (W4).
 
-        THE TIMEOUT FACE (attack-3 B1's cure, the union amendment): an
+        THE TIMEOUT FACE (the union amendment, the union amendment): an
         ABANDONED hold (the expiry sweep fired on this wait site, no
         held row stands) RETURNS the :class:`Expired` member — the
         fail-close arm the checker forces. The re-execution NEVER
         automatically mints a new epoch — hold → expire → re-hold → ∞
-        is the convicted dragon: the face fires ONCE per abandoned row
+        is the rejected dragon: the face fires ONCE per abandoned row
         per attempt (the face marker below); a DELIBERATE re-wait (the
         body MATCHED the expiry member and waits again within the same
         attempt) is a NEW body decision: it registers a NEW hold with a
@@ -203,7 +203,7 @@ class CtxWaitOps(WaitHost):
         candidates. Without one, an ambiguous payload is the typed
         refusal at the deliver boundary.
 
-        THE DOUBLE-TIMEOUT PRECEDENCE (C8's law — BOTH faces declare a
+        THE DOUBLE-TIMEOUT PRECEDENCE (the law — BOTH faces declare a
         timeout): THIS parameter arms the expiry sweep — the hold row's
         ``expires_at`` is written from THIS ``timeout_s`` (the DB clock
         plus it). The gate's ``GateDecl(timeout_s=…)`` is the
@@ -216,7 +216,7 @@ class CtxWaitOps(WaitHost):
         )
         if not models:
             # THE CONTRACT IS MANDATORY AT HOLD TIME (attack-4
-            # F-P4-UNTYPED-COLD-DOOR's cure, the authoring half): a hold
+            # F-P4-UNTYPED-COLD-DOOR's fix, the authoring half): a hold
             # minted without a declared payload schema is the audit hole —
             # ANY payload delivers to it from a fresh process (the row's
             # payload_schema is the cold process's only witness). The
@@ -238,8 +238,8 @@ class CtxWaitOps(WaitHost):
             register_signal_models,
         )
 
-        # E17 — THE RESERVED NAMESPACE AT THE MINT (the timer-cures
-        # lane's cure 1): a payload model NAMED inside the durable
+        # E17 — THE RESERVED NAMESPACE AT THE MINT (the timer-fixes
+        # lane's fix 1): a payload model NAMED inside the durable
         # timer's reserved ``__timer__`` prefix would mint a hold every
         # reader mis-identifies as the CLOCK's (invisible to
         # HitlClient.list(), unanswerable, never fail-closing, fired at
@@ -274,7 +274,7 @@ class CtxWaitOps(WaitHost):
         # (2) the CONSUMED hold can never answer twice.
         #
         # THE LOOP'S ITERATION INDEX IS THE CURSOR (the deploy matrix's
-        # multi-HITL cure): a LOOP resume is a CONTINUATION of the
+        # multi-HITL fix): a LOOP resume is a CONTINUATION of the
         # iteration sequence, never a replay of it — the per-attempt
         # cursor restarts at 0 on every resume (a new attempt), so the
         # resumed loop's later iterations re-consumed the EARLIER
@@ -288,7 +288,7 @@ class CtxWaitOps(WaitHost):
         # iteration replays ITS OWN answer (the same k-th), both laws
         # one mechanism. A loop body declares ONE wait per iteration
         # (the loop's shape); the plain steps keep the per-site,
-        # per-attempt cursor (the I5c cure — a body's timer site and its
+        # per-attempt cursor (the per-site cursor fix — a body's timer site and its
         # signal site count their own consumptions, so a timer's
         # re-consume can never inflate a signal site's queue position:
         # the delivered answer the operator sent reaches ITS wait site).
@@ -302,7 +302,7 @@ class CtxWaitOps(WaitHost):
                     self._wsql.schema,
                 ),
                 self.job_id,
-                # THE PER-SITE CURSOR (the I5c cure — E13's discipline
+                # THE PER-SITE CURSOR (the per-site cursor fix — E13's discipline
                 # generalized to the plain kind): the cursor is keyed to
                 # the WAIT SITE (its own signal name), never bare to the
                 # attempt — one body's TWO wait sites (a timer THEN a
@@ -327,9 +327,9 @@ class CtxWaitOps(WaitHost):
                 else 0
             )  # pyright: ignore[reportIndexType,reportArgumentType]
             cursor = row_iteration if is_loop_kind else row_cursor
-            # EVERY WAIT-SITE READ CARRIES THE MAP INDEX (the F2 cure):
+            # EVERY WAIT-SITE READ CARRIES THE MAP INDEX (the F2 fix):
             # a MAP SIBLING's answer queue / held representation /
-            # timeout face are the SIBLING'S OWN rows — the pre-cure
+            # timeout face are the SIBLING'S OWN rows — the pre-fix
             # node_key-only reads let sibling A's hold contaminate
             # sibling B's wait (the held-representation wedge) and
             # sibling B's resume steal sibling A's delivered answer (the
@@ -349,7 +349,7 @@ class CtxWaitOps(WaitHost):
                 self._map_index,
             )
             if is_loop_kind and cursor > len(queue):
-                # THE E13 RULE (the loop's uniform-wait law — C9's cure):
+                # THE E13 RULE (the loop's uniform-wait law — the uniform-wait law):
                 # the iteration cursor may never run PAST the answer
                 # queue. The aligned states are: cursor == len (the
                 # continuation's wait — a fresh hold next) and cursor <
@@ -413,7 +413,7 @@ class CtxWaitOps(WaitHost):
             )
             if held_row is not None:
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=names)
-            # THE TIMEOUT FACE (attack-3 B1's cure, the union
+            # THE TIMEOUT FACE (the union amendment, the union
             # amendment): the sweep marked THIS wait site's hold
             # 'abandoned' and no held row stands — the wait site RETURNS
             # the union's ``Expired`` MEMBER (the fail-close arm the
@@ -440,7 +440,7 @@ class CtxWaitOps(WaitHost):
                 self._map_index,
             )
             if abandoned_row is not None:
-                # THE FACE MARKER IS PER-SITE TOO (the I5c cure's same
+                # THE FACE MARKER IS PER-SITE TOO (the per-site cursor's same
                 # discipline): one body's second wait site must surface
                 # ITS OWN abandoned row's face — a shared per-attempt
                 # key would let the first site's marker suppress the
@@ -478,8 +478,8 @@ class CtxWaitOps(WaitHost):
                     )
             # A NEW HOLD: a NEW epoch (the count of this name's holds —
             # the identity's mint). THE MINT IS PER MAP SIBLING (the F2
-            # cure): siblings of one source mint INDEPENDENT epoch
-            # sequences (the pre-cure shared mint collided the
+            # fix): siblings of one source mint INDEPENDENT epoch
+            # sequences (the pre-fix shared mint collided the
             # siblings' epochs onto one row).
             epoch = await conn.fetchval(
                 render_sql(
@@ -522,7 +522,7 @@ class CtxWaitOps(WaitHost):
     ) -> Any:
         """The delivered payload re-validates into the declared model
         (the typed wait's return — narrows with ``isinstance``). BY
-        SHAPE, never by declaration order (attack-3 B2's cure): every
+        SHAPE, never by declaration order (the attack-3 class): every
         declared model is tried STRICTLY; exactly one must fit (it is
         returned); zero or more than one is the typed refusal —
         :class:`taskq.exceptions.SignalPayloadError` /
@@ -538,9 +538,9 @@ class CtxWaitOps(WaitHost):
         return cast(Any, fitted.model_validate(payload_doc))
 
     async def signal(self, name: str) -> Any:
-        """Read a DELIVERED signal's payload on resume (cut #3's cure —
+        """Read a DELIVERED signal's payload on resume (the
         the payload rides the ROW; the author never hand-rolls a side
-        table). THE READ IS THE SIBLING'S OWN (the F2 cure): the
+        table). THE READ IS THE SIBLING'S OWN (the F2 fix): the
         map_index filter keeps a map sibling off a sibling's answers."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(

@@ -3,7 +3,7 @@
 -- backup. The literal "{schema}" token is substituted at apply time by
 -- the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE CREATE TABLE STATEMENT (its own relation
 -- lock on a NEW table — no ALTERs, no index builds mixed in; the
@@ -29,7 +29,7 @@
 --
 -- THE TWO-CLAIMS LAW (the design's spine, restated for the operator):
 -- the run-key arbiter dedups CONCURRENT; THIS table dedups TEMPORAL —
--- a LATER run over the same body (its §22.1 code-version hash) + the
+-- a LATER run over the same body (its code-version hash) + the
 -- same input (the resolved args' canonical jsonb) reads the EARLIER
 -- run's result and never executes the body. Rows are written on
 -- TERMINAL-SUCCEEDED ONLY (a failure never squats an address), and the

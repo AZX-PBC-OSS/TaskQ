@@ -4,7 +4,7 @@
 -- backup. The literal "{schema}" token is substituted at apply time by
 -- the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE METADATA-ONLY COLUMN ADDITIONS (ACCESS
 -- EXCLUSIVE, held for milliseconds on the catalog — no table rewrite:
@@ -25,7 +25,7 @@
 --   EXCLUSIVITY's budget face: a loop holding on a human is PAUSED and
 --   INVISIBLE to the budget sweep — even when its deadline is forced
 --   into the past. The arm carries `AND NOT budget_paused` (the
---   CONSUME-BUDGET dragon's cure: the consume variant killed a held
+--   CONSUME-BUDGET dragon's fix: the consume variant killed a held
 --   loop mid-hold and the operator's later approval was refused — work
 --   silently lost, never again).
 -- * budget_remaining_ms bigint NULL — the on-wake remaining (computed
@@ -50,6 +50,6 @@ ALTER TABLE "{schema}".jobs
 COMMENT ON COLUMN "{schema}".jobs.budget_deadline IS
     'The loop node''s budget wall (T19): the BUDGET SWEEP fires exhaustion at this DB-clock deadline — NULL for a loop without a budget (the arm never fires). Holds PAUSE it (budget_paused), never burn it.';
 COMMENT ON COLUMN "{schema}".jobs.budget_paused IS
-    'The held-loop''s budget pause (T19): the budget sweep''s arm carries AND NOT budget_paused — a loop holding on a human is invisible to the wall even when its deadline is forced into the past (the CONSUME-BUDGET dragon''s cure).';
+    'The held-loop''s budget pause (T19): the budget sweep''s arm carries AND NOT budget_paused — a loop holding on a human is invisible to the wall even when its deadline is forced into the past (the CONSUME-BUDGET dragon''s fix).';
 COMMENT ON COLUMN "{schema}".jobs.budget_remaining_ms IS
     'The loop node''s on-wake remaining budget (T19), computed from PG''s clock on every resume — holds are free: the deadline does not burn while waiting on a human.';

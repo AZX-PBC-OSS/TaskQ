@@ -9,7 +9,7 @@ fire without its reducer body dispatches consumers off an UN-REDUCED join:
 the join's output never exists, "at-least-once body execution" degraded to
 NEVER.
 
-THE CURE — THE REGISTRY IS THE TRUTH, THE MEMO IS A CACHE: the reducer
+THE FIX — THE REGISTRY IS THE TRUTH, THE MEMO IS A CACHE: the reducer
 body resolves OUTSIDE the finalizing process's memory. ``insert_flow_run``
 stamps the flow root's metadata with its workflow's registered name
 (``metadata.workflow`` — schema-level, every process reads it); the
@@ -65,7 +65,7 @@ _flow_reducers: dict[JobId, dict[str, Callable[[], Awaitable[None]]]] = {}
 @dataclass(frozen=True, slots=True)
 class FlowReducerResolution:
     """The fired join's body resolution's VERDICT (the three faces the
-    sweep's fire arm must distinguish — the wedged-hold cure's own
+    sweep's fire arm must distinguish — the wedged-hold fix's own
     contract):
 
     * ``body`` set: the engine-level reducer (the tx2's own dict, warmed
@@ -83,14 +83,14 @@ class FlowReducerResolution:
       class: the definitions not imported here) — the delivery continues
       and the record goes LOUD (the stamp + the warning).
 
-    THE CONVICTED VARIANT this contract replaces: the registry leg that
+    THE REJECTED VARIANT this contract replaces: the registry leg that
     adapted ANY registered body to the reducer convention
     (``definition_body(None)``) — the registry's bodies are STEP bodies
     (ctx + params), so the adapter was the TypeError machine: a crash-
     window heal of a parented STEP row fired it, resolved the step's
     body, called it with the reducer's arity, rolled the fire's tx back,
     and re-fired FOREVER — the sweep arm wedged, the drive max_ticks
-    (the two-drivers pin's conviction, 2026-10-09)."""
+    (the two-drivers pin's finding, 2026-10-09)."""
 
     body: Callable[[], Awaitable[None]] | None
     loud: bool

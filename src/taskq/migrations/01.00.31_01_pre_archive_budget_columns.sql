@@ -2,7 +2,7 @@
 -- sync with 01.00.26_01 (the loop-budget round added the three columns to
 -- `jobs` but missed the mirror; CERT2's F-CERT2-1, the archive/COPY drift).
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- METADATA-ONLY COLUMN ADDITIONS (ACCESS EXCLUSIVE, held for milliseconds
 -- on the catalog — nullable columns / a CONSTANT default are filled

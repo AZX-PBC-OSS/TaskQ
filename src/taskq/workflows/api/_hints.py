@@ -6,7 +6,7 @@ string). A name the function's globals cannot resolve is looked up in the
 body's CLOSURE (a locally-declared model the body captured — the wiring
 shape). Unresolvable → {}: the rule that needs a type SKIPS (the
 zero-false-positive doctrine — a name the compile cannot resolve is never
-convicted on a guess)."""
+rejected on a guess)."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def inner_fn(body: object) -> object:
     so the ANNOTATION reads (E4/E9's faces) work through it — but the
     SOURCE reads (``inspect.getsource``) refuse an instance outright
     ("code object was expected, got WorkflowActor" — the stamp loss the
-    rv3 teardown round convicted). This seam is the ONE unwrap: the
+    teardown round rejected). This seam is the ONE unwrap: the
     validator's static walk and the runner's code-version stamper read
     through it, never around it."""
     from taskq.workflows.api._app import WorkflowActor
@@ -54,8 +54,8 @@ def own_source(body: object) -> str | None:
     ``inspect.getsource`` unwrapped (:func:`inner_fn`), dedented — and
     the slice PROVEN to be this function's.
 
-    THE SLICE-IDENTITY GUARD (the rv3 teardown round's doc-fence
-    conviction): a body defined by ``exec(code, FENCE_PATH)`` (the docs
+    THE SLICE-IDENTITY GUARD (the teardown round's doc-fence
+    finding): a body defined by ``exec(code, FENCE_PATH)`` (the docs
     fences) carries the .md's filename and a ``co_firstlineno`` in the
     .md's OWN line numbering, not the extracted code's — the re-sliced
     text is PROSE (a one-line fragment, the bash fence's text): the
@@ -63,7 +63,7 @@ def own_source(body: object) -> str | None:
     half — PARSES as a fragment nobody can reproduce. The guard demands
     the slice actually DECLARE the function's name; anything else
     returns ``None`` (the unreadable source — the caller SKIPS: a guess
-    is never convicted, a prose stamp is never written)."""
+    is never rejected, a prose stamp is never written)."""
     fn = inner_fn(body)
     try:
         # The callable-shaped cast IS the seam's boundary: the source
@@ -98,13 +98,13 @@ def ctx_input_reads(body: object) -> bool | None:
     ``body(ctx, …)`` first-positional), ``False`` when none does,
     ``None`` when the source is NOT readable (a builtin, a partial, an
     exec'd fragment — the caller SKIPS: the zero-false-positive
-    doctrine, a guess is never convicted).
+    doctrine, a guess is never rejected).
 
     THE SCAN IS CRUDE, ON PURPOSE (the declared boundary): it reads the
     body's OWN source only — a helper the body calls may read
     ``ctx.input`` unseen (the same closure boundary the address's
     helper-closure law states), and an aliased ctx (``c = ctx`` then
-    ``c.input``) reads unseen. The wiring refusal names the cure
+    ``c.input``) reads unseen. The wiring refusal names the fix
     regardless of the scan's blind spots: wire the value as a PARAM so
     it enters the address. Both the wiring verb (:func:`taskq.workflows.step`)
     and the validator's E18 re-proof read THIS walk — one home."""

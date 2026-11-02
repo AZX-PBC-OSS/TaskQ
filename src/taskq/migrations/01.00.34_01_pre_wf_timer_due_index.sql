@@ -1,9 +1,9 @@
--- THE DURABLE TIMER'S DUE-SCAN INDEX (the timer-cures lane's cure 4 —
+-- THE DURABLE TIMER'S DUE-SCAN INDEX (the timer drain fix —
 -- the 10k-timer tail). Forward-only; there is no down migration. To
 -- revert, restore from backup. The literal "{schema}" token is
 -- substituted at apply time by the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE CREATE INDEX STATEMENT (SHARE lock class —
 -- blocks writes for the build's duration, never reads; no ALTERs and no
@@ -15,7 +15,7 @@
 --       AND expires_at IS NOT NULL AND expires_at <= clock_timestamp()
 --     ORDER BY expires_at, id  LIMIT n
 -- Pre-index this was a SEQ SCAN + SORT over every wf_signals row on
--- every sweep tick (the drill's receipt: 10k due timers + 100k human
+-- every sweep tick (the measured tail: 10k due timers + 100k human
 -- holds, Seq Scan + Sort Key (expires_at, id)).
 --
 -- WHY THE PARTIAL INDEX (the reads chose it — measured): a full

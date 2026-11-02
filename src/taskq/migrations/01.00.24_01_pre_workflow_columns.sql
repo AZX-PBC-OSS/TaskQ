@@ -1,15 +1,15 @@
 -- Workflow columns on `jobs` (and the `jobs_archive` mirror) — T03, the
--- measured-tax migration (§16). Forward-only; there is no down migration.
+-- the measured-tax migration. Forward-only; there is no down migration.
 -- To revert, restore from backup. The literal "{schema}" token is substituted
 -- at apply time by the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- This round is SPLIT into three single-lock-class files because the
 -- migration runner (src/taskq/migrate.py) wraps each FILE in one
 -- transaction: a file's statements share ONE write-block window, so lock
 -- classes must not mix within a file (the estate's own structural pin,
--- tests/test_migration_lock_scope_dead_index.py family 1, convicts the
+-- tests/test_migration_lock_scope_dead_index.py family 1, rejects the
 -- mixed form — the ACCESS EXCLUSIVE-across-everything shape).
 --
 --   01.00.24_01_pre_workflow_columns.sql  THIS FILE: ONLY the metadata-only
@@ -27,7 +27,7 @@
 --
 -- ALL WORKFLOW DDL IS ADDITIVE — no `post_` phase ever ships for v1 (a
 -- forever rule): a pre-workflow worker reads the row shape unchanged (the
--- rollback rule, §22.3). Deployment sequence:
+-- the rollback rule). Deployment sequence:
 --   1. `taskq migrate up --phase pre` (this round) — safe before/during the
 --      code rollout; old code keeps working unmodified (it never reads the
 --      new columns; see the RED-FIRST dispatch-claim pin for the one
@@ -60,7 +60,7 @@ ALTER TABLE "{schema}".jobs
 -- The positional node key. Never changes across holds/retries/reclaims.
 ALTER TABLE "{schema}".jobs
     ADD COLUMN IF NOT EXISTS step_key text NULL;
--- The per-attempt code-version RECORD (§22.1: mixed-version joins legal
+-- The per-attempt code-version RECORD (mixed-version joins legal
 -- with hashes recorded). A RECORD, not a cache — no cache_key machinery.
 -- Written at claim by the workflow claim path; computed via the tors
 -- canonical content hash.
@@ -92,4 +92,4 @@ COMMENT ON COLUMN "{schema}".jobs.map_index IS
 COMMENT ON COLUMN "{schema}".jobs.step_key IS
     'The positional node key: never changes across holds/retries/reclaims. NULL on vanilla rows.';
 COMMENT ON COLUMN "{schema}".jobs.code_version IS
-    'The per-attempt code-version RECORD (§22.1): computed at claim via the tors canonical content hash. A record, not a cache — there is deliberately no cache_key/content-addressed machinery here.';
+    'The per-attempt code-version RECORD (the deploy-matrix record): computed at claim via the tors canonical content hash. A record, not a cache — there is deliberately no cache_key/content-addressed machinery here.';

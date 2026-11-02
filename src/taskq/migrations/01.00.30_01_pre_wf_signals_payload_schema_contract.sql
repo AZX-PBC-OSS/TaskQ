@@ -1,9 +1,9 @@
 -- THE HOLD'S CONTRACT IS MANDATORY (attack-4 F-P4-UNTYPED-COLD-DOOR's
--- cure, the upgrade-world half). Forward-only; there is no down
+-- fix, the upgrade-world half). Forward-only; there is no down
 -- migration. To revert, restore from backup. The literal "{schema}"
 -- token is substituted at apply time by the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY ONE BACKFILL UPDATE against wf_signals (rows
 -- already in the table; the statement takes no schema-lock beyond the
@@ -16,7 +16,7 @@
 -- every delivery against the hold's DECLARED models — and a fresh
 -- process's only witness is the ROW's ``payload_schema``. A hold row
 -- written before the typed door (or hand-migrated) carries NULL: under
--- the pre-cure boundary that row delivered to ANY payload — the door's
+-- the pre-fix boundary that row delivered to ANY payload — the door's
 -- teeth depended on which process asked.
 --
 -- THE BACKFILL: NULL → the empty jsonb object (the EXPLICIT no-contract

@@ -3,7 +3,7 @@
 -- revert, restore from backup. The literal "{schema}" token is
 -- substituted at apply time by the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE CREATE TABLE STATEMENT (its own relation
 -- lock on a NEW table — no ALTERs, no index builds mixed in). ALL
@@ -38,7 +38,7 @@
 -- clean failure). The PARTIAL unique index (unresolved holds only)
 -- carries the identity; the epoch's counter column rides the row.
 --
--- THE PAYLOAD RIDES THE ROW (cut #3's cure): the spike's `deliver()`
+-- THE PAYLOAD RIDES THE ROW (cut #3's fix): the spike's `deliver()`
 -- accepted the human's answer and DROPPED it — the author hand-rolled
 -- a `signal_payloads` side table. Never again: `payload` IS the
 -- column, `payload_schema` the declared model's schema (what a UI

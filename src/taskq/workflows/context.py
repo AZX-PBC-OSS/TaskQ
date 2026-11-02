@@ -11,9 +11,9 @@ recorded result rather than re-executing. The node's own finalize records
 the ledger terminal (riding tx1 — the ledger-terminal-atomic rule);
 ``ctx.substep``'s claim is the attempt's grant of work.
 
-THE CONNECTION IS NEVER HELD ACROSS THE BODY (the LedgerWatch F4 cure):
+THE CONNECTION IS NEVER HELD ACROSS THE BODY (the LedgerWatch F4 fix):
 the claim and the terminal write are ~1 ms statements, each on its OWN
-acquisition — the body runs with NO pool connection held. The pre-cure
+acquisition — the body runs with NO pool connection held. The pre-fix
 shape held ONE connection from the claim to the terminal, so the
 execution door's pool (the dispatcher pool, 4 connections at the
 shipped default) throttled every concurrent map child to the conn
@@ -86,7 +86,7 @@ class WorkflowSteps:
         if not idempotent:
             return await fn(*args, **kwargs)
 
-        # THE CLAIM'S OWN ACQUISITION (the F4 cure, leg 1): the memoized
+        # THE CLAIM'S OWN ACQUISITION (the F4 fix, leg 1): the memoized
         # read + the claim are ~1 ms statements; the connection releases
         # the moment they land — the body runs UNWIRED.
         async with self._pool.acquire() as conn:
@@ -123,7 +123,7 @@ class WorkflowSteps:
         # THE STEP'S OWN TERMINAL (the re-execution doctrine's cheap side):
         # the memoized replay reads TERMINAL rows — a claim left 'running'
         # would re-execute on every resume (the defect the runner pins
-        # convict: pre-wait side effects replay cheap, or not at all). The
+        # reject: pre-wait side effects replay cheap, or not at all). The
         # FAILURE path records too: a raising step's claim terminalizes
         # 'failed' (the ladder's ledger shape), then the exception
         # propagates to the node's own failure handling.
@@ -148,10 +148,10 @@ class WorkflowSteps:
         error_message: str | None,
     ) -> None:
         """The step ledger's terminal write on ITS OWN acquisition (the
-        F4 cure, leg 2: the terminal never rides a connection held from
+        the LedgerWatch F4 fix, leg 2: the terminal never rides a connection held from
         the claim). Two keyings, the claim's own contract: the claim's
         OWN row id (the strongest key) when the claim returned it; the
-        arbiter tuple otherwise (the pre-cure fallback, kept for a
+        arbiter tuple otherwise (the pre-fix fallback, kept for a
         claim shape that carries no id)."""
         if claim.ledger_id is not None:
             async with self._pool.acquire() as conn:
@@ -163,7 +163,7 @@ class WorkflowSteps:
                     error_class,
                     error_message,
                     None,
-                    None,  # the ctx's callers hold no claim instant — the NULL form (the pre-cure shape)
+                    None,  # the ctx's callers hold no claim instant — the NULL form (the pre-fix shape)
                 )
         else:
             async with self._pool.acquire() as conn:

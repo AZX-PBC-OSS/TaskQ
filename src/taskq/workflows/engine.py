@@ -174,13 +174,13 @@ async def insert_node(conn: ConnLike, wsql: WorkflowSql, spec: NodeSpec) -> JobI
         else _jsonb(_metadata(spec.flow_id, blocking_reason=None)),
         spec.idempotency_scope,
         spec.idempotency_key,
-        # THE ROW'S RESOLVED PRIORITY (the wf-priority cure): the spec's
+        # THE ROW'S RESOLVED PRIORITY (the priority surface): the spec's
         # own value — the column default 0 when the caller resolved none
-        # (the pre-cure byte-identical row).
+        # (the pre-fix byte-identical row).
         spec.priority,
-        # THE ROW'S DECLARED DEADLINE (the wf start_to_close cure): the
+        # THE ROW'S DECLARED DEADLINE (the wf start_to_close bound): the
         # spec's own value — the column NULL when the caller resolved
-        # none (the pre-cure byte-identical row).
+        # none (the pre-fix byte-identical row).
         spec.start_to_close,
     )
     # The declared edges ride the SAME call (the exported edge writer): a
@@ -250,7 +250,7 @@ async def _run_tx1(
     """tx1 in ONE transaction: the fenced terminal mark; the ledger's
     terminal write; the fork's children + edges + join node. Returns
     whether the fence admitted the write (the rowcount gate tx2 keys on).
-    A fenced write records the attempt 'fenced' on the ledger (H1) — never
+    A fenced write records the attempt 'fenced' on the ledger () — never
     a running row left forever on a terminal flow.
 
     THE LEDGER TERMINAL'S KEY: the claim's OWN RETURNING id when the caller
@@ -368,7 +368,7 @@ async def _fire_and_deliver(
             # stated.
             await body()
     if fired.consumers:
-        # THE TRACE RIDES THE OUTBOX (§18.2's stamp-at-enqueue): the
+        # THE TRACE RIDES THE OUTBOX (the stamp-at-enqueue): the
         # consumer rows' trace_id is the join's own trace when it has one,
         # else the FIRE's id — every consumer of one fire shares one trace
         # chain, never a NULL trace on the drain's dispatch.
@@ -389,11 +389,11 @@ async def _fire_and_deliver(
                             "payload": c.payload,
                             "trace_id": trace_id,
                             # THE CONSUMER'S DECLARED DEADLINE (the wf
-                            # start_to_close cure): the binding's own
+                            # start_to_close fix): the binding's own
                             # resolution rides the fire's bindings (as
                             # SECONDS — the jsonb wire form the drain
                             # parses back); the undeclared consumer
-                            # omits the key (the pre-cure bindings'
+                            # omits the key (the pre-fix bindings'
                             # shape byte-identical).
                             **(
                                 {"start_to_close_s": c.start_to_close.total_seconds()}
@@ -658,7 +658,7 @@ async def finalize_node(
     CAS requires ``attempt = $n`` (and the worker + claim-epoch fences), so
     a zombie's write from an abandoned attempt loses to the reclaim +
     re-claim's fresh attempt (hardening H8). A fenced finalize records the
-    attempt 'fenced' on the ledger (H1) and reports ``applied=False``.
+    attempt 'fenced' on the ledger () and reports ``applied=False``.
 
     The LEDGER TERMINAL's key: *ledger_id* (the claim's own RETURNING id —
     ``LedgerClaim.ledger_id``) when held, else the arbiter tuple keyed with
@@ -667,7 +667,7 @@ async def finalize_node(
     """
     assert_valid_transition("running", outcome, job_id)
 
-    # THE REDUCER CACHE WARM (the tx1→tx2 window's cure, cache half): the
+    # THE REDUCER CACHE WARM (the tx1→tx2 window's fix, cache half): the
     # finalize's reducers are resolvable OUTSIDE this call's stack — the
     # sweep's healing pass runs the fired join's body from the REGISTERED
     # DEFINITION (the flow root's stamped workflow name resolves it in any

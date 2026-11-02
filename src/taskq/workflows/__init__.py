@@ -1,10 +1,10 @@
 """TaskQ Workflows — the DAG engine (``taskq[flows]``).
 
-THE IMPORT LAW (§16.1): ``import taskq`` NEVER imports this package. The
+THE IMPORT LAW (the import law): ``import taskq`` NEVER imports this package. The
 only sanctioned entry is a direct ``import taskq.workflows`` (or a
 submodule) by a caller that opted into the ``taskq[flows]`` extra. Nothing
 under ``src/taskq/`` outside this package may import ``taskq.workflows`` at
-module scope — the import-discipline pin convicts a violation.
+module scope — the import-discipline pin rejects a violation.
 
 The engine is core-deps-only (tors, asyncpg, uuid_utils — all base
 dependencies); the ``flows`` extra carries no requirements of its own and
@@ -31,7 +31,7 @@ their homes WITHOUT the tax:
   handle); the progress READ surface (``run_display``/``keyed_display``
   — the operator's display contract, the progress guide's taught
   import) is re-exported HERE from ``_progress_read`` (the LedgerWatch
-  F7 cure: the docs' path said "private" while the docs blessed it —
+  F7 fix: the docs' path said "private" while the docs blessed it —
   the public re-export is the one tax paid, the private module stays
   the home).
 * ``chain`` owns the chain surface; ``context`` owns ``ctx.step``;

@@ -1,4 +1,4 @@
-"""THE PROGRESS LISTENER (the consumer-face lane's CURE 3 — the
+"""THE PROGRESS LISTENER (the push-primary surface — the
 HitlListener's sibling): the typed, public face over the progress push —
 ONE dedicated connection, LISTEN → BACKFILL → TAIL — fanning out to N
 concurrent subscribers.
@@ -29,7 +29,7 @@ FIRST, correctness never — the row is the truth, the poll converges.
 
 THE OPERATIONAL LANDMINES (the T26 listener's own four, verbatim): the
 PgBouncer transaction-pooling mode silently breaks LISTEN (the
-dedicated connection IS the cure); the dedicated connection is ONE POOL
+dedicated connection IS the fix); the dedicated connection is ONE POOL
 SLOT for the stream's life (size the pool for the streams you run);
 asyncpg is fork-unsafe (start the listener IN EACH WORKER after the
 fork); and the run-scoped backfill is bounded by THIS run's node count
@@ -168,7 +168,7 @@ class ProgressListener:
 
             self._backfill_sql = render_workflow_sql(schema).progress_state_read_run
         self._raw: asyncio.Queue[_Raw | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        # THE FAN-OUT (P7's cure): per-SUBSCRIBER queues (each its own
+        # THE FAN-OUT (the fan-out fix): per-SUBSCRIBER queues (each its own
         # sentinel on stop), a bounded history each late subscriber
         # replays first (the buffer-then-consume behavior).
         self._subs: dict[int, asyncio.Queue[ProgressEvent | None]] = {}
@@ -196,9 +196,9 @@ class ProgressListener:
 
     async def stop(self) -> None:
         """Stop the pump and release the dedicated connection, then end
-        EVERY subscriber with its OWN sentinel (the pre-cure single
+        EVERY subscriber with its OWN sentinel (the pre-fix single
         ``None`` on one shared queue stranded all but one waiter — P7's
-        convicted shape; the teardown is SHIELDED: a cancellation
+        rejected shape; the teardown is SHIELDED: a cancellation
         delivered while the pump's own finally releases the LISTEN
         connection must not strand it against the pool cap)."""
         self._closing = True

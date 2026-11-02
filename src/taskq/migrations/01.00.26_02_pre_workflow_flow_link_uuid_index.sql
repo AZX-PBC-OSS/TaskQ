@@ -1,9 +1,9 @@
 -- The workflow flow-link index, REBUILT ON THE READ SHAPE (the phase-2
--- attack's H3 cure). Forward-only; there is no down migration. To revert,
+-- attack's H3 fix). Forward-only; there is no down migration. To revert,
 -- restore from backup. The literal "{schema}" token is substituted at
 -- apply time by the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE INDEX STATEMENTS (SHARE lock class — blocks
 -- writes for each build's duration, never reads; no ALTERs and no
@@ -22,7 +22,7 @@
 -- shapes (measured: the grouped rollup read ONE 500-node run in p50
 -- 15.2 ms at 221k rows, LINEAR in the fleet table, not the run).
 --
--- THE CURE: the index expression carries the same uuid cast the reads
+-- THE FIX: the index expression carries the same uuid cast the reads
 -- carry — the expression and the comparison now agree letter for letter —
 -- and the partial predicate names the INDEX'S TRUE POPULATION: a
 -- WORKFLOW row (the flow link PRESENT — `metadata ? 'flow_id'` — and a

@@ -117,13 +117,13 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     #: key; the hold-context redact hook's resolution).
     _workflow_name: str = ""
     #: The workflow's redact hook (chain → hook — the hold context's
-    #: persist-time redact; attack-3 H3's cure).
+    #: persist-time redact; the crash-window fix).
     _redact: Callable[[str], str] | None = None
     #: This node's claim view's worker (the emit's cursor checkpoint
     #: fences on it — T20). ``None`` = the context was built without a
     #: claim (a unit-test direct call) — the emit refuses loudly.
     _worker_id: JobId | None = None
-    #: THE MAX-IN-FLIGHT BOUND (T20 / DH9): the workflow's DECLARED
+    #: THE MAX-IN-FLIGHT BOUND (T20): the workflow's DECLARED
     #: admission control, handed to every ``ctx.emit_batch`` (``None`` =
     #: the explicit unbounded).
     _max_in_flight: int | None = None
@@ -258,7 +258,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
 
         TYPED + BOUNDED: ``pct`` is an int 0..100 or None; ``message`` is
         chars-capped; ``data`` is jsonb, capped with the
-        ``__truncated__`` marker (T18's D5 shape) and — when the node
+        ``__truncated__`` marker (T18's truncation shape) and — when the node
         DECLARED a payload schema (``step(body, ..., progress_schema=
         Model)``, the TypedGate-door pattern) — validated against it, a
         wrong shape refused with :class:`taskq.workflows.ProgressRefusedError`.
@@ -282,7 +282,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
             # test then sees the refusal their production run will get).
             validate_emission(pct, message, data, None)
             return
-        # THE PUBLIC OP VALIDATES (the gate-hole cure): the emitter's own
+        # THE PUBLIC OP VALIDATES (the gate-hole fix): the emitter's own
         # validating door — the buffer's private write is never reached
         # around the gate.
         await emitter.emit(pct, message, data)
@@ -292,15 +292,15 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         result (the re-execution doctrine's cheap side: pre-wait side
         effects are substep-ledgered and replay cheap).
 
-        THE CONNECTION IS NEVER YOURS, BODY (the LedgerWatch F4 cure):
+        THE CONNECTION IS NEVER YOURS, BODY (the LedgerWatch F4 fix):
         the claim and the terminal write each take their own
         acquisition; between them the body runs with NO pool connection
         held — a hot map fan-out's concurrent substeps are bounded by
         the workers, never by the execution pool's conn count (the
-        pre-cure shape held ONE connection across *fn* and throttled a
+        pre-fix shape held ONE connection across *fn* and throttled a
         300-child fan-out to the dispatcher pool's 4).
 
-        THE GLOSSARY LAW (the ergonomic tail's cure): this was
+        THE GLOSSARY LAW (the ergonomic tail's fix): this was
         ``ctx.step`` — the wiring verb ``step()`` already owns that name
         with DIFFERENT semantics (a graph NODE's declaration vs a node's
         INNER ledgered effect). The lesser noun renamed: the substep is

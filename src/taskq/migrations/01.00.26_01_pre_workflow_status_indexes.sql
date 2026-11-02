@@ -4,7 +4,7 @@
 -- backup. The literal "{schema}" token is substituted at apply time by
 -- the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE CREATE INDEX STATEMENTS (SHARE lock class —
 -- blocks writes for each build's duration, never reads; no ALTERs and no

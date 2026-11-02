@@ -1,9 +1,9 @@
 -- THE PROGRESS STATE CHANNEL'S PCT DOMAIN IS STORAGE-DOMAIN LAW (the
--- T20/T21 fixer's gate-hole cure). Forward-only; there is no down
+-- T20/T21 fixer's gate-hole fix). Forward-only; there is no down
 -- migration. To revert, restore from backup. The literal "{schema}" token
 -- is substituted at apply time by the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONE ADD CONSTRAINT against wf_node_progress (an
 -- existing table; the CHECK takes a brief ACCESS EXCLUSIVE lock — the
@@ -15,7 +15,7 @@
 -- "the storage-domain twin" of the emission op's 0..100 bound — but
 -- smallint's domain is ±32767, so the comment's promise had NO
 -- constraint behind it: a ``pct=999`` (or ``-1``) landed in the state
--- row the moment a writer bypassed the Python gate (the convicted
+-- row the moment a writer bypassed the Python gate (the rejected
 -- hole: the emitter's buffer write was a PUBLIC ``submit`` that
 -- validated nothing). The CHECK is the storage domain's own refusal —
 -- the same teeth the stream table's class/kind CHECKs carry (DH3's
@@ -29,7 +29,7 @@
 --
 -- IDEMPOTENCE: the DO block adds the constraint only when absent —
 -- the fresh-schema replay and the deployed-ledger upgrade land the
--- same domain. (A pre-cure deployment whose state rows already carry
+-- same domain. (A pre-fix deployment whose state rows already carry
 -- an out-of-domain pct fails VALIDATION loudly here: the rogue row is
 -- named, never silently kept — the record must not look healthy while
 -- the data is wrong.)

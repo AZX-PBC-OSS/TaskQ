@@ -3,7 +3,7 @@
 -- migration. To revert, restore from backup. The literal "{schema}" token
 -- is substituted at apply time by the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE CREATE TABLE STATEMENTS AND THE NEW TABLES'
 -- OWN INDEXES (each takes its own relation lock on a NEW table — no

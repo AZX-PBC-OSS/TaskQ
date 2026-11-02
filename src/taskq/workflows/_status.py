@@ -1,13 +1,13 @@
 """The workflow status derivation + the rows-only reconstruction (T08).
 
-THE §17.5 DERIVATION TABLE — the workflow-level status derived from the
+THE DERIVATION TABLE — the workflow-level status derived from the
 NODE statuses, precedence applied IN ORDER. No status cache exists to
 corrupt: the ledger is the status store, and the derivation is a PURE
 function over the grouped rollup's rows (the crash-safety proof is the
 derivation's corollary — the status can be RECONSTRUCTED from rows alone;
 there is no cache, only rows to re-read).
 
-THE ABSORBED-FAILURE CLAUSE COMES FIRST (re-red-team B2 — the clause that
+THE ABSORBED-FAILURE CLAUSE COMES FIRST (the clause that
 makes T06's gate and T07's maybe pin hold): a ``failed`` node whose
 failure was ABSORBED by its edge's declared policy (``collect``, or a
 ``maybe`` edge — the edge ledger records the policy; the join row's
@@ -47,7 +47,7 @@ DIFFERENT class: the attempt-level reclaim receipt (the row re-pends —
 see ``reconstruct_workflow_status``), and they stay out of the terminal
 read.
 
-§17.5's no-zombie promise holds BY this fold: every node status maps to
+the no-zombie promise holds BY this fold: every node status maps to
 exactly one workflow status, and the terminal classes cannot derive
 liveness.
 """
@@ -149,10 +149,10 @@ class NodeView:
 
 
 def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
-    """The §17.5 derivation table, precedence applied in order. THE
-    TOTALITY IS A PROPERTY (GAPS-ESTATE F6a): for EVERY input multiset the
+    """The derivation table, precedence applied in order. THE
+    TOTALITY IS A PROPERTY: for EVERY input multiset the
     derivation yields EXACTLY ONE workflow status — a new node
-    representation added without a table row reds the property (the
+    representation added without a table row breaks the property (the
     totality is the test, ``tests/test_wf_status_property.py``).
 
     THE TERMINAL-CRASH FOLD comes first (the module docstring's semantics
@@ -165,7 +165,7 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
     )
     nodes = folded
     # 1. any node running OR any cancel in flight → running. THE
-    #    LIVENESS VOCABULARY (the crashed-terminal wedge's cure): exactly
+    #    LIVENESS VOCABULARY (the crashed-terminal wedge's fix): exactly
     #    ONE jobs status is live-executing — ``running``, the reclaim
     #    arms' only input (a holder that died with budget remaining
     #    re-pends from here). ``crashed``/``abandoned`` are TERMINALS

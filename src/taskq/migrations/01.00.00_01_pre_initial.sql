@@ -161,7 +161,7 @@ CREATE INDEX jobs_actor_running_idx
     ON "{schema}".jobs (actor)
     WHERE status = 'running';
 
--- Per-actor pending+scheduled count for max_pending backpressure (§3.3).
+-- Per-actor pending+scheduled count for max_pending backpressure .
 CREATE INDEX jobs_actor_pending_idx
     ON "{schema}".jobs (actor)
     WHERE status IN ('pending', 'scheduled');

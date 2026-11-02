@@ -1,4 +1,4 @@
--- THE FLOW-HISTORY RETENTION ARMS' INDEXES (the TAStack P1's cure —
+-- THE FLOW-HISTORY RETENTION ARMS' INDEXES (
 -- five workflow tables grew monotone-forever: no retention arm, no FK
 -- for the job prune to cascade). Forward-only; there is no down
 -- migration. To revert, restore from backup. The literal "{schema}"
@@ -41,7 +41,7 @@
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS wf_edge_flow_idx
 --       ON "{schema}".wf_edge (flow_id);
 -- and the runner's IF NOT EXISTS makes the boot a no-op (the by-hand
--- DROP-first shape is also the cure for an interrupted HAND build's
+-- DROP-first shape is also the fix for an interrupted HAND build's
 -- INVALID index — and the boot's own DROP-then-CREATE below rebuilds
 -- such debris transactionally when the window is missed).
 --

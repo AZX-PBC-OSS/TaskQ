@@ -1,16 +1,16 @@
--- THE ROOTLESS WALKS' PERSISTED CURSORS (the round-2 conviction R1's
--- cure). Forward-only; there is no down migration. To revert, restore
+-- THE ROOTLESS WALKS' PERSISTED CURSORS (the round-2 finding R1's
+-- fix). Forward-only; there is no down migration. To revert, restore
 -- from backup. The literal "{schema}" token is substituted at apply time
 -- by the migration runner.
 --
--- PHASE OBLIGATIONS (single-lock-class file — GAPS-ESTATE F2)
+-- PHASE OBLIGATIONS (the single-lock-class file law)
 -- ------------------------------------------------------------
 -- THIS FILE HOLDS ONLY THE CREATE TABLE STATEMENT, ITS SEED ROWS, AND
 -- ITS COMMENT (the table's own relation lock on a NEW table — no ALTERs
 -- of existing tables, no index builds, no backfills). All DDL is
 -- additive; a pre-migration worker never reads or writes this table.
 --
--- THE CONVICTION (R1, proven): the flow-history arms' ROOTLESS passes —
+-- THE DEFECT (proven): the flow-history arms' ROOTLESS passes —
 -- the PK-ordered walks that prune the orphan class (the row's pointee
 -- is NOT a flow root at all) — NEVER ADVANCED at a live PK front. The
 -- walk was ``ORDER BY pk LIMIT $1``: when the table's first $1 rows all
@@ -19,7 +19,7 @@
 -- front were stranded forever (the red-team's proof: a 3,000-row live
 -- front, batch 1,000, five passes, deleted=0, 50 orphans stranded).
 --
--- THE CURE: the estate's own watermark precedent —
+-- THE FIX: the estate's own watermark precedent —
 -- ``job_events_prune_state`` (01.00.20_02), a persisted cursor row the
 -- deleter advances IN THE SAME STATEMENT/TRANSACTION as its delete, so
 -- the cursor can never lag what is already gone nor claim what is not.
@@ -76,7 +76,7 @@ ON CONFLICT (arm) DO NOTHING;
 
 COMMENT ON TABLE "{schema}".wf_rootless_sweep_state IS
     'The flow-history rootless walks'' persisted cursors (the round-2 R1 '
-    'cure): one row per arm, the arm''s last VISITED PK as text (cursor_a '
+    'fix): one row per arm, the arm''s last VISITED PK as text (cursor_a '
     '+ optional cursor_b; NULL = from the start). The walks seek strictly '
     'past the cursor so a live PK front never strands the orphans behind '
     'it; the cursor advances in the same statement/transaction as the '

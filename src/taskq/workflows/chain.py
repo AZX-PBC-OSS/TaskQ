@@ -26,7 +26,7 @@ loudly, never silently drop):
 
 1. DECLARATION TIME: :class:`Chain` refuses a route that is not total
    over its step's outcome enum — the outcome a route drops would
-   silently strand a record's chain (a coding error, convicted before
+   silently strand a record's chain (a coding error, rejected before
    any row exists; the same shape as ``validate_fork``'s refusals).
 2. RUN TIME: :class:`RouterNotTotal` — an outcome with no arm (a body
    that returned a foreign value) fails the step LOUDLY with
@@ -95,7 +95,7 @@ class Route:
     (a step key of the chain, or :data:`DONE`).
 
     TWO dispatch vocabularies (the type-tagged route — the routing
-    proof's cure — beside the original enum face):
+    proof's fix — beside the original enum face):
 
     * THE ENUM FACE: the keys are the members of the step body's outcome
       enum — the LITERAL TAG (the member's ``.value`` string) is the
@@ -253,7 +253,7 @@ class Chain:
         collide onto one row (the spike's 198 UniqueViolations).
 
         THE TRACE IS THE FORK'S OWN DOOR (the accept-and-ignore hunt's
-        cure): ``next_child`` once accepted ``trace_id=`` and consumed
+        fix): ``next_child`` once accepted ``trace_id=`` and consumed
         nothing — the trace actually propagates through
         :func:`chain_fork`'s ``trace_id=`` (the caller passes both legs
         the same row value). The decorative kwarg is GONE; the fork's

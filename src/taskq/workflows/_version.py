@@ -1,6 +1,6 @@
 """The per-attempt code-version record's canonical hash (T04, G8).
 
-``jobs.code_version`` is §22.1's "code-version hash per attempt": the deploy
+``jobs.code_version`` is the "code-version hash per attempt": the deploy
 computes the module hash, or the decorator pins it — written at claim by the
 workflow claim path. It is a RECORD, not a cache (K3's ``cache_key`` /
 content-addressed machinery stays dead).

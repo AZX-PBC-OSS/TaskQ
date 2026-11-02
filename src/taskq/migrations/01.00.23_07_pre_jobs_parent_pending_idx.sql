@@ -2,7 +2,7 @@
 -- the IF NOT EXISTS record beside its byte-frozen home: the shipped
 -- 01.00.23_01_pre_jobs_parent_id.sql carries the index and may never
 -- be rewritten (the upgrade-path gate's ledger checksum law — the
--- d24f17b9 split attempt was convicted by exactly that). Idempotent
+-- d24f17b9 split attempt was rejected by exactly that). Idempotent
 -- everywhere: a fresh schema gets the index from 23_01 and no-ops
 -- here; a deployed schema that applied the shipped 23_01 has it and
 -- records the no-op's ledger row.
