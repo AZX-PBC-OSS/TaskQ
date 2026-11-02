@@ -411,12 +411,13 @@ the same composite arbiter with the scope `workflow-run:<flow name>` — a
 conflict returns the EXISTING run's TYPED claim (`RunClaim`: `created` /
 `existing-running` / `existing-terminal`), never a second silent
 run, and two different flows sharing a naive key never collide (each
-flow's keys namespace its own scope). THE RUN KEY'S SURFACE — two
-spellings, one arbiter: `FlowRunner.create_flow(run_key=…)` (returns the
-typed claim) and the PACKAGED one-call run,
+flow's keys namespace its own scope). THE RUN KEY'S SURFACE — ONE
+name, both doors: `key=` (canonical) on `FlowRunner.create_flow(key=…)`
+and the PACKAGED one-call run,
 `taskq.workflows.run(flow, pool, schema, input=…, key=…)` — create +
 drive + the decoded result in one call, the typed claim on the returned
-`WorkflowRunResult`. THE TERMINAL CASE IS STATED, NEVER SILENT: a
+`WorkflowRunResult` (`run_key=` rides as the alias on both; passing
+both and disagreeing is refused). THE TERMINAL CASE IS STATED, NEVER SILENT: a
 TERMINAL run's replay answers `existing-terminal` with the prior run's
 id + status — the REFUSED-TO-REUSE verdict (a failed run squatting its
 key silently was the founding bug class; the re-run is the caller's
@@ -1070,7 +1071,31 @@ state them changes nothing about a step's retry shape (the node keeps
 `max_attempts=3, retry_kind=None`, byte-identical to the unwired form).
 (PLACEMENT stays the step's own decision: the handle's NAME is not the
 node's actor — the split-placement law above is unchanged.) The
-non-negative-int law is the vanilla one, enforced at the declaration
+
+**WHICH VERB CARRIES WHICH STEP TERM** (the wiring surface's own map —
+a term absent from a verb's signature is not accepted there, by design):
+
+| term | `step` | `map_source` | `route` | `RouteArm` | `gather` | `loop` |
+|---|---|---|---|---|---|---|
+| `key=` (the node's name) | ✓ | — (the join key is derived: `<source-key>.join`) | — (each arm's key derives from the arm type's tag) | — | — | ✓ (the loop's step name) |
+| `actor=` / `queue=` (placement) | ✓ | `queue=` | `queue=` | ✓ (the arm's own placement) | — | — |
+| `on_failure=` | ✓ | ✓ | ✓ | — | ✓ | — (the loop exhausts into `on_exhausted=`) |
+| `max_attempts=` / `retry_kind=` | ✓ | `max_attempts=` (the items' ladder) | `max_attempts=` (the route fork's) | — | — | — |
+| `rate_limits=` | ✓ | ✓ (the items' buckets) | — | ✓ (the arm's children's buckets) | — | — |
+| `max_concurrent=` / `reservations=` | ✓ | — | — | ✓ | — | — |
+| `result_ttl=` / `priority=` / `start_to_close=` | ✓ | — | — | ✓ | — | — |
+| `skip=` / `gates=` / `progress_schema=` | ✓ | — | — | — | — | `gates=` (the loop's HOLD gates) |
+| `cache=` / `cache_ttl=` | ✓ | — | — | — | — | — |
+
+**DURATIONS, ONE LAW**: every second-denominated term —
+`timeout_s=`, `budget_s=`, `cache_ttl=`, `result_ttl=` — accepts a
+`datetime.timedelta` or a bare number of seconds; the seconds number is
+the one stored form (the timedelta normalizes at the wiring face).
+`start_to_close=` is the exception and stays a `timedelta`-only
+declaration (the vanilla `@actor`'s own law: a bare number is refused,
+never silently coerced — the pin keeps the refusal honest).
+
+The non-negative-int law is the vanilla one, enforced at the declaration
 site: a negative or non-int `max_concurrent` on
 `@app.actor` is a `ValueError` before anything registers.
 
@@ -1413,7 +1438,7 @@ The dispatch-time predicates: `step(..., skip=pred)` —
 DISPATCHES against the flow's state (`{"input": …, "results": {…}}`), a
 sibling's COMPLETED result decides it. A skipped child SUCCEEDS WITH
 THE RECORD (the result names the skip — the envelope never lies about
-what ran) and fans into its absorbing joins (collect | maybe) as a
+what ran) and fans into its absorbing joins (collect) as a
 typed item — a skip is not an attempt (zero ledger rows).
 
 **DEPRECATED FOR DISPATCH — teach the typed route.** The predicate's
@@ -1474,7 +1499,7 @@ The barrier's semantics, stated exactly:
     blocks with `blocking_reason='failed_parent'` NAMING the failed
     parent on the row, the chunk never fires, and the flow fails (the
     cascade) — the partial result never masquerades as the whole.
-  - `collect` | `maybe`: the child's failure fans in as a typed
+  - `collect`: the child's failure fans in as a typed
     `FailureInfo` item on the join's `metadata.failures` (the policy
     that ran is ON the item — the envelope must not lie) + the
     decrement; the join fires when the last child terminalizes, with
@@ -1751,12 +1776,10 @@ The fan-in's failure policy is declared ON the join
 (`on_failure="fail_closed"` — T06's duality: a failed
 parent either fails the join closed (the cascade, the peers
 peer-cancelled) or fans in as a typed `FailureInfo` item and the join
-FIRES with the typed partial). The ABSORBING policy has two accepted
-spellings — `"collect"` (T06's shape: the failures fan in AS PART of the
-typed partial) and `"maybe"` (T07's shape: the branch's contribution may
-be absent) — the engine treats both as the same absorption (the typed
-`FailureInfo` item + the fire with the partials); pick the name that
-reads honestly at the call site. The fan-in bound is 1000 declared
+FIRES with the typed partial). The ABSORBING policy is
+`"collect"` — the failures fan in AS PART of the typed `FailureInfo`
+items and the join FIRES with the typed partial (the engine also
+accepts the spelling `"maybe"` — the same absorption, one meaning). The fan-in bound is 1000 declared
 parents (`MAX_FAN_IN_PER_JOIN`) — past it, partition the map.
 
 For a RUNTIME-determined N: `map_source(source, item_body)` — the
@@ -2997,7 +3020,7 @@ Every workflow fact is a row in the same database; the CLI and the explorer are 
 | Table | One row per | The columns that matter |
 |---|---|---|
 | `jobs` (the workflow rows) | a run's root (`step_key='__flow__'`), every node, every map child | `step_key` (the positional node key — never changes across holds/retries/reclaims), `deps_pending` (the join counter — a CACHE; the edge ledger is truth), `map_index` (the fan-out slot), `parent_id` (the graph's parent pointer — the fork's source node), `code_version` (the per-attempt code hash), `metadata` (`flow_id`, `workflow`, `blocking_reason`, `failed_parent`, `wf_cache_hit`), plus the vanilla columns (`status`, `attempt`, `max_attempts`, the lease columns, the error columns) |
-| `wf_edge` | dependency edge (`child_id`, `parent_id`, `failure_policy`) | the join counter's ONLY truth source; the failure policy the edge was wired with (`collect`/`maybe`/`fail_closed`) |
+| `wf_edge` | dependency edge (`child_id`, `parent_id`, `failure_policy`) | the join counter's ONLY truth source; the failure policy the edge was wired with (`collect`/`fail_closed`) |
 | `wf_join_fire` | exactly-once join fire (`join_job_id` UNIQUE) | the fire guard's record: at most one fire per joined node, ever |
 | `wf_outbox` | a fired join's consumer delivery | `delivered` false = the drain still owes the consumer rows |
 | `wf_step_ledger` | one attempt of one step (`flow_id`, `step_key`, `map_index`, `attempt`) | the attempt record: `status` (the attempt's outcome), `result`, `error_class`, `error_message`, `capture` (the failure IO-capture, per the workflow's policy) |
@@ -3006,6 +3029,17 @@ Every workflow fact is a row in the same database; the CLI and the explorer are 
 | `wf_step_cache` | one cached step result (`content_address`) | `run_id` (the producing run), `result`, `expires_at` (the TTL) |
 
 **The closed vocabularies** (the values the surfaces render, and what each means):
+
+- **The run's identity, one id per surface**: the prose says "run id";
+  the Python kwarg is `flow_id=` (the claim's own `JobId`);
+  `HitlClient.list` accepts `run=` (canonical) and `flow_id=`; the CLI
+  spells it `run_id` (`taskq flows holds <run_id>`); the admin URL is
+  `/taskq/workflows/{run_id}`. One id — the `jobs` root row — spelled
+  per surface.
+- **"Hold" is the user-facing concept**: a node waiting on a human, a
+  deadline, or a typed signal. The implementation names it in places
+  (`GateDecl`, `wf_signals`, the gates= parameter) — the surfaces the
+  operator reads (the run explorer, the CLI, this guide) say "hold".
 
 - A node row's `status` is the vanilla jobs vocabulary: `pending`, `scheduled`, `running`, `succeeded`, `failed`, `cancelled`, `crashed`, `abandoned`. Two derived pending SHAPES exist — join-wait (`pending` + `deps_pending > 0`) and held (`pending` + the unresolved `wf_signals` row). `crashed`/`abandoned` are TERMINALS (zero outbound transitions; the derivation folds them into the failed class).
 - The run status is DERIVED from the node rows: `running` (any node live or a cancel in flight) → `failed` (any unabsorbed failure) → `blocked` (any hold, join-wait, or blocked row) → `complete` → `cancelled` → `pending`. The root row's own `status` is a CACHE of this derivation.

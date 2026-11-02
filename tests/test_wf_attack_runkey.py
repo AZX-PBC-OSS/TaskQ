@@ -211,9 +211,30 @@ async def test_a_terminal_run_s_key_replay_carries_the_claim_verdict(
 
     compiled = app.get("replay_verdict_flow")
     run_key = f"replay-{new_uuid()}"
-    with pytest.raises(Exception):  # noqa: B017,PT011 - the prior run's own RuntimeError family
+    with pytest.raises(Exception):  # noqa: B017  # Why: the raise is the prior run's own failure family, reached through the packaged door — the exact class is the subject of the assertion below.
         await run(compiled, wf_pool, wf_schema, input=_RunkeyIn(doc_id="d1"), key=run_key)
 
-    with pytest.raises(Exception) as replay_info:  # noqa: B017,PT011
+    from taskq.exceptions import TaskQError
+    from taskq.workflows import WorkflowRunError
+
+    with pytest.raises((WorkflowRunError, TaskQError)) as replay_info:
         await run(compiled, wf_pool, wf_schema, input=_RunkeyIn(doc_id="d1"), key=run_key)
     assert getattr(replay_info.value, "claim_verdict", None) == "existing-terminal"
+
+
+async def test_the_run_key_alias_is_accepted_on_both_doors(
+    wf_pool: asyncpg.Pool, wf_schema: str
+) -> None:
+    """``key=`` is the canonical run-key name on BOTH run doors;
+    ``run_key=`` rides as the alias — the two spellings claim the same
+    run — and passing both with different values is refused (the run
+    key is ONE value)."""
+    from taskq.workflows import WorkflowBuildError
+
+    runner = _one_step_runner(wf_pool, wf_schema, "runkey_alias_flow")
+    key = f"alias-{new_uuid()}"
+    by_key = await runner.create_flow(key=key)
+    by_alias = await runner.create_flow(run_key=key)
+    assert by_key.flow_id == by_alias.flow_id
+    with pytest.raises(WorkflowBuildError, match="run key is ONE value"):
+        await runner.create_flow(key=key, run_key="different-key")

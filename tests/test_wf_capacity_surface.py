@@ -35,6 +35,7 @@ from taskq.ratelimit.reservation import ConcurrencyReservation
 from taskq.settings import WorkerSettings
 from taskq.workflows import (
     FlowRunner,
+    GateDecl,
     Promise,
     StepContext,
     WorkflowApp,
@@ -183,36 +184,106 @@ def test_explicit_step_retry_terms_override_the_handle() -> None:
     assert node.retry_kind == "transient"
 
 
-def test_explicit_step_params_override_the_handle_terms() -> None:
-    """The explicit step params OVERRIDE the handle's terms, never the
-    reverse; an unoverridden term still flows (the handle's reservations
-    ride when only ``max_concurrent`` is replaced)."""
-    app = WorkflowApp()
-    guard = ConcurrencyReservation(name="pdfium-guard", slots=1, lease=30.0)
-    other = ConcurrencyReservation(name="other-guard", slots=2, lease=30.0)
+def test_duration_terms_accept_timedelta_or_seconds() -> None:
+    """Every second-denominated term accepts a timedelta or a bare
+    number of seconds; the node decl carries the seconds float either
+    way (one stored form, one normalizer)."""
+    from datetime import timedelta
 
-    @app.actor(max_concurrent=1, reservations=[guard], result_ttl=60.0)
-    async def guarded(
+    app = WorkflowApp()
+
+    @app.actor(result_ttl=timedelta(seconds=45))
+    async def ttl_actor(
         ctx: StepContext, params: Ingest
     ) -> Report:  # pragma: no cover - the runner drives real bodies
         return Report(ref=params.doc_id)
 
-    @app.workflow("overridden-flow")
-    def overridden_flow() -> Promise[object]:
+    assert ttl_actor.result_ttl == 45.0
+
+    @app.workflow("duration-forms")
+    def duration_forms() -> Promise[object]:
         return build(
             step(
-                guarded,
+                ttl_actor,
                 Ingest(doc_id="d"),
-                key="guard",
-                max_concurrent=4,
-                reservations=[other],
+                key="probe",
+                result_ttl=timedelta(seconds=60),
+                cache=True,
+                cache_ttl=timedelta(hours=1),
             )
         )
 
-    node = app.get("overridden-flow").nodes["guard"]
-    assert node.max_concurrent == 4
-    assert node.reservations == (other,)
+    node = app.get("duration-forms").nodes["probe"]
     assert node.result_ttl == 60.0
+    assert node.cache_ttl == 3600.0
+
+
+def test_the_capture_policy_alias_is_accepted_on_both_decorators() -> None:
+    """``capture_policy=`` is the canonical name on ``@app.actor`` and
+    ``@app.workflow``; ``capture=`` rides as the alias on both — one
+    concept, one word, two accepted spellings, and a disagreement
+    between the two is refused."""
+    app = WorkflowApp()
+
+    @app.actor(capture="all")
+    async def by_alias(
+        ctx: StepContext, params: Ingest
+    ) -> Report:  # pragma: no cover - the runner drives real bodies
+        return Report(ref=params.doc_id)
+
+    assert by_alias.capture_policy == "all"
+
+    @app.workflow("capture-alias-flow", capture_policy="all")
+    def by_canonical() -> Promise[object]:
+        return build(step(by_alias, Ingest(doc_id="d"), key="probe"))
+
+    assert app.get("capture-alias-flow").nodes["probe"].body is by_alias
+
+    with pytest.raises(ValueError, match="capture policy is ONE value"):
+        app.actor(capture="none", capture_policy="all")(by_alias)
+
+
+def test_reservations_accept_list_tuple_or_none_on_every_face() -> None:
+    """The reservations term accepts a list, a tuple, or None on every
+    face (the actor, the step, the route arm); the node decl stores the
+    tuple either way, and None reserves nothing."""
+    from taskq.workflows.api._graph import RouteArm
+
+    guard = ConcurrencyReservation(name="alias-guard", slots=1, lease=30.0)
+    app = WorkflowApp()
+
+    @app.actor(reservations=[guard])
+    async def listed(ctx: StepContext, params: Ingest) -> list[Report]:
+        return [Report(ref=params.doc_id)]
+
+    @app.actor()
+    async def bare_actor(ctx: StepContext, params: Ingest) -> list[Report]:
+        return [Report(ref=params.doc_id)]
+
+    async def arm_body(ctx: StepContext, params: Report) -> Report:
+        return params
+
+    @app.workflow("reservations-shapes-flow")
+    def reservations_shapes() -> Promise[object]:
+        src = step(listed, Ingest(doc_id="d"), key="list", reservations=[guard])
+        none_form = step(bare_actor, Ingest(doc_id="d"), key="none_form", reservations=None)
+        fan = map_source(src, {Report: RouteArm(arm_body, reservations=[guard])})
+        return build(none_form, fan)
+
+    assert app.get("reservations-shapes-flow").nodes["list"].reservations == (guard,)
+    assert app.get("reservations-shapes-flow").nodes["none_form"].reservations == ()
+
+
+def test_explicit_step_params_override_the_handle_terms() -> None:
+    """The hold gate's deadline accepts a timedelta — the seconds number
+    is what arms the hold's expiry either way."""
+    from datetime import timedelta
+
+    gate = GateDecl(name="Approve", payload_models=(object,), timeout_s=timedelta(seconds=90))
+    assert isinstance(gate.timeout_s, timedelta)
+    from taskq.workflows._types import duration_seconds
+
+    assert duration_seconds(gate.timeout_s) == 90.0
 
 
 def test_handle_term_conflict_message_names_reservation_buckets_not_instances() -> None:

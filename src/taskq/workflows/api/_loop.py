@@ -48,11 +48,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel
 
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
+from taskq.workflows._types import duration_seconds
 from taskq.workflows.api._graph import (
     BodyFn,
     GateDecl,
@@ -234,7 +236,7 @@ def loop(
     carry_type: type[BaseModel] | None = None,
     until: UntilPredicate | None = None,
     max_iterations: int | None = None,
-    budget_s: float | None = None,
+    budget_s: timedelta | float | None = None,
     on_exhausted: ExhaustionPolicy = "escalate",
     escalates_to: BodyFn | None = None,
     gates: tuple[GateDecl, ...] = (),
@@ -299,7 +301,7 @@ def loop(
     spec = LoopSpec(
         loop_key=name,
         max_iterations=max_iterations,
-        budget_s=budget_s,
+        budget_s=duration_seconds(budget_s),
         on_exhausted=on_exhausted,
         carry_type=carry_type
         if carry_type is not None

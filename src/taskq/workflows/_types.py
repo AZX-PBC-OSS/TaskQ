@@ -18,6 +18,21 @@ from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ErrorInfo, JobId
 from taskq.workflows._sql import BLOCKING_REASON_JOIN
 
+
+def duration_seconds(value: timedelta | float | int | None) -> float | None:
+    """ONE normalizer for the second-denominated terms: a
+    :class:`datetime.timedelta` or a bare number of seconds — the seconds
+    float the row stamps and the sweep arithmetic read. ``None`` rides
+    (nothing declared). The dual form is accepted at every
+    duration-bearing term's face; the normalized seconds is the only
+    stored form."""
+    if value is None:
+        return None
+    if isinstance(value, timedelta):
+        return value.total_seconds()
+    return float(value)
+
+
 __all__ = [
     "MAP_INDEX_CEILING",
     "AbsorbingPolicy",
@@ -41,6 +56,7 @@ __all__ = [
     "_metadata",
     "_row_metadata",
     "_seconds_or_none",
+    "duration_seconds",
 ]
 
 #: THE MAP_INDEX CEILING — the wire-format fact the ceiling error
