@@ -967,3 +967,22 @@ async def fire_count(conn: asyncpg.Connection, schema: str, join_id: JobId) -> i
             join_id,
         )
     )
+
+
+async def expire_holds(
+    conn: asyncpg.Connection, schema: str, flow_id: JobId, *, timer_only: bool = True
+) -> None:
+    """THE INJECTED CLOCK for the hold pins: every held hold's expiry
+    stamp is written PAST — due-ness becomes a row fact the test sets,
+    never a wall-clock race. The declared deadlines stay generous (no
+    loaded tick can outlive them), so the dev drive's own tail sweep —
+    the tick's timer/expiry arms — can never fire the wake the pin's
+    own arm must fire; the write makes the hold due exactly when the
+    pin says so. ``timer_only`` scopes to the clock's reserved prefix;
+    the human gates' expiry face passes ``False``."""
+    scope = "AND starts_with(signal_name, '__timer__') " if timer_only else ""
+    await conn.execute(  # Why: the schema is a fixture-derived test identifier; the value is $-bound.
+        f'UPDATE "{schema}".wf_signals SET expires_at = now() - interval \'1 second\' '
+        f"WHERE workflow_id = $1 AND status = 'held' {scope}-- the injected expiry\n",
+        flow_id,
+    )
