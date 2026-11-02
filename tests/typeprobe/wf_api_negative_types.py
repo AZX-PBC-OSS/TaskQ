@@ -1,4 +1,4 @@
-"""NEGATIVE TYPE PROBES — the T09 flow API's wiring (pyright 1.1.414 +
+"""NEGATIVE TYPE PROBES — the flow API's wiring (pyright 1.1.414 +
 ty 0.0.85).
 
 Run:  uv run --no-sync python tests/typeprobe/_gate.py
@@ -12,11 +12,11 @@ the EXACT rule-ids the pinned checkers must emit (the gate asserts the
 ids — a stray unrelated error must not satisfy a probe). A probe the
 checkers do NOT flag is a finding: the Any leak the probe demonstrates.
 
-T09's doors probed here: the Promise is WIRING, not a future (awaiting
+the typed API's doors probed here: the Promise is WIRING, not a future (awaiting
 it — the wrong-nesting mistake — reds); a promise does not satisfy a
 plain-data parameter (the direct unit-call form wants the DATA —
 passing the wiring handle reds). The TypedGate's wrong-model delivery
-door ships with T10's runtime (its probe lands with that surface).
+door ships with the hold machinery's runtime (its probe lands with that surface).
 """
 
 from __future__ import annotations

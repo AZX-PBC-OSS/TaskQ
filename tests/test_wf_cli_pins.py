@@ -1,4 +1,4 @@
-"""T12 — THE CLI PINS: ``taskq flows`` — one question, one surface.
+"""THE CLI PINS: ``taskq flows`` — one question, one surface.
 
 The failing-first evidence: the three pins (taxonomy-drift, empty-snapshot,
 read-only) are collected with their REJECTED VARIANTS — each scenarios the

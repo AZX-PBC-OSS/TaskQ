@@ -1,4 +1,4 @@
-"""The two maintainer-ordered scenario pins (T07) — MAP-RETRY-BARRIER and
+"""The two maintainer-ordered scenario pins — MAP-RETRY-BARRIER and
 JOIN-FAILURE-POLICY — the integration tier, the real PG lane.
 
 MAP-RETRY-BARRIER: a list map over N=8 children; K=3 fail intermittently
@@ -14,7 +14,7 @@ over-eager parent-fail; the retry-storm contagion.
 JOIN-FAILURE-POLICY: the duality - TERMINALITY x POLICY. A join/collect
 fails ONLY on a child's TERMINAL state (the ladder exhausted, a terminal
 cancel, or the join's own timeout) - NEVER on an attempt-failure;
-required = fail-closed composing with T06's peer-cascade; maybe =
+required = fail-closed composing with the failed-parent propagation's peer-cascade; maybe =
 proceed-with-subset SURFACED (the envelope names the policy that
 absorbed it - it must not lie); the timeout arm rides the node-level
 deadline (the estate's deadline-exceeded sweep - this series gives the
@@ -427,7 +427,7 @@ async def test_join_failure_policy_terminality_one_number_apart(
         "collect fires where the policy says fail-closed)",
         {"required_join_fires": await fire_count(wf_conn, wf_schema, required_join)},
     )
-    # B. REQUIRED fan-in = FAIL-CLOSED, composing with T06's rule: the
+    # B. REQUIRED fan-in = FAIL-CLOSED, composing with the failed-parent propagation's rule: the
     # join blocks, the peers peer-cancel, the flow fails.
     assert await fire_count(wf_conn, wf_schema, required_join) == 0, (
         "a required child's terminal failure FAILS THE JOIN CLOSED"
@@ -439,7 +439,7 @@ async def test_join_failure_policy_terminality_one_number_apart(
         required_children[1],
     )
     assert peer is not None and peer["status"] == "cancelled", (
-        "T06's decided rule: a required-join failure peer-cancels the running peers"
+        "the failed-parent propagation's decided rule: a required-join failure peer-cancels the running peers"
     )
     peer_meta = (
         peer["metadata"]
@@ -577,7 +577,7 @@ async def test_join_failure_policy_timeout_arm_both_policies(
     # elapses NEVER wedges the join.
 
     # ── THE REQUIRED ARM: the deadline sweep terminal-fails the stuck
-    # child -> the sweep's rederive resolves the fail_closed join (T06's
+    # child -> the sweep's rederive resolves the fail_closed join (the failed-parent propagation's
     # heal): blocked-with-reason, never fired.
     flow_id = await seed_flow(wf_conn, wf_schema)
     req_join, req_children = await _seed_map_with_indexes(

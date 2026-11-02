@@ -1,8 +1,8 @@
-"""The T06 failed-parent propagation pins — the FAIL-CLOSED peer-cascade and
-the COLLECT fan-in, failing-first per the doctrine (BUILD-PROTOCOL §2: every
-pin's red is a REAL mutation of the shipped rule, observed and recorded).
+"""The failed-parent propagation's pins — the FAIL-CLOSED peer-cascade and
+the COLLECT fan-in (each pin's red is a real mutation of the shipped rule,
+observed and recorded).
 
-THE PROPAGATION RULE (T06's two semantics, per the ticket):
+THE PROPAGATION RULE (the failed-parent propagation's two semantics):
 
 * **fail_closed (the default)** — a parent's TERMINAL failure (the ladder
   exhausted or a non-retryable class) fails the join CLOSED by a
@@ -121,7 +121,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     """A fail_closed join whose parent TERMINALLY fails must NOT hang: the
     joined node's side of the counter is resolved by the flow-scoped
     transition (blocked-with-reason naming the parent), the flow fails.
-    THE REJECTED VARIANT (the pre-T06 shipped shape): the parent's failed
+    THE REJECTED VARIANT (the pre-fix shipped shape): the parent's failed
     finalize plain-decrements (or never resolves), the join stays
     join-wait / fires silently over a partial — the record shows a hanging
     join. The mutation scenario: the cascade statement's block arm dropped —
@@ -153,7 +153,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     state = await node_state(wf_conn, wf_schema, join_id)
     propagation_redlog.red(
         "t06-pin1-stranded-join",
-        "the cascade's block arm dropped (the pre-T06 shipped shape: the "
+        "the cascade's block arm dropped (the pre-fix shipped shape: the "
         "join stays join-wait or fires over the failed parent)",
         {
             "status": state["status"],
@@ -222,7 +222,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     propagation_redlog.red(
         "t06-pin1-block-arm-dropped",
         "the cascade's block arm dead in the REAL engine's tx2 — the join "
-        "never resolves (the pre-T06 shipped shape: the record shows a "
+        "never resolves (the pre-fix shipped shape: the record shows a "
         "hanging join) and the flow's flip never lands (the flow arm is "
         "gated on the block arm)",
         {
@@ -409,7 +409,7 @@ async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
     assert [a["error_message"] for a in attempts] == ["boom-1", "boom-2"]
 
     # THE WORKFLOW SUCCEEDS with the failure report (the absorbed-failure
-    # clause T08's derivation reads): the collect is not a failure.
+    # clause the typed node view's derivation reads): the collect is not a failure.
     flow_state = await node_state(wf_conn, wf_schema, flow_id)
     assert flow_state["status"] == "running", (
         "a collect join's child failure does NOT cascade to the flow"
@@ -633,7 +633,7 @@ async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
     * the lying envelope: the derivation must say 'failed' for this
       failed-closed run — X's failure is NOT absorbed (the edge's POLICY
       declaration alone absorbs nothing; the record must show the
-      absorption RAN). T07's C: the envelope must not lie about which
+      absorption RAN). the fan-in bound's rule: the envelope must not lie about which
       policy ran.
     THE REJECTED VARIANT (the scenario): the absorbed predicate without the
     fence clause (EXISTS any absorbing edge) — the derivation flips to

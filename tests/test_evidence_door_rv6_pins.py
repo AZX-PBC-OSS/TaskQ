@@ -35,30 +35,30 @@ working tree's residue never enters.
 
 The findings (each rejected live — every estate below exits rc=0 today):
 
-* F-D1 — THE SCAN WINDOW (FIXED): the first cut's ``_scan_window`` read
+* THE SCAN WINDOW (FIXED): the first cut's ``_scan_window`` read
   only the first 3 + last 12 lines of a capture; a capture whose stamp
   says ``rc=0`` whose TRUE red verdict (``1 failed, N passed``) sat
   MID-FILE — pushed out of the tail window by trailing chatter —
   greened silently. THE PIN (green): the door rejects a red verdict
   ANYWHERE in the capture — the scan is verdict-shaped, never
   line-counted.
-* F-D2 — THE JSON LAUNDER (FIXED): a capture named ``*.json`` carrying
+* THE JSON LAUNDER (FIXED): a capture named ``*.json`` carrying
   ``{"rc": 1, "failed": 3}`` parsed as valid JSON and greened — the door
   never read verdict content inside JSON (the suffix alone was the
   exemption). THE PIN (green): JSON captures' verdict fields
   (``rc``/``failed``/``errors``) are read like any stamp; the band
   family's verdict-free measurements stay green.
-* F-D3 — THE EMPTY REGISTRY GREENS VACUOUSLY (FIXED): a claims registry
+* THE EMPTY REGISTRY GREENS VACUOUSLY (FIXED): a claims registry
   with ``"claims": []`` passed ("the head-stamp law holds"). THE PIN
   (green): an empty registry is a loud refusal — an estate with no
   claims is unverifiable,
   per the verifier's own missing-registry law.
-* F-D4 — FUTURE-DATED CAPTURES (FIXED): ``captured_at`` was never
+* FUTURE-DATED CAPTURES (FIXED): ``captured_at`` was never
   parsed — a capture dated 2030 with a fresh ``head_sha`` greened. THE
   PIN (green): ``captured_at`` (and the filename's embedded stamp,
   where present) must be sane — not future-dated beyond the law's
   stated tolerance (one day, in the verifier's docstring).
-* F-D5 — THE ENV-FORGED HEAD (FIXED): ``GITHUB_EVENT_PATH`` pointing at
+* THE ENV-FORGED HEAD (FIXED): ``GITHUB_EVENT_PATH`` pointing at
   a hand-written payload made ``_head()`` return a sha that exists
   NOWHERE in the repo — the verifier then judged claims against the
   forgery and printed it as "THIS head". THE PIN (green): the verified
@@ -80,7 +80,7 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[1]
 _VERIFIER = _REPO / "scripts" / "verify_evidence_heads.py"
 
-#: A sha that exists NOWHERE in the repo (the F-D5 forgery).
+#: A sha that exists NOWHERE in the repo (the forgery).
 _FORGED_SHA = "f" * 40
 
 
@@ -114,7 +114,7 @@ def _run_verifier(runs_dir: Path, *, env_extra: dict[str, str] | None = None) ->
     at another tree — the import-resolution seam the pack's receipts
     document). Returns the combined output; the ambient
     ``GITHUB_EVENT_PATH`` is neutralized unless the leg under test sets
-    it (the F-D5 control: no leg forges by accident)."""
+    it (the control: no leg forges by accident)."""
     env = {
         **os.environ,
         "PYTHONPATH": str(_REPO / "src"),
@@ -136,7 +136,7 @@ def _claim(stem: str, file: str, head_sha: str, captured_at: str) -> dict[str, s
     return {"stem": stem, "file": file, "head_sha": head_sha, "captured_at": captured_at}
 
 
-# ── F-D1: the scan window ────────────────────────────────────────────────
+# ── the scan window ────────────────────────────────────────────────
 
 
 def test_d1_the_door_convicts_a_red_verdict_anywhere_in_the_capture(tmp_path: Path) -> None:
@@ -161,13 +161,13 @@ def test_d1_the_door_convicts_a_red_verdict_anywhere_in_the_capture(tmp_path: Pa
     )
     output = _run_verifier(runs_dir)
     assert "d1-stem" in output and "the head-stamp law holds" not in output, (
-        "F-D1: the red verdict mid-capture was never read — the door greens a "
+        "The red verdict mid-capture was never read — the door greens a "
         "capture whose own content records failure because the verdict sits "
         "outside the first-3/last-12 edge window. The output:\n" + output
     )
 
 
-# ── F-D2: the JSON launder ───────────────────────────────────────────────
+# ── the JSON launder ───────────────────────────────────────────────
 
 
 def test_d2_a_json_capture_verdict_is_never_laundered(tmp_path: Path) -> None:
@@ -192,12 +192,12 @@ def test_d2_a_json_capture_verdict_is_never_laundered(tmp_path: Path) -> None:
     )
     output = _run_verifier(runs_dir)
     assert "d2-stem" in output and "the head-stamp law holds" not in output, (
-        "F-D2: the JSON capture's own verdict fields (rc=1, failed=3) were never "
+        "The JSON capture's own verdict fields (rc=1, failed=3) were never "
         "read — a valid-JSON body greens whatever it records. The output:\n" + output
     )
 
 
-# ── F-D3: the empty registry greens vacuously ────────────────────────────
+# ── the empty registry greens vacuously ────────────────────────────
 
 
 def test_d3_the_empty_registry_is_a_loud_refusal(tmp_path: Path) -> None:
@@ -209,16 +209,16 @@ def test_d3_the_empty_registry_is_a_loud_refusal(tmp_path: Path) -> None:
     _write_estate(runs_dir, [], {})
     output = _run_verifier(runs_dir)
     assert "rc=0" not in output, (
-        "F-D3: the empty registry GREENS — zero claims is zero verdicts, and the "
+        "The empty registry GREENS — zero claims is zero verdicts, and the "
         "estate passes vacuously. The output:\n" + output
     )
     assert re.search(r"empty|no claims|zero", output, re.IGNORECASE), (
-        "F-D3: the refusal must NAME the empty registry (the loud law's own "
+        "The refusal must NAME the empty registry (the loud law's own "
         "shape — the missing-registry message names its cause). The output:\n" + output
     )
 
 
-# ── F-D4: future-dated captures ──────────────────────────────────────────
+# ── future-dated captures ──────────────────────────────────────────
 
 
 def test_d4_a_future_dated_capture_is_refused(tmp_path: Path) -> None:
@@ -242,12 +242,12 @@ def test_d4_a_future_dated_capture_is_refused(tmp_path: Path) -> None:
     )
     output = _run_verifier(runs_dir)
     assert "d4-stem" in output and "the head-stamp law holds" not in output, (
-        "F-D4: the capture dated 2030 greens — the registry's captured_at field "
+        "The capture dated 2030 greens — the registry's captured_at field "
         "(and the filename's embedded timestamp) is never parsed. The output:\n" + output
     )
 
 
-# ── F-D5: the env-forged head ────────────────────────────────────────────
+# ── the env-forged head ────────────────────────────────────────────
 
 
 def test_d5_the_verified_head_is_the_repos_own(tmp_path: Path) -> None:
@@ -270,7 +270,7 @@ def test_d5_the_verified_head_is_the_repos_own(tmp_path: Path) -> None:
     payload.write_text(json.dumps({"pull_request": {"head": {"sha": _FORGED_SHA}}}))
     output = _run_verifier(runs_dir, env_extra={"GITHUB_EVENT_PATH": str(payload)})
     assert "the head-stamp law holds" not in output, (
-        "F-D5: the verifier judged the estate against the FORGED head "
+        "The verifier judged the estate against the FORGED head "
         f"{_FORGED_SHA[:12]}… (the env payload's say-so) and GREENED — the "
         "repo's own HEAD was never consulted. The output:\n" + output
     )

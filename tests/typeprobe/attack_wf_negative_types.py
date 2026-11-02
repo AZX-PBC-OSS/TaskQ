@@ -16,7 +16,7 @@ the noise lines must stay clean on BOTH checkers (the gate fails on any
 unmarked error, so a probe's own sloppiness would red the gate, not the
 probed door).
 
-TODO(T01) — TICKET HOME for the probe-config finding: the root pyproject's
+TODO(the claim door  — TICKET HOME for the probe-config finding: the root pyproject's
 ``tests`` executionEnvironment sets ``reportArgumentType = false`` (the
 suite's duck-typed-seam relaxation), so a probe file under ``tests/`` is
 MUTE for exactly the violations it asserts when checked by the root

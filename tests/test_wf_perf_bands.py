@@ -1,4 +1,4 @@
-"""The workflow perf bands (T03/T04, G11/G12): the enqueue-latency + dispatch-claim noise bands (with the AND deps_pending = 0 exclusion clause present), the join-fire latency band, the 1000-child fan-out tx band. All load_sensitive (the serial perf lane); the bands are SET from these measurements (the files land in .measurements/) and pinned forever.
+"""The workflow perf bands: the enqueue-latency + dispatch-claim noise bands (with the AND deps_pending = 0 exclusion clause present), the join-fire latency band, the 1000-child fan-out tx band. All load_sensitive (the serial perf lane); the bands are SET from these measurements (the files land in .measurements/) and pinned forever.
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
@@ -145,7 +145,7 @@ async def test_join_fire_latency_band(
     assert elapsed_ms < 50, f"join-fire latency {elapsed_ms:.1f} ms exceeds the band"
 
 
-# ── T03's pins 4/5: the enqueue + dispatch-claim noise bands ─────────────
+# ── the enqueue-latency band's pins 4/5: the enqueue + dispatch-claim noise bands ─────────────
 
 _PIN4_P50_BUDGET_US = 25_000
 
@@ -423,7 +423,7 @@ async def test_pin_5_dispatch_claim_band(jobs_app: Any) -> None:
     )
 
 
-# ── T07: THE EDGE-JOIN SCALE CURVE (the bound's honest derivation) ──────
+# ── the fan-in bound: THE EDGE-JOIN SCALE CURVE (the bound's honest derivation) ──────
 
 
 async def _seed_fan_in(

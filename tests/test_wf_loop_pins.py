@@ -1,4 +1,4 @@
-"""T19 — THE LOOP PINS: the two walls, the carry, the ladder classes.
+"""THE LOOP PINS: the two walls, the carry, the ladder classes.
 
 Failing-first: each pin's REJECTED VARIANT was run against the mutated guard
 (the mutation test — BUILD-PROTOCOL §2), the observed red captured to
@@ -284,7 +284,7 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
 async def test_infra_fault_routes_to_reclaim_never_the_ladder(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SEMANTICS DECISION, stated once — attack-3 H5's fix sharpened
+    """THE SEMANTICS DECISION, stated once — the escape-point classifier's fix sharpened
     it: the classifier reads WHERE the error ESCAPED, never merely its
     type. A fault raised by the BODY is a BODY failure even when it
     wears a ConnectionError's face (the body cannot forge an infra
@@ -587,13 +587,13 @@ async def test_carry_optimistic_apply_dragon_red_forever(
     )
 
 
-# ── THE COMPOSITION PIN: a hold INSIDE a loop (T10 reads T19's arm) ─────
+# ── THE COMPOSITION PIN: a hold INSIDE a loop (the hold machinery reads the loop drive bound's arm) ─────
 
 
 async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Spike1's subject at the composition (T19 x T10): a loop iteration
+    """Spike1's subject at the composition (the loop drive bound x the hold machinery): a loop iteration
     that HOLDS — the loop node's budget PAUSES (the wall is blind), the
     operator's approval RESUMES (the pause lifts, the remaining is the
     on-wake read), the loop COMPLETES — zero budget_exhausted events,
@@ -786,7 +786,7 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
     """THE ADVANCE/EXHAUST FENCES: the loop's advance and exhaust carry
     the SAME claim-identity legs every other terminal write carries
     (worker + attempt + claim_epoch — the one-tx-finalize doctrine; the
-    unguarded statements were the doctrine's BACK DOOR). The pre-fix
+    unguarded statements were the hole's back door). The pre-fix
     truth: a zombie driver's exhaust killed a HEALTHY RECLAIMED loop and
     wrote its escalation row; a stale payload moved the counter
     backward.

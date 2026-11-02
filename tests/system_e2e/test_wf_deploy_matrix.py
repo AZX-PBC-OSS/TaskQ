@@ -1,4 +1,4 @@
-"""THE DEPLOY MATRIX (T15 — §22's cells as system-tier scenarios).
+"""THE DEPLOY MATRIX (§22's cells as system-tier scenarios).
 
 The workflow variant of the rolling-fleet harness's contract (see
 ``test_rolling_release_fleet.py``'s header): real worker subprocesses on
@@ -222,7 +222,7 @@ async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_move
         assert status == "complete", f"the reclaimed run derived {status!r}, not complete"
 
         # THE PER-ATTEMPT RECORD: the §22.1 record lives on the ROW
-        # (T03's code_version, written at claim — each attempt's claim
+        # (the enqueue-latency band's code_version, written at claim — each attempt's claim
         # rewrites it; the attempt LEDGER is the history). The run
         # terminalized, so the FINAL attempt's record is stamped; the
         # ledger shows the crashed attempt AND the retry.

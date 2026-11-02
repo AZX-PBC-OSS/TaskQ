@@ -1,4 +1,4 @@
-"""The fork-family pins (T04): pin 18 (ID-COLLISION — the compiled graph owns ids), pin 19 (FORK-DEBT — the atomic fork makes the debt unrepresentable; the split-tx variant reds), pin 20 (OUTBOX-FLUSH — the drain completes the dispatch exactly once).
+"""The fork-family pins: pin 18 (ID-COLLISION — the compiled graph owns ids), pin 19 (FORK-DEBT — the atomic fork makes the debt unrepresentable; the split-tx variant reds), pin 20 (OUTBOX-FLUSH — the drain completes the dispatch exactly once).
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture

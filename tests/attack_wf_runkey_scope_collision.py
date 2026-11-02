@@ -3,7 +3,7 @@ key, one silent cross-flow dedup.
 
 ``RUN_IDEMPOTENCY_SCOPE = "workflow-run"`` (``src/taskq/workflows/ledger.py:69``)
 is a bare constant shared by EVERY workflow in the schema; the run key
-alone decides the dedup. T05/G2's cron composition puts the flow name in
+alone decides the dedup. the iteration ledger/G2's cron composition puts the flow name in
 the KEY by convention (``key=<flow>:<slot-timestamp>``) — but nothing in
 the arbiter enforces it. Two DIFFERENT flow definitions run with the same
 naive key (a slot timestamp, ``"nightly"``, ``"daily"`` — the exact shapes

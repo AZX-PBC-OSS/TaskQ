@@ -1,8 +1,8 @@
-"""THE CROSS-RUN STEP CACHE's pins (T25) — integration: real PG.
+"""THE CROSS-RUN STEP CACHE's pins — integration: real PG.
 
 THE LAW THE PINS HOLD (the two-claims law — the design's spine):
 
-* the ARBITER dedups CONCURRENT (the run-key claim, T05's ledger);
+* the ARBITER dedups CONCURRENT (the run-key claim, the iteration ledger's ledger);
 * the CACHE dedups TEMPORAL (a LATER run over the same body + the same
   input reads the EARLIER run's result — the body never runs).
 

@@ -1,6 +1,6 @@
-"""T17 — THE ERGONOMICS-CONTRACT PINS (the authoring session's paper cuts).
+"""THE ERGONOMICS-CONTRACT PINS (the authoring surface's paper cuts).
 
-The BLOCKER/CRITICAL fixes landed with T09's flow API: these probes were
+The BLOCKER/CRITICAL fixes landed with the typed API's flow API: these probes were
 captured RED against the pre-API tree (strict-xfail — the cut IS the red;
 the red evidence: ``.measurements/t17-contract-first-run.txt``) and are
 GREEN here — the marker's removal in THIS commit is the flip. The bar-walk
@@ -35,7 +35,7 @@ from taskq.workflows.api._validate import validate_compiled
 # ── the ABSTRACTION CONTRACT's banned vocabulary (the campaign domain) ──
 #: The repo-bound surfaces ship in the abstract ``doc_ingest`` domain; the
 #: authoring session's own campaign vocabulary must never leak into them.
-#: The same repo-wide check tickets 13/14/16 cite (T17's scope).
+#: The same repo-wide check tickets 13/14/16 cite (the API reference's scope).
 _BANNED_DOMAIN_TERMS: tuple[str, ...] = (
     "capex",
     "cbre",
@@ -48,7 +48,7 @@ _BANNED_DOMAIN_TERMS: tuple[str, ...] = (
 
 
 def test_shipped_surfaces_carry_no_campaign_vocabulary() -> None:
-    """THE ABSTRACTION CONTRACT (T17): grep the shipped surfaces for the
+    """THE ABSTRACTION CONTRACT: grep the shipped surfaces for the
     campaign domain's terms — zero hits, the examples/docs/code live in
     the abstract doc_ingest domain."""
     repo = Path(__file__).resolve().parents[1]
@@ -144,7 +144,7 @@ async def _branch_b(ctx: StepContext, params: DocIngest) -> dict[str, int]:
 
 
 def test_bar_walk() -> None:
-    """THE BAR WALK (T17's failing-first 2): the authoring agent's original
+    """THE BAR WALK (the API reference's failing-first 2): the authoring agent's original
     graph — the shapes the paper cuts were hit on — compiles with zero
     boilerplate: plain-type data, Promise wiring, a gather-join,
     sequencing, a consumed terminal, the input parameter on create_flow."""
@@ -229,7 +229,7 @@ def test_paper_cut_7_create_flow_takes_input() -> None:
         f"the zero-warning budget is VIOLATED: {[d.rule for d in diagnostics]}"
     )
     # the signature exists and accepts the input (the runtime behavior is
-    # T09's runner pins; this walk pins the ERGONOMIC SHAPE: the parameter
+    # the typed API's runner pins; this walk pins the ERGONOMIC SHAPE: the parameter
     # is there, IDE-discoverable).
     assert "input" in inspect.signature(FlowRunner.create_flow).parameters
 

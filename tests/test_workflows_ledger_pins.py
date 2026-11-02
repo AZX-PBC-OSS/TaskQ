@@ -1,4 +1,4 @@
-"""T05's pins — the step ledger, the run-key arbiter, the idempotency
+"""THE STEP LEDGER'S PINS — the ledger, the run-key arbiter, the idempotency, the run-key arbiter, the idempotency
 contract, driven against a live Postgres through the REAL engine.
 
 Method: every pin's rejected variant is made to manifest its dragon (the
@@ -501,7 +501,7 @@ async def test_pin_7_map_children_own_ledger_rows(
 ) -> None:
     """Two map children of ONE step key (map_index 0 and 1, first attempt
     each) claim DIFFERENT ledger rows and terminalize WITHOUT overwrite:
-    each replay returns ITS OWN child's result (T05's key contract; the
+    each replay returns ITS OWN child's result (the iteration ledger's key contract; the
     recorded finding — an arbiter omitting map_index — is the RED scenario, the
     shipped statements are what the scenario mutates)."""
     flow_id = new_uuid()

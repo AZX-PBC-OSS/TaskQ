@@ -1,4 +1,4 @@
-"""The T08 (state, event) totality table (hardening Layer 3, imported):
+"""The (state, event) totality table (hardening Layer 3, imported):
 EVERY (state, event) pair exercised against a live seeded row through the
 engine's REAL code paths — each pair either performs its table-defined
 transition or is REFUSED by the guard with the row untouched. **0 undefined

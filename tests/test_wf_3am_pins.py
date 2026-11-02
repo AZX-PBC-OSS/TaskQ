@@ -96,7 +96,7 @@ def test_a_crashed_terminal_node_renders_its_story() -> None:
 
 def test_failed_parent_line_names_the_dead_parent() -> None:
     """The failed_parent stamp NAMES the failed parent on the record
-    (metadata.failed_parent, the T06 cascade's own write) — the why-stuck
+    (metadata.failed_parent, the failed-parent propagation cascade's own write) — the why-stuck
     line must print that id, not send the operator hunting through the
     run's other nodes to discover which parent died."""
     parent_id = "01a130ef-813b-7f50-86b2-14d8c01a61e5"

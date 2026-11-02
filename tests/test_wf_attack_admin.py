@@ -1,8 +1,6 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (module_pg_schema); every value is $-bound — the estate's test-SQL precedent (test_workflows_page.py).
-"""ATTACK PINS — the admin workflow-run page's attack front.
-
-Provenance: the hostile review of the consolidated head (af1b8779), the
-admin-workflow-page attack front. Five findings LANDED and are pinned
+"""THE ADMIN WORKFLOW-RUN PAGE'S PINS — the page's stated contracts,
+each held against its rejected shape. Five findings landed and are pinned
 strict-xfail, each asserting the SAFE behavior against the live defect —
 the fix flips each to XPASS-strict (a red that tells you to remove the
 marker WITH the fix, the same scenario test_wf_attack_cancel.py's Face C
@@ -11,7 +9,7 @@ verified-safe behavior can never rot silently.
 
 The landed five:
 
-* F-ADM-1 — the map-collapse read is DEAD. ``_wf_rows.fetch_run_view``
+* the map-collapse read is DEAD. ``_wf_rows.fetch_run_view``
   passes the run's ROOT id into ``WORKFLOW_MAP_PROGRESS_SQL``
   (``WHERE c.parent_id = $1``) but the engine's fork parents map
   children at the MAP SOURCE node (``_fork.insert_fork(parent_id=
@@ -20,22 +18,22 @@ The landed five:
   hexagon collapse + n/m counter (``rows_mermaid``'s ``{{…}}`` shape,
   whose docstring promises "ZERO child boxes") can never fire: a big
   map renders as thousands of raw node rows.
-* F-ADM-2 — a shape-refused resolve at the page's validation layer
+* a shape-refused resolve at the page's validation layer
   (``_wf_actions._validate_through_gates`` raises the 422 BEFORE
   ``HitlClient.resolve`` — the layer whose own refusal IS audited — is
   ever called) writes ZERO audit rows, while the page's own template
   (workflow_detail.html's audit-trail section) claims "every
   Resolve/cancel/deliver is audited".
-* F-ADM-3 — the run SSE stream (``_wf_actions.run_stream``) never wires
+* the run SSE stream (``_wf_actions.run_stream``) never wires
   the mid-stream ``session_verifier`` re-check that ``/sse/{topic}``
   got for #316 (sse.py:91-118): a revoked admin session keeps the
   stream until disconnect.
-* F-ADM-4 — ``run_cancel``'s refusal redirect targets
+* ``run_cancel``'s refusal redirect targets
   ``?error=cancel-not-applied``, but ``workflow_detail`` refuses ALL
   query params (``reject_unknown_query_params(request, ())``) — the
   operator lands on a 400 wall instead of the refusal banner the jobs
   page's refused-op contract (jobs.py's ``_ERROR_MESSAGES``) defines.
-* F-ADM-5 (defense-in-depth) — the node panel's SELECT returns
+* the node panel's SELECT returns
   ``error_message`` / ``error_traceback`` / ``metadata->>'error'``
   unbounded; a row carrying megabytes of failure text serves whole
   (the estate's precedent: jobs.py's ``_truncate_traceback`` display
@@ -86,7 +84,7 @@ MODULE_NAME = "att_adm_demo_flows"
 
 _TICK = 0.02
 
-#: F-ADM-5's stored payload size: far above any honest display cap (the
+#: the stored payload size: far above any honest display cap (the
 #: jobs page's 2000-char traceback bound, the CLI's 120-char detail
 #: line), far below PG's text limit — the write LANDS, so the served
 #: length proves boundedness at the READ.
@@ -263,12 +261,11 @@ async def _seed_node(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# F-ADM-1 — THE pin: the map-collapse read is dead (the page's
+# THE pin: the map-collapse read is dead (the page's
 # signature feature is currently dead code with live cost).
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-1, landed @af1b8779): fetch_run_view passes the run ROOT id …
 async def test_the_map_collapse_counts_the_real_children(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -321,12 +318,11 @@ async def test_the_map_collapse_counts_the_real_children(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# F-ADM-2 — the shape-refused resolve writes ZERO audit rows while the
+# the shape-refused resolve writes ZERO audit rows while the
 # page claims "every Resolve/cancel/deliver is audited".
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-2]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-2, landed @af1b8779): _validate_through_gates raises the …
 async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -376,12 +372,11 @@ async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# F-ADM-3 — the run SSE stream has no mid-stream session re-check (the
+# the run SSE stream has no mid-stream session re-check (the
 # #316 fix reached /sse/{topic}, never this stream).
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-4]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-3, landed @af1b8779): _wf_actions.run_stream authenticates …
 async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -456,7 +451,7 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
 
         assert task.done(), (
             "CONTRACT: a run stream whose session is revoked must end at the "
-            "next re-check tick. REGRESSION (F-ADM-3): the run stream "
+            "next re-check tick. REGRESSION : the run stream "
             "authenticates only at subscribe and is STILL OPEN 2s after the "
             "revocation; frames served to the dead session in that window: "
             f"{b''.join(received[tail:])!r}"
@@ -475,11 +470,10 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# F-ADM-4 — the refused-cancel redirect lands on a 400 wall.
+# the refused-cancel redirect lands on a 400 wall.
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-4]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-4, landed @af1b8779): run_cancel's refusal redirect targets …
 async def test_the_refused_cancel_redirect_lands_on_a_rendered_refusal(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -523,12 +517,11 @@ async def test_the_refused_cancel_redirect_lands_on_a_rendered_refusal(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# F-ADM-5 (defense-in-depth) — the node panel serves the error fields
+# the node panel serves the error fields
 # unbounded.
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-ADM-5: the panel's read-side bound (_bound_for_panel, the shipped 10k cap with the shipped truncation marker)]; the marker was removed per the designed flip (the confirmation).
 async def test_the_node_panel_bounds_the_error_fields_it_serves(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,

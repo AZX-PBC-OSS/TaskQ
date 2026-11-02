@@ -1,7 +1,7 @@
-"""THE T20/T21 GATE-FIX PINS — the progress gates + the typed deaths +
+"""THE PROGRESS-GATE FIX PINS — the progress gates + the typed deaths +
 the failure-class routing rule.
 
-THE RECORDED FINDINGS THESE HOLD CLOSED (the T20/T21 front's finding, each
+THE RECORDED FINDINGS THESE HOLD CLOSED (the streaming router and the progress reporting's recorded finding, each
 fixed in src and pinned here):
 
 * THE PRE-VALIDATION DICT (the lax-pydantic hole): the schema gate ran

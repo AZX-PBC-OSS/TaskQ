@@ -48,7 +48,7 @@ class Ingest(BaseModel):
 
 def _wedge_app(name: str) -> WorkflowApp:
     """A one-node workflow whose node HOLDS on an Approval — the demo's
-    review shape (the registry is exact: a unique name per app). T26'S
+    review shape (the registry is exact: a unique name per app). the expiry-as-value'S
     AMENDMENT: the wait's expiry face is the ``Expired`` MEMBER — the
     body converts it into the RAISED failure (the ladder's own use)."""
     from taskq.exceptions import SignalTimeoutError

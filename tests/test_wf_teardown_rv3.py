@@ -1,69 +1,59 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""TEARDOWN-REVIEW PINS — the rv3 cut-and-fix lane's recorded findings
-(feat/taskqflow @ 512f7a91; the teardown review of the workflows
-interface).
-
-Provenance: the teardown reviewer's offered cut, this lane's pack. Per
-the doctrine, a LANDED finding is pinned asserting the SAFE behavior
-under ``pytest.mark.xfail(strict=True)`` — the fix flips the pin to
-XPASS-strict (a red that says: remove the marker WITH the fix); the
-pin then stands as the green guard. Every finding here was run
-UNMARKED first (the red captured in RECEIPTS — the
-the pinning protocol) before the marker
-went on.
+"""THE WORKFLOWS INTERFACE'S TEARDOWN PINS — the teardown contract at
+every face this pack exercises: a body's signal cleanup, a cancelled
+run's held-row resolution, and a wedged teardown's loud failure. Each
+pin asserts the SAFE behavior and stands as the permanent green guard.
 
 The findings (each rejected live at the pin head):
 
-* F-RV3-1 — ``map_source``'s ``key=`` param is the can-only-error seat:
+* ``map_source``'s ``key=`` param is the can-only-error seat:
   every value but the derived key raises ``WorkflowBuildError`` (the
   accept-and-ignore class's guard), so the param's only possible
   outcome is the author's own refusal — the param should not exist.
   THE FIX IS A REMOVAL (documented in the changelog + the guide).
-* F-RV3-2 — the packaged run's first contact on an unmigrated schema
+* the packaged run's first contact on an unmigrated schema
   raises the RAW ``asyncpg.exceptions.UndefinedTableError`` — the
   client arm's typed ``SchemaNotMigratedError`` translation exists and
   the packaged door does not use it.
-* F-RV3-3 — ``apply_pending`` takes a raw ``asyncpg.Connection``; a
+* ``apply_pending`` takes a raw ``asyncpg.Connection``; a
   Pool arrives at the first statement's convenience method and dies
   the untyped ``AttributeError`` (the Pool has no ``transaction()``).
-* F-RV3-4 — THE E2-ANALOG HOLE IN THE GATE WIRING: a DECLARED gate the
+* THE E2-ANALOG HOLE IN THE GATE WIRING: a DECLARED gate the
   body never waits on, and a body's ``wait_signal`` with NO declared
   gate, both validate CLEAN — the compile-visible gate seat and the
   bodies' waits are never walked against each other (E2 walks the
   promise wiring; the gate wiring has no walk).
-* F-RV3-5 — ``cli.py``'s ``if __name__ == "__main__":`` block sits
+* ``cli.py``'s ``if __name__ == "__main__":`` block sits
   MID-MODULE (before the workgroup/flows tails): ``python -m
   taskq.cli`` runs ``main()`` with 18 commands unregistered — the
   entry-point help advertises verbs the ``-m`` path dies on.
-* F-RV3-6 — the ``schema`` param carries TWO conventions among the
+* the ``schema`` param carries TWO conventions among the
   read-face siblings: keyword-only on ``HitlClient``, positional on
   ``FlowRunner`` / ``run()`` (the majority). ONE convention: positional
   (``HitlClient`` is unreleased — the fix is free).
-* F-RV3-7 — ``FlowRunner.result()`` on a FAILED run returns the
+* ``FlowRunner.result()`` on a FAILED run returns the
   terminal node's empty read — failed and running indistinguishable at
   the read face; ``WorkflowRunError`` exists and is never raised by the
   read.
-* F-RV3-8 — the ``@app.actor`` canonical path defeats the code-version
+* the ``@app.actor`` canonical path defeats the code-version
   stamper: the node's body is the ``WorkflowActor`` WRAPPER, so the
   stamp hashes the wrapper's identity (every node the same constant —
   §22.1's deploy-drift feature dead where the docs teach).
-* F-RV3-9 — the hold's reason has TWO homes: the wait site's
+* the hold's reason has TWO homes: the wait site's
   ``reason=`` lands in the row's ``payload['reason']`` (populated) and
   ``HoldContext.reason`` reads ``None`` — always.
-* F-RV3-10 — the gate timeout is DOUBLE-SOURCED (the wait site's
+* the gate timeout is DOUBLE-SOURCED (the wait site's
   ``timeout_s=`` arms the runtime; ``GateDecl.timeout_s`` feeds the
   compile surfaces) with the precedence UNDOCUMENTED on the
   declaration, and the two sources never cross-checked where they are
   cross-checkable (both literals, disagreeing) — plus the ``GateDecl``
   docstring's stale raise-face text.
-* F-RV3-12 — the loop's shape law ("a loop body declares ONE wait per
+* the loop's shape law ("a loop body declares ONE wait per
   iteration") is DOCSTRING-ENFORCED: a conditional-interior
   ``wait_signal`` in a loop body mis-indexes the answer cursor (the
-  T26 review's the is the same question) and nothing names it.
+  the expiry-as-value review's the is the same question) and nothing names it.
 
-FIX ORDER (the reviewer's): F-RV3-4 (E14 — the headline), F-RV3-7,
-F-RV3-5, F-RV3-2/F-RV3-3, F-RV3-8/F-RV3-6/F-RV3-9, F-RV3-10/F-RV3-1/
-F-RV3-12. Each fix lands WITH its pin (the marker removed — the pin
+Each pin's fix landed with the pin beside it (the marker removed — the pin (the marker removed — the pin
 becomes the green guard) in the same commit.
 """
 
@@ -128,7 +118,7 @@ def _compile_quietly(app: WorkflowApp, name: str) -> Any:
     return app._compile(name)
 
 
-# ── F-RV3-4: the gate wiring's E2-analog (THE HEADLINE) ────────────────
+# ── the gate wiring's E2-analog (THE HEADLINE) ────────────────
 
 
 def test_rv3_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> None:
@@ -156,7 +146,7 @@ def test_rv3_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> Non
 
 
 def test_rv3_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
-    """E14's other face — RE-PARTITIONED BY THE MERGE'S RULING (the T26
+    """E14's other face — re-partitioned at the merge (the hold
     evidence won it): a wait with NO declared gate is NOT the lie (the
     wait site is SELF-DESCRIBING — the payload models + the timeout ride
     the call; the hold row is real; the listener, the resolve door and
@@ -191,7 +181,7 @@ def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> Non
     """E14's ZERO-FALSE-POSITIVE bound (the reviewer's own rule): a
     declared gate whose body DOES reference ``wait_signal`` is never
     E14-rejected — the static walk cannot prove a conditional-interior
-    wait never fires (that face is the documented W-face, F-RV3-12's
+    wait never fires (that face is the documented W-face,
     rule). The gate declared + the wait referenced validates past E14."""
     app = WorkflowApp()
 
@@ -222,7 +212,7 @@ def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> Non
     )
 
 
-# ── F-RV3-7: result()'s failure face ────────────────────────────────────
+# ── result()'s failure face ────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -251,7 +241,7 @@ async def test_rv3_7_a_failed_run_s_result_read_names_the_failure(
         await runner.result(claim.flow_id)
 
 
-# ── F-RV3-5: the -m path's dead verbs ───────────────────────────────────
+# ── the -m path's dead verbs ───────────────────────────────────
 
 
 def test_rv3_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
@@ -284,7 +274,7 @@ def test_rv3_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
     )
 
 
-# ── F-RV3-6: ONE schema convention ──────────────────────────────────────
+# ── ONE schema convention ──────────────────────────────────────
 
 
 def test_rv3_6_the_schema_param_carries_one_convention() -> None:
@@ -305,7 +295,7 @@ def test_rv3_6_the_schema_param_carries_one_convention() -> None:
     assert runner_kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
 
 
-# ── F-RV3-2: the packaged run's unmigrated-schema contact ───────────────
+# ── the packaged run's unmigrated-schema contact ───────────────
 
 
 @pytest.mark.integration
@@ -336,7 +326,7 @@ async def test_rv3_2_the_packaged_run_names_the_unmigrated_schema(
         await wf_conn.execute(f'DROP SCHEMA IF EXISTS "{bare}" CASCADE')
 
 
-# ── F-RV3-3: apply_pending's Pool is the typed refusal ─────────────────
+# ── apply_pending's Pool is the typed refusal ─────────────────
 
 
 async def test_rv3_3_apply_pending_names_the_connection_it_refuses() -> None:
@@ -354,7 +344,7 @@ async def test_rv3_3_apply_pending_names_the_connection_it_refuses() -> None:
         await pool.close()
 
 
-# ── F-RV3-8: the stamper reads the wrapper's INNER fn ──────────────────
+# ── the stamper reads the wrapper's INNER fn ──────────────────
 
 
 @pytest.mark.integration
@@ -426,7 +416,7 @@ async def test_rv3_8_the_actor_wrapped_bodies_stamp_their_own_code(
     )
 
 
-# ── F-RV3-9: the hold's reason — ONE home ───────────────────────────────
+# ── the hold's reason — ONE home ───────────────────────────────
 
 
 @pytest.mark.integration
@@ -472,7 +462,7 @@ async def test_rv3_9_the_hold_s_reason_rides_its_own_field(
     assert "compliance sign-off" in reason
 
 
-# ── F-RV3-10: the gate timeout's one precedence + the cross-check ───────
+# ── the gate timeout's one precedence + the cross-check ───────
 
 
 def test_rv3_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
@@ -538,13 +528,13 @@ def test_rv3_10b_the_gate_decl_docstring_names_the_union_face() -> None:
     )
 
 
-# ── F-RV3-12: the loop's shape law — named, never prose ────────────────
+# ── the loop's shape law — named, never prose ────────────────
 
 
 def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     """The loop's shape law ("ONE wait per iteration") as a NAMED W-rule:
     a loop body whose ``wait_signal`` sits in a CONDITIONAL interior
-    mis-indexes the answer cursor (the T26 review's the — the iteration
+    mis-indexes the answer cursor (the recorded finding — the iteration
     counter is the cursor, so an iteration that does not wait drifts the
     sequence). The mis-index shape is the warning's subject; the
     docstring's prose is not the enforcement."""
@@ -581,7 +571,7 @@ def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     shape = [d for d in diagnostics if d.rule == "W5-loop-wait-shape"]
     assert shape, (
         "the loop body's conditional-interior wait validates clean — the "
-        "shape law is docstring-enforced and the mis-index (the T26 "
+        "shape law is docstring-enforced and the mis-index (the recorded finding): "
         "review's C9) has no name at the validator"
     )
 
@@ -624,7 +614,7 @@ def test_rv3_12b_the_unconditional_loop_wait_stays_clean() -> None:
     )
 
 
-# ── F-RV3-1: map_source's can-only-error param is GONE ─────────────────
+# ── map_source's can-only-error param is GONE ─────────────────
 
 
 def test_rv3_1_map_source_takes_no_key_param() -> None:

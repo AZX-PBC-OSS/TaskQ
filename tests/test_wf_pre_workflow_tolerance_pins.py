@@ -1,5 +1,5 @@
 """The pre-workflow-schema tolerance pins (the phase-2 attack's M1 fix):
-the T18 workflow-liveness guard probes ``wf_edge`` — a schema the
+the retention coupling workflow-liveness guard probes ``wf_edge`` — a schema the
 workflow round has NOT landed on has no such table, and an untolerated
 miss is the leader's death (a non-transient error class fatal to the
 sweep loop).

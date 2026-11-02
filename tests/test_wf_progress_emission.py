@@ -1,11 +1,11 @@
-"""T21 — THE EMISSION OP PINS: ``ctx.progress``, the coalesce, the
+"""THE PROGRESS EMISSION'S PINS: ``ctx.progress``, the coalesce, the
 asymmetry.
 
-The provenance: the PoC's PROOF (PROOF 1/2/4) — the chain, the fan-out,
+The obligations: the chain, the fan-out,
 the chatty body — ported onto the BUILT surface. Each pin's REJECTED
 VARIANT is named; the unfenced variants stay RED FOREVER (the failure log).
 
-THE LAW (T21 decision e): observability degrades FIRST, never
+THE LAW (the progress reporting decision e): observability degrades FIRST, never
 correctness. The emission is best-effort — never in the finalize path
 (the zero-finalize-changes probe, ``test_wf_progress_persistence.py``),
 never raised into the body on infrastructure failure, never blocking the
@@ -179,7 +179,7 @@ async def test_typed_gates_pct_and_data(
 
 
 async def test_data_cap_truncates_with_the_marker(wf_pool: asyncpg.Pool, wf_sql: Any) -> None:
-    """T18's D5 shape on the emission op: oversize ``data`` truncated WITH
+    """the retention coupling's D5 shape on the emission op: oversize ``data`` truncated WITH
     the ``__truncated__`` marker — never silently (the reader must know
     it read a truncation)."""
     from taskq.workflows._progress import DATA_MAX_BYTES

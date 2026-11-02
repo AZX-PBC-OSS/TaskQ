@@ -12,10 +12,10 @@ frozen dataclass, no ``Any`` laundering):
 
 * ``ctx.input`` — the run's carried input (cut #7);
 * ``await ctx.substep(name, fn, *args)`` — the ledger's replay contract;
-* ``await ctx.progress(pct, message, data)`` — the emission op (T21);
-* ``await ctx.wait_signal((Model,), timeout_s=...)`` — the typed wait (T10);
+* ``await ctx.progress(pct, message, data)`` — the emission op (the progress reporting ;
+* ``await ctx.wait_signal((Model,), timeout_s=...)`` — the typed wait (the hold machinery ;
 * ``await ctx.cursor()`` + ``await ctx.emit_batch(children, cursor=...)``
-  — the streaming source's pair (T20).
+  — the streaming source's pair (the streaming router .
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ async def documented_body(ctx: StepContext, params: Params) -> Outcome:
 
 
 async def streaming_source(ctx: StepContext) -> None:
-    """The T20 pair (the paged generator body's reads)."""
+    """The streaming router pair (the paged generator body's reads)."""
     from taskq.workflows._types import EmitChild
 
     cursor: dict[str, object] = await ctx.cursor()

@@ -1,5 +1,5 @@
 """The workflow-capable worker subprocess entry point for the system-e2e
-tier (T15).
+tier.
 
 Same shape as :mod:`tests.system_e2e._worker_entry` (the production
 bootstrap, env-configured like a pod, the health socket as readiness)

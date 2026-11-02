@@ -1,4 +1,4 @@
-"""THE EMBEDDING DEMO'S WEB HALF, VERIFIED (T26's fix lane — C10):
+"""THE EMBEDDING DEMO'S WEB HALF, VERIFIED (the expiry-face's fix lane):
 ``examples/deep_research_web.py`` — the app-lifespan listener → the
 per-user SSE endpoint (authz scoped by the run) → the HoldCreated
 handler reading the ROW for the display facts → the resolve POST → the

@@ -1188,7 +1188,7 @@ async def _seed_rootless_story(
         )
         return "wf_signals", front, orphans
     if table == "wf_node_progress":
-        # The front's OWNER rows: live nodes grounded on the live root
+        # The owner rows: live nodes grounded on the live root
         # (the probe's honest survivors); the orphans' nodes are GONE.
         front = [_pk_uuid(high=False, i=i) for i in range(1, _FRONT_N + 1)]
         orphans = [_pk_uuid(high=True, i=i) for i in range(1, _ORPHAN_N + 1)]
@@ -1206,7 +1206,7 @@ async def _seed_rootless_story(
         )
         return "wf_node_progress", front, orphans
     if table == "wf_node_stream":
-        # seq is the PK: the front rides 1..N (the live node's ring), the
+        # seq is the PK: the ring rides 1..N (the live node's ring), the
         # orphans a high band above it (a GONE node's ring).
         front = [str(i) for i in range(1, _FRONT_N + 1)]
         orphans = [str(10**9 + i) for i in range(1, _ORPHAN_N + 1)]
@@ -1308,7 +1308,7 @@ async def test_rootless_walk_advances_past_a_live_pk_front(
     ADVANCED — the persisted cursor rides the last VISITED row (visited,
     not deleted: a live front's rows ARE the advance), the state row
     survives restarts (the migration's table, the job_events_prune_state
-    precedent); by pass 4 the walk is past the front and the orphans
+    precedent); by pass 4 the walk is past the frontier and the orphans
     DELETE (deleted by pass ≥ 2); pass 5 finds nothing above the last
     orphan and the cursor REWINDS to the start (the wraparound — rows
     whose root died after the walk passed are re-probed on the next
@@ -1347,7 +1347,7 @@ async def test_rootless_walk_advances_past_a_live_pk_front(
     )
     assert cursors[1] != cursors[0], f"{table}: the cursor did not advance pass over pass"
     assert cursors[2] == front_keys[-1], (
-        f"{table}: the cursor after pass 3 is {cursors[2]!r}, the front's "
+        f"{table}: the cursor after pass 3 is {cursors[2]!r}, the frontier's "
         f"last key is {front_keys[-1]!r} — the walk's scan is not "
         "batch-bounded or the advance is not the last VISITED row"
     )

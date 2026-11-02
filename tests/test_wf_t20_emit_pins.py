@@ -1,4 +1,4 @@
-"""T20's EMIT-TX pins — the design's ONE new primitive (PROOF.md §6a).
+"""THE EMIT TRANSACTION'S PINS — the design's ONE new primitive (PROOF.md §6a).
 
 The shipped fork inserts children ONLY inside the parent's terminal-mark
 tx1 (fork-at-finalize). A STREAMING source must emit children while
@@ -554,7 +554,7 @@ async def test_t20_emit_map_index_discriminates_siblings(
     # THE COLLISION PROOF: re-emitting the same record (the same
     # step + map_index) aborts the tx on the unique key — the loud
     # refusal; the tx's OTHER children (a fresh sibling) roll back with
-    # it (never a partial page). THE NAMED DEATH (the T20/T21 fixer's
+    # it (never a partial page). THE NAMED DEATH (the streaming router's
     # typed death): the raw UniqueViolationError no longer escapes
     # whole — the divergence is PageDivergedError (the cursor diverged
     # from the row history; the remedy — re-sync the cursor — rides the

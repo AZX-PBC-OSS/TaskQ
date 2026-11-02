@@ -1,4 +1,4 @@
-"""ATTACK (phase-2, round 2): the T06 fail-closed peer-cascade's windows.
+"""THE FAIL-CLOSED PEER-CASCADE'S WINDOWS.
 
 The attacker's probes, each an independent test (RED = a finding):
 
@@ -15,7 +15,7 @@ The attacker's probes, each an independent test (RED = a finding):
    the cascade) does NOT — do the peers of a healed fail_closed run keep
    running forever on a dead flow?
 
-3. MAYBE DOES NOT CASCADE (the absorbed-failure clause, T06's gate): a
+3. MAYBE DOES NOT CASCADE (the absorbed-failure clause, the failed-parent propagation's gate): a
    maybe child's terminal failure must NOT kill peers / fail the flow.
    Certification evidence (expected GREEN).
 

@@ -1,6 +1,5 @@
-"""DOCS-HONESTY PINS — the loop front's doc-truth recorded findings (the
-hostile review of the consolidated head, af1b8779; the front's REPORT.md
-surface B carries the audit table).
+"""DOCS-HONESTY PINS — the loop documentation's stated contracts,
+held against the shipped files.
 
 Pure file-system pins (no PG): each parses the doc/artifact it rejects
 and asserts the honest shape. All are LIVE defects → strict-xfail; the
@@ -175,9 +174,6 @@ def _perf_doc_figures(text: str) -> list[tuple[int, str, str]]:
 # ── DOCS-1/2: the docs-numbers pin — every measured figure resolves ─────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [DOCS-RATIO]; the marker was removed per the designed flip (the confirmation).
-
-
 # ── DOCS-1/2: the docs-numbers pin — every measured figure resolves ─────
 
 
@@ -288,7 +284,6 @@ def test_docs_the_api_reference_covers_every_shipped_validate_rule() -> None:
 # ── DOCS-3: the streaming ratio is cherry-picked against the captures ───
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the streaming doc's cited ratio now reads the NEWEST capture's (or the honest range): the fix landed [DOCS-RATIO]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_streaming_ratio_is_the_newest_capture_or_an_honest_range() -> None:
     """The capture law for the cited band ratio: the doc's number is the
     NEWEST run-scoped capture's, or the doc states the range across the
@@ -320,7 +315,7 @@ def test_docs_the_streaming_ratio_is_the_newest_capture_or_an_honest_range() -> 
     )
 
 
-# ── DOCS-4: the T17 disposition counts drift three ways ────────────────
+# ── DOCS-4: the API reference disposition counts drift three ways ────────────────
 
 
 def _t17_table_counts(ledger: str) -> dict[str, int]:
@@ -341,7 +336,6 @@ def _t17_table_counts(ledger: str) -> dict[str, int]:
     return counts
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the T17 counts: the ledger header to the pin's contract + the guide's one-home doctrine enforced (the pointer present, the arithmetic absent)]; the marker is removed per the designed flip.
 def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> None:
     """One count, one home: the ledger's table (the truth), the ledger's
     header line, and the guide's parenthetical must agree. (The
@@ -382,18 +376,16 @@ def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> Non
     if "nowhere else" not in guide:
         drift.append("the guide lost its one-home statement for the disposition counts")
     assert not drift, (
-        "T17 disposition count drift (one count, one home):\n  - "
+        "disposition count drift (one count, one home):\n  - "
         + "\n  - ".join(drift)
         + f"\n  (the table's own counts: {table})"
     )
 
     # ── DOCS-5: the reference surface vs the shipped surface ───────────────
 
-    # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [DOCS-API]; the marker was removed per the designed flip (the confirmation).
     assert not drift, "the API reference's validate surface drifted:\n  - " + "\n  - ".join(drift)
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the API reference documents the loop surface (loop(/Done/Refine all present): the fix landed [DOCS-API]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_api_reference_documents_the_loop_surface() -> None:
     """``wf.loop`` / ``Done`` / ``Refine`` are v1 API; a reference that
     omits them sends the reader to the guide's (stale) signature as the
@@ -406,7 +398,6 @@ def test_docs_the_api_reference_documents_the_loop_surface() -> None:
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the guide §9 spells the shipped verb's own signature (every parameter, the bare names) [the guide-signature fix]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     """The guide's spelled signature must carry every parameter the
     shipped verb takes (a param the guide never names — carry_type,
@@ -427,7 +418,6 @@ def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the inventory names the loop/HITL/phase3-fix/progress families]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_pin_inventory_names_the_families_the_guide_relies_on() -> None:
     """ "Every invariant above is pinned by a test that can fail (the pin
     inventory at the foot of this page)" — the inventory is the map; a
@@ -455,7 +445,6 @@ def test_docs_the_pin_inventory_names_the_families_the_guide_relies_on() -> None
 # ── DOCS-6: the carry dragon's "red forever" claim has no receipt ──────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the carry dragon's scenario receipt recorded (the machine-generated red)]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
     """The receipts law, applied to the carry dragon: the claim stands
     in two homes (the guide's §9 carry paragraph and the advance

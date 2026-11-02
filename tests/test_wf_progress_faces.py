@@ -1,7 +1,7 @@
-"""T21 — THE FACES + THE FENCE PINS: the SSE replay, the aggregation, the
+"""THE PROGRESS FACES + THE FENCE PINS: the SSE replay, the aggregation, the
 progress-lie fence, the gauge's cardinality.
 
-The provenance: the PoC's PROOF 1/2/5/6 — the chain, the fan-out
+The obligations: the chain, the fan-out
 aggregation, the lie/crash dragons, the bounds — ported onto the BUILT
 surfaces. Each pin's REJECTED VARIANT is named and — where observable —
 exercised with the red captured to ``.measurements/t21-pin-reds.json``.

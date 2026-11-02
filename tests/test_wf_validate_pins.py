@@ -1,4 +1,4 @@
-"""T09 — THE VALIDATE PINS: the checker-independent validator's mutation
+"""THE VALIDATE PINS: the checker-independent validator's mutation
 matrix. A valid graph pins CLEAN; ONE mutation at a time flips EXACTLY
 the intended rule and nothing else (§15.6's discipline) — the
 zero-false-positive budget is the pin, not an aspiration.
@@ -387,7 +387,7 @@ def test_the_drills_runtime_death_is_real() -> None:
 
 
 def test_fan_in_bound_mutation() -> None:
-    """E6: the T07 bound — past MAX_FAN_IN_PER_JOIN the compile refuses
+    """E6: the fan-in bound bound — past MAX_FAN_IN_PER_JOIN the compile refuses
     (the error names the bound)."""
     from taskq.workflows.definitions import MAX_FAN_IN_PER_JOIN
 

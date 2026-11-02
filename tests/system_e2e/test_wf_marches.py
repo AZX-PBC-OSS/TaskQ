@@ -1,4 +1,4 @@
-"""THE DEEP-RESEARCH MARCH (T15 — the system tier's full walk).
+"""THE DEEP-RESEARCH MARCH (the system tier's full walk).
 
 ONE scenario, the whole spine, on a real fleet (real worker
 subprocesses, one real Postgres — the deploy matrix's harness):
@@ -19,11 +19,11 @@ subprocesses, one real Postgres — the deploy matrix's harness):
    back and reconciled against the march's own decisions.
 5. THE PARTIAL REPORT + THE TIMEOUT FACE — the publish step's typed
    wait is left UNRESOLVED on purpose: the expiry sweep's abandonment
-   RETURNS the ``Expired`` member in the body (T26's amendment — the
+   RETURNS the ``Expired`` member in the body (the expiry-as-value's amendment — the
    timeout face is a value), the body MATCHES it and pivots to the
    degraded report — the report NAMES the failed source and its own
    degradation, never wedges.
-6. THE STREAMING EMIT — the T20 router lived on the tier: the paged
+6. THE STREAMING EMIT — the streaming router router lived on the tier: the paged
    source emits TWO pages while running (the children + edges + cursor
    checkpoint per emit tx); the per-record chains route on the body's
    OWN typed outcomes (the conditional chains: 2 flagged → manual
@@ -401,7 +401,7 @@ async def test_the_streaming_emit_march_conditional_chains(
     module_pg_schema: Any,
     sys_ledger: asyncpg.Connection,
 ) -> None:
-    """THE STREAMING EMIT (the T20 router lived on the tier): the paged
+    """THE STREAMING EMIT (the streaming router router lived on the tier): the paged
     source emits TWO pages while running; the per-record chains route on
     the body's OWN typed outcomes — 2 flagged (risk > 0.8) walk the
     manual-review step, 2 clean go straight to done. The cursor
@@ -491,7 +491,7 @@ async def test_the_doc_ingest_march_fan_in_progress_render(
 ) -> None:
     """THE DOC-INGEST MARCH: the map's fan-in barrier join
     (fail_closed), the maybe collect (a failed branch does not kill the
-    run), the declared READ-SIDE aggregate (T21 decision c), and the
+    run), the declared READ-SIDE aggregate (the progress reporting decision c), and the
     graph's mermaid RENDER matching the wiring."""
     from taskq.workflows.api._mermaid import render_mermaid
     from taskq.workflows.api._runner import FlowRunner

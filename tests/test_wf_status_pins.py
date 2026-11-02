@@ -1,4 +1,4 @@
-"""The T08 status + progress pins: the derivation table's rows (each
+"""The state-totality status + progress pins: the derivation table's rows (each
 mutation-checked — flipping any two rows' precedence must red), the
 rows-only reconstruction (the kill-everything shape), the gauge's
 cardinality law (never per-node labels; the `_other_` collapse), the
@@ -498,7 +498,7 @@ async def test_t08_maintenance_leg_finalizes_the_wedged_root(
     # cascade's own flip stamps the peer-cancel origin instead).
     assert root["error_class"] is not None, "the finalize names the reason"
     # RETENTION RELEASED: the root is terminal, so the pruner's liveness
-    # guard (T18) no longer holds the run's rows — the terminal state IS
+    # guard (the retention coupling  no longer holds the run's rows — the terminal state IS
     # the release. (The root's own rows prune on the normal schedule.)
 
     # THE MUTATION TEST (live, on a FRESH wedged flow): the maintenance

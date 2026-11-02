@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""T11 — THE ADMIN WORKFLOW PAGE PINS: the run explorer's pages + the
+"""THE ADMIN WORKFLOW PAGE'S PINS: the run explorer's pages + the
 SSE node_state stream + the typed actions, against a REAL run on a real
 migrated schema (the fastapi marker tier: server-rendered pytest, no
 browser — the DoD's primary lane; the browser-level probe replay is the
@@ -672,7 +672,7 @@ async def test_g7_rows_equal_the_rendered_state(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """G7 (T08's always-on law) exercised on the REAL page: the §17.5
+    """G7, the always-on metamorphic law, exercised on the REAL page: the §17.5
     derivation over the rows == the status the page renders; the boot
     JSON's per-node states == the node rows, seq for seq."""
     schema = module_pg_schema.schema_name

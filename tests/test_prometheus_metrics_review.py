@@ -652,7 +652,7 @@ _ALERT_RESULT: dict[str, tuple[dict[str, str], float]] = {
     "TaskQStrandedJobs": ({"actor": "probe_ghost_actor", "reason": "unserved_queue"}, 4.0),
     "TaskQRunningLeaseExpired": ({}, 3.0),
     "TaskQClaimLatencyDegraded": ({"queue": "probe_queue"}, 12.0),
-    # T08: the blocked-stuck alert ships WITH the gauge —
+    # the typed node view: the blocked-stuck alert ships WITH the gauge —
     # a metric nobody alerts on is a decoration). The pathology: a run's
     # blocked-node count pinned above zero past the 30m bound. The rule's
     # expression is a bare selector (no aggregation), so the result
@@ -1176,7 +1176,7 @@ def _build_promtool_cases(live: Exposition) -> list[dict[str, Any]]:
         )
     )
 
-    # T08 — TaskQWorkflowBlockedStuck: the alert suggestion shipped WITH
+    # the typed node view — TaskQWorkflowBlockedStuck: the alert suggestion shipped WITH
     # the gauge, evaluated through the honest harness: the pathology
     # (blocked nodes pinned past the 30m bound) staged through promtool;
     # the silent side is the healthy fleet (no blocked nodes).
@@ -1577,17 +1577,17 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
     assert "SUCCESS" in out, out
 
 
-# ── THE RUNBOOK-ANCHOR PIN (the F-R3 discipline, re-landed 2026-10-09) ──
+# ── THE RUNBOOK-ANCHOR PIN ──
 
 
 def test_every_runbook_alert_row_names_a_rule_shipped_in_both_files() -> None:
-    """THE RUNBOOK ↔ SHIPPED-ALERT CROSS-CHECK (the reviewer's F-R3 scenario,
+    """THE RUNBOOK ↔ SHIPPED-ALERT CROSS-CHECK (the cross-check scenario,
     made mechanical): every ``## TaskQ…`` alert row in
     ``docs/guides/runbooks.md`` names an alert SHIPPED in BOTH
     ``contrib/prometheus/rules.yaml`` AND ``contrib/kubernetes/prometheus_rule.yaml``
     (the pair ships lockstep), and every shipped alert has a runbook row —
     an operator paged by the real alert must find its row, and a row no
-    alert can fire is a page that lies. The rejected shape (F-R3's
+    alert can fire is a page that lies. The rejected shape (
     original + its carry-regression, both 2026-10-09): the runbook's
     ``TaskQWfRunStuck``/``TaskQWfHoldExpired`` rows named rules NO rule
     file carried — the runbook's promise had no code behind it. The two
@@ -1628,14 +1628,14 @@ def test_every_runbook_alert_row_names_a_rule_shipped_in_both_files() -> None:
     phantom_rows = row_names - prometheus_alerts
     anchorless_alerts = prometheus_alerts - row_names
     assert not phantom_rows, (
-        "THE RUNBOOK NAMES AN ALERT THAT SHIPS NOWHERE (the F-R3 class): "
+        "THE RUNBOOK NAMES AN ALERT THAT SHIPS NOWHERE (the named-alert class): "
         f"{sorted(phantom_rows)} — a runbook row no shipped rule can fire "
         "is a page that lies: ship the rule (both files, lockstep, with "
         "its metric) or fold the row's content into the shipped alert's "
         "row"
     )
     assert not anchorless_alerts, (
-        "THE SHIPPED ALERT HAS NO RUNBOOK ROW (the F-R3 cross-face): "
+        "THE SHIPPED ALERT HAS NO RUNBOOK ROW (the cross-check face): "
         f"{sorted(anchorless_alerts)} — an operator paged by this alert "
         "finds no runbook row: write the row"
     )

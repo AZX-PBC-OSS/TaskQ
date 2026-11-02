@@ -15,8 +15,9 @@ livelock / deadlock / lost-job probes over the phase-3/4 arms.
     landing WHILE the drain holds the spawn tx, the resolve racing the
     cancel — every job lands in a NAMED state, zero silent losses.
 
-Anything this suite finds in MY phase-4 code, I fix; the phase-3
-findings go to the fixer (the separation of responsibilities).
+Anything this suite finds in its own scope lands its own pin; the
+other surfaces' findings land in their own packs (each pack owns its
+faces).
 """
 
 from __future__ import annotations

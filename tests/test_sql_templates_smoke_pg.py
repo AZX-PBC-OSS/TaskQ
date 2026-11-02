@@ -328,7 +328,7 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
             "taskq.backend._dispatch_sql:DISPATCH_STRICT_FIFO_SQL",
             "taskq.backend._dispatch_sql:DISPATCH_ROUND_ROBIN_SQL",
         ),
-        "-- THE DISPATCH FENCE (P3 rule 4's second leg, T04, + the worker",
+        "-- THE DISPATCH FENCE (P3 rule 4's second leg + the worker",
         "a token template (the __WF_ALIAS__/__WF_TERMINAL__ holes are "
         "substituted by _wf_dispatch_fence per alias, never .format), never "
         "a standalone statement; its rendered text rides the two dispatch "
@@ -362,7 +362,7 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
     "taskq.backend._sweeps:_SWEEP_RESULT_TTL_GUARD_SQL": (
         ("taskq.backend._sweeps:_SWEEP_RESULT_TTL_SQL",),
         None,
-        "the T18 expiry-eats-children guard fragment (a NOT-EXISTS conjunct "
+        "the expiry-eats-children guard fragment (a NOT-EXISTS conjunct "
         "carrying {schema} holes), never a standalone statement; spliced at "
         "the window's LIMIT into _SWEEP_RESULT_TTL_BASE_SQL to make "
         "_SWEEP_RESULT_TTL_SQL — the rolling-deploy tolerance's fallback runs "
@@ -378,7 +378,7 @@ _COVERED_BY: Final[dict[str, tuple[tuple[str, ...], str | None, str]]] = {
         'JOIN "{schema}".jobs fl ON fl.id = e.flow_id',
         "a NOT-EXISTS guard fragment, never a standalone statement; "
         "composed onto the archive candidate windows (the prune + the "
-        "per-actor variant) — T18's parent-prune hold; the guard's "
+        "per-actor variant) — the parent-prune hold; the guard's "
         "rendered text is validated through the products' prepare",
     ),
     "taskq.backend._sweeps:_SWEEP_IDLE_KEYED_BUCKETS_BODY": (

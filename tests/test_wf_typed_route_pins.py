@@ -1,4 +1,4 @@
-"""T27's pins — THE TYPED ROUTE AT THE GRAPH LEVEL (``route(promise, arms)``).
+"""THE TYPED ROUTE'S PINS AT THE GRAPH LEVEL (``route(promise, arms)``).
 
 THE RECORDED FINDING (the reviewer's, lived on the routing-proof corpus): the
 chain's route works but the chain is graph-INVISIBLE (no join-back, the
@@ -7,7 +7,7 @@ DSL's ``skip=``-predicates are STRINGLY — the live recorded finding: a "video"
 tag skipped BOTH arms and the run terminalized SUCCEEDED having routed
 NOTHING (the exact silent drop ``RouterNotTotal`` exists to prevent).
 
-THE FIX (T27 — the ticket is ``dag-research/tickets/T27-typed-route.md``):
+THE FIX (the typed route  the ticket is ``dag-research/tickets/the typed route-typed-route.md``):
 the union MEMBERS key a route dict at the graph level —
 
     route(source_promise, {ImageItem: RouteArm(body=process_image, queue="gpu"),

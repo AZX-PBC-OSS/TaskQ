@@ -8,7 +8,7 @@ FLIP IS DONE: the fixes (the api-reference's wiring-verbs table carries
 the `route` + `chain_source` rows; the guide's fan-in section NAMES
 `FanInBoundExceededError` beside its remedy; the guide's route teaching
 states the single-value disposition) removed the markers WITH the fix —
-the assertions stand as the permanent green pins. F-DOCS-4's cited text
+the assertions stand as the permanent green pins. the cited text
 (the holdmap fix's runbook paragraph) does NOT exist in this tree — it
 lives on the unmerged ``feat/taskqflow-holdmap-fixes`` lane — so that
 pin stands GREEN as the anti-rot guard: the docs-numbers law it asserts
@@ -19,25 +19,25 @@ text, never a container).
 
 The findings:
 
-* F-DOCS-1 — the api-reference's wiring-verbs table
+* the api-reference's wiring-verbs table
   (``docs/api-reference/workflows.md``, "The wiring verbs") omits
-  ``route`` — a top-level export (``taskq.workflows.__all__``), the T27
+  ``route`` — a top-level export (``taskq.workflows.__all__``), the typed route
   typed-route verb whose own section the guide teaches. THE PIN (static):
   every public verb in ``taskq.workflows.__all__`` that is a wiring verb
   (a function homed in the graph-DSL wiring layer) appears as a table row
   (walk ``__all__`` vs the table; ``route`` must be present).
-* F-DOCS-2 — ``FanInBoundExceededError`` exists in src
+* ``FanInBoundExceededError`` exists in src
   (``workflows/definitions.py``) but nowhere in ``docs/`` — the fan-in
   bound's section teaches the bound and the child-driven escape but never
   NAMES the error class the operator meets. THE PIN: the guide's fan-in
   bound section names the error class with its remedy.
-* F-DOCS-3 — the single-value ``Promise[A|B]`` disposition is unstated:
+* the single-value ``Promise[A|B]`` disposition is unstated:
   ``route()`` is documented only as the per-element (list-source) map
   face; the build refusal for a non-list source ("the route is a MAP
   face") and the single-value alternative (the chain step's in-body
   ``Route``) are nowhere named. THE PIN: the guide's route/conditional
   section names the single-value disposition explicitly.
-* F-DOCS-4 — (the holdmap lane's runbook text, NOT at this tree): "served
+* (the holdmap lane's runbook text, NOT at this tree): "served
   by five ``wf_*`` tables" while listing six ``wf_*`` tables + ``jobs``.
   THE PIN (the docs-numbers pattern, a GREEN guard here): every
   count-and-list claim of the form "N ``wf_*`` tables" in the docs
@@ -64,7 +64,7 @@ _API_REF = _REPO / "docs" / "api-reference" / "workflows.md"
 _WIRING_MODULES = {"taskq.workflows.api._graph", "taskq.workflows.api._loop"}
 
 
-# ── F-DOCS-1: the wiring-verbs table walks __all__ ───────────────────────
+# ── the wiring-verbs table walks __all__ ───────────────────────
 
 
 def test_docs1_every_wiring_verb_in_all_appears_in_the_table() -> None:
@@ -94,14 +94,14 @@ def test_docs1_every_wiring_verb_in_all_appears_in_the_table() -> None:
     )
     missing = verbs - documented
     assert not missing, (
-        "F-DOCS-1: public wiring verbs missing from the api-reference table: "
-        f"{sorted(missing)} — `route` is a top-level export (the T27 typed "
+        "Public wiring verbs missing from the api-reference table: "
+        f"{sorted(missing)} — `route` is a top-level export (the typed route typed "
         "route the guide teaches at length); a reader of the reference can "
         "never find it"
     )
 
 
-# ── F-DOCS-2: the fan-in bound's error class, named with its remedy ──────
+# ── the fan-in bound's error class, named with its remedy ──────
 
 
 def test_docs2_the_fan_in_bounds_error_class_is_named_with_its_remedy() -> None:
@@ -123,7 +123,7 @@ def test_docs2_the_fan_in_bounds_error_class_is_named_with_its_remedy() -> None:
         "the witness fails loud"
     )
     assert "FanInBoundExceededError" in section_text, (
-        "F-DOCS-2: the fan-in bound's error CLASS is named nowhere in the "
+        "The fan-in bound's error CLASS is named nowhere in the "
         "guide (nor anywhere in docs/) — the operator who meets "
         "error_class='FanInBoundExceededError' finds no doc; the section "
         "teaches the bound (≤ 1000) and the child-driven escape but never "
@@ -131,7 +131,7 @@ def test_docs2_the_fan_in_bounds_error_class_is_named_with_its_remedy() -> None:
     )
 
 
-# ── F-DOCS-3: the single-value route disposition ─────────────────────────
+# ── the single-value route disposition ─────────────────────────
 
 
 def test_docs3_the_single_value_route_disposition_is_named() -> None:
@@ -157,7 +157,7 @@ def test_docs3_the_single_value_route_disposition_is_named() -> None:
         re.IGNORECASE,
     )
     assert disposition is not None, (
-        "F-DOCS-3: the single-value Promise[A|B] disposition is unstated — "
+        "The single-value Promise[A|B] disposition is unstated — "
         "route() is taught only over list sources ('each element runs ITS "
         "type's arm'), and nothing names where routing a SINGLE union value "
         "goes (the chain step's in-body Route) nor route()'s own build "
@@ -165,7 +165,7 @@ def test_docs3_the_single_value_route_disposition_is_named() -> None:
     )
 
 
-# ── F-DOCS-4: the docs-numbers count-vs-list law (the GREEN guard) ───────
+# ── the docs-numbers count-vs-list law (the GREEN guard) ───────
 
 #: The count claim's shape: "five `wf_*` tables" — a number word (or digit)
 #: immediately scoping the workflow-table family.
@@ -219,6 +219,4 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
                     f"{doc.relative_to(_REPO)}: claims {claimed} `wf_*` tables "
                     f"but lists {len(listed)} ({sorted(listed)})"
                 )
-    assert not offenders, "F-DOCS-4: a table-count claim disagrees with its list:\n" + "\n".join(
-        offenders
-    )
+    assert not offenders, "A table-count claim disagrees with its list:\n" + "\n".join(offenders)

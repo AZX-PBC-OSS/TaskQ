@@ -1,4 +1,4 @@
-"""T28 — THE DURABLE TIMER'S PINS: the hold whose resolver is the clock.
+"""THE DURABLE TIMER'S PINS: the hold whose resolver is the clock.
 
 ``ctx.wait_until(when)`` mints an ORDINARY hold row under the reserved
 ``__timer__`` signal prefix; the sweep's TIMER arm resolves it

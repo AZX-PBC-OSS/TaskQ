@@ -1,4 +1,4 @@
-"""T29 — THE IN-FLIGHT VERSIONING CONTRACT's pins: the redeploy face.
+"""THE IN-FLIGHT VERSIONING CONTRACT's pins: the redeploy face.
 
 THE DECISION (the registry-is-truth contract — the guide's versioning
 section carries the full text): **a redeployed definition = the
@@ -87,7 +87,7 @@ async def test_redeploy_adopts_the_new_body_at_the_next_node_claim(
     body through the same claim-time resolution): a run mid-LOOP (the
     iteration's body re-resolution), a run mid-WAIT (the wake's resume
     re-enters the new body — the timer interplay pin below), a cached
-    step (the cache's address INCLUDES the code_version — T25's own
+    step (the cache's address INCLUDES the code_version — the cache's own
     law: a redeploy is a new address, the new code's cache line)."""
     app = WorkflowApp()
     name = "redeploy_face_v1"
@@ -141,7 +141,7 @@ async def test_redeploy_adopts_the_new_body_at_the_next_node_claim(
         "the pre-contract tree (the doc's TODAY): a mid-flow deploy changed the "
         "behavior SILENTLY — no contract text, no taught stamp read",
         {
-            "recorded finding": "the stamps landed with T03/§22.1; THIS pin pins the adopt + the stamp together"
+            "the stamps landed with the deploy-matrix record; this pin holds the adopt + the stamp together"
         },
     )
 
@@ -149,8 +149,8 @@ async def test_redeploy_adopts_the_new_body_at_the_next_node_claim(
 async def test_redeploy_mid_wait_the_wake_reenters_the_new_body(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE CONTRACT's mid-WAIT edge case (the timer interplay — T28
-    x T29): a run holding on a DURABLE TIMER when the registry mutates —
+    """THE CONTRACT's mid-WAIT edge case (the timer interplay — the child flows
+    x the versioning contract): a run holding on a DURABLE TIMER when the registry mutates —
     the wake's resume re-enters the NEW body (the claim-time resolution
     is the only body source; a wake is a resume like any other). The
     stamp proves WHICH code ran the post-wake side, and the answer

@@ -1,44 +1,41 @@
-"""ATTACK PINS — the loop machinery front (the heaviest front of the
-hostile review of the consolidated head, af1b8779).
-
-Provenance: the att_loop adversarial review's probes (a1a through a5, REPORT.md) run live
-against PG. Each LANDED finding is pinned here asserting the SAFE
+"""THE LOOP MACHINERY'S PINS — the loop's contracts under adversarial
+shapes, run live against PG. Each pin asserts the SAFE
 behavior and marked ``pytest.mark.xfail(strict=True)``: the fix flips
 the pin to XPASS-strict (a red that says: remove the marker WITH the
-fix). The GUARDS at the foot are the attacks the front FAILED — the
+fix). The GUARDS at the foot are the attacks the machinery HELD — the
 machinery held; they run green so the fence cannot rot silently.
 
-The findings, one pin each (the front's REPORT.md carries the evidence):
+The findings, one pin each:
 
-* F-LOOP-1 — the typed carry is a validate-time fiction:
+* the typed carry is a validate-time fiction:
   ``initial=Counter()`` is jsonabled to a dict at iteration 0, every
   resume/replay reads the jsonb dict, and ``loop_body(ctx, carry)``
   never revalidates. A body trusting ``carry: Counter`` dies on
   iteration 0 with zero faults; the shipped pins' isinstance fallbacks
   silently RESET accumulation on resume (observed [1, 1, 2, 3] for a
   three-step count).
-* F-LOOP-2 — the advance/exhaust statements are UNFENCED: their WHERE
+* the advance/exhaust statements are UNFENCED: their WHERE
   reads ``status='running'`` only — no worker/attempt/claim_epoch legs
   (the fence every other terminal write in the estate carries). A stale
   driver's body failure killed a healthy RECLAIMED loop mid-drive (and
   wrote the escalation row); a stale advance moved the counter BACKWARD
   3→1 over the live carry.
-* F-LOOP-3 — the escalation consumer NEVER RUNS in production shape:
+* the escalation consumer NEVER RUNS in production shape:
   the dispatch fence's terminal-flow leg refuses the row (the
   exhaustion terminalizes the flow in the outbox insert's own tx — the
   row is born unfenceable); the phase-3 pin greens via an in-process
   tick whose comment claims the fleet claims it (false).
-* F-LOOP-4 — a body returning neither Done nor Refine is RECORDED as a
+* a body returning neither Done nor Refine is RECORDED as a
   succeeded iteration before the union assert; drive() raises a bare
   AssertionError; on reclaim the memo replays the garbage as a Refine
   and the loop dies as IterationLimitExhausted — the ledger lies and
   the diagnosis never names the shape error.
-* F-LOOP-5 — sweep_loop_budget's return counts only the
+* sweep_loop_budget's return counts only the
   escalate-enqueued exhaustions; a fail-policy loop exhausts while the
   sweep returns 0.
-* F-LOOP-6 — loop()'s promised "waits forever" validate warning does
+* loop()'s promised "waits forever" validate warning does
   not exist (no rule reads loop_until/max_iterations/budget_s).
-* F-LOOP-7 — E8 rejects at .validate()/FlowRunner() but app.get()
+* E8 rejects at .validate()/FlowRunner() but app.get()
   compiles + REGISTERS the bad definition (the boot projection compiles
   without validating): a fleet refuses at first claim, not at compile.
 """
@@ -74,7 +71,7 @@ pytestmark = pytest.mark.integration
 
 
 class Counter(BaseModel):
-    """The declared carry model (F-LOOP-1's subject)."""
+    """The declared carry model (the subject)."""
 
     acc: int = 0
 
@@ -86,10 +83,9 @@ class Carry(BaseModel):
     by: str = ""
 
 
-# ── F-LOOP-1: the typed carry never reaches the body ────────────────────
+# ── the typed carry never reaches the body ────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-CARRY0]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): loop(initial=Counter()) jsonables the model to a …
 async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -122,7 +118,7 @@ async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     )
     assert verdict == "terminal" and node is not None
     assert node["status"] == "succeeded", (
-        f"F-LOOP-1: the trusting body never stood a chance — the loop node is "
+        f"The trusting body never stood a chance — the loop node is "
         f"{node['status']}/{node['error_class']} ({(node['error_message'] or '')[:100]}); "
         f"the body was handed {seen} — the typed carry is a validate-time fiction "
         "(a body declaring a model type must receive that type at EVERY boundary)"
@@ -131,7 +127,6 @@ async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     assert await runner.result(flow_id) == {"acc": 3}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-CARRY]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): the crash-window resume replays the carry as a …
 async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -188,16 +183,15 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     assert await runner2.drive(flow_id, max_ticks=50) == "terminal"
     assert await runner2.result(flow_id) == {"acc": 3}
     assert spawns == [("Counter", 1), ("Counter", 2), ("Counter", 3)], (
-        f"F-LOOP-1: the accumulate-across-resume sequence is {spawns} — a dict "
+        f"The accumulate-across-resume sequence is {spawns} — a dict "
         "carry silently reset the count on the resume (the declared model never "
         "reached the body at the boundary)"
     )
 
 
-# ── F-LOOP-2: the advance/exhaust statements carry no claim fence ───────
+# ── the advance/exhaust statements carry no claim fence ───────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-FENCE]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL fence on …
 def test_f_loop_2_the_advance_and_exhaust_statements_carry_the_claim_fence() -> None:
     """The statement face of the unfenced writes (the behavioral face is
     the zombie pin below). The estate's fence vocabulary is fixed — the
@@ -213,19 +207,15 @@ def test_f_loop_2_the_advance_and_exhaust_statements_carry_the_claim_fence() -> 
             if leg not in statement:
                 missing.append(f"{name} carries no {leg} fence leg")
     assert not missing, (
-        "F-LOOP-2: the loop's terminal writes are unfenced — "
+        "The loop's terminal writes are unfenced — "
         + "; ".join(missing)
         + " (every other terminal write in the estate carries all three)"
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-UNION]; the marker was removed per the designed flip (the confirmation).
+# ── the non-union return is recorded as success, then laundered ─
 
 
-# ── F-LOOP-4: the non-union return is recorded as success, then laundered ─
-
-
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-UNION]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): a body returning neither Done nor Refine is …
 async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -285,7 +275,7 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
     )
     assert node1 is not None
     assert drive_exc is None and verdict == "terminal", (
-        f"F-LOOP-4: drive() raised "
+        f"Drive() raised "
         f"{type(drive_exc).__name__ if drive_exc else None} "
         f"({(str(drive_exc)[:120]) if drive_exc else verdict}) — the shape error "
         "must terminalize the flow as a NAMED failure, never escape as a bare "
@@ -296,30 +286,30 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
         and node1["error_class"] not in (None, "IterationLimitExhausted")
         and "Refine" in (node1["error_message"] or "")
     ), (
-        f"F-LOOP-4: the shape error was never NAMED — the loop node is "
+        f"The shape error was never NAMED — the loop node is "
         f"{node1['status']}/{node1['error_class']} "
         f"({(node1['error_message'] or '')[:120]}); the diagnosis must name the "
         "control-union violation at the point of return, never the cap"
     )
     assert succeeded1 == 0 and succeeded2 == 0, (
-        f"F-LOOP-4: the ledger recorded the garbage return as SUCCEEDED "
+        f"The ledger recorded the garbage return as SUCCEEDED "
         f"({succeeded1} iteration rows after the first drive, {succeeded2} after "
         "the re-drive — the memo replayed the garbage as a Refine: the launder)"
     )
     assert len(spawns) == 1, (
-        f"F-LOOP-4: the body ran {len(spawns)} times — the reclaim replayed the "
+        f"The body ran {len(spawns)} times — the reclaim replayed the "
         "laundered memo instead of standing on the named failure"
     )
 
 
-# ── F-LOOP-5: the sweep's return counts every exhaustion ────────────────
+# ── the sweep's return counts every exhaustion ────────────────
 # FIXED (the sweep-count fix): the budget sweep's return counts EVERY
 # CAS-held exhaustion — the named state + the flow's terminalization
 # complete at the exhaust statement; the escalation arm is additional
 # work. The marker is gone, the green IS the receipt.
 
 
-# ── F-LOOP-3: the escalation's claim on the REAL dispatch path ──────────
+# ── the escalation's claim on the REAL dispatch path ──────────
 # FIXED (this head): the ESCALATION-KIND exemption is shipped in BOTH
 # fences (the claim fence AND the probe fence — the two may not
 # disagree): the loop's registered escalation consumer is dispatchable ON
@@ -427,7 +417,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
     )
     esc_claimed = claimed.get(str(esc["id"]))
     assert esc_claimed is not None, (
-        "F-LOOP-3: the escalation row is a DEAD LETTER on the real dispatch path — "
+        "The escalation row is a DEAD LETTER on the real dispatch path — "
         "the control (a live flow's node) was claimed in the same round but the "
         "escalation row was refused: the dispatch fence's terminal-flow leg rejects "
         "it (the exhaustion terminalized its flow in the outbox insert's own "
@@ -568,7 +558,7 @@ async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
 
     assert strike is not None
     assert strike["status"] == "running" and strike["it"] == 1 and "B" in (strike["carry"] or ""), (
-        f"F-LOOP-2: the zombie's stale strike LANDED on the live loop — the row is "
+        f"The zombie's stale strike LANDED on the live loop — the row is "
         f"{strike['status']}/{strike['error_class']} at iteration {strike['it']} with "
         f"carry {strike['carry']} (B was mid-drive, healthy). The exhaust accepted a "
         f"writer that had lost the claim (strike root: {strike_root}, outbox rows "
@@ -621,13 +611,13 @@ async def test_f_loop_5_the_sweep_counts_every_exhaustion(
         f"the orphaned at-cap loop was not exhausted by the sweep: {dict(node)}"
     )
     assert exhausted == 1, (
-        f"F-LOOP-5: the sweep exhausted the loop (row failed, iteration_cap_exhausted) "
+        f"The sweep exhausted the loop (row failed, iteration_cap_exhausted) "
         f"but returned {exhausted} — the count increments only on the "
         "escalate-enqueued path; the return lies for the fail policy"
     )
 
 
-# ── F-LOOP-6: the promised 'waits forever' validate warning ─────────────
+# ── the promised 'waits forever' validate warning ─────────────
 # FIXED (this head): the W3-eternal-loop warning rule landed — the
 # docstring's promise is the shipped behavior; the marker is gone, the
 # green IS the receipt.
@@ -652,16 +642,16 @@ def test_f_loop_6_validate_warns_on_the_waits_forever_loop() -> None:
     diagnostics = _run_rules(app.get("aloop_nowalls"))
     warnings = [d for d in diagnostics if d.severity == "warning"]
     assert any("forever" in f"{d.rule} {d.message}".lower() for d in warnings), (
-        f"F-LOOP-6: the no-walls loop validated with NO 'waits forever' warning "
+        f"The no-walls loop validated with NO 'waits forever' warning "
         f"(diagnostics: {[(d.rule, d.severity) for d in diagnostics]}) — the "
         "docstring's promised validate warning does not exist"
     )
 
 
-# ── F-LOOP-7: E8 rejects one seam late (registration, not validate) ────
+# ── E8 rejects one seam late (registration, not validate) ────
 
 
-# ── F-LOOP-7: E8 rejects one seam late (registration, not validate) ────
+# ── E8 rejects one seam late (registration, not validate) ────
 # FIXED (this head): the registration door validates — app.get() runs
 # validate_compiled before recording/registering, so the mismatched
 # carrier is refused before any row exists; the marker is gone, the
@@ -820,7 +810,7 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
     seam the shipped pin #6 uses). The reclaim records 'crashed' (the
     ladder untouched), the memo replay heals the window, the ledger
     shows EXACTLY ONE succeeded row per iteration key, and the result is
-    correct. (The RESUME's carry TYPE is F-LOOP-1's pin — this guard
+    correct. (The RESUME's carry TYPE is the pin — this guard
     pins the ledger's exactly-once, which held.)"""
     from taskq.workflows.api import _runner_loop
 
@@ -932,7 +922,7 @@ async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
     assert by_paused[False]["state"] == "budget_exhausted"
 
 
-# ── F-LOOP-8: the loop-parents gap — a promise handle as the initial carry ──
+# ── the loop-parents gap — a promise handle as the initial carry ──
 
 
 def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None:
@@ -947,7 +937,7 @@ def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None
     and names the fix (a first step returns the initial carry; the loop
     starts from that value). The honest alternatives still build: a
     VALUE initial validates clean, and the loop-with-no-walls warning
-    (F-LOOP-6's subject) is unaffected."""
+    (the subject) is unaffected."""
     from taskq.workflows.api._validate import _run_rules
 
     async def refine_forever(ctx: StepContext, carry: object) -> Refine[dict[str, int]]:
@@ -964,7 +954,7 @@ def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None
         lp = loop("scan", refine_forever, initial=p, max_iterations=10)
         return build(lp, p)
 
-    # THE REGISTRATION DOOR (the F-LOOP-7 fix's own seam) refuses the
+    # THE REGISTRATION DOOR (the registration seam) refuses the
     # handle BEFORE any row exists — the named rule, the named fix.
     from taskq.workflows.api._validate import WorkflowValidationError
 

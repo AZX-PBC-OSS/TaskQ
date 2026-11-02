@@ -1,4 +1,4 @@
-"""NEGATIVE TYPE PROBES — the graph-DSL typed route (T27): the route's
+"""NEGATIVE TYPE PROBES — the graph-DSL typed route: the route's
 arms are keyed by the source's union MEMBERS' TYPES.
 
 The graph-level face of the type-tagged Route's discipline (the chain
@@ -134,7 +134,7 @@ async def ocr_text(ctx: object, item: ImageDoc) -> ExtractedText:
 
 
 def probe_the_homogeneous_barrier_type(app: WorkflowApp) -> None:
-    """THE FAN-IN'S EDITOR FACE (T27's barrier — fork, fan back in at the
+    """THE FAN-IN'S EDITOR FACE (the typed route's barrier — fork, fan back in at the
     chunking step): HOMOGENEOUS arms (both return ``ExtractedText``) —
     the route's promise solves to the flat ``Promise[list[ExtractedText]]``
     (the build fn's declared return pins the solve: a drifted ARM reds

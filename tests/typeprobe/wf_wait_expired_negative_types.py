@@ -1,4 +1,4 @@
-"""T26's AMENDMENT — the expiry-as-value probes: the wait's timeout face
+"""THE EXPIRY-AS-VALUE'S PROBES — the wait's timeout face: the wait's timeout face
 returns the TYPED UNION (the declared decision models joined with the
 house ``Expired`` member), so the CHECKER forces the fail-close arm.
 
@@ -84,7 +84,7 @@ async def probe_the_green_door(ctx: StepContext, params: Params) -> Approval:
             raise AssertionError(f"unreachable: the union is closed, got {other!r}")
 
 
-# ── T28's TIMER PROBES — the durable timer's typed wake ─────────────────
+# ── the child flows's TIMER PROBES — the durable timer's typed wake ─────────────────
 # ``ctx.wait_until`` returns the TYPED ``TimerWake`` (never a union, never
 # Any): the wake's fields (key/scheduled/fired_at) narrow, a wrong
 # ``when`` argument reds, and a body reading a foreign attribute off the

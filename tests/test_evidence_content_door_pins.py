@@ -71,7 +71,7 @@ bringing up nodes...
 ........................................................................ [ 95%]
 ............................                                             [100%]
 =================================== FAILURES ===================================
-E   AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate
+E   AssertionError: the head-stamp verifier reds on the committed estate
 =========================== short test summary info ============================
 FAILED tests/test_wf_attack_rv2.py::test_rv2_13_the_head_stamp_law_greens_on_the_committed_tree
 1 failed, 603 passed, 1 warning in 80.24s (0:01:20)
@@ -87,7 +87,7 @@ _FORGED_STAMP_CAPTURE = """\
 bringing up nodes...
 ..F.                                                                     [100%]
 =================================== FAILURES ===================================
-E   AssertionError: F-RV2-13: the head-stamp verifier reds on the committed estate
+E   AssertionError: the head-stamp verifier reds on the committed estate
 1 failed, 75 passed in 7.41s
 """
 

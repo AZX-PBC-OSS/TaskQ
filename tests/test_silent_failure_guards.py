@@ -650,7 +650,7 @@ def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
     ``await reap_cancelled_child(task)``), whose helper suppresses only
     THE CHILD'S cancel and re-raises the reaper's own (the uncancel
     accounting). Any direct ``suppress(asyncio.CancelledError)`` in
-    ``src/`` is the rejected swallow (the F-DEMO-2 class: the lifespan's
+    ``src/`` is the rejected swallow (the swallowed-cancel class: the lifespan's
     cancel eaten, the task alive 12 s later; the run loop's poll that
     could never receive its own shutdown). The grep gate sweeps every
     seat: a new suppress must ride the reaper helper or name its own

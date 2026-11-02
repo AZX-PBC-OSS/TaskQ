@@ -1,4 +1,4 @@
-"""T09 — THE API-SURFACE PINS: the decorator's composition contract
+"""THE API-SURFACE PINS: the decorator's composition contract
 (F3 — no second, invisible actor population), the channel/gate
 declaration doors, and the Mermaid emission's shape vocabulary (the
 golden's grammar).

@@ -1,4 +1,4 @@
-"""The in-process engine pins (T04): pin 10 (the seam-only generation grep), pin 11 (REDACT-BEFORE-PERSIST), pin 12 (CANONICAL-HASH), pin 14 (the deadlock-retry budget), pin 16 (BODY-FROM-DEFINITION).
+"""The in-process engine pins: pin 10 (the seam-only generation grep), pin 11 (REDACT-BEFORE-PERSIST), pin 12 (CANONICAL-HASH), pin 14 (the deadlock-retry budget), pin 16 (BODY-FROM-DEFINITION).
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
@@ -214,7 +214,7 @@ def test_pin_16_body_from_definition(
 def test_pin_14_deadlock_retry_budget(engine_redlog: RedLog) -> None:
     """Both operators RETRY on a real Postgres ``DeadlockDetectedError``
     (the aborted TX had no effect → linearization-preserving); the budget
-    exhausts LOUDLY. The x200 linearization storm itself is T15's crash
+    exhausts LOUDLY. The x200 linearization storm itself is the escalation-drain's crash
     fixture (the real-PG storm shape; the engine-side budget pin lives
     here)."""
     import asyncpg.exceptions

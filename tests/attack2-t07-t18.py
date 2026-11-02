@@ -1,23 +1,23 @@
-"""ATTACK (phase-2, round 2): T18's pruner coupling + T07's barrier under
+"""THE PRUNER COUPLING AND THE BARRIER'S FAN-IN BOUND under
 concurrency.
 
-1. T18 EXPIRY COUPLING DIRECTION: the guard holds a child's result while
+1. the retention coupling EXPIRY COUPLING DIRECTION: the guard holds a child's result while
    its join is UN-FIRED. The shipped pin sweeps BEFORE the fire. The
    attacker's window is the OTHER arm: sweep runs BETWEEN the fire and
    the reduce's batch read — does anything still eat the results? (The
    body reads in the fire's own tx on both paths; the probe documents
    the boundary and hunts the gap via the sweep's own shipped driver.)
 
-2. T18 THE OVER-HOLD DIRECTION (vanilla rows): the guard must not hold
+2. the retention coupling THE OVER-HOLD DIRECTION (vanilla rows): the guard must not hold
    NON-workflow rows (no edges → swept normally). A guard that over-holds
    vanilla rows is the retention regression.
 
-3. T07 THE BARRIER RACING A CANCEL: the flow cancels while the ladder's
+3. the fan-in bound THE BARRIER RACING A CANCEL: the flow cancels while the ladder's
    LAST intermittent child is mid-ladder; the child then terminalizes.
    The barrier + the cancel fence must give: no fire on a cancelled flow,
    one verdict per row.
 
-4. T07 THE TIMEOUT ARM RACING THE LADDER'S LAST RETRY: the deadline
+4. the fan-in bound THE TIMEOUT ARM RACING THE LADDER'S LAST RETRY: the deadline
    sweep fires while the child is RUNNING its would-succeed final
    attempt. The child's real finalize must lose the fence CLEANLY (no
    corrupt row, no fire over the deadline-failed fail_closed parent).
@@ -161,7 +161,7 @@ async def test_attack_t18_expiry_guard_does_not_hold_vanilla_rows(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """A VANILLA terminal row (no edges) past its expiry must still sweep —
-    the T18 guard is a workflow-liveness probe, not a retention pause on
+    the pruner guard is a workflow-liveness probe, not a retention pause on
     the fleet."""
     vanilla = None  # placeholder to keep the import local
     from taskq._ids import new_uuid
@@ -184,7 +184,7 @@ async def test_attack_t18_expiry_guard_does_not_hold_vanilla_rows(
     assert left == 0, "the guard over-holds: a vanilla row's result was held"
 
 
-# ── 3: T07's barrier racing a cancel ────────────────────────────────────
+# ── 3: the fan-in bound's barrier racing a cancel ────────────────────────────────────
 
 
 @pytest.mark.integration

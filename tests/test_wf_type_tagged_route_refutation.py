@@ -130,8 +130,7 @@ THE_CHAIN = Chain(
 def test_type_route_not_total_is_refused_at_declaration() -> None:
     """A type-tagged route missing a union member is REFUSED at
     declaration — the element type it drops would silently strand the
-    record's chain (the same totality fence the enum face has had since
-    T20)."""
+    record's chain (the same totality fence the enum face has had since the typed route landed)."""
     with pytest.raises(ValueError, match="missing") as exc_info:
         Chain(
             name="not-total",

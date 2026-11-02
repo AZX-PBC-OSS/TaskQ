@@ -5,7 +5,7 @@ hesitation"; F4 (the connection-hold) and F1 (the ladder's inheritance)
 re-probed against this branch are the HOLDMAP LANE's territory (the
 verdicts ride this lane's report); the REMAINING fixes are HERE, each
 failing-first (the pin rejected against the base head ``0e2f5cc09`` before
-its fix landed — the red receipts are this lane's captures):
+its fix landed — each pin watched its own failure first):
 
 * **F2** — THE ROUTE ARMS' COHORTS NEVER PROJECTED AT BOOT: the arms
   fork at RUNTIME (the source's finalize stamps each arm's effective

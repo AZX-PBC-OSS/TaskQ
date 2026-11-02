@@ -1,4 +1,4 @@
-"""T10 — THE HITL PINS: held rows, the deliver CAS, the timers, the
+"""THE HOLD MACHINERY'S PINS: held rows, the deliver CAS, the timers, the
 cancel cascade, the reply handle.
 
 The failing-first evidence: each pin's REJECTED VARIANT (the spike's
@@ -532,7 +532,7 @@ async def test_signal_timeout_fires_on_db_clock(
     """Pin 13 (G6): the expiry arm compares PG's clock — the expired
     hold → the DEFINED 'abandoned' state; AND THE TYPED TIMEOUT FACE IS
     REAL (the vacuous-audit's fix — the shipped pin's docstring claimed
-    the face it never exercised). T26'S AMENDMENT: the face is a VALUE —
+    the face it never exercised). THE EXPIRY'S AMENDMENT: the face is a VALUE —
     the wait returns the ``Expired`` MEMBER (the closed union's second
     arm; the checker forces the fail-close); the body that wants the
     FAILURE raises :class:`taskq.exceptions.SignalTimeoutError` ITSELF

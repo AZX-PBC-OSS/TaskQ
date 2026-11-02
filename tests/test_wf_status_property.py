@@ -1,4 +1,4 @@
-"""The T08 totality PROPERTY ( F6a): the derivation table's
+"""THE STATE TOTALITY PROPERTY: the derivation table's
 totality is a tested property — a hypothesis-driven generator over RANDOM
 multisets of node views (including the two derived pending-row shapes —
 join-wait and held — and the ABSORBED-failure class, B2's clause) asserts
