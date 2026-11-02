@@ -353,7 +353,7 @@ class WorkflowApp:
         queue: str = "default",
         max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
         retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
-        capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
+        capture_policy: Literal["none", "errors-only", "all"] | None = None,
         capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_concurrent: int | None = None,
@@ -376,7 +376,7 @@ class WorkflowApp:
         queue: str = "default",
         max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
         retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
-        capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
+        capture_policy: Literal["none", "errors-only", "all"] | None = None,
         capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_concurrent: int | None = None,
@@ -398,7 +398,7 @@ class WorkflowApp:
         queue: str = "default",
         max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
         retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
-        capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
+        capture_policy: Literal["none", "errors-only", "all"] | None = None,
         capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_concurrent: int | None = None,
@@ -459,18 +459,20 @@ class WorkflowApp:
             # actor.py's "start_to_close must be > 0" check at the
             # declaration site): the refusal before anything registers.
             check_start_to_close_decl(start_to_close, what=f"the workflow actor {actor_name!r}'s")
-            if capture is not None:
-                # THE ONE CANONICAL NAME: ``capture_policy=``; ``capture=``
-                # rides as the alias — a disagreement is refused (the
-                # author passes one).
-                if capture_policy != "errors-only":
-                    raise ValueError(
-                        f"capture_policy={capture_policy!r} and capture={capture!r} are both given "
-                        "and disagree — the capture policy is ONE value; pass capture_policy= only"
-                    )
-                resolved_capture_policy = capture
-            else:
-                resolved_capture_policy = capture_policy
+            # THE ONE CANONICAL NAME: ``capture_policy=``; ``capture=``
+            # rides as the alias. Both spellings carry the None sentinel,
+            # so a DECLARED value is visible as a declared value: two
+            # declared values that disagree are refused (naming both) —
+            # never a silent winner decided by which kwarg the author
+            # happened to pass.
+            if capture_policy is not None and capture is not None and capture_policy != capture:
+                raise ValueError(
+                    f"capture_policy={capture_policy!r} and capture={capture!r} are both given "
+                    "and disagree — the capture policy is ONE value; pass capture_policy= only"
+                )
+            resolved_capture_policy = (
+                capture_policy if capture_policy is not None else (capture or "errors-only")
+            )
             handle = WorkflowActor(
                 body,
                 name=actor_name,
@@ -500,7 +502,7 @@ class WorkflowApp:
         actor: str | None = None,
         queue: str | None = None,
         capture_policy: Literal["none", "errors-only", "all"] | None = None,
-        capture: Literal["none", "errors-only", "all"] = "errors-only",
+        capture: Literal["none", "errors-only", "all"] | None = None,
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT,
     ) -> Callable[[Callable[[], Promise[R]]], Callable[[], Promise[R]]]:
@@ -572,8 +574,17 @@ class WorkflowApp:
             self._workflows[name] = build_fn
             build_fn.__wf_name__ = name  # type: ignore[attr-defined]  # Why: the declaration rides the function; the app is the registry.
             # THE ONE CANONICAL NAME: ``capture_policy=``; ``capture=``
-            # rides as the alias (the canonical wins when both given).
-            resolved_capture = capture_policy if capture_policy is not None else capture
+            # rides as the alias. Both spellings carry the None sentinel:
+            # two declared values that disagree are refused (naming
+            # both) — never a silent winner decided by argument order.
+            if capture_policy is not None and capture is not None and capture_policy != capture:
+                raise ValueError(
+                    f"capture_policy={capture_policy!r} and capture={capture!r} are both given "
+                    "and disagree — the capture policy is ONE value; pass capture_policy= only"
+                )
+            resolved_capture = (
+                capture_policy if capture_policy is not None else (capture or "errors-only")
+            )
             build_fn.__wf_capture__ = resolved_capture  # type: ignore[attr-defined]  # Why: the definition's capture policy rides the build fn as data — the function-attribute face is this decorator's own contract.
             build_fn.__wf_redact__ = redact  # type: ignore[attr-defined]
             build_fn.__wf_max_in_flight__ = max_in_flight  # type: ignore[attr-defined]  # Why: the declaration rides the function — the compile reads it.

@@ -555,7 +555,7 @@ class RouteArm[R]:
     #: surface).
     max_concurrent: int | None = None
     reservations: tuple[object, ...] | list[object] | None = ()
-    result_ttl: float | None = None
+    result_ttl: timedelta | float | None = None
     #: THE ARM'S PRIORITY OVERRIDE (the priority surface — the enqueue
     #: face the vanilla rows always had): the arm's children's rows land
     #: at this value in the ``jobs.priority`` column — the claim SQL's
@@ -588,6 +588,18 @@ class RouteArm[R]:
     #: redundant declaration here enters the projection's one-cap
     #: comparison.
     capacity_owner: str = "operator"
+
+    def __post_init__(self) -> None:
+        # THE CONSTRUCTION'S NORMALIZATION: the accepted spellings become
+        # the stored forms before any reader sees them — ``None``
+        # reservations are the nothing-reserved arm (the tuple), and a
+        # ``timedelta`` result_ttl is the seconds number the projection's
+        # column and every reader of it expect.
+        if self.reservations is None:
+            object.__setattr__(self, "reservations", ())
+        else:
+            object.__setattr__(self, "reservations", tuple(self.reservations))
+        object.__setattr__(self, "result_ttl", duration_seconds(self.result_ttl))
 
 
 @dataclass(frozen=True, slots=True)
@@ -947,7 +959,7 @@ def step[R](
     actor: str = "wf",
     queue: str = "default",
     on_failure: EdgeFailurePolicy = "fail_closed",
-    max_attempts: int = 3,
+    max_attempts: int | None = None,
     retry_kind: str | None = None,
     skip: SkipPredicate | None = None,
     gates: tuple[GateDecl, ...] = (),
@@ -1074,11 +1086,6 @@ def step[R](
         # nothing: its decorator defaults are not a declaration, so an
         # undeclared wiring leaves the node byte-identical to the
         # unwired form (max_attempts 3, retry_kind None).
-        if (
-            max_attempts == 3
-            and getattr(handle, "max_attempts", None) != ACTOR_MAX_ATTEMPTS_DEFAULT
-        ):
-            max_attempts = handle.max_attempts
         if retry_kind is None and getattr(handle, "retry_kind", None) != ACTOR_RETRY_KIND_DEFAULT:
             retry_kind = handle.retry_kind
         # THE CAPACITY OWNER: the handle's declaration is the
@@ -1087,6 +1094,20 @@ def step[R](
         # it. The wiring surface has no override kwarg of its own: the
         # declaration is PER-ACTOR (the handle's), never per-node.
         capacity_owner = handle.capacity_owner
+    # THE ATTEMPT COUNT'S UNSET RESOLUTION: the step's sentinel (``None``)
+    # means "the handle's declared attempts, else the three-attempt
+    # default" — the declared handle value (seven) reaches the node, the
+    # handle's decorator default does not (it is not a declaration), and
+    # the step's OWN explicit count (three included — the sentinel makes
+    # declared-three distinguishable from unset) always wins.
+    if max_attempts is None:
+        declared_attempts: int | None = (
+            getattr(handle, "max_attempts", None) if handle is not None else None
+        )
+        if declared_attempts is not None and declared_attempts != ACTOR_MAX_ATTEMPTS_DEFAULT:
+            max_attempts = declared_attempts
+        else:
+            max_attempts = 3
     # THE PRIORITY DOMAIN (the vanilla law at every layer that accepts a
     # priority — constants.py's own statement of it): the RESOLVED
     # declaration (the step's own or the handle's folded default) is
