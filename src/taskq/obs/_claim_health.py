@@ -4,7 +4,7 @@ The death spiral (brandur.org/postgres-queues; PlanetScale's 2026
 re-run): a long or overlapping transaction pins the MVCC horizon, VACUUM
 cannot reclaim, and the claim query's B-tree scans degenerate through
 dead tuples - 15x lock-time degradation measured, identical under SKIP
-LOCKED. The literature's first cure is the PREDICTOR: the degradation
+LOCKED. The literature's first remedy is the PREDICTOR: the degradation
 shows in the claim-latency distribution BEFORE the backlog explodes.
 
 What this module computes, per queue, from THIS worker's own claim
@@ -106,12 +106,12 @@ class ClaimQueueHealth:
 
 # ── the bounded stores ─────────────────────────────────────────────────
 
-# THE STORES' LOCK (finding 11's cure — the gauge racing itself): the
+# THE STORES' LOCK (the gauge racing itself is a proven failure): the
 # record path runs on the EVENT-LOOP thread; the observable-gauge
 # callbacks run on the OTel SDK's COLLECTION thread. Both walk
 # ``_window`` (a deque — cross-thread mutation during iteration raises
 # ``RuntimeError: deque mutated during iteration``) and both roll/read
-# ``_baseline`` (the same race, deque and dict). The convicted shape:
+# ``_baseline`` (the same race, deque and dict). The measured shape:
 # 287 RuntimeErrors in 3 s of hot load — every raise kills the
 # callback's observation batch, so the alert's operand (the degradation
 # ratio, the p99s) VANISHED exactly when the queue was hottest. The read
@@ -220,7 +220,7 @@ def claim_health_snapshot(*, now: float | None = None) -> dict[str, ClaimQueueHe
     a queue with no window entries (the empty-not-zero discipline - a
     scrape of an idle worker produces no data points, never zeros).
 
-    THE ATOMIC READ (finding 11's cure): the window walk, the baseline
+    THE ATOMIC READ (the race fix): the window walk, the baseline
     roll, and the baseline read all hold ``_store_lock`` — the OTel
     collection thread's scrape can no longer interleave with the event
     loop's records inside a deque/dict iteration (the 287-RuntimeErrors-
