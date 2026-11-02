@@ -17,7 +17,6 @@ flipped them green. The rejected variants recorded through
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import asyncpg
@@ -40,6 +39,7 @@ from taskq.workflows.api._hitl import (
     sweep_due_timers,
     sweep_expired_signals,
 )
+from tests._wf_fixtures import expire_holds
 
 
 class Nudge(BaseModel):
@@ -73,7 +73,7 @@ async def test_timer_wake_is_at_least_at_ts(
     seen: dict[str, TimerWake] = {}
 
     async def timer_body(ctx: StepContext, params: Nudge) -> str:
-        wake = await ctx.wait_until(0.25, key="at-least")
+        wake = await ctx.wait_until(120.0, key="at-least")
         seen["wake"] = wake
         return "woken"
 
@@ -95,8 +95,12 @@ async def test_timer_wake_is_at_least_at_ts(
     assert hold is not None and hold["status"] == "held", hold
     assert hold["signal_name"].startswith(TIMER_SIGNAL_PREFIX)
 
-    # THE PASS AT/AFTER THE DEADLINE (the drive's tick runs the timer
+    # THE DEADLINE PASSES (the injected clock: the row's own expiry stamp
+    # written past — a generous declared deadline cannot be outlived by a
+    # loaded tick, so the dev drive's own tail sweep never steals the
+    # wake), then THE PASS AT/AFTER IT (the drive's tick runs the timer
     # arm — the dev loop's mirror of the leader's): the wake fires.
+    await expire_holds(wf_conn, wf_schema, flow_id)
     outcome = await runner.drive(flow_id)
     assert outcome == "terminal"
     wake = seen["wake"]
@@ -181,7 +185,7 @@ async def test_crash_mid_wait_the_successor_sweep_wakes_the_body(
 
     async def timer_body(ctx: StepContext, params: Nudge) -> str:
         await ctx.substep("before_timer", log_note)
-        wake = await ctx.wait_until(0.05, key="crash")
+        wake = await ctx.wait_until(120.0, key="crash")
         return f"woken:{wake.key}"
 
     app = WorkflowApp()
@@ -201,7 +205,10 @@ async def test_crash_mid_wait_the_successor_sweep_wakes_the_body(
     # THE SUCCESSOR (a fresh runner — a different process's claim path)
     # fires the wake through its own sweep and drives to terminal.
     successor = FlowRunner(app.get("timer_crash"), wf_pool, wf_schema)
-    await asyncio.sleep(0.12)  # the deadline passes while nobody watches
+    # THE DEADLINE PASSES while nobody watches (the injected clock — the
+    # row's own expiry stamp written past; the successor's sweep reads
+    # the row, never a wall).
+    await expire_holds(wf_conn, wf_schema, flow_id)
     fired = await sweep_due_timers(wf_pool, schema=wf_schema)
     assert fired == 1, fired
     outcome = await successor.drive(flow_id)
@@ -274,13 +281,13 @@ async def test_expired_and_timer_waits_are_orthogonal(
     the timer's prefix, the timer arm never abandons the human's."""
 
     async def gate_body(ctx: StepContext, params: Nudge) -> str:
-        outcome = await ctx.wait_signal(Nudge, timeout_s=0.05)
+        outcome = await ctx.wait_signal(Nudge, timeout_s=120.0)
         if isinstance(outcome, Expired):
             return "fail-close"
         return "answered"
 
     async def timer_body(ctx: StepContext, params: Nudge) -> str:
-        wake = await ctx.wait_until(0.05, key="orthogonal")
+        wake = await ctx.wait_until(120.0, key="orthogonal")
         return f"wake:{wake.fired_by}"
 
     async def join_body(ctx: StepContext, gate: str, timer: str) -> str:
@@ -297,10 +304,12 @@ async def test_expired_and_timer_waits_are_orthogonal(
     runner = FlowRunner(app.get("timer_orthogonal"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
-    # BOTH deadlines pass (both faces declared 0.05s), then BOTH arms
-    # run (the leader's signal sweep would; the pins call the arms
-    # directly — the same statements the leader's tick runs).
-    await asyncio.sleep(0.12)
+    # BOTH deadlines pass (the injected clock: both holds' expiry stamps
+    # written past — a generous declaration cannot be outlived by a
+    # loaded tick), then BOTH arms run (the leader's signal sweep would;
+    # the pins call the arms directly — the same statements the leader's
+    # tick runs).
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
     await sweep_expired_signals(wf_pool, schema=wf_schema)
     await sweep_due_timers(wf_pool, schema=wf_schema)
     outcome = await runner.drive(flow_id)
@@ -323,7 +332,7 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
     import json
 
     async def timer_body(ctx: StepContext, params: Nudge) -> str:
-        wake = await ctx.wait_until(0.05, key="forged")
+        wake = await ctx.wait_until(120.0, key="forged")
         return f"woken:{wake.key}:{wake.fired_by}"
 
     app = WorkflowApp()
@@ -357,8 +366,11 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
     )
     assert result.status == "refused", result
     # THE HOLD SURVIVES, and the CLOCK still resolves it (the typed
-    # door's refusal is the boundary's, not the row's death).
-    await asyncio.sleep(0.12)  # the deadline passes, the refusal notwithstanding
+    # door's refusal is the boundary's, not the row's death) — the
+    # deadline passes by the injected clock (the row's own expiry stamp
+    # written past; the generous declaration cannot be outlived by a
+    # loaded tick, so the hand's answer never depends on a race).
+    await expire_holds(wf_conn, wf_schema, flow_id)
     fired = await sweep_due_timers(wf_pool, schema=wf_schema)
     assert fired == 1, fired
     outcome = await runner.drive(flow_id)
@@ -397,7 +409,7 @@ async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
     import json
 
     async def mixed(ctx: StepContext) -> str:
-        _wake = await ctx.wait_until(0.05, key="tick")  # site 1: the clock
+        _wake = await ctx.wait_until(120.0, key="tick")  # site 1: the clock
         say = await ctx.wait_signal((SecondSay,), timeout_s=30.0)  # site 2: the human
         if isinstance(say, Expired):
             return "expired"
@@ -415,9 +427,12 @@ async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
     # 1. The first pass: the body mints the TIMER hold.
     assert await runner.drive(flow_id, until="held") == "held"
     # 2. THE CLOCK FIRES (the sweep's timer arm — the leader's leg; the
-    # dev drive's `until="held"` check parks before the tick, so the pin
-    # calls the arm the way the leader's sweep does).
-    await asyncio.sleep(0.15)  # the deadline passes
+    # deadline passes by the injected clock — the row's own expiry stamp
+    # written past; the dev drive's `until="held"` check parks before
+    # the tick, so the pin calls the arm the way the leader's sweep
+    # does, and a generous declared deadline keeps the dev drive's own
+    # tail sweep from ever stealing the wake).
+    await expire_holds(wf_conn, wf_schema, flow_id)
     assert await sweep_due_timers(wf_pool, schema=wf_schema, drain=True) == 1
     # 3. The body consumes the wake and mints the SIGNAL hold.
     assert await runner.drive(flow_id, until="held") == "held"

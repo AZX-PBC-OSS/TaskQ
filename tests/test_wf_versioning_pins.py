@@ -18,7 +18,6 @@ semantics, now named and taught), not mutation scenarios.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import asyncpg
@@ -34,6 +33,7 @@ from taskq.workflows import (
 )
 from taskq.workflows.api._hitl import sweep_due_timers
 from taskq.workflows.definitions import WorkflowDef, get_registry
+from tests._wf_fixtures import expire_holds
 
 
 class Doc(BaseModel):
@@ -158,7 +158,7 @@ async def test_redeploy_mid_wait_the_wake_reenters_the_new_body(
     re-sleeps)."""
 
     async def wait_then_v1(ctx: StepContext, params: Doc) -> str:
-        await ctx.wait_until(0.05, key="redeploy-wait")
+        await ctx.wait_until(120.0, key="redeploy-wait")
         return "wake:v1"
 
     async def wait_then_v2(ctx: StepContext, params: Doc) -> str:
@@ -181,7 +181,11 @@ async def test_redeploy_mid_wait_the_wake_reenters_the_new_body(
     # own wait site declares a far timer — different code, same node).
     _install_registry(name, {"solo": wait_then_v2})
 
-    await asyncio.sleep(0.12)  # the OLD hold's deadline passes
+    # THE OLD HOLD'S DEADLINE PASSES (the injected clock — the row's own
+    # expiry stamp written past; the generous declaration cannot be
+    # outlived by a loaded tick, so the drive's own tail sweep never
+    # steals the wake).
+    await expire_holds(wf_conn, wf_schema, flow_id)
     fired = await sweep_due_timers(wf_pool, schema=wf_schema)
     assert fired == 1, fired
     await runner.drive(flow_id)
