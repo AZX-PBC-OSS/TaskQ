@@ -85,6 +85,26 @@ def test_clean_graph_validates_clean() -> None:
     assert _rules(_compiled(name, app)) == set()
 
 
+def test_validate_returns_the_diagnostics() -> None:
+    """The public door RETURNS the diagnostics: a graph with a warning
+    validates and the warning is the return value (empty when clean) —
+    the zero-warning budget a doc example claims is CHECKABLE through
+    the same call that runs the rules."""
+    app = WorkflowApp()
+
+    @app.workflow("warned")
+    def warned() -> Promise[object]:
+        produced = step(_annotated_body, Ingest(doc_id="d1"), key="produce")
+        consumed = step(_consumer_body, produced, key="consume")
+        return build(consumed)
+
+    compiled = app._compile("warned")
+    object.__setattr__(compiled, "known_queues", frozenset({"some-other-queue"}))
+    diagnostics = compiled.validate()
+    assert isinstance(diagnostics, tuple)
+    assert {d.rule for d in diagnostics} == {"W2-unknown-queue"}
+
+
 def test_cycle_mutation_flips_only_acyclicity() -> None:
     """E1 (the unconditional owner): a self-referential wiring → the
     cycle error; pyright is absent at runtime — the validator owns it."""

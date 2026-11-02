@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Literal, cast, overload
+from typing import TYPE_CHECKING, Final, Literal, cast, overload
 
 from pydantic import BaseModel
 
@@ -49,6 +49,9 @@ from taskq.workflows.api._graph import (
 )
 from taskq.workflows.definitions import DuplicateWorkflowError
 
+if TYPE_CHECKING:
+    from taskq.workflows.api._validate import WorkflowValidationError
+
 __all__ = [
     "CompiledWorkflow",
     "SignalChannel",
@@ -56,6 +59,14 @@ __all__ = [
     "WorkflowActor",
     "WorkflowApp",
 ]
+
+
+#: The workflow actor's decorator defaults for the retry terms. They
+#: exist so the step() fold can tell a DECLARED term from a default:
+#: only a value different from these folds into the node — a bare
+#: ``@app.actor()`` never changes a step's retry shape.
+ACTOR_MAX_ATTEMPTS_DEFAULT: Final = 3
+ACTOR_RETRY_KIND_DEFAULT: Final = "transient"
 
 
 class WorkflowActor:
@@ -258,12 +269,15 @@ class CompiledWorkflow:
         """The node's dispatch-time skip predicate, if declared."""
         return self.nodes[key].skip
 
-    def validate(self) -> None:
+    def validate(self) -> tuple[WorkflowValidationError, ...]:
         """The checker-independent validator (the totality refusals) —
-        :mod:`taskq.workflows.api._validate`."""
+        :mod:`taskq.workflows.api._validate`. Returns the same
+        diagnostics :func:`validate_compiled` returns — the one-pass
+        report (rule → severity → message), empty when clean; the
+        ERRORs also raise."""
         from taskq.workflows.api._validate import validate_compiled
 
-        validate_compiled(self)
+        return validate_compiled(self)
 
     def mermaid(self) -> str:
         """The compile-time Mermaid emission (byte-stable) —
@@ -334,8 +348,8 @@ class WorkflowApp:
         *,
         name: str | None = None,
         queue: str = "default",
-        max_attempts: int = 3,
-        retry_kind: str = "transient",
+        max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
+        retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
         capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_concurrent: int | None = None,
@@ -354,8 +368,8 @@ class WorkflowApp:
         *,
         name: str | None = None,
         queue: str = "default",
-        max_attempts: int = 3,
-        retry_kind: str = "transient",
+        max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
+        retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
         capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_concurrent: int | None = None,
@@ -373,8 +387,8 @@ class WorkflowApp:
         *,
         name: str | None = None,
         queue: str = "default",
-        max_attempts: int = 3,
-        retry_kind: str = "transient",
+        max_attempts: int = ACTOR_MAX_ATTEMPTS_DEFAULT,
+        retry_kind: str = ACTOR_RETRY_KIND_DEFAULT,
         capture_policy: Literal["none", "errors-only", "all"] = "errors-only",
         redact: Callable[[dict[str, object]], dict[str, object]] | None = None,
         max_concurrent: int | None = None,

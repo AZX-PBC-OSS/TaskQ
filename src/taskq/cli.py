@@ -371,9 +371,20 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
         raise typer.Exit(code=1)
 
     if not registry:
+        from taskq.workflows._worker_execution import workflow_execution_capable
+
+        if workflow_execution_capable():
+            typer.echo(
+                f"actor registry at {actors} is empty; the imported "
+                "WorkflowApp mounts the workflow cohorts, so the worker "
+                "dispatches workflow steps only",
+                err=True,
+            )
+            return {}
         typer.echo(
-            f"actor registry at {actors} is empty, a worker with no actors "
-            "dispatches nothing; refusing to boot",
+            f"nothing to dispatch at {actors}: the actor registry is empty "
+            "and no WorkflowApp is imported in the module — a worker with "
+            "no actors and no workflows dispatches nothing; refusing to boot",
             err=True,
         )
         raise typer.Exit(code=1)
