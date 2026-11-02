@@ -7,28 +7,28 @@ THE RED RECEIPTS (all captured live BEFORE the fixes, on the base head
 against the lane's :5812 — the capture rides
 ``.measurements/child-fixes/rv5-child-failing-first.txt``):
 
-* RV5-C1 (THE ASYNCIO.GATHER DRAGON — GRAND-MERGE BLOCKER): the natural
+* RV5-the (THE ASYNCIO.GATHER DRAGON — GRAND-MERGE BLOCKER): the natural
   fan-out spelling ``gather(*[ctx.spawn_flow(...) for t in tenants])``
   minted ONE child and returned tenant-0's verdict K times wearing K
   labels — the per-attempt spawn cursor's read/write was not atomic, so
   K concurrent spawns all adopted the same slot (run key), and the
   arbiter's conflict path handed every caller THE ONE child's handle.
   ZERO errors, green pins, silent fabricated results.
-* RV5-C2 (THE RECURSION BOMB + THE RECURSIVE CASCADE — GRAND-MERGE
+* RV5-the (THE RECURSION BOMB + THE RECURSIVE CASCADE — GRAND-MERGE
   BLOCKER): (a) a self-spawning flow minted a generation per sweep tick
   forever — no depth bound, no cycle check; (b) the cancel cascade was
   Python-recursive — a 1200-deep cascade raised ``RecursionError`` at
   the operator and left hundreds of runs running.
-* RV5-C3 (THE RETENTION-RESPAWN FAIL-CLOSE): purging a child's rows +
+* RV5-the (THE RETENTION-RESPAWN FAIL-CLOSE): purging a child's rows +
   resuming the parent SILENTLY RE-EXECUTED the child (the arbiter's row
   went with the purge → the spawn re-minted a fresh child → the child's
   side effects ran twice, the parent SUCCEEDED — the worst face). The
   fail-close is now the typed arm: the dangling child pointer raises.
-* RV5-C4 (THE ORPHAN WINDOW): the crash between child-create and
+* RV5-the (THE ORPHAN WINDOW): the crash between child-create and
   receipt-write, then a parent cancel, let the child ESCAPE the cascade
   forever — the cascade walked the crash-unsafe receipts and never read
   the crash-safe ``parent_flow_id`` direction the rows already carry.
-* RV5-C5 (THE SMALLER FACES): (a) the dev-loop tick never ran the
+* RV5-the (THE SMALLER FACES): (a) the dev-loop tick never ran the
   expiry arm — ``timeout_s`` was inert in dev drives; (b) the admin run
   explorer was child-blind — the parent↔child links the rows carry
   never rendered; (c) resolving a child-join hold no-op-bounced (the

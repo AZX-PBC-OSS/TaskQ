@@ -10,7 +10,7 @@ Covers:
 - Autonomous path: no flush/discard, row committed immediately
 - Same enqueuer instance across interim and live ctx
 - Shielded success block: commit protected from cancellation
-- Shielded success + outer cancel: NOT marked as cancelled (C3 invariant)
+- Shielded success + outer cancel: NOT marked as cancelled (invariant)
 """
 
 import asyncio

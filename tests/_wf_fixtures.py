@@ -552,7 +552,7 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
       stands) — nothing to assert against;
     * a LIVE root ('running'/'pending') may lag the rows' terminal
       verdict by one sweep pass — the maintenance leg's lag window (the
-      H1 fix heals it in one pass; the H1 pin carries that teeth).
+      the fix heals it in one pass; the H1 pin carries that teeth).
 
     THE WEDGE LEG (the crashed-terminal wedge's mutation pin — the
     attacker's proof was G7 staying green ON THE CORPSE): a live root

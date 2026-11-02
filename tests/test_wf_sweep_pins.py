@@ -96,7 +96,7 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled' WHERE id = $1", flow_id
     )
 
-    # THE SHIPPED SWEEP: the flow-fenced join arm (the H2 fix) resolves
+    # THE SHIPPED SWEEP: the flow-fenced join arm (the fix) resolves
     # the join BEFORE the fire arm even attempts it — a never-fired join
     # row on a TERMINAL flow is stamped 'flow_dead' (never retried
     # forever); the fire's own flow-status leg remains the second fence

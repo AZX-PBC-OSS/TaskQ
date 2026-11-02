@@ -50,7 +50,7 @@ Five hypotheses, one test each (plus one divergence pin):
    counts, same survivors, same watermark. The sweeps' contracts hold on
    both storage engines.
 
-Plus one pinned divergence (H6): the archive write's NOT EXISTS fold guard
+Plus one pinned divergence : the archive write's NOT EXISTS fold guard
 ("a job id is archived at most once") is keyed on the archive row's
 EXISTENCE, and a chunk drop removes that witness — after the ghost's chunk
 drops, the hypertable mode re-archives a retried job where vanilla would
@@ -791,7 +791,7 @@ async def test_sweep_script_agrees_across_both_engines(timescale_dsn: str, pg_ds
                     conn, schema, next_start=datetime.now(UTC) + timedelta(days=3650)
                 )
             # The full-range wiring on both engines: pin the SQL's
-            # mode-agnosticism, not the floor's composition (H9 owns that).
+            # mode-agnosticism, not the floor's composition (owns that).
             with _no_floor_patch():
                 outcomes[label] = await _parity_scenario(conn, schema)
         finally:
@@ -1072,7 +1072,7 @@ async def test_policy_floor_bounds_the_event_ttl_sweep_and_the_window_stays_exac
     would coincide and the window would be empty).
 
     The outbox arm carries the floor too: below it the policy's chunk
-    drop defeats the carve-out anyway (H2), so the sweep does not pay to
+    drop defeats the carve-out anyway , so the sweep does not pay to
     re-delete what the policy owns, and above it the carve-out keeps its
     full strength (pinned by the H2 test). The inside-window deletion
     still advances the watermark — below the floor the sweep deletes
@@ -1245,7 +1245,7 @@ async def test_policy_run_plus_floor_composes_to_todays_end_state(timescale_dsn:
             # floor scenario it does the deleting (chunk drops), in the
             # no-floor scenario the sweeps already did it row-exactly and
             # the run finds aged chunks holding only the outbox row —
-            # which it drops too (H2).
+            # which it drops too .
             await _force_policies_now(conn, schema)
 
             async def _aged_gone() -> bool:

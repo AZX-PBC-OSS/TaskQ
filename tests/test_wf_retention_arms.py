@@ -4,7 +4,7 @@
 Five workflow tables grew monotone-forever — no retention arm, no FK
 for the job prune to cascade: ``wf_edge``, ``wf_step_ledger``,
 ``wf_join_fire``, ``wf_signals``, ``wf_node_progress``. These pins hold
-the fix's shape (THE TWO-PASS LAW — the H-B1 rewrite): every arm runs
+the fix's shape (THE TWO-PASS LAW — the rewrite): every arm runs
 
 * a FLOWS-SIDE pass — the TERMINAL-AGED ROOTS are selected FIRST from
   the tiny jobs side (``step_key='__flow__'`` + a terminal status +
@@ -545,7 +545,7 @@ async def test_a_flow_whose_root_row_was_pruned_is_still_swept(
         assert remaining == 0, f"{table} kept {remaining} orphaned row(s) of a pruned flow"
 
 
-# ── (f) H-B1: the scale pin — the loaded pass, the drain, the zero-doomed
+# ── (f) the: the scale pin — the loaded pass, the drain, the zero-doomed
 #    steady state — every pass completes under the dispatcher command
 #    timeout and deletes at most the batch ────────────────────────────────
 
@@ -707,7 +707,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     )
 
 
-# ── (g) H-B3: the root identity — a row pointing at a live NON-root job
+# ── (g) the: the root identity — a row pointing at a live NON-root job
 #    is rootless-class; a live ROOT's rows survive; a terminal-aged
 #    root's rows belong to the flows-side pass ────────────────────────────
 
@@ -789,7 +789,7 @@ async def test_non_root_pointee_rows_prune_and_live_root_rows_survive(
     )
 
 
-# ── (h) H-B3: the node_progress legs — a node WITHOUT the flow_id stamp
+# ── (h) the: the node_progress legs — a node WITHOUT the flow_id stamp
 #    is prune-eligible; the node-gone leg; the live-root pointee survives ─
 
 
@@ -849,7 +849,7 @@ async def test_node_progress_orphan_legs_are_honest(
     assert kept == 1, "the LIVE ROOT's node progress deleted — the identity leg is dishonest"
 
 
-# ── (i) H-B4 / R2: the NULL-stamp leg's CONSERVATIVE shape — the
+# ── (i) the / R2: the NULL-stamp leg's CONSERVATIVE shape — the
 #    NULL-stamped terminal roots are SKIPPED (never doomed: the delete is
 #    never eager), the pass OBSERVES them and the named warning fires in
 #    BOTH the busy and the idle shapes (the tripwire always live) ────────
@@ -1034,7 +1034,7 @@ def test_outbox_and_step_cache_arms_derive_from_the_prune_family_knob() -> None:
     """PIN (j2) — the mirror of (j) for the two DERIVED-DATA retention
     arms: the delivered outbox's TTL arm and the step cache's
     expired-corpses arm borrowed ``event_writer_batch_size`` (100) the
-    same way the five flow-history arms did (H-B2's recorded finding class —
+    same way the five flow-history arms did (the recorded finding class —
     a monotone population drained 100 rows per pass). Their wiring is
     the prune family's own knob (``prune_batch_size``, the
     deletion-sweep family's batch both arms' docstrings already
@@ -1075,7 +1075,7 @@ def test_outbox_and_step_cache_arms_derive_from_the_prune_family_knob() -> None:
         assert borrowed == 0, f"{name} still borrows event_writer_batch_size (H-B2)"
 
 
-# ── (k) H-B7: one clock face across the five arms' statements ───────────
+# ── (k) the: one clock face across the five arms' statements ───────────
 
 
 def test_the_five_arms_tell_one_clock() -> None:

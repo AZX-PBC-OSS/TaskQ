@@ -19,7 +19,7 @@ gates on live UNRESOLVED work —
             OR (status IN ('pending','scheduled')
                 AND NOT (metadata ? 'blocking_reason')))
 
-The blocked-stamp exclusion is exactly what keeps the phase-2 H1 wedge
+The blocked-stamp exclusion is exactly what keeps the phase-2 the wedge
 fixed: a resolved-blocked join row (``blocking_reason`` stamped) is
 RESOLVED — it must not hold the run; a pending CHAIN row (no stamp) is
 UNRESOLVED work — it must.

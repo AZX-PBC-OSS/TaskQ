@@ -435,7 +435,7 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
     statements: list[str] = []
     for path in sorted(migrations.glob("*.sql")):
         statements += re.findall(
-            # THE HONEST MATCHER (the reconciled flip — rv5-t3b's receipt):
+            # THE HONEST MATCHER (the reconciled flip — the recorded finding'sreceipt):
             # the shipped index is the PARTIAL index leading expires_at
             # with the timer predicate, written CREATE INDEX IF NOT
             # EXISTS — the original regex's `\w+` choked on the "IF NOT
@@ -469,7 +469,7 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
     in the pin's docstring.
 
     THE HARNESS RIDES THE PRODUCTION ENRICHMENT (the reconciled flip —
-    rv5-t4's receipt): the fixed template branches on the ``is_timer``
+    the recorded finding'sreceipt): the fixed template branches on the ``is_timer``
     field the holds projection enriches (``web/admin/_wf_rows.py``'s
     ``_normalize_hold`` — the row's own truth, derived from the signal
     name), so the harness passes its hold rows through THE SAME

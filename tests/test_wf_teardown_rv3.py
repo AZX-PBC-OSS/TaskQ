@@ -59,7 +59,7 @@ The findings (each rejected live at the pin head):
 * F-RV3-12 — the loop's shape law ("a loop body declares ONE wait per
   iteration") is DOCSTRING-ENFORCED: a conditional-interior
   ``wait_signal`` in a loop body mis-indexes the answer cursor (the
-  T26 review's C9 is the same question) and nothing names it.
+  T26 review's the is the same question) and nothing names it.
 
 FIX ORDER (the reviewer's): F-RV3-4 (E14 — the headline), F-RV3-7,
 F-RV3-5, F-RV3-2/F-RV3-3, F-RV3-8/F-RV3-6/F-RV3-9, F-RV3-10/F-RV3-1/
@@ -191,7 +191,7 @@ def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> Non
     """E14's ZERO-FALSE-POSITIVE bound (the reviewer's own rule): a
     declared gate whose body DOES reference ``wait_signal`` is never
     E14-rejected — the static walk cannot prove a conditional-interior
-    wait never fires (that face is the documented C9/W-face, F-RV3-12's
+    wait never fires (that face is the documented W-face, F-RV3-12's
     rule). The gate declared + the wait referenced validates past E14."""
     app = WorkflowApp()
 
@@ -544,7 +544,7 @@ def test_rv3_10b_the_gate_decl_docstring_names_the_union_face() -> None:
 def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     """The loop's shape law ("ONE wait per iteration") as a NAMED W-rule:
     a loop body whose ``wait_signal`` sits in a CONDITIONAL interior
-    mis-indexes the answer cursor (the T26 review's C9 — the iteration
+    mis-indexes the answer cursor (the T26 review's the — the iteration
     counter is the cursor, so an iteration that does not wait drifts the
     sequence). The mis-index shape is the warning's subject; the
     docstring's prose is not the enforcement."""

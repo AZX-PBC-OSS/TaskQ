@@ -24,7 +24,7 @@ recorded findings, each fixed and pinned (failing-first against the unfixed tree
   had its result DELETED. The fix: the engine's own SKIPPED_RESULT
   containment (``result @> '{"skipped": true}'::jsonb``).
 - R2-5 THE NITS: (a) the dead ``ExitOps.retry_node`` parallel
-  implementation delegates to the ONE verb (the H-C3/H-C4 laws ride the
+  implementation delegates to the ONE verb (the/the laws ride the
   compiled face); (b) masked-key collisions disambiguate ``***[2]`` —
   no entry silently overwrites; (c) the rerun's audit row carries the
   ROWS count (the verb's returned row count summed) and the partial
@@ -114,7 +114,7 @@ def r2_app_module() -> Iterator[types.ModuleType]:
 
     @app_obj.workflow("r2_three_doomed_flow")
     def three_doomed_flow() -> Promise[object]:
-        # THREE PARALLEL doomed keys (the H-C5 pin's own shape): the
+        # THREE PARALLEL doomed keys (the pin's own shape): the
         # rerun composition's failed-key census, with the FIRST sorted
         # key's rows scripted by the spy (the route sums the verb's
         # returned rows — that counting law is the pin's subject).
@@ -397,7 +397,7 @@ async def test_the_capture_face_masks_the_raw_canary_at_display(
         f"canary byte rides the panel, got {dumped}"
     )
     assert "***" in dumped, "the masked form is what the operator reads"
-    # THE H-C6 LABELS SURVIVE THE MASK (the chain masks the strings, not
+    # THE the LABELS SURVIVE THE MASK (the chain masks the strings, not
     # the attempt's identity).
     assert resp.json()["io"]["capture_attempt"] == 1
 
@@ -596,7 +596,7 @@ async def test_the_compiled_retry_face_delegates_to_the_verb(
 ) -> None:
     """R2-5a: the compiled face's ``retry_node`` DELEGATES to the one
     id-addressed verb (the parallel implementation was stale — it lacked
-    the H-C3 FOR-UPDATE serialization and the H-C4 skip re-arm). The pin
+    the FOR-UPDATE serialization and the skip re-arm). The pin
     proves the call-through (the SAME public seam the CLI/routes ride —
     one name to patch) and the bool mapping of the verb's row count.
     Hermetic: the spy touches no rows."""

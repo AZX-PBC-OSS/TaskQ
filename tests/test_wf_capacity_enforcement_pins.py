@@ -1,6 +1,6 @@
 """THE CAPACITY ENFORCEMENT PINS (§H-A's claim-path + finalize faces):
 
-* H-A1 — THE WF RESERVATIONS ARE ACQUIRED: the flow rows carry the
+* the — THE WF RESERVATIONS ARE ACQUIRED: the flow rows carry the
   step's declared reservation NAMES on their metadata (the static node
   inserts + the fork's children, the ``rate_limits`` stamp's own
   five-point ride: stamp → resolve → acquire → release → the fail-closed
@@ -12,7 +12,7 @@
   second gate DENIES (the row snoozed budget-free, its release_reason
   naming the reservation), and the release re-opens the gate. The
   overlap-guard tripwire (the flows demo's pattern) never fires.
-* H-A5 — result_ttl IS A LIVE KNOB: the wf finalize's terminal mark
+* the — result_ttl IS A LIVE KNOB: the wf finalize's terminal mark
   writes ``result_expires_at`` on the SUCCEEDED terminal rows from the
   cohort's stored ``actor_config.result_ttl`` (the vanilla
   ``mark_succeeded``'s lateral equivalent); a cohort with no TTL writes
@@ -180,7 +180,7 @@ class OverlapGuard:
             self.in_flight -= 1
 
 
-# ── H-A1: the stamp ──────────────────────────────────────────────────────
+# ── the: the stamp ──────────────────────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -237,7 +237,7 @@ def _meta(raw: Any) -> dict[str, Any]:
     return decoded
 
 
-# ── H-A1: the acquire — exactly ONE body at a time ──────────────────────
+# ── the: the acquire — exactly ONE body at a time ──────────────────────
 
 
 @pytest.mark.integration
@@ -399,7 +399,7 @@ async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
     assert guard.tripped == [], "THE TRIPWIRE: two bodies overlapped — the reservation did not hold"
 
 
-# ── H-A1: the fail-closed arms ──────────────────────────────────────────
+# ── the: the fail-closed arms ──────────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -448,7 +448,7 @@ async def test_malformed_reservation_metadata_parks_fail_closed(
     assert gate.dependency_failure is not None, "the metadata lies — the row parks"
 
 
-# ── H-A5: result_ttl is a live knob ─────────────────────────────────────
+# ── the: result_ttl is a live knob ─────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -611,7 +611,7 @@ async def _run_one_job_through_the_intercept(
 async def test_a_renamed_reservation_park_snoozes_and_stamps_never_disowns(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """C1 (THE CHURN RECORDED FINDING): a flow row stamped with a reservation
+    """the (THE CHURN RECORDED FINDING): a flow row stamped with a reservation
     NAME the registry lacks hits the FAIL-CLOSED park arm — the park is
     a SNOOZE (``mark_snoozed`` called, the stamp landed: the
     ``released_reason`` naming the park, the arm's own kind beside it),

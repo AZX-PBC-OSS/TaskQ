@@ -51,7 +51,7 @@ receipts law — the receipt rows were captured at the pinning run; every flip g
 at the lane head): C1, C4, C5, C6, C7's markers are REMOVED WITH THE
 FIXES (the child-fixes lane's landed shapes — the pins were xpass-strict
 at the reconciliation ground); C2 and C3 are RECONCILED to the fixed
-shapes (C2: the fail-close AT THE RESPAWN ATTEMPT — the typed
+shapes (the fail-close AT THE RESPAWN ATTEMPT — the typed
 ``ChildFlowLostError`` on the parent node, the root failed, the census
 zero; C3: the DEPTH BOUND — the ancestor-chain walk, the typed
 ``SpawnDepthExceededError``, the bounded tree terminalizing). Neither

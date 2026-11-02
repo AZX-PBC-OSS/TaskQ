@@ -650,7 +650,7 @@ class _Cards:
     ONLY by the union's events): create opens a card, resolve/expired
     close it, and the ``Backfilled`` snapshot RECONCILES — anything open
     on the consumer's side that the snapshot's ids disown is DROPPED.
-    This is C1's consumer half: a hold resolved or expired during a
+    This is the consumer half: a hold resolved or expired during a
     listener outage never announces itself (its notify went to no one —
     the connection was down), so the SNAPSHOT is the only witness."""
 
@@ -690,7 +690,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
 
     THE SCENARIO (permanent, recorded): at the outage window the card set
     and the ROWS diverge — the consumer still holds the card the rows
-    disown. THE C7 VERIFICATION rides the same walk: the stale
+    disown. THE the VERIFICATION rides the same walk: the stale
     ``_backfilled``/``_raw`` notifies announcing dead holds die the
     SAME death — the new subscriber replays the ghost ``HoldCreated``
     from the pre-outage history, and the reconcile snapshot drops its
@@ -760,7 +760,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
             "consumer's card"
         )
         assert hold_id not in reconcile.open_hold_ids, reconcile
-        # THE C7 DEATH: the ghost (the stale create in the replayed
+        # THE the DEATH: the ghost (the stale create in the replayed
         # history) may cross the stream — the card does not survive the
         # snapshot.
         assert cards.open == {}, (
@@ -1190,7 +1190,7 @@ async def test_rolled_back_resolve_emits_no_notification(
 async def test_wait_signals_timeout_arms_the_sweep_not_the_gate_declaration(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Pin (C8): BOTH faces declare a timeout — ``GateDecl(timeout_s=…)``
+    """Pin : BOTH faces declare a timeout — ``GateDecl(timeout_s=…)``
     AND ``ctx.wait_signal(timeout_s=…)`` — and the precedence is: THE
     WAIT'S VALUE ARMS THE SWEEP (``register_hold`` writes ``expires_at``
     from the wait site's ``timeout_s``); the gate's ``timeout_s`` is the

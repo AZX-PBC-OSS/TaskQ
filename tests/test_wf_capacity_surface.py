@@ -142,7 +142,7 @@ def test_explicit_step_params_override_the_handle_terms() -> None:
 
 def test_handle_term_conflict_message_names_reservation_buckets_not_instances() -> None:
     """The wiring conflict's message renders the two sides' BUCKET NAMES
-    (the identity the whole capacity law speaks — name-keyed, H-A3), never
+    (the identity the whole capacity law speaks — name-keyed, the), never
     the raw ``<ConcurrencyReservation object at 0x…>`` dump the default
     repr gives: the operator reading the refusal must see WHICH buckets
     disagree, and a pointer cannot be acted on."""
@@ -212,7 +212,7 @@ def test_the_collect_reads_the_recorded_graphs_not_a_recompile() -> None:
 
 def test_actor_carrier_carries_the_caps() -> None:
     """The handle's F3 carrier (``actor_config``) — the REAL projection's
-    ONE vocabulary (H-A12), the same shape the config sync + the guards
+    ONE vocabulary , the same shape the config sync + the guards
     consume — carries the declared caps (the reservations do NOT ride
     it: no field; the ensure-slots pass owns their materialization)."""
     app = WorkflowApp()
@@ -230,7 +230,7 @@ def test_actor_carrier_carries_the_caps() -> None:
 
 
 def test_actor_carrier_carries_the_code_owner() -> None:
-    """C15: the F3 carrier carries the handle's capacity-owner
+    """The capacity-owner surface: the F3 carrier carries the handle's capacity-owner
     declaration (the projection's vocabulary grew with the ActorConfig
     field) — "code" rides the carrier the same way the caps do."""
     app = WorkflowApp()
@@ -258,9 +258,7 @@ def test_projection_rows_carry_the_declared_caps() -> None:
 
     row = next(c for c in project_workflow_actor_configs() if c.actor == "wf-cap")
     assert row.max_concurrent == 2
-    assert (
-        row.max_pending is None
-    )  # H-A6: the dead knob is off the surface — the row seeds it UNSET
+    assert row.max_pending is None  # the: the dead knob is off the surface — the row seeds it UNSET
     assert row.result_ttl == 60.0
     assert row.queue == "gpu"
     assert row.metadata == {"workflow_actor": True}
@@ -493,7 +491,7 @@ def test_collect_workflow_reservations_ignores_non_reservation_entries() -> None
 def test_unconsumed_workflow_queue_refuses_the_boot() -> None:
     """A projected cohort's queue outside the worker's consumed set
     refuses the boot LOUDLY under the STRICT gate (the vanilla twin's
-    own opt-in law — H-A8): the silent strand (rows pending forever, no
+    own opt-in law — the): the silent strand (rows pending forever, no
     error, anywhere) named, the strict knob + the remedy spelled."""
     from taskq.worker._bootstrap import _fail_fast_on_unconsumed_workflow_queues
     from taskq.workflows._worker_execution import WorkflowQueueUnconsumedError
@@ -1130,7 +1128,7 @@ def test_non_strict_foreign_cohort_warns_not_refuses() -> None:
     assert "TASKQ_QUEUES" in str(warnings[0].get("remedy", "")), warnings[0]
 
 
-# ── (g) H-A4: the silent cap-drop by the placement override ────────────
+# ── (g) the: the silent cap-drop by the placement override ────────────
 
 
 class ImageItem(BaseModel):
@@ -1294,7 +1292,7 @@ def test_chain_step_capped_body_refused() -> None:
         app.get("chain-capped-body-flow")
 
 
-# ── (h) H-A11: the loop escalation's cohort projects ────────────────────
+# ── (h) the: the loop escalation's cohort projects ────────────────────
 
 
 def test_escalation_cohort_projects() -> None:
@@ -1357,11 +1355,11 @@ async def test_a_workflow_reservation_rebinds_its_schema_at_registration() -> No
 # ══ ROUND-2 ADVERSARIAL REVIEW'S RECORDED FINDINGS ═════════════
 
 
-# ── C3: the registry's duplicate-name law ────────────────────────────────
+# ── the registry's duplicate-name law ────────────────────────────────
 
 
 def test_the_registry_duplicate_name_law_heeds_lock_lease() -> None:
-    """C3: the REGISTRY's duplicate-name law compares the identity that
+    """The REGISTRY's duplicate-name law compares the identity that
     survives the rebind — ``(name, slots, lease, keyed, lock_lease)``,
     the schema EXCLUDED (the rebind owns it). Two registrations differing
     only in ``lock_lease`` are the REFUSED defect (the ValueError names
@@ -1386,11 +1384,11 @@ def test_the_registry_duplicate_name_law_heeds_lock_lease() -> None:
     assert "dup-law" in str(excinfo.value), "the reservation's own name is on the record"
 
 
-# ── C2: the explicit-registry door (the docs' own pattern) ───────────────
+# ── the explicit-registry door (the docs' own pattern) ───────────────
 
 
 def test_the_explicit_registry_door_boots_clean_on_the_docs_pattern() -> None:
-    """C2: the docs' blessed pattern — construct a ``RateLimitRegistry``,
+    """The docs' blessed pattern — construct a ``RateLimitRegistry``,
     ``.register()`` the RAW import-time reservation on it, pass it to
     ``worker_main(..., rate_limit_registry=rl)`` — must BOOT CLEAN on a
     non-default schema. ONE doctrine: the registration passes (the
@@ -1478,11 +1476,11 @@ def test_the_explicit_registry_door_boots_clean_on_the_docs_pattern() -> None:
     assert raw is not live
 
 
-# ── C4: the str-name reservations' boot warning ──────────────────────────
+# ── the str-name reservations' boot warning ──────────────────────────
 
 
 def test_the_collect_gathers_plain_str_reservation_names() -> None:
-    """C4: the collect gathers the plain-``str`` reservation names the
+    """The collect gathers the plain-``str`` reservation names the
     rate-limits collect gathers its own (the second slot's return — the
     bootstrap's warning input). The wiring door passes the str (the row
     stamps the name — the claim-time fail-closed arm remains the
@@ -1515,7 +1513,7 @@ def test_the_collect_gathers_plain_str_reservation_names() -> None:
 
 
 def test_the_bootstrap_warns_unbacked_workflow_reservation_names() -> None:
-    """C4's WARNING: the bootstrap's reservation twin of
+    """The WARNING's twin: the bootstrap's reservation twin of
     ``workflow-rate-limit-name-unregistered`` — a str name NO registry
     entry backs is the WARNING (the rate-limit twin's own shape: the
     names + the remedy); a name the registry (a vanilla actor's own
@@ -1599,7 +1597,7 @@ def test_the_workflow_placement_declares_the_escalation_cohort() -> None:
 
 
 def test_the_workflow_placement_defaults_stay() -> None:
-    """C6's non-adopter law: NO placement declared — the definition's
+    """the non-adopter law: NO placement declared — the definition's
     placement stays the CURRENT values ("workflow"/"default"), the loop
     node's fallback stays ("wf", "default"): no behavior change."""
     from taskq.workflows.definitions import get_registry
@@ -1618,7 +1616,7 @@ def test_the_workflow_placement_defaults_stay() -> None:
 
 
 def test_the_workflow_placement_joins_the_one_queue_law() -> None:
-    """C6's validation: the declared placement joins the SAME one-queue
+    """the validation: the declared placement joins the SAME one-queue
     law the node cohorts keep — a node on the declared actor's name at a
     DIFFERENT queue is the split placement, rejected by the projection's
     own law (the workflow skips LOUDLY, the conflict naming the actor and
@@ -1656,7 +1654,7 @@ def test_the_workflow_placement_joins_the_one_queue_law() -> None:
 
 
 def test_the_workflow_placement_refuses_non_string_values() -> None:
-    """C6's declaration-site guard: a non-str (or empty) actor=/queue= is
+    """the declaration-site guard: a non-str (or empty) actor=/queue= is
     the refused declaration — the placement names a real actor and
     queue, never a silent anything."""
     app = WorkflowApp()
@@ -1880,7 +1878,7 @@ def test_route_arm_body_handle_flows_the_code_owner_per_arm() -> None:
     folded into the source node (the sibling arm and the join must not
     inherit it). The arm's own ``RouteArm.capacity_owner`` declaration
     honors it (the priority surface's per-arm shape); WITHOUT it the
-    wiring refuses, NAMING the owner (the H-A4 law's extension — the
+    wiring refuses, NAMING the owner (the law's extension — the
     override would drop it)."""
     from taskq.workflows._worker_execution import project_workflow_actor_configs as project
     from taskq.workflows.api._graph import RouteArm, WorkflowBuildError
