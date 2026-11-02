@@ -1,4 +1,4 @@
-"""ATTACK-3 (phase-3 adversarial review) — the compile-time surfaces: wf.validate()'s
+"""THE COMPILE-TIME SURFACES' ADVERSARIAL PROBES: wf.validate()'s
 rules, the wiring verbs' doors, the Mermaid byte-stability.
 
 No PG: every probe compiles or validates. RED = the observed half

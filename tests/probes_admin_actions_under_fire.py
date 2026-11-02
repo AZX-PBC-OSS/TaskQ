@@ -1,4 +1,4 @@
-# ruff: noqa: N999, S608, TID251, ASYNC230  # Why: the brief mandates the dash-named attack4-* module; the seeded adversarial rows deliberately use uuid4 (a row whose id must NOT collinearly pack the B-tree); the open() writes the latency capture beside the test.
+# ruff: noqa: S608, TID251, ASYNC230  # Why: the brief mandates the dash-named attack4-* module; the seeded adversarial rows deliberately use uuid4 (a row whose id must NOT collinearly pack the B-tree); the open() writes the latency capture beside the test.
 """ATTACK4 — THE ADMIN PAGE UNDER FIRE (the phase-4 attacker's suite).
 
 The stranger's adversarial probes against the workflow-run explorer:

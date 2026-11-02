@@ -1,4 +1,4 @@
-# ruff: noqa: N999, S608, S603, ASYNC220, ASYNC221, N802  # Why: the dash-named attack4-* module; the CLI probes run REAL subprocesses (the stranger's own terminal) with fixed argv and fixture-derived env; the TRUE blocker's name is the pin's claim.
+# ruff: noqa: S608, S603, ASYNC220, ASYNC221, N802  # Why: the dash-named attack4-* module; the CLI probes run REAL subprocesses (the stranger's own terminal) with fixed argv and fixture-derived env; the TRUE blocker's name is the pin's claim.
 """ATTACK4 — THE CLI UNDER FIRE (the phase-4 attacker's suite).
 
 The stranger's probes against ``taskq flows`` , NOT the
@@ -467,7 +467,7 @@ async def test_the_stale_app_resolve_is_the_named_refusal_never_a_traceback(
     module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
 ) -> None:
     """THE KEYERROR-TRACEBACK PIN (the why-stuck face's medium finding;
-    the red was the attacker's race repro — attack4-cli-races-run1): a
+    the red was the attacker's race repro — probes_cli_races-run1): a
     run whose workflow is NOT declared on the --app module (the
     stale-deploy world) meets 'flows resolve' — the typed door must
     refuse with the NAMED error + exit 1, never a rich traceback. The

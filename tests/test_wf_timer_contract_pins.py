@@ -215,7 +215,7 @@ async def _collect(listener: HitlListener, seconds: float) -> list[Any]:
 
 
 @pytest.mark.integration
-async def test_t1_wait_signal_refuses_a_timer_prefixed_model(
+async def test_wait_signal_refuses_a_timer_prefixed_model(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """THE RESERVED PREFIX IS THE MINT'S DOOR: a ``wait_signal`` payload
@@ -275,7 +275,7 @@ async def test_t1_wait_signal_refuses_a_timer_prefixed_model(
 
 
 @pytest.mark.integration
-async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
+async def test_the_broadcast_and_backfill_never_surface_timer_holds(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """A timer hold is the CLOCK's, never a human's pending card: across
@@ -453,7 +453,7 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
 # ── THE EXPLORER'S FALSE AFFORDANCE (the render-level pin) ─────────
 
 
-def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
+def test_timer_rows_never_render_the_human_resolve_form() -> None:
     """THE FALSE AFFORDANCE DIES AT THE TEMPLATE: render the run page
     with ONE timer hold + ONE human hold (both 'held', actions on) — the
     HUMAN row keeps its resolve form (the affordance's guard), the TIMER
@@ -556,7 +556,7 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
 
 
 @pytest.mark.integration
-async def test_t5_flows_status_surfaces_the_version_drift(
+async def test_flows_status_surfaces_the_version_drift(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_pool: asyncpg.Pool,
@@ -621,7 +621,7 @@ async def test_t5_flows_status_surfaces_the_version_drift(
 
 
 @pytest.mark.integration
-async def test_t6_a_vanished_node_key_terminal_fails_loudly(
+async def test_a_vanished_node_key_terminal_fails_loudly(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """THE LOUD LAW (the house's failure doctrine): a run whose PENDING

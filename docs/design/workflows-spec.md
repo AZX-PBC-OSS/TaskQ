@@ -238,7 +238,7 @@ and the in-tree pin that re-runs it).
 | The fan-in curve (200 → 3.0 ms, 1000 → 3.3 ms, 5000 → 11.1 ms; the refit ~1.7 µs/edge + ~2.7 ms base; the 5 ms-class comparison struck) | the scale pin (`tests/test_wf_perf_bands.py`), measured |
 | The 1000-child fan-out tx band, the join-fire latency | the perf bands pin (`tests/test_wf_perf_bands.py`) |
 | The hold/resume band (the resume consumes no attempt) | the HITL pins (`tests/test_wf_hitl_pins.py`) |
-| The streaming bands (the emit cursor) | the T20 backpressure pins (`tests/test_wf_t20_backpressure_pins.py`) |
+| The streaming bands (the emit cursor) | the T20 backpressure pins (`tests/test_wf_emit_backpressure_pins.py`) |
 | The migration-chain proof (every bundled migration, stepwise, onto populated data) | `tests/test_migrations_populated.py` |
 | The stranger test (a fresh reader, docs-only: the demo + the API explanation + the 18 stumbles, each dispositioned) | the adoption walkthrough in this doc's history |
 | The engine's pin inventory (the tests that can fail) | the workflows guide's foot; `tests/test_wf_*.py` |

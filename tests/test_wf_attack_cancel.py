@@ -13,7 +13,7 @@ held signals, and the audit row commit together or not at all.
 
 Face C is the IMPORT LAW (§16.1's sibling): the cancel path is workflow
 engine (core deps only) — it must never reach the admin package (whose
-``__init__`` imports the ``fastapi`` extra). Rejected LIVE at af1b8779:
+``__init__`` imports the ``fastapi`` extra). Rejected LIVE on the unfixed tree:
 ``FlowRunner.cancel_workflow``'s lazy ``from taskq.web.admin._audit
 import …`` makes ``cancel_workflow`` raise ``ModuleNotFoundError`` on a
 base ``taskq[flows]`` install. The pin is strict-xfail until the lane

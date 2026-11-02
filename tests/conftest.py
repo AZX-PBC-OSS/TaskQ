@@ -203,6 +203,11 @@ def free_host_port() -> int:
 # the published path directly; only the redirect shim stays repo-specific.
 
 
+collect_ignore_glob = [
+    "probes_*.py"
+]  # the adversarial probes: run-directly by explicit path, never the default collection
+
+
 @pytest.fixture(autouse=True)
 def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner; pyright does not track fixture usage.
     monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest

@@ -110,7 +110,7 @@ async def _ledger_rows(
 
 
 @pytest.mark.integration
-async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
+async def test_pin1_fail_closed_join_resolves_never_hangs(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -243,7 +243,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
 
 
 @pytest.mark.integration
-async def test_t06_pin2_peer_cancel_record(
+async def test_pin2_peer_cancel_record(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -323,7 +323,7 @@ async def test_t06_pin2_peer_cancel_record(
 
 
 @pytest.mark.integration
-async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
+async def test_pin3_collect_exhaustion_fans_in_fires_partial(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -433,7 +433,7 @@ async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
 
 
 @pytest.mark.integration
-async def test_t06_pin4_skip_fans_in_zero_ledger_rows(
+async def test_pin4_skip_fans_in_zero_ledger_rows(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -486,7 +486,7 @@ async def test_t06_pin4_skip_fans_in_zero_ledger_rows(
 
 
 @pytest.mark.integration
-async def test_t06_pin5_mid_ladder_emits_no_cascade_and_no_decrement(
+async def test_pin5_mid_ladder_emits_no_cascade_and_no_decrement(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -540,7 +540,7 @@ async def test_t06_pin5_mid_ladder_emits_no_cascade_and_no_decrement(
 
 
 @pytest.mark.integration
-async def test_t06_pin6_sweep_heals_fail_closed_join_after_crash(
+async def test_pin6_sweep_heals_fail_closed_join_after_crash(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -593,7 +593,7 @@ async def test_t06_pin6_sweep_heals_fail_closed_join_after_crash(
 # ── Pin 7: the validator refuses an unknown policy (build-time door) ────
 
 
-def test_t06_pin7_unknown_failure_policy_refused_at_build() -> None:
+def test_pin7_unknown_failure_policy_refused_at_build() -> None:
     """A fork declaring an unknown failure_policy is refused at build time
     (the runtime's split would silently take the default — the
     over-permission the asymmetry doctrine forbids). The mutation scenario:
@@ -613,7 +613,7 @@ def test_t06_pin7_unknown_failure_policy_refused_at_build() -> None:
 
 
 @pytest.mark.integration
-async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
+async def test_pin8_mixed_policy_node_the_fence_is_not_absorption(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

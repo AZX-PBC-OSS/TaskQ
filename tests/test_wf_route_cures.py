@@ -411,8 +411,8 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
     overwrite): the tag-injectivity refusal at the wiring verb."""
     from taskq.workflows.chain import type_tag
 
-    TwinA = type("Twin", (BaseModel,), {"__module__": "tests.test_wf_rv4_route_cures"})  # noqa: N806  # Why: the twin IS the subject — two distinct class objects, one tag.
-    TwinB = type("Twin", (BaseModel,), {"__module__": "tests.test_wf_rv4_route_cures"})  # noqa: N806
+    TwinA = type("Twin", (BaseModel,), {"__module__": "tests.test_wf_route_cures"})  # noqa: N806  # Why: the twin IS the subject — two distinct class objects, one tag.
+    TwinB = type("Twin", (BaseModel,), {"__module__": "tests.test_wf_route_cures"})  # noqa: N806
     assert TwinA is not TwinB
     assert type_tag(TwinA) == type_tag(TwinB)
 

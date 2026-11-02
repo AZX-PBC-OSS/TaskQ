@@ -48,12 +48,12 @@ _TESTS = [
     "tests/test_wf_progress_emission.py",
     "tests/test_wf_progress_faces.py",
     "tests/test_wf_runner_pins.py",
-    "tests/test_wf_t20_router_pins.py",
+    "tests/test_wf_router_pins.py",
     "tests/test_wf_validate_pins.py",
-    "tests/attack3-hitl.py",
-    "tests/attack3-loop.py",
-    "tests/attack3-validate.py",
-    "tests/t21_numbers_run.py",
+    "tests/probes_hold_identity.py",
+    "tests/probes_loop_machinery.py",
+    "tests/probes_validator_rules.py",
+    "tests/progress_numbers_run.py",
 ]
 
 _DEF_CTX = re.compile(r"def\s+\w+\s*\([^)]*\bctx\b[^)]*\)")

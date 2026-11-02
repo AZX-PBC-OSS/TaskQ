@@ -39,7 +39,7 @@ from taskq.workflows.chain import (
     chain_start,
 )
 from tests._wf_fixtures import RedLog, seed_flow
-from tests.test_wf_t20_emit_pins import claim_source, make_source
+from tests.test_wf_emit_tx_pins import claim_source, make_source
 
 
 class ScreenOutcome(enum.Enum):
@@ -105,7 +105,7 @@ def the_chain() -> Chain:
 # ── DOOR 1: the declaration-time refusal ────────────────────────────────
 
 
-def test_t20_route_not_total_is_refused_at_declaration() -> None:
+def test_route_not_total_is_refused_at_declaration() -> None:
     """A route missing an outcome is REFUSED when the chain is declared —
     the outcome it drops would silently strand a record's chain. The
     refusal NAMES the missing member (the spike's message shape)."""
@@ -184,7 +184,7 @@ def test_t20_route_not_total_is_refused_at_declaration() -> None:
 # ── DOOR 2: the runtime loud refusal ────────────────────────────────────
 
 
-def test_t20_router_not_total_loud_refusal() -> None:
+def test_router_not_total_loud_refusal() -> None:
     """An outcome with NO arm raises :class:`RouterNotTotal` — the runner
     converts it to a terminal-FAILED finalize carrying
     ``error_class='RouterNotTotal'`` (the integration below pins the ROW).
@@ -203,7 +203,7 @@ def test_t20_router_not_total_loud_refusal() -> None:
 
 
 @pytest.mark.integration
-async def test_t20_chain_routes_through_the_certified_fork(
+async def test_chain_routes_through_the_certified_fork(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -351,7 +351,7 @@ async def test_t20_chain_routes_through_the_certified_fork(
 
 
 @pytest.mark.integration
-async def test_t20_router_not_total_fails_the_row_loudly(
+async def test_router_not_total_fails_the_row_loudly(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -518,7 +518,7 @@ async def t20_source(ctx: StepContext) -> None:
 
 
 @pytest.mark.integration
-async def test_t20_chain_end_to_end_through_the_runner(
+async def test_chain_end_to_end_through_the_runner(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -600,7 +600,7 @@ async def t20_lying_source(ctx: StepContext) -> None:
 
 
 @pytest.mark.integration
-async def test_t20_router_not_total_through_the_runner(
+async def test_router_not_total_through_the_runner(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

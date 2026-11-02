@@ -221,7 +221,7 @@ async def kill_backend_at(window: int, dsn: str) -> WindowHook:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("window", [1, 2, 3])
-async def test_t20_emit_tx_atomic_at_every_statement_window(
+async def test_emit_tx_atomic_at_every_statement_window(
     window: int,
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -319,7 +319,7 @@ async def test_t20_emit_tx_atomic_at_every_statement_window(
 
 
 @pytest.mark.integration
-async def test_t20_emit_tx_zero_reemitted_zero_lost_across_pages(
+async def test_emit_tx_zero_reemitted_zero_lost_across_pages(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_schema: Any,
@@ -415,7 +415,7 @@ async def test_t20_emit_tx_zero_reemitted_zero_lost_across_pages(
 
 
 @pytest.mark.integration
-async def test_t20_emit_fenced_on_superseded_claim(
+async def test_emit_fenced_on_superseded_claim(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -468,7 +468,7 @@ async def test_t20_emit_fenced_on_superseded_claim(
 
 
 @pytest.mark.integration
-async def test_t20_emit_map_index_discriminates_siblings(
+async def test_emit_map_index_discriminates_siblings(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

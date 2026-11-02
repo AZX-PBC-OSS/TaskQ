@@ -52,7 +52,7 @@ def _nodes(*statuses: str, **kwargs: Any) -> tuple[NodeView, ...]:
 # ── The derivation table's rows + the PRECEDENCE matrix ────────────────
 
 
-def test_t08_derivation_rows_precedence_matrix() -> None:
+def test_derivation_rows_precedence_matrix() -> None:
     """Every rule row exercised, IN ORDER — and each FLIP caught: swapping
     any two rows' precedence reds (the derivation is order-sensitive by
     the table's own contract). The absorbed-failure clause is stated
@@ -162,7 +162,7 @@ def test_t08_derivation_rows_precedence_matrix() -> None:
 
 
 @pytest.mark.integration
-async def test_t08_reconstruction_two_sources_rows_only(
+async def test_reconstruction_two_sources_rows_only(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -236,7 +236,7 @@ async def test_t08_reconstruction_two_sources_rows_only(
 
 
 @pytest.mark.integration
-async def test_t08_g7_teeth_the_lying_fixture_reds(
+async def test_g7_teeth_the_lying_fixture_reds(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
@@ -268,7 +268,7 @@ async def test_t08_g7_teeth_the_lying_fixture_reds(
 # ── The gauge's cardinality law ─────────────────────────────────────────
 
 
-def test_t08_cardinality_never_per_node_labels() -> None:
+def test_cardinality_never_per_node_labels() -> None:
     """The metric registration must REJECT a per-node label series — a
     per-node series cannot be created: the cache is (workflow, state)-keyed
     (a node-dimensioned key cannot enter — ATTEMPTED here, the rejection
@@ -322,7 +322,7 @@ def test_t08_cardinality_never_per_node_labels() -> None:
 
 
 @pytest.mark.integration
-async def test_t08_query_count_one_read_per_status_surface(
+async def test_query_count_one_read_per_status_surface(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
@@ -420,7 +420,7 @@ async def test_t08_query_count_one_read_per_status_surface(
 
 
 @pytest.mark.integration
-async def test_t08_maintenance_leg_finalizes_the_wedged_root(
+async def test_maintenance_leg_finalizes_the_wedged_root(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -538,7 +538,7 @@ async def test_t08_maintenance_leg_finalizes_the_wedged_root(
 
 
 @pytest.mark.integration
-async def test_t08_one_run_one_trace_concurrent(
+async def test_one_run_one_trace_concurrent(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
@@ -600,7 +600,7 @@ async def test_t08_one_run_one_trace_concurrent(
 
 @pytest.mark.load_sensitive
 @pytest.mark.integration
-async def test_t08_rollup_cost_gate_index_driven(
+async def test_rollup_cost_gate_index_driven(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,

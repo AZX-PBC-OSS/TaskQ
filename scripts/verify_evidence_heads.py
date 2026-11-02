@@ -106,7 +106,7 @@ content is history's.
 
 THE FIVE EDGES (the content door's own
 face, each observed live and pinned
-``tests/test_evidence_door_rv6_pins.py``):
+``tests/test_evidence_door_contract_pins.py``):
 
 * **THE SCAN WINDOW IS VERDICT-SHAPED, NEVER LINE-COUNTED** (D1). The
   content door's first cut read only the first 3 + last 12 lines — a

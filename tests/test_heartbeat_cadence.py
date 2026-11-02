@@ -1,6 +1,6 @@
 """THE HEARTBEAT-CADENCE PIN (the HB-deltas instrument, permanent).
 
-The live finding this pin settles: "every task sits idle yet timers fire
+The behavior this pin settles: "every task sits idle yet timers fire
 7x late, ALTERNATING". The 2026-10-08 investigation measured the cadence
 in FIVE regimes on the probe box and could not reproduce the pathology —
 the numbers, every one captured in ``.measurements/``:

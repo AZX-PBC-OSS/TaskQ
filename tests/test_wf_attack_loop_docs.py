@@ -336,7 +336,7 @@ def _t17_table_counts(ledger: str) -> dict[str, int]:
     return counts
 
 
-def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> None:
+def test_docs_the_disposition_counts_agree_across_their_three_homes() -> None:
     """One count, one home: the ledger's table (the truth), the ledger's
     header line, and the guide's parenthetical must agree. (The
     ``applied`` class tolerates the #3b fold convention — the drifted
