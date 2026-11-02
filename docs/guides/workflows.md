@@ -1633,8 +1633,10 @@ the deadline (the cancel-fenced law — the node terminalises
 The reads (`FlowRunner.result(flow_id)` — the
 terminal's result, DECODED ONCE through the estate's JSON seam; on a
 FAILED run the read is the FAILURE's face — the typed
-`WorkflowRunError` carrying the failing node row's error class +
-message (WHAT failed, and why, answered AT the read; failed and
+`WorkflowRunError` carrying the UNABSORBED failing node's error
+class + message (the failure that failed the run: a branch failure
+the join's collect policy absorbed never names the verdict — WHAT
+failed, and why, answered AT the read; failed and
 running are never indistinguishable). A CANCELLED run's read is the
 CANCEL's face: the typed `WorkflowRunCancelledError` — a
 `WorkflowRunError` subclass, so existing `except WorkflowRunError`
