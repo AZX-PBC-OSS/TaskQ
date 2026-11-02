@@ -103,6 +103,42 @@ def test_a_workflow_capture_policy_and_capture_alias_disagreeing_is_refused() ->
             return build(step(_ingest_body, Ingest(doc_id="d1"), key="probe"))
 
 
+def test_the_capture_alias_accepts_agreeing_and_single_declarations() -> None:
+    """THE REFUSAL'S OTHER SIDE: only two DECLARED values that disagree
+    are refused. Unset both (the errors-only default), one spelling
+    declared (that value wins), and both declared with the SAME value are
+    all accepted — the None sentinel separates "unset" from "declared the
+    default", and equality is agreement, never a disagreement."""
+    app = WorkflowApp()
+
+    @app.actor(capture_policy=None, capture=None)
+    async def both_unset(ctx: StepContext, params: Ingest) -> Report:
+        return Report(ref=params.doc_id)
+
+    @app.actor(capture_policy="all", capture="all")
+    async def both_same(ctx: StepContext, params: Ingest) -> Report:
+        return Report(ref=params.doc_id)
+
+    @app.actor(capture="none")
+    async def alias_only(ctx: StepContext, params: Ingest) -> Report:
+        return Report(ref=params.doc_id)
+
+    assert both_unset.capture_policy == "errors-only"
+    assert both_same.capture_policy == "all"
+    assert alias_only.capture_policy == "none"
+
+    @app.workflow("capture-agreement-flow", capture_policy="all", capture="all")
+    def by_both_same() -> Promise[object]:
+        return build(step(both_same, Ingest(doc_id="d1"), key="probe"))
+
+    @app.workflow("capture-unset-flow")
+    def by_unset() -> Promise[object]:
+        return build(step(both_unset, Ingest(doc_id="d1"), key="probe"))
+
+    assert app.get("capture-agreement-flow").capture == "all"
+    assert app.get("capture-unset-flow").capture == "errors-only"
+
+
 def test_a_route_arms_timedelta_result_ttl_projects_as_seconds() -> None:
     """THE DURATION LAW'S ROUTE-ARM FACE: ``RouteArm(result_ttl=…)`` is a
     second-denominated term, so the duration law's "every face" accepts a
@@ -122,7 +158,7 @@ def test_a_route_arms_timedelta_result_ttl_projects_as_seconds() -> None:
             {
                 Item: RouteArm(
                     body=_item_arm,
-                    result_ttl=timedelta(minutes=2),  # pyright: ignore[reportArgumentType]  # Why: the duration law says this face accepts a timedelta; the annotation refusing it is the same unnormalized face.
+                    result_ttl=timedelta(minutes=2),
                 )
             },
         )
