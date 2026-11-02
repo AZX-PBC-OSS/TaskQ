@@ -9,34 +9,36 @@ calendar date.  Its output is the drives' seed, tick and bound arithmetic, so
 an output that is wrong-but-plausible is worse than a hardcoded date: the
 drive stays green on a shape the zone does not have.
 
-Two contract defects are pinned red here:
+Two contract guards hold here:
 
 1.  ``FallbackTransition.range_start`` is documented as a "naive dated wall",
-    but it is returned carrying ``fold=1`` (it is the transition instant's own
-    wall, and ``repeated_range_bounds`` copies ``after_local``'s fold into it).
-    ``range_end`` carries ``fold=0``.  ``str()`` renders both identically and
-    ``datetime`` equality ignores ``fold``, so the difference is invisible; the
-    natural conversion of a naive wall - ``range_start.replace(tzinfo=tz)`` -
-    silently resolves to the *fold-1* (later, post-transition) instant.  A
-    drive that seeds a schedule from that wall starts on the wrong pass of the
-    fold.  ``fold_instant`` exists, but the exported wall must not smuggle a
-    second meaning the documented "naive wall" reading silently resolves to.
+    but a wall carrying ``fold=1`` would be invisible - ``repeated_range_bounds``
+    copies the seed wall's fold into its answer (the transition instant's own
+    wall is a fold-1 wall), ``str()`` renders the folds identically and
+    ``datetime`` equality ignores them - while the natural conversion of a
+    naive wall - ``range_start.replace(tzinfo=tz)`` - would silently resolve to
+    the *fold-1* (later, post-transition) instant, and a drive that seeds a
+    schedule from that wall would start on the wrong pass of the fold.
+    ``fold_instant`` exists, but the exported wall must not smuggle a
+    second meaning the documented "naive wall" reading silently resolves to:
+    the pin refuses a stored wall that carries a fold.
 
-2.  ``fallback_transitions`` is ``functools.cache``d and returns the cached
-    *list object*, so every caller shares one mutable value.  A consumer that
-    reorders, trims or extends the result (``.sort()``/``.reverse()``/
+2.  A ``functools.cache``d discovery that returns the cached value directly
+    hands every caller one shared *list object*.  A consumer that reorders,
+    trims or extends the result (``.sort()``/``.reverse()``/
     ``.extend()`` for a property drive is the ordinary way to select a
-    transition) silently changes what every later caller - including the
-    parity drives - dates itself from.  The drives then stay green on a
-    different transition than the one they were written for.
+    transition) would silently change what every later caller - including the
+    parity drives - dates itself from: the drives would stay green on a
+    different transition than the one they were written for.  The pin
+    reorders through one caller's reference and refuses the re-dating.
 
 Every other hypothesis area is searched by the green pins below: the range
 characterization against an independent ambiguity oracle (half-hour repeat,
 45-minute offset, midnight-starting, midnight-ending, month/year-crossing,
 leap-day, two-hour repeat), the half-open discovery window at its edges, the
 loud failure for a zone with no fall-back, TZ independence, and a fold-1 seed
-at an interior slot (the added midnight pin seeds only the range's first
-fold-1 slot).
+at an interior slot (``test_havana_fold1_seed_inside_the_midnight_crossing_range_advances_to_its_end``
+seeds only the range's first fold-1 slot).
 """
 
 from __future__ import annotations
@@ -63,9 +65,12 @@ from .test_rt_cron_harness import (
     seed_schedule,
 )
 from .test_rt_cron_parity_dst import (
+    _DISCOVERY_FIRST_YEAR,
+    _DISCOVERY_LAST_YEAR,
     _MINUTELY,
     _OPEN_ACTOR,
     TestFoldParityBeyondNewYork,
+    _first_fallback_matching,
     _first_midnight_ending_fallback,
     _first_midnight_starting_fallback,
     _first_non_hour_fallback,
@@ -95,23 +100,18 @@ def _offset_at(instant: datetime, tz: ZoneInfo) -> timedelta:
     return offset
 
 
-def _first_transition_matching(
-    zone: str, predicate: Callable[[FallbackTransition], bool]
-) -> FallbackTransition:
-    matches = [
-        transition for transition in fallback_transitions(zone, 2018, 2038) if predicate(transition)
-    ]
-    assert matches, f"{zone}: no fall-back in [2018, 2038) matches the shape"
-    return matches[0]
-
-
 def _first_two_hour_fallback(zone: str) -> FallbackTransition:
-    return _first_transition_matching(zone, lambda transition: transition.width_minutes >= 120)
+    return _first_fallback_matching(
+        zone,
+        "with a repeat of two hours or more",
+        lambda transition: transition.width_minutes >= 120,
+    )
 
 
 def _first_month_crossing_fallback(zone: str) -> FallbackTransition:
-    return _first_transition_matching(
+    return _first_fallback_matching(
         zone,
+        "whose repeated range crosses a month boundary",
         lambda transition: (
             (transition.range_start.year, transition.range_start.month)
             != (transition.range_end.year, transition.range_end.month)
@@ -120,8 +120,9 @@ def _first_month_crossing_fallback(zone: str) -> FallbackTransition:
 
 
 def _first_leap_day_fallback(zone: str) -> FallbackTransition:
-    return _first_transition_matching(
+    return _first_fallback_matching(
         zone,
+        "whose repeated range starts on a leap day",
         lambda transition: transition.range_start.month == 2 and transition.range_start.day == 29,
     )
 
@@ -129,8 +130,9 @@ def _first_leap_day_fallback(zone: str) -> FallbackTransition:
 def test_a_discovered_wall_is_a_plain_wall_not_a_latent_fold() -> None:
     """``range_start`` is documented as a naive dated wall, so the obvious
     ``replace(tzinfo=zone)`` must resolve to the pre-transition (fold-0)
-    occurrence.  Today it carries ``fold=1`` and silently resolves to the
-    later occurrence; ``range_end`` carries ``fold=0``."""
+    occurrence.  A wall carrying ``fold=1`` would silently resolve to the
+    later occurrence; the stored walls carry ``fold=0``, and the pin refuses
+    a re-smuggled fold."""
     fold = _first_midnight_starting_fallback("America/Havana")
     tz = ZoneInfo(fold.zone)
     assert fold.range_start.fold == 0, (
@@ -141,7 +143,7 @@ def test_a_discovered_wall_is_a_plain_wall_not_a_latent_fold() -> None:
         f"{fold.range_start_fold0_utc.isoformat()}"
     )
     assert fold.range_end.fold == 0, f"{fold.zone}: range_end carries fold={fold.range_end.fold}"
-    # A fold-carrying ZoneInfo wall never compares == to a UTC rendering of
+    # An ambiguous ZoneInfo wall never compares == to a UTC rendering of
     # either of its own resolutions (PEP 495's mixed-tzinfo comparison), so
     # both sides normalize to UTC - the codebase's cross-zone comparison
     # rule - before the equality.
@@ -186,17 +188,17 @@ def test_the_discovery_result_is_not_shared_mutable_state_across_callers() -> No
     """The cached discovery must not hand every caller one mutable list: a
     consumer ordering or trimming the result for its own drive silently
     re-dates every later caller (including the parity drives)."""
-    cached = fallback_transitions("America/Havana", 2018, 2038)
+    cached = fallback_transitions("America/Havana", _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
     earliest = cached[0]
     # An immutable result has no in-place ordering to leak and a copy has none
     # either; only the shared cached list can be re-dated through one caller's
     # reference.  Resolved through getattr so the pin stays honest after either
-    # cure (tuple return or per-call copy).
+    # result shape (tuple return or per-call copy).
     sort_in_place = getattr(cached, "sort", None)
     if sort_in_place is not None:
         sort_in_place(key=lambda transition: transition.transition_utc, reverse=True)
     try:
-        later = fallback_transitions("America/Havana", 2018, 2038)
+        later = fallback_transitions("America/Havana", _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
         assert later[0] == earliest, (
             "a caller that reordered the returned result changed the earliest "
             f"transition every later caller sees: {earliest.range_start.date()} "
@@ -225,7 +227,7 @@ def test_every_discovered_range_agrees_with_the_zone_ambiguity_oracle(zone: str)
     start ambiguous, the minute before it not, the last minute ambiguous and
     the end not - whatever the repeat width or the boundary it crosses."""
     tz = ZoneInfo(zone)
-    transitions = fallback_transitions(zone, 2018, 2038)
+    transitions = fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
     assert transitions, f"{zone}: expected at least one fall-back in the window"
     for transition in transitions:
         assert _ambiguous(transition.range_start, tz), (
@@ -276,8 +278,8 @@ def test_a_zone_without_a_fall_back_fails_the_drive_premise_loudly() -> None:
     """A zone (or window) with no fall-back must not look like a green drive:
     the discovery answers empty and the drive's selector refuses to invent a
     premise."""
-    assert fallback_transitions("Asia/Kolkata", 2018, 2038) == []
-    assert fallback_transitions("UTC", 2018, 2038) == []
+    assert fallback_transitions("Asia/Kolkata", _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR) == []
+    assert fallback_transitions("UTC", _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR) == []
     for selector in (
         _first_midnight_starting_fallback,
         _first_midnight_ending_fallback,
@@ -296,7 +298,9 @@ def test_discovery_does_not_read_the_runners_tz_environment(
     process cache cannot hide a TZ-dependent read."""
     baseline = [
         transition.transition_utc
-        for transition in fallback_transitions("America/Havana", 2018, 2038)
+        for transition in fallback_transitions(
+            "America/Havana", _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR
+        )
     ]
     monkeypatch.setenv("TZ", "Pacific/Kiritimati")
     time.tzset()
@@ -320,10 +324,11 @@ async def test_fold1_seed_at_an_interior_slot_advances_through_the_remainder(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """The added midnight pin seeds the range's *first* fold-1 slot; an
-    operator edit or an outage recompute can leave ``next_fire_at`` at an
-    interior fold-1 slot.  The uncovered remainder must fire once each and the
-    twin-covered tail must not re-fire."""
+    """``test_havana_fold1_seed_inside_the_midnight_crossing_range_advances_to_its_end``
+    seeds the range's *first* fold-1 slot; an operator edit or an outage
+    recompute can leave ``next_fire_at`` at an interior fold-1 slot.  The
+    uncovered remainder must fire once each and the twin-covered tail must not
+    re-fire."""
     fold = _first_midnight_starting_fallback("America/Havana")
     seed_offset = fold.width_minutes // 2
     covered_from = seed_offset + 5
