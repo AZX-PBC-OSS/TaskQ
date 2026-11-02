@@ -241,9 +241,8 @@ per_flow AS (
     + absorbed_exists("n")
     + """
            ) AS has_failed,
-           -- THE FAILED ARM'S LIVENESS (T20, the spike's live finding;
-           -- RE-DERIVED by the T20/T21 fixer's zombie audit against the
-           -- state machine's totality table): live UNRESOLVED work holds
+           -- THE FAILED ARM'S LIVENESS (derived against the state machine's
+           -- totality table): live UNRESOLVED work holds
            -- a failing run — a RUNNING row (the reclaim arms' ONLY
            -- input) and a pending/scheduled row that is NOT a
            -- resolved-blocked stamp. THE TERMINAL-CRASH CLASS IS GONE

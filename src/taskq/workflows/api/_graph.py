@@ -103,8 +103,8 @@ BodyFn = Callable[..., Awaitable[object]]
 #: face is STRINGLY — the state it reads is decoded JSON dicts, and a
 #: tag-keyed predicate ("skip unless mime == video") can drop an element
 #: from EVERY downstream arm and still let the run terminalize SUCCEEDED
-#: having routed NOTHING (the routing-proof round's live finding —
-#: the exact silent drop the totality fence exists to refuse). For
+#: having routed NOTHING — the exact silent drop the totality fence
+#: exists to refuse). For
 #: dispatch-by-type the taught face is the TYPED ROUTE
 #: (:func:`route` — the union's members key the arms, a non-total route
 #: is a build refusal (E15), and the no-match element dies LOUDLY in

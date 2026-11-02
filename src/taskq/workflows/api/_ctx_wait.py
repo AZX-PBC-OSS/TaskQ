@@ -59,7 +59,7 @@ class SignalUnavailableError(RuntimeError):
 
 
 class LoopWaitShapeError(RuntimeError):
-    """THE E13 RULE (the hostile review's contract): a
+    """THE E13 RULE: a
     LOOP-kind body's wait site found the iteration cursor PAST the
     answer queue — the state a CONDITIONAL wait mints (some iterations
     wait, others don't). The loop's answer-queue cursor IS the

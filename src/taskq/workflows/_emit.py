@@ -134,8 +134,8 @@ class EmitFencedError(RuntimeError):
 
 
 class PageDivergedError(RuntimeError):
-    """THE DIVERGENT PAGING ON RESUME, NAMED (the T20/T21 fixer's typed
-    death): the emit's children INSERT hit the idempotency arbiter — the
+    """THE DIVERGENT PAGING ON RESUME, NAMED: the emit's children INSERT
+    hit the idempotency arbiter — the
     page's rows ALREADY EXIST under the page's ``(flow, emit,
     map_index, step)`` keys — while the source's cursor checkpoint says
     the page never ran. The cursor and the row history have diverged:
@@ -165,8 +165,7 @@ class PageDivergedError(RuntimeError):
 
 
 class MapIndexExhaustedError(RuntimeError):
-    """THE SMALLINT CEILING, TYPED (the T20/T21 fixer's typed death):
-    a page carried a record whose ``map_index`` is past the smallint
+    """THE SMALLINT CEILING, TYPED: a page carried a record whose ``map_index`` is past the smallint
     ceiling (:data:`taskq.workflows._types.MAP_INDEX_CEILING` — 32767;
     the ledger's claim-arbiter column is a smallint). THE BATCH
     SEMANTICS: a poison record kills ITSELF loudly, NEVER ITS MATES —
@@ -223,8 +222,8 @@ async def _emit_tx(
     INSERT, the edge rows, the cursor checkpoint — the certified fork
     shapes re-bound, chunked parallel arrays, ids minted app-side.
 
-    THE DIVERGENT PAGE IS NAMED (the T20/T21 fixer's typed death): the
-    children INSERT is the page's ONLY unique-violation surface (the
+    THE DIVERGENT PAGE IS NAMED: the children INSERT is the page's
+    ONLY unique-violation surface (the
     idempotency arbiter — the composite ``(scope, key)`` index). The raw
     ``UniqueViolationError`` used to escape whole: the body boundary
     laddered it transient, the re-claim re-read the SAME cursor and
@@ -395,7 +394,7 @@ async def emit_batch(
                 "the per-record trace (the one-query lineage)"
             )
 
-    # THE SMALLINT CEILING AT THE DOOR (the T20/T21 fixer's typed death):
+    # THE SMALLINT CEILING AT THE DOOR:
     # jobs.map_index is a smallint — a record past
     # :data:`MAP_INDEX_CEILING` used to die as the raw DataError
     # MID-TX, taking the valid page-mates down with the rollback (an
