@@ -251,6 +251,8 @@ the registry's own law)."""
 def register_app(app: object) -> None:
     """The app's boot registration (WorkflowApp.__init__ calls this).
     Weak: the registry observes the imported apps, never pins them."""
+    global _projection_cache
+    _projection_cache = None
     _apps.add(app)
 
 
@@ -282,6 +284,8 @@ def reset_app_registry_for_tests() -> None:
     itself (``app.get`` recompiles idempotently; the D1 registry's
     absorption guard owns the name collision).
     """
+    global _projection_cache
+    _projection_cache = None
     _apps.clear()
 
 
@@ -439,6 +443,9 @@ def _workflow_cohorts(
     return cohorts, caps
 
 
+_projection_cache: tuple[list[ActorConfig], list[str]] | None = None
+
+
 def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
     """THE BOOT PROJECTION with its failures' names: the same projection
     :func:`project_workflow_actor_configs` runs, returning ALSO the
@@ -486,6 +493,9 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
     event stream read the projection — a stable order is the readable
     one.
     """
+    global _projection_cache
+    if _projection_cache is not None:
+        return _projection_cache
     totals: dict[str, tuple[str, set[str]]] = {}
     capacity_totals: dict[str, _CapacityTerms] = {}
     failures: list[str] = []
@@ -556,6 +566,18 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
                         "per actor, the estate's own law)."
                     )
                 capacity_totals.setdefault(actor, terms)
+            if not workflow_cohorts:
+                # THE EMPTY GRAPH'S DIAGNOSTIC: the compile succeeded and
+                # produced nothing dispatchable (the app declares no
+                # workflows, or this workflow's builder wired nothing /
+                # returned None) — a runnable-cohort gate reads this list,
+                # so the state is named, never collapsed into "nothing
+                # imported".
+                failures.append(
+                    f"{app_face}.{name}: the workflow projects no cohorts — "
+                    "the builder wired no nodes (or returned None)"
+                )
+                continue
             for actor, seen in workflow_cohorts.items():
                 queues = totals.get(actor)
                 if queues is None:
@@ -601,7 +623,8 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
                 capacity_owner=terms.capacity_owner,
             )
         )
-    return configured, failures
+    _projection_cache = (configured, failures)
+    return _projection_cache
 
 
 def project_workflow_actor_configs() -> list[ActorConfig]:
