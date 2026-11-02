@@ -71,7 +71,7 @@ _RUNS_PAGE_SIZE = 200
 _RUNS_SQL = (
     "SELECT r.id, r.actor, r.status, r.created_at, r.finished_at, r.cancel_requested_at, "
     "r.metadata->>'workflow' AS workflow, "
-    # THE RUN-LEVEL DEFERRAL FACES (C4 — the visibility gap's cure): a
+    # THE RUN-LEVEL DEFERRAL FACES (the visibility gap's guard): a
     # pathologically deferring run is visible from the INVENTORY — the
     # sitting nodes' count (a node is sitting when it rests 'scheduled' on
     # a LIVE deferral stamp: the stamp's own attempt discriminator, the
@@ -142,14 +142,14 @@ def _field_of(payload: object, field_name: str) -> str | int | float | bool | No
 
 #: The refusal banner's closed vocabulary (the redirect the action
 #: routes carry — the operator lands on the DEFINED refused-op state,
-#: never a 400 wall: the extra conviction — a refusal redirect that the
-#: page's own reject_unknown_query_params 400s is the teach-them-to-
-#: retry mutation trap). The KEYS live on the action routes
+#: never a 400 wall: a refusal redirect that the
+#: page's own reject_unknown_query_params 400s would teach operators
+#: to retry blind). The KEYS live on the action routes
 #: (``_wf_actions``) so a route and its copy cannot drift apart.
-#: THE COPY HONESTY (H-C9): the not-applied refusal names only causes
+#: THE COPY HONESTY: the not-applied refusal names only causes
 #: the CAS can actually hit — the attempt ceiling is NOT one (the
 #: ordinal CONTINUES; no ceiling is consulted), and the impossible
-#: cause is off the record. The ROOT KEY's own line (H-C1): the run's
+#: cause is off the record. The ROOT KEY's own line: the run's
 #: root is not a node — its re-run is the RUN-rerun's concern.
 REFUSAL_BANNERS: Final[dict[str, str]] = {
     "cancel-not-applied": (
@@ -165,7 +165,7 @@ REFUSAL_BANNERS: Final[dict[str, str]] = {
         "Rerun refused — the run is cancelled; re-opening it is a second "
         "decision (create a new run, or un-cancel deliberately)."
     ),
-    # THE DEADLOCK'S NAMED REFUSAL (the round-2 conviction): the race's
+    # THE DEADLOCK'S NAMED REFUSAL: the race's
     # honest loser — the retry's writers raced, PG killed this one; the
     # winner's own voice is honest and the operator re-checks the settled
     # state. Never a 500 wall.
@@ -178,7 +178,7 @@ REFUSAL_BANNERS: Final[dict[str, str]] = {
 }
 _REFUSAL_PARAM: Final[str] = "error"
 
-#: THE PARTIAL BANNER'S PREFIX (H-C5): ``rerun-partial:<rows>:<keys>:<total>``
+#: THE PARTIAL BANNER'S PREFIX: ``rerun-partial:<rows>:<keys>:<total>``
 #: — the half-rerun's counts ride the closed vocabulary's key.
 _RERUN_PARTIAL_PREFIX: Final[str] = RERUN_PARTIAL_BANNER + ":"
 
@@ -188,7 +188,7 @@ def _rerun_partial_copy(value: str) -> str | None:
     redirect key); None when the shape is not the route's own (a hostile
     or malformed param falls through to the generic refusal line). The
     key's shape is ``rerun-partial:<rows>:<keys>:<total>`` — the copy
-    speaks ROWS-WHERE-HONEST (the round-2 conviction): when the row and
+    speaks ROWS-WHERE-HONEST: when the row and
     key counts agree the plain "N of M" stands; when a map key's grant
     moved several rows the copy names the rows."""
     parts = value.split(":")
@@ -257,7 +257,7 @@ def register(router: APIRouter) -> None:
                 "workflow": r["workflow"] or r["actor"],
                 "root_status": r["status"],
                 "created_at": _iso(r["created_at"]),
-                # THE RUN-LEVEL DEFERRAL FACES (C4): the badge's inputs —
+                # THE RUN-LEVEL DEFERRAL FACES: the badge's inputs —
                 # a run with no sitting deferral reads all-None/0 (the
                 # defined absent face).
                 "deferring": int(r["deferring"] or 0),
@@ -363,13 +363,13 @@ def register(router: APIRouter) -> None:
                 # label is the row's truth (the stamp's own
                 # discriminator), rendered beside the status chip.
                 "deferral_label": n.deferral_label,
-                # THE DEADLINE LINE (the wf start_to_close cure — the
-                # bound where declared + the running face's reality):
+                # THE DEADLINE LINE (the wf start_to_close bound —
+                # where declared + the running face's reality):
                 # the same row's-truth pattern, rendered beside the
                 # deferral line.
                 "deadline_label": n.deadline_label,
             }
-            # THE COLLAPSE (Q1d): the map children render through their
+            # THE COLLAPSE: the map children render through their
             # source's hexagon — the page's node projection is the
             # collapsed one, the derivation reads every row.
             for n in view.nodes
@@ -389,15 +389,15 @@ def register(router: APIRouter) -> None:
                 "args": _field_of(h["payload"], "args"),
                 "created_at": h["created_at"],
                 # THE CLOCK FIELDS PASS THROUGH (the deadline face's
-                # cure): the view's holds are ALREADY normalized
+                # fix): the view's holds are ALREADY normalized
                 # (_normalize_hold's contract — the clocks as ISO text,
                 # JSON-safe), so a second _iso() here read a STRING,
                 # answered None, and the page's deadline line rendered
                 # the none-face for EVERY hold — the with-deadline face
-                # was dead code (the deadline-face pin's red).
+                # was dead code (the deadline-face pin's defect).
                 "expires_at": h["expires_at"],
                 "resolved_at": h["resolved_at"],
-                # THE TIMER'S BRANCH (the timer-cures lane's cure 3): the
+                # THE TIMER'S BRANCH: the
                 # normalized row's own timer mark (the reserved prefix's
                 # derivation) rides the projection — the template branches
                 # on the ROW's truth: a timer renders AS a timer, no
@@ -410,7 +410,7 @@ def register(router: APIRouter) -> None:
         ]
         boot = {
             "runId": view.run_id,
-            # THE BASE_PATH LAW (the relative-URL 404 bug's conviction):
+            # THE BASE_PATH LAW (the relative-URL 404 bug's fix):
             # every URL the JS builds rides the mounted prefix — the
             # stream URL is server-built absolute-with-base-path, and the
             # basePath rides the boot for the JS's own fetches (the node
@@ -427,7 +427,7 @@ def register(router: APIRouter) -> None:
             derived=view.derive(),
             nodes=nodes,
             holds=holds,
-            # THE REFUSED-OP BANNER (the extra conviction's cure): the
+            # THE REFUSED-OP BANNER (the refusal-redirect guard): the
             # cancel route's redirect lands HERE, on the named refusal —
             # never on a 400 wall.
             refusal_banner=_refusal_banner(request),

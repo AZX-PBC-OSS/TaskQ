@@ -1106,8 +1106,8 @@ def register(router: APIRouter) -> None:
         # the raw pool the BoundedPool wraps: the bound stays on every
         # handler-side checkout, the stream's own poll acquire is its own.
         #
-        # THE PUSH PRIMARY, THE POLL BELT (the consumer-face lane's CURE
-        # 3): the ProgressListener (the HitlListener's sibling) rides the
+        # THE PUSH PRIMARY, THE POLL BELT: the ProgressListener (the
+        # HitlListener's sibling) rides the
         # SAME LISTEN/NOTIFY transport — the write's own knock wakes the
         # replay, sub-poll latency; the 1s poll stays as the fallback
         # belt. THE CAPACITY TAX (the listener's own docstring): this

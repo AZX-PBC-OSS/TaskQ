@@ -388,8 +388,8 @@ def get_csrf_token(request: Request) -> str:
 async def validate_csrf(request: Request) -> None:
     """Dependency: validates the synchronizer-token CSRF on POST requests.
 
-    THE 403 LOOP'S REMEDY (the round-2 conviction): a refusal names the
-    CURE — the cookie and the form token drift when the page sat while
+    THE 403 LOOP'S REMEDY: a refusal names the
+    fix — the cookie and the form token drift when the page sat while
     the session rotated (or the cookie was lost outright), and the
     operator's only fix is a fresh page; the detail says so, so the 403
     self-describes its remedy instead of reading as a bug (the
