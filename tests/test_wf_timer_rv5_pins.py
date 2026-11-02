@@ -1,18 +1,12 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE DURABLE TIMER's rv5 HOSTILE-REVIEW pins (feat/taskqflow-durable-timers
-@ 08dccb92d) — the rejected defects of the T28 lane (+ the T29 redeploy
-face's operator surfaces), pinned asserting the SAFE behavior.
+"""THE DURABLE TIMER'S PINS — the timer hold's contract across the child
+flows and the versioning contract's redeploy faces: a hold's deadline is
+the row's truth, the wake is addressed, and the expiry arm fires once.
+Each pin asserts the SAFE behavior.
 
-Provenance: the rv5 internals review's live recorded findings, each reproduced
-against this head BEFORE pinning (the pre-pin repro shapes + outputs were captured at the pinning run.) Per the
-doctrine, a LIVE finding is pinned under ``pytest.mark.xfail(strict=True,
-reason="LIVE FINDING rv5-t<id>: …")`` asserting the SAFE behavior — the fix
-flips the pin XPASS-strict (a red that says: remove the marker WITH the
-fix).
+The behaviors held:
 
-The findings (each rejected live; the receipts carry the verbatim reds):
-
-* F-T1 (SEVERE) — THE TROJAN PREFIX: a payload model named
+* THE TROJAN PREFIX: a payload model named
   ``__timer__Approval`` mints a "human hold" that is INVISIBLE to
   ``HitlClient.list()`` (the _LIST_SQL's prefix exclusion), UNANSWERABLE
   (the boundary refuses the hand-delivered answer as a forgery of the
@@ -23,8 +17,8 @@ The findings (each rejected live; the receipts carry the verbatim reds):
   (every leg observed live). THE PIN: ``wait_signal`` refuses a model
   whose name carries the reserved prefix — the mint-time refusal NAMING
   the rule (build door or wait site), never the self-fire death.
-* F-T2 — THE BROADCAST LEAK: durable timers surface as pending HUMAN
-  holds on the T26 broadcast + backfill: the hold-create notify is
+* THE BROADCAST LEAK: durable timers surface as pending HUMAN
+  holds on the expiry-as-value broadcast + backfill: the hold-create notify is
   unconditional (``register_hold``'s create leg), and the listener's
   backfill (``_hitl_listen.py`` — ``WHERE status = 'held'``) carries no
   prefix filter (observed: ``HoldCreated(signal='__timer__leak')`` on
@@ -33,7 +27,7 @@ The findings (each rejected live; the receipts carry the verbatim reds):
   surface a timer hold as a HUMAN hold (the filter fix; a typed
   TimerScheduled event distinct from HoldCreated also satisfies —
   recorded here).
-* F-T3 — THE 10K-TIMER TAIL: ``sweep_due_timers`` is one bounded batch
+* THE 10K-TIMER TAIL: ``sweep_due_timers`` is one bounded batch
   (``batch_size=100``, no drain) at the 30s default cadence → 10k due
   timers drain in ~50 minutes (observed: 1500 seeded due, ONE pass fired
   exactly 100, 1400 left held; no ``drain=`` knob exists); and NO index
@@ -46,21 +40,21 @@ The findings (each rejected live; the receipts carry the verbatim reds):
   in a handful of seconds; (b) a static pin: a migration carries an
   index covering the due-scan (``expires_at`` on ``wf_signals``, the
   held-partial or equivalent).
-* F-T4 — THE EXPLORER'S FALSE AFFORDANCE: the admin run page renders the
+* THE EXPLORER'S FALSE AFFORDANCE: the admin run page renders the
   human RESOLVE form on a TIMER hold row (``workflow_detail.html``'s
   ``{% if h.status == 'held' and actions_enabled %}`` — any held row;
   observed at render level: a ``__timer__`` hold row renders
   ``data-wf-form="resolve"`` exactly like a human hold's). THE PIN:
   timer rows never render the human-resolve form (the template branch;
   the render-level pin keeps the HUMAN affordance intact).
-* F-T5 — THE DRIFT-INVISIBLE OPERATOR: zero ``code_version`` references
+* THE DRIFT-INVISIBLE OPERATOR: zero ``code_version`` references
   in the CLI/admin surfaces — a run redeployed mid-flight (two distinct
   §22.1 hashes on one run's rows — the stamps EXIST,
   ``jobs.code_version``) is flagged nowhere (observed: the mixed-version
   run's ``taskq flows status <run>`` output carries no version line at
   all). THE PIN: ``flows status <run>`` surfaces the version drift when
   a run's node rows carry >1 distinct ``code_version``.
-* F-T6 — THE STRUCTURAL-REDEPLOY WEDGE: rename a node in a redeploy →
+* THE STRUCTURAL-REDEPLOY WEDGE: rename a node in a redeploy →
   the in-flight run's pending row at that key is unresolvable in the new
   process (observed: the new-process drive RAISES
   ``WorkflowRunError: step 'second' is not in workflow ... compiled
@@ -73,8 +67,8 @@ The findings (each rejected live; the receipts carry the verbatim reds):
   with a NAMED error class, never an eternal zombie.
 
 THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
-receipts law — the pack is the acceptance record; every flip green x2
-at the lane head; the reds' verbatim pre-flip captures in (the pinning run's record):
+the pack's acceptance law — each marker left only when its fix landed,
+and the pin's assertion outlives the fix:
 
 * T1, T2, T3a — the markers are REMOVED WITH THE FIXES (the
   timer-fixes lane's landed shapes: the E17 mint refusal, the broadcast
@@ -217,7 +211,7 @@ async def _collect(listener: HitlListener, seconds: float) -> list[Any]:
     return events
 
 
-# ── F-T1: THE TROJAN PREFIX (the mint-time refusal) ─────────────────────
+# ── THE TROJAN PREFIX (the mint-time refusal) ─────────────────────
 
 
 @pytest.mark.integration
@@ -265,19 +259,19 @@ async def test_t1_wait_signal_refuses_a_timer_prefixed_model(
         f"the trojan mint must die LOUDLY at the wait site — the node ended {node['status']!r}"
     )
     assert node["error_class"] != "SignalPayloadError", (
-        "F-T1: the run died the TROJAN death — the minted '__timer__Approval' hold "
+        "The run died the TROJAN death — the minted '__timer__Approval' hold "
         "was invisible to the client and unanswerable by hand, then the TIMER ARM "
         "fired it at the deadline and the wait site's revalidation killed the run "
         "(SignalPayloadError). The mint itself must be refused"
     )
     message = node["error_message"] or ""
     assert "__timer__" in message and "reserved" in message.lower(), (
-        f"F-T1: the wait-site death does not name the reserved-prefix rule: "
+        f"The wait-site death does not name the reserved-prefix rule: "
         f"{node['error_class']}: {message!r}"
     )
 
 
-# ── F-T2: THE BROADCAST LEAK (the listener never sees a timer as human) ──
+# ── THE BROADCAST LEAK (the listener never sees a timer as human) ──
 
 
 @pytest.mark.integration
@@ -314,7 +308,7 @@ async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
             and str(getattr(e, "signal", "")).startswith("__timer__")
         ]
         assert timer_creations == [], (
-            f"F-T2 (notify leg): the listener announced a TIMER hold as a HUMAN "
+            f"The listener announced a TIMER hold as a HUMAN "
             f"hold — HoldCreated events for the clock's own rows: "
             f"{[(getattr(e, 'signal', None), getattr(e, 'source', None)) for e in timer_creations]}"
         )
@@ -336,7 +330,7 @@ async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
             and str(getattr(e, "signal", "")).startswith("__timer__")
         ]
         assert timer_creations2 == [], (
-            f"F-T2 (backfill leg): the snapshot announced a TIMER hold as a HUMAN "
+            f"The snapshot announced a TIMER hold as a HUMAN "
             f"hold: {[(getattr(e, 'signal', None), getattr(e, 'source', None)) for e in timer_creations2]}"
         )
         backfilled = [e for e in events2 if getattr(e, "event", "") == "backfilled"]
@@ -344,7 +338,7 @@ async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
             "the listener's reconcile event never arrived (the harness's own witness)"
         )
         assert all(hold_id not in e.open_hold_ids for e in backfilled), (
-            "F-T2 (the reconcile): Backfilled.open_hold_ids carries the TIMER id — "
+            "The reconciled open-hold ids carry the TIMER id — "
             "the consumer's pending-human cards include the clock's hold"
         )
     finally:
@@ -353,7 +347,7 @@ async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
         await runner.cancel_workflow(flow_id, reason="the pin's cleanup")
 
 
-# ── F-T3: THE 10K-TIMER TAIL (the drain + the index) ────────────────────
+# ── THE 10K-TIMER TAIL (the drain + the index) ────────────────────
 
 
 # Why load_sensitive: the drain ceiling (1500 due timers inside 15 s) is
@@ -408,7 +402,7 @@ async def test_t3a_the_timer_arm_drains_the_due_set_in_one_cascade(
         - held0
     )
     assert remaining == 0, (
-        f"F-T3a: one sweep cascade left {remaining} of {seeded} due timers HELD "
+        f"One sweep cascade left {remaining} of {seeded} due timers HELD "
         f"(the arm fires one bounded batch per pass — at the 30s default cadence "
         "a 10k backlog takes ~50 minutes to drain)"
     )
@@ -449,14 +443,14 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
     assert signals_indexes, "no wf_signals index exists at all (the harness's own witness)"
     due_scan = [s for s in signals_indexes if "expires_at" in s.lower()]
     assert due_scan, (
-        f"F-T3b: no wf_signals index covers expires_at — the timer due-scan "
+        f"No wf_signals index covers expires_at — the timer due-scan "
         f"(status='held' + the __timer__ prefix + expires_at <= now ORDER BY "
         f"expires_at) seq-scans + sorts per tick. The shipped indexes: "
         f"{[s.splitlines()[0] for s in signals_indexes]}"
     )
 
 
-# ── F-T4: THE EXPLORER'S FALSE AFFORDANCE (the render-level pin) ─────────
+# ── THE EXPLORER'S FALSE AFFORDANCE (the render-level pin) ─────────
 
 
 def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
@@ -552,13 +546,13 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
         "the HUMAN hold lost its resolve form — the fix must not amputate the real affordance"
     )
     assert "rv5t4timer" not in forms, (
-        "F-T4: the TIMER hold row renders the human resolve form — a control "
+        "The TIMER hold row renders the human resolve form — a control "
         "whose every submission is refused-as-forgery is a false affordance on "
         "the operator's page"
     )
 
 
-# ── F-T5: THE DRIFT-INVISIBLE OPERATOR (the version-drift surface) ───────
+# ── THE DRIFT-INVISIBLE OPERATOR (the version-drift surface) ───────
 
 
 @pytest.mark.integration
@@ -569,7 +563,7 @@ async def test_t5_flows_status_surfaces_the_version_drift(
     cli_settings: Any,
 ) -> None:
     """THE STAMPS MUST BE READ: a run whose node rows carry >1 distinct
-    ``code_version`` (the redeployed-mid-run shape — the T29 contract's
+    ``code_version`` (the redeployed-mid-run shape — the versioning contract contract's
     own adoption) is FLAGGED on the operator's run view: ``taskq flows
     status <run>`` carries a drift line naming the versions' plurality.
     The staging is the versioning pins' own redeploy seam: 'first' runs
@@ -617,13 +611,13 @@ async def test_t5_flows_status_surfaces_the_version_drift(
         and ("drift" in ln.lower() or "differ" in ln.lower() or "mixed" in ln.lower())
     ]
     assert drift_lines, (
-        f"F-T5: `taskq flows status` never mentions the version drift — the run "
+        f"`taskq flows status` never mentions the version drift — the run "
         f"carries 2 distinct code_versions and the operator sees nothing. "
         f"The output: {lines!r}"
     )
 
 
-# ── F-T6: THE STRUCTURAL-REDEPLOY WEDGE (the loud terminal) ──────────────
+# ── THE STRUCTURAL-REDEPLOY WEDGE (the loud terminal) ──────────────
 
 
 @pytest.mark.integration
@@ -674,7 +668,7 @@ async def test_t6_a_vanished_node_key_terminal_fails_loudly(
     )
     assert node is not None
     assert node["status"] == "failed", (
-        f"F-T6: the vanished node's run NEVER terminalizes — 'second' is "
+        f"The vanished node's run NEVER terminalizes — 'second' is "
         f"{node['status']!r} and the root follows it (the eternal zombie: "
         "budget-free parked, detector-logged at best, surfaced nowhere ON THE "
         "RUN). The loud law: terminal-fail with a NAMED error class"

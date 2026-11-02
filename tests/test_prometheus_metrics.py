@@ -219,7 +219,7 @@ _NAME_MAP: list[tuple[str, str, str]] = [
     ("taskq.claim.latency_p99_seconds", "taskq_claim_latency_p99_seconds", "gauge"),
     ("taskq.claim.claims_per_second", "taskq_claim_claims_per_second", "gauge"),
     ("taskq.claim.degradation_ratio", "taskq_claim_degradation_ratio", "gauge"),
-    # T08's workflow-progress rollup gauge (obs/_otel.py's observable
+    # the typed node view's workflow-progress rollup gauge (obs/_otel.py's observable
     # gauge; the maintenance leader samples it). The name already ends in
     # the counter suffix "total" but the instrument is a GAUGE: the bridge
     # renders the bare name, and rules.yaml's TaskQWorkflowBlockedStuck

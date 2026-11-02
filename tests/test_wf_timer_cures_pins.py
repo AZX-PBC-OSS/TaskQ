@@ -1,4 +1,4 @@
-"""THE TIMER-FIXES LANE'S PINS — the timer attack front's five
+"""THE TIMER-FIXES LANE'S PINS — the timer fixes' five
 recorded findings + the doc-deep gap, each fixed WITH its failing-first pin (the
 recorded finding's live repro is the red receipt BEFORE the fix).
 
@@ -15,7 +15,7 @@ The six fixes, and what each pin holds shut:
   legs at the base tree. THE FIX: the refusal is at the MINT —
   ``wait_signal`` (and ``wait_until``'s key) raise the typed
   E17-reserved-timer-prefix error naming the fix, no row is written.
-* FIX 2 — THE TIMER LEAK INTO THE APPROVAL BROADCAST: the T26
+* FIX 2 — THE TIMER LEAK INTO THE APPROVAL BROADCAST: the expiry-as-value
   create-broadcast fired unconditionally and the listener's backfill had
   no prefix filter — every SSE/cowork-UI consumer saw every timer as a
   pending approval. THE FIX: ONE mechanism — the reserved-prefix split
@@ -450,7 +450,7 @@ async def test_the_backfill_never_surfaces_a_timer_hold(
 async def test_the_create_broadcast_never_announces_a_timer_hold(
     wf_pool: asyncpg.Pool, wf_schema: str, timer_cures_redlog: Any
 ) -> None:
-    """FIX 2, the create leg's face: the T26 create-broadcast is the
+    """FIX 2, the create leg's face: the create-broadcast is the
     APPROVAL broadcast — a timer hold minted UNDER a live listener
     announces NOTHING on it (the human control minted beside it does).
     Failing-first: at the base tree the leg fired unconditionally."""

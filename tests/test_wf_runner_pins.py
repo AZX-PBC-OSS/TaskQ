@@ -1,9 +1,9 @@
-"""T09 — THE RUNNER PINS: the integration tier (the real PG lane). The
+"""THE RUNNER PINS: the integration tier (the real PG lane). The
 API's compile lowers into the ENGINE's rows and drives through the
 engine's own finalize/sweep machinery — every pin here exercises the REAL
 path (create → drive → read), never a local re-implementation.
 
-The paper-cut fixes' re-tests (the T17 disposition ledger's "re-test"
+The paper-cut fixes' re-tests (the API reference disposition ledger's "re-test"
 column) live here:
   #1  test_join_user_body_cascades_downstream
   #2  test_sequenced_maps_depth3_one_flow
@@ -282,7 +282,7 @@ async def test_transient_ladder_emits_no_terminal_until_exhaustion(
     # attempt failures ≠ node failure — no terminal until exhaustion).
     assert [r["status"] for r in statuses] == ["failed", "failed", "failed"]
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
-    assert root == "failed"  # T06's cascade took the flow with it
+    assert root == "failed"  # the failed-parent cascade took the flow with it
 
 
 async def test_flow_result_read_decodes_once(
@@ -317,7 +317,7 @@ async def test_flow_result_read_decodes_once(
 async def test_dispatch_resolves_bodies_from_the_definition_registry(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """D1's dispatch wiring (the pin the round-1 fixer deferred): the
+    """D1's dispatch wiring (the pin the earlier round deferred): the
     runner resolves EVERY body from the REGISTERED DEFINITION — a
     definition unregistered from the registry is unrunnable (loud), and
     a per-call body map cannot exist."""
@@ -416,7 +416,7 @@ async def test_drive_until_held_bound(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """Cut #10's contract (the shape; the loop/HITL compositions land in
-    T19/T10): the driver's ``until`` knob is bound and BOUNDED — a flow
+    the loop drive bound/the hold machinery): the driver's ``until`` knob is bound and BOUNDED — a flow
     that never terminalizes ends at ``max_ticks``, never a hang."""
     app = WorkflowApp()
 

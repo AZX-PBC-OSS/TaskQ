@@ -17,7 +17,7 @@ a RUNNABLE path + the captured output:
   run: the maintenance leader's sampler feeds
   ``taskq.wf_progress_nodes_total{workflow,state}``; the worker's
   /metrics renders it — the scrape output captured verbatim.
-* **LEG 4 — FORK/ROUTER**: the T20 conditional router LIVE: the chain's
+* **LEG 4 — FORK/ROUTER**: the streaming router conditional router LIVE: the chain's
   SCREEN step routes each record — READABLE → index, UNREADABLE →
   dead_letter; the totals are the fence (a non-total route is refused
   at declaration).
@@ -407,13 +407,13 @@ async def test_leg3_the_live_wf_gauge_scrape(
     )
 
 
-# ── LEG 4: the conditional router (the T20 chain, live) ──────────────────
+# ── LEG 4: the conditional router (the streaming router chain, live) ──────────────────
 
 
 async def test_leg4_the_conditional_router_routes_live(
     module_pg_pool: Any, module_pg_schema: Any, wf_pool: Any, wf_schema: str, wf_conn: Any
 ) -> None:
-    """The T20 router LIVE: the chain's SCREEN step routes each record —
+    """The streaming router router LIVE: the chain's SCREEN step routes each record —
     READABLE → index, UNREADABLE → dead_letter; the totals are the
     fence. THE RUNNABLE PATH: the demo's ``doc_screen_router`` run."""
     from examples.workflows import _DOC_SOURCE
@@ -443,7 +443,7 @@ async def test_leg4_the_conditional_router_routes_live(
         "leg4-router.json",
         json.dumps(
             {
-                "leg": "4 — the conditional router (the T20 chain)",
+                "leg": "4 — the conditional router (the typed chain)",
                 "run_id": str(run_id),
                 "rows": dict(sorted(by_key.items())),
                 "the_route": {

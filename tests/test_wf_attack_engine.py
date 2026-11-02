@@ -1,11 +1,9 @@
 """ATTACK PINS — THE CRASHED-TERMINAL WEDGE + THE RUN-CREATION SEAM
 (engine half).
 
-Provenance: the hostile review of the consolidated head (af1b8779) —
-FINDING PACK 1 (the round's most severe engine finding; attacker
-evidence in schema ``att_t20``) and the migrations front's F-CREATE-1 /
-F-CREATE-3. The pins assert the SAFE behavior; each carries its
-unmarked red run in the pinning run's record.
+THE WEDGE'S FINDING PACK (the engine's most severe recorded defect; the
+evidence lives in the probe schema's rows). The pins assert the SAFE
+behavior; each watched its own failure before the fix landed.
 
 THE WEDGE (pack 1, rejected LIVE at af1b8779): a run whose nodes are
 ``{succeeded|failed, crashed}`` wedges ``running`` FOREVER. The chain:
@@ -34,7 +32,7 @@ derives ``failed``, never ``running``, and never ``complete``
 (rule 4's all-succeeded/failed/skipped row cannot claim a node whose
 work can never report). The pins assert NOT-running + ``failed``.
 
-F-CREATE-1 (LANDED): ``FlowRunner.create_flow`` is N+M+2 auto-committed
+``FlowRunner.create_flow`` is N+M+2 auto-committed
 statements — ``_insert_root`` commits the root row ALONE on its own
 pool acquire; ``_insert_static_nodes`` + ``ROOT_START`` ride a SECOND
 acquire with NO ``conn.transaction()``. Kill after the root insert →
@@ -42,7 +40,7 @@ an orphan root (``pending``, zero nodes) the derivation can never see
 (``WORKFLOW_ROOT_MAINTAIN_SQL`` inner-joins the node rows — the orphan
 produces no ``per_flow`` row), never terminalizes, never prunes.
 
-F-CREATE-3 (LANDED): the pending root row (``actor='wf'``,
+the pending root row (``actor='wf'``,
 ``step_key='__flow__'``, ``metadata.flow_id`` = its own id) matches the
 dispatch candidate predicates — ``backend/_dispatch_sql.py`` carries NO
 ``__flow__`` exclusion (grep-verified: the only ``step_key`` legs in
@@ -135,7 +133,6 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
 # ── Pack 1, pin (a): THE DERIVATION MUST TERMINALIZE THE CORPSE ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [pack-1(a)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING pack-1(a) @ af1b8779: a run whose nodes are …
 async def test_wedge_derivation_terminalizes_the_dead_run(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
@@ -161,7 +158,6 @@ async def test_wedge_derivation_terminalizes_the_dead_run(
 # ── Pack 1, pin (b): THE WEDGE IS SURFACED, NOT HIDDEN (the G7 face) ───
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [pack-1(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING pack-1(b) @ af1b8779: the maintenance leg's …
 async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql, wf_pool: asyncpg.Pool
 ) -> None:
@@ -192,7 +188,7 @@ async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
     )
 
 
-# ── F-CREATE-1: THE INTERRUPTED CREATE LEAVES NO LIVE ORPHAN ───────────
+# ── THE INTERRUPTED CREATE LEAVES NO LIVE ORPHAN ───────────
 
 
 class _CreateIn(BaseModel):
@@ -203,7 +199,6 @@ async def _create_body(ctx: StepContext, params: _CreateIn) -> Any:
     return {"doc_id": params.doc_id}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-1 @ af1b8779: create_flow commits the …
 async def test_interrupted_create_leaves_no_live_orphan(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -211,7 +206,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
     wf_sql: WorkflowSql,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F-CREATE-1: drive the REAL ``create_flow`` with the second leg
+    """drive the REAL ``create_flow`` with the second leg
     killed (``_insert_static_nodes`` raises — the crash-after-root-insert
     window). The SAFE law, either fix direction:
 
@@ -221,7 +216,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
       sweep within 3 maintenance passes.
 
     Today's shape fails both: the root row sits ``pending`` with zero
-    nodes forever (the red in (the pinning run's record)."""
+    nodes forever (the red in ."""
     app = WorkflowApp()
 
     @app.workflow("create_seam_orphan")
@@ -259,14 +254,13 @@ async def test_interrupted_create_leaves_no_live_orphan(
     )
 
 
-# ── F-CREATE-3: THE CLAIM PATH NEVER HANDS OUT THE __flow__ ROW ────────
+# ── THE CLAIM PATH NEVER HANDS OUT THE __flow__ ROW ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-3]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-3 @ af1b8779: the dispatch fence …
 async def test_dispatch_never_claims_the_flow_root_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
-    """F-CREATE-3, at the SQL level (the doctrine's verify-first): the
+    """at the SQL level (the doctrine's verify-first): the
     pending root row — the mid-create window's shape AND every run's
     steady pre-``ROOT_START`` instant — must be UNCLAIMABLE even by a
     registered, ``workflow_execution``-capable worker serving the root's

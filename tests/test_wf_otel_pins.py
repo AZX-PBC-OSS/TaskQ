@@ -449,7 +449,7 @@ async def test_an_exhausted_deferral_records_the_ladder_scrubbed(
 async def test_a_held_step_records_the_hold_event(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE HOLD (T10): a body at its gate — the step span's outcome is
+    """THE HOLD (the hold machinery : a body at its gate — the step span's outcome is
     ``held``, the ``wf.held`` event names the hold id and the signals,
     the status stays UNSET; the run span (``until='held'``) records the
     drive's stop and NO terminal lifecycle event (the run is not

@@ -1,81 +1,74 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""ATTACK PINS — the RE-REVIEW round's recorded findings (feat/taskqflow @
-d24f17b9; the second hostile pass over the consolidated head).
+"""THE RUN VIEW'S PINS — the run page's stated contracts under adversarial
+shapes, one pin each. Each pin asserts the SAFE behavior; one finding
+whose resolved behavior already holds at the head stands GREEN as the
+guard that keeps the resolution from rotting.
 
-Provenance: the rv2 front's live recorded findings, one pin each. Per the
-doctrine, a LANDED finding (a live defect at d24f17b9) is pinned
-asserting the SAFE behavior under ``pytest.mark.xfail(strict=True)`` —
-the fix flips the pin to XPASS-strict (a red that says: remove the
-marker WITH the fix); a finding whose RESOLVED behavior already holds
-at the head (rv2-11 — the battery's deterministic red, rejected as a
-bad declaration in the BATTERY's own test) stands GREEN as the guard
-that keeps the resolution from rotting.
+The behaviors held:
 
-The findings (the front's receipts carried each recorded finding live):
-
-* F-RV2-1 — the admin panel/run-page bound ``error_message`` /
+* the admin panel/run-page bound ``error_message`` /
   ``error_traceback`` / ``captured_error`` (the Q5 read-side fix) but
   ``error_class`` (unbounded text) still round-trips WHOLE:
   ``_wf_rows.py``'s ``_run_view_from_rows`` (node + root) and
   ``_wf_actions.py``'s node-panel route (the detail AND the children
   census) serve it raw.
-* F-RV2-2 — ``reap_nodeless_roots`` returns ``int(fetchval(RETURNING
+* ``reap_nodeless_roots`` returns ``int(fetchval(RETURNING
   f.id))`` — the FIRST reaped row's UUID as a 128-bit int — as the
   "reaped count" metric.
-* F-RV2-3 — ``step(gates=(<a TypedGate from channel.gate(...)>,))``
+* ``step(gates=(<a TypedGate from channel.gate(...)>,))``
   (the natural door-confusion: ``TypedGate`` instead of ``GateDecl``)
   crashes ``validate_compiled`` with a raw ``AttributeError``
   (``_rule_eternal_wait`` reads ``gate.timeout_s``) instead of a NAMED
   E-rule refusal.
-* F-RV2-4 — ``taskq.audit.record_admin_action`` binds ``reason`` /
+* ``taskq.audit.record_admin_action`` binds ``reason`` /
   ``detail`` VERBATIM into the never-pruned ``admin_audit`` (a 5MB
   reason lands whole); and a NUL byte in the reason on the workflow
   cancel path rolls the WHOLE cancel back with an opaque
   ``CharacterNotInRepertoireError`` (the jobs-cancel route carries the
   ``parse_text_filter`` NUL guard; the workflow route doesn't).
-* F-RV2-5 — ``DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL`` drops the
+* ``DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL`` drops the
   ``deps_pending = 0`` filter AND the workflow fence (the ``__flow__``
   exclusion + the terminal-flow exclusion) that the plain probe
   carries — against the module's own "the two fences may not disagree"
   invariant.
-* F-RV2-6 — ``_dispatch_batch``'s expansion loop flips ``sql_stmt`` to
+* ``_dispatch_batch``'s expansion loop flips ``sql_stmt`` to
   the cursor render while ``round_bound`` is live but never flips it
   BACK: a cursor entry the jitter reset expires BETWEEN iterations
   calls the ``$6`` statement with 5 args (asyncpg ``InterfaceError``),
   while the comment at the loop head claims the plain shape runs.
-* F-RV2-7 — ``obs._claim_health.claim_health_snapshot`` iterates the
+* ``obs._claim_health.claim_health_snapshot`` iterates the
   module-global ``_window`` deque while ``record_claim_latency``
   mutates it: concurrent record+scrape raises ``RuntimeError: deque
   mutated during iteration`` (hundreds of times per second under
   thread-level concurrency).
-* F-RV2-8 — a ``Promise`` NESTED in a dict/list ``loop(initial=...)``
+* a ``Promise`` NESTED in a dict/list ``loop(initial=...)``
   carry passes validation clean (E11's ``isinstance`` reads only the
   top level) and dies at the first claim with ``UnencodableValue``
   (the jsonb bind refusing the handle) — a claim→crash→reclaim loop
   classified infra-fault.
-* F-RV2-9 — E10 counts ANNOTATED params (``typing.get_type_hints``),
+* E10 counts ANNOTATED params (``typing.get_type_hints``),
   not ACTUAL params: an unannotated-but-runnable body wired correctly
   is refused with "takes 0 param(s)" — the message lies about the real
   arity, against the validator's zero-false-positive doctrine.
-* F-RV2-10 — the deploy-matrix header (tests/system_e2e/
+* the deploy-matrix header (tests/system_e2e/
   test_wf_deploy_matrix.py) lists 9 cells; cells 4 (OUTAGE), 6
   (REDISPATCH OWNERSHIP) and 9 (RETENTION MID-FLIGHT) have no test
   function anywhere, and the header cites a mutation pins file and a
   deployment.md "operator table" that do not exist.
-* F-RV2-11 — the battery's deterministic red
+* the battery's deterministic red
   (``test_wf_execution_py.py::test_projection_the_split_placement_
   cohorts``): the test's chain-source declaration wires a
   ``(ctx, params)`` body with ZERO args — the runtime invokes source
   bodies with ctx alone, so the declaration IS a wiring lie and E10's
   recorded finding is correct; the RESOLVED behavior (a ctx-only source
   body) is pinned green.
-* F-RV2-12 — ``tests/typeprobe/wf_gather_negative_types.py`` is a
+* ``tests/typeprobe/wf_gather_negative_types.py`` is a
   ZOMBIE probe: on disk, carrying live MUST_ERROR markers, wired
   nowhere (not in ``_gate.py``'s ``_CORPUS``, so not in the CI gate).
-* F-RV2-13 — the head-stamp law's own verifier
+* the head-stamp law's own verifier
   (``scripts/verify_evidence_heads.py``) reds on the committed
   ``.measurements/runs`` at the head (unstamped + stale live claims).
-* F-RV2-14 — ``perf-evidence-workflows-streaming.md``'s emit paragraph
+* ``perf-evidence-workflows-streaming.md``'s emit paragraph
   cites "max 10.4\u201314.5 ms across the five captured runs"; the capture
   ``t20-streaming-bands-20261008-052519.json`` carries max 20.569 —
   the cited range does not cover the evidence.
@@ -140,7 +133,7 @@ class _Report(BaseModel):
     ref: str
 
 
-# ── F-RV2-1: the unbounded error_class, both raw surfaces ───────────────
+# ── the unbounded error_class, both raw surfaces ───────────────
 
 
 async def _seed_failed_run_with_a_hostile_error_class(
@@ -194,12 +187,12 @@ async def test_rv2_1_the_run_view_bounds_error_class(
     for label, error_class in served:
         assert error_class is not None
         assert len(error_class) <= _BOUND_CEILING_CHARS, (
-            f"F-RV2-1 ({label}): the run view served error_class UNBOUNDED "
+            f"{label}: the run view served error_class UNBOUNDED "
             f"({len(error_class)} chars) — the panel/page bound covers "
             "error_message but the class field rides raw"
         )
         assert _TRUNCATION_MARKER.search(error_class), (
-            f"F-RV2-1 ({label}): the bounded error_class does not NAME the "
+            "The bounded error_class does not NAME the "
             "truncation (the honesty marker the sibling fields carry)"
         )
 
@@ -239,14 +232,14 @@ async def test_rv2_1_the_node_panel_route_bounds_error_class(
     for label, error_class in served:
         assert isinstance(error_class, str)
         assert len(error_class) <= _BOUND_CEILING_CHARS, (
-            f"F-RV2-1 (panel {label}): error_class served UNBOUNDED ({len(error_class)} chars)"
+            f"{label}: error_class served UNBOUNDED ({len(error_class)} chars)"
         )
         assert _TRUNCATION_MARKER.search(error_class), (
-            f"F-RV2-1 (panel {label}): the bounded error_class does not NAME the truncation"
+            "The bounded error_class does not NAME the truncation"
         )
 
 
-# ── F-RV2-2: the reap arm's count is a UUID-as-int ──────────────────────
+# ── the reap arm's count is a UUID-as-int ──────────────────────
 
 
 @pytest.mark.integration
@@ -271,13 +264,13 @@ async def test_rv2_2_the_nodeless_reap_returns_the_reaped_count(
     )
     assert actually_reaped == 1, "the arm must reap the orphan (its own contract)"
     assert reaped == actually_reaped, (
-        f"F-RV2-2: the arm reports {reaped} reaped but the rows say "
+        f"The arm reports {reaped} reaped but the rows say "
         f"{actually_reaped} — the metric carries int(first-reaped-uuid), "
         "not the count"
     )
 
 
-# ── F-RV2-3: a TypedGate in step(gates=...) is a NAMED refusal ──────────
+# ── a TypedGate in step(gates=...) is a NAMED refusal ──────────
 
 
 async def _hold_body(ctx: StepContext, params: _Ingest) -> Any:
@@ -301,7 +294,7 @@ def test_rv2_3_a_typed_gate_in_step_gates_is_a_named_refusal() -> None:
         app.get("rv2_typed_gate_mistake")
 
 
-# ── F-RV2-4: the audit trail's bounds + the NUL-proof cancel ────────────
+# ── the audit trail's bounds + the NUL-proof cancel ────────────
 
 
 @pytest.mark.integration
@@ -334,18 +327,13 @@ async def test_rv2_4a_the_audit_reason_and_detail_are_bounded(
     reason = row["reason"] or ""
     detail_text = row["detail"] if isinstance(row["detail"], str) else json.dumps(row["detail"])
     assert len(reason) <= _BOUND_CEILING_CHARS, (
-        f"F-RV2-4a: the audit reason landed UNBOUNDED ({len(reason)} chars) "
-        "in the never-pruned trail"
+        f"The audit reason landed UNBOUNDED ({len(reason)} chars) in the never-pruned trail"
     )
-    assert _TRUNCATION_MARKER.search(reason), (
-        "F-RV2-4a: the bounded reason does not NAME the truncation"
-    )
+    assert _TRUNCATION_MARKER.search(reason), "The bounded reason does not NAME the truncation"
     assert len(detail_text) <= _BOUND_CEILING_CHARS, (
-        f"F-RV2-4a: the audit detail landed UNBOUNDED ({len(detail_text)} chars)"
+        f"The audit detail landed UNBOUNDED ({len(detail_text)} chars)"
     )
-    assert _TRUNCATION_MARKER.search(detail_text), (
-        "F-RV2-4a: the bounded detail does not NAME the truncation"
-    )
+    assert _TRUNCATION_MARKER.search(detail_text), "The bounded detail does not NAME the truncation"
 
 
 @pytest.mark.integration
@@ -378,12 +366,12 @@ async def test_rv2_4b_a_nul_reason_never_aborts_the_wf_cancel(
     )
     assert audit_reason is not None, "the audit row must land with the cancel (G4)"
     assert "\x00" not in audit_reason and "bad" in audit_reason, (
-        f"F-RV2-4b: the audit row must carry the SANITIZED reason "
+        f"The audit row must carry the SANITIZED reason "
         f"(the NUL escaped/stripped, the content kept) — got {audit_reason[:80]!r}"
     )
 
 
-# ── F-RV2-5: the cursor probe's fence must BE the plain probe's ─────────
+# ── the cursor probe's fence must BE the plain probe's ─────────
 
 #: The seeded trio (each leg alone, one sub-case per isolation): the
 #: shapes the PLAIN probe's fence excludes (deps_pending=0 + the
@@ -468,13 +456,13 @@ async def test_rv2_5_the_cursor_probe_fences_identically_to_the_plain_probe(
 
     disagreements = [leg for leg in legs if not leg.endswith("(0, 0)")]
     assert not disagreements, (
-        "F-RV2-5: the cursor probe's world disagrees with the plain probe's "
+        "The cursor probe's world disagrees with the plain probe's "
         "(each seeded shape must read 0 rows in BOTH — the claim's candidacy "
         "the probe arbitrates for):\n  - " + "\n  - ".join(legs)
     )
 
 
-# ── F-RV2-6: the expired cursor mid-expansion is a NAMED degradation ────
+# ── the expired cursor mid-expansion is a NAMED degradation ────
 
 
 class _AcquireCtx:
@@ -595,20 +583,20 @@ def test_rv2_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None
     except BaseException as exc:  # Why: the pin's subject IS the exception's class.
         raised = exc
     assert not isinstance(raised, asyncpg.InterfaceError), (
-        f"F-RV2-6: the expired-cursor round died on the RAW driver arity error "
+        f"The expired-cursor round died on the RAW driver arity error "
         f"({raised}) — the loop presented the $6 cursor render with 5 args "
         f"(pairings: {conn.pairings}); the comment at the loop head claims the "
         "plain shape runs, and nothing names the degradation"
     )
     for is_cursor_render, argc in conn.pairings:
         assert is_cursor_render == (argc == 6), (
-            f"F-RV2-6: the round presented (cursor_render={is_cursor_render}, "
+            f"The round presented (cursor_render={is_cursor_render}, "
             f"{argc} args) — the statement/argument pairing is the round's own "
             f"invariant (pairings: {conn.pairings})"
         )
 
 
-# ── F-RV2-7: the claim-health snapshot never races the recorder ─────────
+# ── the claim-health snapshot never races the recorder ─────────
 
 
 def test_rv2_7_concurrent_record_and_snapshot_never_raise() -> None:
@@ -654,13 +642,13 @@ def test_rv2_7_concurrent_record_and_snapshot_never_raise() -> None:
         otel_mod._otel_enabled = original_flag  # pyright: ignore[reportPrivateUsage]
         reset_claim_health_state()
     assert not errors, (
-        f"F-RV2-7: concurrent record+snapshot raised {len(errors)} times "
+        f"Concurrent record+snapshot raised {len(errors)} times "
         f"(first: {type(errors[0]).__name__}: {errors[0]}) — the scrape-time "
         "read must never see the recorder's mutation"
     )
 
 
-# ── F-RV2-8: the nested Promise in the initial carry ────────────────────
+# ── the nested Promise in the initial carry ────────────────────
 
 
 async def _src_body(ctx: Any, params: _Ingest) -> _Report:
@@ -697,7 +685,7 @@ def test_rv2_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -
         app.get("rv2_loop_nested_promise")
 
 
-# ── F-RV2-9: E10 counts the ACTUAL params ───────────────────────────────
+# ── E10 counts the ACTUAL params ───────────────────────────────
 
 
 def test_rv2_9_e10_counts_the_actual_params() -> None:
@@ -753,13 +741,13 @@ def test_rv2_9_e10_counts_the_actual_params() -> None:
     message = str(excinfo.value)
     assert "E10" in message, f"the real mismatch must still refuse (E10): {message}"
     assert "only" in message, (
-        f"F-RV2-9: the refusal must NAME the offending node (the rule firing "
+        f"The refusal must NAME the offending node (the rule firing "
         f"on the right subject is the contract; the count's sentence is "
         f"wording, never pinned): {message}"
     )
 
 
-# ── F-RV2-10: the deploy-matrix header walks ────────────────────────────
+# ── the deploy-matrix header walks ────────────────────────────
 
 _REPO = Path(__file__).resolve().parents[1]
 _MATRIX = _REPO / "tests" / "system_e2e" / "test_wf_deploy_matrix.py"
@@ -837,7 +825,7 @@ def test_rv2_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
     assert not failures, "the deploy-matrix header walks:\n  - " + "\n  - ".join(failures)
 
 
-# ── F-RV2-11: the battery's deterministic red — the RESOLVED behavior ───
+# ── the battery's deterministic red — the RESOLVED behavior ───
 #
 # THE VERDICT (root-caused at the head): the test's declaration is the
 # lie, the validator is right. ``chain_source(chain, body)`` wires ZERO
@@ -969,7 +957,7 @@ def test_rv2_11_the_bad_source_declaration_still_refuses_loudly() -> None:
     )
 
 
-# ── F-RV2-12: no zombie typeprobe corpus ────────────────────────────────
+# ── no zombie typeprobe corpus ────────────────────────────────
 
 
 def test_rv2_12_every_typeprobe_file_is_wired_into_the_gate() -> None:

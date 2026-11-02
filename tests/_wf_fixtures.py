@@ -435,7 +435,7 @@ class RedLog:
     Every pin's rejected variant appends its observed dragon here; the
     fixture flushes on teardown.
 
-    THE PRESERVATION LAW (attack-3's hygiene finding, the fixer's own
+    THE PRESERVATION LAW (the hygiene finding's own
     lane): the evidence sinks are APPEND-ONLY and RUN-SCOPED — flush()
     appends ONE JSONL record (``{"run": …, "entries": [...]}``) and
     never rewrites the file. The rejected defect: ``write_text``
@@ -550,7 +550,7 @@ def ledger_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def hitl_redlog() -> Iterator[RedLog]:
-    """The red sink for the T10 HITL pins (the rejected variants)."""
+    """The red sink for the hold machinery's pins (the rejected variants)."""
     log = RedLog("t10-pin-reds.json")
     yield log
     log.flush()
@@ -558,7 +558,7 @@ def hitl_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def loop_redlog() -> Iterator[RedLog]:
-    """The red sink for the T19 loop pins (the mutation tests' reds)."""
+    """The red sink for the loop drive bound loop pins (the mutation tests' reds)."""
     log = RedLog("t19-pin-reds.json")
     yield log
     log.flush()
@@ -566,7 +566,7 @@ def loop_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def propagation_redlog() -> Iterator[RedLog]:
-    """The red sink for the T06 propagation pins (the phase-2 family)."""
+    """The red sink for the failed-parent propagation's pins (the cascade family)."""
     log = RedLog("t06-propagation-reds.json")
     yield log
     log.flush()
@@ -574,7 +574,7 @@ def propagation_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def t20_redlog() -> Iterator[RedLog]:
-    """The red sink for the T20 streaming pins (the rejected variants)."""
+    """The red sink for the streaming router streaming pins (the rejected variants)."""
     log = RedLog("t20-pin-reds.json")
     yield log
     log.flush()
@@ -582,7 +582,7 @@ def t20_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def progress_redlog() -> Iterator[RedLog]:
-    """The red sink for the T21 progress pins (the rejected variants)."""
+    """The red sink for the progress reporting's pins (the rejected variants)."""
     log = RedLog("t21-pin-reds.json")
     yield log
     log.flush()
@@ -610,7 +610,7 @@ def wedge_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def timer_redlog() -> Iterator[RedLog]:
-    """The red sink for the T28 durable-timer pins (the pre-implementation
+    """The red sink for the child flows durable-timer pins (the pre-implementation
     reds + the rejected variants)."""
     log = RedLog("t28-timer-pin-reds.json")
     yield log
@@ -619,7 +619,7 @@ def timer_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def versioning_redlog() -> Iterator[RedLog]:
-    """The red sink for the T29 versioning-contract pins (the redeploy
+    """The red sink for the versioning-contract pins (the redeploy
     face's reds)."""
     log = RedLog("t29-versioning-pin-reds.json")
     yield log
@@ -655,7 +655,7 @@ G7_DERIVED_TO_ROOT: dict[str, str] = {
 async def wf_g7_status_truth(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> AsyncIterator[None]:
-    """G7 (T08): the ALWAYS-ON metamorphic assertion — at test end, the
+    """G7, the always-on metamorphic assertion — at test end, the
     REPORTED workflow status (the flow root row's own status, the
     linearization point the engine's maintenance leg writes) equals the
     status RECONSTRUCTED FROM ROWS ALONE (the §17.5 derivation over the
@@ -794,9 +794,9 @@ def wf_schema(module_pg_schema: Any) -> str:
 
 @pytest.fixture
 async def wf_pool(module_pg_schema: Any) -> AsyncIterator[asyncpg.Pool]:
-    """The RUNNER's pool (T09): the flow runner acquires from a pool (its
+    """The RUNNER's pool (the typed API : the flow runner acquires from a pool (its
     claims + finalizes); the module's DSN builds it — one pool per test,
-    closed at teardown. The loop pins (T19) share it (a fixture
+    closed at teardown. The loop pins share it (a fixture
     duplicated across two files is a seam owed NOW — this is the
     seam's home, beside the other wf fixtures)."""
     pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
@@ -811,7 +811,7 @@ def wf_sql(module_pg_schema: Any) -> WorkflowSql:
 
 
 class FlowStandIn:
-    """The registered-definition stand-in (T09's API formalizes it; the
+    """The registered-definition stand-in (the typed API's API formalizes it; the
     run-key claim needs the placement fields only)."""
 
     def __init__(self, name: str = "ledger-flow") -> None:

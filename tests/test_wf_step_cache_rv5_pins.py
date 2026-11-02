@@ -1,21 +1,13 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE CROSS-RUN STEP CACHE's rv5 HOSTILE-REVIEW pins (feat/taskqflow-cross-run-cache
-@ 0839019c1) — the rejected defects of the T25 lane, pinned asserting the
-SAFE behavior.
-
-Provenance: the rv5 internals review's live recorded findings, each reproduced
-against this head BEFORE pinning (the pre-pin repro shapes + outputs were captured at the pinning run.) Per the
-doctrine, a LIVE finding is pinned under ``pytest.mark.xfail(strict=True,
-reason="LIVE FINDING rv5-k<id>: …")`` asserting the SAFE behavior — the fix
-flips the pin XPASS-strict (a red that says: remove the marker WITH the
-fix). The one GREEN guard (rv5-k2) pins the behavior that is already
-correct (the address IS input-sensitive) and must survive the fixes — it is
-the pack's own hole closed (the mutation that drops the input leg reds it;
-the scenario's capture is recorded).
+"""THE CROSS-RUN STEP CACHE'S PINS — the cache's contract: the address
+is input-sensitive, a hit never crosses runs or tenants, a store lands
+only on a terminal-succeeded body, and the TTL bounds what a hit may
+serve. Each pin asserts the SAFE behavior; the input-sensitivity guard
+is the pack's own mutation pin (dropping the input leg reds it).
 
 The findings (each rejected live; the receipts carry the verbatim reds):
 
-* F-K1 (MERGE-BLOCKER) — THE ROUTE-SOURCE WEDGE: ``cache=True`` on a
+* THE ROUTE-SOURCE WEDGE: ``cache=True`` on a
   typed-route SOURCE is accepted at wiring; run 1 stores; run 2 HITS and
   the hit path never rebuilds the route fork (api/_runner.py:666-681 —
   the hit's ``_finalize_success`` carries no ``prebuilt_route_fork``,
@@ -27,15 +19,15 @@ The findings (each rejected live; the receipts carry the verbatim reds):
   wedge must be impossible): the combination is a BUILD REFUSAL naming
   the why, OR the hit re-forks (the children spawn, the join fires, the
   run completes).
-* F-K2 — THE INPUT-SENSITIVITY PIN GAP (the pins' own hole): the address
+* THE INPUT-SENSITIVITY PIN GAP (the pins' own hole): the address
   must cover the WIRED INPUT — two DIFFERENT inputs to one cached body
   must MISS each other's entries (the mutation that drops the input leg
   survives all 11 shipped pins). THE GREEN GUARD: body B cached with
   input X then called with input Y → MISS + re-execute + separate
   addresses. Green at the head already; the mutation test (drop the
-  ``"input"`` leg from ``cache_address``'s doc) reds it — the capture
-  was captured at the pinning run.
-* F-K3 — THE CTX.INPUT EXCLUSION: a cached body reading
+  ``"input"`` leg from ``cache_address``'s doc) reds it — the mutation
+  is the pin's own witness.
+* THE CTX.INPUT EXCLUSION: a cached body reading
   ``ctx.input["tenant"]`` serves the FIRST run's truth to a second run
   with a different ``ctx.input`` (observed: run 2 with
   ``tenant=globex`` received ``'tenant:acme'`` — the cross-tenant leak
@@ -45,7 +37,7 @@ The findings (each rejected live; the receipts carry the verbatim reds):
   body reading run-scoped state under the cache opt-in): a build-time
   diagnostic (warning-or-refusal) naming the hazard. The docs-only
   alternative is flagged in the pin's own docstring.
-* F-K4 — THE CLOSURE HOLE's LAW: the address covers the body's OWN
+* THE CLOSURE HOLE's LAW: the address covers the body's OWN
   source only; a changed HELPER keeps the address. THE PIN (the honest
   minimum, the campaign's docs-numbers pattern): the guide's cache
   section states the law — the address covers the body's own source and
@@ -53,18 +45,18 @@ The findings (each rejected live; the receipts carry the verbatim reds):
   leg — a validator note when a cached body calls module-level
   callables — is NOT pinned; the gap is recorded here. If the lanes fix at root
   with transitive hashing, the pin flips.)
-* F-K5 — THE EXIT DEAD-CACHE: ``cache=True`` on an ``Exit``-returning
+* THE EXIT DEAD-CACHE: ``cache=True`` on an ``Exit``-returning
   body silently never stores (api/_runner.py:727-733's
   ``_finalize_exit`` returns before :822-824's store) — the opt-in
   no-ops SILENTLY (observed: two runs, zero cache rows, the body ran
   both times). THE PIN: refused at the wiring, the combination named
   (the Exit-annotation face is compile-visible). The store-instead
   alternative is flagged in the pin's own docstring.
-* F-K6 — THE EVICTION DOOR: no CLI verb / admin endpoint evicts a cache
+* THE EVICTION DOOR: no CLI verb / admin endpoint evicts a cache
   entry (raw SQL only — ``taskq cache purge`` exits 2). THE PIN:
   ``taskq cache purge <address>`` exists and works (a stored row is
   gone after the purge; the next run misses and re-executes).
-* F-K7 — THE CLASSIFIER ASYMMETRY: a ``ConnectionError`` on a HIT's
+* THE CLASSIFIER ASYMMETRY: a ``ConnectionError`` on a HIT's
   finalize is laddered as a BODY failure (the hit's finalize sits
   INSIDE the ladder's try — with ``max_attempts=1`` the node
   terminal-fails ``error_class='ConnectionError'`` with the body NEVER
@@ -78,8 +70,7 @@ The findings (each rejected live; the receipts carry the verbatim reds):
   lands, and the cleared-fault re-drive completes via the hit.
 
 THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
-receipts law — the pack is the acceptance record; the receipt rows are
-at the pinning run; every flip green x2 at the lane head):
+acceptance law — each marker left only when its fix landed):
 
 * K1, K5 — the markers are REMOVED WITH THE FIXES (the cache-fixes
   lane's shapes: the cached route-source's refusal + the Exit+cache
@@ -102,7 +93,7 @@ at the pinning run; every flip green x2 at the lane head):
   nothing, then ``--yes`` evicts — the fixed door's whole law pinned).
 * K7 — NOT flipped: the xfail stands at this lane (the hit's
   ``_finalize_success`` is still inside the ladder's try — my own run
-  confirmed the front's verdict: the asymmetry is REAL). The fix
+  confirmed the verdict: the asymmetry is REAL). The fix
   touches ``api/_runner.py``'s finalize/ladder path AND the docsfaces
   lane (still in flight) may touch the adjacent absorb path — the
   single-writer-per-file law: K7's fix dispatches when docsfaces
@@ -265,7 +256,7 @@ async def _cache_rows(conn: asyncpg.Connection, schema: str) -> list[asyncpg.Rec
     return await conn.fetch(f'SELECT * FROM "{schema}".wf_step_cache')
 
 
-# ── F-K1: THE ROUTE-SOURCE WEDGE (either fix satisfies) ────────────────
+# ── THE ROUTE-SOURCE WEDGE (either fix satisfies) ────────────────
 
 
 @pytest.mark.integration
@@ -312,7 +303,7 @@ async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
     assert claim_b.created
     outcome = await runner.drive(claim_b.flow_id, tick=0.02, max_ticks=120)
     assert outcome == "terminal", (
-        f"F-K1: the cached route source's HIT wedged the run (drive returned "
+        f"The cached route source's HIT wedged the run (drive returned "
         f"{outcome!r}) — the hit's finalize never rebuilt the route fork: the "
         "children never spawn, the consumer's dep never releases, the run is a "
         "'running' corpse over a succeeded source"
@@ -342,7 +333,7 @@ async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
     assert run_a is not None  # the producing run's record stands
 
 
-# ── F-K2: THE INPUT-SENSITIVITY GREEN GUARD (the pack's own hole) ────────
+# ── THE INPUT-SENSITIVITY GREEN GUARD (the pack's own hole) ────────
 
 
 @pytest.mark.integration
@@ -354,8 +345,8 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
     ONE cached body under TWO different wired inputs → the second call
     MISSES the first's entry (the body re-executes) and the two calls
     hold TWO distinct addresses. The mutation scenario (drop the ``input``
-    leg from ``cache_address``'s doc) reds this pin — the capture rides
-    the pinning run's record."""
+    leg from ``cache_address``'s doc) reds this pin — the mutation is
+    the pin's own witness."""
     from taskq.workflows._cache import cache_address
 
     app = WorkflowApp()
@@ -379,7 +370,7 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
     addr_x = cache_address(version, [{"doc_id": "X"}])
     addr_y = cache_address(version, [{"doc_id": "Y"}])
     assert addr_x != addr_y, (
-        "F-K2: one body over two inputs hashed to ONE address — the input leg "
+        "One body over two inputs hashed to ONE address — the input leg "
         "is absent from the address (any run's input reads every run's entry)"
     )
 
@@ -389,7 +380,7 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
     # served for the Y call).
     await _run_flow(app.get("rv5k2_y"), wf_pool, wf_schema, run_key="rv5k2:y")
     assert CALLS["k2_work"] == 2, (
-        "F-K2: the second input HIT the first's entry — the address is blind "
+        "The second input HIT the first's entry — the address is blind "
         "to the wired input (the cross-input leak)"
     )
     rows = await _cache_rows(wf_conn, wf_schema)
@@ -400,7 +391,7 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
     )
 
 
-# ── F-K3: THE CTX.INPUT EXCLUSION (the build-time diagnostic) ────────────
+# ── THE CTX.INPUT EXCLUSION (the build-time diagnostic) ────────────
 
 
 def test_k3_a_cached_body_reading_ctx_input_is_a_build_diagnostic() -> None:
@@ -425,11 +416,11 @@ def test_k3_a_cached_body_reading_ctx_input_is_a_build_diagnostic() -> None:
         app.get("rv5k3_ctx_input_cache")
     message = str(exc_info.value)
     assert "cache" in message and "input" in message, (
-        f"F-K3: the E18 refusal does not name the cache+ctx.input hazard: {message!r}"
+        f"The E18 refusal does not name the cache+ctx.input hazard: {message!r}"
     )
 
 
-# ── F-K4: THE CLOSURE HOLE's LAW (the docs pin) ─────────────────────────
+# ── THE CLOSURE HOLE's LAW (the docs pin) ─────────────────────────
 
 _DOCS = Path(__file__).resolve().parent.parent / "docs"
 
@@ -463,13 +454,13 @@ def test_k4_the_docs_carry_the_closure_holes_law() -> None:
         r"helper[^.]*(invisible|not|never)[^.]*address|address[^.]*(invisible|not|never)[^.]*helper",
         lowered,
     ), (
-        "F-K4: the guide names 'helper' but never states the law's operational "
+        "The guide names 'helper' but never states the law's operational "
         "half — that a changed helper does NOT move the address (the fixed "
         "verbatim: 'A changed HELPER is invisible to the address')"
     )
 
 
-# ── F-K5: THE EXIT DEAD-CACHE (refused at the wiring) ────────────────────
+# ── THE EXIT DEAD-CACHE (refused at the wiring) ────────────────────
 
 
 def test_k5_cache_on_an_exit_returning_body_refuses() -> None:
@@ -490,11 +481,11 @@ def test_k5_cache_on_an_exit_returning_body_refuses() -> None:
         app.get("rv5k5_exit_cache")
     message = str(exc_info.value)
     assert "cache" in message and ("Exit" in message or "exit" in message), (
-        f"F-K5: the refusal does not name the Exit+cache combination: {message!r}"
+        f"The refusal does not name the Exit+cache combination: {message!r}"
     )
 
 
-# ── F-K6: THE EVICTION DOOR (the purge verb) ─────────────────────────────
+# ── THE EVICTION DOOR (the purge verb) ─────────────────────────────
 
 
 @pytest.fixture
@@ -573,8 +564,7 @@ async def test_k6_the_cache_purge_verb_evicts(
     assert CALLS["k2_work"] == 2, "the purged address still served a hit"
 
 
-# ── F-K7: THE CLASSIFIER ASYMMETRY (one fault, one semantics) ────────────
-# THE FLIP (the K7 fix): the strict-xfail marker is REMOVED WITH the
+# ── THE CLASSIFIER ASYMMETRY (one fault, one semantics) ────────────
 # fix — the claim tail's machinery boundary classifies the infra fault
 # at EITHER finalize face as the reclaim class (the ledger says
 # 'crashed', the ladder unburned, the row re-pended reclaim-eligible,
@@ -628,7 +618,7 @@ async def test_k7_the_hit_finalize_infra_fault_is_the_reclaim_class(
 
     node = await _node_row(wf_conn, wf_schema, claim_b.flow_id, "ocr")
     assert node["status"] != "failed", (
-        f"F-K7: the hit-finalize's infra fault terminal-FAILED the node "
+        f"The hit-finalize's infra fault terminal-FAILED the node "
         f"(status={node['status']!r}) — the SAME fault on the miss path escapes "
         "as the reclaim class; here it was laddered as a BODY failure with the "
         "body never run (the classifier asymmetry: one fault, two semantics)"
@@ -639,7 +629,7 @@ async def test_k7_the_hit_finalize_infra_fault_is_the_reclaim_class(
         claim_b.flow_id,
     )
     assert failed_ledgers == 0, (
-        f"F-K7: the infra fault burned the ladder ({failed_ledgers} 'failed' "
+        f"The infra fault burned the ladder ({failed_ledgers} 'failed' "
         "ledger row(s)) — the reclaim class writes NO failure record"
     )
 

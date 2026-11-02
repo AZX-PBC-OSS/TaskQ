@@ -581,7 +581,7 @@ def _params_wrapper(lateral: str, schema: str, *, rr_keys: bool) -> str:
     The capability CTE (``_WF_EXEC_CAPABLE_CTE``) is composed VERBATIM
     between ``params`` and the rest: the production laterals reference
     ``wf_exec_capable`` by name (the execution fence's data leg), so a
-    wrapper that omitted it fails to prepare (CERT2 F-CERT2-1) — and one
+    wrapper that omitted it fails to prepare  — and one
     the wrapper literalized would let the pin's plan drift from the
     production one (the constant's own comment states the law).
     """

@@ -1,4 +1,4 @@
-"""The T07 fan-in bound pins (the fast tier): the DECLARED MAXIMUM FAN-IN
+"""The fan-in bound pins (the fast tier): the DECLARED MAXIMUM FAN-IN
 PER JOIN refused at validate with the child-driven alternative named, the
 escape recorded on the joined node, and the exactly-once pins on the
 child-driven shape (50 duplicate finalizes → 1 decrement; the PK rejects
@@ -91,7 +91,7 @@ def test_t07_pin_bound_refuses_the_forks_join_above_the_maximum() -> None:
 
 def test_t07_pin_bound_at_the_maximum_is_accepted() -> None:
     """The bound is a ceiling, not a haircut: exactly the bound is legal
-    (over-rejection is the worse asymmetry — the doctrine)."""
+    (over-rejection is the worse asymmetry — the stated doctrine)."""
     parents = tuple(JobId(new_id()) for _ in range(MAX_FAN_IN_PER_JOIN))
     validate_join_spec("edge_join", parents, len(parents))
 

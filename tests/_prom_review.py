@@ -1033,7 +1033,7 @@ otel_mod.set_otel_enabled(True)
 record_sweep_timeout("scheduled_to_pending")
 record_sweep_unexpected_error("scheduled_to_pending")
 record_cron_skipped_slots("probe_fail_actor", 1)
-# THE WF-PROGRESS GAUGE (T08): the leader's sampler's own write - the
+# THE WF-PROGRESS GAUGE (the typed node view : the leader's sampler's own write - the
 # (workflow, state)-keyed cache the observable gauge reads out. The fed
 # values are the promtool cases' fed label values' source of truth.
 update_wf_progress_cache(

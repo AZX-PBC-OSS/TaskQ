@@ -1,4 +1,4 @@
-"""The workflow schema round's structural + measured pins (T03, §16.4).
+"""The workflow schema round's structural + measured pins (the enqueue-latency band's own section, §16.4).
 
 Structural (the lock-scope family's form): the three-file single-lock-class
 split, the seam-only id generation in the DDL, the phase-obligations
@@ -138,7 +138,7 @@ def test_indexes_file_holds_only_create_indexes() -> None:
 
 
 def test_workflow_ddl_ids_are_seam_only() -> None:
-    """T04 pin 10's DDL half: the workflow DDL carries NO ``gen_random_uuid``
+    """the dispatch-claim band pin 10's DDL half: the workflow DDL carries NO ``gen_random_uuid``
     and NO ``uuid4`` — every id is app-side through the ``taskq._ids`` seam
     (uuid7, the TID251 discipline). Any hit reds."""
     for path in _round_files():
@@ -157,7 +157,7 @@ def test_phase_obligations_header_present() -> None:
 
 
 def test_dispatch_claim_carries_the_join_wait_exclusion() -> None:
-    """The dispatch-exclusion clause (T03's owning decision): the claim
+    """The dispatch-exclusion clause (the enqueue band's owning decision): the claim
     statement's WHERE carries ``deps_pending = 0`` at every claimable-row
     site — a semantic no-op for vanilla rows (DEFAULT 0), the thing that
     keeps a join-wait row unclaimable."""
@@ -201,7 +201,7 @@ def test_import_law_taskq_never_imports_workflows() -> None:
     assert '"violates": false' in out, out
 
 
-#: §16.1's BOOT SURFACES (F-R5's widening): every process entry the
+#: §16.1's BOOT SURFACES (the widening): every process entry the
 #: package ships — the library root, the worker's boot entry (the
 #: intercept seam), the CLI, the web assembly, and the admin's workflow
 #: PAGES module. The pin's old probe checked ONLY ``taskq/__init__``, so
@@ -221,7 +221,7 @@ _IMPORT_LAW_SURFACES = (
 
 @pytest.mark.parametrize("surface", _IMPORT_LAW_SURFACES)
 def test_import_law_every_boot_surface_never_imports_workflows(surface: str) -> None:
-    """The §16.1 law, widened (F-R5): importing ANY boot surface must
+    """The §16.1 law, widened : importing ANY boot surface must
     leave ``taskq.workflows`` unloaded — a module-scope workflows import
     anywhere in the surface's transitive tree is rejected. The admin's
     page modules are the proven violator (lazy-discovery loads them only
@@ -518,7 +518,7 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
             assert row["partial"] > 0, f"{idx} missing -- the clone did not build"
             assert ratio <= 0.01, (
                 f"{idx} is {ratio:.4%} of the same-column full index -- "
-                "the partial exemption is the doctrine"
+                "the partial exemption is the stated law"
             )
         partial_sizes["_red_drill"] = {
             "note": "the full control index against the smallest partial is the "

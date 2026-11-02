@@ -1,5 +1,5 @@
 # Why: the schema is a fixture-derived test identifier, not user input; every value is $-bound.
-"""ATTACK4 — the held-drive livelock (F-P4-HELD-DRIVE-NULL-DEADLINE).
+"""THE HELD-DRIVE LIVELOCK'S PIN — a held loop's deadline arm never re-arms a null deadline.
 
 A NO-DEADLINE hold is the LEGAL form (the W1 warning documents it), but
 `drive(until="held")` reads the held representation through
@@ -10,7 +10,7 @@ This is a PHASE-3 finding (the runner predates PR-6): the pin is
 strict-xfail with the REASON named — the fix is the hold
 marker, `metadata ? 'hold'`, the rows-alone predicate; it lands,
 the marker goes, and the pin greens. A strict xfail that PASSES fails the suite,
-so the flip is forced — the same mechanism the T17 contract probes used.
+so the flip is forced — the same mechanism the API reference contract probes used.
 """
 
 from __future__ import annotations

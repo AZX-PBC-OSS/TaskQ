@@ -1,5 +1,5 @@
-"""The T18 workflow-aware-pruner pins — the retention/result-expiry
-coupling (B4's owner), failing-first per the doctrine.
+"""The workflow-aware pruner's pins — the retention/result-expiry
+coupling.
 
 THE COUPLING: result-expiry must not eat a map's children before the join
 fires (EXPIRY-EATS-CHILDREN); retention must not prune a live run's
@@ -200,7 +200,7 @@ async def test_t18_pin1_expiry_eats_children(
 
 def wf_sql_unguarded_expiry(wf_sql: WorkflowSql) -> str:
     """THE REJECTED SHAPE: the expiry arm WITHOUT the workflow-liveness
-    guard — the pre-T18 shipped statement (the revert scenario's target)."""
+    guard — the pre-fix shipped statement (the revert scenario's target)."""
     from taskq.backend import _sweeps
 
     mutated = _sweeps._SWEEP_RESULT_TTL_SQL.replace(  # pyright: ignore[reportPrivateUsage]  # Why: the rejected variant is the SHIPPED statement minus its guard — the mutation is the scenario.

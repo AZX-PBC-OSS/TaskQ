@@ -1,4 +1,4 @@
-"""The finalize-family pins (T04): pin 1 (the deps fingerprint — the snapshot write reds, the shipped arm heals), pin 6 (duplicate finalizes → one decrement, the rowcount gate), pin 13 (THE ATTEMPT-FENCE — the zombie loses).
+"""The finalize-family pins: pin 1 (the deps fingerprint — the snapshot write reds, the shipped arm heals), pin 6 (duplicate finalizes → one decrement, the rowcount gate), pin 13 (THE ATTEMPT-FENCE — the zombie loses).
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
@@ -365,7 +365,7 @@ async def test_pin_25_concurrent_fire_window_one_row(
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """F-R4's scenario: TWO fire paths race ONE join in one window — the
+    """The scenario: TWO fire paths race ONE join in one window — the
     engine's tx2 fire (``fired_by='finalize'``, the decrement just hit 0)
     and the sweep's healing fire (``fired_by='sweep'``, the rederive arm
     re-deriving firable from the LEDGER while the counter already says 0).
@@ -625,7 +625,7 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
     the bodies live at MODULE level (above) — the perf front's
     function-local ``ItemsIn`` is invisible to the body-hints walk (the
     closure cell carries only the body's own free variables; the
-    annotation is a string under the future-import), and the front's
+    annotation is a string under the future-import), and the walk's
     local definition reds at the AttributeError, never at the size
     assert — an unfaithful repro. Module level = the annotation
     resolves, the body runs, the map forks, and the red names THE

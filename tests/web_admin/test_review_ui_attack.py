@@ -103,7 +103,7 @@ def _make_client(pool: Any, *, base_path: str = "") -> TestClient:
 
 # ── 1. the refresh-transport matrix, exhaustive ───────────────────────────
 #
-# The matrix the fixer pinned had holes: the 8 no-transport pages were
+# The earlier matrix had holes: the 8 no-transport pages were
 # pinned in "real-time mode" via _force_realtime, which setattr's a module
 # attribute FastAPI's Depends-captured callable never reads - those cells
 # rendered in POLLING mode and the pin held trivially. /jobs and the two
@@ -257,7 +257,7 @@ def test_no_page_serves_an_inline_event_handler(
 ) -> None:
     """EVERY rendered page, probed with hostile stored data (a bucket name
     carrying the JS-string breakout the rate-limits fix removed), must ship
-    zero inline ``on*=`` handlers. The fixer removed the bucket reset's
+    zero inline ``on*=`` handlers. The fix removed the bucket reset's
     handler; the job detail page's cancel and retry confirms still
     interpolate a value into inline onclick JS strings - the same
     attribute-entity-decodes-before-the-JS-runs class, one missed instance

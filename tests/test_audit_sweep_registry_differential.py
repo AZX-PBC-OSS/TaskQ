@@ -635,7 +635,7 @@ async def test_audit_hasattr_gate_keeps_sweeps_off_in_memory_backend(
 #
 # The differential above audits the REFACTOR equivalence: the vendored
 # eight-sweep module vs the spec-driven one, on doubles that implement the
-# LEGACY maintenance surface. The workflow arms (T04) are NOT part of that
+# LEGACY maintenance surface. The workflow arms (the dispatch-claim band  are NOT part of that
 # claim — they registered later, admitted through the same hasattr seam on
 # their OWN capability marker (``workflow_sweeps_capable`` — the
 # backend's declaration; the arms never borrow another sweep's method
@@ -649,8 +649,8 @@ _WF_ARMS = (
     "wf_join_rederive",
     "wf_outbox_drain",
     "wf_signal_sweep",
-    # T28's child-join wake: the child flow's terminal is the join
-    # hold's resolver (the CAS delivery + the resume + the T26 knock).
+    # the child flows's child-join wake: the child flow's terminal is the join
+    # hold's resolver (the CAS delivery + the resume + the expiry-as-value knock).
     # Pure append, same as the arms before it.
     "wf_child_join_wake",
     # The D2 soak's fixes: the hold-stamp reconcile (the SIGKILL-during-
@@ -663,7 +663,7 @@ _WF_ARMS = (
     "wf_phantom_reap",
     "wf_nodeless_root_reap",
     "wf_progress_ring_prune",
-    # T25's step-cache expiry arm: pure append, same as every arm before.
+    # the cross-run cache's step-cache expiry arm: pure append, same as every arm before.
     "wf_step_cache_retention",
 )
 

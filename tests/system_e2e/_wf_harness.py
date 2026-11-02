@@ -1,4 +1,4 @@
-"""The workflow marches' fleet helpers (T15): spawn, wait, read, close.
+"""The workflow marches' fleet helpers: spawn, wait, read, close.
 
 The vanilla harness's shape (``_harness.py`` — spawn/readiness/signal/
 reap) with the WORKFLOW capability: every pod boots the

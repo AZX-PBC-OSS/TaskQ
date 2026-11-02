@@ -15,7 +15,7 @@ baseline re-measurement shows the same lines). What each region IS:
   cold-process fallback's teeth), the no-deadline hold's NULL deadline,
   the deliver CAS's no-op + resume-refused arms, the context's
   chain+hook redact composition;
-* ``_ctx.py`` — ``cursor()`` (the T20 checkpoint read: {} before the
+* ``_ctx.py`` — ``cursor()`` (the streaming router checkpoint read: {} before the
   first emit + the decode), the progress emitter's unwired no-op;
 * ``_ctx_wait.py`` — the re-wait's NodeHeldError (a hold standing), the
   replay path's non-dict payload passthrough, ``signal()`` (the
@@ -516,7 +516,7 @@ async def test_the_cursors_checkpoint_the_empty_then_the_decoded(
     module_pg_pool: Any, module_pg_schema: ModulePgSchema
 ) -> None:
     """``ctx.cursor()``: ``{}`` before the first emit; the committed
-    checkpoint decodes after (the T20 resume law's read half)."""
+    checkpoint decodes after (the resume law's read half)."""
     schema = module_pg_schema.schema_name
     app = WorkflowApp()
 

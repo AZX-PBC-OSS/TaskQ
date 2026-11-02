@@ -1,4 +1,4 @@
-"""The sweep-arm-family pins (T04): pins 2+5 (the flow-status leg INSIDE the fire statement — a post-cancel re-derive refuses), pin 8 (MISNAMED-CHILD — blocked-with-reason, never a silent fire), pin 4 (HELD-ROW EXCLUSIVITY), pin 15 (PHANTOM-RUNNING reaped), pin 17 (EMPTY-JOIN — the edge-ledger formula is load-bearing).
+"""The sweep-arm-family pins: pins 2+5 (the flow-status leg INSIDE the fire statement — a post-cancel re-derive refuses), pin 8 (MISNAMED-CHILD — blocked-with-reason, never a silent fire), pin 4 (HELD-ROW EXCLUSIVITY), pin 15 (PHANTOM-RUNNING reaped), pin 17 (EMPTY-JOIN — the edge-ledger formula is load-bearing).
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
@@ -257,7 +257,7 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     # THE EXECUTION LEG (the execution verdict's fence): the SAME live
     # child is UNCLAIMABLE by a worker that cannot execute it — an
     # unregistered worker id (the COALESCE-safe default) and a registered
-    # NON-capable worker both refuse. THE VACUITY LAW (F-R2, the fresh
+    # NON-capable worker both refuse. THE VACUITY LAW (the fresh
     # reviewer's mutation scenario): each leg asserts on a pending flow row
     # INSERTED WITHIN THE LEG — the row the dead fence leaks must be the
     # row the pin observes. The unregistered leg's row (``live2``) was
@@ -363,7 +363,7 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
 
     # THE REJECTED TWIN (the comparator, kept forever as pin 2's flow leg
     # keeps its unfenced twin): the capability CTE's SAFE DEFAULT flipped
-    # — ``COALESCE(…, false)`` → ``true`` — the F-R2 mutation, composed on
+    # — ``COALESCE(…, false)`` → ``true`` — the mutation, composed on
     # the RENDERED statement (the same shape the production dispatch
     # runs). The unregistered worker then CLAIMS the still-pending
     # ``live2`` row: the leg is load-bearing, the damage observed and
@@ -394,7 +394,7 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     engine_redlog.red(
         "pin2-exec-capable-leg-dropped",
         "the capability CTE's safe default COALESCE(false)→true — an "
-        "UNREGISTERED worker claims the pending flow row (F-R2's damage)",
+        "UNREGISTERED worker claims the pending flow row (the damage)",
         {"claimed": sorted(claimed), "leaked_flow_row": str(live2_id)},
     )
 
@@ -559,7 +559,7 @@ async def test_pin_4_held_row_invisible_to_the_rederive(
     deadline, the only live timer on it) is INVISIBLE to the re-derive
     arm: not locked, not reconciled, not fired -- even when the LEDGER
     already says every parent is terminal (the crash-window composition).
-    On wake the arm reconciles + fires exactly once. The budget arm (T19)
+    On wake the arm reconciles + fires exactly once. The budget arm
     carries the same invariant as ``AND NOT budget_paused``."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     held = await seed_join(wf_conn, wf_schema, flow_id, deps=2, scheduled_in=3600)

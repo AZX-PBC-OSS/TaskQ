@@ -78,7 +78,7 @@ def probe_resolve_takes_a_dict_not_a_model() -> None:
 
 
 def probe_awaiting_a_promise_again() -> None:
-    """The wiring handle is not awaitable (the T01 regression guard on
+    """The wiring handle is not awaitable (the claim door regression guard on
     the new surface's verbs)."""
     app = WorkflowApp()
 

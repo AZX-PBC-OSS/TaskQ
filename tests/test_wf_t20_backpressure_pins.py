@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""T20's EMIT BACKPRESSURE pins — DH9's fix (the ticket's decision 7).
+"""THE EMIT BACKPRESSURE's pins — the emit cap's decision.
 
 THE DECLARED HOME (the design law — one home): the max-in-flight bound
 is the RUN's admission control — how many non-terminal rows the run may

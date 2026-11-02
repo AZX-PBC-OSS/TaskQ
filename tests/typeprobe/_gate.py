@@ -1,4 +1,4 @@
-"""T01's type-probe gate: every MUST_ERROR marker reds on BOTH pinned
+"""THE TYPE-PROBE GATE: every MUST_ERROR marker reds on BOTH pinned
 checkers — asserting the EXPECTED RULE-IDS per marker, and failing on any
 error OUTSIDE the markers.
 
@@ -27,7 +27,7 @@ clean-site regression's escape hatch, removed.)
 pyright runs under this directory's own ``pyrightconfig.json`` — the root
 pyproject's ``tests`` executionEnvironment sets ``reportArgumentType =
 false``, which would mute exactly the violations the probes assert (the
-T01 finding this config exists to fix).
+the claim door finding this config exists to fix).
 
 Run: ``uv run --no-sync python tests/typeprobe/_gate.py`` (the CI
 ``type-probes`` job's single step).
@@ -47,8 +47,8 @@ from pathlib import Path
 PYRIGHT_VERSION = "1.1.414"
 TY_VERSION = "0.0.85"
 
-#: The probe CORPUS: one file per API surface round (T01's engine corpus,
-#: the T09 flow API's wiring corpus, the type-mechanism round's generic
+#: The probe CORPUS: one file per API surface round (the claim door's engine corpus,
+#: the typed API flow API's wiring corpus, the type-mechanism round's generic
 #: wiring corpus, the phase-2/-3/-4 attack rounds' surface corpora — the
 #: negative probes ship WITH the API, BUILD-PROTOCOL §7b). Each
 #: MUST_ERROR marker reds on BOTH checkers — with the RULE-IDS the
@@ -79,7 +79,7 @@ _CORPUS: tuple[str, ...] = (
     # a -> object decl is a static error at the decoration site, both
     # checkers; these hold that line in the corpus.
     "wf_workflow_decl_negative_types.py",
-    # T26'S AMENDMENT — the expiry-as-value probes: the wait's timeout
+    # the expiry-as-value'S AMENDMENT — the expiry-as-value probes: the wait's timeout
     # face is the TYPED UNION (the decision models | Expired) and the
     # CHECKER forces the fail-close arm (the bare unwrap + the
     # fall-through match red; the green door — both arms — stays clean).
@@ -89,13 +89,13 @@ _CORPUS: tuple[str, ...] = (
     # string key (neither an enum member nor a payload type) reds; the
     # type-keyed green face stays clean.
     "wf_type_tagged_route_negative_types.py",
-    # THE GRAPH-DSL TYPED ROUTE'S PROBES (T27's fix): the route verb's
+    # THE GRAPH-DSL TYPED ROUTE'S PROBES (the typed route's fix): the route verb's
     # arms are keyed by the union's member TYPES — a raw string key reds
     # at the call site (the Route literal's discipline, at the wiring
     # verbs); the type-keyed green face (and the flat Promise[list[R]]
     # it returns) stays clean.
     "wf_graph_route_negative_types.py",
-    # THE CHILD FLOWS' PROBES (T28): the join's closed union
+    # THE CHILD FLOWS' PROBES (the child flows : the join's closed union
     # (``ChildOk[M] | ChildFailed | ChildCancelled | Expired``) forces
     # the fail-close arms — the bare unwrap reds the attribute, the
     # ChildOk-only match reds the fall-through against the body's

@@ -2,7 +2,7 @@
 this file is the fence's kept-green receipt: the pin below HOLDS THE
 FENCE GREEN, and a red here is the fence's regression, not a finding.
 
-P3 rule 4 (T04): "Cancel = one transaction — the flow flip is the
+P3 rule 4 (the dispatch-claim band : "Cancel = one transaction — the flow flip is the
 linearization point; every other statement re-checks flow status inside
 its own statement. THREE legs: the fire guard …, the DISPATCH FENCE (in
 the claim), the finalize fence — any two are insufficient; all three

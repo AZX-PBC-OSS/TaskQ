@@ -1,21 +1,13 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""ATTACK PINS — the rv6 round's ENGINE pack (the pushed head 0e2f5cc09),
-PORTED TO the engine-fixes lane and FLIPPED GREEN by its fixes.
-
-Provenance: the rv6 front's live recorded findings, each reproduced against the
-pinned head BEFORE pinning. Per the doctrine, a LIVE finding is pinned
-under ``pytest.mark.xfail(strict=True, reason="LIVE FINDING rv6-e<id>: …")``
-asserting the SAFE behavior — the fix flips the pin to XPASS-strict (a
-red that says: remove the marker WITH the fix). THE FLIP IS DONE: both
-pins ran xfail-strict at the base (the red receipts are in this pack's
-RECEIPTS file and the lane's captures) and the fixes
-(``_sql_runner.py``'s terminal-flow fence on BOTH claim seats;
-``_hitl.py``'s hold-stamp-addressed wake) flipped them — the markers are
-REMOVED WITH the fix, the assertions stand as the permanent green pins.
+"""THE ENGINE'S CLAIM-FENCE PINS — a terminal flow's rows are never
+re-claimed (the in-process driver's claim path AND the fleet's dispatch
+claim both fence on the flow's terminal status), and a hold's wake is
+addressed to the hold's own stamped identity (a stale epoch's wake
+resolves nothing). Both pins stand as permanent green guards.
 
 The findings (each rejected live):
 
-* F-E1 (SEVERE) — THE IN-PROCESS POST-TERMINAL EXECUTION HOLE: the
+* THE IN-PROCESS POST-TERMINAL EXECUTION HOLE: the
   in-process driver's claim path (``CLAIMABLE_NODES_SQL_TEMPLATE`` /
   ``NODE_CLAIM_SQL_TEMPLATE``, ``workflows/api/_sql_runner.py``) carries
   NO flow-status leg; only ``drive()``'s loop-top check covers it. A
@@ -29,7 +21,7 @@ The findings (each rejected live):
   door doesn't. THE PIN: the in-process claim carries the same
   terminal-flow fence — a body never executes on a terminal flow through
   ANY door.
-* F-E2 — THE HOLD→NODE WAKE'S MISSING MAP-INDEX LEG (the holdmap lane's
+* THE HOLD→NODE WAKE'S MISSING MAP-INDEX LEG (the holdmap lane's
   resume-addressing hole, pinned at THIS head — the map_index fix
   (1528719d2) is NOT an ancestor of this tree; the shape pinned is the
   one this tree ships): the deliver path's wake
@@ -58,7 +50,7 @@ from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build
 from taskq.workflows.api._hitl import deliver_payload
 from tests._wf_fixtures import seed_flow
 
-#: THE EXECUTION SENTINEL (F-E1): the staged body appends here when it
+#: THE EXECUTION SENTINEL : the staged body appends here when it
 #: runs. Module-level (the in-process driver executes in THIS process);
 #: cleared at the pin's start — the recorded finding is "the body NEVER ran".
 _E1_SENTINEL: list[str] = []
@@ -76,7 +68,7 @@ async def _e1_child_body(ctx: StepContext) -> str:
     return "done"
 
 
-# ── F-E1: the in-process post-terminal execution hole ────────────────────
+# ── the in-process post-terminal execution hole ────────────────────
 
 
 @pytest.mark.integration
@@ -112,7 +104,7 @@ async def test_e1_the_in_process_claim_never_executes_on_a_terminal_flow(
     )
     await runner.tick(flow_id)
     assert _E1_SENTINEL == [], (
-        "F-E1: the body EXECUTED on the cancelled flow — the in-process claim "
+        "The body EXECUTED on the cancelled flow — the in-process claim "
         f"carries no terminal-flow fence (the fleet's dispatch SQL has it). "
         f"Sentinel: {_E1_SENTINEL!r}"
     )
@@ -123,7 +115,7 @@ async def test_e1_the_in_process_claim_never_executes_on_a_terminal_flow(
     )
     assert row is not None
     assert row["status"] != "succeeded" and row["attempt"] == 0, (
-        f"F-E1: the child on the cancelled flow finalized {row['status']!r} "
+        f"The child on the cancelled flow finalized {row['status']!r} "
         f"(attempt {row['attempt']}) — a post-terminal execution through the "
         "in-process door. The fenced claim leaves the row pending (a refused "
         "claim is re-derivable; a claimed one is not un-runnable — the "
@@ -131,7 +123,7 @@ async def test_e1_the_in_process_claim_never_executes_on_a_terminal_flow(
     )
 
 
-# ── F-E2: the hold→node wake's missing map_index leg ─────────────────────
+# ── the hold→node wake's missing map_index leg ─────────────────────
 
 #: The staged hold's declared contract (the cold-process boundary's
 #: structural fit — no wait site ran in this process, so
@@ -214,7 +206,7 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
     resumed = {str(r["id"]) for r in rows if not r["still_held"]}
     own_node = node_by_hold[str(hold_ids[1])]
     assert resumed == {own_node}, (
-        "F-E2: the middle-out resolve woke the WRONG sibling — the wake matches "
+        "The middle-out resolve woke the WRONG sibling — the wake matches "
         f"step_key + flow + hold-marker with no map_index/ORDER BY leg. The "
         f"resolved hold {str(hold_ids[1])[:12]}… owns node {own_node[:12]}… "
         f"(map_index=1); the resumed set is "
@@ -224,6 +216,6 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
     )
     still_held_count = sum(1 for r in rows if r["still_held"])
     assert still_held_count == 2, (
-        f"F-E2: exactly the two UNANSWERED siblings stay held; observed "
+        f"Exactly the two UNANSWERED siblings stay held; observed "
         f"{still_held_count} — the resolve's wake disturbed more than its own node"
     )

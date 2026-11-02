@@ -1,14 +1,13 @@
 """ATTACK PINS — the torn-cancel faces + the cancel import law.
 
-Provenance: the hostile review of the consolidated head (af1b8779). The
-attack is F-P4-TORN-CANCEL's two faces — the cancel cascade's signal leg
+The torn-cancel defect's two faces — the cancel cascade's signal leg
 riding a SECOND pool connection in autocommit (fixed at 2ada9d33: the
 leg runs on the caller's connection inside the caller's transaction).
 These pins exist so the fix can never rot silently: the attack lives
 here, green against the fence, and any re-introduction of a second
 connection — or a new leg that fails after the signal write — reds.
 
-The law this file pins (T10/P3 rule 4, verbatim): cancel is ONE
+The law this file pins (the hold machinery/P3 rule 4, verbatim): cancel is ONE
 transaction — the flow flip is the linearization point; the nodes, the
 held signals, and the audit row commit together or not at all.
 
@@ -155,8 +154,7 @@ def test_the_cancel_path_never_imports_the_admin_package() -> None:
     scopes — the function-local lazy import is exactly where the
     rejected seam lived.
 
-    THE XFAIL IS GONE (the designed flip, observed and captured — the
-    fixer's ``faceC-XPASS-flip-*.txt``): the strict marker reded as
+    THE XFAIL IS GONE: the strict marker turned
     XPASS the moment the fix landed (the audit seam moved to the
     deps-free :mod:`taskq.audit`; the compat shim
     ``taskq.web.admin._audit`` re-exports it and the engine never
@@ -190,7 +188,7 @@ def test_the_cancel_path_never_imports_the_admin_package() -> None:
 async def test_the_canonical_module_attr_patch_lands_exactly_one_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """TOOTH T1 — the CANONICAL module attr's patch (the adversarial review's 1e):
+    """TOOTH T1 — the CANONICAL module attr's patch (the patched attr must be the canonical one):
     a test double rebinds ``taskq.audit.record_admin_action`` itself (a
     newcomer's natural first reach) with the classic delegating spy
     (capture the original, call it), while the shim is loaded. The

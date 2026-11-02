@@ -1234,7 +1234,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             group = f"e2e-{item.path.stem}" if is_e2e else item.path.stem
         item.add_marker(pytest.mark.xdist_group(name=group))
 
-    # G7's ALWAYS-ON registration (T08): every ASYNC test in the WORKFLOW
+    # G7's ALWAYS-ON registration (the typed node view : every ASYNC test in the WORKFLOW
     # pin files ends with the reported==reconstructed check (the fixture
     # in tests/_wf_fixtures.py). THE WIRING (the phase-2 attack's H4
     # fix): a ``usefixtures`` MARKER added here is INERT — the items'

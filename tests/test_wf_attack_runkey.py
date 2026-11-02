@@ -1,11 +1,9 @@
-"""ATTACK PINS — THE RUN-KEY SEAM (the run-creation front, run-key half).
+"""THE RUN-KEY SEAM'S PINS.
 
-Provenance: the hostile review of the consolidated head (af1b8779) —
-the migrations front's F-CREATE-2 / F-RUNKEY-4 / F-RUNKEY-5. The pins
-assert the SAFE behavior; each carries its unmarked red run in the
-pack's own record.
+The run-key seam's pins: the create path's replay and refusal
+contracts, stated as the caller meets them.
 
-F-CREATE-2 (LANDED): the retry interaction. ``create_flow(run_key=K)``
+The retry interaction. ``create_flow(run_key=K)``
 after an interrupted create hits the arbiter's conflict path
 (``ledger.insert_flow_run`` → ``RunClaim(created=False)``) and
 ``FlowRunner.create_flow`` EARLY-RETURNS the existing run's id — the
@@ -16,7 +14,7 @@ INCOMPLETE node census must COMPLETE the census (the replay heals the
 interrupted create) or REFUSE with a named error — never return 'your
 run' to a shell.
 
-F-RUNKEY-4 (LANDED): a FAILED run squats its key. ``create_flow``
+A FAILED run squats its key. ``create_flow``
 returns the bare ``JobId`` — ``RunClaim.status`` (which
 ``insert_flow_run`` read off the existing row) is DISCARDED at
 ``_runner.py``'s ``return claim.flow_id`` — nothing re-fires, and the
@@ -28,21 +26,13 @@ law: the conflict's STATUS is learnable from the ``create_flow`` call
 itself (a returned claim object, or a typed refusal carrying the
 status).
 
-F-RUNKEY-5 (doc lie): docs/guides/workflows.md instructs
+The guide's named run entrypoint must exist:
 ``workflows.run(flow, input, key=…)`` — an API that does not exist
 (grep-verified: ``taskq.workflows.__all__`` carries no ``run``;
 ``hasattr(taskq.workflows, 'run')`` is False). The pin is the
 doc↔package consistency smoke: either the API exists or the guide does
 not name it.
 
-GUARD DISPOSITION (the doctrine's tail): the run-key replay pin
-(``tests/test_workflows_ledger_pins.py::test_pin_4_run_key_replay_one_run``)
-already holds one-run-row-forever GREEN at the ledger layer. The
-terminal-failed extension does NOT ship as a green guard: the current
-runner semantics is 'return the failed run's bare id' and the guide
-promises 'id + status' — the doc does not bless the shipped API shape,
-so the case folds into F-RUNKEY-4's xfail (above), per the doctrine's
-"otherwise".
 """
 
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against the fixtures' _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
@@ -94,17 +84,16 @@ async def _node_census(wf_conn: asyncpg.Connection, wf_schema: str, flow_id: Job
     )
 
 
-# ── F-CREATE-2: THE RETRY COMPLETES THE CENSUS (OR REFUSES NAMED) ──────
+# ── the interrupted create's retry completes the census ──────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-2]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-2 @ af1b8779: create_flow(run_key=K) …
 async def test_runkey_retry_after_interrupted_create_completes_the_census(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_pool: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F-CREATE-2: kill the first create after the root insert
+    """Kill the first create after the root insert
     (``_insert_static_nodes`` raises once), then RETRY with the same run
     key — the caller's recovery move. THE SAFE LAW (the shipped arm,
     pinned exactly): the retry returns the SAME run with a COMPLETE node
@@ -147,18 +136,14 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
     )
 
 
-# ── F-RUNKEY-4: THE CONFLICT'S STATUS SURFACES ON THE CALL ─────────────
+# ── the conflict's status surfaces on the call ─────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-RUNKEY-5]; the marker was removed per the designed flip (the confirmation).
+# ── the guide's run() entrypoint resolves (doc smoke) ──
 
 
-# ── F-RUNKEY-5: THE GUIDE'S run() ENTRYPOINT RESOLVES (doc-lie smoke) ──
-
-
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-RUNKEY-5]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-RUNKEY-5 @ af1b8779: docs/guides/workflows.md …
 def test_the_guide_s_documented_run_entrypoint_resolves() -> None:
-    """F-RUNKEY-5, the doc-reference smoke: the guide's named run-level
+    """The doc-reference smoke: the guide's named run-level
     idempotency surface resolves against the package, or the guide no
     longer names it. Sync by design — the derivation of the lie is
     import-and-read, no PG."""

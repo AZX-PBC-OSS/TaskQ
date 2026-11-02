@@ -1,4 +1,4 @@
-"""T20's FENCE PROBE — the source-terminal fence + the premature-terminal
+"""THE SOURCE-TERMINAL FENCE'S PROBE — the source-terminal fence + the premature-terminal
 fence (the spike's 30-sweep probe's shape, PROOF.md §2, translated).
 
 The no-fan-in design has NO join, so the original premature-FIRE fence

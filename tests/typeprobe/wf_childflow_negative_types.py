@@ -1,4 +1,4 @@
-"""T28's probes — the JOIN's closed union: ``handle.wait()`` returns
+"""THE CHILD FLOW'S JOIN PROBES — the closed union: ``handle.wait()`` returns
 ``ChildOutcome[M] | Expired`` (``ChildOk[M] | ChildFailed |
 ChildCancelled | Expired``), so the CHECKER forces the arms — the
 ``Decision | Expired`` pattern's sibling at the flow boundary.
@@ -7,7 +7,7 @@ Each ``MUST_ERROR(rules...)`` marker names a wrong-shape body that must
 RED on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
 from the marker's DECLARED set.
 
-THE FAILING-FIRST RECEIPT: the bare-unwrap marker ran against the PRE-T28
+THE FAILING-FIRST RECEIPT: the bare-unwrap marker ran against the pre-child-flow
 tree — ``spawn_flow`` did not exist, the parent's join had no typed
 union to force anything; the capture rides
 ``.measurements/t28-typegate-failing-first.txt`` and the union's landing is

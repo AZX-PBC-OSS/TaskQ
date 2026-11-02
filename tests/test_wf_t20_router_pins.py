@@ -1,4 +1,4 @@
-"""T20's ROUTER pins — the typed-outcome Chain/Step/Route surface
+"""THE ROUTER'S PINS — the typed-outcome Chain/Step/Route surface
 (PROOF.md §3 + §4).
 
 TOTALITY IS THE FENCE, at TWO doors (the asymmetry doctrine — the spike's

@@ -1,34 +1,33 @@
 """THE CHILD-FLOW FIXES' PINS — the pin pack (the child-flows
-attack front's recorded findings, fixed failing-first on the
-``feat/taskqflow-child-fixes`` branch off the child line's head
+recorded findings, fixed failing-first on the
+the child-fixes branch off the child line's head
 ``f8bfc5033``).
 
-THE RED RECEIPTS (all captured live BEFORE the fixes, on the base head
-against the lane's :5812 — the capture rides
-the recorded capture):
+THE PINS' BASELINE (each behavior was wrong before its fix, and the pin
+watched it fail):
 
-* RV5-the (THE ASYNCIO.GATHER DRAGON — GRAND-MERGE BLOCKER): the natural
+* THE ASYNCIO.GATHER DRAGON  — GRAND-MERGE BLOCKER): the natural
   fan-out spelling ``gather(*[ctx.spawn_flow(...) for t in tenants])``
   minted ONE child and returned tenant-0's verdict K times wearing K
   labels — the per-attempt spawn cursor's read/write was not atomic, so
   K concurrent spawns all adopted the same slot (run key), and the
   arbiter's conflict path handed every caller THE ONE child's handle.
   ZERO errors, green pins, silent fabricated results.
-* RV5-the (THE RECURSION BOMB + THE RECURSIVE CASCADE — GRAND-MERGE
+* THE RECURSION BOMB + THE RECURSIVE CASCADE  — GRAND-MERGE
   BLOCKER): (a) a self-spawning flow minted a generation per sweep tick
   forever — no depth bound, no cycle check; (b) the cancel cascade was
   Python-recursive — a 1200-deep cascade raised ``RecursionError`` at
   the operator and left hundreds of runs running.
-* RV5-the (THE RETENTION-RESPAWN FAIL-CLOSE): purging a child's rows +
+* (THE RETENTION-RESPAWN FAIL-CLOSE): purging a child's rows +
   resuming the parent SILENTLY RE-EXECUTED the child (the arbiter's row
   went with the purge → the spawn re-minted a fresh child → the child's
   side effects ran twice, the parent SUCCEEDED — the worst face). The
   fail-close is now the typed arm: the dangling child pointer raises.
-* RV5-the (THE ORPHAN WINDOW): the crash between child-create and
+* (THE ORPHAN WINDOW): the crash between child-create and
   receipt-write, then a parent cancel, let the child ESCAPE the cascade
   forever — the cascade walked the crash-unsafe receipts and never read
   the crash-safe ``parent_flow_id`` direction the rows already carry.
-* RV5-the (THE SMALLER FACES): (a) the dev-loop tick never ran the
+* (THE SMALLER FACES): (a) the dev-loop tick never ran the
   expiry arm — ``timeout_s`` was inert in dev drives; (b) the admin run
   explorer was child-blind — the parent↔child links the rows carry
   never rendered; (c) resolving a child-join hold no-op-bounced (the
@@ -229,7 +228,7 @@ async def _descendants(
     return [JobId(str(r["fid"])) for r in rows]
 
 
-# ── RV5-C1: THE GATHER DRAGON (the spawn's atomicity face) ──────────────
+# ── THE GATHER DRAGON (the spawn's atomicity face) ──────────────
 
 
 class TestRv5C1GatherDragonAtomicity:
@@ -590,7 +589,7 @@ class TestRv5C4OrphanWindow:
         )
 
 
-# ── RV5-C3: THE RETENTION-RESPAWN FAIL-CLOSE ────────────────────────────
+# ── THE RETENTION-RESPAWN FAIL-CLOSE ────────────────────────────
 
 
 class TestRv5C3ChildLostFailClose:

@@ -121,7 +121,7 @@ async def test_insert_node_the_deps_guard(wf_conn: Any, wf_schema: str) -> None:
 
 
 def test_join_metadata_the_child_driven_shape_record() -> None:
-    """T07's shape record: the child-driven escape rides the ROW (the
+    """The fan-in bound's shape record: the child-driven escape rides the ROW (the
     rederive reads it; the record never guesses)."""
     from taskq.backend._protocol import JobId
     from taskq.workflows._types import ConsumerBinding, _join_metadata

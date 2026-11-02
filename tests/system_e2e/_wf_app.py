@@ -1,4 +1,4 @@
-"""The workflow marches' shared app module (T15 — the system tier).
+"""The workflow marches' shared app module (the system tier).
 
 ONE module, imported by BOTH the test process and the tier's worker
 subprocesses (``_wf_entry`` imports it so the worker's boot stamps
@@ -14,7 +14,7 @@ The flows:
   body HOLDS on a typed gate (the multi-epoch multi-HITL), and the
   publish step whose typed wait can TIME OUT (the timeout face — the
   body pivots to the degraded report, never wedges).
-* ``triage_chain`` — the T20 router lived on the tier: a ``chain_source``
+* ``triage_chain`` — the streaming router router lived on the tier: a ``chain_source``
   paged body (the streaming emit) whose per-record chains route on the
   body's OWN typed outcomes (the conditional chains).
 * ``doc_ingest`` — THE DOC-INGEST MARCH's flow: the map + the fan-in
@@ -216,7 +216,7 @@ PUBLISH_APPROVAL_TIMEOUT_S: Final[float] = 300.0
 async def publish_body(
     ctx: StepContext, triage: dict[str, object], review_note: str
 ) -> ResearchReport:
-    # THE TIMEOUT FACE, AS A VALUE (T26's amendment): the typed wait is
+    # THE TIMEOUT FACE, AS A VALUE (the expiry-as-value's amendment): the typed wait is
     # BOUNDED; the expiry sweep's abandonment RETURNS the Expired
     # member here — the body MATCHES it and pivots (the degraded
     # report), never wedges, never re-holds in a loop (the re-wait
@@ -301,7 +301,7 @@ def deep_research_cron() -> Promise[object]:
     return deep_research()
 
 
-# ── the T20 router lived on the tier (the streaming emit source) ─────────
+# ── the streaming router router lived on the tier (the streaming emit source) ─────────
 
 
 class TriageOutcome(enum.Enum):
@@ -387,7 +387,7 @@ class Verdict(BaseModel):
 
 
 def _sum_aggregate(rows: list[Any]) -> dict[str, object]:
-    """The map's DECLARED READ-SIDE aggregate (T21 decision c): a pure fn
+    """The map's DECLARED READ-SIDE aggregate (the progress reporting decision c): a pure fn
     over the children's decoded result rows, evaluated at read time."""
     return {"count": len(rows)}
 

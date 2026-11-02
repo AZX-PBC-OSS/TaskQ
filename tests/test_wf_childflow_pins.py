@@ -1,4 +1,4 @@
-"""T28 — THE CHILD FLOWS' PINS: the spawn→join happy path (the parent's
+"""THE CHILD FLOWS' PINS: the spawn→join happy path (the parent's
 body gets the child's typed result; the parent↔child links BOTH
 directions), the child-fail face (the parent's ``ChildFailed`` arm —
 never a silent swallow), the cancel cascade (the parent cancelled → the
@@ -10,7 +10,7 @@ slot held — while the child's work sits in its OWN rows), and the
 crash-mid-wait (the wake arm delivers; the successor's reclaim joins;
 the hold-stamp reconcile is the belt for a lost resume).
 
-The failing-first receipt: this suite ran against the PRE-T28 tree — every
+The failing-first receipt: this suite ran against the pre-child-flow tree — every
 import of the child-flow surface reds (``ChildHandle``/``ChildOk``/
 ``ChildFailed``/``ChildCancelled`` do not exist; ``ctx.spawn_flow`` is
 not on the context); the capture rides

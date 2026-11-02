@@ -1,6 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""ATTACK PINS — the demo/examples front (the hostile review of the
-consolidated head af1b8779, demo lane).
+"""THE DEMO/EXAMPLES' PINS — the demo machinery's rejected defects.
 
 The demo's own machinery was rejected on four LIVE findings and the
 evidence law on a fifth; the ergonomics contract carries an inflated
@@ -9,28 +8,28 @@ strict-xfail until the fix lands (the fix flips the pin to XPASS-
 strict — a red that tells you to remove the marker; the scenario is
 test_wf_attack_cancel.py's face C).
 
-* F-DEMO-1 — the demo's drive loop is poisonable by a FOREIGN run:
+* the demo's drive loop is poisonable by a FOREIGN run:
   ``_drive_pending`` (examples/workflows.py) drives EVERY running flow
   with the doc_ingest compiled graph; a foreign-workflow run raises
   WorkflowRunError ("a foreign step key"), aborts the whole pass, and
   starves every later run (the fetch has no ORDER BY) — re-raised and
   re-logged every 0.5 s forever.
-* F-DEMO-2 — the lifespan's ``drive_task.cancel()`` is swallowed by the
+* the lifespan's ``drive_task.cancel()`` is swallowed by the
   ``contextlib.suppress(asyncio.CancelledError)`` inside
   ``_drive_pending``: measured alive 12 s after cancel, still ticking.
-* F-DEMO-3 — the node panel cannot address a map child:
+* the node panel cannot address a map child:
   ``_NODE_PANEL_SQL`` is ``fetchrow WHERE step_key = $1`` with no
   map_index addressing, so the README's promised observation (watch
   doc-doomed's attempt go 1 → 2 in the node panel) is unreachable.
-* F-DEMO-5 — the README's leg-3 "captured verbatim scrape" is a test's
+* the README's leg-3 "captured verbatim scrape" is a test's
   f-string rendering, never scraped: the metric name carries ILLEGAL
   dots for the Prometheus text exposition (the OTel exporter sanitizes
   them) and the label reads ``workflow="None"`` where the sampler's
   documented coalesce is ``_other_``.
-* F-DEMO-6 — the compose stack's workers subscribe only
+* the compose stack's workers subscribe only
   ``TASKQ_QUEUES=examples``: none of the demo's workflow cohort queues,
   so the heterogeneous placement is decorative in the shipped stack.
-* F-ERGO-7 — the "zero-warning budget" is inflated:
+* the "zero-warning budget" is inflated:
   ``CompiledWorkflow.validate()`` raises only on severity=="error"; a
   warning-severity regression sails green.
 
@@ -61,10 +60,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.fastapi]
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-# ── F-DEMO-1: the foreign run poisons the drive pass ─────────────────────
+# ── the foreign run poisons the drive pass ─────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: the live finding
 async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
@@ -128,7 +126,7 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     )
 
 
-# ── F-DEMO-2: the swallowed cancellation ─────────────────────────────────
+# ── the swallowed cancellation ─────────────────────────────────
 
 #: The bounded window: a cancellable task must die promptly once
 #: ``cancel()`` lands — the measured defect was alive 12 s later. 5 s is
@@ -136,7 +134,6 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
 _CANCEL_BOUND_S = 5.0
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: the live finding
 async def test_the_drive_task_cancel_completes_within_a_bounded_window(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
@@ -174,10 +171,9 @@ async def test_the_drive_task_cancel_completes_within_a_bounded_window(
             await asyncio.sleep(0.1)
 
 
-# ── F-DEMO-3: the node panel cannot address a map child ──────────────────
+# ── the node panel cannot address a map child ──────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-3]; the marker was removed per the designed flip (the confirmation).
 async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
@@ -247,7 +243,7 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     )
 
 
-# ── F-DEMO-5: the fabricated scrape (the evidence law) ───────────────────
+# ── the fabricated scrape (the evidence law) ───────────────────
 
 #: The Prometheus text exposition format's metric-name and label-name
 #: grammar (prometheus.io/docs/instrumenting/exposition_formats):
@@ -263,7 +259,6 @@ _PROM_LINE_RE = re.compile(
 )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-5]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: the live finding
 def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> None:
     """THE EVIDENCE-LAW GUARD: every ``.prom`` artifact under
     ``.measurements`` must parse as VALID Prometheus text exposition —
@@ -357,10 +352,9 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
     )
 
 
-# ── F-DEMO-6: the compose stack's decorative placement ───────────────────
+# ── the compose stack's decorative placement ───────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-DEMO-6: the compose workers subscribe the demo's declared cohorts + the default queue]; the marker was removed per the designed flip (the confirmation).
 def test_the_compose_workers_subscribe_the_demos_declared_queues() -> None:
     """The wiring truth: every queue the demo's workflows DECLARE must be
     SUBSCRIBED by the shipped compose stack's workers — else the
@@ -400,7 +394,7 @@ def test_the_compose_workers_subscribe_the_demos_declared_queues() -> None:
     )
 
 
-# ── F-ERGO-7: the inflated zero-warning budget ───────────────────────────
+# ── the inflated zero-warning budget ───────────────────────────
 
 
 class _Verdict(BaseModel):
@@ -442,7 +436,7 @@ def test_validate_refuses_a_warning_carrying_graph() -> None:
     # make the raises-block green for the wrong reason).
     assert diagnostics, "the W1 carrier produced no diagnostics — the pin is vacuous"
     assert all(d.severity == "warning" for d in diagnostics), diagnostics
-    # THE SHIPPED SEMANTICS (F-ERGO-7's resolution — the claim re-worded
+    # THE SHIPPED SEMANTICS (the resolution — the claim re-worded
     # to what the door DOES): validate() RAISES on the error severity
     # (the runner's construction door); the WARNINGS REPORT in the
     # diagnostics — the zero-warning budget is enforced by the CONTRACT

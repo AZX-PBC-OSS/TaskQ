@@ -1,4 +1,4 @@
-"""ATTACK-3 (phase-3 adversarial review) — T10's HITL surface: the hold identity
+"""THE HOLD IDENTITY'S ADVERSARIAL PINS:
 under concurrent deliver, the epoch on a retried hold-site, the redact
 chain on the list() surface, the knock's pointer-only law, the typed
 door's runtime boundary, the timeout face, the driver's held check.
@@ -89,7 +89,7 @@ async def test_a3_expired_hold_reholds_forever_no_timeout_face(
     from taskq.workflows import Expired
 
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
-        # T26'S AMENDMENT: the face is a VALUE (the Expired member); the
+        # the expiry-as-value'S AMENDMENT: the face is a VALUE (the Expired member); the
         # body converts it into the raised failure (the ladder's own use).
         outcome = await ctx.wait_signal(Approval, timeout_s=0.3)
         match outcome:

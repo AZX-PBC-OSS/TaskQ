@@ -130,9 +130,9 @@ other orchestrators → [the pattern catalog](patterns.md). The rest of
 this page is the machinery those fences ride.
 
 >
-> **The reader's key** (the shorthand this page and the pin inventory
-> use): `T07`/`T10`/`T18`/… are the work-stream's ticket numbers — each
-> names ONE landed subsystem (T06 failed-parent propagation, T07 fan-in
+> **The reader's key** (this page's own shorthand): `T07`/`T10`/`T18`/… are
+> the workflow round's subsystem numbers — each names ONE landed subsystem
+> (T06 failed-parent propagation, T07 fan-in
 > bounds, T09 the typed API, T10 holds/HITL, T18 retention coupling, T19
 > loops, T20 the streaming router). `§N` references this page's own
 > sections. "P3 rule N" is the engine's

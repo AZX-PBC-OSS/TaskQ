@@ -1,5 +1,5 @@
 """THE PHASE-3 FIX PINS (the phase-3 fixes) — the in-commit pins for the
-fixes the attack-3 probes proved red first:
+fixes whose failures the probes demonstrated first:
 
 * B2's BOTH-FIT arm: an ambiguous payload is the typed refusal UNLESS
   the gate declares an explicit discriminator (the small honest API).
@@ -16,7 +16,7 @@ fixes the attack-3 probes proved red first:
   alignment-audit's Missing #1, landed failing-first.
 * E8: the loop CARRIER-TYPE declaration enforced (pin 5's teeth).
 
-Each pin states the fix's law; the red evidence is the attack-3 corpus
+Each pin states the fix's law; the red evidence is the pin's own failure on the unfixed tree
 (``.measurements/attack3/``) plus this file's own captured first run.
 """
 
@@ -650,7 +650,7 @@ async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
     )
 
 
-# ── E8: the CARRIER-TYPE declaration enforced (T19's pin 5) ────────────
+# ── E8: the CARRIER-TYPE declaration enforced (the loop drive bound's pin 5) ────────────
 
 
 async def _refines_wrong(ctx: StepContext, carry: object) -> Refine[Other]:
@@ -658,7 +658,7 @@ async def _refines_wrong(ctx: StepContext, carry: object) -> Refine[Other]:
 
 
 def test_carrier_type_mismatch_is_convicted() -> None:
-    """T19 pin 5's teeth: a loop declaring ``initial=Counter`` whose body
+    """The loop drive bound's pin 5 teeth: a loop declaring ``initial=Counter`` whose body
     refines with an UNRELATED model is the compile's refusal (the
     recorded declaration is now ENFORCED)."""
     app = WorkflowApp()
@@ -832,7 +832,7 @@ def test_e4_still_convicts_the_genuinely_unannotated() -> None:
 def test_wiring_key_with_a_dot_is_refused() -> None:
     """The dot is the ENGINE'S derived namespace (``<key>.item`` /
     ``<key>.join`` / ``<key>.iter<i>``) — a wiring key carrying one is
-    refused at the compile (the T17 ledger's cut #6 citation, which had
+    refused at the compile (the earlier wording's rejected citation, which had
     no test under any name before this pin)."""
     import pytest
 

@@ -1,11 +1,6 @@
-"""ATTACK PINS — the T21 progress subsystem's landed findings.
-
-Provenance: the T21/T20 attack front's live reproductions against the
-consolidated head (``af1b8779``; pinned here at the review tree's
-``b2a1c122``). Every xfail-strict pin below was run RED FIRST — written
-as the SAFE behavior, executed against the real PG, the failure captured
-— then marked. The fix flips the pin to XPASS-strict (a red that tells
-you to remove the marker WITH the fix). The two guards are the front's
+"""THE PROGRESS SUBSYSTEM'S PINS — the progress contract's stated
+faces, each held against its rejected shape on the real PG. The two
+guards are the
 own repros of laws that HELD under attack — green, so they can never
 rot silently.
 
@@ -14,21 +9,21 @@ emission op + the emitter) and migration ``01.00.28`` (the two-channel
 storage).
 
 THE FINDINGS (each landed live; the probe transcripts are in this pack's
-(the pinning run's record):
+:
 
-* F-PROG-1 — ``validate_emission`` validates LAX and stores the
+* ``validate_emission`` validates LAX and stores the
   PRE-VALIDATION dict: ``{"page": "42"}`` against a declared
   ``page: int`` passes and the STRING lands in
   ``wf_node_progress.data``; undeclared extra keys pass and store.
-* F-PROG-2 — ``ProgressEmitter.submit()`` is public and validates
+* ``ProgressEmitter.submit()`` is public and validates
   NOTHING: ``submit(999, …)`` persists ``pct=999``; the migration's
   comment claims pct's smallint is "the storage-domain twin" of the
   0..100 bound but NO CHECK constraint exists.
-* F-PROG-3 — the auto-class path (``project_auto_event``) discards the
+* the auto-class path (``project_auto_event``) discards the
   ring-trim's drop count: only user-class flushes write the
   ``__stream__`` counters — "dropped ON THE RECORD" is a
   user-class-only promise.
-* F-PROG-4 — an uncaught ``ProgressRefusedError`` (a deterministic
+* an uncaught ``ProgressRefusedError`` (a deterministic
   authoring defect) is laddered as TRANSIENT and burns all attempts
   before terminal-failing.
 """
@@ -68,10 +63,9 @@ class _PageDecl(BaseModel):
     page: int
 
 
-# ── F-PROG-1: the gate validates lax and stores the PRE-VALIDATION dict ──
+# ── the gate validates lax and stores the PRE-VALIDATION dict ──
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-1: validate_emission …
 async def test_f_prog_1_the_stored_payload_is_the_validated_dump(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -84,13 +78,13 @@ async def test_f_prog_1_the_stored_payload_is_the_validated_dump(
     # the extras stripped.
     _pct, _msg, data = validate_emission(50, "m", {"page": "42"}, _PageDecl)
     assert data == {"page": 42}, (
-        f"F-PROG-1: the gate validated LAX and handed back the PRE-VALIDATION dict "
+        f"The gate validated LAX and handed back the PRE-VALIDATION dict "
         f"{data!r} — the string '42' survives where the declared schema says int; "
         "the gate must return the VALIDATED model dump"
     )
     _pct, _msg, data = validate_emission(50, "m", {"page": 1, "evil_extra": "x" * 100}, _PageDecl)
     assert data == {"page": 1}, (
-        f"F-PROG-1: an undeclared extra key SURVIVED the declared-schema gate: {data!r} — "
+        f"An undeclared extra key SURVIVED the declared-schema gate: {data!r} — "
         "the validated dump strips extras"
     )
 
@@ -107,16 +101,15 @@ async def test_f_prog_1_the_stored_payload_is_the_validated_dump(
     )
     stored: Any = json.loads(raw) if isinstance(raw, str) else raw
     assert stored == {"page": 42}, (
-        f"F-PROG-1: the stored payload is the PRE-VALIDATION dict {stored!r} — the "
+        f"The stored payload is the PRE-VALIDATION dict {stored!r} — the "
         "record must carry the validated model dump (types coerced, extras stripped)"
     )
 
 
-# ── F-PROG-2: the public submit() bypass + the storage domain's missing
+# ── the public submit() bypass + the storage domain's missing
 # teeth ─────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-2b]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-2a: …
 async def test_f_prog_2a_out_of_domain_pct_refused_and_check_constrained(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -138,7 +131,7 @@ async def test_f_prog_2a_out_of_domain_pct_refused_and_check_constrained(
         "progress",
     )
     assert refused is not None, (
-        f"F-PROG-2a: submit(999) bypassed the typed gate and the row persisted "
+        f"Submit(999) bypassed the typed gate and the row persisted "
         f"pct={stored} — an out-of-domain pct must be REFUSED at the door"
     )
     assert stored is None, "a refused emission must write nothing"
@@ -161,13 +154,12 @@ async def test_f_prog_2a_out_of_domain_pct_refused_and_check_constrained(
     ).read_text()
     claim_present = "storage-domain twin" in migration_text
     assert pct_checks or not claim_present, (
-        "F-PROG-2a: the migration claims pct's smallint is the storage-domain twin "
+        "The migration claims pct's smallint is the storage-domain twin "
         "of the 0..100 bound, but no CHECK constraint carries it — either the storage "
         "grows the teeth (a CHECK on pct) or the claim is corrected"
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-2b]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-2b: the validated …
 async def test_f_prog_2b_the_validated_path_is_the_only_write_path(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -188,16 +180,15 @@ async def test_f_prog_2b_the_validated_path_is_the_only_write_path(
         refused = exc
     await emitter.aclose()  # drains whatever the bypass armed — no leaked task either way
     assert refused is not None, (
-        "F-PROG-2b: ProgressEmitter.submit is public and validates NOTHING — the "
+        "B: ProgressEmitter.submit is public and validates NOTHING — the "
         "typed gate (validate_emission, ctx.progress's door) is not the only write "
         "path; submit must route through the gate or go private"
     )
 
 
-# ── F-PROG-3: the auto-class path's trims are nowhere on the record ──────
+# ── the auto-class path's trims are nowhere on the record ──────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-3]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-3: …
 async def test_f_prog_3_auto_path_trims_are_counted_on_the_record(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -229,27 +220,26 @@ async def test_f_prog_3_auto_path_trims_are_counted_on_the_record(
         STREAM_CHANNEL,
     )
     assert counters is not None, (
-        "F-PROG-3: the auto path's ring trims are NOWHERE on the record — no "
+        "The auto path's ring trims are NOWHERE on the record — no "
         "__stream__ counters row exists for a node whose ring trimmed "
         f"{emitted - PROGRESS_RING_BOUND} auto rows"
     )
     assert int(counters["dropped"]) == emitted - int(retained), (
-        f"F-PROG-3: the record shows dropped={counters['dropped']} but the ring "
+        f"The record shows dropped={counters['dropped']} but the ring "
         f"trimmed {emitted - int(retained)} auto rows — the honest "
         "emitted-vs-delivered pair must cover the auto class too"
     )
 
 
-# ── F-PROG-4: the refusal laddered as transient ─────────────────────────
+# ── the refusal laddered as transient ─────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-4]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-4: an uncaught …
 async def test_f_prog_4_the_refusal_classifies_permanent(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The ladder's classification is for faults that MIGHT heal; a typed
     authoring refusal cannot. The pin drives a real workflow whose body
-    violates its own declared ``progress_schema`` (the front's repro
+    violates its own declared ``progress_schema`` (the recorded repro
     shape): the refusal IS on the record (loud — not the finding); the
     finding is the BURN — a permanent class terminal-fails on the FIRST
     attempt, exactly one failed ledger leg."""
@@ -289,14 +279,14 @@ async def test_f_prog_4_the_refusal_classifies_permanent(
         flow_id,
     )
     assert int(failed_legs) == 1, (
-        f"F-PROG-4: the deterministic authoring defect burned {failed_legs} attempts "
+        f"The deterministic authoring defect burned {failed_legs} attempts "
         f"(jobs.attempt={row['attempt']}) laddered as TRANSIENT before "
         "terminal-failing — the refusal must classify PERMANENT (one attempt, "
         "terminal, loud) or the taxonomy must name why it doesn't"
     )
 
 
-# ── THE GUARDS (the front's repros of laws that HELD — green, forever) ──
+# ── THE GUARDS (the recorded repros of laws that HELD — green, forever) ──
 
 
 async def test_guard_progress_writes_never_block_the_finalize(
@@ -344,7 +334,7 @@ async def test_guard_progress_writes_never_block_the_finalize(
 async def test_guard_the_progress_lie_never_flips_the_terminal_state(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """THE PROGRESS-LIE FENCE (DH4/DH7, the front's battery E1): a body
+    """THE PROGRESS-LIE FENCE (DH4/DH7, the battery's finding E1): a body
     reports pct=100 'done!' and the node then FAILS — the record shows
     FAILED with the 100% rendered INSIDE it, never 100%-running; a
     STRAGGLER emission landing after the terminal (the aclose race's

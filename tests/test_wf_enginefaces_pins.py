@@ -265,7 +265,7 @@ def test_the_node_face_rides_one_read_through_the_engine_query(
 def test_failed_parent_rides_the_engine_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The failed_parent stamp (the T06 cascade's write — the dead
+    """The failed_parent stamp (the failed-parent propagation cascade's write — the dead
     parent's id, NAMED on the record) rides the engine query too: the
     why-stuck line prints it from the ONE read."""
     parent_id = "01a130ef-813b-7f50-86b2-14d8c01a61e5"

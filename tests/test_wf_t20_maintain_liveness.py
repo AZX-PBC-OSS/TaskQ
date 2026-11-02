@@ -1,7 +1,7 @@
-"""T20's CORE FIX pins (the spike's live finding): the maintenance leg's
+"""THE MAINTENANCE LEG'S CORE PINS: the maintenance leg's
 failed arm gates on live UNRESOLVED work.
 
-THE FINDING (observed live in the T20 concept-proof spike, PROOF.md §6b):
+THE FINDING (observed live in the streaming router concept-proof spike, PROOF.md §6b):
 the shipped ``WORKFLOW_ROOT_MAINTAIN_SQL`` failed arm gated on
 ``has_active`` = running/crashed/abandoned ONLY — pending/scheduled
 siblings did NOT hold a failing run. A streaming source's FIRST chain

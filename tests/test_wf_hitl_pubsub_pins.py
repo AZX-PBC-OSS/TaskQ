@@ -1,4 +1,4 @@
-"""T26 — THE HITL BROADCAST'S PINS: the transactional NOTIFY legs, the
+"""THE HITL BROADCAST'S PINS: the transactional NOTIFY legs, the
 zero-window backfill, the resolve wake, the expiry fail-close, the
 escalation interplay — plus the hostile-review round's P6-P10: the
 reconnect reconcile, the concurrent-consumer fan-out, the schema
@@ -18,7 +18,7 @@ through ``hitl_redlog``).
 The channels are GLOBAL; the schema rides the payload (the
 schema-per-module estate shares one database across many schemas —
 ``pg_notify`` is per-database; the listener filters by payload). The
-legacy ``taskq_wf_holds`` pointer knob keeps its pinned shape (T10's
+legacy ``taskq_wf_holds`` pointer knob keeps its pinned shape (the hold machinery's
 pin 12); the broadcast legs ride their own channels.
 """
 
@@ -90,7 +90,7 @@ async def _held_flow(
     name: str,
 ) -> tuple[JobId, FlowRunner, JobId]:
     """A flow whose single node HOLDS: created, driven to the hold
-    (T10's helper's shape; ``name`` is UNIQUE PER TEST — D1)."""
+    (the hold machinery's helper's shape; ``name`` is UNIQUE PER TEST — D1)."""
     app = WorkflowApp()
 
     @app.workflow(name)
@@ -135,7 +135,7 @@ class _RawKnocks:
         return [payload for ch, payload in self.knocks if ch == channel]
 
 
-# ── T26-P1: the create leg is TRANSACTIONAL (a rollback is silent) ──────
+# ── the expiry-as-value-P1: the create leg is TRANSACTIONAL (a rollback is silent) ──────
 
 
 async def test_hold_create_broadcast_is_transactional_and_shaped(
@@ -189,7 +189,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
             "the pre-fix mutation did not reproduce the dragon — the scenario is vacuous"
         )
         hitl_redlog.red(
-            "T26-P1-create-knock-outside-the-tx",
+            "the expiry-as-value-P1-create-knock-outside-the-tx",
             "the broadcast sent OUTSIDE the hold's transaction (autocommit): the knock "
             "outlives its rolled-back row — the broadcast LIES about a hold the rows disown",
             {"knocks_without_row": len(drill_knocks), "row_committed": False},
@@ -218,7 +218,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
             node_key="review",
             signal_name="Approval",
             hold_epoch=2,
-            call_id="call:T26-shape",
+            call_id="call:the expiry-as-value-shape",
             payload_schema={"Approval": {"type": "object", "properties": {}}},
             timeout_s=120.0,
         )
@@ -247,7 +247,7 @@ class RollbackDrillError(Exception):
     """The scenario's own unwinding (named — never a bare raise)."""
 
 
-# ── T26-P2: the zero-window backfill + the dedup ────────────────────────
+# ── the expiry-as-value-P2: the zero-window backfill + the dedup ────────────────────────
 
 
 async def test_listener_backfills_open_holds_and_dedups(
@@ -312,7 +312,7 @@ async def test_listener_backfills_open_holds_and_dedups(
         assert decoded.source == "notify"
 
 
-# ── T26-P3: the resolve wake reaches the listener ───────────────────────
+# ── the expiry-as-value-P3: the resolve wake reaches the listener ───────────────────────
 
 
 async def test_resolve_wake_reaches_the_listener(
@@ -364,7 +364,7 @@ async def _next_of(listener: HitlListener, kind: str) -> Any:
     return None
 
 
-# ── T26-P4: the expiry fail-close (the worked example) ──────────────────
+# ── the expiry-as-value-P4: the expiry fail-close (the worked example) ──────────────────
 
 
 async def test_deep_research_approve_path(
@@ -504,7 +504,7 @@ async def _expired_for(listener: HitlListener, run_id: str) -> Any:
     return None
 
 
-# ── T26-P5: the expiry inside a LOOP's hold — the escalation leg ────────
+# ── the expiry-as-value-P5: the expiry inside a LOOP's hold — the escalation leg ────────
 
 
 async def test_expiry_in_loop_escalation_leg_still_delivers(
@@ -642,7 +642,7 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
     assert outcome == "succeeded", outcome
 
 
-# ── T26-P6: the reconnect reconcile (the fourth union member) ───────────
+# ── the expiry-as-value-P6: the reconnect reconcile (the fourth union member) ───────────
 
 
 class _Cards:
@@ -676,7 +676,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
     wf_pool: asyncpg.Pool,
     hitl_redlog: RedLog,
 ) -> None:
-    """Pin P6 (the reconnect-reconcile hole — the hostile review's C1):
+    """Pin P6 (the reconnect-reconcile hole):
     ``_backfill()`` selects only ``status='held'``, so a hold RESOLVED
     during a listener outage never clears the consumer's card — the
     create event announced it, nothing ever announced its death.
@@ -737,7 +737,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
             "disagree HERE, or the pin proves nothing"
         )
         hitl_redlog.red(
-            "T26-P6-card-vs-rows-divergence",
+            "the expiry-as-value-P6-card-vs-rows-divergence",
             "the hold resolved during the listener outage: the consumer's card set "
             "still holds it open (no event ever announces a death the disconnected "
             "listener cannot hear) — the snapshot reconcile is the only fix",
@@ -770,7 +770,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
         await listener.stop()
 
 
-# ── T26-P7: the concurrent-consumer fan-out (no partitioned stream) ─────
+# ── the expiry-as-value-P7: the concurrent-consumer fan-out (no partitioned stream) ─────
 
 
 async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
@@ -822,7 +822,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
         f"the rejected partition did not reproduce: a={haul_a} b={haul_b}"
     )
     hitl_redlog.red(
-        "T26-P7-shared-queue-partition",
+        "hitl-shared-queue-partition",
         "ONE shared queue + ONE stop sentinel: two concurrent consumers partition "
         "the stream — consumer A steals every event, consumer B starves against a "
         "sentinel that is never its own",
@@ -857,7 +857,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
             node_key="review",
             signal_name="Approval",
             hold_epoch=2,
-            call_id="call:T26-fanout",
+            call_id="call:hitl-fanout",
             payload_schema={"Approval": {"type": "object", "properties": {}}},
             timeout_s=120.0,
         )
@@ -881,7 +881,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
         await listener.stop()
 
 
-# ── T26-P8: the schema isolation (the payload filter IS the isolation) ──
+# ── the expiry-as-value-P8: the schema isolation (the payload filter IS the isolation) ──
 
 
 async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
@@ -939,7 +939,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
             "the scenario's knock never crossed — the raw ear proves nothing"
         )
         hitl_redlog.red(
-            "T26-P8-unfiltered-channel-ear",
+            "the expiry-as-value-P8-unfiltered-channel-ear",
             "a consumer that trusts the CHANNEL (pg_notify is per-DATABASE, the "
             "channels are global) hears EVERY schema's holds — the payload filter "
             "is the isolation, and without it the estate's schemas leak",
@@ -956,7 +956,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
         node_key="review",
         signal_name="Approval",
         hold_epoch=1,
-        call_id="call:T26-isolation",
+        call_id="call:the expiry-as-value-isolation",
         payload_schema={"Approval": {"type": "object", "properties": {}}},
         timeout_s=120.0,
     )
@@ -996,7 +996,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
         await teardown.close()
 
 
-# ── T26-P9: the payload-size bound (the pointer-law creep protector) ────
+# ── the expiry-as-value-P9: the payload-size bound (the pointer-law creep protector) ────
 
 
 async def test_notify_payloads_stay_under_the_named_cap(
@@ -1036,7 +1036,7 @@ async def test_notify_payloads_stay_under_the_named_cap(
         await scenario.close()
     assert refused != "NOT-refused", "PG accepted a 9000-byte payload — the cap moved"
     hitl_redlog.red(
-        "T26-P9-over-cap-pg-notify",
+        "hitl-over-cap-pg-notify",
         "the over-cap knock reaches pg_notify UNGUARDED: PG refuses it mid-tx and "
         "the caller's whole transaction dies with the opaque server error — the "
         "pointer-law creep must die at the code seam instead, loudly, named",
@@ -1075,7 +1075,7 @@ async def test_notify_payloads_stay_under_the_named_cap(
             node_key=long_key,
             signal_name="Approval",
             hold_epoch=2,
-            call_id="call:T26-cap",
+            call_id="call:hitl-cap",
             payload_schema={"Approval": {"type": "object", "properties": {}}},
             timeout_s=120.0,
         )
@@ -1085,7 +1085,7 @@ async def test_notify_payloads_stay_under_the_named_cap(
     assert max(len(k.encode()) for k in shaped) < NOTIFY_PAYLOAD_MAX_BYTES
 
 
-# ── T26-P10: the resolve-rollback silence (symmetric to P1) ─────────────
+# ── the expiry-as-value-P10: the resolve-rollback silence (symmetric to P1) ─────────────
 
 
 class AuditBoomError(Exception):
@@ -1141,7 +1141,7 @@ async def test_rolled_back_resolve_emits_no_notification(
             "the scenario's knock never crossed — the scenario proves nothing"
         )
         hitl_redlog.red(
-            "T26-P10-resolve-knock-outside-the-tx",
+            "hitl-resolve-knock-outside-the-tx",
             "the resolve knock sent OUTSIDE the CAS tx (autocommit): the knock "
             "outlives the rolled-back resolve — the broadcast LIES about a "
             "decision the rows disown (P1's dragon, on the resolve leg)",

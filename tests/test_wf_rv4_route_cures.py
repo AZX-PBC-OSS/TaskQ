@@ -1,10 +1,8 @@
 """THE RV4 FIX LANE'S PINS (the recertifier's seven-recorded finding pack).
 
 The routing spine certified; seven live recorded findings + the estate red;
-this file carries the pins — failing-first (each pin ran against the base
-head ``94996174`` and REJECTED before its fix landed; the red receipts
-live beside the pins in ``.measurements/rv4-*.txt``), every fix WITH
-its pin.
+this file carries the pins — each behavior was wrong before its fix and
+the pin watched it fail; every fix landed WITH its pin.
 
 * **F1** — the empty-corpus wedge (``_runner.py``'s ``_route_fork``
   returns ``None`` for a legitimately-empty corpus: the join never

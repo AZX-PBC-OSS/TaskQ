@@ -1,4 +1,4 @@
-"""ATTACK-3 (phase-3 adversarial review) — T19's loop machinery under adversarial
+"""THE LOOP MACHINERY'S ADVERSARIAL PINS:
 load: the escalation path, the ladder classes, the answer-queue cursor
 through a retry, the body-controlled infra classifier.
 

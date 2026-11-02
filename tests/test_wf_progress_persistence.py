@@ -1,15 +1,14 @@
-"""T21 — THE PERSISTENCE PINS: the two-channel progress substrate.
+"""THE PERSISTENCE PINS: the two-channel progress substrate.
 
-The provenance: the PoC's PROOF (t21-20261008T033005Z, PROVEN - DH1-DH8
-closed, 3 consecutive clean rounds) is the spec's proven shape; these pins
-port its obligations onto the BUILT surface, in the estate's pin idiom.
+The obligations these pins hold were proven in the design phase and are
+pinned here against the built surface.
 
 The failing-first evidence: each pin's REJECTED VARIANT (the spike's dragons)
 is named in the docstring and — where the variant is observable — exercised
 with the red captured to ``.measurements/t21-pin-reds.json``. The unfenced
 variants stay RED FOREVER (they are the dragons, not bugs).
 
-THE CHANNELS (T21 decision d):
+THE CHANNELS (the progress reporting decision d):
 * the STATE channel — ``wf_node_progress``: ONE row per (node, channel),
   upserted latest-wins + the honest occurrence counter. The row count is
   nodes x channels, CONSTANT whatever the emission rate (DH1's fence).

@@ -1,8 +1,6 @@
 """THE CACHE FIXES' PINS — the cache-attack front's recorded findings, fixed.
 
-The lane's red receipts (all captured live BEFORE the fixes, on the base
-head ``0e2f5cc09`` against :5810 — the files live in
-``.measurements/cache-fixes/``):
+The lane's pins (each behavior was wrong before its fix):
 
 * FIX 1 (P8f, the ROUTE-SOURCE WEDGE): ``route_wedge_repro.py`` — run 1
   stores, run 2 HITS and the hit path never rebuilds the route fork →
@@ -662,7 +660,7 @@ async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
 @pytest.fixture
 def cache_cli_env(module_pg_schema: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     """The CLI's settings read THIS module's migrated schema (the
-    test_wf_cli_pins convention — the env is the front door)."""
+    test_wf_cli_pins convention — the env is the entry door)."""
     monkeypatch.setenv("TASKQ_PG_DSN", module_pg_schema.pg_dsn)
     monkeypatch.setenv("TASKQ_SCHEMA_NAME", module_pg_schema.schema_name)
     return module_pg_schema

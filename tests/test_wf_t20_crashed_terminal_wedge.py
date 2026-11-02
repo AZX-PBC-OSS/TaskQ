@@ -1,4 +1,4 @@
-"""THE CRASHED-TERMINAL WEDGE (the T20/T21 wedge fixes) — the round's
+"""THE CRASHED-TERMINAL WEDGE — the wedge's
 most severe recorded finding: a run whose nodes = {succeeded|failed, crashed}
 WEDGED RUNNING FOREVER.
 
@@ -280,7 +280,7 @@ def test_the_liveness_predicates_exclude_the_terminal_crash_class() -> None:
     spells it IN — the same class re-derived against the state machine's
     totality table (crashed/abandoned: zero outbound transitions). A
     future edit that re-adds crashed/abandoned to a liveness set reds
-    here (the predicate that predates T20 and was never re-attacked, now
+    here (the predicate that predates the streaming router and was never re-attacked, now
     attacked permanently)."""
     from taskq.workflows._sql_status import WORKFLOW_ROOT_MAINTAIN_SQL
 

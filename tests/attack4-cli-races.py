@@ -1,7 +1,7 @@
 # ruff: noqa: N999, S608, S603, ASYNC220, ASYNC221, N802  # Why: the dash-named attack4-* module; the CLI probes run REAL subprocesses (the stranger's own terminal) with fixed argv and fixture-derived env; the TRUE blocker's name is the pin's claim.
 """ATTACK4 — THE CLI UNDER FIRE (the phase-4 attacker's suite).
 
-The stranger's probes against ``taskq flows`` (T12's surface), NOT the
+The stranger's probes against ``taskq flows`` , NOT the
 builder's pins (tests/test_wf_cli_pins.py owns those) — the adversarial
 shapes:
 
@@ -363,14 +363,14 @@ async def test_the_why_stuck_arm_names_the_TRUE_blocker(
     (max_attempts=1); 'downstream' can never run. ``flows status`` must
     name the FAILED row as the thing to retry (with its remedy), and the
     blocked row's answer must be TRUE — run5's observed output failed
-    both honesty halves (the attack-4 report's F-P4-WHYSTUCK-*); both
+    both honesty halves of the why-stuck face; both
     fixes are pinned here as hard asserts (the xfail was the pre-fix
-    shape, the attack-4 fixer's round 1 removed it):
+    shape, a later pass removed it):
 
-    * F-P4-WHYSTUCK-LADDER-LIE (fixed): the status read carries the
+    * the LADDER-LIE face: the status read carries the
       attempt counters — an EXHAUSTED ladder reads "the ladder is
       EXHAUSTED", never "ladder headroom 3";
-    * F-P4-WHYSTUCK-FALSE-REMEDY (fixed): the create path stamps the
+    * the FALSE-REMEDY face: the create path stamps the
       join marker (the engine's own law on the static path), so the
       failed-parent cascade resolves the row to BLOCKED-failed_parent —
       the remedy derives from the REASON, the join-fires promise is
@@ -392,12 +392,12 @@ async def test_the_why_stuck_arm_names_the_TRUE_blocker(
     assert "doomed: FAILED" in out, f"the failed row is not named: {out!r}"
     assert "the upstream blew up" in out, "the error message did not ride the why-stuck line"
     assert "taskq flows retry" in out, "the remedy is missing"
-    # THE LADDER'S TRUTH (F-P4-WHYSTUCK-LADDER-LIE, FIXED): the ladder was
+    # THE LADDER'S TRUTH (fixed): the ladder was
     # max_attempts=1 and it spent its attempt — the honest note is
     # "the ladder is EXHAUSTED", not "headroom 3". The status read carries
     # the row's own attempt counters now.
     assert "the ladder is EXHAUSTED" in out, f"the exhausted ladder is misreported: {out!r}"
-    # THE CONSEQUENCE'S TRUTH (F-P4-WHYSTUCK-FALSE-REMEDY, FIXED): the
+    # THE CONSEQUENCE'S TRUTH (fixed): the
     # blocked row's answer derives from the blocking REASON — the parent
     # finalized as a FAILURE, so the row reads BLOCKED-failed_parent and
     # the join-fires promise is GONE (the create path stamps the join
@@ -466,7 +466,7 @@ async def test_the_exit_code_contract_the_empty_error_and_missing_states(
 async def test_the_stale_app_resolve_is_the_named_refusal_never_a_traceback(
     module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
 ) -> None:
-    """F-P4-CLI-KEYERROR-TRACEBACK's PIN (the attack-4 report's MEDIUM;
+    """THE KEYERROR-TRACEBACK PIN (the why-stuck face's medium finding;
     the red was the attacker's race repro — attack4-cli-races-run1): a
     run whose workflow is NOT declared on the --app module (the
     stale-deploy world) meets 'flows resolve' — the typed door must
