@@ -33,11 +33,11 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   (attack-3 M3's smuggle): under a colliding key it builds a silently
   WRONG edge to this app's own same-named node; the verbs record the
   smuggle, this rule rejects it.
-* E9 ctx-annotation (F3-1) — the body's ``ctx`` annotation must BE
+* E9 ctx-annotation — the body's ``ctx`` annotation must BE
   StepContext (or a subclass), or the declared-unchecked Any/object: the
   fabricated stand-in is the build refusal (the annotation is
   verification, not documentation).
-* E10 arity (F3-2) — the body's params (beyond ctx) must match the
+* E10 arity — the body's params (beyond ctx) must match the
   wired sources' count: the mismatch is a build refusal, never a
   mid-flow ladder discovery. ONE param beyond the wiring is the DEPS
   shape — E12's contract, not an arity mismatch.

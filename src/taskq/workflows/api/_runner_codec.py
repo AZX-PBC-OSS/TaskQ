@@ -152,7 +152,7 @@ def encode_result(value: object) -> dict[str, object] | None:
     return {"value": encode_data_arg(value)}
 
 
-#: The runner's envelope key set (the F4 read-side reconciliation): the
+#: The runner's envelope key set (the bounded-collect reconciliation): the
 #: NON-truncated envelope is ONE key (``{"value": …}``); the
 #: ``_bounded_collect``'s TRUNCATED envelope adds exactly the TWO honest
 #: markers (the ``__truncated__`` count + the ``detail_home`` pointer).
@@ -166,7 +166,7 @@ def decode_result(raw: object) -> object:
     """jsonb decoded ONCE : asyncpg returns ``str`` on un-coded
     connections — parse through the estate's seam, never per call site.
     The runner's own envelope unwraps BY ITS KNOWN KEY SET — ``value``
-    alone (the pre-fix envelope) or ``value`` + the F4 markers
+    alone (the pre-fix envelope) or ``value`` + the truncation markers
     (``__truncated__``, ``detail_home``; the bounded collect's shape) —
     NOT by ``len(decoded) == 1``: the truncated envelope is THREE keys,
     and the consumer's typed decode must see the declared ``list[...]``
@@ -197,7 +197,7 @@ def decode_result(raw: object) -> object:
 
 
 def result_truncation(raw: object) -> int | None:
-    """The RAW row's truncation face (the F4 marker's read): the count
+    """The RAW row's truncation face (the marker's read): the count
     when the envelope is the bounded collect's TRUNCATED shape, ``None``
     otherwise (a None raw, a plain envelope, a body's own dict). The
     decode's unwrap drops the markers from the consumer's value — THIS

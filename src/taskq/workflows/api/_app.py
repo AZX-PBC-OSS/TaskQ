@@ -141,8 +141,8 @@ class WorkflowActor:
         return getattr(self._fn, attr)
 
     def actor_config(self) -> dict[str, object]:
-        """THE F3 CARRIER, IN THE REAL PROJECTION'S ONE VOCABULARY (
-        — never two name schemes): the ``ActorConfig`` field set the
+        """THE ACTOR-CONFIG CARRIER, IN THE REAL PROJECTION'S ONE VOCABULARY
+        (never two name schemes): the ``ActorConfig`` field set the
         estate's config-sync and guards consume, keyed exactly as
         ``project_workflow_actor_configs`` keys the rows. The handle's
         declared name + queue are its placement face; the CAPACITY TERMS
@@ -320,7 +320,7 @@ class WorkflowApp:
         # IMPORTED app — the projection compiles their workflows (the
         # D1 registry's population in the worker's process) and projects
         # the (actor, queue) cohorts the estate's actor_config sees (the
-        # F3 law's call site). The lazy import keeps the seam's module
+        # visibility law's call site). The lazy import keeps the seam's module
         # graph out of the authoring surface's own import time.
         from taskq.workflows._worker_execution import register_app
 
@@ -386,7 +386,7 @@ class WorkflowApp:
     ) -> WorkflowActor | Callable[[Callable[..., Awaitable[object]]], WorkflowActor]:
         """``@app.actor`` — the workflow step decorator: registers the
         body into the workflow definition registry (D1) and projects the
-        F3 carrier. The redact hook POST-COMPOSES on the capture chain
+        actor-config carrier. The redact hook POST-COMPOSES on the capture chain
         (chain → hook, never a replacement — pin 11's composed-anyway).
         ``priority=`` is the actor's declared enqueue DEFAULT for its
         nodes' rows (the vanilla ``@actor(priority=)`` face; the step's

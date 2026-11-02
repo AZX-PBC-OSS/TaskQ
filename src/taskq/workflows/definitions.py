@@ -10,7 +10,7 @@ the caller passed.
 
 The registry is a module-level map keyed by the workflow's registered
 name — the same shape the actor registry uses (one registry, the estate's
-no-second-registry rule, F3).
+no-second-registry rule).
 """
 
 from __future__ import annotations
@@ -174,8 +174,8 @@ FAILURE_POLICIES: Final[tuple[str, ...]] = ("fail_closed", "collect", "maybe")
 
 
 class FanInBoundExceededError(ValueError):
-    """The fork's fan-in past :data:`MAX_FAN_IN_PER_JOIN` (the the fix —
-    F8's typed bound): the exceeded bound is the NAMED refusal, the
+    """The fork's fan-in past :data:`MAX_FAN_IN_PER_JOIN` (the typed
+    bound): the exceeded bound is the NAMED refusal, the
     message carrying the ``child_driven`` escape so the remedy is
     reachable from the refusal's own text.
 
@@ -192,7 +192,7 @@ def validate_fork(fork: ForkSpec) -> None:
     """Refuse a malformed fork at build time — the 'record healthy, work
     wrong' class, rejected before any row is written.
 
-    THE EMPTY-JOIN PRECEDENT (the the fix — F1): a fork over a
+    THE EMPTY-JOIN PRECEDENT: a fork over a
     legitimately-empty corpus STILL declares its join — the join is born
     ``deps_pending=0``, fires IMMEDIATELY, and packs the EMPTY list (the
     typed sum's honest value: ``result() == []``, the run terminal,

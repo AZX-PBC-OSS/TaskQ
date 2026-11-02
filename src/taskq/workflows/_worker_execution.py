@@ -14,7 +14,7 @@ Three faces, one seam:
   (``_dispatch_sql``'s execution leg) makes sure it is never HANDED a
   workflow row to fail on.
 
-* **THE BOOT PROJECTION (the F3 law's call site)** —
+* **THE BOOT PROJECTION (the visibility law's call site)** —
   :func:`project_workflow_actor_configs` compiles every imported app's
   workflows (which is also what populates the D1 definition registry in
   THIS process — the intercept's ``resolve_step_body`` answers from
@@ -116,7 +116,7 @@ WHERE j.id = $1
 #: The projection's metadata stamp on the projected ``actor_config``
 #: rows — the estate's surfaces (the drift guards, the admin actors
 #: page, ``TASKQ_QUEUES_STRICT``) see the workflow cohorts as the
-#: projected population they are (F3: one registry, no invisible
+#: projected population they are (one registry, no invisible
 #: cohort).
 _PROJECTION_METADATA: dict[str, object] = {"workflow_actor": True}
 
@@ -329,7 +329,7 @@ def any_app_declares_strict_queues() -> bool:
     return any(getattr(app, "queues_strict", False) for app in _apps)
 
 
-# ── the boot projection (the F3 law's call site) ─────────────────────────
+# ── the boot projection (the visibility law's call site) ─────────────────────────
 
 
 def _workflow_cohorts(
@@ -340,7 +340,7 @@ def _workflow_cohorts(
     the fork's children ride it), the chains' step rows (every row of a
     chain — the emitted starts and the forked children alike — lands on
     the chain's own pair), and THE ROUTE ARMS' FORKED COHORTS (the
-    docshelf adoption team's F2): the arms' children fork at RUNTIME —
+    docshelf adoption's finding): the arms' children fork at RUNTIME —
     the source's finalize stamps each arm's effective placement
     (``actor=arm.actor or node.actor, queue=arm.queue or node.map_queue``,
     the runner's ``_route_fork``) — so the projection walks the SAME
@@ -443,7 +443,7 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
     the compiled graphs' (actor, queue) cohorts project into
     ``ActorConfig`` rows — the same carrier, the same ``sync_actor_config``
     surface, the same drift guards the vanilla ``@actor`` refs ride at
-    boot. THE F3 LAW'S CALL SITE: the workflow actors are VISIBLE to the
+    boot. THE VISIBILITY LAW'S CALL SITE: the workflow actors are VISIBLE to the
     estate — the dispatch capacity LATERAL sees their cohorts, the drift
     machinery, the admin page, ``TASKQ_QUEUES_STRICT`` — no second,
     invisible actor population.
@@ -454,8 +454,8 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
     raises, or whose graph fails validation — skips THAT WORKFLOW
     LOUDLY (``workflow-projection-skipped``: the app, the workflow, the
     defect named) and the healthy workflows still project — ONE broken
-    build fn must not refuse the ENTIRE worker's boot (F2-3: the
-    healthy apps boot). The conflict across workflows/apps — two HEALTHY
+    build fn must not refuse the ENTIRE worker's boot (one broken
+    build fn must not refuse the healthy apps' boot). The conflict across workflows/apps — two HEALTHY
     declarations projecting the same actor name onto different queues —
     is the remaining refusal: that is not a broken app to skip, it is
     the drift the estate's guards exist to refuse (skipping one side
@@ -514,7 +514,7 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
                 # OTHER failure classes (a raising build fn, a validation
                 # refusal, the queue conflict) keep the skip-loudly arm.
                 raise
-            except Exception as exc:  # Why: the isolation IS the fix (F2-3) — one broken build fn (a raising builder, a validation refusal, the workflow's own queue conflict) must not refuse the worker's whole boot; the failure is the same skip-loudly arm for every shape.
+            except Exception as exc:  # Why: the isolation IS the fix — one broken build fn (a raising builder, a validation refusal, the workflow's own queue conflict) must not refuse the worker's whole boot; the failure is the same skip-loudly arm for every shape.
                 logger.error(
                     "workflow-projection-skipped",
                     app=app_face,

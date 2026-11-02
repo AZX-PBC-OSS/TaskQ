@@ -294,7 +294,7 @@ async def drain_outbox(
     default_max_attempts: int = 3,
     default_retry_kind: str = "transient",
 ) -> int:
-    """The delivery half of the exactly-once fire (the re-review, F6).
+    """The delivery half of the exactly-once fire.
 
     Read undelivered outbox rows (lock-first), insert the consumer rows
     IDEMPOTENTLY on the consumer step key (the composite
