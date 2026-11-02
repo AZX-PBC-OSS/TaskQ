@@ -422,8 +422,13 @@ SELECT count(*) FROM flipped
 """
 
 TERMINAL_RESULT_SQL_TEMPLATE = """
-SELECT id, step_key, result, status FROM {schema}.jobs WHERE step_key = $1
-  AND (metadata->>'flow_id')::uuid = $2
+SELECT r.status AS run_status,
+       n.id AS node_id, n.step_key AS node_key, n.result AS node_result,
+       n.status AS node_status
+FROM {schema}.jobs r
+LEFT JOIN {schema}.jobs n
+  ON (n.metadata->>'flow_id')::uuid = r.id AND n.step_key = $1
+WHERE r.id = $2 AND r.step_key = '__flow__'
 """
 
 #: THE FAILURE FACE (the teardown fix): the run's newest

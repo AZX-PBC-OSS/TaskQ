@@ -2548,72 +2548,82 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         DECODED — never a raw jsonb string. ``None`` before the terminal
         node finalizes.
 
-        THE FAILURE AND CANCEL FACES: a FAILED run's read raises the
-        typed :class:`WorkflowRunError` carrying the failing node row's
-        error class + message; a CANCELLED run's read raises the typed
+        THE VERDICT'S SOURCE IS THE RUN'S STATUS, not the terminal
+        node's row: the terminal row supplies the payload only. A run
+        whose terminal step succeeded while a sibling branch failed or
+        was cancelled is a FAILED/CANCELLED run — the read raises the
+        typed verdict, never a plausible result. THE FAILURE AND CANCEL
+        FACES: a FAILED run's read raises the typed
+        :class:`WorkflowRunError` carrying the failing node row's error
+        class + message; a CANCELLED run's read raises the typed
         :class:`WorkflowRunCancelledError` (the same family) carrying
         the terminal status and the cancel reason — the run's first
-        question (WHAT ended it, and why) answered AT the read face,
-        never the empty read that made ended and running
-        indistinguishable."""
+        question (WHAT ended it, and why) answered AT the read face."""
         terminal = self.compiled.terminal
         if terminal is None:
             raise WorkflowRunError(
                 f"workflow {self.compiled.name!r} names no terminal — "
                 "wire one (wf.build(p)) to read a result"
             )
-        # THE TERMINAL ROW READS FIRST: the status poll and this read are
-        # two statements, and a cancel or a failure can commit between
-        # them — the row's own status is the verdict's witness, and an
-        # empty read is what the status must then explain. Either way a
-        # cancel or a failure landing anywhere inside the read surfaces
-        # as its verdict, never as the plausible empty read.
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                render_sql(TERMINAL_RESULT_SQL_TEMPLATE, self.schema), terminal, flow_id
-            )
-        # THE ROW'S OWN STATUS NAMES THE VERDICT: a terminalised node row
-        # (cancelled/failed) IS the run's end, its result column NULL —
-        # the verdict raises from the row, never an empty read.
-        if row is not None and row["status"] == "cancelled":
-            raise await self._cancellation_verdict(flow_id)
-        if row is not None and row["status"] == "failed":
-            raise await self._failure_verdict(flow_id)
-        if row is None or row["status"] != "succeeded":
-            # THE READ'S RACE: the row's face said live/held — a cancel
-            # or a failure may commit between the two statements. The
-            # status read explains the face; a run the status still
-            # calls live gets ONE bounded re-read of the row (no polling
-            # loop) — the flip that committed during the read shows
-            # there — and the re-read's verdict raises. A run that is
-            # genuinely still working (held or queued) keeps the honest
-            # None.
-            status = await self._flow_status(flow_id)
-            if status == "cancelled":
-                raise await self._cancellation_verdict(flow_id)
-            if status == "failed":
-                raise await self._failure_verdict(flow_id)
+
+        async def _verdict_of(run_status: str) -> WorkflowRunError | None:
+            if run_status == "cancelled":
+                return await self._cancellation_verdict(flow_id)
+            if run_status == "failed":
+                return await self._failure_verdict(flow_id)
+            return None
+
+        async def _read_state() -> asyncpg.Record | None:
             async with self.pool.acquire() as conn:
-                reread = await conn.fetchrow(
+                return await conn.fetchrow(
                     render_sql(TERMINAL_RESULT_SQL_TEMPLATE, self.schema), terminal, flow_id
                 )
-            if reread is not None and reread["status"] == "cancelled":
-                raise await self._cancellation_verdict(flow_id)
-            if reread is not None and reread["status"] == "failed":
-                raise await self._failure_verdict(flow_id)
-            return None
-        async with self.pool.acquire() as conn:
+
+        state = await _read_state()
+        run_status = state["run_status"] if state is not None else "missing"
+
+        async def _decode(state_row: asyncpg.Record) -> object:
             # THE BOUNDED COLLECT'S DETAIL RE-READ (the F4 read-side
             # reconciliation): a truncating JOIN as the terminal node
             # reads the full collect off the children's rows — the
             # decoded answer is the declared shape, never the bounded
             # summary's envelope.
-            return await self._decode_with_detail(
-                conn,
-                str(row["step_key"]),  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the Record walk's boundary.
-                row["id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
-                row["result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
-            )
+            async with self.pool.acquire() as conn:
+                return await self._decode_with_detail(
+                    conn,
+                    str(state_row["node_key"]),  # pyright: ignore[reportUnknownArgumentType,reportAny]  # Why: the Record walk's boundary.
+                    state_row["node_id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                    state_row["node_result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
+                )
+
+        if run_status == "succeeded" and state is not None and state["node_status"] == "succeeded":
+            return await _decode(state)
+        # THE RUN IS NOT A CLEAN SUCCESS: the verdict comes from the
+        # run's own status (failed/cancelled raise their verdicts); a
+        # run the snapshot still calls live gets the bounded re-read —
+        # the flip that committed during the read shows there and raises
+        # its verdict; a run genuinely still working (held, queued)
+        # keeps the honest None.
+        verdict = await _verdict_of(run_status)
+        if verdict is not None:
+            raise verdict
+        status = await self._flow_status(flow_id)
+        if status == "cancelled":
+            raise await self._cancellation_verdict(flow_id)
+        if status == "failed":
+            raise await self._failure_verdict(flow_id)
+        state2 = await _read_state()
+        run_status2 = state2["run_status"] if state2 is not None else "missing"
+        verdict2 = await _verdict_of(run_status2)
+        if verdict2 is not None:
+            raise verdict2
+        if (
+            run_status2 == "succeeded"
+            and state2 is not None
+            and state2["node_status"] == "succeeded"
+        ):
+            return await _decode(state2)
+        return None
 
     async def _cancellation_verdict(self, flow_id: JobId) -> WorkflowRunCancelledError:
         """The cancelled run's typed verdict: the root row's stamped
