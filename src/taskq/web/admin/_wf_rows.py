@@ -13,7 +13,7 @@ Two pure derivations live here:
   (the ledger's max ids; the rows are the durable ring the replay
   reads).
 
-The status derivation is THE §17.5 derivation (``workflows._status``) —
+The status derivation is THE derivation (``workflows._status``) —
 one engine, three surfaces (backend, SSE, CLI), no mapping drift.
 """
 
@@ -30,7 +30,7 @@ from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike
 
 if TYPE_CHECKING:
-    # THE §16.1 IMPORT LAW's typing-only carve-out: the name exists for
+    # THE IMPORT LAW's typing-only carve-out: the name exists for
     # the annotations alone — it is NEVER a runtime module-scope import
     # (the fresh-interpreter probes prove the package stays unloaded).
     from taskq.workflows._status import NodeView
@@ -131,7 +131,7 @@ class RunNode:
     # node in this run (its parent_id names a node row of the same run) —
     # the renderers COLLAPSE it into its parent source's hexagon (the
     # parent carries the done/total counter; the child detail lives in
-    # the drill-down). The derivation reads EVERY row — the child's
+    # the recorded failure-down). The derivation reads EVERY row — the child's
     # status drives the derived verdict exactly as before; only the RENDER
     # collapses (a 10k fan-out renders ONE hexagon, never 10k lines).
     map_child: bool = False
@@ -234,9 +234,9 @@ class RunNode:
         )
 
     def view(self) -> NodeView:
-        """The §17.5 derivation's input (the one conversion — the same
+        """The derivation's input (the one conversion — the same
         law the CLI's analysis module states)."""
-        # THE §16.1 IMPORT LAW: the workflows import stays LAZY (the
+        # THE IMPORT LAW: the workflows import stays LAZY (the
         # module-scope import coupled every admin-page load to the
         # package — this module is the one surface the law's pin had
         # caught importing at module scope).

@@ -732,7 +732,7 @@ async def fetch_worker_busy_ratio(
       window the worker actually existed for (tenure capped at the
       window).  Near zero across a sustained window on a worker still
       heartbeating is the idle-worker shape; near one is saturation.
-    * ``worker_id`` drills ONE worker down (the idle-worker question is
+    * ``worker_id`` filters ONE worker down (the idle-worker question is
       always asked about one worker); the default fleet read groups
       the whole window in one pass.  Both arms are bounded by
       ``started_at`` — the live side's btree Index Cond, the archive

@@ -92,7 +92,7 @@ _parent_tags_var: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextV
     default=(),
 )
 
-# The fan-out ledger's contextvar (LIB-2): the enqueuing parent's job id,
+# The fan-out ledger's contextvar: the enqueuing parent's job id,
 # the sibling of the tag-inheritance var above. Set together at worker
 # entry (worker/run.py and worker/_consumer.py set BOTH — the ledger
 # stamp and the tag inheritance are one parent context), read by every
@@ -247,7 +247,7 @@ class SubJobEnqueuer:
     ) -> BackpressureSnapshot:
         """Read the submit path's backpressure state for *queues*.
 
-        The actor body's slice of the LIB-2 read (the fan-out decision
+        The actor body's slice of the read (the fan-out decision
         happens HERE, in the parent's execution): same contract as
         :meth:`JobsClient.backpressure` — the actor-scoped verdict, the
         fail-open ``unknown`` state, advisory semantics — reading this
@@ -367,7 +367,7 @@ class SubJobEnqueuer:
                 unique_for=unique_for,
                 unique_states=unique_states,
                 max_pending=effective_max_pending,
-                # LIB-2: the fan-out ledger stamp — the ambient parent's
+                # the fan-out ledger stamp — the ambient parent's
                 # job id when this runs under a parent context, None
                 # otherwise (the builder stays pure, the arm reads the
                 # contextvar once).

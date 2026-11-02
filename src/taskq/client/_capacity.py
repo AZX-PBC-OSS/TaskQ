@@ -416,7 +416,7 @@ class ActorCapacityCache:
     async def refresh(self) -> None:
         """Refresh the snapshot if stale; never raises.
 
-        The read-side entry point (the LIB-2 backpressure read warms the
+        The read-side entry point (the backpressure read warms the
         snapshot through this before peeking): the same single-flight,
         TTL-bounded, fail-open refresh every enqueue pays — at most one
         small whole-table read per ``ttl`` per process, a failed or

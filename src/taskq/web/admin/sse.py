@@ -273,7 +273,7 @@ async def _holds_generator(
     the listener's pump and its dedicated LISTEN connection must
     release deterministically)."""
     from taskq.workflows.api._hitl_listen import (
-        HitlListener,  # the import law (§16.1): lazy, never at module scope
+        HitlListener,  # the import law (the import law): lazy, never at module scope
     )
 
     _session_still_valid = _session_gate(session_verifier, schema)

@@ -1420,7 +1420,7 @@ class UnknownQueueError(TaskQError):
 
 class SignalTimeoutError(TaskQError):
     """A held signal's deadline passed under ``on_timeout="fail"`` — the
-    dedicated typed failure (GAPS-ESTATE F9's glossary shape: the
+    dedicated typed failure (the glossary shape: the
     ``Signal`` prefix, the :class:`TaskQError` base; NOT
     ``TaskQSignalTimeout``, which would break the exceptions glossary's
     one-prefix rule). The named state's ledger record: the hold row's
@@ -1447,10 +1447,10 @@ class SignalAbandonedError(TaskQError):
 
 class SignalPayloadError(TaskQError):
     """A delivered payload validated against NONE of the wait's declared
-    models (the typed door's runtime boundary — attack-3 B2/H2's cure):
+    models (the typed door's runtime boundary — attack-3 B2/the fix):
     the refusal happens BEFORE the deliver CAS consumes the hold, so the
     hold SURVIVES and the operator sees WHY. Never a silent drop into the
-    body's re-validation (the convicted shape: the payload consumed, then
+    body's re-validation (the rejected shape: the payload consumed, then
     the body's laddering ``ValidationError`` kills the flow).
 
     See also :class:`SignalPayloadAmbiguousError` — the same refusal when
@@ -1461,7 +1461,7 @@ class SignalPayloadError(TaskQError):
 class SignalPayloadAmbiguousError(SignalPayloadError):
     """A delivered payload fit MORE than one of the wait's declared
     models and the gate declared no discriminator: which member the body
-    receives would be decided by DECLARATION ORDER (the convicted
+    receives would be decided by DECLARATION ORDER (the rejected
     first-fit mis-narrowing — attack-3 B2), so the delivery is refused
     instead. The gate's escape is the explicit ``discriminator=`` on the
     wait site; the operator's escape is a payload whose shape names one
@@ -1469,7 +1469,7 @@ class SignalPayloadAmbiguousError(SignalPayloadError):
 
 
 class ReservedTimerNamespaceError(TaskQError):
-    """E17 — THE RESERVED TIMER NAMESPACE (the timer-cures lane's cure
+    """E17 — THE RESERVED TIMER NAMESPACE (the timer hardening's fix
     1): a HAND-facing mint named its hold inside the durable timer's
     reserved ``__timer__`` signal prefix — a payload model named
     ``__timer__Approval``, or a ``wait_until`` key beginning with the

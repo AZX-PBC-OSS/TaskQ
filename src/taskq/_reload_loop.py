@@ -62,7 +62,7 @@ async def run_reload_schedule(
         try:
             await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            # THE TEARDOWN'S OWN ORDER (the leaked-_wait cure, found by the
+            # THE TEARDOWN'S OWN ORDER (the leaked-_wait fix, found by the
             # leaked-task guard's own teeth): CANCEL ALL the pending
             # waiters first, THEN reap each. The previous shape cancelled
             # and reaped one waiter per lap — the reaper's own concurrent
@@ -70,7 +70,7 @@ async def run_reload_schedule(
             # re-raised out of the FIRST reap and orphaned the remaining
             # waiters: a cancelled-not-awaited trigger.wait and a STILL-
             # RUNNING _wait, leaking the parked sleeper into later tests
-            # (the leaked-task guard's conviction, 3 errors on the fast
+            # (the leaked-task guard's finding, 3 errors on the fast
             # tier). The reaper's law is untouched: our OWN cancellation
             # still propagates — after the bounded reap completes, never
             # swallowed, only not allowed to orphan the children.

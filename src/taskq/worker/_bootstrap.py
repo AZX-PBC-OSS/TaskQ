@@ -2135,7 +2135,7 @@ async def _main(
         # THE WORKFLOW EXECUTION PROJECTION (the F3 law's call site + the
         # dispatch fence's capability): resolved BEFORE register_worker —
         # the workers row's metadata carries the capability the dispatch
-        # fence reads as data. The lazy import keeps the §16.1 import law
+        # fence reads as data. The lazy import keeps the import law
         # (a worker that never installed taskq[flows] pays nothing, and
         # is not capable — the fence never hands it a workflow row).
         # The PROJECTION runs here too (compiling every imported app's

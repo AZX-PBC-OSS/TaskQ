@@ -143,7 +143,7 @@ _RUN_REVISION_SQL = (
 #: the stream's 404-before-first-frame (the existence oracle's refusal).
 _RUN_EXISTS_SQL = "SELECT 1 FROM \"{schema}\".jobs WHERE id = $1 AND step_key = '__flow__'"
 
-#: The node detail panel's read (the drill-down: status header, attempts,
+#: The node detail panel's read (the recorded failure-down: status header, attempts,
 #: the trace id, captured error, one upstream hop — the causal chain
 #: via parent_id). MAP CHILDREN share one step key (``<src>.item``), so
 #: the panel addresses a child by (step, map_index): the bare read
@@ -252,7 +252,7 @@ def _iso(value: Any) -> str | None:
 
 #: The panel's display cap (CHARS): error_message / error_traceback /
 #: metadata->>'error' render bounded — the full detail stays in the ROWS
-#: (the drill-down fetch reads the same rows; the cap is the DISPLAY's:
+#: (the recorded failure-down fetch reads the same rows; the cap is the DISPLAY's:
 #: engine-written rows carry the write-side caps,
 #: but a row written by ANY other path — or a hostile DB write — served
 #: unbounded through this endpoint, a 15MB response from a foreign row).
@@ -1423,7 +1423,7 @@ def register_actions(router: APIRouter) -> None:
         THE SCOPE, STATED HONESTLY: the engine has NO run-level
         re-enqueue verb — the run-key arbiter is terminal-forever (a
         fresh input, or a CANCELLED run, is a NEW run — the engine's own
-        G2 contract, and the CLI's remedy line says the same). What the
+        run-key-arbiter contract, and the CLI's remedy line says the same). What the
         engine DOES offer is the per-node manual resume
         (``retry_workflow_node``: the node's CAS re-arm + the blocked
         children's reset + the flow re-open + the exit-skipped branches'

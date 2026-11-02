@@ -276,7 +276,7 @@ class ActorRef[P: BaseModel, R: BaseModel | None]:
         self.singleton = singleton
         self.max_concurrent = max_concurrent
         self.max_pending = max_pending
-        # THE CAPACITY OWNER (C15): "operator" (the default) is the
+        # THE CAPACITY OWNER: "operator" (the default) is the
         # estate's own law — the stored row wins on every conflict. "code"
         # hands max_concurrent/result_ttl to the declaration: the startup
         # upsert rewrites them from the literal on every boot (the retry

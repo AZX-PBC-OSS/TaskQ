@@ -820,8 +820,8 @@ def redis_url(redis_container: _RedisContainerShim) -> str:
     same image and flags as the shared pair. The historical record: every
     cross/extras-leg "weather" red of this class (the subscriber wake, the
     ping pins, the attack478 ``CLIENT PAUSE``) was the shared broker's
-    co-tenancy, and every cure that patched ONE test's budget found the NEXT
-    exposed test in the following run. The durable cure is tenancy
+    co-tenancy, and every fix that patched ONE test's budget found the NEXT
+    exposed test in the following run. The durable fix is tenancy
     discipline, not budget inflation.
     """
     return redis_url_for(redis_container, db=_next_redis_db(redis_container))
@@ -880,8 +880,8 @@ def run_isolation_token() -> str:
     each worker's ``DROP DATABASE ... WITH (FORCE)`` / ``DROP SCHEMA ... CASCADE``
     would kill the other's live pools mid-test. AND ACROSS sessions sharing
     one cluster: a parent session and its own subprocess pytest (the scratch
-    drills) both publish a token, and the basetemp path keeps the child's
-    names off the parent's (the mutual-drop class's root cure - see
+    runs) both publish a token, and the basetemp path keeps the child's
+    names off the parent's (the mutual-drop class's root fix - see
     tests/conftest.py::_publish_run_isolation_token).
 
     Invocation-uniqueness of the token (the conftest publishes the

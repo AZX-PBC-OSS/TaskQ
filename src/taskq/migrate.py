@@ -907,7 +907,7 @@ async def apply_pending(
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
     if isinstance(conn, asyncpg.Pool):
-        # THE TYPED REFUSAL (the teardown round's cure): the Pool dies
+        # THE TYPED REFUSAL (the teardown fix): the Pool dies
         # the untyped AttributeError at the first transaction (the Pool
         # has no transaction()) — refuse it BY NAME instead, the remedy
         # in the message.

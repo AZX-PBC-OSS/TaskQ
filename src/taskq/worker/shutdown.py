@@ -87,7 +87,7 @@ def _orchestration_in_progress(
 
     Shared guard used by both the SIGTERM signal handler and the drain
     monitor's ``_trigger_drain_shutdown`` to prevent double-orchestration
-    (H2). Returns True if ``orchestrator_holder`` is non-empty (an
+    (). Returns True if ``orchestrator_holder`` is non-empty (an
     orchestration task was already created) or ``deps.shutdown_phase`` is
     past ``NONE`` (an orchestration has started executing phases).
     """

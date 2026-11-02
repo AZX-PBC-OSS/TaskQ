@@ -910,7 +910,7 @@ class JobsClient:
 
         # Build per-item EnqueueArgs carrying the resolved limits for the
         # backend's per-actor admission check. The ambient parent context
-        # is read ONCE per call (LIB-2): every item is a child of the
+        # is read ONCE per call: every item is a child of the
         # same parent when one is set.
         args_list = build_batch_args(
             items,
@@ -955,7 +955,7 @@ class JobsClient:
                 parent_id=current_parent_id(),
             )
 
-        # Build BatchRow when failure_policy OR finalizer is set (C3:
+        # Build BatchRow when failure_policy OR finalizer is set (the class law:
         # finalizer-only batches also need a row for list_batches
         # discoverability and finalizer_job_id auto-exclusion in
         # wait_for_batch). When only finalizer is set, failure_threshold=None.
@@ -1192,7 +1192,7 @@ class JobsClient:
         # batches would get wrong deserialization).
         item_meta: list[tuple[ActorRef[Any, Any], JobId]] = []
 
-        # The ambient parent context, read ONCE per call (LIB-2): the
+        # The ambient parent context, read ONCE per call: the
         # generator is consumed lazily, possibly mid-transaction, so the
         # contextvar is read at arm entry, never inside the generator.
         ambient_parent_id = current_parent_id()
@@ -1260,7 +1260,7 @@ class JobsClient:
         # Determine queue from the first item.
         queue = first_item.actor_ref.queue
 
-        # Build BatchRow when failure_policy OR finalizer is set (C3:
+        # Build BatchRow when failure_policy OR finalizer is set (the class law:
         # finalizer-only batches also need a row for list_batches
         # discoverability and finalizer_job_id auto-exclusion in
         # wait_for_batch). When only finalizer is set, failure_threshold=None.
@@ -1644,7 +1644,7 @@ class JobsClient:
                 self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
 
         # Phase 2: Build per-item EnqueueArgs. The ambient parent context
-        # is read ONCE per call (LIB-2): every item is a child of the
+        # is read ONCE per call: every item is a child of the
         # same parent when one is set.
         args_list = build_batch_args(
             items,
@@ -1730,7 +1730,7 @@ class JobsClient:
     ) -> BackpressureSnapshot:
         """Read the submit path's backpressure state for *queues*.
 
-        A read-only typed read (the LIB-2 design, mirroring the
+        A read-only typed read (the design, mirroring the
         reader-method precedent of :meth:`get_row` / :meth:`list`) —
         deliberately NOT an ``enqueue`` kwarg: ``enqueue`` is generic
         ``JobHandle[R]`` and no flag may flip the reply type.

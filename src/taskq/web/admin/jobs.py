@@ -1054,7 +1054,7 @@ def register(router: APIRouter) -> None:
         ``resync`` frame (the partial mode + the state payload) BEFORE the
         tail, never a silent empty-success.
 
-        THE IMPORT LAW (§16.1): the workflows imports are lazy — this module
+        THE IMPORT LAW (the import law): the workflows imports are lazy — this module
         never imports ``taskq.workflows`` at module scope.
         """
         from sse_starlette.event import ServerSentEvent

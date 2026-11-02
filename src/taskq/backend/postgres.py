@@ -308,7 +308,7 @@ class PostgresBackend:
 
     #: The workflow healing arms' admission marker — the ``_SweepSpec``
     #: tick table's hasattr gate probes it (``gated_on``). The arms live
-    #: in ``taskq.workflows._sweep`` (the §16.1 import law keeps them out
+    #: in ``taskq.workflows._sweep`` (the import law keeps them out
     #: of this package's module scope); their admission is THIS class's
     #: own capability declaration, the same seam every maintenance sweep
     #: uses (each capability its own marker — the arms never borrow

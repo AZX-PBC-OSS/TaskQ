@@ -241,12 +241,12 @@ def _same_config(
             and a.ttl == b.ttl
         )
     if isinstance(a, ConcurrencyReservation) and isinstance(b, ConcurrencyReservation):
-        # THE DUPLICATE-NAME LAW (C3): the identity that SURVIVES the
+        # THE DUPLICATE-NAME LAW: the identity that SURVIVES the
         # rebind — ``(name, slots, lease, keyed, lock_lease)``. The
         # schema is EXCLUDED: a reservation is declared at module import
         # (the settings' schema unknowable there) and the worker's
         # registration REBINDS the live entry to the deployment's schema
-        # (the H-A2 doctrine) — a same-config differing-schema
+        # (the rebind doctrine) — a same-config differing-schema
         # re-register is ONE reservation meeting its own rebind, never a
         # conflict. A differing ``keyed``/``lock_lease`` IS materially
         # different (the fleet-reclaim mark, the heartbeat's extension).
@@ -268,7 +268,7 @@ _RESERVATION_CONFIG_FIELDS: Final[tuple[str, ...]] = ("slots", "lease", "keyed",
 
 def _reservation_config_diff(a: ConcurrencyReservation, b: ConcurrencyReservation) -> list[str]:
     """The FIELD NAMES (with their values) the two reservations differ on
-    (C3 — the refusal names the field, never a values-only repr dump —
+    (the refusal names the field, never a values-only repr dump —
     the default ``__slots__`` repr is an address, not a diagnosis)."""
     differing: list[str] = []
     for field_name in _RESERVATION_CONFIG_FIELDS:
@@ -283,7 +283,7 @@ def _rate_limit_config_diff(
     a: "TokenBucket | SlidingWindow", b: "TokenBucket | SlidingWindow"
 ) -> list[str]:
     """The FIELD NAMES (with their values) the two rate-limit primitives
-    differ on — the reservation face's own law (C3's cure, mirrored):
+    differ on — the reservation face's own law (the fix, mirrored):
     the refusal names the field, never a values-only repr dump (the
     default repr is an address, not a diagnosis)."""
     differing: list[str] = []
@@ -536,14 +536,14 @@ class RateLimitRegistry:
         whose SCHEMA differs (a pre-registered RAW declaration meeting the
         worker's settings-bound copy) REBINDS the stored entry to the
         incoming copy, so the resolved registry's entries are ALWAYS
-        settings-schema-bound (the C2 doctrine — the rebind at the
+        settings-schema-bound (the rebind doctrine — the rebind at the
         REGISTER step, whichever pass encounters the raw instance)."""
         name = primitive.name
         existing = self._reservations.get(name)
         if existing is not None:
             if _same_config(existing, primitive):
                 if existing.schema != primitive.schema:
-                    # THE REBIND AT THE REGISTER STEP (C2): the stored
+                    # THE REBIND AT THE REGISTER STEP: the stored
                     # entry's schema binding moves to the incoming copy —
                     # the caller's own settings-bound instance (the
                     # bootstrap rebinds BEFORE register; the raw

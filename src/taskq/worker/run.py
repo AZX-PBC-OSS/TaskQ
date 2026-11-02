@@ -120,7 +120,7 @@ if TYPE_CHECKING:
     )
 
     # The execution record's static face (the runtime import stays inside
-    # the intercept's lazy seam — the §16.1 import law).
+    # the intercept's lazy seam — the import law).
     from taskq.workflows._worker_execution import (
         FlowExecution as FlowExecution,
     )
@@ -714,7 +714,7 @@ async def _stub_terminal_write(
         )
 
 
-#: The workflow execution seam, resolved ONCE (the §16.1 import law: the
+#: The workflow execution seam, resolved ONCE (the import law: the
 #: worker core never imports the workflows package at module scope; the
 #: intercept's hook seam does, lazily, and remembers — a worker that
 #: never installed ``taskq[flows]`` resolves ``None`` and keeps paying
@@ -1430,7 +1430,7 @@ async def di_consumer_loop(
         # workflow name) and runs via the runner's ledger-claim/finalize
         # machinery (the same tx1/tx2 + the fences — NOT a second
         # execution semantics; the in-process driver and this door differ
-        # only in WHO CLAIMED). The seam resolves lazily (the §16.1
+        # only in WHO CLAIMED). The seam resolves lazily (the the import law
         # import law): a worker that never installed taskq[flows] has no
         # seam — and the dispatch fence (the workers row's
         # workflow_execution capability) never hands it a workflow row in

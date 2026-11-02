@@ -580,7 +580,7 @@ class ConcurrencyReservation:
     def schema(self) -> str:
         """The PG schema this reservation's slot table lives in.
 
-        THE REBIND OWNS THE LIVE BINDING (C2's one doctrine): a
+        THE REBIND OWNS THE LIVE BINDING (the one rebind doctrine): a
         declaration is constructed at module import — before any settings
         exist — so its schema is the import-time default, not the
         deployment's; the worker's bootstrap registration rebinds the
@@ -600,7 +600,7 @@ class ConcurrencyReservation:
         registered by many processes and many deployments; the declaring
         module's own reference must not drift).
 
-        THE SCHEMA-AT-IMPORT SEAM (the flows demo's conviction): a
+        THE SCHEMA-AT-IMPORT SEAM (the flows demo's finding): a
         workflow-declared reservation is constructed at module import —
         before any settings exist — so it cannot know the deployment's
         schema; the bootstrap rebinds the live one at registration. The
