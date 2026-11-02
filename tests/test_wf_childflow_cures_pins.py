@@ -1,11 +1,11 @@
-"""THE CHILD-FLOW FIXES' PINS — the rv5-child pin pack (the child-flows
+"""THE CHILD-FLOW FIXES' PINS — the pin pack (the child-flows
 attack front's recorded findings, fixed failing-first on the
 ``feat/taskqflow-child-fixes`` branch off the child line's head
 ``f8bfc5033``).
 
 THE RED RECEIPTS (all captured live BEFORE the fixes, on the base head
 against the lane's :5812 — the capture rides
-``.measurements/child-fixes/rv5-child-failing-first.txt``):
+the recorded capture):
 
 * RV5-the (THE ASYNCIO.GATHER DRAGON — GRAND-MERGE BLOCKER): the natural
   fan-out spelling ``gather(*[ctx.spawn_flow(...) for t in tenants])``
@@ -36,9 +36,7 @@ against the lane's :5812 — the capture rides
   the typed refusal now teaches where the resolution actually lives.
 
 The fix choices are the reads' choices, and the pins hold them. Pin
-names carry the rv5 stem (the attack front's pack: these ARE the flip
-targets — the rv5-child branch's pins were not visible at fix time,
-so the fixes' pins name themselves rv5-consistently).
+names carry the pack's own stem.
 """
 
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.

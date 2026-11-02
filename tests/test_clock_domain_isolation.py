@@ -1,4 +1,4 @@
-"""Clock-domain isolation tests - the C3/C4/C5/C6/C11 skew series.
+"""Clock-domain isolation tests - the skew series (C3/C4/C5/C6/C11 — this file's own ledger).
 
 TaskQ runs two independent clocks: the injectable Python ``Clock`` and
 the PG server clock (``clock_timestamp()``).  Every predicate below is
@@ -116,7 +116,7 @@ async def test_schedule_to_close_interval_anchored_to_server_clock(pg_dsn: str) 
     interval`` in Python and stores a server_now+720 s absolute (drift
     +120 s).  The single arm already computes server-side - it is the
     regression guard; the batch arm is the failing case.  The COPY arm is
-    pinned by the C5/the tests below."""
+    pinned by the tests below."""
     stack, backend, schema = await _mk_backend(pg_dsn, timedelta(seconds=120))
     try:
         stamp = datetime.now(UTC) + timedelta(seconds=120)  # client-domain "now"
@@ -413,7 +413,7 @@ async def test_retry_backoff_not_voided_by_negative_skew(pg_dsn: str) -> None:
 
 @_integration
 async def test_retry_deadline_arbitrated_server_side(pg_dsn: str) -> None:
-    """C1/the pin: ``schedule_to_close`` = server_now + 10s, ``retry_delay`` =
+    """C1 — the pin: ``schedule_to_close`` = server_now + 10s, ``retry_delay`` =
     30s, worker Python clock skewed -120s (a caller-side deadline pre-check
     computed from that clock would still say Retry).  The SQL deadline guard
     is the single arbiter: ``clock_timestamp() + 30s > schedule_to_close`` →

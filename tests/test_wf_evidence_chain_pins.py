@@ -17,7 +17,7 @@ receipt is the fix's own capture); the fixed verifier walks the chain
 to its TERMINAL entry and applies the head-sha rule THERE.
 
 Each pin runs the verifier script as a subprocess against a synthetic
-runs-dir (the rv2-13 precedent: the script is the subject, its rc is
+runs-dir (the precedent: the script is the subject, its rc is
 the verdict) and asserts the recorded finding — and the CONTROL pin proves
 the fix does not over-reject: an honest chain (resolving links, a
 fresh on-disk terminal) stays GREEN.
@@ -26,7 +26,7 @@ fresh on-disk terminal) stays GREEN.
 from __future__ import annotations
 
 import json
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the rv2-13 pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
 import sys
 from pathlib import Path
 

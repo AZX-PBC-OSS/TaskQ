@@ -35,14 +35,14 @@ And the HONESTY edges, pinned both ways:
   silence (the defect class this fix kills) is never the outcome.
 
 Each pin runs the verifier script as a subprocess against a synthetic
-runs-dir (the rv2-13 precedent: the script is the subject, its rc is
+runs-dir (the precedent: the script is the subject, its rc is
 the verdict).
 """
 
 from __future__ import annotations
 
 import json
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the rv2-13 pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
 import sys
 from pathlib import Path
 

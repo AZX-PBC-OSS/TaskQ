@@ -37,7 +37,7 @@ def _evidence_measurements_dir() -> Path:
 # locally without the estate (the partial-local-dir race). No local
 # registry → the pins walk the EVIDENCE BRANCH's staged copy — the same
 # files, one indirection; the sha cross-check stays the verifier's and
-# rv2-13's law.
+# the subprocess-seam law.
 MEASUREMENTS = (
     REPO / ".measurements"
     if (REPO / ".measurements" / "runs" / "CLAIMS.json").is_file()

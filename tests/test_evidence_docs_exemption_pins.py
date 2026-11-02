@@ -27,7 +27,7 @@ migrations, ``examples/`` (imported by the smoke tests — behavior),
 ``scripts/`` (the gates themselves), ``benchmarks/`` (the measurement
 pins read them).
 
-THE METHOD (new for this pack, the rv2-13 subprocess seam): the
+THE METHOD (new for this pack, the subprocess seam): the
 off-by-one rule's diff half is judged against the REPO'S OWN HEAD, and a
 script's ``REPO`` is its own home — so each pin builds a THROWAWAY GIT
 REPO in a tmp dir, copies the verifier into it BYTE-IDENTICAL (the copy
@@ -94,7 +94,7 @@ import importlib.util
 import json
 import os
 import shutil
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the rv2-13 pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
 import sys
 from pathlib import Path
 from typing import cast
@@ -197,7 +197,7 @@ def _stamp_estate(repo: Path, base_sha: str, stem: str = "proof-stem") -> None:
 def _run_verifier_copy(repo: Path) -> subprocess.CompletedProcess[str]:
     """The verifier COPY as a subprocess, cwd = the throwaway repo (the
     copy's ``REPO`` is its own home) and the estate passed explicitly —
-    the rv6 pack's ``PYTHONPATH`` seam: the venv's taskq resolves, the
+    the pack's ``PYTHONPATH`` seam: the venv's taskq resolves, the
     git face resolves to the throwaway repo. The ambient
     ``GITHUB_EVENT_PATH`` is neutralized (the F-D5 control)."""
     return subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier copied byte-identical; fixed argv, no shell.

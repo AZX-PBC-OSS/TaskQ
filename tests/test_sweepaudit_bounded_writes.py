@@ -525,7 +525,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     "_SPAWN_SLOT_CLAIM_SQL": (
         "WHERE id = $1",
         "keyed single node row (the spawning node's own spawn-cursor "
-        "slot claim — the ATOMIC increment-and-return, rv5-C1's fix; the "
+        "slot claim — the ATOMIC increment-and-return; the "
         "write set is the ONE row the attempt claims)",
     ),
     "_HOLD_AWAITED_LEDGER_SQL": (

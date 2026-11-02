@@ -221,7 +221,7 @@ def test_mermaid_shape_vocabulary() -> None:
     text = app.get("shapes").mermaid()
     assert (
         'plain(["plain' in text
-    )  # the map source's stadium (it forks children — the rv4 arms-render fix)
+    )  # the map source's stadium (it forks children — the arms-render fix)
     assert "⇢ map:" in text  # the map's item body ON the label
     assert 'gather[["gather"]]' in text  # the gather join
     assert 'plain.join{{"plain.join"}}' in text  # the collapsed map join
