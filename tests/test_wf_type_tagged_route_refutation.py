@@ -33,7 +33,7 @@ doors: declaration (the route must be total over the union's member
 types) and runtime (``RouterNotTotal`` for the element type with no
 arm — the body that lied about its type).
 
-Failing-first: the proof's pins ran RED at the pre-fix head (the receipt:
+The rejected shape: the proof's pins ran RED at the pre-fix head (the receipt:
 ``.measurements/type-tagged-route-reds.json`` — the union declaration
 itself refused, ``TypeError`` out of the enum-only bind).
 """

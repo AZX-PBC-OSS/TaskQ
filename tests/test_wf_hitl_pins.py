@@ -1,7 +1,7 @@
 """THE HOLD MACHINERY'S PINS: held rows, the deliver CAS, the timers, the
 cancel cascade, the reply handle.
 
-The failing-first evidence: each pin's REJECTED VARIANT (the spike's
+The evidence: each pin's REJECTED VARIANT (the spike's
 dragons) is named in the docstring and — where the variant is a
 guard-flip — exercised with the red captured to
 ``.measurements/t10-pin-reds.json``. The unfenced variants stay RED
@@ -9,7 +9,7 @@ FOREVER (they are the dragons, not bugs).
 
 The provenance: P3's cancel matrix (spikes 1-2), the hitl-proof's four
 layers, the agent-loop spike's verdict M (the second multi-hold
-confirmation), the round-8 requirements (the reply handle, the context
+confirmation), the hold round requirements (the reply handle, the context
 contract, the pubsub convergence).
 """
 
@@ -342,7 +342,7 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
 async def test_hold_id_reply_handle_and_context_contract(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Pins 10-11 (round-8): the hold's ID is the reply handle (uuid7 —
+    """Pins 10-11 : the hold's ID is the reply handle (uuid7 —
     time-ordered, the id appears in the row and the client's surface);
     the context contract carries the payload + the schema reference +
     the provenance; the resolve is IDEMPOTENT (already-resolved = the
@@ -472,7 +472,7 @@ async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
     wf_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    """Pin 12 (round-8): the knock carries THE POINTER (hold id + run id
+    """Pin 12 : the knock carries THE POINTER (hold id + run id
     + event) — NEVER the sole copy of the payload; a consumer that
     MISSES the knock still converges by polling ``client.hitl.list()``
     (the row is the truth). THE PIN ACTUALLY LISTENS (the vacuous-audit's

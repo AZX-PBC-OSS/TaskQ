@@ -3,7 +3,7 @@
 The obligations these pins hold were proven in the design phase and are
 pinned here against the built surface.
 
-The failing-first evidence: each pin's REJECTED VARIANT (the spike's dragons)
+The evidence: each pin's REJECTED VARIANT (the spike's dragons)
 is named in the docstring and — where the variant is observable — exercised
 with the red captured to ``.measurements/t21-pin-reds.json``. The unfenced
 variants stay RED FOREVER (they are the dragons, not bugs).

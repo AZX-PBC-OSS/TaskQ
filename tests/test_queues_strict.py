@@ -733,7 +733,7 @@ async def test_empty_snapshot_never_refuses_first_deploy() -> None:
     stored-assignment snapshot that is EMPTY — no worker has ever
     started — carries ZERO evidence of stranding, so strict DISABLES
     itself (advisory posture, the note still fires) and the job is
-    ACCEPTED. Failing-first: this exact submit raised at the base before the
+    ACCEPTED. The rejected shape: this exact submit raised at the base before the
     rule landed."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))  # fresh store: nothing registered
     client = JobsClient(backend, settings=_strict_settings())

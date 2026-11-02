@@ -1359,6 +1359,6 @@ def test_the_page_js_carries_the_base_path_and_rerun_laws() -> None:
         "CONTRACT: the rerun forms confirm before they submit"
     )
     assert '[data-wf-node-row="' in js and "CSS.escape" in js, (
-        "CONTRACT: the node-table selector escapes the attacker-controlled key"
+        "CONTRACT: the node-table selector escapes the hostile-actor-controlled key"
     )
     assert 'BASE + "/api/runs/"' in js, "the Resolve door's fetch rides the base path too"

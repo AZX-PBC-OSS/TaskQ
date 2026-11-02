@@ -1,4 +1,4 @@
-"""THE ROUND-3 ADVERSARIAL REVIEW'S FIXES' PINS — the round-3 subsection's
+"""THE HOLD ROUND'S FIXES' PINS — the hold round subsection's
 residues on the admin surface, each fixed and pinned:
 
 - THE WALK BUDGET'S UNIT: ``_bounded_io_projection``'s size budget

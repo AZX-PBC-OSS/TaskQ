@@ -1,4 +1,4 @@
-"""ATTACK PINS — the CLI adversarial review front (`taskq flows`), the rejected shapes
+"""the CLI adversarial review front (`taskq flows`), the rejected shapes
 the pins stood strict-xfail until their fixes flipped them green.
 
 The CLI's stated contracts, held against adversarial shapes, each a
@@ -740,7 +740,7 @@ async def test_trio_3_list_with_a_negative_limit_is_a_named_refusal(
 async def test_f_cli_5_job_show_bounds_db_sourced_error_class(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """FINDING 14's PIN (FAILING-FIRST), the error_class face: `taskq job
+    """, the error_class face: `taskq job
     show` printed the row's `error_class` RAW — a hand-crafted or legacy
     row's text column carried an ANSI-carrying, multi-line, unbounded
     value straight into the line-oriented shell surface (the job-show

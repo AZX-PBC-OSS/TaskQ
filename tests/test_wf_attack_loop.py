@@ -92,7 +92,7 @@ async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     """The TRUSTING body — no isinstance dance, the annotation's own
     promise (the guide's claim: "a body sees the type it declared, never
     a raw dict"; true for step params via coerce_arg, refuted for the
-    loop door by the front's a1b). SAFE: three iterations, each handed a
+    loop door by the probe's finding). SAFE: three iterations, each handed a
     Counter, the result {"acc": 3}. TODAY: iteration 0 hands a dict and
     the body dies — LoopBodyFailure (AttributeError), zero faults needed."""
     seen: list[str] = []
@@ -318,7 +318,7 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
 async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_path(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE PRODUCTION SHAPE (the front's a3f, extended to the run): a
+    """THE PRODUCTION SHAPE (the probe's finding, extended to the run): a
     loop exhausted under the driver's cap (escalate policy, the author's
     ``escalates_to=`` body), the outbox drained — then the REAL dispatch
     CTE (the round-robin variant, the fleet worker's claim statement)
@@ -463,7 +463,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
 async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The live interleave (the front's a1c, gated deterministically):
+    """The live interleave (the probe's finding, gated deterministically):
     A claims (attempt 1) and parks in iter0's body past its lease; the
     estate reclaim re-pends the row; B (a fresh driver identity)
     re-claims, runs iter0, advances, parks mid-iter1; A wakes and its
@@ -691,7 +691,7 @@ def test_f_loop_7_the_carrier_type_refusal_fires_at_registration() -> None:
 async def test_guard_the_budget_wall_fires_from_the_sweep_with_the_driver_dead(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """GUARD (the attack FAILED — the front's A2a): the budget wall is
+    """GUARD (the attack FAILED — the probe's finding): the budget wall is
     enforced BY THE SWEEP with the driver hard-killed mid-iteration (the
     SIGKILL shape: the task cancelled, no cleanup runs) — the named
     state, the typed failure class, the flow terminal, and the body
@@ -739,7 +739,7 @@ async def test_guard_the_budget_wall_fires_from_the_sweep_with_the_driver_dead(
 async def test_guard_the_cap_wall_fires_from_the_sweep_on_the_crash_window_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """GUARD (the attack FAILED — the front's A2b): a REAL driver runs
+    """GUARD (the attack FAILED — the probe's finding): a REAL driver runs
     the always-Refine body to the cap (the advance guard lets the
     counter REACH max), then dies before the top-of-loop cap check (the
     until= predicate raises CancelledError on the killing pass — the
@@ -804,7 +804,7 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
     wf_pool: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """GUARD (the attack FAILED — the front's A1a): the kill lands
+    """GUARD (the attack FAILED — the probe's finding): the kill lands
     BETWEEN the iteration's committed terminal write and the carry
     advance (the pg_terminate_backend window, injected at the classified
     seam the shipped pin #6 uses). The reclaim records 'crashed' (the
@@ -876,7 +876,7 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
 async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """GUARD (the attack FAILED — the front's A2d, the arm's heart): a
+    """GUARD (the attack FAILED — the probe's finding, the arm's heart): a
     ``budget_paused`` row with its deadline FORCED INTO THE PAST
     survives the sweep untouched (holds are free); the un-paused twin at
     the same deadline fires. (The arm WITHOUT ``AND NOT

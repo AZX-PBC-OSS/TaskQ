@@ -302,7 +302,7 @@ def test_the_health_dataclass_carries_exactly_the_runbook_operands() -> None:
 
 
 def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
-    """FINDING 11's PIN (FAILING-FIRST): the gauge callbacks scrape on the
+    """the gauge callbacks scrape on the
     OTel collection THREAD while the claim path records on the EVENT-
     LOOP thread — the pre-fix stores had no lock, and the two walkers
     raced inside the deque/dict: **287 RuntimeErrors in 3 s of hot

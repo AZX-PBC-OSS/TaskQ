@@ -9,8 +9,7 @@ claim seam (D1's resolution is per-claim, never per-run), and the
 §22.1 stamp (``jobs.code_version`` — the per-node canonical content
 hash written at claim) records WHICH code ran each row.
 
-Failing-first evidence: the pins ran against the PRE-IMPLEMENTATION tree —
-the doc's TODAY was the silent behavior change (no contract text, no
+The pins hold behaviors that were broken before their fixes: the doc's TODAY was the silent behavior change (no contract text, no
 stamp read taught); the captures ride
 ``.measurements/t29-versioning-pin-reds-pre.txt``. These pins are the
 contract's OWN proof (the adoption + the stamp are the shipped

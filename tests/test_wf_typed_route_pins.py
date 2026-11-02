@@ -22,7 +22,7 @@ keys, named), the validator's E15-route-totality (the checker-independent
 re-proof from the compiled graph), and the runtime ``RouterNotTotal`` (the
 no-match element dies loudly — the skip-silent shape is DEAD).
 
-Failing-first: every pin below ran against the base head ``d0491207`` BEFORE
+Every pin below holds a behavior that was broken before its fix,
 the surface existed (the lazy imports raise ``ImportError`` — the red
 receipt: ``.measurements/t27-typed-route-reds.txt``); the greens are the
 built code's evidence. Captured: ``.measurements/t27-*.txt``.
@@ -121,7 +121,7 @@ def wire_the_scenario(
 ) -> None:
     """Wire the reviewer's exact scenario on *app*: the source step → the
     typed route (the two placements) → the typed-sum join (the terminal).
-    The lazy imports ARE the failing-first door: at the base head they raise
+    The lazy imports ARE the door: at the base head they raise
     ``ImportError`` and every pin xfails."""
     from taskq.workflows import RouteArm, build, route, step
 

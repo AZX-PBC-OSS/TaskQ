@@ -1,5 +1,5 @@
 """THE CHILD-FLOW FIXES' PINS — the pin pack (the child-flows
-recorded findings, fixed failing-first on the
+recorded findings, fixed on the
 the child-fixes branch off the child line's head
 ``f8bfc5033``).
 
@@ -240,12 +240,12 @@ class TestRv5C1GatherDragonAtomicity:
         each carrying ITS OWN input, and every receipt must name its own
         child (no tenant-0 x K, no dropped tenants, no fabricated
         per-caller verdicts)."""
-        _child_app("rv5_c1_child").get("rv5_c1_child")
+        _child_app("c1_chil").get("c1_chil")
 
         async def gather_body(ctx: StepContext, params: ParentIn) -> ParentOut:
             probes = [SubProbe(doc_id=f"{params.doc_id}-{i}") for i in range(5)]
             handles = await asyncio.gather(
-                *[ctx.spawn_flow("rv5_c1_child", input=p, result=SubReport) for p in probes]
+                *[ctx.spawn_flow("c1_chil", input=p, result=SubReport) for p in probes]
             )
             verdicts: list[str] = []
             for handle in handles:
@@ -259,9 +259,9 @@ class TestRv5C1GatherDragonAtomicity:
                         verdicts.append("not-ok")
             return ParentOut(findings=verdicts, verdict="ok")
 
-        parent_app = _parent_app("rv5_c1_child", "rv5_c1_parent", body=gather_body)
+        parent_app = _parent_app("c1_chil", "c1_paren", body=gather_body)
         flow_id, outcome, _runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "rv5_c1_parent"
+            parent_app, wf_pool, wf_schema, "c1_paren"
         )
         assert outcome == "terminal"
 
@@ -285,15 +285,13 @@ class TestRv5C1GatherDragonAtomicity:
         """THE HONEST SHARED FACE: a SAME-key concurrent spawn ADOPTS the
         same child and EVERY caller receives THAT child's handle/outcome
         — never a fabricated per-caller verdict."""
-        _child_app("rv5_c1_same_child").get("rv5_c1_same_child")
+        _child_app("c1_same_chil").get("c1_same_chil")
 
         async def same_key_body(ctx: StepContext, params: ParentIn) -> ParentOut:
             probes = [SubProbe(doc_id=f"{params.doc_id}-{i}") for i in range(5)]
             handles = await asyncio.gather(
                 *[
-                    ctx.spawn_flow(
-                        "rv5_c1_same_child", input=p, result=SubReport, key="the-shared-site"
-                    )
+                    ctx.spawn_flow("c1_same_chil", input=p, result=SubReport, key="the-shared-site")
                     for p in probes
                 ]
             )
@@ -306,9 +304,9 @@ class TestRv5C1GatherDragonAtomicity:
                 case _:
                     return ParentOut(findings=[], verdict="not-ok")
 
-        parent_app = _parent_app("rv5_c1_same_child", "rv5_c1_same_parent", body=same_key_body)
+        parent_app = _parent_app("c1_same_chil", "c1_same_paren", body=same_key_body)
         flow_id, outcome, _runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "rv5_c1_same_parent"
+            parent_app, wf_pool, wf_schema, "c1_same_paren"
         )
         assert outcome == "terminal"
         roots = await _child_roots(wf_conn, wf_schema, flow_id)
@@ -340,7 +338,7 @@ class TestRv5C1GatherDragonAtomicity:
             raw = cast("dict[str, object]", ctx.input)
             return Echo(echo=raw)
 
-        @app.workflow("rv5_c1_fid_child")
+        @app.workflow("c1_fid_chil")
         def rv5_fid_child() -> Promise[object]:
             return build(step(echo_step, key="echo"))
 
@@ -351,7 +349,7 @@ class TestRv5C1GatherDragonAtomicity:
                 ShapeB(doc_id="tb", shape="B", only_b="bee"),
             ]
             handles = await asyncio.gather(
-                *[ctx.spawn_flow("rv5_c1_fid_child", input=i, result=Echo) for i in inputs]
+                *[ctx.spawn_flow("c1_fid_chil", input=i, result=Echo) for i in inputs]
             )
             echoes: list[dict[str, object]] = []
             for handle in handles:
@@ -364,12 +362,12 @@ class TestRv5C1GatherDragonAtomicity:
         async def fid_parent(ctx: StepContext, params: ParentIn) -> dict[str, object]:
             return await fid_body(ctx, params)  # type: ignore[operator]
 
-        @app.workflow("rv5_c1_fid_parent")
+        @app.workflow("c1_fid_paren")
         def rv5_fid_parent() -> Promise[object]:
             return build(step(fid_parent, ParentIn(doc_id="d1"), key="spawn_join"))
 
-        app.get("rv5_c1_fid_child")  # the registration door (D1)
-        runner = FlowRunner(app.get("rv5_c1_fid_parent"), wf_pool, wf_schema)
+        app.get("c1_fid_chil")  # the registration door (D1)
+        runner = FlowRunner(app.get("c1_fid_paren"), wf_pool, wf_schema)
         claim = await runner.create_flow()
         outcome = await runner.drive(claim.flow_id, until="terminal", max_ticks=4000)
         assert outcome == "terminal"
@@ -412,18 +410,16 @@ class TestRv5C2SpawnDepthBound:
         @app.actor(queue="cpu", max_attempts=1)
         async def bomb_step(ctx: StepContext) -> GenOut:
             gen_in = GenIn.model_validate(ctx.input)
-            handle = await ctx.spawn_flow(
-                "rv5_c2_bomb", input=GenIn(gen=gen_in.gen + 1), result=GenOut
-            )
+            handle = await ctx.spawn_flow("c2_bom", input=GenIn(gen=gen_in.gen + 1), result=GenOut)
             outcome = await handle.wait()
             assert isinstance(outcome, ChildOk)
             return GenOut(gen=outcome.result.gen)
 
-        @app.workflow("rv5_c2_bomb")
+        @app.workflow("c2_bom")
         def rv5_bomb() -> Promise[object]:
             return build(step(bomb_step, key="bomb"))
 
-        runner = FlowRunner(app.get("rv5_c2_bomb"), wf_pool, wf_schema)
+        runner = FlowRunner(app.get("c2_bom"), wf_pool, wf_schema)
         claim = await runner.create_flow(input=GenIn(gen=0))
         outcome = await runner.drive(claim.flow_id, until="terminal", max_ticks=600)
         assert outcome == "terminal", (
@@ -456,11 +452,11 @@ class TestRv5C2SpawnDepthBound:
         """THE CYCLE CHECK (folded into the same ancestor walk): a cycle
         in the rows' parent links cannot run the walk forever — the same
         typed bound fires."""
-        _child_app("rv5_c2_cycle_child").get("rv5_c2_cycle_child")
+        _child_app("c2_cycle_chil").get("c2_cycle_chil")
 
         async def cycle_body(ctx: StepContext, params: ParentIn) -> ParentOut:
             handle = await ctx.spawn_flow(
-                "rv5_c2_cycle_child",
+                "c2_cycle_chil",
                 input=SubProbe(doc_id=params.doc_id),
                 result=SubReport,
             )
@@ -471,8 +467,8 @@ class TestRv5C2SpawnDepthBound:
                 case _:
                     return ParentOut(findings=[], verdict="not-ok")
 
-        parent_app = _parent_app("rv5_c2_cycle_child", "rv5_c2_cycle_parent", body=cycle_body)
-        runner = FlowRunner(parent_app.get("rv5_c2_cycle_parent"), wf_pool, wf_schema)
+        parent_app = _parent_app("c2_cycle_chil", "c2_cycle_paren", body=cycle_body)
+        runner = FlowRunner(parent_app.get("c2_cycle_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
 
         # THE FABRICATED CYCLE: the parent's root points at ITSELF (the
@@ -510,7 +506,7 @@ async def _chain_rows(wf_conn: asyncpg.Connection, wf_schema: str, depth: int) -
     directions."""
     ids = [JobId(new_uuid()) for _ in range(depth)]
     for i, fid in enumerate(ids):
-        meta: dict[str, object] = {"flow_id": str(fid), "workflow": "rv5_chain"}
+        meta: dict[str, object] = {"flow_id": str(fid), "workflow": "chai"}
         if i > 0:
             meta["parent_flow_id"] = str(ids[i - 1])
         if i < depth - 1:
@@ -560,9 +556,9 @@ class TestRv5C4OrphanWindow:
         parent cancel — the child must STILL be cancelled by the rows'
         parent_flow_id direction (the crash-safe truth), never escape
         the cascade forever."""
-        _child_app("rv5_c4_child").get("rv5_c4_child")
-        parent_app = _parent_app("rv5_c4_child", "rv5_c4_parent")
-        runner = FlowRunner(parent_app.get("rv5_c4_parent"), wf_pool, wf_schema)
+        _child_app("c4_chil").get("c4_chil")
+        parent_app = _parent_app("c4_chil", "c4_paren")
+        runner = FlowRunner(parent_app.get("c4_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
 
         await _spawn_and_hold(runner, flow_id)
@@ -605,9 +601,9 @@ class TestRv5C3ChildLostFailClose:
         the dangling child pointer raises the typed arm, the parent's
         run FAILS honestly (the pre-fix shape re-minted a fresh child:
         emails/payments twice, the parent SUCCEEDED)."""
-        _child_app("rv5_c3_child").get("rv5_c3_child")
-        parent_app = _parent_app("rv5_c3_child", "rv5_c3_parent")
-        runner = FlowRunner(parent_app.get("rv5_c3_parent"), wf_pool, wf_schema)
+        _child_app("c3_chil").get("c3_chil")
+        parent_app = _parent_app("c3_chil", "c3_paren")
+        runner = FlowRunner(parent_app.get("c3_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
 
         await _spawn_and_hold(runner, flow_id)
@@ -734,11 +730,11 @@ class TestRv5C5DevDriveParity:
 
         gate = GateDecl(name="ContinueApproval", payload_models=(ContinueApproval,))
 
-        @app.workflow("rv5_c5a_parent")
+        @app.workflow("c5a_paren")
         def rv5_c5a() -> Promise[object]:
             return build(step(waiter, ParentIn(doc_id="d1"), key="hold", gates=(gate,)))
 
-        runner = FlowRunner(app.get("rv5_c5a_parent"), wf_pool, wf_schema)
+        runner = FlowRunner(app.get("c5a_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         outcome = await runner.drive(flow_id, until="terminal", max_ticks=400)
         assert outcome == "terminal", (
@@ -771,9 +767,9 @@ class TestRv5C5AdminFaces:
         monkeypatch.setenv("TASKQ_ADMIN_ACTIONS_ENABLED", "true")
         monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
 
-        _child_app("rv5_c5b_child").get("rv5_c5b_child")
-        parent_app = _parent_app("rv5_c5b_child", "rv5_c5b_parent")
-        runner = FlowRunner(parent_app.get("rv5_c5b_parent"), wf_pool, wf_schema)
+        _child_app("c5b_chil").get("c5b_chil")
+        parent_app = _parent_app("c5b_chil", "c5b_paren")
+        runner = FlowRunner(parent_app.get("c5b_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         await _spawn_and_hold(runner, flow_id)
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
@@ -803,9 +799,9 @@ class TestRv5C5AdminFaces:
         child's terminal) — the hold SURVIVES; the pre-fix face
         delivered, the body re-executed, the live child re-held (the
         no-op bounce wearing a 200)."""
-        _child_app("rv5_c5c_child").get("rv5_c5c_child")
-        parent_app = _parent_app("rv5_c5c_child", "rv5_c5c_parent")
-        runner = FlowRunner(parent_app.get("rv5_c5c_parent"), wf_pool, wf_schema)
+        _child_app("c5c_chil").get("c5c_chil")
+        parent_app = _parent_app("c5c_chil", "c5c_paren")
+        runner = FlowRunner(parent_app.get("c5c_paren"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         await _spawn_and_hold(runner, flow_id)
 

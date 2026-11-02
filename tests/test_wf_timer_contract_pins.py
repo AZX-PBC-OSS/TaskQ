@@ -226,12 +226,12 @@ async def test_wait_signal_refuses_a_timer_prefixed_model(
     of an innocent-looking run)."""
     app = WorkflowApp()
 
-    @app.workflow("rv5t1_trojan")
+    @app.workflow("troja")
     def t1_flow() -> Promise[object]:
         return build(step(_t1_trojan_body, Nudge(), key="gate", max_attempts=1))
 
     try:
-        compiled = app.get("rv5t1_trojan")
+        compiled = app.get("troja")
     except (WorkflowBuildError, WorkflowValidationError) as exc:
         # THE BUILD DOOR's refusal — the rule must be named.
         message = str(exc)
@@ -287,11 +287,11 @@ async def test_the_broadcast_and_backfill_never_surface_timer_holds(
     human-hold shape; the alternative is flagged above.)"""
     app = WorkflowApp()
 
-    @app.workflow("rv5t2_leak")
+    @app.workflow("lea")
     def t2_flow() -> Promise[object]:
         return build(step(_t2_timer_body, Nudge(), key="timer_node"))
 
-    runner = FlowRunner(app.get("rv5t2_leak"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("lea"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
 
     # THE NOTIFY LEG: the listener is LIVE when the timer mints.
@@ -494,7 +494,7 @@ def test_timer_rows_never_render_the_human_resolve_form() -> None:
 
     run = SimpleNamespace(
         run_id="12345678-abcd",
-        workflow="rv5t4",
+        workflow="probe",
         root_status="running",
         root_map_children=0,
         cancel_requested_at=None,
@@ -532,7 +532,7 @@ def test_timer_rows_never_render_the_human_resolve_form() -> None:
         installed=True,
         derived="running",
         nodes=[],
-        holds=[hold("rv5t4timer", "__timer__leak"), hold("rv5t4human", "Approval")],
+        holds=[hold("time", "__timer__leak"), hold("huma", "Approval")],
         events=[],
         boot=None,
         csrf_token="t",
@@ -542,10 +542,10 @@ def test_timer_rows_never_render_the_human_resolve_form() -> None:
         refusal_banner=None,
     )
     forms = re.findall(r'data-wf-form="resolve" data-hold-id="([^"]+)"', html)
-    assert "rv5t4human" in forms, (
+    assert "huma" in forms, (
         "the HUMAN hold lost its resolve form — the fix must not amputate the real affordance"
     )
-    assert "rv5t4timer" not in forms, (
+    assert "time" not in forms, (
         "The TIMER hold row renders the human resolve form — a control "
         "whose every submission is refused-as-forgery is a false affordance on "
         "the operator's page"
@@ -573,7 +573,7 @@ async def test_flows_status_surfaces_the_version_drift(
     from taskq.cli import app as cli_app
 
     app = WorkflowApp()
-    name = "rv5t5_drift_flow"
+    name = "drift_flo"
 
     @app.workflow(name)
     def t5_flow() -> Promise[object]:
@@ -632,7 +632,7 @@ async def test_a_vanished_node_key_terminal_fails_loudly(
     log). The cancel-then-restart remediation alternative is flagged in
     the recorded gap."""
     app = WorkflowApp()
-    name = "rv5t6_wedge_flow"
+    name = "wedge_flo"
 
     @app.workflow(name)
     def t6_flow() -> Promise[object]:

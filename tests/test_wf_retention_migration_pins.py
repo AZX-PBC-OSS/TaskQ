@@ -131,7 +131,7 @@ def test_migration_ships_exactly_the_two_flow_indexes() -> None:
 def test_migration_ops_note_carries_the_measured_lock_threshold() -> None:
     """R5: the ops note's too-large advice was UNMEASURED — an operator
     had no number to threshold the by-hand build on. The note now carries
-    the MEASURED figure (~1.0 s @ 3M rows on warm NVMe — the round-2's
+    the MEASURED figure (~1.0 s @ 3M rows on warm NVMe — the
     data; the boot's SHARE lock blocks ALL writes to the table for that
     span), states the cloud-volume multiple honestly (a multiple of the
     local number, measure yours), and gives the by-hand threshold's

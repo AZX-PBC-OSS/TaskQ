@@ -286,12 +286,12 @@ def test_3_a_typed_gate_in_step_gates_is_a_named_refusal() -> None:
     app = WorkflowApp()
     gate = app.channel().gate(_Approval)  # the TypedGate — the wrong door's object
 
-    @app.workflow("rv2_typed_gate_mistake")
+    @app.workflow("typed_gate_mistak")
     def _wf() -> object:
         return build(step(_hold_body, _Ingest(doc_id="d"), key="review", gates=(gate,)))
 
     with pytest.raises((WorkflowValidationError, WorkflowBuildError)):
-        app.get("rv2_typed_gate_mistake")
+        app.get("typed_gate_mistak")
 
 
 # ── the audit trail's bounds + the NUL-proof cancel ────────────
@@ -312,7 +312,7 @@ async def test_4a_the_audit_reason_and_detail_are_bounded(
         await record_admin_action(
             wf_conn,
             schema=wf_schema,
-            principal="attacker",
+            principal="the probe",
             action="workflow.cancel",
             target_type="workflow_run",
             target_id=target,
@@ -355,7 +355,7 @@ async def test_4b_a_nul_reason_never_aborts_the_wf_cancel(
         schema=wf_schema,
         flow_id=flow_id,
         reason="bad\x00reason",
-        principal="attacker",
+        principal="the probe",
     )
     assert cancelled >= 1, "the cancel must LAND — the NUL reason sanitized, never the abort"
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
@@ -512,7 +512,7 @@ def test_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None:
     from taskq.backend._dispatch import _dispatch_batch
     from taskq.backend._sql_templates import render
 
-    sql = render("rv2pin_wire")  # the statements' TEXT is the subject; the stub conn is the wire
+    sql = render("in_wir")  # the statements' TEXT is the subject; the stub conn is the wire
 
     class _WireConn:
         """The wire, honestly: the probe statements answer "rows remain"
@@ -569,7 +569,7 @@ def test_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None:
             sql,
             2,
             5.0,
-            "rv2pin_wire",
+            "in_wir",
             new_uuid(),
             ["q1"],
             4,
@@ -674,7 +674,7 @@ def test_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -> No
 
     app = WorkflowApp()
 
-    @app.workflow("rv2_loop_nested_promise")
+    @app.workflow("loop_nested_promis")
     def _wf() -> object:
         parent = step(_src_body, _Ingest(doc_id="d"), key="parent")
         lp = loop("lp", _loop_body, initial={"seed": parent}, max_iterations=2)
@@ -682,7 +682,7 @@ def test_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -> No
         return build(lp)
 
     with pytest.raises((WorkflowValidationError, WorkflowBuildError, UnencodableValue)):
-        app.get("rv2_loop_nested_promise")
+        app.get("loop_nested_promis")
 
 
 # ── E10 counts the ACTUAL params ───────────────────────────────
@@ -717,11 +717,11 @@ def test_9_e10_counts_the_actual_params() -> None:
 
     app = WorkflowApp()
 
-    @app.workflow("rv2_e10_duck_ok")
+    @app.workflow("e10_duck_o")
     def _wf() -> object:
         return build(step(duck_body, {"doc_id": "d"}, key="only"))
 
-    app.get("rv2_e10_duck_ok")  # the doctrine: NO refusal
+    app.get("e10_duck_o")  # the doctrine: NO refusal
 
     # The annotation surface is the old bug's counting basis, never the
     # pin's — the message must name the REAL arity of THIS shape.
@@ -730,14 +730,14 @@ def test_9_e10_counts_the_actual_params() -> None:
 
     app2 = WorkflowApp()
 
-    @app2.workflow("rv2_e10_real_mismatch")
+    @app2.workflow("e10_real_mismatc")
     def _wf2() -> object:
         return build(
             step(two_param_body, key="only")
         )  # ZERO wired args: 2 params beyond the wiring — E10's class (the 1-beyond shape is E12's)
 
     with pytest.raises(WorkflowValidationError) as excinfo:
-        app2.get("rv2_e10_real_mismatch")
+        app2.get("e10_real_mismatc")
     message = str(excinfo.value)
     assert "E10" in message, f"the real mismatch must still refuse (E10): {message}"
     assert "only" in message, (
@@ -866,7 +866,7 @@ def test_11_the_split_placement_declaration_resolved() -> None:
 
     app = WorkflowApp()
     chain = Chain(
-        name="rv2-split-chain",
+        name="-split-chai",
         start="screen",
         steps={
             "screen": Step(
@@ -879,7 +879,7 @@ def test_11_the_split_placement_declaration_resolved() -> None:
         queue="gpu",
     )
 
-    @app.workflow("rv2-split")
+    @app.workflow("-spli")
     def _workflow() -> object:
         src = chain_source(chain, _source_ctx_only, key="doc_source")
         return build(src)
@@ -923,7 +923,7 @@ def test_11_the_bad_source_declaration_still_refuses_loudly() -> None:
 
     bad = WorkflowApp()
     chain = Chain(
-        name="rv2-split-chain-bad",
+        name="-split-chain-ba",
         start="screen",
         steps={
             "screen": Step(
@@ -936,7 +936,7 @@ def test_11_the_bad_source_declaration_still_refuses_loudly() -> None:
         queue="gpu",
     )
 
-    @bad.workflow("rv2-split-bad")
+    @bad.workflow("-split-ba")
     def _workflow() -> object:
         src = chain_source(chain, _source_with_params, key="doc_source")
         return build(src)

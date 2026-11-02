@@ -1,6 +1,6 @@
 """THE CLI PINS: ``taskq flows`` — one question, one surface.
 
-The failing-first evidence: the three pins (taxonomy-drift, empty-snapshot,
+The evidence: the three pins (taxonomy-drift, empty-snapshot,
 read-only) are collected with their REJECTED VARIANTS — each scenarios the
 mutated shape and captures the observed red to
 ``.measurements/t12-pin-reds.json``. The surface-walk + output-contract
@@ -444,7 +444,7 @@ def test_derive_flow_status_is_the_shared_derivation() -> None:
     assert derive_flow_status([FlowNodeRow(step_key="a", status="failed")]) == "failed"
 
 
-# ── the taxonomy pin (failing-first 1) ───────────────────────────────────────
+# ── the taxonomy pin (1) ───────────────────────────────────────
 
 
 def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
@@ -491,7 +491,7 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
     engine_redlog.flush()
 
 
-# ── the read-only pin (failing-first 3) ─────────────────────────────────────
+# ── the read-only pin (3) ─────────────────────────────────────
 
 
 def test_read_only_pin_the_read_verbs_have_no_write_path() -> None:

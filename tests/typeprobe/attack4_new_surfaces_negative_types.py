@@ -1,5 +1,5 @@
-"""ATTACK4 — the NEW surfaces' negative type-probes (the phase-4
-attacker's corpus): the admin's run-explorer + the CLI's analysis module
+"""the NEW surfaces' negative type-probes (the phase-4
+the corpus): the admin's run-explorer + the CLI's analysis module
 under BOTH pinned checkers. Each MUST_ERROR marker names the rule-ids
 the violation must red under (the gate's vocabulary). Run:
 

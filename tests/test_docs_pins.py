@@ -1,7 +1,7 @@
-"""ATTACK PINS — the rv6 round's DOCS pack (fix/docs-currency @ 6e2297fe8),
+"""the rv6 round's DOCS pack (fix/docs-currency @ 6e2297fe8),
 PORTED TO the engine-fixes lane and FLIPPED GREEN by its doc fixes.
 
-Provenance: the rv6 front's recorded findings over the docs estate. Three were
+Provenance: the recorded recorded findings over the docs estate. Three were
 LIVE at the pinned head (pinned ``pytest.mark.xfail(strict=True)``
 asserting the SAFE behavior — the fix flips them XPASS-strict). THE
 FLIP IS DONE: the fixes (the api-reference's wiring-verbs table carries
@@ -12,7 +12,7 @@ the assertions stand as the permanent green pins. the cited text
 (the holdmap fix's runbook paragraph) does NOT exist in this tree — it
 lives on the unmerged ``feat/taskqflow-holdmap-fixes`` lane — so that
 pin stands GREEN as the anti-rot guard: the docs-numbers law it asserts
-rejects the text the day the lane lands with the mismatch (the rv2-11
+rejects the text the day the lane lands with the mismatch (the 11
 posture: a guard that keeps the resolution from rotting, here pre-seeded
 for the incoming paragraph). All four pins are STATIC (the estate's own
 text, never a container).

@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
 """THE H-C WAVE'S PINS — the ledger §H-C's rejected admin-UI defects,
-each pinned failing-first against the unfixed tree, then fixed:
+each pinned against the unfixed tree, then fixed:
 
 - H-C1 THE BRICKED RUN: ``POST /nodes/__flow__/retry`` re-armed the
   RUN'S ROOT — the CAS had no root guard, the root flipped failed→

@@ -144,7 +144,7 @@ async def _branch_b(ctx: StepContext, params: DocIngest) -> dict[str, int]:
 
 
 def test_bar_walk() -> None:
-    """THE BAR WALK (the API reference's failing-first 2): the authoring agent's original
+    """THE BAR WALK (the API reference's 2): the authoring agent's original
     graph — the shapes the paper cuts were hit on — compiles with zero
     boilerplate: plain-type data, Promise wiring, a gather-join,
     sequencing, a consumed terminal, the input parameter on create_flow."""

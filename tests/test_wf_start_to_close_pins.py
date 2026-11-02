@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE WF START_TO_CLOSE PINS — the step deadline's declaration + enforcement, failing-first.
+"""THE WF START_TO_CLOSE PINS — the step deadline's declaration + enforcement, .
 
 THE RECORDED FINDING: the vanilla machinery EXISTS end to end — the ``jobs``
 table's ``start_to_close interval`` column (``migrations/

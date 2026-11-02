@@ -1,6 +1,6 @@
 # ruff: noqa: S608, S603, ASYNC221, TID251, N817  # Why: the dash-named attack4-* module; the cold-process probes run a subprocess with fixed argv; the seeded ledger rows deliberately use uuid4 (a ledger row the arbiter did not mint); BM is the probe corpus's local shorthand.
-"""ATTACK4 — THE COVERAGE RESIDUALS (the split owner's gaps, closed by
-the attacker's own tests — attack4 ADDS tests, never source).
+"""THE COVERAGE RESIDUALS (the split owner's gaps, closed by
+these probes' own tests — the pack adds tests, never source).
 
 The captured p4 report's missing-line lists
 (``p4-coverage-split4.txt``: _hitl 68, _loop 80, _ctx 81, _ctx_wait 86,

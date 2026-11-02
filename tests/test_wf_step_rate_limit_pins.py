@@ -27,7 +27,7 @@ THE FIX'S SHAPE (ONE mechanism, the authoring face added):
   budget-free, LOUD — never a silent pass-through, the admitted-never-
   limited lie).
 
-Failing-first: the pins ran RED at the pre-fix head; the reds are captured
+The rejected shape: the pins ran RED at the pre-fix head; the reds are captured
 in ``.measurements/cons-cure2-reds.json``.
 """
 

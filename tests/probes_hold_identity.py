@@ -231,7 +231,7 @@ async def test_a3_knock_is_pointer_only(
     )
     # THE LISTENER: a raw pg_notify consumer on the hold channel — on the
     # MODULE's database (pg_notify is per-database; the env DSN's db is
-    # NOT the module's db — the attacker's own first listener missed it).
+    # NOT the module's db — the first listener draft missed it).
     listen_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
 
     async def listener() -> None:

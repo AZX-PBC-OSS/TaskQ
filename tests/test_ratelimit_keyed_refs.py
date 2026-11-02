@@ -337,7 +337,7 @@ async def test_resolve_keyed_ref_validation_errors_are_sanitized() -> None:
     critical - it is how a foreign BaseModel payload becomes an instance
     of ref.payload_type - and its ValidationError details follow the
     documented sanitization contract (include_url=False, include_input=False):
-    the attacker-controlled payload value and pydantic doc URLs must not
+    the hostile-actor-controlled payload value and pydantic doc URLs must not
     ride into error_message / web admin on validation_errors."""
     reg = RateLimitRegistry()
     ref = _keyed_ref(base_name="session-cap")

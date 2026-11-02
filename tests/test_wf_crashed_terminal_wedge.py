@@ -33,7 +33,7 @@ THE FIXES PINNED HERE:
   one-pass heal itself and reds when the reported state still disagrees
   (the corpse-stays-green blind spot, closed).
 
-Failing-first: the corpse pins ran RED against the pre-fix tree
+The rejected shape: the corpse pins ran RED against the pre-fix tree
 (reconstruction derived ``running``; the maintenance pass left the root
 ``running``) — captured in ``.measurements/wedge-pin-reds.json``.
 """
@@ -185,7 +185,7 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
     wf_sql: WorkflowSql,
     wedge_redlog: RedLog,
 ) -> None:
-    """THE G7 MUTATION-PIN (the attacker's proof): G7 stayed green ON THE
+    """THE G7 MUTATION-PIN (the mutation's proof): G7 stayed green ON THE
     CORPSE — the anti-drift assertion could not fail on a wedged run.
     THE FIX'S TEETH: a live root whose rows reconstruct a TERMINAL
     verdict contradicts the rows; the assertion runs the one-pass heal
@@ -218,7 +218,7 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
         "g7-corpses-cannot-hide",
         "the G7 assertion WITHOUT the terminal-contradiction leg: a live "
         "root over a terminal reconstruction greens the dead run (the "
-        "attacker's proof: G7 stayed green on the corpse) — the scenario "
+        "the mutation's proof: G7 stayed green on the corpse) — the scenario "
         "ran the mutant check and read the corpse after it",
         {
             "raised": str(scenario.value)[:300],

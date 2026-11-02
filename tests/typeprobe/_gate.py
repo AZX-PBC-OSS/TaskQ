@@ -53,8 +53,7 @@ TY_VERSION = "0.0.85"
 #: negative probes ship WITH the API, BUILD-PROTOCOL §7b). Each
 #: MUST_ERROR marker reds on BOTH checkers — with the RULE-IDS the
 #: marker declares. THE EVIDENCE-INTEGRITY ROUND'S WIRING (fix 4):
-#: attack2/attack3/attack4 ran only under their attackers' own
-#: invocations and ROTTED OFF this gate — three of seven corpus files
+#: the phase-probe corpora ran only under their own invocations and ROTTED OFF this gate — three of seven corpus files
 #: unwired, their markers dead or wrong-rule as the signatures moved.
 #: They are WIRED here, re-derived against the current signatures
 #: (wire-or-delete, no zombie corpus).

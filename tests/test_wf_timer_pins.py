@@ -9,8 +9,7 @@ EXPIRY'S: ``wait_signal``'s deadline-pass = the ``Expired`` member (the
 fail-close); ``wait_until``'s deadline-pass = THE WAKE — the
 continuation, never the fail-close.
 
-Failing-first evidence: the pins ran against the PRE-IMPLEMENTATION tree
-(no ``wait_until``, no timer arm — the captures:
+The pins hold behaviors that were broken before their fixes: the captures:
 ``.measurements/t28-timer-pin-reds-pre.txt``), then the implementation
 flipped them green. The rejected variants recorded through
 ``timer_redlog`` name the dragon each pin's guard holds shut.

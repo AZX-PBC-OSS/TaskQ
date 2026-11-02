@@ -1,20 +1,20 @@
-"""ATTACK PINS — the rv6 round's ESTATE pack: the content door's own holes
+"""the rv6 round's ESTATE pack: the content door's own holes
 (the evidence-integrity lane @ 3f69eaa32; the verifier under pin is
 ``scripts/verify_evidence_heads.py`` there — the fixed content door whose
 own scan is the subject).
 
-Provenance: the rv6 front's live recorded findings, each reproduced against this
+Provenance: the recorded live recorded findings, each reproduced against this
 head BEFORE pinning (the pre-pin repro script + output are in the pin
 pack's ``repro/``; the receipts carry the verbatim verdicts). Per the
 doctrine, the pack landed ``pytest.mark.xfail(strict=True, reason="LIVE
-FINDING rv6-d<id>: …")`` asserting the SAFE behavior — failing-first at the
+FINDING rv6-d<id>: …")`` asserting the SAFE behavior — at the
 door-edges lane's base (58faf52b7: all five xfail, the failure log receipt in
 ``.measurements/door-edges/``) — and the FIX ON THIS BRANCH flipped all
 five to XPASS-strict, so the markers are REMOVED WITH the fix (the
 doctrine's flip): these pins now run GREEN and guard the five edges
 permanently.
 
-The method is the rv2-13 pin's own: every pin builds a SYNTHETIC ESTATE in
+The method is the 13 pin's own: every pin builds a SYNTHETIC ESTATE in
 a tmp dir (a ``runs/`` with a hand-written ``CLAIMS.json`` + the tampered
 capture) and runs the verifier as a subprocess against it
 (``--runs-dir``). Every claim is FRESH (``head_sha`` = the worktree's own
@@ -25,7 +25,7 @@ working tree's residue never enters.
 The findings (each WAS a live recorded finding — every estate exited rc=0
 before this branch's fix):
 
-The method is the rv2-13 pin's own: every pin builds a SYNTHETIC ESTATE in
+The method is the 13 pin's own: every pin builds a SYNTHETIC ESTATE in
 a tmp dir (a ``runs/`` with a hand-written ``CLAIMS.json`` + the tampered
 capture) and runs the verifier as a subprocess against it
 (``--runs-dir``). Every claim is FRESH (``head_sha`` = the worktree's own
@@ -109,7 +109,7 @@ def _write_estate(runs_dir: Path, claims: list[dict[str, str]], files: dict[str,
 
 
 def _run_verifier(runs_dir: Path, *, env_extra: dict[str, str] | None = None) -> str:
-    """The verifier as a subprocess (the rv2-13 pin's own seam), the
+    """The verifier as a subprocess (the 13 pin's own seam), the
     worktree's ``src`` on PYTHONPATH (the venv's editable install points
     at another tree — the import-resolution seam the pack's receipts
     document). Returns the combined output; the ambient

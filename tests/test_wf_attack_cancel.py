@@ -1,4 +1,4 @@
-"""ATTACK PINS — the torn-cancel faces + the cancel import law.
+"""the torn-cancel faces + the cancel import law.
 
 The torn-cancel defect's two faces — the cancel cascade's signal leg
 riding a SECOND pool connection in autocommit (fixed at 2ada9d33: the
@@ -114,7 +114,7 @@ async def test_cancel_rolls_back_whole_when_a_late_leg_fails(
     audit_mod.record_admin_action = _poisoned
     try:
         with pytest.raises(RuntimeError, match="poisoned audit leg"):
-            await runner.cancel_workflow(flow_id, reason="poison", principal="attacker")
+            await runner.cancel_workflow(flow_id, reason="poison", principal="the probe")
     finally:
         audit_mod.record_admin_action = original
 
@@ -135,7 +135,7 @@ async def test_cancel_on_a_one_connection_pool_completes_atomically(
     try:
         flow_id, runner = await _held_flow(solo, wf_schema, "attack_cancel_oneconn")
         cancelled = await asyncio.wait_for(
-            runner.cancel_workflow(flow_id, reason="one-conn", principal="attacker"),
+            runner.cancel_workflow(flow_id, reason="one-conn", principal="the probe"),
             timeout=30,
         )
         assert cancelled >= 1
@@ -209,7 +209,7 @@ async def test_the_canonical_module_attr_patch_lands_exactly_one_row(
 
     audit_core.record_admin_action = delegating_spy
     try:
-        stopped = await runner.cancel_workflow(flow_id, reason="tooth-t1", principal="attacker")
+        stopped = await runner.cancel_workflow(flow_id, reason="tooth-t1", principal="the probe")
     finally:
         audit_core.record_admin_action = real
     assert stopped >= 1
@@ -244,7 +244,7 @@ async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
 
     audit_mod.record_admin_action = instrumenting_wrapper
     try:
-        stopped = await runner.cancel_workflow(flow_id, reason="tooth-t2", principal="attacker")
+        stopped = await runner.cancel_workflow(flow_id, reason="tooth-t2", principal="the probe")
     finally:
         audit_mod.record_admin_action = real
     assert stopped >= 1
@@ -264,7 +264,7 @@ async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
 async def test_the_nul_reason_does_not_roll_back_the_cancel(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE AUDIT SEAM'S NUL POISON (finding 10, face A — FAILING-FIRST): the
+    """THE AUDIT SEAM'S NUL POISON (the finding's face A): the
     reason rode the text bind RAW, and asyncpg refuses a NUL byte in a
     text bind — the audit leg raised inside the cancel's own transaction,
     and the WHOLE cancel rolled back (the same-tx guarantee turned a
@@ -275,7 +275,7 @@ async def test_the_nul_reason_does_not_roll_back_the_cancel(
     flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_nul_reason")
 
     stopped = await runner.cancel_workflow(
-        flow_id, reason="ops\x00payload — the poisoned reason", principal="attacker"
+        flow_id, reason="ops\x00payload — the poisoned reason", principal="the probe"
     )
     assert stopped >= 1, "the poisoned cancel refused — the NUL rode raw"
     state = await _cancel_state(wf_conn, wf_schema, flow_id)
@@ -297,7 +297,7 @@ async def test_the_nul_reason_does_not_roll_back_the_cancel(
 async def test_the_audit_reason_is_bounded_at_the_leaf(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE AUDIT SEAM'S LENGTH BOUND (finding 10, face B — FAILING-FIRST):
+    """THE AUDIT SEAM'S LENGTH BOUND (the finding's face B):
     ``admin_audit`` is the NEVER-PRUNED table, and an unbounded reason
     was unbounded retention per row (a 100k-char reason landed verbatim).
     THE FIX: the truncate-to-bounds law at the leaf — the row records
@@ -306,7 +306,7 @@ async def test_the_audit_reason_is_bounded_at_the_leaf(
     flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_long_reason")
 
     huge = "x" * 100_000
-    stopped = await runner.cancel_workflow(flow_id, reason=huge, principal="attacker")
+    stopped = await runner.cancel_workflow(flow_id, reason=huge, principal="the probe")
     assert stopped >= 1
     row = await wf_conn.fetchval(
         f'SELECT reason FROM "{wf_schema}".admin_audit WHERE target_id = $1',  # noqa: S608  # Why: the schema identifier is the fixture's validated name; the value is $n-bound.

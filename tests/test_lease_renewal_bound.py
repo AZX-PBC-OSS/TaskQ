@@ -18,7 +18,7 @@ documented). These pins hold the two safety properties the bound risks:
   reclaimed - the sweep's lease arm only takes rows whose
   ``lock_expires_at`` has actually passed, and the gate's whole sizing
   contract (``_lease_renewal_threshold``) is that a deferred row's
-  lease is still comfortably valid. Proven failing-first: with the bound
+  lease is still comfortably valid. Proven with the bound
   reverted to an unsafe one (a threshold of 0 - the degenerate
   "renew-nothing" gate), the same seed's lease lapses and the sweep
   DOES take the row, so these assertions fail on the unsafe shape.
@@ -183,7 +183,7 @@ async def test_deferred_renewal_row_is_not_reclaimed(
     where the ORIGINAL lease deadline has passed, so the row visibly
     outlives it on renewals alone.
 
-    Failing-first provenance: with the bound reverted to an unsafe one
+    With the bound reverted to an unsafe one
     (threshold 0 - the degenerate "renew-nothing" gate the sizing
     exists to prevent), the same walk lets the lease lapse at the
     original deadline and Sweep 1 takes the row - every assertion here

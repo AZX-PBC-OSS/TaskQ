@@ -2,7 +2,7 @@
 lives on ``evidence/taskqflow``, the reviewable PR stops carrying it):
 the pins that read the measurement estate's FILES read them from the
 branch (the same files, the same paths, one indirection). The sha
-cross-check stays the verifier's and rv2-13's law — these helpers are
+cross-check stays the verifier's and 13's law — these helpers are
 the file-read face only."""
 
 from __future__ import annotations

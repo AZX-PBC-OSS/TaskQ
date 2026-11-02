@@ -270,14 +270,14 @@ async def test_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
     child's own verdict. (The alternative fix — a LOUD refusal of
     concurrent spawns naming the sequential spelling — is flagged in
     the pin asserts the distinct-children shape.)"""
-    _child_app("rv5c1_child").get("rv5c1_child")
+    _child_app("chil").get("chil")
     app = WorkflowApp()
 
     async def gather_body(ctx: StepContext, params: ParentIn) -> GatherOut:
         probes = [SubProbe(doc_id=f"{params.doc_id}-{i}") for i in range(3)]
         # THE CONCURRENT FAN-OUT: the natural asyncio spelling.
         handles = await asyncio.gather(
-            *[ctx.spawn_flow("rv5c1_child", input=p, result=SubReport) for p in probes]
+            *[ctx.spawn_flow("chil", input=p, result=SubReport) for p in probes]
         )
         outcomes = [await h.wait() for h in handles]
         verdicts: list[str] = []
@@ -300,11 +300,11 @@ async def test_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
     async def parent_actor(ctx: StepContext, params: ParentIn) -> GatherOut:
         return await gather_body(ctx, params)
 
-    @app.workflow("rv5c1_parent")
+    @app.workflow("paren")
     def parent_wf() -> Promise[object]:
         return build(step(parent_actor, ParentIn(doc_id="d1"), key="spawn_join"))
 
-    runner = FlowRunner(app.get("rv5c1_parent"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("paren"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     outcome = await runner.drive(flow_id, until="terminal", max_ticks=4000)
     assert outcome == "terminal"
@@ -328,7 +328,7 @@ async def test_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
     # order is the scheduler's. The LAW is the no-fabrication SET (above) +
     # the distinct children (below); the keyed stable-join face is the
     # child-fixes lane's own pin.
-    assert await _child_census(wf_conn, wf_schema, "rv5c1_child") == 3
+    assert await _child_census(wf_conn, wf_schema, "chil") == 3
 
 
 # ── THE RETENTION-RESPAWN ─────────────────────────────────────────
@@ -360,12 +360,12 @@ async def test_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
     the recorded finding's own words — so the fixed pin reads the ROWS: the
     node's error class names the wedge, the root followed it, the
     census stayed at zero."""
-    _child_app("rv5c2_child").get("rv5c2_child")
+    _child_app("chil-3").get("chil-3")
     app = WorkflowApp()
 
     async def join_body(ctx: StepContext, params: ParentIn) -> PurgeOut:
         handle = await ctx.spawn_flow(
-            "rv5c2_child", input=SubProbe(doc_id=params.doc_id), result=SubReport
+            "chil-3", input=SubProbe(doc_id=params.doc_id), result=SubReport
         )
         outcome = await handle.wait()
         match outcome:
@@ -383,18 +383,18 @@ async def test_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
     async def parent_actor(ctx: StepContext, params: ParentIn) -> PurgeOut:
         return await join_body(ctx, params)
 
-    @app.workflow("rv5c2_parent")
+    @app.workflow("paren-4")
     def parent_wf() -> Promise[object]:
         return build(step(parent_actor, ParentIn(doc_id="d1"), key="spawn_join"))
 
-    runner = FlowRunner(app.get("rv5c2_parent"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("paren-4"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await _spawn_and_hold(runner, flow_id)
     parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
     receipts = parent_node["metadata"]["child_flows"]
     assert len(receipts) == 1
     child_flow_id = JobId(str(receipts[0]))
-    assert await _child_census(wf_conn, wf_schema, "rv5c2_child") == 1
+    assert await _child_census(wf_conn, wf_schema, "chil-3") == 1
 
     # THE RETENTION PURGE: the child's rows are gone while the parent
     # waits (the edges first, then the run's rows — the pruner's shape).
@@ -409,7 +409,7 @@ async def test_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
         f"DELETE FROM \"{wf_schema}\".jobs WHERE (metadata->>'flow_id')::uuid = $1 OR id = $1",
         child_flow_id,
     )
-    assert await _child_census(wf_conn, wf_schema, "rv5c2_child") == 0
+    assert await _child_census(wf_conn, wf_schema, "chil-3") == 0
 
     outcome = await runner.drive(flow_id, until="terminal", max_ticks=4000)
     assert outcome == "terminal"
@@ -435,7 +435,7 @@ async def test_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
         f"The parent's run is {root!r} — the fail-close must take the "
         "run to a LOUD terminal (the rows tell the operator the truth)"
     )
-    assert await _child_census(wf_conn, wf_schema, "rv5c2_child") == 0, (
+    assert await _child_census(wf_conn, wf_schema, "chil-3") == 0, (
         "The resume RE-CREATED the purged child — the double execution the "
         "fail-close exists to prevent"
     )
@@ -474,9 +474,7 @@ async def test_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
 
     @app.actor(queue="cpu", max_attempts=1)
     async def ouroboros(ctx: StepContext, params: SubProbe) -> GenOut:
-        handle = await ctx.spawn_flow(
-            "rv5c3_self", input=SubProbe(doc_id=params.doc_id), result=SubReport
-        )
+        handle = await ctx.spawn_flow("sel", input=SubProbe(doc_id=params.doc_id), result=SubReport)
         outcome = await handle.wait()
         match outcome:
             case ChildOk(result=report):
@@ -489,11 +487,11 @@ async def test_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
                 return GenOut(verdict="expired")
         raise AssertionError("unreachable: the checker forces the arms")  # pragma: no cover
 
-    @app.workflow("rv5c3_self")
+    @app.workflow("sel")
     def self_wf() -> Promise[object]:
         return build(step(ouroboros, SubProbe(doc_id="x"), key="self_spawn"))
 
-    runner = FlowRunner(app.get("rv5c3_self"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("sel"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     # The fixed engine's drive: the dev drive walks the descendant flows,
     # the generations run until the depth bound fires, and the BOUNDED
@@ -505,7 +503,7 @@ async def test_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
         f"{outcome!r}) — the depth bound must stop the mint and let the "
         "bounded tree reach terminal"
     )
-    census = await _child_census(wf_conn, wf_schema, "rv5c3_self")
+    census = await _child_census(wf_conn, wf_schema, "sel")
     from taskq.workflows import DEFAULT_SPAWN_MAX_DEPTH
 
     assert census <= 1 + DEFAULT_SPAWN_MAX_DEPTH, (
@@ -571,7 +569,7 @@ async def test_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
     ids = [new_uuid() for _ in range(C4_DEPTH)]
     rows = []
     for i, fid in enumerate(ids):
-        meta: dict[str, object] = {"flow_id": str(fid), "workflow": "rv5c4_chain"}
+        meta: dict[str, object] = {"flow_id": str(fid), "workflow": "chai"}
         if i + 1 < C4_DEPTH:
             meta["child_flows"] = [str(ids[i + 1])]
         rows.append((fid, json.dumps(meta)))
@@ -621,12 +619,12 @@ async def test_c5_the_cascade_walks_both_directions_no_child_escapes(
     provenance riding the create tx, byte-identical to _childflow.py's
     ``root_metadata_extra`` write), and the receipt write — the
     statement the kill-window aborts — never runs."""
-    _child_app("rv5c5_child").get("rv5c5_child")
+    _child_app("chil-7").get("chil-7")
     app = WorkflowApp()
 
     async def join_body(ctx: StepContext, params: ParentIn) -> GenOut:
         handle = await ctx.spawn_flow(
-            "rv5c5_child", input=SubProbe(doc_id=params.doc_id), result=SubReport
+            "chil-7", input=SubProbe(doc_id=params.doc_id), result=SubReport
         )
         outcome = await handle.wait()
         match outcome:
@@ -644,11 +642,11 @@ async def test_c5_the_cascade_walks_both_directions_no_child_escapes(
     async def parent_actor(ctx: StepContext, params: ParentIn) -> GenOut:
         return await join_body(ctx, params)
 
-    @app.workflow("rv5c5_parent")
+    @app.workflow("paren-8")
     def parent_wf() -> Promise[object]:
         return build(step(parent_actor, ParentIn(doc_id="d1"), key="spawn_join"))
 
-    runner = FlowRunner(app.get("rv5c5_parent"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("paren-8"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
 
@@ -657,7 +655,7 @@ async def test_c5_the_cascade_walks_both_directions_no_child_escapes(
     # minus the receipt write the kill aborts.
     from taskq.workflows._worker_execution import get_compiled_workflow
 
-    child_runner = FlowRunner(get_compiled_workflow("rv5c5_child"), wf_pool, wf_schema)
+    child_runner = FlowRunner(get_compiled_workflow("chil-7"), wf_pool, wf_schema)
     claim = await child_runner.create_flow(
         input=SubProbe(doc_id="d1"),
         run_key=f"childflow:{flow_id}:spawn_join:0",
@@ -729,17 +727,17 @@ async def test_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
     async def parked_probe(ctx: StepContext) -> Any:
         return await ctx.wait_signal(NeverGate, timeout_s=120.0)
 
-    @capp.workflow("rv5c6_child")
+    @capp.workflow("chil-9")
     def child_wf() -> Promise[object]:
         return build(step(parked_probe, key="probe"))
 
-    capp.get("rv5c6_child")
+    capp.get("chil-9")
     papp = WorkflowApp()
 
     @papp.actor(queue="cpu", max_attempts=3)
     async def parent_actor(ctx: StepContext, params: ParentIn) -> ExpireOut:
         handle = await ctx.spawn_flow(
-            "rv5c6_child", input=SubProbe(doc_id=params.doc_id), result=SubReport
+            "chil-9", input=SubProbe(doc_id=params.doc_id), result=SubReport
         )
         outcome = await handle.wait(timeout_s=0.2)
         match outcome:
@@ -753,11 +751,11 @@ async def test_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
                 return ExpireOut(verdict="expired")
         raise AssertionError("unreachable: the checker forces the arms")  # pragma: no cover
 
-    @papp.workflow("rv5c6_parent")
+    @papp.workflow("paren-10")
     def parent_wf() -> Promise[object]:
         return build(step(parent_actor, ParentIn(doc_id="d1"), key="spawn_join"))
 
-    runner = FlowRunner(papp.get("rv5c6_parent"), wf_pool, wf_schema)
+    runner = FlowRunner(papp.get("paren-10"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     outcome = await runner.drive(flow_id, until="terminal", tick=0.02, max_ticks=120)
     assert outcome == "terminal", (
@@ -785,12 +783,12 @@ async def test_c7_resolving_a_child_join_hold_is_a_named_boundary_refusal(
     machine-owned hold is not operator-answerable), the hold SURVIVES
     'held', and the node keeps its held representation (nothing
     consumed, nothing bounced)."""
-    _child_app("rv5c7_child").get("rv5c7_child")
+    _child_app("chil-11").get("chil-11")
     app = WorkflowApp()
 
     async def join_body(ctx: StepContext, params: ParentIn) -> GenOut:
         handle = await ctx.spawn_flow(
-            "rv5c7_child", input=SubProbe(doc_id=params.doc_id), result=SubReport
+            "chil-11", input=SubProbe(doc_id=params.doc_id), result=SubReport
         )
         outcome = await handle.wait()
         match outcome:
@@ -808,11 +806,11 @@ async def test_c7_resolving_a_child_join_hold_is_a_named_boundary_refusal(
     async def parent_actor(ctx: StepContext, params: ParentIn) -> GenOut:
         return await join_body(ctx, params)
 
-    @app.workflow("rv5c7_parent")
+    @app.workflow("paren-12")
     def parent_wf() -> Promise[object]:
         return build(step(parent_actor, ParentIn(doc_id="d1"), key="spawn_join"))
 
-    runner = FlowRunner(app.get("rv5c7_parent"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("paren-12"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await _spawn_and_hold(runner, flow_id)
 

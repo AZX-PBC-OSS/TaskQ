@@ -91,7 +91,7 @@ OFF_BY_ONE_DIFF_EXCLUSIONS: tuple[str, ...] = (
     ":(exclude).gitignore",
 )
 
-#: THE DOCS-DERIVED STEMS (the review round's fix) — the in-suite
+#: THE DOCS-DERIVED STEMS — the in-suite
 #: mirror of the verifier's own ``_DOCS_SENSITIVE_STEM_PREFIXES``: the
 #: evidence kinds whose batteries READ the docs estate (mkdocs builds
 #: ``docs/`` strict; the docs-example tests'
@@ -125,7 +125,7 @@ def source_changes_since(
     a property of the tree THEY verified, not of the checkout that
     happens to be reading them).
 
-    THE DOCS-DERIVED STEMS' FALLBACK (the review round's fix): *stem*
+    THE DOCS-DERIVED STEMS' FALLBACK: *stem*
     carrying a ``DOCS_SENSITIVE_STEM_PREFIXES`` prefix names an
     evidence kind whose battery READS the docs estate — mkdocs builds
     ``docs/`` strict and the docs-example tests' ``DOC_ROOTS`` execute
@@ -145,7 +145,7 @@ def source_changes_since(
     sink record collapses from O(records) git subprocesses (18k+ — the
     per-test timeout's knife edge at 300 s, rejected: the wf battery's
     failure log-guard timeout) to O(distinct heads). THE MEMO KEY IS THE
-    PAIR (the review round's own correctness fix): a docs-derived stem
+    PAIR (the correctness fix): a docs-derived stem
     and a plain stem sharing a claimed head get DIFFERENT verdicts from
     DIFFERENT exclusion sets — keyed by the sha alone the first caller
     would answer for both."""
@@ -697,7 +697,7 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
       that teeth).
 
     THE WEDGE LEG (the crashed-terminal wedge's mutation pin — the
-    attacker's proof was G7 staying green ON THE CORPSE): a live root
+    the hostile caller's proof was G7 staying green ON THE CORPSE): a live root
     whose rows reconstruct a TERMINAL verdict contradicts the rows.
     The lag window is ONE pass, so the check RUNS the maintenance leg
     itself (the same statement the sweep drives) and re-reads: the

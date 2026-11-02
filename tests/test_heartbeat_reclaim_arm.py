@@ -309,7 +309,7 @@ async def test_deadline_boundary_just_short_just_past(
     cancel carve-out: 5s past the deadline is far inside the 60s margin,
     so a rewrite that drops the ``cancel_phase = 0 OR`` disjunct leaves
     this row running while the sibling file's 1h-stale row (past every
-    margin) stays green - exactly the gap a adversarial review pass exists to hold.
+    margin) stays green - exactly the gap an adversarial pass exists to hold.
     """
     schema = module_pg_schema.schema_name
     worker_id = new_uuid()

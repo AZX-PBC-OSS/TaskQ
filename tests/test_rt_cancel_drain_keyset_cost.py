@@ -87,10 +87,10 @@ async def _drain(
     running -- each with its own cursor, and since the pair runs as
     bounded fixpoint ROUNDS: every round re-issues each arm's statement
     from a fresh cursor, so grouping by statement text alone would pool
-    the later rounds' single probing batches into the round-1 drain and
+    the later rounds' single probing batches into the hold round drain and
     misread a two-probe arm as a drain. The round-aware counter below
     splits the groups at every fresh-cursor batch, so each arm's
-    round-1 DRAIN stays measurable against its own bound.
+    drain stays measurable against its own bound.
 
     Only groups that actually drained (more than one batch within the
     round) are returned: an arm with nothing to do issues a single
@@ -244,7 +244,7 @@ async def test_cancel_drain_does_not_reread_rows_it_already_cancelled(
     )
     assert len(drains) == 1, (
         "only the terminal arm should have drained (one multi-batch group: "
-        "its round-1 pass; every other arm-round pair is a single probe)"
+        "its first pass; every other arm-round pair is a single probe)"
     )
     _assert_total_work_is_linear(
         drains[0], _BACKLOG, what="terminal cancel of pending/scheduled jobs"

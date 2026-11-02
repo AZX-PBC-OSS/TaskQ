@@ -40,7 +40,7 @@ second commit. The git env is hermetic (no ambient global/system config
 commits).
 
 The findings (each WAS the live recorded finding — the docs-only estates
-exited rc=1 before this branch's fix; the failing-first tails are the
+exited rc=1 before this branch's fix; the tails are the
 fix's own receipt):
 
 * THE DOCS-ONLY MERGE STALIFIES (FIXED): a claim recorded on the
@@ -62,17 +62,17 @@ fix's own receipt):
   docs-sensitive prefix tuple — a drift is one law reading two ways
   (the CI verifier greens a docs-only merge the suite's guard reds, or
   the reverse).
-* THE EXEMPTION'S OWN EDGE (the review round's fix, failing-first):
+* THE EXEMPTION'S OWN EDGE:
   the DOCS-DERIVED stems — ``mkdocs-strict*`` (mkdocs builds ``docs/``
   strict), ``docs-examples*`` (the docs-example tests'
   ``tests/_docs_examples.py::DOC_ROOTS = ("docs", "README.md")``
   EXECUTE the fences) and the ``docs-lane*`` kinds — have the docs
   estate among their BATTERY'S INPUTS, so for them a docs-only merge
   IS a source change: the exemption set falls back to the NARROW one
-  and the claim goes STALE. FAILING-FIRST: the round-1 fix's verifier
+  and the claim goes STALE. the hold round fix's verifier
   applied the docs exemption to EVERY stem and called these fresh —
   the reds are this fix's receipt.
-* THE ROUND-1 FIX'S LEG KEEPS: the SAME docs-only merge
+* THE EARLIER FIX'S LEG KEEPS: the SAME docs-only merge
   against a PLAIN stem (no docs-sensitive prefix) stays FRESH — the
   fallback narrows the exemption for the docs-derived stems only,
   never for the estate.
@@ -267,7 +267,7 @@ def test_a_docs_only_merge_of_one_member_does_not_stalify(
     CANNOT change what the capture verifies — the source + test tree is
     content-identical — so the off-by-one rule must hold the claim
     FRESH (rc=0). The first cut's rule exempted only ``.measurements/``:
-    each leg red here before the fix (the failing-first tails are the
+    each leg red here before the fix (the tails are the
     commit's receipt)."""
     repo, base = _init_repo(tmp_path)
     _stamp_estate(repo, base)
@@ -396,7 +396,7 @@ def test_a_docs_only_merge_stalifies_a_docs_derived_stem(
     capture's verdict was measured against. For these stems the docs
     exemption must not apply: the exclusion set falls back to the
     NARROW one and a docs-only merge goes STALE, exactly as a src/
-    merge would. FAILING-FIRST: the round-1 fix's verifier applied the
+    merge would. the hold round fix's verifier applied the
     docs exemption to EVERY stem and called these fresh — the reds are
     this fix's receipt."""
     repo, base = _init_repo(tmp_path)
@@ -419,7 +419,7 @@ def test_a_docs_only_merge_stalifies_a_docs_derived_stem(
     )
 
 
-# ── the round-1 fix's leg keeps — a plain stem stays fresh ────────
+# ── the hold round fix's leg keeps — a plain stem stays fresh ────────
 
 
 def test_the_same_docs_only_merge_keeps_a_plain_stem_fresh(tmp_path: Path) -> None:
@@ -438,7 +438,7 @@ def test_the_same_docs_only_merge_keeps_a_plain_stem_fresh(tmp_path: Path) -> No
     assert proc.returncode == 0 and "the head-stamp law holds" in proc.stdout, (
         "The docs-derived fallback STALIFIED a PLAIN stem — the narrow "
         "set is for the stems whose batteries read the docs estate, never "
-        "for the estate at large: the round-1 fix's green must survive the "
+        "for the estate at large: the hold round fix's green must survive the "
         "per-stem fix. The output:\n" + proc.stdout + proc.stderr
     )
 

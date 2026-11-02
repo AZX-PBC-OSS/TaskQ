@@ -391,7 +391,7 @@ def test_sso_group_allowlist_gates_mutations_not_only_reads() -> None:
     job_id = new_uuid()
     backend = _RecordingBackend(make_job_row(status="pending"))
     manager = SessionManager(
-        secret="rt-web-adversarial review-session-secret",
+        secret="rt-web-adversarial-session-secret",
         max_age_seconds=3600,
         secure_cookie=False,
     )

@@ -1,5 +1,5 @@
 """THE 3AM PINS — the operator-truth faces fenced (the
-observability lane's evidence, failing-first).
+observability lane's evidence, ).
 
 Each pin is a scenario gap's fence: the surface MUST say X, where X is the
 truth an operator needs at 3am with ONLY the documented surfaces (the

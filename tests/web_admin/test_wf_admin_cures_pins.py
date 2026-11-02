@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
 """THE ADMIN-SURFACE FIXES' PINS — the adversarial review's rejected findings,
-each fixed and pinned failing-first where the rig's red is reproducible in
+each fixed and pinned where the rig's red is reproducible in
 the fast lane:
 
 - Q1d THE DEAD MAP-COLLAPSE: the map progress read feeds the TRUE
@@ -10,7 +10,7 @@ the fast lane:
   lines), and the §17.5 derivation still reads EVERY row (the collapse
   never hides a failure from the verdict).
 - Q3 THE INVISIBLE PROBE: the typed door's 422 refusal writes its
-  ``admin_audit`` row (refused + the reason) — the attacker's
+  ``admin_audit`` row (refused + the reason) — the hostile actor's
   shape-probing lands IN the trail the page claims covers every
   Resolve/deliver; the hold survives.
 - Q4 THE SSE SESSION-REVOCATION GAP: the run stream carries the SAME
@@ -308,7 +308,7 @@ async def test_wrong_shaped_resolve_writes_the_refused_audit_row(
 ) -> None:
     """THE RECORDED FINDING (Q3): the shape-refused resolves (the typed door's
     422s) wrote ZERO audit rows while the page claims every
-    Resolve/cancel/deliver is audited — the attacker's probing was
+    Resolve/cancel/deliver is audited — the hostile actor's probing was
     INVISIBLE. THE FIX'S PIN: the wrong-shaped resolve → the audit row
     EXISTS (refused + the reason) AND the hold survives."""
     schema = module_pg_schema.schema_name
@@ -655,7 +655,7 @@ def test_the_root_payload_is_off_the_read_path() -> None:
 
 def test_the_page_js_escapes_the_row_key_and_sanitizes_the_status_class() -> None:
     """THE NITS' PINS: the poisoned-row defense in the source — the
-    querySelector escapes the attacker-controlled key (CSS.escape), and
+    querySelector escapes the hostile-actor-controlled key (CSS.escape), and
     the status class is the legend's closed vocabulary (a space-bearing
     hostile status paints as pending, never throws)."""
     from pathlib import Path

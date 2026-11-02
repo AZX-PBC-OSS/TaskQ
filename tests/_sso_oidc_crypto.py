@@ -24,7 +24,7 @@ _SIGN_KEYSET: KeySet = KeySet([_PRIV_KEY])
 _VERIFY_JWKS: dict[str, Any] = {"keys": [_PRIV_KEY.as_dict(private=False)]}
 
 # Signs id_tokens whose public half is NOT in ``jwks_dict()`` - an IdP (or
-# attacker) key the relying party has never seen.
+# or a foreign key) the relying party has never seen.
 _FOREIGN_KEY: RSAKey = RSAKey.import_key(
     rsa.generate_private_key(public_exponent=65537, key_size=2048)
 )

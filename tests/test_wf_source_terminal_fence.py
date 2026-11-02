@@ -15,7 +15,7 @@ running. Also asserted at every pass: the sweep finds NOTHING to fire
 (``firable=0``, zero join-wait rows) — the join machinery is inert in
 this design.
 
-The mutation scenario is the failing-first tooth: the maintenance leg with its
+The mutation scenario is the tooth: the maintenance leg with its
 LIVENESS GATE MUTATED OUT finalizes the root mid-stream on the same
 shape of rows — the fence is load-bearing, not decorative.
 
@@ -194,7 +194,7 @@ async def test_premature_terminal_fence_30_sweeps(
     fire). The resumed run then completes; the root terminalizes ONLY
     after everything drained, and every row is terminal under it.
 
-    THE MUTATION TEST (the failing-first tooth): the maintenance leg with
+    THE MUTATION TEST (the tooth): the maintenance leg with
     its liveness gate mutated out finalizes the root MID-STREAM on a
     fresh mid-stream flow — the fence's teeth, observed red."""
     flow_id = await seed_flow(wf_conn, wf_schema)

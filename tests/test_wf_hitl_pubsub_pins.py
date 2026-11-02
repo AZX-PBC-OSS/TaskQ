@@ -1,10 +1,10 @@
 """THE HITL BROADCAST'S PINS: the transactional NOTIFY legs, the
 zero-window backfill, the resolve wake, the expiry fail-close, the
-escalation interplay — plus the hostile-review round's P6-P10: the
+escalation interplay — plus the hold-broadcast round's pins P6-P10: the
 reconnect reconcile, the concurrent-consumer fan-out, the schema
 isolation, the payload-size bound, the resolve-rollback silence.
 
-The failing-first evidence: P1's rejected variant (the knock sent OUTSIDE
+The evidence: P1's rejected variant (the knock sent OUTSIDE
 the transaction — a rolled-back hold-create that still broadcasts) is
 captured as the mutation test through ``hitl_redlog``; the shipped
 legs are transactional by construction (``pg_notify`` inside the
@@ -1246,7 +1246,7 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
     THE FIX: the E13 RULE — the loop-kind wait site REFUSES the
     mis-aligned state (the iteration cursor PAST the answer queue) with
     the named typed error: the shape law ("ONE wait per iteration")
-    gets teeth. Failing-first: pre-fix the pin's loop silently minted a
+    gets teeth. The rejected shape: pre-fix the pin's loop silently minted a
     second hold and the error never raised."""
 
     app = WorkflowApp()

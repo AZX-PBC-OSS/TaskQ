@@ -1982,14 +1982,14 @@ class TestStreamingPayloadValidation:
 
     async def test_streaming_validation_errors_are_sanitized(self) -> None:
         """validation_errors follows the documented sanitization contract
-        (include_url=False, include_input=False): no attacker-controlled
+        (include_url=False, include_input=False): no hostile caller-controlled
         field values and no pydantic doc URLs are carried on the exception -
         it is persisted into job rows / web admin via generic handlers."""
         _backend, client = _make_client()
         items = [
             EnqueueItem(
                 actor_ref=_streaming_val_actor,
-                payload=_ForeignPayload(name="attacker-controlled-value"),
+                payload=_ForeignPayload(name="hostile caller-controlled-value"),
             )
         ]
 
@@ -2001,7 +2001,7 @@ class TestStreamingPayloadValidation:
         for err in errs:
             assert "input" not in err, f"unsanitized payload input leaked: {err}"
             assert "url" not in err, f"pydantic doc URL leaked: {err}"
-            assert "attacker-controlled-value" not in str(err)
+            assert "hostile caller-controlled-value" not in str(err)
 
     async def test_streaming_payload_dict_is_json_mode_dump(self) -> None:
         """The row payload is the JSON-mode dump of the validated payload -

@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE ROUND-2 ADVERSARIAL REVIEW'S FIXES' PINS — the round-2 subsection's
-recorded findings, each fixed and pinned (failing-first against the unfixed tree):
+"""THE HOLD ROUND'S FIXES' PINS — the hold round subsection's
+recorded findings, each fixed and pinned (against the unfixed tree):
 
 - R2-1 THE DEADLOCK'S NAME: the retry CLI (``flows retry``) and the
   admin retry routes caught only ``WorkflowRunError`` — a laggard

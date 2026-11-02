@@ -24,7 +24,7 @@ fixed: a resolved-blocked join row (``blocking_reason`` stamped) is
 RESOLVED — it must not hold the run; a pending CHAIN row (no stamp) is
 UNRESOLVED work — it must.
 
-Failing-first: the 149-siblings pin ran RED against the shipped leg (the root
+The rejected shape: the 149-siblings pin ran RED against the shipped leg (the root
 flipped ``failed`` with 149 live siblings — the stranding reproduced);
 the greens below are the fix's evidence. Captured:
 ``.measurements/t20-maintain-liveness-*.txt``.

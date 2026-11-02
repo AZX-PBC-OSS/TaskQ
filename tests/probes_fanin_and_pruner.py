@@ -3,7 +3,7 @@ concurrency.
 
 1. the retention coupling EXPIRY COUPLING DIRECTION: the guard holds a child's result while
    its join is UN-FIRED. The shipped pin sweeps BEFORE the fire. The
-   attacker's window is the OTHER arm: sweep runs BETWEEN the fire and
+   race window is the OTHER arm: sweep runs BETWEEN the fire and
    the reduce's batch read — does anything still eat the results? (The
    body reads in the fire's own tx on both paths; the probe documents
    the boundary and hunts the gap via the sweep's own shipped driver.)
@@ -74,7 +74,7 @@ async def test_attack_expiry_after_the_fire_before_the_reduce(
     wf_sql: WorkflowSql,
 ) -> None:
     """The shipped pin sweeps while the join is un-fired (the guard holds).
-    The attacker's window: the fire has LANDED (the guard's join-wait
+    The race window: the fire has LANDED (the guard's join-wait
     condition is now false — the join is deps=0) but the reduce's batch
     read has not happened. Drive the SHIPPED sweep right there: does the
     expiry eat the children's results the reduce still needs? The shipped
