@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -148,6 +149,37 @@ def test_a_discovered_wall_is_a_plain_wall_not_a_latent_fold() -> None:
         f"{fold.zone}: wall {fold.range_start!s} must resolve to the "
         "pre-transition occurrence the dataclass documents"
     )
+
+
+def test_the_wall_resolution_check_still_rejects_a_fold_carrying_wall() -> None:
+    """The instant comparison must keep discriminating the two passes: a wall
+    carrying fold=1 resolves to the fold-1 field, not the fold-0 field, so
+    normalizing the comparison cannot make the pin green on a re-smuggled
+    wall."""
+    fold = _first_midnight_starting_fallback("America/Havana")
+    tz = ZoneInfo(fold.zone)
+    smuggling = replace(fold, range_start=fold.range_start.replace(fold=1))
+    assert smuggling.range_start.fold == 1
+    resolved = smuggling.range_start.replace(tzinfo=tz).astimezone(UTC)
+    assert resolved == smuggling.range_start_fold1_utc
+    assert resolved != smuggling.range_start_fold0_utc
+
+
+def test_the_drive_instants_do_not_read_the_stored_walls_fold() -> None:
+    """The drive-facing fields apply the fold explicitly; the stored wall's
+    own fold must not move a seed, tick or bound.  A fold-1 wall and the
+    fold-0 wall of the same range answer the same four instants and width."""
+    fold = _first_midnight_starting_fallback("America/Havana")
+    smuggling = replace(
+        fold,
+        range_start=fold.range_start.replace(fold=1),
+        range_end=fold.range_end.replace(fold=1),
+    )
+    assert smuggling.range_start_fold0_utc == fold.range_start_fold0_utc
+    assert smuggling.range_start_fold1_utc == fold.range_start_fold1_utc
+    assert smuggling.last_fold0_slot_utc == fold.last_fold0_slot_utc
+    assert smuggling.range_end_utc == fold.range_end_utc
+    assert smuggling.width_minutes == fold.width_minutes
 
 
 def test_the_discovery_result_is_not_shared_mutable_state_across_callers() -> None:
