@@ -2,9 +2,9 @@
 
 Provenance: the hostile review of the consolidated head (af1b8779). The
 attack is F-P4-TORN-CANCEL's two faces — the cancel cascade's signal leg
-riding a SECOND pool connection in autocommit (cured at 2ada9d33: the
+riding a SECOND pool connection in autocommit (fixed at 2ada9d33: the
 leg runs on the caller's connection inside the caller's transaction).
-These pins exist so the cure can never rot silently: the attack lives
+These pins exist so the fix can never rot silently: the attack lives
 here, green against the fence, and any re-introduction of a second
 connection — or a new leg that fails after the signal write — reds.
 
@@ -14,12 +14,12 @@ held signals, and the audit row commit together or not at all.
 
 Face C is the IMPORT LAW (§16.1's sibling): the cancel path is workflow
 engine (core deps only) — it must never reach the admin package (whose
-``__init__`` imports the ``fastapi`` extra). Convicted LIVE at af1b8779:
+``__init__`` imports the ``fastapi`` extra). Rejected LIVE at af1b8779:
 ``FlowRunner.cancel_workflow``'s lazy ``from taskq.web.admin._audit
 import …`` makes ``cancel_workflow`` raise ``ModuleNotFoundError`` on a
 base ``taskq[flows]`` install. The pin is strict-xfail until the lane
-moves the audit seam to a deps-free home; the cure flips this to XPASS-
-strict (a red that tells you to remove the marker), which is the drill.
+moves the audit seam to a deps-free home; the fix flips this to XPASS-
+strict (a red that tells you to remove the marker), which is the scenario.
 """
 
 from __future__ import annotations
@@ -101,9 +101,9 @@ async def test_cancel_rolls_back_whole_when_a_late_leg_fails(
 ) -> None:
     """FACE A — the poisoned late leg: the audit write raises AFTER the
     signal leg ran. The cancel must roll back WHOLE: root NOT cancelled,
-    signal NOT cancelled, no audit row. The pre-cure shape (the signal
+    signal NOT cancelled, no audit row. The pre-fix shape (the signal
     leg on a second autocommit connection) leaves root='running' with
-    signal='cancelled' — the torn state this pin convicts forever."""
+    signal='cancelled' — the torn state this pin rejects forever."""
     import taskq.web.admin._audit as audit_mod
 
     flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_cancel_poison")
@@ -129,7 +129,7 @@ async def test_cancel_rolls_back_whole_when_a_late_leg_fails(
 async def test_cancel_on_a_one_connection_pool_completes_atomically(
     module_pg_schema: Any, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
-    """FACE B — the one-connection pool: the pre-cure shape deadlocked
+    """FACE B — the one-connection pool: the pre-fix shape deadlocked
     (the outer tx held the only connection; the signal leg's own
     acquire waited forever). The cancel must COMPLETE, atomically."""
     solo = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=1)
@@ -153,16 +153,16 @@ def test_the_cancel_path_never_imports_the_admin_package() -> None:
     no module under ``taskq/workflows/`` may import ``taskq.web.admin``
     at ANY scope (module-level OR function-local). AST-walked, both
     scopes — the function-local lazy import is exactly where the
-    convicted seam lived.
+    rejected seam lived.
 
     THE XFAIL IS GONE (the designed flip, observed and captured — the
     fixer's ``faceC-XPASS-flip-*.txt``): the strict marker reded as
-    XPASS the moment the cure landed (the audit seam moved to the
+    XPASS the moment the fix landed (the audit seam moved to the
     deps-free :mod:`taskq.audit`; the compat shim
     ``taskq.web.admin._audit`` re-exports it and the engine never
     imports the admin package). The pin now stands GREEN as the law:
     any re-introduction of an admin import in the engine — including
-    the lazy shape that convicted the pre-cure head — reds here."""
+    the lazy shape that rejected the pre-fix head — reds here."""
     import ast
     from pathlib import Path
 
@@ -190,11 +190,11 @@ def test_the_cancel_path_never_imports_the_admin_package() -> None:
 async def test_the_canonical_module_attr_patch_lands_exactly_one_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """TOOTH T1 — the CANONICAL module attr's patch (the red-team's 1e):
+    """TOOTH T1 — the CANONICAL module attr's patch (the adversarial review's 1e):
     a test double rebinds ``taskq.audit.record_admin_action`` itself (a
     newcomer's natural first reach) with the classic delegating spy
     (capture the original, call it), while the shim is loaded. The
-    pre-cure guard compared the shim's attr against the MUTABLE module
+    pre-fix guard compared the shim's attr against the MUTABLE module
     global — the rebind made the comparison never match: the body routed
     to the shim's attr (the original), whose body's global lookup saw
     the SPY again — unbounded recursion, the whole cancel poisoned on
@@ -229,9 +229,9 @@ async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """TOOTH T2 — the delegating wrapper ON THE SHIM's attr (the
-    red-team's 1c): the plausible host instrumentation rebinds
+    adversarial review's 1c): the plausible host instrumentation rebinds
     ``taskq.web.admin._audit.record_admin_action`` with a pass-through
-    that calls the canonical body. The pre-cure seam routed to the
+    that calls the canonical body. The pre-fix seam routed to the
     wrapper, the wrapper called the canonical, the canonical's resolver
     saw the shim's attr (still the wrapper) and routed AGAIN — unbounded
     recursion. THE LAW: exactly ONE row lands."""
@@ -266,11 +266,11 @@ async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
 async def test_the_nul_reason_does_not_roll_back_the_cancel(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE AUDIT SEAM'S NUL POISON (finding 10, face A — RED-FIRST): the
+    """THE AUDIT SEAM'S NUL POISON (finding 10, face A — FAILING-FIRST): the
     reason rode the text bind RAW, and asyncpg refuses a NUL byte in a
     text bind — the audit leg raised inside the cancel's own transaction,
     and the WHOLE cancel rolled back (the same-tx guarantee turned a
-    poisoned free-text field into a failed mutation). THE CURE: the NUL
+    poisoned free-text field into a failed mutation). THE FIX: the NUL
     is sanitized AT THE WRITE (the leaf's shape pin — it rides as the
     ``\\x00`` ESCAPE), the poison is inert, and the cancel lands with its
     audit row."""
@@ -299,10 +299,10 @@ async def test_the_nul_reason_does_not_roll_back_the_cancel(
 async def test_the_audit_reason_is_bounded_at_the_leaf(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE AUDIT SEAM'S LENGTH BOUND (finding 10, face B — RED-FIRST):
+    """THE AUDIT SEAM'S LENGTH BOUND (finding 10, face B — FAILING-FIRST):
     ``admin_audit`` is the NEVER-PRUNED table, and an unbounded reason
     was unbounded retention per row (a 100k-char reason landed verbatim).
-    THE CURE: the truncate-to-bounds law at the leaf — the row records
+    THE FIX: the truncate-to-bounds law at the leaf — the row records
     what arrived, CAPPED (the cancel form's own maxlength the module
     docstring already names)."""
     flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_long_reason")
@@ -327,7 +327,7 @@ async def test_the_run_feed_survives_a_direct_db_poisoned_row(
     put control characters in the text and ``\\u0000`` inside the detail
     jsonb) must not take the run's live feed down: the SSE frame path and
     the run page's audit read survive it. The write-side sanitize makes
-    NEW poison impossible; this pin convicts the READ's survival."""
+    NEW poison impossible; this pin rejects the READ's survival."""
     import json as json_mod
 
     from taskq.web.admin._wf_actions import _frame

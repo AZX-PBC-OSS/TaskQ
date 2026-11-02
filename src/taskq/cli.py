@@ -3374,11 +3374,11 @@ _JOB_SHOW_COLUMNS: Final = (
     "error_message",
     "idempotency_key",
     "tags",
-    # THE 3AM FACES (the observability lane's cure): the lease columns
-    # (the lost-worker drill's "the worker died" vs "the work is slow"
+    # THE 3AM FACES (the observability lane's fix): the lease columns
+    # (the lost-worker probe's "the worker died" vs "the work is slow"
     # distinction — the reclaim sweep's input is lock_expires_at) + the
     # metadata jsonb (the cross-run cache hit's receipt lives at
-    # metadata.wf_cache_hit; the audit drill's provenance face). The
+    # metadata.wf_cache_hit; the provenance face). The
     # RENDER stays conditional: a terminal row's lease face is history,
     # not liveness, and only the receipt is ever printed from metadata.
     "locked_by_worker",
@@ -3495,7 +3495,7 @@ async def _job_show(
     _render_lease_face(row)
     _render_cache_hit(row)
     if row["error_class"] is not None:
-        # THE DB-SOURCED TEXT'S DISCIPLINE (finding 14's cure — the
+        # THE DB-SOURCED TEXT'S DISCIPLINE (the
         # job-show seat's own face): error_class is written by the
         # ladder/reaper paths as a class name, but the COLUMN is text —
         # a hand-crafted or legacy row's value flows to the tty here
@@ -3548,7 +3548,7 @@ _LEASE_LIVE_STATUSES: Final[frozenset[str]] = frozenset({"pending", "scheduled",
 
 
 def _render_lease_face(row: Any) -> None:
-    """THE LEASE FACE (the lost-worker drill's cure — ``job show``'s
+    """THE LEASE FACE (the lost-worker probe's fix — ``job show``'s
     liveness section): who holds the row, when the holder last breathed,
     when the lease lapses — and, past the lapse, the LAPSED verdict: the
     holder is presumed dead and the reclaim sweep repends the row within
@@ -3584,7 +3584,7 @@ def _render_lease_face(row: Any) -> None:
 
 
 def _render_cache_hit(row: Any) -> None:
-    """THE CACHE-HIT RECEIPT (the audit drill's cure — the provenance
+    """THE CACHE-HIT RECEIPT (the provenance face — the provenance
     face): the cross-run step cache's hit stamp (metadata.wf_cache_hit:
     the address + the producing run's id + the store instant) printed
     when present. A step that never executed must not read like one that
@@ -4092,7 +4092,7 @@ _FLOWS_LIST_LIMIT: Final[int] = 20
 
 
 def _cli_principal() -> str:
-    """The CLI's audit subject: THE KERNEL'S WORD (F-CLI-3's cure) —
+    """The CLI's audit subject: THE KERNEL'S WORD (F-CLI-3's fix) —
     ``os.getuid()`` through ``pwd``, never the environment. ``getpass.
     getuser()`` reads ``LOGNAME``/``USER`` first, so
     ``LOGNAME=postgres taskq flows resolve …`` wrote the mutation as
@@ -4142,8 +4142,8 @@ async def _flows_pool(settings: TaskQSettings) -> AsyncGenerator[asyncpg.Pool, N
         await close_pool_bounded(pool, "flows", CLOSE_TIMEOUT_SECS)
 
 
-# The cross-run step cache's operator surface (T25 — the cache-cures
-# round's CURE 5, THE POISON PILL DOOR): a well-shaped lie at a known
+# The cross-run step cache's operator surface (T25 — the cache-fixes
+# round's fix 5, THE POISON PILL DOOR): a well-shaped lie at a known
 # address serves every future run until TTL — with no verb, no endpoint,
 # and no hit log, the operator's only face was the lie itself. This is
 # the door: `taskq wf cache list` shows the rows AND the hits' receipts
@@ -4591,14 +4591,14 @@ async def _flows_status(
             typer.echo("Action: taskq flows list shows the recent runs.", err=True)
             raise typer.Exit(code=1)
         node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
-        # THE ONE-READ LAW (the engine-faces lane's cure): the 3am
+        # THE ONE-READ LAW (the engine-faces lane's fix): the 3am
         # columns ride the ENGINE query — WORKFLOW_NODES_SQL selects
         # started_at + the failed_parent stamp + the lease face's columns
         # at the source. The supplement read this seat used to carry (a
         # second, CLI-owned jobs fetch keyed by the row id) is RETIRED:
         # two reads where one suffices was the engine query's missing
         # columns forcing the workaround.
-        # THE §22.1 STAMPS (the drift face's data) ride
+        # THE STAMPS (the drift face's data) ride
         # THE SAME READ: WORKFLOW_NODES_SQL carries j.code_version, so
         # the drift face derives from the node rows themselves (a run
         # redeployed mid-flight carries >1 DISTINCT stamp on its rows —
@@ -4629,7 +4629,7 @@ async def _flows_status(
             error_class=row["error_class"],
             error_message=row["error_message"],
             # THE ATTEMPT COUNTERS RIDE THE READ (attack-4
-            # F-P4-WHYSTUCK-LADDER-LIE's cure): the dataclass defaults
+            # F-P4-WHYSTUCK-LADDER-LIE's fix): the dataclass defaults
             # (0 / 3) made every failed row report "ladder headroom 3" —
             # the read must carry the row's own counters.
             max_attempts=row["max_attempts"],
@@ -4650,7 +4650,7 @@ async def _flows_status(
         )
         for row in node_rows
     ]
-    # THE VERSIONING-WEDGE SURFACE (the timer-cures lane's cure 5): with
+    # THE VERSIONING-WEDGE SURFACE (the timer hardening's fix 5): with
     # --app, the run's node inventory is checked against the CURRENT
     # registry's compiled graph — a node the current code no longer
     # declares is a zombie's home, and the status NAMES it (the drift
@@ -4689,7 +4689,7 @@ async def _flows_status(
         cancel_in_flight=root["cancel_requested_at"] is not None,
         registry_node_keys=registry_node_keys,
         # THE STAMPS' DRIFT FACE: the run's OWN rows'
-        # §22.1 stamps — one coherent drift section with the stranded
+        # stamps — one coherent drift section with the stranded
         # face above.
         code_version_stamps=stamps,
     ):
@@ -4795,7 +4795,7 @@ def _validate_through_gate(
     try:
         models = gate_models_for(app_obj, workflow, node_key)
     except KeyError as exc:
-        # THE NAMED REFUSAL (attack-4 F-P4-CLI-KEYERROR-TRACEBACK's cure):
+        # THE NAMED REFUSAL (attack-4 F-P4-CLI-KEYERROR-TRACEBACK's fix):
         # the stale-deploy world — the run's workflow is not declared on
         # THIS app (the --app module predates the run, or the node key
         # does not exist on the declared workflow). The admin's twin
@@ -4812,7 +4812,7 @@ def _validate_through_gate(
     except WorkflowValidationError as exc:
         # THE DOOR'S OWN REPORT IS THE REFUSAL (the registration door's
         # CLI face — found by THIS lane's attack round: app.get() validates
-        # since the F-LOOP-7 cure, so an INVALID graph's compile error
+        # since the F-LOOP-7 fix, so an INVALID graph's compile error
         # escaped the typed door as a rich traceback — the diagnostics-
         # first law's own violation). The validation report NAMES the rule
         # + the fix; the operator's terminal carries it, exit 1.
@@ -5080,7 +5080,7 @@ def flows_cancel(
                 )
             except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
                 # THE RACE'S HONEST LOSER (the resolve/cancel race pin's
-                # conviction — the two verbs' cascades can deadlock: PG
+                # — the two verbs' cascades can deadlock: PG
                 # kills one writer, and the CLI's answer must be the NAMED
                 # refusal with the remedy, never a rich traceback — the
                 # diagnostics-first law). The winner's own voice is honest;

@@ -1,6 +1,6 @@
-"""THE CANCEL NOTIFY TRANSPORT'S BOUND — the system-e2e PG17 lane's convictions.
+"""THE CANCEL NOTIFY TRANSPORT'S BOUND — the system-e2e PG17 lane's recorded findings.
 
-The CI conviction (run 38053606389, the ``system-e2e (17)`` leg at
+The CI recorded finding (run 38053606389, the ``system-e2e (17)`` leg at
 f7155214; PG15/16/18 green on the same commit): one silently-dead PG
 socket under the runner's weather converted ONE infrastructure event
 into THREE legs of the matrix:
@@ -33,8 +33,8 @@ ledger cleanup are unbounded client-side**. The law this lane lands
 (the same one the HITL listener already declares): THE ROWS ARE THE
 TRUTH, THE NOTIFY IS TRANSPORT — a transport that never answers must
 not hold the operator's call, the leader's sweep tick, or the tier's
-own cleanup hostage. The three pins below replay each convicted leg
-deterministically; the cures (the transport bound in
+own cleanup hostage. The three pins below replay each rejected leg
+deterministically; the fixes (the transport bound in
 ``taskq.backend.postgres``, the bounded ledger reads and the
 resilient cleanup in ``tests/system_e2e``) turn each red green.
 
@@ -70,7 +70,7 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 
-#: The transport bound the cure installs in ``taskq.backend.postgres``.
+#: The transport bound the fix installs in ``taskq.backend.postgres``.
 #: The pins' outer budgets are sized to outlive it with headroom.
 _TRANSPORT_BOUND_S = 5.0
 _PIN_WAIT_S = 60.0
@@ -157,12 +157,12 @@ async def test_write_cancel_request_returns_when_the_notify_transport_never_answ
     module_pg_schema: ModulePgSchema,
     clean_jobs_app: Any,
 ) -> None:
-    """The convicted await (leg F): the cancel request's row write
+    """The rejected await (leg F): the cancel request's row write
     commits, then the NOTIFY transport's socket never answers — the
     call must still RETURN (the row IS the request; the heartbeat poll
     remains authoritative for signal delivery), inside its own bound,
     with the transport failure swallowed-and-warned. UNCURED the call
-    hangs forever (the CI leg's 240s timeout); CURED the transport
+    hangs forever (the CI leg's 240s timeout); FIXED the transport
     bound fires and the call returns the committed truth."""
     import asyncpg
 
@@ -205,7 +205,7 @@ async def test_wait_running_fails_designed_when_the_ledger_never_answers() -> No
     of leg F): a ledger connection that never answers must end at the
     helper's OWN cap with the DESIGNED assertion ("fewer than N jobs
     claimed"), never consume the scenario's 240s pytest-timeout budget
-    on a single unbounded fetch. UNCURED the read hangs forever; CURED
+    on a single unbounded fetch. UNCURED the read hangs forever; FIXED
     every fetch is bounded and the cap decides."""
     from tests.system_e2e.test_shutdown_requeue_states import _wait_running
 
@@ -231,7 +231,7 @@ async def test_tagged_population_deleted_even_when_the_ledger_conn_died(
     on the ledger connection — when that socket dies mid-scenario, the
     UNBOUNDED cleanup hangs the test's finally (the zombie task) or
     dies with it, and the zombie population (same module schema, same
-    tag) contaminates the SIBLING scenario's own population. CURED the
+    tag) contaminates the SIBLING scenario's own population. FIXED the
     cleanup is bounded and, on a dead ledger connection, retries ONCE
     on a FRESH connection: the rows the scenario owns are deleted, and
     the sibling's population stays clean."""

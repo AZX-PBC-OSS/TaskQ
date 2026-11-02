@@ -1,28 +1,28 @@
-"""THE T20/T21 GATE-CURE PINS — the progress gates + the typed deaths +
+"""THE T20/T21 GATE-FIX PINS — the progress gates + the typed deaths +
 the failure-class routing rule.
 
-THE CONVICTIONS THESE HOLD CLOSED (the T20/T21 front's finding, each
-cured in src and pinned here):
+THE RECORDED FINDINGS THESE HOLD CLOSED (the T20/T21 front's finding, each
+fixed in src and pinned here):
 
 * THE PRE-VALIDATION DICT (the lax-pydantic hole): the schema gate ran
   and its answer was THROWN AWAY — ``{"page": "42"}`` against a
   declared ``page: int`` landed the STRING in the state row and the
-  stream ring. THE CURE: the VALIDATED model's own dump
+  stream ring. THE FIX: the VALIDATED model's own dump
   (``model_dump(mode="json")``) is the record.
 * THE PUBLIC VALIDATING-NOTHING DOOR: ``ProgressEmitter.submit`` was
   PUBLIC and validated nothing — a ``pct=999`` reached the buffer and
   persisted (the migration's comment claimed a CHECK constraint that
-  did not exist). THE CURE: the buffer write is PRIVATE (``_submit`` —
+  did not exist). THE FIX: the buffer write is PRIVATE (``_submit`` —
   the public op is :meth:`emit`/``ctx.progress`` and it validates);
   the CHECK is REAL (``wf_node_progress_pct_domain``, 01.00.32_01 —
   the comment's promise shipped).
 * THE AUTO-CLASS DISCARDED RECEIPT: ``project_auto_event`` threw the
   append's drop count away — the user class's receipt discipline
   (DH2's honest appended==retained+dropped pair) was user-only. THE
-  CURE: the counters row rides every projection.
+  FIX: the counters row rides every projection.
 * THE DETERMINISTIC-AS-TRANSIENT LADDER BURN: ``ProgressRefusedError``
   (a DETERMINISTIC authoring bug) laddered like a flake and burned the
-  retry budget. THE CURE: the failure-class routing rule —
+  retry budget. THE FIX: the failure-class routing rule —
   deterministic = the NAMED terminal (the ladder unburned), infra =
   reclaim, transient = the ladder — pinned per class.
 * THE TWO UNTYPED DEATHS: the divergent-page resume died as the raw
@@ -78,12 +78,12 @@ async def test_the_validated_dump_lands_not_the_pre_validation_dict(
     (a STRING) against the declared ``page: int`` — pydantic's lax
     validation coerces, and the VALIDATED dump (page == 42, the int) is
     what lands in the STATE row and the STREAM payload. RED (the
-    pre-cure tree): the raw dict was stored and the string landed where
+    pre-fix tree): the raw dict was stored and the string landed where
     the int is declared — the schema was decoration, the storage lied."""
     app = WorkflowApp()
 
     async def lax_body(ctx: StepContext, params: Ingest) -> dict[str, object]:
-        # The string is the convicted shape: lax pydantic coerces it —
+        # The string is the rejected shape: lax pydantic coerces it —
         # the RECORD must carry the coercion, never the input.
         await ctx.progress(50, "the lax page", {"page": "42"})
         return {"ok": True}
@@ -139,7 +139,7 @@ async def test_the_validated_dump_lands_not_the_pre_validation_dict(
 def test_the_buffer_door_is_private_the_public_op_validates() -> None:
     """THE STRUCTURAL PIN: ``ProgressEmitter.submit`` no longer exists as
     a public unvalidated door — the buffer write is ``_submit`` (private
-    by law) and the PUBLIC op (:meth:`emit`) validates. The convicted
+    by law) and the PUBLIC op (:meth:`emit`) validates. The rejected
     hole: a public ``submit`` that validated nothing admitted
     ``pct=999`` to the buffer (and it persisted — the storage CHECK was
     a comment's lie)."""
@@ -211,7 +211,7 @@ async def test_the_auto_class_drop_count_is_on_the_record(
     past the ring bound are COUNTED on the node's STREAM-channel counters
     row (occurrences == the projections, dropped == the trims — the
     honest appended == retained + dropped pair, BOTH classes). RED (the
-    pre-cure tree): the drop count was discarded — the auto class had no
+    pre-fix tree): the drop count was discarded — the auto class had no
     receipt."""
     from tests._wf_fixtures import seed_running_node
 
@@ -328,10 +328,10 @@ async def test_routing_progress_refused_is_the_named_terminal_not_a_flake(
     """THE ROUTING RULE, deterministic leg (pinned per class): a
     ``ProgressRefusedError`` — a DETERMINISTIC authoring bug — finalizes
     the node on the FIRST attempt with the named class; the ladder is
-    unburned (no re-pends, ONE ledger failed row). RED (the pre-cure
+    unburned (no re-pends, ONE ledger failed row). RED (the pre-fix
     tree): the deterministic death laddered as transient — three
     identical failures pretending to be a flake, the retry budget spent
-    on a bug no retry can cure."""
+    on a bug no retry can fix."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     runner, row = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
 
@@ -344,7 +344,7 @@ async def test_routing_progress_refused_is_the_named_terminal_not_a_flake(
     progress_redlog.red(
         "t21-routing-deterministic",
         "the DETERMINISTIC authoring failure laddered as transient (the "
-        "retry budget burned on a bug no retry cures)",
+        "retry budget burned on a bug no retry fixes)",
         {
             "status": status,
             "error_class": error_class,
@@ -374,7 +374,7 @@ async def test_routing_page_diverged_is_the_named_terminal(
 
     from taskq.workflows._emit import PageDivergedError
 
-    exc = PageDivergedError(JobId(row["id"]), JobId(row["id"]), "the drill")
+    exc = PageDivergedError(JobId(row["id"]), JobId(row["id"]), "the scenario")
     await runner._ladder_or_fail(flow_id, row, 1, _FakeNode(), exc)  # pyright: ignore[reportPrivateUsage,reportUnknownArgumentType]
 
     status, error_class, attempt, failed_rows = await _terminal_shape(
@@ -417,7 +417,7 @@ async def test_routing_transient_body_failure_still_ladders(
     wf_sql: Any,
 ) -> None:
     """THE ROUTING RULE, transient leg: an ordinary body failure still
-    rides the ladder (the re-pend, no terminal) — the rule's cure must
+    rides the ladder (the re-pend, no terminal) — the rule's fix must
     not eat the retry curve it exists to protect."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     runner, row = await _routed_node(wf_conn, wf_schema, wf_pool, wf_sql, flow_id)
@@ -442,11 +442,11 @@ async def test_map_index_poison_record_its_mates_commit(
     wf_sql: Any,
     t20_redlog: RedLog,
 ) -> None:
-    """RECORD #32768'S CURE (the batch semantics): a page carrying a
+    """RECORD #32768'S FIX (the batch semantics): a page carrying a
     poison record (map_index past the smallint ceiling) emits the VALID
     page-mates — their tx COMMITS, the valid work survives on the
     record — then raises :class:`MapIndexExhaustedError` NAMING the
-    offender. RED (the pre-cure tree): the raw DataError escaped
+    offender. RED (the pre-fix tree): the raw DataError escaped
     MID-TX and the whole page rolled back — the valid mates died with
     the poison record (the accidental untyped ceiling)."""
     from taskq.workflows._emit import MapIndexExhaustedError, emit_batch

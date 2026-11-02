@@ -1,4 +1,4 @@
-"""Red-team locks: unbounded terminal-write pool acquires starve the heartbeat loop.
+"""Adversarial review locks: unbounded terminal-write pool acquires starve the heartbeat loop.
 
 ``backend/_terminal.py``'s ``_mark_cancelled`` acquires from its pool with
 NO timeout (``async with pool.acquire() as conn:``) and

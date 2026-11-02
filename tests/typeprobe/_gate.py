@@ -52,7 +52,7 @@ TY_VERSION = "0.0.85"
 #: wiring corpus, the phase-2/-3/-4 attack rounds' surface corpora — the
 #: negative probes ship WITH the API, BUILD-PROTOCOL §7b). Each
 #: MUST_ERROR marker reds on BOTH checkers — with the RULE-IDS the
-#: marker declares. THE EVIDENCE-INTEGRITY ROUND'S WIRING (cure 4):
+#: marker declares. THE EVIDENCE-INTEGRITY ROUND'S WIRING (fix 4):
 #: attack2/attack3/attack4 ran only under their attackers' own
 #: invocations and ROTTED OFF this gate — three of seven corpus files
 #: unwired, their markers dead or wrong-rule as the signatures moved.
@@ -65,11 +65,11 @@ _CORPUS: tuple[str, ...] = (
     "attack2_wf_phase2_types.py",
     "attack3_wf_negative_types.py",
     "attack4_new_surfaces_negative_types.py",
-    # THE ZOMBIE PROBE'S WIRE (finding 7's cure — wire-or-delete, the
+    # THE ZOMBIE PROBE'S WIRE (finding 7's fix — wire-or-delete, the
     # gate's own law): ``wf_gather_negative_types.py`` carried a LIVE
     # ``MUST_ERROR`` marker but was registered NOWHERE — the gate never
     # ran it, the marker was decoration, the vacuous class exactly the
-    # wiring round convicted ("three of seven corpus files unwired").
+    # wiring round rejected ("three of seven corpus files unwired").
     # WIRED and re-derived against the current signatures (the F1-2
     # residual slot's door still reds on both checkers with the
     # declared rules).
@@ -84,12 +84,12 @@ _CORPUS: tuple[str, ...] = (
     # CHECKER forces the fail-close arm (the bare unwrap + the
     # fall-through match red; the green door — both arms — stays clean).
     "wf_wait_expired_negative_types.py",
-    # THE TYPE-TAGGED ROUTE'S PROBES (the routing proof's cure): the
+    # THE TYPE-TAGGED ROUTE'S PROBES (the routing proof's fix): the
     # Route literal's keys are checker-gated on BOTH faces — a raw
     # string key (neither an enum member nor a payload type) reds; the
     # type-keyed green face stays clean.
     "wf_type_tagged_route_negative_types.py",
-    # THE GRAPH-DSL TYPED ROUTE'S PROBES (T27's cure): the route verb's
+    # THE GRAPH-DSL TYPED ROUTE'S PROBES (T27's fix): the route verb's
     # arms are keyed by the union's member TYPES — a raw string key reds
     # at the call site (the Route literal's discipline, at the wiring
     # verbs); the type-keyed green face (and the flat Promise[list[R]]
@@ -101,7 +101,7 @@ _CORPUS: tuple[str, ...] = (
     # ChildOk-only match reds the fall-through against the body's
     # declared return; the all-arms green door stays clean.
     "wf_childflow_negative_types.py",
-    # THE WIRING'S ELEMENT-TYPE SEAM'S PROBES (the E5 drill's cure — the
+    # THE WIRING'S ELEMENT-TYPE SEAM'S PROBES (the E5 probe's fix — the
     # engine-faces lane): a list[Word] producer wired into a list[str]
     # consumer reds at the WIRING SITE on both checkers (the single-
     # promise list seam is TYPED — the body's list[E] and the promise's
@@ -233,8 +233,8 @@ def _ty_errors(probe_rel: str) -> dict[int, set[str]]:
     proc = subprocess.run(
         # --config-file: the gate's OWN (empty) config — hermetic to the
         # box; without it ty's discovery adopts stray parent-directory
-        # ty.toml files (the 2026-10-27 conviction: a bisection leftover
-        # at /tmp/opencode/ty.toml carrying a newer ty's
+        # ty.toml files (the 2026-10-27 recorded finding: a bisection leftover
+        # in a scratch parent directory carrying a newer ty's
         # `return-type-inference` option crashed every probe on config
         # parse). The flag belongs to the CHECK subcommand.
         [

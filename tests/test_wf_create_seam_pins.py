@@ -1,11 +1,11 @@
-"""THE CREATE-SEAM PINS (the migrations/run-creation front's convictions,
-cured): the create's atomicity, the run-key claim's honesty, the
+"""THE CREATE-SEAM PINS (the migrations/run-creation front's recorded findings,
+fixed): the create's atomicity, the run-key claim's honesty, the
 root-marker dispatch fence, the nodeless-root reap belt, and the packaged
 one-call run.
 
-THE CONVICTIONS THE PINS HOLD RED FOREVER:
+THE RECORDED FINDINGS THE PINS HOLD RED FOREVER:
 
-1. **THE CREATE ATOMICITY** — the pre-cure create was N+M+2 auto-committed
+1. **THE CREATE ATOMICITY** — the pre-fix create was N+M+2 auto-committed
    statements: the root insert COMMITTED ALONE and the static nodes +
    ROOT_START rode a second acquire with no ``conn.transaction()``. The
    kill window committed the ORPHAN ROOT (pending, ZERO nodes): a root
@@ -13,14 +13,14 @@ THE CONVICTIONS THE PINS HOLD RED FOREVER:
    the node rows — a nodeless root never derives, never terminalizes,
    never prunes), and one that SQUATS THE RUN KEY (the retry's arbiter
    conflict answers ``created=False`` and the nodes never landed —
-   ``drive()`` ran to ``max_ticks``). The cure is the fork-atomicity law
+   ``drive()`` ran to ``max_ticks``). The fix is the fork-atomicity law
    at creation granularity: root + nodes + edges + ROOT_START are ONE
    transaction (the orphan is UNREPRESENTABLE), and the census-grace
    reap arm is the belt (any orphan that could ever exist — a future
    statement-order regression's debris — is reaped ``failed`` past the
    grace).
 2. **THE CLAIM CHURN** — the fleet dispatch's candidate fence carries the
-   ROOT-MARKER leg (the root row is a CACHE, never work); the pin drills
+   ROOT-MARKER leg (the root row is a CACHE, never work); the pin exercises
    the leg out of the rendered statement and observes the churn (a
    capable worker claims the pending root). The shipped statement greens
    it.
@@ -127,9 +127,9 @@ async def test_pin_create_is_one_transaction_the_kill_commits_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """PIN 1a — THE CREATE ATOMICITY: the root insert + the static nodes +
-    edges + ROOT_START are ONE transaction. THE DRILL: the node pass
+    edges + ROOT_START are ONE transaction. THE SCENARIO: the node pass
     RAISES mid-create (the kill after the root insert) — the shipped tx
-    rolls the root back and NOTHING commits; the convicted N+M+2 shape
+    rolls the root back and NOTHING commits; the rejected N+M+2 shape
     (each statement auto-committed) left the ORPHAN ROOT behind: pending,
     zero nodes, undevelopable by the maintenance derivation (the rollup
     INNER-JOINS the node rows), never pruned, and squatting the run key."""
@@ -175,10 +175,10 @@ async def test_pin_kill_retry_completes_the_run(
     createseam_redlog: RedLog,
 ) -> None:
     """PIN 1b — THE RETRY COMPLETES: the legacy debris (a root committed
-    without its nodes — the pre-cure head's exact product, crafted here
+    without its nodes — the pre-fix head's exact product, crafted here
     through the shipped root claim) + the retry create_flow(run_key=…)
     → the nodes LAND, the root runs, the flow reaches terminal. The
-    convicted retry was ``created=False → early return``: the census
+    rejected retry was ``created=False → early return``: the census
     stayed 0 forever and ``drive()`` ran to ``max_ticks`` (the wedged
     run)."""
     _app, compiled = _create_seam_app()
@@ -226,7 +226,7 @@ async def test_pin_dispatch_never_claims_the_flow_root(
     """PIN 2 — THE ROOT-MARKER LEG: the fleet dispatch's candidate fence
     excludes the flow-root rows (step_key '__flow__' is a CACHE, never
     work). A pending root + a workflow-CAPABLE worker on the root's queue
-    claims NOTHING. THE DRILL: the exclusion leg dropped from the rendered
+    claims NOTHING. THE SCENARIO: the exclusion leg dropped from the rendered
     statement → the CHURN observed (the capable worker claims the root
     row — the claim-snooze-claim loop's fuel). The shipped statement
     greens it."""
@@ -277,11 +277,11 @@ async def test_pin_dispatch_never_claims_the_flow_root(
         "flow ROOT row is a cache, never work: the ROOT-MARKER leg dropped"
     )
 
-    # THE DRILL: the exclusion leg dropped from the rendered statement —
+    # THE SCENARIO: the exclusion leg dropped from the rendered statement —
     # the churn manifests on the SAME population (the pending root row).
     shipped_sql = DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema)
     mutated = shipped_sql.replace("step_key <> '__flow__'\n", "step_key IS NOT NULL\n")
-    assert mutated != shipped_sql, "the mutation drill did not arm"
+    assert mutated != shipped_sql, "the mutation test did not arm"
     churned = await dispatch_batch(
         wf_conn,
         sql=mutated,
@@ -300,7 +300,7 @@ async def test_pin_dispatch_never_claims_the_flow_root(
         },
     )
     assert any(r["step_key"] == "__flow__" for r in churned), (
-        "the mutation drill claimed no root row — the drill did not "
+        "the mutation test claimed no root row — the scenario did not "
         "manifest the churn; the pin has no teeth"
     )
 
@@ -314,7 +314,7 @@ async def test_pin_run_key_claim_is_honest_terminal_is_refused_loudly(
 ) -> None:
     """PIN 3 — THE CLAIM SURFACE HONEST: create_flow returns the TYPED
     RunClaim — ``created`` / ``existing-running`` / ``existing-terminal``
-    — never a bare id. THE CONVICTED LIE: a FAILED run + the same key
+    — never a bare id. THE REJECTED LIE: a FAILED run + the same key
     returned the failed run's id (a silent 202 by another name): nothing
     re-fired, and 'already running' was indistinguishable from 'already
     failed' without a second query. The typed claim states the
@@ -450,13 +450,13 @@ async def test_pin_nodeless_root_reap_count_is_the_true_count(
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """FINDING 14's PIN (RED-FIRST): the reaper's RETURN was
+    """FINDING 14's PIN (FAILING-FIRST): the reaper's RETURN was
     ``RETURNING f.id`` read through ``fetchval`` — the FIRST reaped row's
     128-BIT UUID — and ``int(uuid)`` converted the identity into a garbage
     "count" (measured on this tree: ``265174781926550178777984214673248076994``)
     that rode ``taskq.sweep.rows``'s sample; a multi-row reap's magnitude
     was lost with it (one orphan reaped, two reported as one
-    128-bit-hash-fragment). THE CURE: the statement answers ``count(*)``
+    128-bit-hash-fragment). THE FIX: the statement answers ``count(*)``
     (a bigint), the caller's cast is the pin's contract (the metric never
     samples a non-int), and the pin asserts the EXACT count — one orphan
     seeded, exactly 1 returned, never more, never a hash fragment."""
@@ -499,7 +499,7 @@ async def test_pin_packaged_run_one_call_end_to_end(
     ``taskq.workflows.run(flow, pool, schema, input=…, key=…)`` exists and
     works END TO END — the typed claim + the drive + the decoded result.
     The re-run against the terminal run answers the HONEST claim (the
-    demo's 409/202 distinction rides it). The phantom API the pre-cure
+    demo's 409/202 distinction rides it). The phantom API the pre-fix
     docs taught (``workflows.run(flow, input, key=…)``) did not exist at
     all — this pin holds the REAL surface."""
     import taskq.workflows as wf

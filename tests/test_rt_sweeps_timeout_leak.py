@@ -1,4 +1,4 @@
-"""Red-team attacks on SET LOCAL statement_timeout scoping in the sweeps.
+"""Adversarial review attacks on SET LOCAL statement_timeout scoping in the sweeps.
 
 Every bounded sweep opens its own ``conn.transaction()`` and issues
 ``SET LOCAL statement_timeout = <ms>`` inside it.  When the caller

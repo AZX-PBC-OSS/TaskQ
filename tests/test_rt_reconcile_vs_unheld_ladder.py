@@ -1,4 +1,4 @@
-"""Red-team: the claim-loss reconcile vs the cancel ladder's unheld walk.
+"""Adversarial review: the claim-loss reconcile vs the cancel ladder's unheld walk.
 
 Two writers now own the same row class on current main, and their premises
 collide for one row shape:

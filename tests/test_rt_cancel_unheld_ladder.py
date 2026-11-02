@@ -1,4 +1,4 @@
-"""Red-team: the cancel ladder's ownership of a polled row with NO registry entry.
+"""Adversarial review: the cancel ladder's ownership of a polled row with NO registry entry.
 
 The attacking interleaving (surfaced by the system-e2e cancel-storm tier's
 effects ledger - a body run with no claim row behind it):

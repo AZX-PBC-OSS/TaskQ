@@ -1002,7 +1002,7 @@ async def consume_one_job(
     _buf: _ProgressBuffer | None = None
 
     _parent_tags_token = _parent_tags_var.set(tuple(job.tags))
-    # The fan-out ledger stamp (LIB-2): the sibling contextvar, set and
+    # The fan-out ledger stamp: the sibling contextvar, set and
     # reset with the tags token — every child enqueue under this attempt
     # carries this job's id as parent_id.
     _parent_job_id_token = _parent_job_id_var.set(job.id)
@@ -1707,7 +1707,7 @@ class _DeadlineEnforcementCtx(Protocol):
 
     Structural on purpose: the enforcement is ONE machinery, never a
     second one per carrier (the wf runner imports THIS function — the
-    three holes, the unwind budget, the hostile-finally drills
+    three holes, the unwind budget, the hostile-finally shape
     inherited)."""
 
     def _set_actor_body_task(self, task: asyncio.Task[object]) -> None: ...

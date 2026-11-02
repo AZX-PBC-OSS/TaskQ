@@ -388,7 +388,7 @@ def build_enqueue_args[P: BaseModel, R: BaseModel | None](
         unique_states=resolved_unique_states,  # type: ignore[arg-type]  # Why: tuple[str, ...] from caller and tuple[JobStatus, ...] from ActorRef both satisfy the runtime contract; JobStatus is Literal[str, ...]
         metadata=metadata_dict,
         tags=_validate_and_dedup_tags(tags),
-        # LIB-2: the fan-out ledger stamp — the caller (the enqueue arm)
+        # the fan-out ledger stamp — the caller (the enqueue arm)
         # read the ambient parent context and passed it here, the
         # builder stays pure (no contextvar read inside).
         parent_id=parent_id,
@@ -416,7 +416,7 @@ def build_batch_args(
     just admitted; when omitted, each actor's literal is used, exactly
     as before.
 
-    ``parent_id`` is the fan-out ledger stamp (LIB-2): the caller read
+    ``parent_id`` is the fan-out ledger stamp: the caller read
     the ambient parent context ONCE per call and passed it here, every
     item carries it. Pure like the rest of the module — no contextvar
     read inside.
@@ -442,7 +442,7 @@ def build_batch_args(
             start_to_close=item.start_to_close,
             max_pending=item_max_pending,
             tags=item.tags,
-            # The H5 strip-then-stamp boundary runs inside
+            # The strip-then-stamp boundary runs inside
             # build_enqueue_args: any batch_id on item.metadata is stripped
             # before the library's own batch_id is stamped.
             stamp_batch_id=batch_id_str,

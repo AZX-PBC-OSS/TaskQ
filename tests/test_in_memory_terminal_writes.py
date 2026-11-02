@@ -596,7 +596,7 @@ class TestAttemptEpochFencing:
     async def test_mark_succeeded_without_attempt_no_ops(self) -> None:
         """A write that cannot present ANY attempt epoch must not land.
 
-        This is the red-team pin's exact shape
+        This is the adversarial review pin's exact shape
         (``mark_succeeded(job_id, worker_id, None)``): a caller with no
         attempt-identity snapshot is indistinguishable from the stale
         handler and must be fenced out, never allowed to terminate a row
@@ -2279,7 +2279,7 @@ class TestGetExpiredResults:
         )
 
     async def test_expired_read_appends_no_events_and_never_touches_wake(self) -> None:
-        """Red-team F11 pin: an expired read is side-effect-free. The PG
+        """Adversarial review F11 pin: an expired read is side-effect-free. The PG
         sweep is a bare UPDATE - no ``job_events`` row, no NOTIFY - and a
         read must be stricter still: evaluating the view may never write.
         ``get`` past expiry appends nothing to the event log and pings
@@ -2317,7 +2317,7 @@ class TestGetReturnsIsolatedRowCopies:
     copied, so a caller mutating a freshly-read row cannot corrupt the
     backend's stored state.
 
-    Red-team finding reported during the result-TTL work and
+    Adversarial review finding reported during the result-TTL work and
     deliberately left unfixed there: ``JobRow`` is frozen, but its dict
     fields (``payload``, ``progress_state``, ``result``, ``metadata``)
     are shared by reference - and only the expired branch of the read

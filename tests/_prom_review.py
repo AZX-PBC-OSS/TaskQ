@@ -63,7 +63,7 @@ def _free_tcp_port() -> int:
     fan-out (-n 8: eight workers' probes allocating near-simultaneously
     — two workers' bind-close windows handed out the SAME port, one
     probe's exporter bound it first, the other's boot died EADDRINUSE
-    and its port fetches refused). The cure is the deterministic
+    and its port fetches refused). The fix is the deterministic
     partition: each xdist worker's probes draw from ITS OWN range
     (``gw<N>`` -> base + N * stride), so no two workers' probes can
     collide regardless of timing; the bind-close still dodges the
@@ -390,7 +390,7 @@ async def _scrape_port() -> str:
 async def _poll_fetch_port(port: int, *, deadline_s: float = 45.0) -> str:
     """POLL, don't knock once: the worker's boot (interpreter start, PG
     connect, the first election attempt) has outrun any fixed wait under
-    co-tenancy — the follower arm's own conviction (3.14 leg, run
+    co-tenancy — the follower arm's own recorded finding (3.14 leg, run
     36629891786: the lone connect got Errno 111 and the missing file
     failed three otherwise-green tests as PROBE_TASK_FAILED). The
     LIVE arm raced the SAME boot the same way (the -n 8 consolidated
@@ -424,7 +424,7 @@ async def _dump(tag: str) -> None:
     with open(f"{os.environ['PROBE_SCRAPE_PATH']}.{tag}.bridge", "w") as fh:
         fh.write(bridge)
     # The LIVE arm polls too: the worker's boot races the scrape under
-    # co-tenancy (the same storm the follower's poll cures). FINAL keeps
+    # co-tenancy (the same storm the follower's poll fixes). FINAL keeps
     # the one-shot: the worker is already exiting, the poll would stall
     # on a port that is legitimately going away.
     port = await _poll_fetch_port(METRICS_PORT) if tag == "LIVE" else await _scrape_port()

@@ -1,4 +1,4 @@
-"""THE CLAIMS REGISTRY'S MIGRATION PASS (the de-slop round, cure 3 — run
+"""THE CLAIMS REGISTRY'S MIGRATION PASS (run
 once; kept for the record and for dry/other estates).
 
 Indexes every existing capture under ``.measurements/runs/`` into the

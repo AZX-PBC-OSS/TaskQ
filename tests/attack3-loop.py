@@ -1,4 +1,4 @@
-"""ATTACK-3 (phase-3 red team) — T19's loop machinery under adversarial
+"""ATTACK-3 (phase-3 adversarial review) — T19's loop machinery under adversarial
 load: the escalation path, the ladder classes, the answer-queue cursor
 through a retry, the body-controlled infra classifier.
 

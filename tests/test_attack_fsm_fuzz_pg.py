@@ -218,7 +218,7 @@ async def test_diff_fsm_serial_plans_mirror_pg(plan: list[Op], pg_dsn: str) -> N
     THE FUZZ IS THE DISCOVERY ENGINE, NOT THE PIN: an xfail(strict) on a
     fuzz draw is a lie — CI's runner draws different plans, never draws
     the counterexample, and the strict marker XPASSes (the 2026-10-10 CI
-    conviction, three legs). The convicted counterexample lives in its
+    recorded finding, three legs). The rejected counterexample lives in its
     OWN deterministic replay below: test_the_convicted_reopen_plan."""
     mem_obs, pg_obs = await run_differential(_plan_scenario(plan), pg_dsn=pg_dsn)
     _assert_snapshot_invariants(mem_obs)
@@ -234,9 +234,9 @@ async def test_diff_fsm_serial_plans_mirror_pg(plan: list[Op], pg_dsn: str) -> N
 
 
 async def test_the_convicted_reopen_plan(pg_dsn: str) -> None:
-    """The convicted counterexample, replayed DETERMINISTICALLY - now GREEN.
+    """The rejected counterexample, replayed DETERMINISTICALLY - now GREEN.
 
-    The 2026-10-10 conviction (the consolidator's fast tier, red receipted
+    The 2026-10-10 recorded finding (the consolidator's fast tier, red receipted
     .measurements/fsm-red/red-20261010-fsm-mirror.txt) held that this plan
     (enqueue, cancel_request, retry_job, cancel_request) "emits a
     state_change AFTER a terminal event".  The reads decided in the
@@ -250,7 +250,7 @@ async def test_the_convicted_reopen_plan(pg_dsn: str) -> None:
     (_assert_snapshot_invariants: a non-terminal from_state after a
     terminal event proves the silent re-pend and resets the scan), so
     this replay passes verbatim - the xfail(strict) marker came off WITH
-    the cure, as its own note directed.  The engine's event ordering and
+    the fix, as its own note directed.  The engine's event ordering and
     the backends are untouched: both sides' trails were IDENTICAL all
     along (the mirror never diverged - the invariant's projection was the
     stricter, unfaithful one)."""
@@ -263,7 +263,7 @@ async def test_the_convicted_reopen_plan(pg_dsn: str) -> None:
     mem_obs, pg_obs = await run_differential(_plan_scenario(plan), pg_dsn=pg_dsn)
     _assert_snapshot_invariants(mem_obs)
     _assert_snapshot_invariants(pg_obs)
-    assert_mirror("the convicted reopen plan, replayed verbatim", mem_obs, pg_obs)
+    assert_mirror("the rejected reopen plan, replayed verbatim", mem_obs, pg_obs)
 
 
 async def _ceiling_repeat_scenario(side: DiffSide) -> None:

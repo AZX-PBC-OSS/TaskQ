@@ -9,7 +9,7 @@ workflow definition registry (D1 — the only body source), and
 ``ActorConfig`` carrier so the config-sync, the drift guards, the
 deregistration guards, the admin's actors page and ``TASKQ_QUEUES_STRICT``'s
 fail-fast all SEE workflow actors — no second, invisible actor population
-(GAPS-ESTATE F3). The vanilla path is untouched: this decorator adds
+(). The vanilla path is untouched: this decorator adds
 registrations, it never edits an existing one (the byte-identity pin
 holds).
 
@@ -99,7 +99,7 @@ class WorkflowActor:
         self.max_concurrent = max_concurrent
         self.reservations = list(reservations) if reservations else []
         self.result_ttl = result_ttl
-        # THE ACTOR'S DECLARED PRIORITY (the wf-priority cure): the
+        # THE ACTOR'S DECLARED PRIORITY (the priority surface): the
         # handle's enqueue DEFAULT for its nodes' rows — the wiring folds
         # it into the node decl when the step declares none (the
         # capacity-terms flow's own shape). ``None`` = nothing declared —
@@ -107,7 +107,7 @@ class WorkflowActor:
         # vanilla ``ActorRef.priority``, it rides the handle and the
         # enqueue, never the config row.
         self.priority = priority
-        # THE ACTOR'S DECLARED DEADLINE (the wf start_to_close cure): the
+        # THE ACTOR'S DECLARED DEADLINE (the wf start_to_close bound): the
         # handle's DEFAULT for its nodes' rows — the wiring folds it into
         # the node decl when the step declares none (the priority
         # fold's own shape). ``None`` = nothing declared — the row's
@@ -116,7 +116,7 @@ class WorkflowActor:
         # deadline is the ROW's own column value, and two steps of one
         # actor may declare different bounds with no conflict law.
         self.start_to_close = start_to_close
-        # THE CAPACITY OWNER (C15's opt-in, the vanilla actor's own
+        # THE CAPACITY OWNER (the ``capacity_owner="code"`` opt-in, the vanilla actor's own
         # declaration): "operator" (the default) keeps the estate's
         # seed-only law — the stored row wins every conflict after
         # first boot. "code" hands max_concurrent/result_ttl to the
@@ -141,8 +141,8 @@ class WorkflowActor:
         return getattr(self._fn, attr)
 
     def actor_config(self) -> dict[str, object]:
-        """THE F3 CARRIER, IN THE REAL PROJECTION'S ONE VOCABULARY (H-A12
-        — never two name schemes): the ``ActorConfig`` field set the
+        """THE ACTOR-CONFIG CARRIER, IN THE REAL PROJECTION'S ONE VOCABULARY
+        (never two name schemes): the ``ActorConfig`` field set the
         estate's config-sync and guards consume, keyed exactly as
         ``project_workflow_actor_configs`` keys the rows. The handle's
         declared name + queue are its placement face; the CAPACITY TERMS
@@ -221,25 +221,25 @@ class CompiledWorkflow:
     #: The workflow's declared chains (T20) — the chain SOURCE node owns
     #: its Chain; the runner resolves chain-step routes from here.
     chains: tuple[object, ...] = ()
-    #: THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's admission control,
+    #: THE MAX-IN-FLIGHT BOUND (T20): the RUN's admission control,
     #: declared at the workflow level; the runner hands it to every
     #: ``ctx.emit_batch``. ``None`` = the explicit unbounded.
     max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT
     #: The cross-graph smuggles the wiring verbs recorded (attack-3 M3's
-    #: cure): ``(consumer_key, parent_key)`` pairs — validate's E7 reads
+    #: fix): ``(consumer_key, parent_key)`` pairs — validate's E7 reads
     #: it.
     smuggled: tuple[tuple[str, str], ...] = ()
     #: The app's declared queue universe (``"default"`` + every workflow
-    #: actor's queue + TASKQ_QUEUES' names — attack-3 M5's cure):
+    #: actor's queue + TASKQ_QUEUES' names — attack-3 M5's fix):
     #: validate's W2 reads it; ``None`` = no universe declared, nothing
-    #: to convict.
+    #: to reject.
     known_queues: frozenset[str] | None = None
     # THE DECLARED POLICIES (§10.3 — the capture writer + the redact
     # chain read them FROM THE COMPILE; the runner never hardcodes the
     # default past this point — the declaration is the only source).
     capture: Literal["none", "errors-only", "all"] = "errors-only"
     redact: Callable[[dict[str, object]], dict[str, object]] | None = None
-    #: THE WORKFLOWDEF'S OWN PLACEMENT (C6 — the definition's own rows'
+    #: THE WORKFLOWDEF'S OWN PLACEMENT (the definition's own rows'
     #: face): the escalation consumer rows' address (D1) and the loop
     #: node's fallback placement. The CURRENT defaults ("workflow"/
     #: "default") for non-adopters — no behavior change.
@@ -255,7 +255,7 @@ class CompiledWorkflow:
         return list(self.nodes[key].parents)
 
     def skip_predicate(self, key: str) -> object | None:
-        """The node's dispatch-time skip predicate (cut #4), if declared."""
+        """The node's dispatch-time skip predicate, if declared."""
         return self.nodes[key].skip
 
     def validate(self) -> None:
@@ -313,14 +313,14 @@ class WorkflowApp:
         self._workflows: dict[str, Callable[..., object]] = {}
         #: The app's declared queue universe (the workflow actors'
         #: queues — validate's W2 rule reads the compiled projection;
-        #: attack-3 M5's cure).
+        #: attack-3 M5's fix).
         self._actor_queues: set[str] = set()
         # THE APP REGISTRY (the worker-hosted execution seam): the app
         # registers weakly, so the boot projection can find every
         # IMPORTED app — the projection compiles their workflows (the
         # D1 registry's population in the worker's process) and projects
         # the (actor, queue) cohorts the estate's actor_config sees (the
-        # F3 law's call site). The lazy import keeps the seam's module
+        # visibility law's call site). The lazy import keeps the seam's module
         # graph out of the authoring surface's own import time.
         from taskq.workflows._worker_execution import register_app
 
@@ -386,7 +386,7 @@ class WorkflowApp:
     ) -> WorkflowActor | Callable[[Callable[..., Awaitable[object]]], WorkflowActor]:
         """``@app.actor`` — the workflow step decorator: registers the
         body into the workflow definition registry (D1) and projects the
-        F3 carrier. The redact hook POST-COMPOSES on the capture chain
+        actor-config carrier. The redact hook POST-COMPOSES on the capture chain
         (chain → hook, never a replacement — pin 11's composed-anyway).
         ``priority=`` is the actor's declared enqueue DEFAULT for its
         nodes' rows (the vanilla ``@actor(priority=)`` face; the step's
@@ -411,11 +411,11 @@ class WorkflowApp:
                         f"the workflow actor {actor_name!r}'s {field} must be a "
                         f"non-negative int or None, got {value!r}"
                     )
-            # THE CAPACITY OWNER'S SHAPE DOOR (C15): the declaration is
+            # THE CAPACITY OWNER'S SHAPE DOOR: the declaration is
             # exactly one of the two owner names — anything else is the
             # refused declaration, never a silent anything.
             validate_capacity_owner(capacity_owner, what=f"the workflow actor {actor_name!r}'s")
-            # THE CAPACITY DOOR (H-A10): a KeyedReservationRef (or any
+            # THE CAPACITY DOOR: a KeyedReservationRef (or any
             # other unnamed shape) in reservations= is the LOUD refusal
             # at the declaration site — never a silently-dropped cap.
             reservation_names(
@@ -466,13 +466,13 @@ class WorkflowApp:
         max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT,
     ) -> Callable[[Callable[[], Promise[R]]], Callable[[], Promise[R]]]:
         """``@app.workflow(name, actor=…, queue=…, capture=…, redact=…,
-        max_in_flight=…)`` — the per-workflow declaration (§10.3's
+        max_in_flight=…)`` — the per-workflow declaration (the
         policies). The declaration is what T04's capture writer and every
         export surface consume; ``redact=fn`` POST-COMPOSES on the
         default chain's output (it can only redact more, never less —
         TORS-REV-0.16 §G1).
 
-        THE PLACEMENT FACE (C6 — the definition's own rows):
+        THE PLACEMENT FACE (the definition's own rows):
         ``actor=``/``queue=`` declare the WORKFLOWDEF's own (actor,
         queue) pair — the address of the rows addressed by the
         DEFINITION rather than by a node decl: the loop's ESCALATION
@@ -501,7 +501,7 @@ class WorkflowApp:
         checkers). The type story no longer dies at the first line the
         user writes: the builder's own signature is the typed door.
 
-        THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's admission control
+        THE MAX-IN-FLIGHT BOUND (T20): the RUN's admission control
         — how many non-terminal rows the run may materialize. The emit
         admits its WHOLE page under the bound; a fast source outpacing
         its workers BLOCKS at the bound (the generator's laziness is the
@@ -510,12 +510,12 @@ class WorkflowApp:
         the EXPLICIT unbounded (the author takes the dragon).
 
         THE SIGNAL CHANNEL is NOT a declaration param (the ergonomic
-        tail's cure): the old ``channel=`` was accepted and silently
+        tail's fix): the old ``channel=`` was accepted and silently
         DROPPED — a declaration that does nothing is a lie wearing the
         signature. The signal channel is the app's own method:
         :meth:`channel` (the declared gates' registry) — ONE name, one
         surface (the glossary law)."""
-        # THE PLACEMENT'S DECLARATION-SITE GUARD (C6): the placement
+        # THE PLACEMENT'S DECLARATION-SITE GUARD: the placement
         # names a real actor and a real queue — a non-str (or empty)
         # value is the refused declaration, never a silent anything.
         for field_name, value in (("actor", actor), ("queue", queue)):
@@ -572,7 +572,7 @@ class WorkflowApp:
         through: an invalid graph raises here (the door), never at
         first claim."""
         compiled = self._compile(name)
-        # THE REGISTRATION DOOR VALIDATES (the E8-late seam's cure —
+        # THE REGISTRATION DOOR VALIDATES (the E8-late seam's fix —
         # F-LOOP-7's finding): compile + register is the LAST compile-time
         # seam a fleet passes through before rows exist; an invalid graph
         # registered here is a fleet that refuses at first claim, never at
@@ -604,7 +604,7 @@ class WorkflowApp:
         if build_fn is None:
             raise KeyError(f"workflow {name!r} is not declared on this app")
         graph = BuildGraph()
-        # THE WORKFLOWDEF'S OWN PLACEMENT (C6): the decorator's
+        # THE WORKFLOWDEF'S OWN PLACEMENT: the decorator's
         # declaration rides the build fn; the recorder carries it so the
         # LOOP's fallback placement (the wiring verbs run HERE) resolves
         # the same cohort the definition's own rows will stamp.
@@ -634,7 +634,7 @@ class WorkflowApp:
             max_in_flight=getattr(build_fn, "__wf_max_in_flight__", EMIT_MAX_IN_FLIGHT_DEFAULT),
             capture=getattr(build_fn, "__wf_capture__", "errors-only"),
             redact=getattr(build_fn, "__wf_redact__", None),
-            # THE WORKFLOWDEF'S OWN PLACEMENT (C6): the declared face,
+            # THE WORKFLOWDEF'S OWN PLACEMENT: the declared face,
             # defaulted to the CURRENT values for the non-adopter.
             def_actor=graph.declared_actor or "workflow",
             def_queue=graph.declared_queue or "default",
@@ -664,7 +664,7 @@ def _register_bodies(
     (``<map>.item`` — the fork's per-item identity): the alias is the
     same body, registered under the key the child rows carry.
 
-    THE ESCALATION STEP (attack-3 H1's cure): a loop declaring
+    THE ESCALATION STEP (the escalation fix): a loop declaring
     ``on_exhausted="escalate"`` registers ITS escalation body under the
     ``loop.escalation`` step key — the author's ``escalates_to=`` body,
     or the framework default. The outbox's consumer job resolves its
@@ -745,7 +745,7 @@ def _register_bodies(
             WorkflowDef(
                 name=compiled.name,
                 bodies=bodies,
-                # THE WORKFLOWDEF'S OWN PLACEMENT (C6): the decorator's
+                # THE WORKFLOWDEF'S OWN PLACEMENT: the decorator's
                 # declared (actor, queue) — the escalation consumer rows'
                 # address (D1: escalation_bindings reads THIS), defaulted
                 # to the CURRENT values for the non-adopter.

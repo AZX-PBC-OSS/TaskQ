@@ -640,7 +640,7 @@ def test_migrate_up_threads_allow_checksum_drift(monkeypatch: Any) -> None:
 
 @pytest.mark.integration
 def test_migrate_up_checksum_drift_flag_end_to_end(pg_dsn: str, monkeypatch: Any) -> None:
-    """The tampered-ledger drill against a real PG, the full operator path
+    """The tampered-ledger scenario against a real PG, the full operator path
     the ChecksumDriftError text advertises: without the flag the run exits
     1 fail-closed (the failure report names the drift); with the flag the
     run proceeds past the refusal and the ``migration-checksum-drift``

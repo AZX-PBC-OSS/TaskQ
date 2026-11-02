@@ -1,4 +1,4 @@
-"""Red-team: RELEASING-phase release must not double-refund against a
+"""Adversarial review: RELEASING-phase release must not double-refund against a
 concurrent reclaim sweep on the same row.
 
 Hypothesis under test: ``mark_interrupted``'s fence

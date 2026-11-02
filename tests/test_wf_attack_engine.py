@@ -5,9 +5,9 @@ Provenance: the hostile review of the consolidated head (af1b8779) —
 FINDING PACK 1 (the round's most severe engine finding; attacker
 evidence in schema ``att_t20``) and the migrations front's F-CREATE-1 /
 F-CREATE-3. The pins assert the SAFE behavior; each carries its
-unmarked red run in the pack's RECEIPTS.md.
+unmarked red run in the pinning run's record.
 
-THE WEDGE (pack 1, convicted LIVE at af1b8779): a run whose nodes are
+THE WEDGE (pack 1, rejected LIVE at af1b8779): a run whose nodes are
 ``{succeeded|failed, crashed}`` wedges ``running`` FOREVER. The chain:
 
 * the jobs-level reclaim (``backend._sweeps._SWEEP_1_BODY``) reads
@@ -96,13 +96,14 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
     crashed = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata, error_class, error_message, "
-        "finished_at) "
+        "retry_kind, status, attempt, step_key, metadata, fairness_key, error_class, "
+        "error_message, finished_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'crashed', 3, 'boom', "
-        "$2::jsonb, 'WorkerCrashed', "
+        "$2::jsonb, $3, 'WorkerCrashed', "
         "'lock expired before worker reported terminal state', clock_timestamp())",
         crashed,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
@@ -114,11 +115,12 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
     sibling = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata, finished_at) "
+        "retry_kind, status, attempt, step_key, metadata, fairness_key, finished_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'succeeded', 1, 'ok', "
-        "$2::jsonb, clock_timestamp())",
+        "$2::jsonb, $3, clock_timestamp())",
         sibling,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger (id, flow_id, job_id, step_key, '
@@ -133,7 +135,7 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
 # ── Pack 1, pin (a): THE DERIVATION MUST TERMINALIZE THE CORPSE ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [pack-1(a)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING pack-1(a) @ af1b8779: a run whose nodes are …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [pack-1(a)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING pack-1(a) @ af1b8779: a run whose nodes are …
 async def test_wedge_derivation_terminalizes_the_dead_run(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
@@ -142,7 +144,7 @@ async def test_wedge_derivation_terminalizes_the_dead_run(
     attempt == max_attempts, succeeded} derives ``failed`` — the table's
     rule-2 verdict for an unabsorbed failure — NEVER ``running``.
 
-    The unmarked red (RECEIPTS.md): ``reconstruct_workflow_status``
+    The unmarked failing run: ``reconstruct_workflow_status``
     returns ``'running'`` for the corpse — and the G7 always-on
     assertion agrees with the root's ``running`` cache, so the dead run
     is hidden, not surfaced."""
@@ -159,16 +161,16 @@ async def test_wedge_derivation_terminalizes_the_dead_run(
 # ── Pack 1, pin (b): THE WEDGE IS SURFACED, NOT HIDDEN (the G7 face) ───
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [pack-1(b)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING pack-1(b) @ af1b8779: the maintenance leg's …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [pack-1(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING pack-1(b) @ af1b8779: the maintenance leg's …
 async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql, wf_pool: asyncpg.Pool
 ) -> None:
-    """PACK 1(b), the G7 guard: after the cure the wedge is IMPOSSIBLE —
+    """PACK 1(b), the G7 guard: after the fix the wedge is IMPOSSIBLE —
     the maintenance arms (``sweep_join_rederive``'s root-maintain leg +
     ``reap_phantom_ledger``) terminalize the wedged root within the
     sweep's grace, so the reported status and the rows-alone
     reconstruction agree ON A TERMINAL VERDICT (the drift-check's
-    agreement then means what it says). The unmarked red (RECEIPTS.md):
+    agreement then means what it says). The unmarked failing run:
     three full passes leave the root ``running`` and the reconstruction
     ``running`` — the always-on assertion green on a dead run."""
     flow_id = await _seed_wedge(wf_conn, wf_schema)
@@ -201,7 +203,7 @@ async def _create_body(ctx: StepContext, params: _CreateIn) -> Any:
     return {"doc_id": params.doc_id}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-CREATE-1]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-CREATE-1 @ af1b8779: create_flow commits the …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-1 @ af1b8779: create_flow commits the …
 async def test_interrupted_create_leaves_no_live_orphan(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -211,7 +213,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
 ) -> None:
     """F-CREATE-1: drive the REAL ``create_flow`` with the second leg
     killed (``_insert_static_nodes`` raises — the crash-after-root-insert
-    window). The SAFE law, either cure direction:
+    window). The SAFE law, either fix direction:
 
     * ONE TRANSACTION — the root insert rolls back with the failure: NO
       root row exists afterwards; or
@@ -219,7 +221,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
       sweep within 3 maintenance passes.
 
     Today's shape fails both: the root row sits ``pending`` with zero
-    nodes forever (the red in RECEIPTS.md)."""
+    nodes forever (the red in (the pinning run's record)."""
     app = WorkflowApp()
 
     @app.workflow("create_seam_orphan")
@@ -260,7 +262,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
 # ── F-CREATE-3: THE CLAIM PATH NEVER HANDS OUT THE __flow__ ROW ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-CREATE-3]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-CREATE-3 @ af1b8779: the dispatch fence …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-3]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-3 @ af1b8779: the dispatch fence …
 async def test_dispatch_never_claims_the_flow_root_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:

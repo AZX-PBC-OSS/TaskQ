@@ -1,4 +1,4 @@
-"""Red-team attacks on two worker surfaces.
+"""Adversarial review attacks on two worker surfaces.
 
 Surface A - the per-slot transactional connections: the
 dispatch path acquires one slot-pool connection per job and shadows the

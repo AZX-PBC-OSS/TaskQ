@@ -1,24 +1,24 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""TEARDOWN-REVIEW PINS — the rv3 cut-and-cure lane's convictions
+"""TEARDOWN-REVIEW PINS — the rv3 cut-and-fix lane's recorded findings
 (feat/taskqflow @ 512f7a91; the teardown review of the workflows
 interface).
 
 Provenance: the teardown reviewer's offered cut, this lane's pack. Per
 the doctrine, a LANDED finding is pinned asserting the SAFE behavior
-under ``pytest.mark.xfail(strict=True)`` — the cure flips the pin to
-XPASS-strict (a red that says: remove the marker WITH the cure); the
+under ``pytest.mark.xfail(strict=True)`` — the fix flips the pin to
+XPASS-strict (a red that says: remove the marker WITH the fix); the
 pin then stands as the green guard. Every finding here was run
 UNMARKED first (the red captured in RECEIPTS — the
-``tests/test_wf_teardown_rv3_RECEIPTS.md`` protocol) before the marker
+the pinning protocol) before the marker
 went on.
 
-The findings (each convicted live at the pin head):
+The findings (each rejected live at the pin head):
 
 * F-RV3-1 — ``map_source``'s ``key=`` param is the can-only-error seat:
   every value but the derived key raises ``WorkflowBuildError`` (the
   accept-and-ignore class's guard), so the param's only possible
   outcome is the author's own refusal — the param should not exist.
-  THE CURE IS A REMOVAL (documented in the changelog + the guide).
+  THE FIX IS A REMOVAL (documented in the changelog + the guide).
 * F-RV3-2 — the packaged run's first contact on an unmigrated schema
   raises the RAW ``asyncpg.exceptions.UndefinedTableError`` — the
   client arm's typed ``SchemaNotMigratedError`` translation exists and
@@ -59,11 +59,11 @@ The findings (each convicted live at the pin head):
 * F-RV3-12 — the loop's shape law ("a loop body declares ONE wait per
   iteration") is DOCSTRING-ENFORCED: a conditional-interior
   ``wait_signal`` in a loop body mis-indexes the answer cursor (the
-  T26 review's C9 is the same question) and nothing names it.
+  T26 review's the is the same question) and nothing names it.
 
-CURE ORDER (the reviewer's): F-RV3-4 (E14 — the headline), F-RV3-7,
+FIX ORDER (the reviewer's): F-RV3-4 (E14 — the headline), F-RV3-7,
 F-RV3-5, F-RV3-2/F-RV3-3, F-RV3-8/F-RV3-6/F-RV3-9, F-RV3-10/F-RV3-1/
-F-RV3-12. Each cure lands WITH its pin (the marker removed — the pin
+F-RV3-12. Each fix lands WITH its pin (the marker removed — the pin
 becomes the green guard) in the same commit.
 """
 
@@ -190,8 +190,8 @@ def test_rv3_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
 def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> None:
     """E14's ZERO-FALSE-POSITIVE bound (the reviewer's own rule): a
     declared gate whose body DOES reference ``wait_signal`` is never
-    E14-convicted — the static walk cannot prove a conditional-interior
-    wait never fires (that face is the documented C9/W-face, F-RV3-12's
+    E14-rejected — the static walk cannot prove a conditional-interior
+    wait never fires (that face is the documented W-face, F-RV3-12's
     rule). The gate declared + the wait referenced validates past E14."""
     app = WorkflowApp()
 
@@ -217,7 +217,7 @@ def test_rv3_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> Non
     compiled = _compile_quietly(app, "rv3-4c-conditional-wait-declared")
     diagnostics = validate_compiled(compiled)
     assert not [d for d in diagnostics if d.rule.startswith("E14")], (
-        "E14 convicted a conditional-interior wait — the static walk "
+        "E14 rejected a conditional-interior wait — the static walk "
         "cannot prove that wait never fires (the zero-false-positive bound)"
     )
 
@@ -544,7 +544,7 @@ def test_rv3_10b_the_gate_decl_docstring_names_the_union_face() -> None:
 def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     """The loop's shape law ("ONE wait per iteration") as a NAMED W-rule:
     a loop body whose ``wait_signal`` sits in a CONDITIONAL interior
-    mis-indexes the answer cursor (the T26 review's C9 — the iteration
+    mis-indexes the answer cursor (the T26 review's the — the iteration
     counter is the cursor, so an iteration that does not wait drifts the
     sequence). The mis-index shape is the warning's subject; the
     docstring's prose is not the enforcement."""
@@ -588,7 +588,7 @@ def test_rv3_12_a_conditional_loop_wait_is_a_named_warning() -> None:
 
 def test_rv3_12b_the_unconditional_loop_wait_stays_clean() -> None:
     """The zero-false-positive bound: the loop body's UNCONDITIONAL wait
-    (the shape law kept) is never convicted."""
+    (the shape law kept) is never rejected."""
     app = WorkflowApp()
 
     async def looping(ctx: StepContext, carry: _Carry):
@@ -619,7 +619,7 @@ def test_rv3_12b_the_unconditional_loop_wait_stays_clean() -> None:
     compiled = _compile_quietly(app, "rv3-12b-unconditional-loop-wait")
     diagnostics = validate_compiled(compiled)
     assert not [d for d in diagnostics if d.rule == "W5-loop-wait-shape"], (
-        "the unconditional loop wait was convicted — the shape law only "
+        "the unconditional loop wait was rejected — the shape law only "
         "names the conditional-interior mis-index"
     )
 

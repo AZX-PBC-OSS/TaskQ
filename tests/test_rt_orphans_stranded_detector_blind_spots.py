@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on the stranded-jobs detector's blind spots.
+"""Adversarial review attacks on the stranded-jobs detector's blind spots.
 
 The detector's entire predicate is ``status IN ('pending','scheduled') AND
 NOT EXISTS (actor_config row)`` (src/taskq/worker/_leader_sweeps.py:1228-1236)

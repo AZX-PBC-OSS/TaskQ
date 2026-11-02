@@ -1,7 +1,5 @@
-# T28 — THE CHILD FLOWS: `ctx.spawn_flow` + the join hold — the sub-investigations lane
+# T28 — THE CHILD FLOWS: `ctx.spawn_flow` + the join hold — the sub-investigations ticket
 
-Lane: `feat/taskqflow-child-flows` off `feat/taskqflow` @ `16d24edd`
-(the T25-merge tip; verified via `git -C /tmp/opencode/wt-land log --oneline -1`).
 Design-first: THIS ticket is the 30-minute read's output; every claim below
 was verified against the tree at the base head before a line of code.
 
@@ -192,7 +190,7 @@ retry-stable (the retry re-derives the same K keys and adopts).
 * `workflows/api/_runner_exit.py`: the cancel cascade.
 * `workflows/__init__.py`: the exported faces (the protocol-pin tax paid).
 
-## THE PINS (red-first — `tests/test_wf_childflow_pins.py`)
+## THE PINS (`tests/test_wf_childflow_pins.py`)
 
 1. **THE SPAWN→JOIN HAPPY PATH**: the parent's body gets the child's
    typed result; the rows: the parent's `child_flows` receipt AND the

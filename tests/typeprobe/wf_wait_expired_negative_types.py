@@ -6,17 +6,17 @@ Each ``MUST_ERROR(rules...)`` marker names a wrong-shape body that must
 RED on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
 from the marker's DECLARED set.
 
-THE RED-FIRST RECEIPT (the amendment's own): the bare-unwrap marker ran
+THE FAILING-FIRST RECEIPT (the amendment's own): the bare-unwrap marker ran
 against the PRE-UNION tree — ``wait_signal`` returned ``Any``, the
 checker was SILENT on the exact shape that hangs an operator (a body
 reading the decision off an outcome that may be the expiry); the
-capture rides ``.measurements/t26-typegate-red-first.txt`` and the
+capture rides ``.measurements/t26-typegate-failing-first.txt`` and the
 union's landing is the flip. The exception face
 (``SignalTimeoutError``) could never be forced: a body that never
 catches it compiles clean.
 
 The fall-through marker reds through the BODY's own declared return —
-the loop-shape law's forcing — and stays as the second arm's drill.
+the loop-shape law's forcing — and stays as the second arm's scenario.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Red-team attacks on the SSE progress bridge's broker-facing waits.
+"""Adversarial review attacks on the SSE progress bridge's broker-facing waits.
 
 Hunt scope: ``src/taskq/web/progress.py`` - the streaming loop's Redis
 dependency, connection lifetime, and the SSE slot cap.
@@ -69,7 +69,7 @@ from taskq.constants import progress_channel
 from taskq.testing.assertions import wait_for_condition
 from taskq.web.progress import (
     _BROKER_READ_GRACE_SECS,  # pyright: ignore[reportPrivateUsage]  # Why: the pin derives its budget from the loop's own read deadline.
-    _event_generator,  # pyright: ignore[reportPrivateUsage]  # Why: red-team tests exercise the production generator directly rather than reimplementing it.
+    _event_generator,  # pyright: ignore[reportPrivateUsage]  # Why: adversarial review tests exercise the production generator directly rather than reimplementing it.
     _resolve_last_event_id,  # pyright: ignore[reportPrivateUsage]  # Why: pins the malformed Last-Event-ID branch, which no existing test covers.
     create_router,
 )

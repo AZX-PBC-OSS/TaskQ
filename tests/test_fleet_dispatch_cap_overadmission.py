@@ -1,4 +1,4 @@
-"""Red-team: does fixing the uncapped under-claim reopen over-admission
+"""Adversarial review: does fixing the uncapped under-claim reopen over-admission
 past a capped actor's max_concurrent when several pods contend, forcing
 the window-expansion loop to run?
 

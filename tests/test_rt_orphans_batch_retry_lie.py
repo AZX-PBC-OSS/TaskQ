@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on retry_job's completed-batch membership lie.
+"""Adversarial review attacks on retry_job's completed-batch membership lie.
 
 ``retry_job`` accepts any failed/crashed/cancelled member and resets it to
 pending with NO batch awareness (src/taskq/backend/_sql_templates.py:1178-1193).

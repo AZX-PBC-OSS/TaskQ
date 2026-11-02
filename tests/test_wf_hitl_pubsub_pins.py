@@ -4,14 +4,14 @@ escalation interplay — plus the hostile-review round's P6-P10: the
 reconnect reconcile, the concurrent-consumer fan-out, the schema
 isolation, the payload-size bound, the resolve-rollback silence.
 
-The red-first evidence: P1's convicted variant (the knock sent OUTSIDE
+The failing-first evidence: P1's rejected variant (the knock sent OUTSIDE
 the transaction — a rolled-back hold-create that still broadcasts) is
-captured as the mutation drill through ``hitl_redlog``; the shipped
+captured as the mutation test through ``hitl_redlog``; the shipped
 legs are transactional by construction (``pg_notify`` inside the
 caller's tx — PG delivers on commit only). P6/P7/P9 were RED at the
-pre-cure head (the reconnect hole, the partitioned stream, the unnamed
-cap — the reds captured in ``.measurements/t26-cure-pins-red.txt``);
-P8/P10 convict their variant as a PERMANENT drill (the unfiltered
+pre-fix head (the reconnect hole, the partitioned stream, the unnamed
+cap — the reds captured in ``.measurements/t26-fix-pins-red.txt``);
+P8/P10 reject their variant as a PERMANENT scenario (the unfiltered
 channel ear; the lying resolve knock — reproducible forever, recorded
 through ``hitl_redlog``).
 
@@ -110,7 +110,7 @@ async def _held_flow(
 
 class _RawKnocks:
     """A raw pg_notify consumer on the MODULE's database (pin 12's
-    vacuous-audit cure): collects (channel, payload) pairs."""
+    vacuous-audit fix): collects (channel, payload) pairs."""
 
     def __init__(self, dsn: str, *channels: str) -> None:
         self._dsn = dsn
@@ -150,18 +150,18 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
     signal, node_key, created_at), never the payload content; and a
     rolled-back hold-create emits NO notification.
 
-    THE RED (the convicted variant, captured): the knock sent OUTSIDE
-    the tx (autocommit) outlives its row — the drill rolls the INSERT
+    THE RED (the rejected variant, captured): the knock sent OUTSIDE
+    the tx (autocommit) outlives its row — the scenario rolls the INSERT
     back under a knock that already fired, and the broadcast LIES (a
     hold the rows disown). The shipped leg cannot lie: the NOTIFY
     commits or nothing does."""
-    # ── THE RED DRILL (the pre-cure shape): the knock on a separate
+    # ── THE MUTATION PIN (the pre-fix shape): the knock on a separate
     # autocommit connection, the insert rolled back under it. ──
     drill_hold = str(new_uuid())
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
-        drill = await asyncpg.connect(module_pg_schema.pg_dsn)
+        scenario = await asyncpg.connect(module_pg_schema.pg_dsn)
         try:
-            await drill.execute(
+            await scenario.execute(
                 "SELECT pg_notify($1, $2)",
                 HOLD_CREATED_CHANNEL,
                 json.dumps({"schema": wf_schema, "hold_id": drill_hold}),
@@ -170,7 +170,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
                 await wf_conn.execute(
                     f'INSERT INTO "{wf_schema}".wf_signals '
                     "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, status) "
-                    "VALUES ($1::uuid, $2::uuid, 'drill', 'Approval', 1, 'call:drill', 'held')",
+                    "VALUES ($1::uuid, $2::uuid, 'scenario', 'Approval', 1, 'call:scenario', 'held')",
                     drill_hold,
                     str(new_uuid()),
                 )
@@ -178,15 +178,15 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
         except RollbackDrillError:
             pass
         finally:
-            await drill.close()
+            await scenario.close()
         await asyncio.sleep(0.2)
         drill_knocks = [k for k in knocks.of(HOLD_CREATED_CHANNEL) if drill_hold in k]
         row = await wf_conn.fetchval(
             f'SELECT id FROM "{wf_schema}".wf_signals WHERE id = $1', uuid_module.UUID(drill_hold)
         )
-        assert row is None, "the drill's insert did not roll back — the drill proves nothing"
+        assert row is None, "the scenario's insert did not roll back — the scenario proves nothing"
         assert drill_knocks, (
-            "the pre-cure mutation did not reproduce the dragon — the drill is vacuous"
+            "the pre-fix mutation did not reproduce the dragon — the scenario is vacuous"
         )
         hitl_redlog.red(
             "T26-P1-create-knock-outside-the-tx",
@@ -244,7 +244,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
 
 
 class RollbackDrillError(Exception):
-    """The drill's own unwinding (named — never a bare raise)."""
+    """The scenario's own unwinding (named — never a bare raise)."""
 
 
 # ── T26-P2: the zero-window backfill + the dedup ────────────────────────
@@ -650,7 +650,7 @@ class _Cards:
     ONLY by the union's events): create opens a card, resolve/expired
     close it, and the ``Backfilled`` snapshot RECONCILES — anything open
     on the consumer's side that the snapshot's ids disown is DROPPED.
-    This is C1's consumer half: a hold resolved or expired during a
+    This is the consumer half: a hold resolved or expired during a
     listener outage never announces itself (its notify went to no one —
     the connection was down), so the SNAPSHOT is the only witness."""
 
@@ -681,16 +681,16 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
     during a listener outage never clears the consumer's card — the
     create event announced it, nothing ever announced its death.
 
-    THE CURE: the FOURTH union member — ``Backfilled(open_hold_ids=…)``
+    THE FIX: the FOURTH union member — ``Backfilled(open_hold_ids=…)``
     — emitted after EVERY (re)backfill; the consumer drops anything not
-    in the snapshot. THE RED (captured at the pre-cure head): after the
+    in the snapshot. THE RED (captured at the pre-fix head): after the
     reconnect the stream carried NOTHING that closes the card — the
     consume-until-reconcile timed out; the stale history even REPLAYED
     the dead hold's create (the ghost) into the new subscriber.
 
-    THE DRILL (permanent, recorded): at the outage window the card set
+    THE SCENARIO (permanent, recorded): at the outage window the card set
     and the ROWS diverge — the consumer still holds the card the rows
-    disown. THE C7 VERIFICATION rides the same walk: the stale
+    disown. THE VERIFICATION rides the same walk: the stale
     ``_backfilled``/``_raw`` notifies announcing dead holds die the
     SAME death — the new subscriber replays the ghost ``HoldCreated``
     from the pre-outage history, and the reconcile snapshot drops its
@@ -726,21 +726,21 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
         client = HitlClient(wf_pool, schema=wf_schema)
         resolved = await client.resolve(hold_id, {"verdict": "approve"})
         assert resolved.status == "delivered"
-        # THE DRILL (the dragon, observed at the outage window): the
+        # THE SCENARIO (the dragon, observed at the outage window): the
         # consumer's card set still holds the hold the ROWS disown.
         row_status = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1',
             uuid_module.UUID(hold_id),
         )
         assert row_status == "delivered" and cards.open == {hold_id: "Approval"}, (
-            "the drill's divergence is gone — the rows and the cards must "
+            "the scenario's divergence is gone — the rows and the cards must "
             "disagree HERE, or the pin proves nothing"
         )
         hitl_redlog.red(
             "T26-P6-card-vs-rows-divergence",
             "the hold resolved during the listener outage: the consumer's card set "
             "still holds it open (no event ever announces a death the disconnected "
-            "listener cannot hear) — the snapshot reconcile is the only cure",
+            "listener cannot hear) — the snapshot reconcile is the only fix",
             {"cards_open": sorted(cards.open), "row_status": row_status},
         )
         # THE RECONNECT: the same listener object (its HISTORY still
@@ -760,7 +760,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
             "consumer's card"
         )
         assert hold_id not in reconcile.open_hold_ids, reconcile
-        # THE C7 DEATH: the ghost (the stale create in the replayed
+        # THE DEATH: the ghost (the stale create in the replayed
         # history) may cross the stream — the card does not survive the
         # snapshot.
         assert cards.open == {}, (
@@ -780,14 +780,14 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
     hitl_redlog: RedLog,
 ) -> None:
     """Pin P7 (the silently single-consumer listener — the hostile
-    review's C2): the pre-cure listener pulled ONE shared queue — two
+    review's C2): the pre-fix listener pulled ONE shared queue — two
     concurrent consumers PARTITIONED the stream (each stole the other's
     events) and ``stop()``'s single ``None`` sentinel stranded all but
     one waiter. THE PRODUCT SHAPE is one backend listener fanning out to
     N watching users (the progress stream's own pub/sub discipline —
     Redis pub/sub broadcasts, it never partitions).
 
-    THE DRILL (permanent): the convicted shape, hand-built — ONE shared
+    THE SCENARIO (permanent): the rejected shape, hand-built — ONE shared
     queue, ONE sentinel, two waiters — recorded: one consumer hauled the
     events, the other starved against a sentinel that was never its own.
 
@@ -795,11 +795,11 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
     their OWN queue + their OWN sentinel on stop; every consumer sees
     EVERY event; both consumers END on stop."""
 
-    # ── THE DRILL (the convicted variant, reproducible forever) ──
+    # ── THE SCENARIO (the rejected variant, reproducible forever) ──
     shared: asyncio.Queue[int | None] = asyncio.Queue()
     for i in range(3):
         shared.put_nowait(i)
-    shared.put_nowait(None)  # THE SINGLE SENTINEL — the pre-cure stop()'s shape
+    shared.put_nowait(None)  # THE SINGLE SENTINEL — the pre-fix stop()'s shape
 
     async def _shared_consumer(haul: list[int]) -> None:
         while True:
@@ -819,7 +819,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
     except TimeoutError:
         stranded = True
     assert stranded and haul_a == [0, 1, 2] and haul_b == [], (
-        f"the convicted partition did not reproduce: a={haul_a} b={haul_b}"
+        f"the rejected partition did not reproduce: a={haul_a} b={haul_b}"
     )
     hitl_redlog.red(
         "T26-P7-shared-queue-partition",
@@ -895,9 +895,9 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
     BOTH schemas' knocks, and the PAYLOAD FILTER is the isolation: the
     listener on schema A delivers A's holds and is SILENT on B's.
 
-    THE DRILL (permanent): a consumer that trusts the CHANNEL without
+    THE SCENARIO (permanent): a consumer that trusts the CHANNEL without
     the payload filter hears the OTHER schema's holds — the cross-schema
-    leak the convicted channel-arithmetic routing buys. THE GREEN: the
+    leak the rejected channel-arithmetic routing buys. THE GREEN: the
     shipped listener filters every decoded event by the payload's
     ``schema`` field (and the ``Backfilled`` snapshot only ever lists
     ITS schema's open holds)."""
@@ -912,7 +912,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
     finally:
         await setup.close()
 
-    # ── THE DRILL: the unfiltered channel ear hears the other schema ──
+    # ── THE SCENARIO: the unfiltered channel ear hears the other schema ──
     foreign_id = str(new_uuid())
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
         leaked = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -936,7 +936,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
             await leaked.close()
         await asyncio.sleep(0.2)
         assert any(foreign_id in k for k in knocks.of(HOLD_CREATED_CHANNEL)), (
-            "the drill's knock never crossed — the raw ear proves nothing"
+            "the scenario's knock never crossed — the raw ear proves nothing"
         )
         hitl_redlog.red(
             "T26-P8-unfiltered-channel-ear",
@@ -1014,7 +1014,7 @@ async def test_notify_payloads_stay_under_the_named_cap(
     field grown to carry content) dies at the code seam, loudly, before
     PG's opaque error.
 
-    THE DRILL (permanent): an over-cap knock handed to pg_notify raises
+    THE SCENARIO (permanent): an over-cap knock handed to pg_notify raises
     — recorded. THE GREEN: the named cap constant + the guard in
     ``_broadcast`` (the typed refusal BEFORE the wire) + every shipped
     leg measured under the cap (a pathologically long — but valid —
@@ -1022,18 +1022,18 @@ async def test_notify_payloads_stay_under_the_named_cap(
 
     from taskq.workflows.api._hitl import NOTIFY_PAYLOAD_MAX_BYTES, _broadcast
 
-    # ── THE DRILL: PG's own refusal (what an unguarded over-cap knock costs) ──
-    drill = await asyncpg.connect(module_pg_schema.pg_dsn)
+    # ── THE SCENARIO: PG's own refusal (what an unguarded over-cap knock costs) ──
+    scenario = await asyncpg.connect(module_pg_schema.pg_dsn)
     refused = "unreached"
     try:
-        async with drill.transaction():
+        async with scenario.transaction():
             try:
-                await drill.execute("SELECT pg_notify($1, $2)", HOLD_CREATED_CHANNEL, "x" * 9000)
+                await scenario.execute("SELECT pg_notify($1, $2)", HOLD_CREATED_CHANNEL, "x" * 9000)
                 refused = "NOT-refused"
             except Exception as exc:
                 refused = f"{type(exc).__name__}: {str(exc)[:120]}"
     finally:
-        await drill.close()
+        await scenario.close()
     assert refused != "NOT-refused", "PG accepted a 9000-byte payload — the cap moved"
     hitl_redlog.red(
         "T26-P9-over-cap-pg-notify",
@@ -1089,7 +1089,7 @@ async def test_notify_payloads_stay_under_the_named_cap(
 
 
 class AuditBoomError(Exception):
-    """The drill's injected audit failure (named — never a bare raise)."""
+    """The scenario's injected audit failure (named — never a bare raise)."""
 
 
 async def test_rolled_back_resolve_emits_no_notification(
@@ -1105,7 +1105,7 @@ async def test_rolled_back_resolve_emits_no_notification(
     a resolve whose tx dies is SILENT (nothing announces a decision the
     rows disown).
 
-    THE DRILL (permanent, the convicted variant like P1's): the resolve
+    THE SCENARIO (permanent, the rejected variant like P1's): the resolve
     knock sent OUTSIDE the CAS's tx outlives the rollback — the
     broadcast LIES about a decision that never landed.
 
@@ -1114,7 +1114,7 @@ async def test_rolled_back_resolve_emits_no_notification(
     rolls back, the hold SURVIVES as ``held``, and NO
     ``taskq_wf_hold_resolved`` knock ever fires."""
 
-    # ── THE DRILL: the lying knock (the knock outside the tx) ──
+    # ── THE SCENARIO: the lying knock (the knock outside the tx) ──
     drill_hold = str(new_uuid())
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_RESOLVED_CHANNEL) as knocks:
         liar = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -1138,7 +1138,7 @@ async def test_rolled_back_resolve_emits_no_notification(
             await liar.close()
         await asyncio.sleep(0.2)
         assert any(drill_hold in k for k in knocks.of(HOLD_RESOLVED_CHANNEL)), (
-            "the drill's knock never crossed — the drill proves nothing"
+            "the scenario's knock never crossed — the scenario proves nothing"
         )
         hitl_redlog.red(
             "T26-P10-resolve-knock-outside-the-tx",
@@ -1190,7 +1190,7 @@ async def test_rolled_back_resolve_emits_no_notification(
 async def test_wait_signals_timeout_arms_the_sweep_not_the_gate_declaration(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Pin (C8): BOTH faces declare a timeout — ``GateDecl(timeout_s=…)``
+    """Pin: BOTH faces declare a timeout — ``GateDecl(timeout_s=…)``
     AND ``ctx.wait_signal(timeout_s=…)`` — and the precedence is: THE
     WAIT'S VALUE ARMS THE SWEEP (``register_hold`` writes ``expires_at``
     from the wait site's ``timeout_s``); the gate's ``timeout_s`` is the
@@ -1238,15 +1238,15 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
 ) -> None:
     """Pin (C9/E13): the loop's answer-queue cursor IS the iteration
     counter — a body that CONDITIONALLY waits (some iterations, not
-    others) mis-indexes the queue SILENTLY pre-cure: the iteration
+    others) mis-indexes the queue SILENTLY pre-fix: the iteration
     counter advances past answers that were never consumed, the stranded
     answer can never be read again, and a RETRY of a waited iteration
     replays the WRONG slot (the retry-replay law, broken silently).
 
-    THE CURE: the E13 RULE — the loop-kind wait site REFUSES the
+    THE FIX: the E13 RULE — the loop-kind wait site REFUSES the
     mis-aligned state (the iteration cursor PAST the answer queue) with
     the named typed error: the shape law ("ONE wait per iteration")
-    gets teeth. Red-first: pre-cure the pin's loop silently minted a
+    gets teeth. Failing-first: pre-fix the pin's loop silently minted a
     second hold and the error never raised."""
 
     app = WorkflowApp()

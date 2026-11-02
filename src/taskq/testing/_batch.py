@@ -344,7 +344,7 @@ async def _enqueue_batch_atomic(
             finalizer_row = row
 
         if batch_row is not None:
-            # H6: when expected_size is 0 (streaming sentinel), use the
+            # when expected_size is 0 (streaming sentinel), use the
             # actual item count consumed from the iterable.
             expected_size = batch_row.expected_size if batch_row.expected_size > 0 else item_count
             finalizer_job_id = (

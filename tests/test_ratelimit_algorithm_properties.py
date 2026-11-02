@@ -1,4 +1,4 @@
-"""Algorithm-property attacks on the rate-limit primitives (red-team wave 2).
+"""Algorithm-property attacks on the rate-limit primitives (adversarial review wave 2).
 
 Each test hypothesizes a way the ratelimit ALGORITHMS' mathematical
 properties could break, writes the experiment, and pins the survivor:

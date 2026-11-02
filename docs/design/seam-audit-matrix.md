@@ -1,6 +1,6 @@
 # The seam-audit matrix
 
-The systematic version of the red-team. Issues #457-461 all lived at SHARED
+The systematic version of the adversarial review. Issues #457-461 all lived at SHARED
 SEAMS: call sites where a neighbor caller or an interleaved state that no test
 constructed turned a locally-correct contract into a production loss. This
 document enumerates those seams, the callers that share them, the failures

@@ -2,8 +2,8 @@
 asymmetry.
 
 The provenance: the PoC's PROOF (PROOF 1/2/4) — the chain, the fan-out,
-the chatty body — ported onto the BUILT surface. Each pin's CONVICTED
-VARIANT is named; the unfenced variants stay RED FOREVER (the redlog).
+the chatty body — ported onto the BUILT surface. Each pin's REJECTED
+VARIANT is named; the unfenced variants stay RED FOREVER (the failure log).
 
 THE LAW (T21 decision e): observability degrades FIRST, never
 correctness. The emission is best-effort — never in the finalize path
@@ -166,7 +166,7 @@ async def test_typed_gates_pct_and_data(
     progress_redlog: RedLog,
 ) -> None:
     """The typed gate's other refusals, unit-shaped: a non-int pct, an
-    out-of-range pct, a non-dict data — each REFUSED (the convicted
+    out-of-range pct, a non-dict data — each REFUSED (the rejected
     variant — silent coercion — is the lie class: a str pct stores as a
     string in the row and the two progress surfaces diverge)."""
     emitter = ProgressEmitter(wf_pool, wf_sql, flow_id=JobId(new_uuid()), node_id=JobId(new_uuid()))
@@ -206,8 +206,8 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
     """THE CHATTY BODY on the BUILT op (the PoC's 10k-emission proof,
     re-proven): 10,000 emissions in a tight loop →
     * the flush count is the CADENCE's, not the emissions' (the coalesce
-      holds; the storm shape — a write per emission — is the convicted
-      variant, kept red in the redlog as the PoC's measured 2,000-row
+      holds; the storm shape — a write per emission — is the rejected
+      variant, kept failing in the failure log as the PoC's measured 2,000-row
       counterfactual);
     * ``occurrences == 10_000`` EXACTLY (the counter is honest);
     * the STATE channel stays at 2 rows (channels progress + __stream__)
@@ -260,7 +260,7 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
             "state_writes": "coalesced at the cadence (see the occurrence counter)",
             "state_rows": rows,
             "ring_rows": ring,
-            "verdict": "the coalesce holds; the convicted variant stays red",
+            "verdict": "the coalesce holds; the rejected variant stays failing",
         },
     )
 
@@ -269,7 +269,7 @@ async def test_flush_failure_never_fails_the_body(wf_sql: Any, wf_schema: str) -
     """THE ASYMMETRY (decision e), unit-shaped: a flush that CANNOT write
     (the pool is broken) is counted — ``write_errors`` — and NEVER raised
     into the body; the first loss is WARNED (the loudness half — the
-    PoC's red-team note: a systematically failing flush must not look
+    PoC's adversarial review note: a systematically failing flush must not look
     healthy). The all-dropped node still terminalizes: correctness is
     unaffected."""
     from taskq.workflows._progress import ProgressEmitter
@@ -384,7 +384,7 @@ async def test_terminal_projection_lands_after_the_finalize(
     assert status == "failed"
     # THE LIE'S SUBSTRATE, on the record: the node's last progress said
     # 99% — and the STATE row keeps it (advisory), while the LEDGER says
-    # failed. The display pins (the faces file) convict the liar that
+    # failed. The display pins (the faces file) reject the liar that
     # derives the state from HERE.
     state = await wf_conn.fetchrow(
         f"""SELECT pct, message FROM "{wf_schema}".wf_node_progress

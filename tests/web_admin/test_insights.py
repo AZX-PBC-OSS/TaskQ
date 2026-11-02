@@ -10,7 +10,7 @@ plain Postgres 18 container AND a TimescaleDB 2.30.1 (PG18) hypertable
 conversion, the same both-modes matrix ``tests/test_insights.py`` runs
 for the SQL layer itself.
 
-The badge claims are the behavioral ones and are pinned red-first: a
+The badge claims are the behavioral ones and are pinned failing-first: a
 healthy fleet renders NO verdict badge anywhere on the page; a verdict
 badge renders only on the pathological shape that earns it
 (over-capacity utilization, an unservable queue, an idle fleet, a
@@ -516,7 +516,7 @@ async def test_cron_ledger_renders_counts_and_the_runaway_badge(
 
 
 async def test_healthy_fleet_renders_no_badges(matrix: tuple[_Mounted, _Mounted]) -> None:
-    """THE red-first behavioral claim: the healthy fleet's page renders
+    """THE failing-first behavioral claim: the healthy fleet's page renders
     NO verdict badge anywhere — no over-capacity, no unservable, no
     idle fleet, no runaway."""
     _, healthy = matrix

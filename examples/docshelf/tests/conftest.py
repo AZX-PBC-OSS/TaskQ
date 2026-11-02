@@ -30,6 +30,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -242,9 +243,11 @@ def _worker_cli() -> list[str]:
 
 @pytest.fixture(scope="module")
 def workers(schema: str, request: pytest.FixtureRequest) -> WorkerFactory:
-    # S108 Why: the drill's own log sink (outside the repo; the
-    # adoption sim's scratch space).
-    factory = WorkerFactory(schema, log_dir=Path("/tmp/opencode/docshelf-worker-logs"))  # noqa: S108  # Why: the drill's own log sink (outside the repo; the adoption sim's scratch space).
+    # S108 Why: the drill's own log sink (a scratch dir outside the
+    # repo; the adoption sim's scratch space).
+    factory = WorkerFactory(
+        schema, log_dir=Path(tempfile.mkdtemp(prefix="docshelf-worker-logs-"))
+    )  # Why: the drill's own log sink (a scratch dir outside the repo; the adoption sim's scratch space).
     request.addfinalizer(factory.stop_all)
     return factory
 

@@ -492,7 +492,7 @@ async def test_redis_client_opened_and_closed_when_configured(
     On the SHARED pair a single ping is a lottery - its co-tenancy stall
     band measurably exceeds the 5s production budget under -n 2 load (the
     weather class that reded this test and ``test_ratelimit_provider``'s
-    pin in consecutive legs; every budget-stretch cure found the next
+    pin in consecutive legs; every budget-stretch fix found the next
     exposed ping). A private broker ends the class by construction, and
     the retained bounded retries are belt-and-braces for the private
     container's first handshake under runner load, not co-tenancy: a

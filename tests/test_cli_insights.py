@@ -289,7 +289,7 @@ def test_wait_empty_window_reports_nothing_to_report(
 def test_balance_over_threshold_row_renders_a_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BEHAVIORAL (red-first): a queue whose utilization exceeds 1 is the
+    """BEHAVIORAL (failing-first): a queue whose utilization exceeds 1 is the
     starved shape; its row must be MARKED, not silently presented among
     the healthy ones."""
     _patch_conn(
@@ -388,7 +388,7 @@ def test_balance_renders_the_utilization_and_capacity_columns(
 def test_drain_no_traffic_renders_the_honest_string_never_eta_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BEHAVIORAL (red-first — red on eta=0): a window with no
+    """BEHAVIORAL (failing-first — red on eta=0): a window with no
     terminalisations has NO estimate. The honest caveat is the string the
     module documents, never a 0 that would read as 'already drained'."""
     _patch_conn(
@@ -637,7 +637,7 @@ def test_every_statement_is_read_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_no_write_ever_reaches_the_connection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """BEHAVIORAL (red-first): the pin is the CONNECTION, not the statement
+    """BEHAVIORAL (failing-first): the pin is the CONNECTION, not the statement
     text. `fetch` is the only data method the command may call — the
     write-trap `execute`/`executemany` methods on the fake red the first
     invocation that reaches for one, even a write hiding in a statement
@@ -686,7 +686,7 @@ def test_no_write_rides_the_all_surface_before_its_tables(
 def test_guards_fire_before_any_connection_is_opened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BEHAVIORAL (red-first): the refusals must happen before
+    """BEHAVIORAL (failing-first): the refusals must happen before
     ``asyncpg.connect`` is even ATTEMPTED — mid-incident, an unauthorized
     option combination must not open a socket to the fleet at all. The
     existing pins assert no statement ran; this one asserts no
@@ -981,7 +981,7 @@ def test_unicode_and_long_names_stay_readable(monkeypatch: pytest.MonkeyPatch) -
 def test_help_contract_covers_every_rendered_column_and_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """BEHAVIORAL (red-first): --help is the operator's column dictionary,
+    """BEHAVIORAL (failing-first): --help is the operator's column dictionary,
     so it is pinned against what the renderers ACTUALLY render, not
     against a hand-copied list. Every header each surface renders (and
     every marker string the renderers emit) must appear in --help —

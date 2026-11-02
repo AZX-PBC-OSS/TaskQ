@@ -46,7 +46,7 @@ def render_loop_sql(template: str, schema: str) -> str:
 LOOP_INIT_SQL = """\
 UPDATE {schema}.jobs
 SET budget_deadline = CASE
-        -- THE NO-WALL SHAPE (the deploy matrix's drain-cure): a loop
+        -- THE NO-WALL SHAPE (the deploy matrix's drain-fix): a loop
         -- that declares NO budget is NOT a loop with an already-expired
         -- budget. ``$2`` NULL → the deadline NULL (the sweep's arm
         -- reads a NULL deadline as NO wall); the old init coerced the
@@ -73,11 +73,11 @@ RETURNING id
 #: after the final advance, before the driver's top-of-loop cap check)
 #: leaves on a RUNNING row, which is what makes the SWEEP's
 #: ``iteration >= max`` predicate REACHABLE in production (the vacuous
-#: arm's cure: the shipped ``i+1 < max`` guard topped the counter at
+#: arm's fix: the shipped ``i+1 < max`` guard topped the counter at
 #: ``max-1`` FOREVER — the sweep's trigger state was unconstructible).
 #: The driver's top-of-loop cap check exhausts the live path; a refused
 #: advance (a concurrent terminal) stays the backstop exhaustion.
-#: This one-statement atomicity is the CARRY-OPTIMISTIC dragon's cure: a
+#: This one-statement atomicity is the CARRY-OPTIMISTIC guard: a
 #: carry advanced at hold/retry time (outside this statement) is the
 #: double-apply/lost-apply variant, kept RED forever.
 #:
@@ -110,7 +110,7 @@ RETURNING (metadata->>'iteration')::int AS iteration
 #: state (the metadata's ``iteration_state`` + the typed failure class on
 #: the row) and the flow root FLIPS TERMINAL in the same statement — a
 #: wedged ``running`` flow that ticks forever (the spike's cut 5) is the
-#: convicted variant, kept RED forever. Idempotent: a terminal loop row
+#: rejected variant, kept RED forever. Idempotent: a terminal loop row
 #: (or a terminal flow) updates nothing.
 #:
 #: THE CLAIM IDENTITY'S FENCE (the same legs the advance and the
@@ -164,8 +164,8 @@ VALUES ($1, $2, $3, $4, $5::jsonb)
 #: THE BUDGET SWEEP ARM (the sweep's exclusivity law + P3 rule 1's
 #: held-row inertness): the arm's HEART is ``AND NOT budget_paused`` —
 #: a loop holding on a human is INVISIBLE to the wall even when its
-#: deadline is forced into the past (the CONSUME-BUDGET dragon's cure;
-#: the arm missing the leg is the mutation the pin drills). The cap wall
+#: deadline is forced into the past (the CONSUME-BUDGET guard;
+#: the arm missing the leg is the mutation the pin exercises). The cap wall
 #: rides the same arm (TWO walls, one sweep, different predicates): a
 #: running loop at/over its iteration cap is exhausted by the SWEEP —
 #: an ``if`` in the body would red the crash pin (the worker dies, the
@@ -232,7 +232,7 @@ FROM {schema}.jobs
 WHERE id = $1
 """
 
-#: THE POLICY'S SOURCE (attack-3 H1's cure): the flow root's stamped
+#: THE POLICY'S SOURCE (the policy fix): the flow root's stamped
 #: workflow name — the sweep's arm resolves the loop's REGISTERED
 #: DEFINITION from it (D1: the policy is read from the definition, never
 #: from the row's metadata cache).

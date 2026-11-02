@@ -25,19 +25,19 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   the wiring promises data the consumer cannot accept. An UNANNOTATED or
   duck-typed consumer param (``Any`` / a plain dict) consumes a model
   producer unseen — the totality claim's duck-shaped hole (attack-3 M4),
-  convicted by the same rule.
+  rejected by the same rule.
 * E6 fan-in bound — a join over more parents than
   ``MAX_FAN_IN_PER_JOIN`` is refused (the T07 bound; the error names the
   child-driven escape).
 * E7 cross-graph promise — a promise wired from ANOTHER app's recorder
   (attack-3 M3's smuggle): under a colliding key it builds a silently
   WRONG edge to this app's own same-named node; the verbs record the
-  smuggle, this rule convicts it.
-* E9 ctx-annotation (F3-1) — the body's ``ctx`` annotation must BE
+  smuggle, this rule rejects it.
+* E9 ctx-annotation — the body's ``ctx`` annotation must BE
   StepContext (or a subclass), or the declared-unchecked Any/object: the
   fabricated stand-in is the build refusal (the annotation is
   verification, not documentation).
-* E10 arity (F3-2) — the body's params (beyond ctx) must match the
+* E10 arity — the body's params (beyond ctx) must match the
   wired sources' count: the mismatch is a build refusal, never a
   mid-flow ladder discovery. ONE param beyond the wiring is the DEPS
   shape — E12's contract, not an arity mismatch.
@@ -49,15 +49,14 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
 * E13 gate-door — a node's ``gates=`` must carry ``GateDecl``
   declarations: the channel.gate(...) bound-door object wired into the
   declaration seat is the build refusal (it used to crash the
-  validator's own gate walk — a raw AttributeError — the rv2 round's
-  conviction).
+  validator's own gate walk — a raw AttributeError).
 * E14 gate-wiring (THE TEARDOWN ROUND'S E2-ANALOG) — the gate seat and
   the bodies' waits are walked against each other, BOTH provable
   directions: a DECLARED gate whose body carries NO ``wait_signal``
   reference at all (the hold seat with no waiter), and a body's
   ``wait_signal`` with NO declared gate (the hold the compile's
   surfaces cannot see). The conditional-interior wait is NOT statically
-  provable — that face is the documented C9/W-rule (the loop-kind
+  provable — that face is the documented W-rule (the loop-kind
   mis-index, W5).
 * E15 route-totality (T27 — THE TOTALITY FENCE AT THE GRAPH LEVEL) — a
   typed route (``route(promise, arms)`` / ``map_source``'s dict form)
@@ -74,18 +73,18 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   LIED about its union is :class:`taskq.workflows.RouterNotTotal`.
 * E8 carrier-type — the loop's declared ``carry_type=`` model vs the body's
   ``Refine[...]`` feedback model (T19's pin 5, enforced): unrelated
-  carriers refuse at compile; undeclarable shapes are never convicted
+  carriers refuse at compile; undeclarable shapes are never rejected
   on a guess.
-* E17 cache-route-source (the cache-cures round's CURE 1) — ``cache=``
+* E17 cache-route-source (the cache hardening round) — ``cache=``
   on a typed-route source is the run that wedges FOREVER at the first
   cache hit (the hit path cannot rebuild the route fork — the arm
   dispatch reads the element's runtime type, the cached envelope cannot
   carry it). Refused at the wiring attachment; re-proved here.
-* E18 cache-ctx-input (the round's CURE 3) — ``cache=True`` on a body
+* E18 cache-ctx-input (the ctx-input fix) — ``cache=True`` on a body
   reading ``ctx.input`` is the cross-tenant leak (the flow input never
   enters the address). Refused at the wiring verb on the static
   source-scan; re-proved here.
-* E19 cache-exit-body (the round's CURE 6b) — ``cache=True`` on an
+* E19 cache-exit-body (the exit-store fix) — ``cache=True`` on an
   Exit-returning body silently no-ops (the exit finalize is not the
   success-only store's seam). Refused at the wiring verb; re-proved
   here.
@@ -113,7 +112,7 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   LOOP body whose ``wait_signal`` sits in a CONDITIONAL interior
   mis-indexes the answer cursor (the iteration counter IS the cursor —
   an iteration that does not wait drifts the sequence; the T26 review's
-  C9 is the same question). The unconditional wait is the shape kept.
+  the same question). The unconditional wait is the shape kept.
 """
 
 from __future__ import annotations
@@ -257,8 +256,8 @@ def _rule_residuals(compiled: CompiledWorkflow) -> list[WorkflowValidationError]
 
 def _rule_edgeless_join(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E3: a join-shaped node (the fan-in) whose parents never exist —
-    the stranded invisible join, convicted before any row is written.
-    (Attack-3 M2's cure: the diagnostic sat AFTER the loop's ``continue``
+    the stranded invisible join, rejected before any row is written.
+    (Attack-3 M2's fix: the diagnostic sat AFTER the loop's ``continue``
     — dead code whose only pin tested the gather([]) verb, not the rule;
     the compiled graph is public, mutable data and the rule owns the
     shape injected into it.)"""
@@ -282,14 +281,14 @@ def _rule_annotations(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
     the wiring (the promise's data type and the fan-in's decoded args
     come from it).
 
-    THE PRESENCE CHECK IS RAW (the pattern miner's false-positive cure):
+    THE PRESENCE CHECK IS RAW (the pattern miner's false-positive fix):
     the rule reads ``body.__annotations__`` — does a return annotation
     EXIST — never the RESOLVED hints. Under ``from __future__ import
     annotations`` an annotation is a STRING; a return type that is not
     module-level (a function-scope model the body's code never names)
     resolves to NOTHING (annotation strings create no closure cells) —
     body_hints returns {} and the RESOLVED view cannot distinguish
-    "unannotated" from "unresolvable". A false conviction is worse than
+    "unannotated" from "unresolvable". A false finding is worse than
     a missed lint (the zero-false-positive doctrine), so the type-
     dependent rules (E5/E8, the runner's codec) keep the resolved view —
     an unresolvable type SKIPS there — while E4, whose question is
@@ -344,10 +343,10 @@ def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidation
             continue
         hints = body_hints(node.body)
         params = [v for k, v in hints.items() if k not in ("return", "ctx")]
-        # THE SIGNATURE-ORDERED WALK (F3-4's cure — the zero-false-
+        # THE SIGNATURE-ORDERED WALK (F3-4's fix — the zero-false-
         # positive doctrine): the body's params map to the wired SOURCES
         # IN ORDER (the wiring's own rule — node.args records the sources
-        # in signature order). The CROSS-PRODUCT convicted the legitimate
+        # in signature order). The CROSS-PRODUCT rejected the legitimate
         # mixed signature — step(body, p, 3) for body(ctx, item: Report,
         # page: int) — the page param compared against p's Report and
         # refused, told to annotate the param that IS annotated. The real
@@ -361,7 +360,7 @@ def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidation
             parent = compiled.nodes.get(str(parent_key))
             if parent is None:
                 continue
-            # THE BODYLESS JOIN'S EDGE (the ergonomic tail's cure): the
+            # THE BODYLESS JOIN'S EDGE (the ergonomic tail's fix): the
             # join/collect node has NO body — its produced shape is the
             # ELEMENT model its own sources declare (the gather's
             # ``Promise[list[R]]`` shape). E5 skipping the bodyless
@@ -373,17 +372,17 @@ def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidation
                 produced = _join_produced_shape(compiled, parent)
             else:
                 produced = body_hints(parent.body).get("return")
-            # THE LIST-PRODUCER ARM (the E5 drill's cure — THE ELEMENT
+            # THE LIST-PRODUCER ARM (the element law — THE ELEMENT
             # LAW): a body producing ``list[PE]`` wired into a consumer's
             # param is the ELEMENT-level compatibility — the same
             # totality discipline E1-E16 apply at the node level. The
-            # pre-cure walk skipped every list-producing parent (the
-            # generic alias is not a ``type``): the drill's
+            # pre-fix walk skipped every list-producing parent (the
+            # generic alias is not a ``type``): the recorded failure's
             # ``list[Word]`` → ``list[str]`` wiring PASSED build-time
             # validation and the run died at RUNTIME with a pydantic
             # ValidationError on every attempt. THE LAW IS ABSOLUTE: a
             # wiring that dies at runtime with a type error is a
-            # BUILD-TIME conviction. (The checker half is the typed
+            # BUILD-TIME finding. (The checker half is the typed
             # single-promise list seam on the wiring verb — the
             # typeprobe corpus's element probes; this is the
             # checker-independent half.)
@@ -436,7 +435,7 @@ def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidation
                     )
                 continue
             if not (isinstance(param, type) and issubclass(param, BaseModel)):
-                # THE DUCK-SHAPED HOLE (attack-3 M4's cure): the PAIRED
+                # THE DUCK-SHAPED HOLE (the attack-3 class): the PAIRED
                 # param carries NO model annotation (``Any``, a plain
                 # dict, a duck) — the payload crosses UNVALIDATED and
                 # UNCHECKED. The signature-ordered map's own caveat: a
@@ -476,20 +475,20 @@ def _element_compat(
     p_elem: object,
     param: object,
 ) -> list[WorkflowValidationError]:
-    """THE ELEMENT LAW's comparison (the E5 drill's cure): the producer's
+    """THE ELEMENT LAW's comparison (the element law): the producer's
     ELEMENT type vs the consumer's wired element type — the pydantic
     models' compatibility at the element level. The zero-false-positive
-    doctrine governs the skips (a guess is never convicted):
+    doctrine governs the skips (a guess is never rejected):
 
     * the consumer's element unresolved / ``Any`` / ``object`` — the
       duck-shaped element consumes anything the codec delivers: SKIP;
     * both elements models — the issubclass door (the producer's element
       must BE or SUBCLASS the consumer's; an unrelated model is the
-      wiring promising data the consumer cannot accept) — CONVICT;
+      wiring promising data the consumer cannot accept) — REJECT;
     * the producer's element a model, the consumer's a RESOLVED
       non-model type (``list[str]`` under a ``list[Word]`` producer —
-      the drill): the decode's TypeAdapter reds it on every attempt —
-      CONVICT;
+      the recorded failure): the decode's TypeAdapter reds it on every attempt —
+      REJECT;
     * both non-models — the codec's TypeAdapter owns the scalar
       coercions: SKIP (the list[non-model] convention, kept).
     """
@@ -514,7 +513,7 @@ def _element_compat(
                         "ELEMENT models: the join's element and the "
                         "consumer's element are different models (a "
                         "wiring that dies at runtime with a type error "
-                        "is a BUILD-TIME conviction)",
+                        "is a BUILD-TIME finding)",
                     )
                 ]
             return []
@@ -558,7 +557,7 @@ def _element_compat(
 
 
 def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E9 (F3-1's cure — THE PICKED DOOR): the body's ``ctx`` annotation
+    """E9 (F3-1's fix — THE PICKED DOOR): the body's ``ctx`` annotation
     must BE :class:`StepContext` (or a subclass), or the
     declared-unchecked Any/object. A FABRICATED ctx annotation (a
     stand-in that CLAIMS the type it does not have) is the wiring-site
@@ -597,14 +596,14 @@ def _rule_ctx_annotation(compiled: CompiledWorkflow) -> list[WorkflowValidationE
 
 
 def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E10 (F3-2's cure — THE ARITY GAP): the body's params (beyond ctx)
+    """E10 (F3-2's fix — THE ARITY GAP): the body's params (beyond ctx)
     must match the wired sources' count. A body taking MORE params than
     wired compiled + validated clean and the mismatch rode the RETRY
     LADDER MID-FLOW (the TypeError at the body's invocation — the
     run-time discovery of a wiring-time lie). The mismatch is a BUILD
     refusal; the ladder never sees it.
 
-    THE MESSAGE'S NUMBERS ARE THE SIGNATURE'S (finding 13's cure): the
+    THE MESSAGE'S NUMBERS ARE THE SIGNATURE'S: the
     declared count reads the body's ACTUAL signature
     (``inspect.signature``), never the resolved-hints dict — hints list
     only the ANNOTATED params, so a partially-annotated body's message
@@ -615,13 +614,13 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     Arity is STRUCTURAL — the mismatch needs names, not annotations; the
     resolvable-hints guard stays only as the zero-false-positive skip
     (a function-scope model the compile cannot resolve is never
-    convicted on a guess)."""
+    rejected on a guess)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        # THE WALK'S FACES (the rv4 arm-arity cure): every body the
+        # THE WALK'S FACES (the arm-arity fix): every body the
         # runner can inject into — the node's own body AND the typed
         # route's arm bodies (each arm runs as its own fork-spawned
-        # child, wired ONE arg — the element). The pre-cure walk read
+        # child, wired ONE arg — the element). The pre-fix walk read
         # node.body only: a zero-param/two-param arm built CLEAN and the
         # raw TypeError died MID-FLOW (the ladder's discovery of a
         # wiring-time lie — the exact shape E10 exists to refuse), while
@@ -640,7 +639,7 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
                 # doctrine's own pin: a function-scope model the body's
                 # code never names — the resolved hints are {}): the
                 # arity is a GUESS on an unresolvable signature — skip
-                # (a guess is never convicted; E4's own pin spells the
+                # (a guess is never rejected; E4's own pin spells the
                 # doctrine).
                 continue
             sig = inspect.signature(body)
@@ -674,7 +673,7 @@ def _rule_arity(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
 
 def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E12 (THE DEPS SEAM'S CONTRACT — the DI capability's build-time
-    conviction): a body that declares ONE parameter beyond ``ctx`` + its
+    finding): a body that declares ONE parameter beyond ``ctx`` + its
     wired sources is the DEPS opt-in — the extra parameter receives the
     app's bound deps instance at every invocation. The contract, checked
     at build against the binding the compile carries:
@@ -689,7 +688,7 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
     the step bodies, the map's item children, and the loop driver's
     bodies (the escalation body rides the same shape — wired 1). An
     unresolvable-annotations body (``body_hints`` → ``{}``) is SKIPPED —
-    the zero-false-positive doctrine (a guess is never convicted); the
+    the zero-false-positive doctrine (a guess is never rejected); the
     runner's positional read is the shape's runtime face, and E10's own
     arithmetic owns the true mismatches."""
     from taskq.workflows.api._deps import deps_satisfied
@@ -701,11 +700,11 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
         if node.body is not None:
             checks.append((node.key, node.body, len(node.args)))
         if node.map_arms is not None:
-            # THE ARMS' DEPS CONTRACT (the rv4 arm-arity cure — the walk
+            # THE ARMS' DEPS CONTRACT (the arm-arity fix — the walk
             # covers every body the runner injects into): each arm runs
             # as its own fork-spawned child, wired ONE arg — the deps
             # shape reads ONE param beyond it, the same contract the
-            # step bodies own. (The pre-cure walk skipped the arms —
+            # step bodies own. (The pre-fix walk skipped the arms —
             # E15's comment claimed this walk covered them.)
             for tag, arm in node.map_arms.items():
                 checks.append((route_child_key(node.key, tag), arm.body, 1))
@@ -721,7 +720,7 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
     for owner, body, wired in checks:
         hints = body_hints(body)
         if not hints:
-            continue  # THE UNRESOLVABLE ANNOTATIONS: a guess is never convicted
+            continue  # THE UNRESOLVABLE ANNOTATIONS: a guess is never rejected
         params = [k for k in hints if k not in ("return", "ctx")]
         if len(params) != wired + 1:
             continue  # not the deps shape — E10 owns the arity
@@ -774,20 +773,20 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
       nothing), an UNKNOWN member would never fire;
     * every arm body declares its arm's MODEL on the item param — the
       decode's target (R3): a DUCK-typed arm (``dict``/unannotated/
-      ``Any``) consumes the element UNVALIDATED (E5's own conviction
+      ``Any``) consumes the element UNVALIDATED (E5's own finding
       shape at the consumer face), and the declared model must be the
-      EXACT union member (the rv4 cure — the "related" door tightened):
+      EXACT union member (the fix — the "related" door tightened):
       a SUPERCLASS builds clean but the runtime decode drops the
       subclass's own fields (pydantic's ``extra='ignore'`` default —
       the silent data loss the sum's reader cannot see), and an
       UNRELATED model is the wiring promising data the arm cannot
-      accept. The pre-cure "related" check accepted BOTH directions of
+      accept. The pre-fix "related" check accepted BOTH directions of
       the issubclass relation — a ``item: DocBase`` arm for a
       ``DocItem`` member passed the fence and died the silent-field
       drop at runtime.
 
     An unresolvable source or arm annotation SKIPS (the zero-false-
-    positive doctrine — a guess is never convicted). The runtime door
+    positive doctrine — a guess is never rejected). The runtime door
     for the body that LIED about its union is ``RouterNotTotal``."""
     from taskq.workflows.chain import type_tag
 
@@ -830,7 +829,7 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
         for tag, arm in node.map_arms.items():
             hints = body_hints(inner_fn(arm.body))
             if not hints:
-                continue  # the unresolvable arm — a guess is never convicted
+                continue  # the unresolvable arm — a guess is never rejected
             params = [k for k in hints if k not in ("return", "ctx")]
             if not params:
                 continue  # E10/E12's faces own the arity; the item contract needs a param to read
@@ -841,7 +840,7 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
                 duck, related = True, False
             elif isinstance(item_param, type) and issubclass(item_param, BaseModel):
                 duck = False
-                # THE EXACT-MEMBER LAW (the rv4 cure — the "related" door
+                # THE EXACT-MEMBER LAW (the fix — the "related" door
                 # tightened): the declared type must BE the member — a
                 # superclass passes the old issubclass fence and the
                 # runtime decode drops the subclass's fields
@@ -877,8 +876,7 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
 
 
 def _rule_cache_route_source(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E17 (THE CACHE-ROUTE WEDGE'S REFUSAL — the cache-cures round's
-    CURE 1, MERGE-BLOCKER P8f): ``cache=True`` on a typed-route source is
+    """E17 (THE CACHE-ROUTE WEDGE'S REFUSAL): ``cache=True`` on a typed-route source is
     the run that wedges FOREVER at its first cache hit. The hit path
     terminalizes the source from the cached envelope and NEVER rebuilds
     the route fork — the arm dispatch reads the element's RUNTIME type
@@ -918,32 +916,32 @@ def _rule_cache_route_source(compiled: CompiledWorkflow) -> list[WorkflowValidat
 
 
 def _rule_cache_ctx_input(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E18 (THE ctx.input CROSS-TENANT LEAK'S REFUSAL — the cache-cures
-    round's CURE 3): ``cache=True`` on a body whose source reads
+    """E18 (THE ctx.input CROSS-TENANT LEAK'S REFUSAL — the cache-fixes
+    round's the ctx-input fix): ``cache=True`` on a body whose source reads
     ``ctx.input`` is the leak the address cannot see. The address covers
     the WIRED args only — the FLOW input never enters it — so a cached
     answer produced under one flow input serves a LATER run whose flow
     input differs: tenant A's answer delivered to tenant B,
     terminal-success, audits clean (the live repro:
-    ``.measurements/cache-cures/ctx_input_leak_repro.py``). The wiring
+    reproduced live). The wiring
     verb refuses on the same static source-scan
     (:func:`taskq.workflows.api._hints.ctx_input_reads` — the ONE walk
     both faces read); this rule re-proves the fence from the compiled
     graph (checker-independently). The scan is CRUDE, on purpose: a
     helper the body calls may read ``ctx.input`` unseen — the same
     closure boundary the address's helper-closure law states (the
-    guide's determinism section); the cure it names regardless: lift the
+    guide's determinism section); the fix it names regardless: lift the
     flow input into the dataflow with an UNcached upstream step and wire
     its result as a PARAM (the param enters the address). An unreadable
     body source SKIPS (the zero-false-positive doctrine — a guess is
-    never convicted)."""
+    never rejected)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         if not node.cache or node.body is None:
             continue
         reads = ctx_input_reads(node.body)
         if reads is None or not reads:
-            continue  # the unreadable source — a guess is never convicted
+            continue  # the unreadable source — a guess is never rejected
         diagnostics.append(
             WorkflowValidationError(
                 "E18-cache-ctx-input",
@@ -963,7 +961,7 @@ def _rule_cache_ctx_input(compiled: CompiledWorkflow) -> list[WorkflowValidation
 
 
 def _rule_cache_exit_body(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E19 (THE Exit NO-OP'S REFUSAL — the cache-cures round's CURE 6b):
+    """E19 (THE Exit NO-OP'S REFUSAL — the cache hardening round's the exit-store fix):
     ``cache=True`` on an Exit-returning body SILENTLY NO-OPS. The
     sentinel terminalizes through the exit finalize
     (``_finalize_exit``), which the success-only store never sees —
@@ -972,7 +970,7 @@ def _rule_cache_exit_body(compiled: CompiledWorkflow) -> list[WorkflowValidation
     path returns before it). The wiring verb refuses on the same static
     read (:func:`taskq.workflows.api._graph.declared_exit_return` — the
     ONE walk both faces read, unions and list elements included); this
-    rule re-proves the fence from the compiled graph. The cure the
+    rule re-proves the fence from the compiled graph. The fix the
     message names: return the DATA result and let the cache hold it, or
     drop cache=True. An unresolvable annotation SKIPS (the
     zero-false-positive doctrine)."""
@@ -1000,11 +998,11 @@ def _rule_cache_exit_body(compiled: CompiledWorkflow) -> list[WorkflowValidation
 
 
 def _rule_cache_unverifiable_source(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E20 (THE UNVERIFIABLE-SOURCE PRECONDITION — the cache-cures
+    """E20 (THE UNVERIFIABLE-SOURCE PRECONDITION — the cache-fixes
     round's AMENDMENT B, the import-probe's #3): ``cache=True`` on a body
     whose OWN source is not verifiable (a builtin, a partial, an exec'd
     fragment whose slice cannot be proven its own) is the SILENTLY
-    uncached step. The address requires the §22.1 code-version canon —
+    uncached step. The address requires the code-version canon —
     module + qualname + the body's own source, through the same
     :func:`taskq.workflows.api._hints.own_source` read the claim path's
     stamper shares — and an unreadable source made the runner log
@@ -1015,7 +1013,7 @@ def _rule_cache_unverifiable_source(compiled: CompiledWorkflow) -> list[Workflow
     wiring verb refuses on the same read (deterministic — the claim
     path's hash reads the same source through the same seam, so no
     false-positive risk); this rule re-proves the fence from the
-    compiled graph. The cure the message names: a module-level def the
+    compiled graph. The fix the message names: a module-level def the
     source reader can read, or drop cache=True."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
@@ -1030,7 +1028,7 @@ def _rule_cache_unverifiable_source(compiled: CompiledWorkflow) -> list[Workflow
                 f"node {node.key!r} declares cache=True but its body's "
                 "source is not verifiable (a builtin, a partial, or an "
                 "exec'd fragment — the cache cannot hash what it cannot "
-                "read): the address requires the §22.1 code-version canon "
+                "read): the address requires the code-version canon "
                 "(module + qualname + the body's own source), and an "
                 "unverifiable source made this step SILENTLY uncached — "
                 "every run re-executes the body while the cache machinery "
@@ -1057,7 +1055,7 @@ def _union_members_of(annotation: object) -> tuple[type[BaseModel], ...] | None:
     a bare union (``A | B``, ``Union[A, B]``) or a LIST of one
     (``list[A | B]`` — the typed sum's flat shape the join consumer
     declares). ``None`` when the annotation is not a model union (a
-    single model, a non-model union, a scalar) — nothing to convict."""
+    single model, a non-model union, a scalar) — nothing to reject."""
     from types import UnionType
 
     inner: object = annotation
@@ -1079,7 +1077,7 @@ def _union_members_of(annotation: object) -> tuple[type[BaseModel], ...] | None:
 
 
 def _rule_union_discriminator(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E16 (THE CONSUMER DISCRIMINATOR LAW — the rv4 cure): every body
+    """E16 (THE CONSUMER DISCRIMINATOR LAW — the fix): every body
     param decoded as a UNION of models (the typed sum's consumer face —
     the join's downstream reads ``list[ImageResult | AudioResult]``) is
     decoded by the codec's left-to-right smart union: the FIRST member
@@ -1108,7 +1106,7 @@ def _rule_union_discriminator(compiled: CompiledWorkflow) -> list[WorkflowValida
     The walk covers every body the runner injects into (the steps, the
     map's item children, the route's arms, the loop bodies). An
     unresolvable-annotations body SKIPS (the zero-false-positive
-    doctrine — a guess is never convicted)."""
+    doctrine — a guess is never rejected)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         checks: list[tuple[str, Callable[..., object]]] = []
@@ -1124,7 +1122,7 @@ def _rule_union_discriminator(compiled: CompiledWorkflow) -> list[WorkflowValida
         for owner, body in checks:
             hints = body_hints(body)
             if not hints:
-                continue  # the unresolvable annotations — a guess is never convicted
+                continue  # the unresolvable annotations — a guess is never rejected
             for pname, annotation in hints.items():
                 if pname in ("return", "ctx"):
                     continue
@@ -1186,7 +1184,7 @@ def _rule_union_discriminator(compiled: CompiledWorkflow) -> list[WorkflowValida
 
 
 def _rule_gate_door(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E13 (THE GATE DOOR — the rv2 finding's cure): a node's ``gates=``
+    """E13 (THE GATE DOOR): a node's ``gates=``
     must carry DECLARATIONS (``GateDecl`` — the compile-visible shape the
     Mermaid render, the W1 timeout warning and T10's machinery read), not
     the channel's BOUND-DOOR object. ``app.channel().gate(Model)`` returns
@@ -1198,7 +1196,7 @@ def _rule_gate_door(compiled: CompiledWorkflow) -> list[WorkflowValidationError]
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         for gate in node.gates:
-            if isinstance(gate, GateDecl):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declaration's type is a LIE this rule convicts (a TypedGate rides the tuple at runtime) — the isinstance IS the check; statically the tuple claims GateDecl.
+            if isinstance(gate, GateDecl):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declaration's type is a LIE this rule rejects (a TypedGate rides the tuple at runtime) — the isinstance IS the check; statically the tuple claims GateDecl.
                 continue
             diagnostics.append(
                 WorkflowValidationError(
@@ -1256,14 +1254,14 @@ def _wait_signal_sites(body: object) -> list[_WaitSite] | None:
 
     Returns ``None`` when the body's source is NOT readable (a builtin,
     a partial, a syntax the walk cannot parse) — the caller SKIPS (the
-    zero-false-positive doctrine: a guess is never convicted). The
+    zero-false-positive doctrine: a guess is never rejected). The
     wrapper forms are unwrapped first (:func:`inner_fn` — the
     ``@app.actor`` handle's source is the INNER function's)."""
     # THE SOURCE READS' ONE HOME (own_source — the unwrap + the
     # slice-identity guard + the parse-family skip): the fence's
     # exec'd bodies, the builtins, the partials, the wrapper — every
     # unreadable or unprovable source SKIPS (a guess is never
-    # convicted).
+    # rejected).
     source = own_source(body)
     if source is None:
         return None
@@ -1304,9 +1302,9 @@ def _wait_signal_sites(body: object) -> list[_WaitSite] | None:
 def _node_bodies(node: object) -> list[Callable[..., object]]:
     """The node's OWN bodies (the walks' candidate set): the step body,
     the loop driver's body, the map's item child, AND the typed route's
-    arm bodies (the rv4 cure — the arm-held HITL's face): each arm runs
+    arm bodies (the fix — the arm-held HITL's face): each arm runs
     as its own fork-spawned child, so an arm body's ``ctx.wait_signal``
-    is a HOLD the compile surfaces must see (the pre-cure walk skipped
+    is a HOLD the compile surfaces must see (the pre-fix walk skipped
     the arms — an arm's hold was ROW-real but COMPILE-invisible: no
     Mermaid hold node, no W1 timeout read)."""
     bodies: list[Callable[..., object]] = []
@@ -1327,7 +1325,7 @@ def _node_bodies(node: object) -> list[Callable[..., object]]:
 
 
 def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E14 (THE GATE-WIRING WALK — the teardown round's E2-analog cure):
+    """E14 (THE GATE-WIRING WALK — the teardown round's E2-analog fix):
     the gate seat and the bodies' waits, walked against each other in
     BOTH provable directions. E2 walks the promise wiring (every
     produced promise is consumed); the gate wiring had no walk — a
@@ -1338,7 +1336,7 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
 
     * declared-never-waited — a node's ``gates=`` carries a ``GateDecl``
       and NO body of the node references ``wait_signal`` AT ALL: the
-      declared hold seat has no waiter. Provable, because the conviction
+      declared hold seat has no waiter. Provable, because the finding
       needs the ABSENCE of any reference (not the absence of a firing).
     * waited-never-declared — a body calls ``ctx.wait_signal`` and the
       node declares NO gate: the hold is invisible to every compile
@@ -1347,18 +1345,18 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
       the invisibility).
 
     THE CONDITIONAL-INTERIOR BOUND: a wait inside a branch cannot be
-    proven never-to-fire — that face is the documented C9 question, the
+    proven never-to-fire — that face is the documented question, the
     loop-kind mis-index W5 names (a conditional wait in a LOOP body
     mis-indexes the answer cursor). The static walk never guesses: an
     unreadable body (a builtin, a partial, an unparseable source) SKIPS
-    the node — a guess is never convicted."""
+    the node — a guess is never rejected."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        # THE BODIES' OWNERS (the rv4 cure — the arm-held HITL's face):
+        # THE BODIES' OWNERS (the fix — the arm-held HITL's face):
         # the waits are read PER BODY and the warning names the body's
         # own address — the arm child's derived key
         # (``<source>.item:<tag>``) for an arm body, the node's key for
-        # its own. (The pre-cure warning said "node X's body" whatever
+        # its own. (The pre-fix warning said "node X's body" whatever
         # body waited — an arm's hold read as the source's own.)
         owned: list[tuple[str, Callable[..., object]]] = []
         for candidate, owner in (
@@ -1431,7 +1429,7 @@ def _rule_fan_in_bound(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
     """E6: the T07 fan-in bound (the error names the child-driven escape
     — the same vocabulary the engine's validators use).
 
-    THE MESSAGE NAMES THE REMEDY (the rv4 F8 cure — the refusal's own
+    THE MESSAGE NAMES THE REMEDY (the refusal's own
     text must reach it): the bound (MAX_FAN_IN_PER_JOIN) AND the
     remedies. THE PUBLIC FACE FIRST: at the graph wiring the remedy is
     PARTITION THE MAP (batch the source's items so each join's fan-in
@@ -1467,14 +1465,14 @@ def _rule_eternal_wait(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
     """W1: a gate with no declared timeout — probably wrong, never a
     refusal (the warning class; the timer-policy matrix is T10's). The
     walk reads only ``GateDecl`` declarations: a foreign object in
-    ``gates=`` (the door-confusion E13 convicts) is SKIPPED here — the
+    ``gates=`` (the door-confusion E13 rejects) is SKIPPED here — the
     rule walk never crashes on a declaration lie (the raw
     ``AttributeError`` out of this walk was the finding's own
-    conviction)."""
+    finding)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         for gate in node.gates:
-            if not isinstance(gate, GateDecl):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declaration's type is a lie E13 convicts (see _rule_gate_door) — the walk's defense is the runtime check.
+            if not isinstance(gate, GateDecl):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declaration's type is a lie E13 rejects (see _rule_gate_door) — the walk's defense is the runtime check.
                 continue
             if gate.timeout_s is None:
                 diagnostics.append(
@@ -1491,7 +1489,7 @@ def _rule_eternal_wait(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
 
 def _rule_gate_timeout_split(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """W4 (THE GATE-TIMEOUT SPLIT, cross-checked — the teardown round's
-    cure): the timeout is declared in TWO places — the ``GateDecl`` (the
+    fix): the timeout is declared in TWO places — the ``GateDecl`` (the
     compile surfaces' face) and the wait site (the runtime's arm). Where
     BOTH are statically readable and they disagree, the drift is NAMED —
     the two sources must agree or the operator reads which side is
@@ -1499,7 +1497,7 @@ def _rule_gate_timeout_split(compiled: CompiledWorkflow) -> list[WorkflowValidat
     union face): the wait site's value arms the runtime; the
     declaration feeds the compile surfaces and never arms the runtime.
     A non-literal wait timeout (a variable the compile cannot read) is
-    SKIPPED — a guess is never convicted (the zero-false-positive
+    SKIPPED — a guess is never rejected (the zero-false-positive
     doctrine)."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
@@ -1616,7 +1614,7 @@ def _rule_eternal_loop(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
 
 def _rule_cross_graph(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E7: a promise wired from ANOTHER app's recorder (attack-3 M3's
-    smuggle — recorded by the verbs at wiring time, convicted here before
+    smuggle — recorded by the verbs at wiring time, rejected here before
     any row is written)."""
     return [
         WorkflowValidationError(
@@ -1637,13 +1635,13 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
     door). The warning class: the queue may be served by another app the
     same fleet hosts (probably wrong, never a refusal)."""
     if compiled.known_queues is None:
-        return []  # no declared queue universe — nothing to convict
+        return []  # no declared queue universe — nothing to reject
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        # THE WALK'S FACES (the rv4 cure — the typo'd arm queue): the
+        # THE WALK'S FACES (the fix — the typo'd arm queue): the
         # node's own queue AND every fork child's EFFECTIVE queue — the
         # typed route's arms (arm.queue or the map queue) and the map's
-        # own map_queue. The pre-cure walk read node.queue only: a
+        # own map_queue. The pre-fix walk read node.queue only: a
         # RouteArm(queue="gp") typo built CLEAN and the arm's children
         # dispatched onto a queue no worker may listen on.
         projections: list[tuple[str, str]] = [(node.key, node.queue)]
@@ -1671,7 +1669,7 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
 
 
 def _rule_actor_queue_cohort(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """W6: the DERIVED JOIN's implicit cohort conflict, convicted at
+    """W6: the DERIVED JOIN's implicit cohort conflict, rejected at
     validate (the docshelf adoption team's F3): ``route()``'s derived
     join inherits the source's ACTOR and takes the verb's ``queue=``
     (default ``default``) — a source placed on a NON-DEFAULT queue made
@@ -1736,7 +1734,7 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
     carry the body cannot receive. Unenforceable when undeclarable (no
     model declared — a scalar/dict initial, or an unresolvable body
     hint): the zero-false-positive doctrine — a guess is never
-    convicted."""
+    rejected."""
     from types import UnionType
     from typing import get_args, get_origin
 
@@ -1747,7 +1745,7 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
         spec = node.loop_spec
         if spec is None or node.loop_body is None:
             continue
-        # THE CARRY'S TYPED SPLIT (the ergonomic tail's cure): the
+        # THE CARRY'S TYPED SPLIT (the ergonomic tail's fix): the
         # CARRIER-TYPE is its own declared field — the model the body's
         # Refine[Feedback] must match. It is DERIVED from the initial
         # carry when the author passed a model instance (the instance
@@ -1790,7 +1788,7 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
 def _rule_loop_promise_carry(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E11: the loop's initial carry is a VALUE, never a promise handle.
 
-    THE LOOP-PARENTS GAP (probe-convicted at this head): ``loop()``'s
+    THE LOOP-PARENTS GAP (probe-rejected at this head): ``loop()``'s
     signature takes no ``*args`` — a parent's result cannot be wired as
     an edge — so an author who passes a ``Promise`` as ``initial=`` (the
     natural reading of "the loop starts from the parent's result")
@@ -1828,7 +1826,7 @@ def _rule_loop_promise_carry(compiled: CompiledWorkflow) -> list[WorkflowValidat
                 )
             )
             continue
-        # THE STRUCTURE WALK (finding 12's cure — the claim→crash→reclaim
+        # THE STRUCTURE WALK (the claim→crash→reclaim
         # loop's second face): a promise handle NESTED inside the carry —
         # a dict's value, a list element, a model's field — dies the SAME
         # death the bare handle does (the rehydration's own walk —
@@ -1906,7 +1904,7 @@ def _nested_promise(value: object, depth: int = 0) -> object | None:
 
 
 def _rule_join_for_progress(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """W2 (T21/DH8): a join whose only reader is the explorer's display —
+    """W2 (T21/): a join whose only reader is the explorer's display —
     the JOIN-FOR-PROGRESS anti-pattern — warns at validate. The
     detectable shape: a join node (a gather, or the map's auto-join)
     whose promise the wiring SUNK (``sink(...)`` — the declared

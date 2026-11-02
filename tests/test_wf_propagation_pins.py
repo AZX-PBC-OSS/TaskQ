@@ -1,5 +1,5 @@
 """The T06 failed-parent propagation pins — the FAIL-CLOSED peer-cascade and
-the COLLECT fan-in, red-first per the doctrine (BUILD-PROTOCOL §2: every
+the COLLECT fan-in, failing-first per the doctrine (BUILD-PROTOCOL §2: every
 pin's red is a REAL mutation of the shipped rule, observed and recorded).
 
 THE PROPAGATION RULE (T06's two semantics, per the ticket):
@@ -121,10 +121,10 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     """A fail_closed join whose parent TERMINALLY fails must NOT hang: the
     joined node's side of the counter is resolved by the flow-scoped
     transition (blocked-with-reason naming the parent), the flow fails.
-    THE CONVICTED VARIANT (the pre-T06 shipped shape): the parent's failed
+    THE REJECTED VARIANT (the pre-T06 shipped shape): the parent's failed
     finalize plain-decrements (or never resolves), the join stays
     join-wait / fires silently over a partial — the record shows a hanging
-    join. The mutation drill: the cascade statement's block arm dropped —
+    join. The mutation scenario: the cascade statement's block arm dropped —
     the join never resolves, the pin reds."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id, children = await _seed_map(wf_conn, wf_schema, flow_id, n=2, policy="fail_closed")
@@ -173,13 +173,13 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
     flow_state = await node_state(wf_conn, wf_schema, flow_id)
     assert flow_state["status"] == "failed", "the workflow fails closed"
 
-    # THE MUTATION DRILL (the REAL engine mutation — the phase-2 audit's
+    # THE MUTATION TEST (the REAL engine mutation — the phase-2 audit's
     # replacement for the broken RED1 evidence): the cascade's BLOCK ARM
     # dead (``AND false``), rendered through the REAL engine's own
     # finalize on a FRESH shape — the shipped tx2 runs the mutant, the
-    # join NEVER resolves (the convicted strand, observed in the row),
+    # join NEVER resolves (the rejected strand, observed in the row),
     # and the flow fails with NO blocked join (the cascade's flow arm is
-    # gated on the block arm — the mutant's other conviction).
+    # gated on the block arm — the mutant's other recorded finding).
     import taskq.workflows._sql_finalize as finalize_sql_module
 
     mutated_cascade = finalize_sql_module.FAIL_CLOSED_CASCADE_SQL.replace(
@@ -187,7 +187,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
         "AND false",
     )
     assert mutated_cascade != finalize_sql_module.FAIL_CLOSED_CASCADE_SQL, (
-        "the mutation drill did not arm"
+        "the mutation test did not arm"
     )
     import taskq.workflows._sql as sql_module
 
@@ -196,7 +196,7 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
         "AND false",
     )
     assert mutated_cascade != finalize_sql_module.FAIL_CLOSED_CASCADE_SQL, (
-        "the mutation drill did not arm"
+        "the mutation test did not arm"
     )
     # The bundle's build reads the constant from _sql.py's namespace (the
     # bundle re-exports the statement constants) — the patch goes THERE,
@@ -232,13 +232,13 @@ async def test_t06_pin1_fail_closed_join_resolves_never_hangs(
         },
     )
     assert state2["metadata"].get("blocking_reason") == "join", (
-        f"the drill's conviction is broken: the mutant's cascade left the "
+        f"the scenario's recorded finding is broken: the mutant's cascade left the "
         f"join {state2} — the block arm must be load-bearing"
     )
     flow2_state = await node_state(wf_conn, wf_schema, flow2)
     assert flow2_state["status"] == "running", (
         f"the mutant's flow flip landed without a blocked join: {flow2_state} "
-        "(the flow arm's gate is part of the conviction)"
+        "(the flow arm's gate is part of the recorded finding)"
     )
 
 
@@ -253,9 +253,9 @@ async def test_t06_pin2_peer_cancel_record(
     """The fail-closed trip names every cancelled peer: the record
     ``by='peer_failure', cascade_from=<node>`` — the error_class origin
     marker (the `by` leg, the estate's cancel-origin doctrine) + the
-    structured record in metadata.peer_cancel. The mutation drill: the
+    structured record in metadata.peer_cancel. The mutation scenario: the
     peers arm's record stamp dropped — the peer rows cancel ANONYMOUSLY
-    (the convicted shape: a cancel nobody can explain)."""
+    (the rejected shape: a cancel nobody can explain)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id, children = await _seed_map(wf_conn, wf_schema, flow_id, n=3, policy="fail_closed")
     # child 1 is mid-run (a running peer) when child 0's ladder exhausts.
@@ -334,8 +334,8 @@ async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
     two Ok results + the Failed(FailureInfo) at exhaustion: the failure
     fans in as the TYPED item (the estate's ErrorInfo envelope embedded,
     the FULL attempt history carried), the workflow SUCCEEDS with the
-    failure report. The mutation drill: the fan-in's append dropped — the
-    join fires but the failure item never lands (the convicted silent
+    failure report. The mutation scenario: the fan-in's append dropped — the
+    join fires but the failure item never lands (the rejected silent
     partial)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id, children = await _seed_map(wf_conn, wf_schema, flow_id, n=3, policy="collect")
@@ -394,7 +394,7 @@ async def test_t06_pin3_collect_exhaustion_fans_in_fires_partial(
     propagation_redlog.red(
         "t06-pin3-collect-exhaustion-fan-in",
         "the fan-in's append dropped — the join fires with the failure "
-        "item missing (the convicted silent partial)",
+        "item missing (the rejected silent partial)",
         {"failures_on_row": failures},
     )
     assert len(failures) == 1, f"the failure must fan in: {state['metadata']}"
@@ -443,8 +443,8 @@ async def test_t06_pin4_skip_fans_in_zero_ledger_rows(
     """A skipped child fans in with ZERO ledger rows — a skip is not an
     attempt (P3 spike3's measured invariant): the item lands on the join
     row with an empty attempt history, no attempt/terminal row anywhere.
-    The mutation drill: the skip helper made to write a ledger row (the
-    convicted variant — a skip recorded as an attempt)."""
+    The mutation scenario: the skip helper made to write a ledger row (the
+    rejected variant — a skip recorded as an attempt)."""
     from taskq.workflows._types import _failure_info_from_json
 
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -465,8 +465,7 @@ async def test_t06_pin4_skip_fans_in_zero_ledger_rows(
     failures: list[dict[str, Any]] = state["metadata"].get("failures") or []
     propagation_redlog.red(
         "t06-pin4-skip-zero-ledger-rows",
-        "the skip helper wrote a ledger row — a skip recorded as an "
-        "attempt (the convicted variant)",
+        "the skip helper wrote a ledger row — a skip recorded as an attempt (the rejected variant)",
         {"failures_on_row": failures},
     )
     assert len(failures) == 1
@@ -515,7 +514,7 @@ async def test_t06_pin5_mid_ladder_emits_no_cascade_and_no_decrement(
     propagation_redlog.red(
         "t06-pin5-mid-ladder-no-cascade",
         "a mid-ladder attempt failure treated as a terminal (the "
-        "over-eager parent-fail — the convicted variant)",
+        "over-eager parent-fail — the rejected variant)",
         {
             "deps_pending": state["deps_pending"],
             "blocking_reason": state["metadata"].get("blocking_reason"),
@@ -597,7 +596,7 @@ async def test_t06_pin6_sweep_heals_fail_closed_join_after_crash(
 def test_t06_pin7_unknown_failure_policy_refused_at_build() -> None:
     """A fork declaring an unknown failure_policy is refused at build time
     (the runtime's split would silently take the default — the
-    over-permission the asymmetry doctrine forbids). The mutation drill:
+    over-permission the asymmetry doctrine forbids). The mutation scenario:
     the check dropped → the call returns instead of raising."""
     from taskq.workflows._types import ChildSpec, ForkSpec, JoinSpec
     from taskq.workflows.definitions import validate_fork
@@ -636,7 +635,7 @@ async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
       declaration alone absorbs nothing; the record must show the
       absorption RAN). T07's C: the envelope must not lie about which
       policy ran.
-    THE CONVICTED VARIANT (the drill): the absorbed predicate without the
+    THE REJECTED VARIANT (the scenario): the absorbed predicate without the
     fence clause (EXISTS any absorbing edge) — the derivation flips to
     'blocked' and the envelope lie reproduces."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -717,19 +716,19 @@ async def test_t06_pin8_mixed_policy_node_the_fence_is_not_absorption(
         "delivered), so the derivation can never say 'failed' here"
     )
 
-    # THE MUTATION DRILL (live): the absorbed predicate WITHOUT the fence
+    # THE MUTATION TEST (live): the absorbed predicate WITHOUT the fence
     # clause — the EXISTS-any-absorbing-edge lie — derives 'blocked': the
-    # convicted envelope lie reproduces against this very state.
+    # rejected envelope lie reproduces against this very state.
     import dataclasses
 
     mutated_nodes = wf_sql.workflow_nodes.replace(
         "AND NOT (j2.status = 'pending' AND j2.metadata->>'blocking_reason' IN ('failed_parent', 'orphan_parent', 'flow_dead'))",
         "",
     )
-    assert mutated_nodes != wf_sql.workflow_nodes, "the mutation drill did not arm"
+    assert mutated_nodes != wf_sql.workflow_nodes, "the mutation test did not arm"
     mutated_sql = dataclasses.replace(wf_sql, workflow_nodes=mutated_nodes)
     lied = await reconstruct_workflow_status(wf_conn, mutated_sql, flow_id)
     assert lied == "blocked", (
-        f"the drill's conviction is broken: the mutant derived {lied!r} — "
+        f"the scenario's recorded finding is broken: the mutant derived {lied!r} — "
         "the fence clause must be load-bearing in the absorbed predicate"
     )

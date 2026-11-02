@@ -7,8 +7,8 @@ HIGH-risk transactions hold for a human approval (the Expired arm
 escalates to a compliance queue) → the rest auto-clear → a typed
 completion report; a scheduled reconciliation pass runs on a durable
 timer. The full product lives at `examples/ledgerwatch/` with its own
-drill suite (real worker subprocesses, SIGKILL crash drills, a
-duplicate-feed drill, a chaos suite); this page teaches the build-through
+scenario suite (real worker subprocesses, SIGKILL crash scenarios, a
+duplicate-feed scenario, a chaos suite); this page teaches the build-through
 and runs its fences against a real Postgres.
 
 The five-minute fence below is the whole loop, self-contained: wire the
@@ -263,7 +263,7 @@ async def main() -> None:
     # reviews NAMED (their holds live in their own runs).
     assert await runner.drive(str(flow_id), until="terminal", max_ticks=600) == "terminal"
     report = await runner.result(str(flow_id))
-    print("the batch's receipt:", report)
+    print("the batch's report:", report)
     assert report["failed"] == []
     assert report["pending_review"] == ["T2", "T4"]
 
@@ -309,7 +309,7 @@ asyncio.run(main())
 Verified output (the docs-example harness's capture, on a fresh schema):
 
 ```
-the batch's receipt: {'failed': [], 'cleared': ['T1', 'T3'], 'pending_review': ['T2', 'T4']}
+the batch's report: {'failed': [], 'cleared': ['T1', 'T3'], 'pending_review': ['T2', 'T4']}
 the reviews' verdicts: ['T2', 'T4']
 ```
 
@@ -321,14 +321,14 @@ real dynamics:
 | module | what it is |
 | --- | --- |
 | `examples/ledgerwatch/config.py` | the ADVERSE-WORLD profile, RECORDED: 15% transient flake + 5% hangs past the declared timeout + 50–300 ms jitter (env-tunable, `LW_PROFILE=adverse`) |
-| `examples/ledgerwatch/enrichment.py` | the MOCK external enrichment API: typed transient errors, the declared timeout, and a DURABLE per-call journal (the drills' receipt) |
-| `examples/ledgerwatch/feed.py` | the at-least-once feed (deterministic batches; re-delivery is the drill's world) |
+| `examples/ledgerwatch/enrichment.py` | the MOCK external enrichment API: typed transient errors, the declared timeout, and a DURABLE per-call journal (the scenarios' record) |
+| `examples/ledgerwatch/feed.py` | the at-least-once feed (deterministic batches; re-delivery is the scenario's world) |
 | `examples/ledgerwatch/app.py` | the THREE graphs: `ledger_watch` (the pipeline), `txn_review` (the per-transaction HITL hold), `reconciliation` (the durable timer) |
 | `examples/ledgerwatch/store.py` | the app's own idempotent tables: the journal, the compliance queue, the reports, the recon passes |
 | `examples/ledgerwatch/worker.py` | the REAL worker entry (`python -m examples.ledgerwatch.worker`) |
-| `examples/ledgerwatch/tests/` | the drill suite: happy path, the 1000-txn flake drill, SIGKILL crash drills, the duplicate-feed drill, the timer drill, the faces, and a 5-iteration chaos suite |
+| `examples/ledgerwatch/tests/` | the scenario suite: happy path, the 1000-txn flake scenario, SIGKILL crash scenarios, the duplicate-feed scenario, the timer scenario, the faces, and a 5-iteration chaos suite |
 
-Run the drills against your own Postgres:
+Run the scenarios against your own Postgres:
 
 ```bash
 LEDGERWATCH_TEST_DSN=postgresql://postgres:taskq@localhost:5802/taskq \
@@ -348,7 +348,7 @@ LEDGERWATCH_TEST_DSN=postgresql://postgres:taskq@localhost:5802/taskq \
    `(workflow_id, node_key, signal_name, hold_epoch)` — map SIBLINGS of
    one step share the node key, so two transactions holding
    CONCURRENTLY in one map collide on one hold row (one answer wakes one
-   sibling; the other wedges). The product's cure: ONE review run per
+   sibling; the other wedges). The product's remedy: ONE review run per
    transaction — the run id is the hold's address — idempotent by the
    run-key arbiter under the feed's re-delivery.
 4. **The map item's ladder caps at 3 attempts** regardless of the wired
@@ -371,7 +371,7 @@ gate, and ENFORCES the schedule against the DB clock on every wake — an
 early nudge (a delivered payload) waits again; the Expired member (the
 normal face) fires the pass at-or-after the deadline. A worker death
 mid-hold costs nothing: the hold is a Postgres row and the sweep's
-expiry arm is the only live timer. The drills prove both faces: fired
+expiry arm is the only live timer. The scenarios prove both faces: fired
 no-earlier-than-scheduled, and the hold survives a SIGKILL.
 
 ## The friction list
@@ -380,22 +380,20 @@ The adoption's FINDINGS — every misleading doc, every capability gap,
 every API that fought, each with file:line and the evidence — are
 committed at `examples/ledgerwatch/FINDINGS.md` (F1–F10, severities
 named). The headline: F2, concurrent HITL holds from map siblings wedge
-a run silently — the framework cure owed is the hold identity's map
-index (or the loud doc); the shipped product cures itself with the
-per-transaction review run. **The cures have since LANDED**: the
-holdmap-cures lane's map-index identity (F2), the ladder-inheritance
+a run silently — the framework fix owed is the hold identity's map
+index (or the loud doc); the shipped product shields itself with the
+per-transaction review run. **The fixes have since LANDED**: the
+map-index identity (F2), the ladder-inheritance
 (F3), the connection-hold (F4) and the watchdog's warn-budget refusal
 (F6) — each annotated CURED-BY in FINDINGS.md with its green pin.
 
-## The receipts
+## The evidence
 
-The drills' evidence lands in `.measurements/ledgerwatch/` (the
-`.measurements/…` artifacts cited in this document live on the evidence
-branch, `evidence/taskqflow`, not in this repo): the
-1000-transaction flake drill's journal (every external call, its
+The scenarios' evidence is recorded with the adoption's runs: the
+1000-transaction flake scenario's journal (every external call, its
 outcome, its latency), the concurrency overlap measured from the rows
 (the fan-out enriched 32-wide), the engine attempt histograms, the
-SIGKILL drills' resume proofs (children carried past attempt 1 by the
+SIGKILL scenarios' resume proofs (children carried past attempt 1 by the
 reclaim), and the chaos suite's per-iteration variance. The invariants
 run UNCONDITIONALLY: all transactions reach typed terminal, nothing
-lost, nothing duplicated — a red is a finding, reported, never a knob.
+lost, nothing duplicated — a failure is a finding, reported, never a knob.

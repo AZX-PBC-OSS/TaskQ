@@ -1,7 +1,7 @@
 """Admin audit trail: the admin package's COMPAT SHIM over the writer.
 
 The canonical writer is :mod:`taskq.audit` — the DEPS-FREE home (the
-import law, §16.1: the workflow engine's cancel/retry seams import the
+import law, the import law: the workflow engine's cancel/retry seams import the
 writer from THERE, because THIS package's ``__init__`` imports the
 ``fastapi`` extra — a base ``taskq[flows]`` install must be able to
 cancel a run without ever loading this package; the attack pins' Face C

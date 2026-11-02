@@ -1,18 +1,18 @@
 """ATTACK PINS — the rv6 round's DOCS pack (fix/docs-currency @ 6e2297fe8),
-PORTED TO the engine-cures lane and FLIPPED GREEN by its doc cures.
+PORTED TO the engine-fixes lane and FLIPPED GREEN by its doc fixes.
 
-Provenance: the rv6 front's convictions over the docs estate. Three were
+Provenance: the rv6 front's recorded findings over the docs estate. Three were
 LIVE at the pinned head (pinned ``pytest.mark.xfail(strict=True)``
-asserting the SAFE behavior — the cure flips them XPASS-strict). THE
-FLIP IS DONE: the cures (the api-reference's wiring-verbs table carries
+asserting the SAFE behavior — the fix flips them XPASS-strict). THE
+FLIP IS DONE: the fixes (the api-reference's wiring-verbs table carries
 the `route` + `chain_source` rows; the guide's fan-in section NAMES
 `FanInBoundExceededError` beside its remedy; the guide's route teaching
-states the single-value disposition) removed the markers WITH the cure —
+states the single-value disposition) removed the markers WITH the fix —
 the assertions stand as the permanent green pins. F-DOCS-4's cited text
-(the holdmap cure's runbook paragraph) does NOT exist in this tree — it
-lives on the unmerged ``feat/taskqflow-holdmap-cures`` lane — so that
+(the holdmap fix's runbook paragraph) does NOT exist in this tree — it
+lives on the unmerged ``feat/taskqflow-holdmap-fixes`` lane — so that
 pin stands GREEN as the anti-rot guard: the docs-numbers law it asserts
-convicts the text the day the lane lands with the mismatch (the rv2-11
+rejects the text the day the lane lands with the mismatch (the rv2-11
 posture: a guard that keeps the resolution from rotting, here pre-seeded
 for the incoming paragraph). All four pins are STATIC (the estate's own
 text, never a container).
@@ -190,16 +190,16 @@ _NUMBER_WORDS = {
 def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
     """THE DOCS-NUMBERS LAW at the table count: a sentence claiming "N
     ``wf_*`` tables" must be followed (in its own block, before the next
-    heading) by a table listing exactly N ``wf_*`` rows — the convicted
+    heading) by a table listing exactly N ``wf_*`` rows — the rejected
     shape (the holdmap lane's runbook) says "five ``wf_*`` tables" and
     lists SIX (``wf_edge``/``wf_step_ledger``/``wf_signals``/``wf_outbox``
     /``wf_join_fire``/``wf_node_progress``) beside ``jobs``.
 
     AT THIS HEAD (6e2297fe8): NO such claim exists — the cited paragraph
-    lives on the unmerged holdmap-cures lane (the guide's §7 here carries
+    lives on the unmerged holdmap-fixes lane (the guide's §7 here carries
     no table-count sentence). This pin stands GREEN as the anti-rot
     guard: the day the lane's paragraph lands with the mismatch, the pin
-    reds. Zero matches is a lawful green (the law convicts claims, not
+    reds. Zero matches is a lawful green (the law rejects claims, not
     absence); the §7 witness keeps the read honest."""
     assert _GUIDE.is_file(), "the workflows guide is missing"
     offenders: list[str] = []

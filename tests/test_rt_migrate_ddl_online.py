@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: 01.00.08's NOT VALID + VALIDATE CHECK constraint under deploy.
+"""Adversarial review: 01.00.08's NOT VALID + VALIDATE CHECK constraint under deploy.
 
 The denial-counters migration adds ``jobs_max_attempts_check`` in two phases
 (NOT VALID, then VALIDATE) so the validation scan runs under the weaker

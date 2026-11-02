@@ -1,14 +1,14 @@
-"""THE RV4 CURE LANE'S PINS (the recertifier's seven-conviction pack).
+"""THE RV4 FIX LANE'S PINS (the recertifier's seven-recorded finding pack).
 
-The routing spine certified; seven live convictions + the estate red;
-this file carries the pins — red-first (each pin ran against the base
-head ``94996174`` and CONVICTED before its cure landed; the red receipts
-live beside the pins in ``.measurements/rv4-*.txt``), every cure WITH
+The routing spine certified; seven live recorded findings + the estate red;
+this file carries the pins — failing-first (each pin ran against the base
+head ``94996174`` and REJECTED before its fix landed; the red receipts
+live beside the pins in ``.measurements/rv4-*.txt``), every fix WITH
 its pin.
 
 * **F1** — the empty-corpus wedge (``_runner.py``'s ``_route_fork``
   returns ``None`` for a legitimately-empty corpus: the join never
-  fires, the flow wedges or lies). The cure: the empty list IS the
+  fires, the flow wedges or lies). The fix: the empty list IS the
   typed sum's honest value — the join fires with ``[]``.
 * **F8** — the >1000 fan-in bound's build seam (the named constant +
   the E-rule refusal AT BUILD; ``validate_fork``'s raise INTO the
@@ -211,7 +211,7 @@ async def two_param_arm(ctx: object, item: ImageItem, extra: object) -> ImageRes
 def test_the_arm_arity_convicts_at_build() -> None:
     """A zero-param / two-param arm is the BUILD refusal (E10/E12's walk
     over the map_arms) — never the raw mid-flow TypeError. The
-    zero-param arm is E10's conviction (0 ≠ the wired 1); the two-param
+    zero-param arm is E10's recorded finding (0 ≠ the wired 1); the two-param
     arm is the deps SHAPE, so E12 owns it (the app binds no deps)."""
 
     async def src(ctx: StepContext) -> list[ImageItem | AudioItem]:
@@ -231,7 +231,7 @@ def test_the_arm_arity_convicts_at_build() -> None:
             routed = route(
                 src_p,
                 {
-                    ImageItem: RouteArm(body=body),  # type: ignore[dict-item]  # Why: the drill's union — the convicted arm shapes ride the type contract.
+                    ImageItem: RouteArm(body=body),  # type: ignore[dict-item]  # Why: the scenario's union — the rejected arm shapes ride the type contract.
                     AudioItem: RouteArm(body=process_audio),
                 },
             )
@@ -258,7 +258,7 @@ def test_e15_a_superclass_arm_param_refuses_at_build() -> None:
     fields would be dropped (``extra='ignore'``) at the runtime decode.
     The exact union member is the law."""
 
-    async def superclass_arm(ctx: object, item: DocBase) -> ImageResult:  # pyright: ignore[reportUntypedBaseClass]  # Why: the pin's own subject — the superclass IS the convicted shape.
+    async def superclass_arm(ctx: object, item: DocBase) -> ImageResult:  # pyright: ignore[reportUntypedBaseClass]  # Why: the pin's own subject — the superclass IS the rejected shape.
         return ImageResult(doc_id=item.doc_id)
 
     async def doc_src(ctx: StepContext) -> list[DocItem]:
@@ -281,7 +281,7 @@ def test_e15_an_unrelated_arm_param_refuses_at_build() -> None:
     refusal (the E-rule, not the raw runtime death)."""
 
     async def unrelated_arm(ctx: object, item: AudioItem) -> ImageResult:
-        return ImageResult(doc_id=item.doc_id)  # type: ignore[arg-type]  # Why: the pin's own subject — the unrelated model IS the convicted shape.
+        return ImageResult(doc_id=item.doc_id)  # type: ignore[arg-type]  # Why: the pin's own subject — the unrelated model IS the rejected shape.
 
     async def doc_src(ctx: StepContext) -> list[DocItem]:
         return []
@@ -435,7 +435,7 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
         routed = route(
             src_p,  # type: ignore[arg-type]  # Why: the twin union IS the pin's subject — the arms' keys collapse to one tag.
             {
-                TwinA: RouteArm(body=arm_a),  # type: ignore[dict-item]  # Why: the drill's union — the twins ride the return annotation's resolution.
+                TwinA: RouteArm(body=arm_a),  # type: ignore[dict-item]  # Why: the scenario's union — the twins ride the return annotation's resolution.
                 TwinB: RouteArm(body=arm_b),  # type: ignore[dict-item]  # Why: the same walk.
             },
         )
@@ -447,7 +447,7 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
 
 async def _waiting_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
     """The arm-held HITL: the arm body WAITS on a signal with no declared
-    gate — the hold was COMPILE-invisible (the pre-cure E14 walk skipped
+    gate — the hold was COMPILE-invisible (the pre-fix E14 walk skipped
     the arms)."""
     await ctx.wait_signal(
         (ImageResult,), timeout_s=30.0
@@ -488,7 +488,7 @@ def test_the_arm_held_hitl_is_compile_visible() -> None:
 def test_the_typod_arm_queue_warns_w2() -> None:
     """A RouteArm spelling a queue no actor declares (the typo) — the W2
     warning NAMES the arm's child key and the typo'd queue (the
-    pre-cure walk read node.queue only; the arm's children dispatched
+    pre-fix walk read node.queue only; the arm's children dispatched
     onto a queue no worker may listen on, clean at build)."""
 
     async def src(ctx: StepContext) -> list[ImageItem | AudioItem]:
@@ -521,7 +521,7 @@ def test_the_typod_arm_queue_warns_w2() -> None:
 
 def test_the_mermaid_arms_render() -> None:
     """The route's arms render ON the source's label (the branches the
-    compile carries — the pre-cure render drew the route source as the
+    compile carries — the pre-fix render drew the route source as the
     plain rectangle, the route's branches invisible), and the
     fork-carrying node wears the map-source shape."""
 
@@ -550,7 +550,7 @@ def test_the_mermaid_arms_render() -> None:
 
 def test_the_double_attach_lie_is_fixed() -> None:
     """A map over a ROUTED source is the double-attach refusal whose text
-    names the ROUTE (the pre-cure check read map_item only — the map
+    names the ROUTE (the pre-fix check read map_item only — the map
     attached ON TOP silently, clobbering the route's placement fields;
     when it did refuse, the text said 'already carries a map' — a lie
     about the attachment it refused)."""
@@ -584,7 +584,7 @@ def test_the_double_attach_lie_is_fixed() -> None:
 def test_the_cannot_resolve_message_is_truthful() -> None:
     """A source whose return annotation the compile CANNOT RESOLVE (the
     function-scope model) refuses with the 'CANNOT RESOLVE' message —
-    the pre-cure text said 'does not declare', a lie about a body that
+    the pre-fix text said 'does not declare', a lie about a body that
     DID declare."""
 
     class Local(BaseModel):  # the function-scope model — the annotation cannot resolve

@@ -153,7 +153,7 @@ async def _count_pending_jobs_by_queue(
     queues: list[str],
 ) -> dict[str, int]:
     """Grouped pending+scheduled counts per queue (the admission count the
-    max_pending cap governs), the LIB-2 backpressure read's DEPTH half.
+    max_pending cap governs), the backpressure read's DEPTH half.
 
     One indexed aggregate per call (``jobs_queue_status``-served, the
     count_active_jobs pattern); a queue with no pending/scheduled rows
@@ -172,7 +172,7 @@ async def _count_pending_children_by_queue(
     sql: SqlTemplates,
     parent_id: JobId,
 ) -> dict[str, int]:
-    """The parent's pending children, exact and grouped by queue (the LIB-2
+    """The parent's pending children, exact and grouped by queue (the
     backpressure read's FAN-OUT half), served by the partial index
     ``jobs_parent_pending_idx`` whose predicate the count's quals repeat
     verbatim.

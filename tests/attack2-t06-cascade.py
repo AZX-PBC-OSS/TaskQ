@@ -438,7 +438,7 @@ async def test_attack_t06_mixed_policy_node_the_collect_join_hangs(
 
     # THE RECORD MUST NOT SHOW A HANGING JOIN: joinB resolved some way —
     # fired, or blocked-with-reason. A pending join-wait row (or a
-    # reconciled-to-0 never-fired claimable row) is the convicted shape.
+    # reconciled-to-0 never-fired claimable row) is the rejected shape.
     resolved = fires_b_after == 1 or b_after["metadata"].get("blocking_reason") in (
         "failed_parent",
         "orphan_parent",

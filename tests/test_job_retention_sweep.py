@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is fixture-derived (module_pg_schema), not user input; every value is $-bound.
 
-"""Red-team pins for age-based ``job_events`` retention.
+"""Adversarial review pins for age-based ``job_events`` retention.
 
 ``job_events`` has 16 INSERT sites and no DELETE anywhere in the package;
 its only exit is the ``ON DELETE CASCADE`` when the leader prune removes a

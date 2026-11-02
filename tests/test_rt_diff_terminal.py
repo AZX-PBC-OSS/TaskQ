@@ -13,6 +13,7 @@ import pytest
 
 from taskq._ids import new_uuid
 from taskq.backend._protocol import ErrorInfo
+from taskq.backend.postgres import PostgresBackend
 from taskq.exceptions import WorkerOwnershipMismatch
 
 from .test_rt_diff_harness import DiffSide, assert_mirror, run_differential
@@ -45,6 +46,88 @@ async def test_diff_mark_succeeded_clears_lock_bookkeeping(pg_dsn: str) -> None:
     )
     assert pg["jobs"]["j1"]["locked_by_worker"] is None
     assert pg["jobs"]["j1"]["lock_expires_at"] is None
+
+
+async def _result_ttl_enqueued_holds(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0, result_ttl_s=300.0)
+    # The loaded runner's inter-action wall: the PG side's scenario consumes
+    # wall time the frozen mirror never sees (the coverage tracer's tax, a
+    # co-tenant lane's load).
+    if isinstance(side.backend, PostgresBackend):
+        import asyncio
+
+        await asyncio.sleep(0.7)
+
+
+async def test_diff_enqueue_result_ttl_holds_its_duration(pg_dsn: str) -> None:
+    """A result TTL passed at enqueue stamps ``result_expires_at`` beside
+    ``created_at`` in the enqueue's own statement (server-side on PG,
+    ``clock_timestamp() + ttl``), and the row keeps that stamp. The bucket
+    reads the TTL's own duration on both backends however much wall the
+    runner puts between the enqueue and the snapshot."""
+    mem, pg = await run_differential(_result_ttl_enqueued_holds, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a result TTL passed at enqueue reads its own duration above "
+        "created_at on both backends, however loaded the runner",
+        mem,
+        pg,
+    )
+    assert pg["jobs"]["j1"]["result_expires_at"] == 300
+
+
+async def _fallback_result_ttl_holds(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    # The job "runs" for a known logical elapsed before completing: the
+    # mirror's clock jumps, PG's wall advances.
+    await side.advance_clock(2.0)
+    ok = await side.mark_succeeded("j1", "w1", result={"v": 1}, fallback_result_ttl_s=60.0)
+    side.record("succeeded", ok)
+
+
+async def test_diff_fallback_result_ttl_holds_its_duration(pg_dsn: str) -> None:
+    """A fallback result TTL (the ``mark_succeeded`` caller's own literal)
+    stamps ``result_expires_at`` beside ``finished_at`` in the terminal
+    write's statement - the row was enqueued WITHOUT a TTL, so the anchor
+    is the completion stamp, and the bucket reads the TTL's own duration on
+    both backends however long the job ran. Anchoring this shape at
+    ``created_at`` instead reads the job's runtime into the bucket (60 plus
+    the elapsed: 62 against the mirror's 60)."""
+    mem, pg = await run_differential(_fallback_result_ttl_holds, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a fallback result TTL applied at completion reads its own duration "
+        "above finished_at on both backends, however long the job ran",
+        mem,
+        pg,
+    )
+    assert pg["jobs"]["j1"]["result_expires_at"] == 60
+
+
+async def _combined_ttl_override_wins(side: DiffSide) -> None:
+    await side.enqueue("j1", scheduled_in=-1.0, result_ttl_s=300.0)
+    await side.dispatch("w1", ["default"], limit=1)
+    # The job "runs" for a known logical elapsed before completing: the
+    # mirror's clock jumps, PG's wall advances.
+    await side.advance_clock(2.0)
+    ok = await side.mark_succeeded("j1", "w1", result={"v": 1}, fallback_result_ttl_s=60.0)
+    side.record("succeeded", ok)
+
+
+async def test_diff_combined_ttl_anchor_moves_to_the_override(pg_dsn: str) -> None:
+    """A fallback TTL supplied at the success write WINS the terminal
+    write's COALESCE over an enqueue-stamped expiry, and restamps the pair
+    beside finished_at - the anchor moves to the write that supplied the
+    value. Reading the combined shape at the enqueue's anchor carries the
+    job's runtime into the bucket: 62 or 63 against the mirror's 60."""
+    mem, pg = await run_differential(_combined_ttl_override_wins, pg_dsn=pg_dsn)
+    assert_mirror(
+        "a fallback TTL supplied at the success write overrides an "
+        "enqueue-stamped expiry and reads its own duration above "
+        "finished_at on both backends, however long the job ran",
+        mem,
+        pg,
+    )
+    assert pg["jobs"]["j1"]["result_expires_at"] == 60
 
 
 async def _succeeded_fencing(side: DiffSide) -> None:

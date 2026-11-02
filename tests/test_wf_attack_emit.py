@@ -4,14 +4,14 @@ Provenance: the T20/T21 attack front's live reproductions against the
 consolidated head (``af1b8779``; pinned here at the review tree's
 ``b2a1c122``). Every pin below was run RED FIRST — written as the SAFE
 behavior, executed against the real PG, the failure captured — then
-marked ``xfail(strict=True)``. The cure flips the pin to XPASS-strict
-(a red that tells you to remove the marker WITH the cure).
+marked ``xfail(strict=True)``. The fix flips the pin to XPASS-strict
+(a red that tells you to remove the marker WITH the fix).
 
-The surfaces under conviction: ``taskq/workflows/_emit.py`` (the emit
+The surfaces under recorded finding: ``taskq/workflows/_emit.py`` (the emit
 tx) and ``taskq/workflows/chain.py`` (the router's record identity).
 
 THE FINDINGS (each landed live; the probe transcripts are in this pack's
-RECEIPTS.md):
+(the pinning run's record):
 
 * F-EMIT-1 — a resume that re-emits a COMMITTED page (or re-pages at a
   different width) dies on a RAW ``asyncpg.UniqueViolationError``,
@@ -129,7 +129,7 @@ async def committed_children(conn: asyncpg.Connection, schema: str, source_id: J
 # ── F-EMIT-1: the page divergence is never typed nor named ───────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-EMIT-1]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1: a resume that …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-EMIT-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1: a resume that …
 async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -138,7 +138,7 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
     defect the emit must NAME (the caller cannot distinguish a raw
     UniqueViolation from a real constraint bug — and the ladder cannot
     either). The atomicity half (nothing new written, cursor unmoved)
-    holds today and must hold after the cure."""
+    holds today and must hold after the fix."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     source_id = await make_source(wf_conn, wf_sql, flow_id)
     worker, attempt, epoch = await claim_source(wf_conn, wf_schema, source_id)
@@ -181,12 +181,12 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
         "emit door (e.g. PageDivergedError), never a raw asyncpg error"
     )
     # The failed emit wrote nothing new (the whole-tx law — holds today,
-    # must hold after the cure).
+    # must hold after the fix).
     assert await committed_children(wf_conn, wf_schema, source_id) == 3
     assert await read_cursor(wf_conn, wf_schema, source_id) == {"page": 0}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-EMIT-1(second face)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1 (second face): …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-EMIT-1(second face)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-EMIT-1 (second face): …
 async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -238,7 +238,7 @@ async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
         "emit door, never a raw asyncpg error"
     )
     # The fresh siblings rolled back with the colliding ones; the
-    # committed page stands (the whole-tx law — both today and cured).
+    # committed page stands (the whole-tx law — both today and fixed).
     assert await committed_children(wf_conn, wf_schema, source_id) == 3
     assert await read_cursor(wf_conn, wf_schema, source_id) == {"page": 0}
 
@@ -246,7 +246,7 @@ async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
 # ── F-EMIT-2: the map_index int16 ceiling ────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-EMIT-2: MapIndexExhaustedError, the typed ceiling refusal, the batch semantics poison-kills-itself]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-EMIT-2: MapIndexExhaustedError, the typed ceiling refusal, the batch semantics poison-kills-itself]; the marker was removed per the designed flip (the confirmation).
 async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -290,7 +290,7 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
     # THE SHIPPED BATCH SEMANTICS (MapIndexExhaustedError's own contract):
     # the poison record kills ITSELF, NEVER ITS MATES — the valid
     # page-mate (32767) committed FIRST (its tx landed), THEN the raise.
-    # The old whole-page-atomicity leg predates the typed cure.
+    # The old whole-page-atomicity leg predates the typed fix.
     assert await committed_children(wf_conn, wf_schema, source_id) == 1, (
         "the valid page-mate must SURVIVE the poison record — the emit's "
         "batch semantics: the valid tx commits, the poison kills itself loudly"

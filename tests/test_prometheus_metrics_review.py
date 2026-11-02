@@ -30,7 +30,7 @@ names/labels - or that fires on a healthy fleet - fails here.
 Marks: integration (testcontainers PG), otel ([prometheus] extra); the
 lock-contention family and the two promtool binding pins carry
 load_sensitive (their verdicts are emission-window-dependent — PR #698's
-conviction) and run in the serial load-sensitive lane.
+recorded finding) and run in the serial load-sensitive lane.
 """
 
 from __future__ import annotations
@@ -408,7 +408,7 @@ class TestCronCounters:
         assert any(s.value >= 1.0 for s in series), series
 
     # load_sensitive: the same losing-side lock-race emission as the
-    # convicted follower pin (TestFleetHandover) — a real contention event
+    # rejected follower pin (TestFleetHandover) — a real contention event
     # must land inside the probe's window (count 0 -> >=1); see the family
     # note there.
     @pytest.mark.load_sensitive
@@ -553,7 +553,7 @@ class TestWatchdogFamily:
 
 
 class TestFleetHandover:
-    # load_sensitive (PR #698's conviction — one root, four faces in this
+    # load_sensitive (PR #698's recorded finding — one root, four faces in this
     # file): the contention counters record the LOSING side of a lock race
     # whose cycle the lease/tick machinery owns — the follower's election
     # against the leader's lease, the tick's try-lock against the held
@@ -652,7 +652,7 @@ _ALERT_RESULT: dict[str, tuple[dict[str, str], float]] = {
     "TaskQStrandedJobs": ({"actor": "probe_ghost_actor", "reason": "unserved_queue"}, 4.0),
     "TaskQRunningLeaseExpired": ({}, 3.0),
     "TaskQClaimLatencyDegraded": ({"queue": "probe_queue"}, 12.0),
-    # T08: the blocked-stuck alert ships WITH the gauge (GAPS-ESTATE F4 —
+    # T08: the blocked-stuck alert ships WITH the gauge —
     # a metric nobody alerts on is a decoration). The pathology: a run's
     # blocked-node count pinned above zero past the 30m bound. The rule's
     # expression is a bare selector (no aggregation), so the result
@@ -1441,7 +1441,7 @@ def test_threshold_margins_fire_exactly_at_the_documented_line(
 # load_sensitive: the binding asserts require the contention series to be
 # among the REAL scrapes' emissions — the harness's literal "0+1x30"
 # contention feed presumes the event landed inside the probe's window
-# (PR #698's conviction: a slow runner's elections don't cycle in time).
+# (PR #698's recorded finding: a slow runner's elections don't cycle in time).
 # Same family note as TestFleetHandover.
 @pytest.mark.load_sensitive
 def test_harness_series_are_bound_to_the_served_exposition(
@@ -1510,7 +1510,7 @@ def test_harness_series_are_bound_to_the_served_exposition(
 )
 # load_sensitive: the operand scan asserts the contention rule's metric
 # against the REAL emission (``token in emitted``), and promtool evaluates
-# the window-fed cases — the same convicted root as the harness-binding
+# the window-fed cases — the same rejected root as the harness-binding
 # pin (the contention event must land inside the probe's window).
 @pytest.mark.load_sensitive
 def test_every_alert_rule_fires_on_real_names_and_labels(
@@ -1581,13 +1581,13 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
 
 
 def test_every_runbook_alert_row_names_a_rule_shipped_in_both_files() -> None:
-    """THE RUNBOOK ↔ SHIPPED-ALERT CROSS-CHECK (the reviewer's F-R3 drill,
+    """THE RUNBOOK ↔ SHIPPED-ALERT CROSS-CHECK (the reviewer's F-R3 scenario,
     made mechanical): every ``## TaskQ…`` alert row in
     ``docs/guides/runbooks.md`` names an alert SHIPPED in BOTH
     ``contrib/prometheus/rules.yaml`` AND ``contrib/kubernetes/prometheus_rule.yaml``
     (the pair ships lockstep), and every shipped alert has a runbook row —
     an operator paged by the real alert must find its row, and a row no
-    alert can fire is a page that lies. The convicted shape (F-R3's
+    alert can fire is a page that lies. The rejected shape (F-R3's
     original + its carry-regression, both 2026-10-09): the runbook's
     ``TaskQWfRunStuck``/``TaskQWfHoldExpired`` rows named rules NO rule
     file carried — the runbook's promise had no code behind it. The two

@@ -144,7 +144,7 @@ def test_register_conflicting_token_bucket_raises_naming_both() -> None:
 
     message = str(excinfo.value)
     assert "dup" in message
-    # THE FIELD-DIFF LAW (the C3 cure): the refusal names the differing
+    # THE FIELD-DIFF LAW (the fix): the refusal names the differing
     # fields with both sides' values — never the repr (an address, not a
     # diagnosis).
     assert "capacity: 10 vs 20" in message

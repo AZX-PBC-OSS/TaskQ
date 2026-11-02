@@ -15,7 +15,7 @@ running. Also asserted at every pass: the sweep finds NOTHING to fire
 (``firable=0``, zero join-wait rows) — the join machinery is inert in
 this design.
 
-The mutation drill is the red-first tooth: the maintenance leg with its
+The mutation scenario is the failing-first tooth: the maintenance leg with its
 LIVENESS GATE MUTATED OUT finalizes the root mid-stream on the same
 shape of rows — the fence is load-bearing, not decorative.
 
@@ -194,7 +194,7 @@ async def test_t20_premature_terminal_fence_30_sweeps(
     fire). The resumed run then completes; the root terminalizes ONLY
     after everything drained, and every row is terminal under it.
 
-    THE MUTATION DRILL (the red-first tooth): the maintenance leg with
+    THE MUTATION TEST (the failing-first tooth): the maintenance leg with
     its liveness gate mutated out finalizes the root MID-STREAM on a
     fresh mid-stream flow — the fence's teeth, observed red."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -264,14 +264,14 @@ async def test_t20_premature_terminal_fence_30_sweeps(
     )
     assert ever_firable == 0, "nothing may fire in the no-fan-in design"
 
-    # ── THE MUTATION DRILL (live, on a FRESH mid-stream flow) ─────────
+    # ── THE MUTATION TEST (live, on a FRESH mid-stream flow) ─────────
     mutated = wf_sql.workflow_root_maintain.replace(
         "(pf.has_failed AND NOT COALESCE(pf.has_unresolved, false))\n"
         "          -- THE COMPLETED/CANCELLED ROOT: every row terminal (rows 4-5).\n"
         "          OR NOT COALESCE(pf.has_live, true)",
         "true",
     )
-    assert mutated != wf_sql.workflow_root_maintain, "the mutation drill did not arm"
+    assert mutated != wf_sql.workflow_root_maintain, "the mutation test did not arm"
     flow2 = await seed_flow(wf_conn, wf_schema)
     src2 = await make_source(wf_conn, wf_schema, flow2, wf_sql)
     w2, a2, e2 = await claim_source(wf_conn, wf_schema, src2)
@@ -289,8 +289,8 @@ async def test_t20_premature_terminal_fence_30_sweeps(
     await wf_conn.execute(mutated, 200)
     root2 = await root_state(wf_conn, wf_schema, flow2)
     assert root2["status"] == "succeeded", (
-        f"the mutation drill did not reproduce the premature terminal "
-        f"(the root reports {root2['status']!r}) — the drill is inert"
+        f"the mutation test did not reproduce the premature terminal "
+        f"(the root reports {root2['status']!r}) — the scenario is inert"
     )
     live2 = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs '
@@ -298,13 +298,13 @@ async def test_t20_premature_terminal_fence_30_sweeps(
         flow2,
     )
     assert int(live2 or 0) == 4, (
-        "the drill's flow must have live rows under the premature terminal "
+        "the scenario's flow must have live rows under the premature terminal "
         "(the mid-stream shape the fence exists to prevent)"
     )
-    # THE DRILL'S UNDO: the mutated leg terminalized EVERY running root
+    # THE MUTATION TEST'S UNDO: the mutated leg terminalized EVERY running root
     # in the schema (no flow scoping) — the lie is restored to the honest
     # live state before the resume (the always-on G7 assertion reads the
-    # roots at teardown; the drill's evidence is the assertion above).
+    # roots at teardown; the scenario's evidence is the assertion above).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running', finished_at = NULL "
         "WHERE id = ANY($1)",

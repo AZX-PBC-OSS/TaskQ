@@ -1,4 +1,4 @@
-"""Red-team scratch: is the actor-cohort rotation bound PROVABLE (exactly
+"""Adversarial review scratch: is the actor-cohort rotation bound PROVABLE (exactly
 ceil(actor_count / limit) rounds) or merely probabilistic?
 
 The rotation tiebreak is ``actor_claimed_at ASC NULLS FIRST`` stamped once

@@ -653,7 +653,7 @@ _WF_ARMS = (
     # hold's resolver (the CAS delivery + the resume + the T26 knock).
     # Pure append, same as the arms before it.
     "wf_child_join_wake",
-    # The D2 soak's cures: the hold-stamp reconcile (the SIGKILL-during-
+    # The D2 soak's fixes: the hold-stamp reconcile (the SIGKILL-during-
     # hold wedge's fleet arm — the hold's state decides) and the outbox
     # TTL (delivered rows are narration, never forever). Pure appends,
     # same as the arms before them.

@@ -179,16 +179,16 @@ def test_composed_miss_path_scales_with_calibration_baseline() -> None:
 
 @pytest.mark.load_sensitive
 def test_relative_gate_has_teeth() -> None:
-    """Drill: the relative gate must actually red on the defect it exists
+    """Scenario: the relative gate must actually red on the defect it exists
     for. A classifier whose miss path developed a hot loop (the classic
     regression: retry logic creeping into the not-claimed path) is
     injected into the composed fleet and the gate's own statistic is
-    computed — the drill asserts the statistic EXCEEDS the budget, i.e.
+    computed — the scenario asserts the statistic EXCEEDS the budget, i.e.
     the gate above reds on this hardware, without depending on absolute
     speed."""
 
     def hot_loop_classifier(exc: BaseException, attempt: int) -> None:
-        # The defect under drill: ~100µs of busy work per miss — a
+        # The defect under scenario: ~100µs of busy work per miss — a
         # cost-CLASS change, orders of magnitude over the budget.
         for _ in range(2_000):
             pass
@@ -206,9 +206,9 @@ def test_relative_gate_has_teeth() -> None:
     drilled_ratio = drilled_us / baseline_us
 
     print(
-        f"\n── drill: hot-loop classifier in the fleet ──\n"
-        f"  drilled ratio {drilled_ratio:.2f}x vs budget {COMPOSED_RATIO_BUDGET}x "
-        f"(drilled {drilled_us:.3f}µs, baseline {baseline_us:.3f}µs)"
+        f"\n── scenario: hot-loop classifier in the fleet ──\n"
+        f"  exercised ratio {drilled_ratio:.2f}x vs budget {COMPOSED_RATIO_BUDGET}x "
+        f"(exercised {drilled_us:.3f}µs, baseline {baseline_us:.3f}µs)"
     )
     assert drilled_ratio > COMPOSED_RATIO_BUDGET, (
         "the relative gate LOST ITS TEETH: a hot-loop miss path "

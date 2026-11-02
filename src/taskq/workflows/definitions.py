@@ -10,7 +10,7 @@ the caller passed.
 
 The registry is a module-level map keyed by the workflow's registered
 name — the same shape the actor registry uses (one registry, the estate's
-no-second-registry rule, F3).
+no-second-registry rule).
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ StepBody = Callable[[Any], Awaitable[Any]]
 
 #: The map's DECLARED read-side aggregate fn (T21 decision c): a PURE fn
 #: over the children's decoded result rows, evaluated AT READ TIME by the
-#: aggregation surfaces — never a blocking fan-in (DH8's fence: the join
+#: aggregation surfaces — never a blocking fan-in (the fence: the join
 #: is for DATAFLOW, progress aggregation is OBSERVABILITY).
 AggregateFn = Callable[[list[Any]], object]
 
@@ -70,7 +70,7 @@ class WorkflowDef:
     capture_policy: str = "errors-only"
     redact: Callable[[str], str] | None = None
     #: The loop nodes' declared ``on_exhausted`` policies, keyed by loop
-    #: key (attack-3 H1's cure): the SWEEP's arm reads the policy from
+    #: key (the policy fix): the SWEEP's arm reads the policy from
     #: the REGISTERED DEFINITION (D1) — a hand-crafted loop row carries
     #: no policy face, and the node row's metadata is the counter's
     #: cache, never the declaration's source.
@@ -174,8 +174,8 @@ FAILURE_POLICIES: Final[tuple[str, ...]] = ("fail_closed", "collect", "maybe")
 
 
 class FanInBoundExceededError(ValueError):
-    """The fork's fan-in past :data:`MAX_FAN_IN_PER_JOIN` (the rv4 cure —
-    F8's typed bound): the exceeded bound is the NAMED refusal, the
+    """The fork's fan-in past :data:`MAX_FAN_IN_PER_JOIN` (the typed
+    bound): the exceeded bound is the NAMED refusal, the
     message carrying the ``child_driven`` escape so the remedy is
     reachable from the refusal's own text.
 
@@ -183,22 +183,22 @@ class FanInBoundExceededError(ValueError):
     _runner_ladder.is_deterministic_authoring_failure`'s fourth class):
     re-running cannot shrink the corpus — the retry ladder never burns;
     the node terminal-fails on the first attempt with this class on the
-    record. (The pre-cure raise was the raw ``ValueError`` OUTSIDE the
+    record. (The pre-fix raise was the raw ``ValueError`` OUTSIDE the
     ladder's try — the reclaim re-crashed it forever, the remedy
     unreachable.)"""
 
 
 def validate_fork(fork: ForkSpec) -> None:
     """Refuse a malformed fork at build time — the 'record healthy, work
-    wrong' class, convicted before any row is written.
+    wrong' class, rejected before any row is written.
 
-    THE EMPTY-JOIN PRECEDENT (the rv4 cure — F1): a fork over a
+    THE EMPTY-JOIN PRECEDENT: a fork over a
     legitimately-empty corpus STILL declares its join — the join is born
     ``deps_pending=0``, fires IMMEDIATELY, and packs the EMPTY list (the
     typed sum's honest value: ``result() == []``, the run terminal,
     SUCCESS truthful — a night with no documents chunked zero documents,
     and that is correct). The old blanket refusal ("a join over zero
-    children waits on edges that never exist") convicted the LEGITIMATE
+    children waits on edges that never exist") rejected the LEGITIMATE
     shape — the empty join does not wait, it fires; the wedge it left
     behind was the route/map source over an empty corpus either sticking
     ``running`` forever with zero error rows or terminalizing with the

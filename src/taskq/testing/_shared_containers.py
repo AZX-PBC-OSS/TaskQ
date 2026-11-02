@@ -6,10 +6,10 @@ plus four Dragonfly containers**, all hammering the same Docker daemon. That
 contention is the measured cause of heavy PG tests (property-sweep equivalence,
 state-transition equivalence, Postgres sweeps, sliding-window rate limits)
 tripping internal timeouts intermittently: they passed in isolation and failed
-under ``-n 4``. The design here is ported from the proven sibling implementation
-(cennan), whose measured numbers this port inherits: one tuned container instead
-of four contending ones, and per-worker forced ``DROP DATABASE`` checkpoints that
-went from 2-14s each (worst 14.46s) to 0.05s.
+under ``-n 4``. The tuning is inherited from the implementation this design was
+ported from, measured there: one tuned container instead of four contending ones,
+and per-worker forced ``DROP DATABASE`` checkpoints that went from 2-14s each
+(worst 14.46s) to 0.05s.
 
 Blast-radius trade-off, stated next to that tuning rationale: ONE shared
 container concentrates the failure signature of an out-of-band ``docker rm``
@@ -74,11 +74,11 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 CREATOR_PID_LABEL = "taskq.test.creator-pid"
 CONTROLLER_PID_LABEL = "taskq.test.controller-pid"
 
-# Any sibling repo's ownership-label key shape, see the sweep rules below. Cross-repo
-# on purpose: cennan (``cennan.test.*``), warden (``warden.test.*``) and other repos on
-# this shared Docker daemon label with the same key shape, and every repo's sweep honors
-# ANY matching key, so one checkout's stale sweep never kills another checkout's live
-# run.
+# The owner-label convention is GENERIC, and no project is named in it: any project on
+# this shared Docker daemon may label its test containers with any key ending in
+# ``.test.creator-pid`` / ``.test.controller-pid``, and every checkout's sweep honors
+# ANY key of that shape — a stale sweep here never kills another checkout's live run.
+# See the sweep rules below.
 OWNER_PID_LABEL_RE = re.compile(r".*\.test\.(creator|controller)-pid$")
 
 
@@ -148,9 +148,10 @@ _PG_DBNAME = "taskq"
 # checkpoint on every module teardown (``DROP DATABASE ... WITH (FORCE)``) and every
 # per-test reset (``DROP SCHEMA ... CASCADE``), and on a shared cluster every worker's
 # forced checkpoint queues behind every other worker's. With default settings that
-# checkpoint has to fsync the whole dirty buffer pool, measured on cennan's port of
-# this design at 4 workers: individual drops took 2-14s (worst 14.46s, vs 0.05s tuned)
-# and pushed tests past their timeout budgets. Turning durability off makes the forced
+# checkpoint has to fsync the whole dirty buffer pool; the numbers are inherited
+# from the implementation this design was ported from, measured there at 4 workers:
+# individual drops took 2-14s (worst 14.46s, vs 0.05s tuned) and pushed tests past
+# their timeout budgets. Turning durability off makes the forced
 # checkpoint nearly free; ``checkpoint_timeout=3600`` keeps ordinary time-triggered
 # checkpoints out of the way so the only ones that happen are the forced ones. This is
 # a container that is deleted at the end of the run, so there is nothing for durability
@@ -246,7 +247,7 @@ def should_sweep_stale_container(
        of those signals are pids, and over days a dead run's pid can be recycled by an
        unrelated live process; the age backstop is what stops such a phantom shielding
        a leftover forever.
-    4. Ownership label present (ours or any sibling repo's, ``OWNER_PID_LABEL_RE``) →
+    4. Ownership label present (ours or any project's, ``OWNER_PID_LABEL_RE``) →
        sweep iff EVERY labeled pid is dead. Two pids because the creating xdist worker
        can legitimately exit first (see ``creator_labels``). The labels alone carry the
        cross-invocation guarantee, by construction: a pair belongs to exactly one
@@ -256,7 +257,7 @@ def should_sweep_stale_container(
        labeled pids dead therefore means no live invocation of ANY repo is using the
        container, the foreign label shapes are honored for exactly that reason. A
        liveness-blind sweep killing concurrently running sessions' containers was the
-       ~98x ConnectionRefusedError flake class in the sibling repo this design is
+       ~98x ConnectionRefusedError flake class in the implementation this design was
        ported from.
     5. Unlabeled → sweep iff it is not running. A RUNNING unlabeled container may
        belong to a live run of pre-label code, so it is left alone; exited ones are

@@ -56,6 +56,7 @@ from opentelemetry.metrics import CallbackOptions, Counter, Histogram, Meter, Ob
 from opentelemetry.trace import Span, StatusCode, Tracer
 from opentelemetry.util.types import Attributes
 
+from taskq._json import sanitize_surrogates
 from taskq.obs._redact_exc import add_exception_event, render_exception
 
 INSTRUMENTATION_NAME: str = "taskq"
@@ -261,7 +262,10 @@ def _record_scrubbed_error(span: Span, exc: BaseException) -> None:
             return
         text = render_exception(exc)
         if needs_status:
-            span.set_status(StatusCode.ERROR, text.message)
+            # The status description is surrogate-escaped like the event's
+            # attributes (the OTLP face); NUL handling stays the log
+            # channel's recipe.
+            span.set_status(StatusCode.ERROR, sanitize_surrogates(text.message))
         if needs_event:
             add_exception_event(span, text)
     except Exception:
@@ -3690,7 +3694,7 @@ def record_sse_rejection(surface: SseSurface, topic: str) -> None:
 # and the admin's per-run page (the rollup read by run id), never the
 # fleet gauge.
 #
-# THE SAMPLER (GAPS-ESTATE F5, named): the MAINTENANCE LEADER (the
+# THE SAMPLER: the MAINTENANCE LEADER (the
 # PG-rollup reader — the same process class that samples queue depth) on
 # the ADMIN's health/metrics surface, at the leader's existing metrics
 # tick (the vanilla pattern — never a worker scrape, never the opt-in
@@ -3699,7 +3703,7 @@ def record_sse_rejection(surface: SseSurface, topic: str) -> None:
 # (jobs_wf_flow_nodes_idx, 01.00.26_02 — the uuid-cast expression, the
 # workflow-rows-only partial `metadata ? 'flow_id'`).
 #
-# THE ALERT SUGGESTION SHIPS WITH THE GAUGE (GAPS-ESTATE F4 — a metric
+# THE ALERT SUGGESTION SHIPS WITH THE GAUGE (a metric
 # nobody alerts on is a decoration): TaskQWorkflowBlockedStuck (a run
 # pinned `blocked` past the bound) in BOTH rule files, evaluated through
 # the promtool harness; the runbook row in docs/guides/runbooks.md.

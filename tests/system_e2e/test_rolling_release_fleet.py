@@ -199,7 +199,7 @@ _SAMPLER_JOIN_BOUND_S = (_SWEEP_INTERVAL + _POLL_FLOOR) * _PROBE_STRETCH
 
 #: The flap scenario's premise hang guard: one claim cycle (the poll
 #: floor plus the leader's dispatch tick) stretched by the 20x co-tenancy
-#: factor - the same shape the #651 cure gave this file's premise waits
+#: factor - the same shape the #651 fix gave this file's premise waits
 #: (a hang guard only: the defiant job's first claim is near-instant on a
 #: healthy fleet, and a fleet that NEVER claims reds here instead of
 #: hanging). Re-anchored from a bare 30.0 so the guard derives from the
@@ -831,7 +831,7 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
     cadence it cannot arm: watchdog_loop_lag_budget 30 + heartbeat 0.5
     must be < lock_lease 8, a settings-validation error), so a drain
     that overruns the configured grace is NOT force-exited by the
-    worker (drilled: a 25s wind-down body held w0's drain at 28.22s,
+    worker (exercised: a 25s wind-down body held w0's drain at 28.22s,
     188% of the 15s grace, and the pod exited rc=0). The harness's
     graceful_stop SIGKILLs only at its own timeout (_GRACE + 30), so
     the rc == 0 pin reds a grace-overrun only past THAT window; inside
@@ -899,7 +899,7 @@ async def test_rolling_release_sequential_drains_keep_the_fleet_serving(
             # arm it, see the scenario docstring), so a drain overrunning
             # the grace exits rc=0, and only the harness's SIGKILL at
             # graceful_stop's own timeout (_GRACE + 30) turns an overrun
-            # into a non-zero rc. Drilled: 25s wind-down body, drain
+            # into a non-zero rc. Exercised: 25s wind-down body, drain
             # 28.22s, rc=0, only this pin could have red.
             assert drain_secs < _GRACE + _PROBE_STALL_MARGIN, (
                 f"pod {name}'s drain ran {drain_secs:.2f}s, past its "
@@ -1760,7 +1760,7 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
     then mirrors the conftest guard's own baseline-diff the moment
     ``close`` returns.
 
-    The cure this pin holds: the close joins the task's NATURAL exit
+    The fix this pin holds: the close joins the task's NATURAL exit
     (the tick loop checks the stop flag between ticks - no cancel ever
     lands mid-query), and the hang-guard fallback (a backend hung past
     the join bound) reaps what its own cancel mints before returning.
@@ -1777,7 +1777,7 @@ async def test_cap_sampler_close_leaves_no_task_pending_on_the_module_loop(
     )  # Why: fixture-validated schema identifier.
     # The lock's bounded release: 1.0s covers close()'s entry plus the
     # sampler's one blocked tick on either shape (the retired bare close
-    # and the cure), and is released long before the pin's own 60s bound.
+    # and the fix), and is released long before the pin's own 60s bound.
     lock_open_until = time.monotonic() + 1.0
 
     async def _release_lock() -> None:

@@ -234,13 +234,13 @@ async def _duck_consumer(ctx: StepContext, words: str) -> dict[str, int]:
 
 
 def test_incompatible_list_element_mutation() -> None:
-    """E5's ELEMENT LAW (the E5 drill's conviction — the typed wiring's
+    """E5's ELEMENT LAW (the E5 probe's recorded finding — the typed wiring's
     whole promise): a ``list[Word]`` producer wired into a
     ``list[str]`` consumer passed BUILD-TIME VALIDATION and the run died
     at RUNTIME with a pydantic ValidationError on every attempt — the
     LIST level was checked (the bodyless-join arm), the ELEMENT level
     was not. The law is absolute: a wiring that dies at runtime with a
-    type error is a BUILD-TIME conviction (the element compatibility is
+    type error is a BUILD-TIME recorded finding (the element compatibility is
     the same totality discipline E1-E16 apply at the node level)."""
     app = WorkflowApp()
 
@@ -285,7 +285,7 @@ def test_unrelated_list_element_models_mutation() -> None:
 def test_duck_list_element_is_the_skipped_face() -> None:
     """The zero-false-positive skip: ``list[Any]`` — the duck-shaped
     element consumes anything the codec delivers, unguessable, never a
-    conviction."""
+    recorded finding."""
     app = WorkflowApp()
 
     @app.workflow("list_elem_any")
@@ -299,7 +299,7 @@ def test_duck_list_element_is_the_skipped_face() -> None:
 def test_scalar_list_elements_are_the_codecs_face() -> None:
     """Both elements non-model (``list[int]`` → ``list[str]``): the
     codec's TypeAdapter owns the scalar coercions — the element law
-    convicts the MODEL mismatches, never a guessed scalar one."""
+    rejects the MODEL mismatches, never a guessed scalar one."""
     app = WorkflowApp()
 
     @app.workflow("list_scalar")
@@ -328,7 +328,7 @@ def test_list_producer_into_single_model_param_mutation() -> None:
 def test_root_model_list_param_is_the_skipped_door() -> None:
     """The RootModel door: a consumer declaring
     ``RootModel[list[Word]]`` TAKES the list payload — the element law's
-    single-model conviction does not fire on it."""
+    single-model recorded finding does not fire on it."""
     app = WorkflowApp()
 
     @app.workflow("list_into_root")
@@ -342,7 +342,7 @@ def test_root_model_list_param_is_the_skipped_door() -> None:
 def test_list_producer_into_duck_param_is_the_skipped_face() -> None:
     """The duck-shaped param under a list producer (``str`` is no model,
     no list): unguessable — the zero-false-positive skip, never a
-    conviction."""
+    recorded finding."""
     app = WorkflowApp()
 
     @app.workflow("list_into_duck")
@@ -355,8 +355,8 @@ def test_list_producer_into_duck_param_is_the_skipped_face() -> None:
 
 def test_the_drills_runtime_death_is_real() -> None:
     """The runtime door the element law pre-empts: the codec's TypeAdapter
-    reds the drill's payload — the pydantic ValidationError the drill hit
-    on every attempt. The conviction moves it to build; this pin holds
+    reds the scenario's payload — the pydantic ValidationError the scenario hit
+    on every attempt. The recorded finding moves it to build; this pin holds
     the runtime's own red so the law's necessity is never arguable."""
     from pydantic import ValidationError
 

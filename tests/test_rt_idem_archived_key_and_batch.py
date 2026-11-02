@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""RED-TEAM pins: archived keys free at prune (S3) and batch exactly-once (S4).
+"""The adversarial-review pins: archived keys free at prune (S3) and batch exactly-once (S4).
 
 Scenario 3 - an ARCHIVED job re-enqueued with the same idempotency key. The
 product decision, from the docs (``docs/guides/jobs-clients.md``:

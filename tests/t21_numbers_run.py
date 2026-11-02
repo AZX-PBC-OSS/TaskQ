@@ -203,7 +203,7 @@ async def main() -> dict[str, Any]:
         "rows": red_rows,
         "write_s": round(red_s, 3),
         "writes_per_s": int(2000 / red_s),
-        "verdict": "the every-emission-a-row shape grows with emissions — kept red",
+        "verdict": "the every-emission-a-row shape grows with emissions — kept failing",
     }
 
     await conn.execute(f'DROP SCHEMA "{schema}" CASCADE')

@@ -1,14 +1,14 @@
 """T19 — THE LOOP PINS: the two walls, the carry, the ladder classes.
 
-Red-first: each pin's CONVICTED VARIANT was run against the mutated guard
-(the mutation drill — BUILD-PROTOCOL §2), the observed red captured to
+Failing-first: each pin's REJECTED VARIANT was run against the mutated guard
+(the mutation test — BUILD-PROTOCOL §2), the observed red captured to
 ``.measurements/t19-pin-reds.json``; the unfenced CONSUME-BUDGET variant
 stays RED FOREVER (it is the dragon, not a bug to fix).
 
-Pins (the ticket's red-first numbering, the ones this suite carries):
-  #1  the CONSUME-BUDGET dragon — recorded via the mutation drill (the
+Pins (the ticket's failing-first numbering, the ones this suite carries):
+  #1  the CONSUME-BUDGET dragon — recorded via the mutation test (the
       arm WITHOUT ``AND NOT budget_paused`` kills a held loop and refuses
-      the operator's approval — the drill's red, kept forever)
+      the operator's approval — the scenario's red, kept forever)
   #2  BUDGET-SWEEP-VS-HOLD — a paused row with a FORCED-PAST deadline
       does not fire; the un-paused row fires at the same deadline
   #3  CARRY — advanced exactly once per iteration, frozen at spawn
@@ -184,7 +184,7 @@ async def test_iteration_cap_terminated_by_the_advance_guard_named_state(
     assert root_status == "failed", root_status
     loop_redlog.red(
         "pin4-iteration-cap",
-        "the cap guard removed from the advance statement (the mutation drill)",
+        "the cap guard removed from the advance statement (the mutation test)",
         {"spawns": len(spawns), "flow_status": root_status},
     )
 
@@ -230,7 +230,7 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
     """A PAUSED loop row with its budget_deadline FORCED INTO THE PAST
     must not fire (holds are free); the UN-paused row at the same
     deadline DOES. The arm missing ``AND NOT budget_paused`` reds (the
-    mutation drill's recorded red = the CONSUME-BUDGET dragon)."""
+    mutation scenario's recorded red = the CONSUME-BUDGET dragon)."""
     app, name = _loop_app(None, budget_s=600.0)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
@@ -239,9 +239,9 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
         loop_id = new_uuid()
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+            "retry_kind, status, step_key, metadata, fairness_key, budget_deadline, budget_paused) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
-            "$2::jsonb, now() - interval '1 hour', $3)",
+            "$2::jsonb, $3, now() - interval '1 hour', $4)",
             loop_id,
             json.dumps(
                 {
@@ -251,6 +251,7 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
                     "max_iterations": 100,
                 }
             ),
+            str(flow_id),
             paused,
         )
     # THE ARM: the paused row is invisible; the un-paused row fires.
@@ -272,7 +273,7 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
     assert by_paused[False]["state"] == "budget_exhausted"
     loop_redlog.red(
         "pin2-budget-sweep-vs-hold",
-        "the arm WITHOUT 'AND NOT budget_paused' (the mutation drill — the CONSUME-BUDGET dragon, red forever)",
+        "the arm WITHOUT 'AND NOT budget_paused' (the mutation test — the CONSUME-BUDGET dragon, red forever)",
         {"paused_row_fired": True, "operator_approval_refused": True},
     )
 
@@ -283,12 +284,12 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
 async def test_infra_fault_routes_to_reclaim_never_the_ladder(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SEMANTICS DECISION, stated once — attack-3 H5's cure sharpened
+    """THE SEMANTICS DECISION, stated once — attack-3 H5's fix sharpened
     it: the classifier reads WHERE the error ESCAPED, never merely its
     type. A fault raised by the BODY is a BODY failure even when it
     wears a ConnectionError's face (the body cannot forge an infra
     fault — the poison-body wedge, 20 crashed rows + a ``running`` flow
-    forever, is the convicted variant the attack probe keeps red); a
+    forever, is the rejected variant the attack probe keeps red); a
     fault raised by the DRIVER'S OWN machinery is the reclaim (the
     ladder untouched, the lease machinery re-claims)."""
     kills2: dict[str, int] = {"n": 0}
@@ -478,7 +479,7 @@ async def test_iteration_memo_is_the_one_tx_shape(
         assert memo.result == {"done": False, "feedback": {"acc": 1}}
 
 
-# ── the CONSUME-BUDGET dragon (pin #1 — RED FOREVER, the mutation drill) ─
+# ── the CONSUME-BUDGET dragon (pin #1 — RED FOREVER, the mutation test) ─
 
 
 async def test_consume_budget_dragon_red_forever(
@@ -488,13 +489,13 @@ async def test_consume_budget_dragon_red_forever(
     the budget (consumes it) instead of PAUSING — killed a held loop
     mid-hold and the operator's later approval was REFUSED (deliver →
     False): work silently lost, timer order nondeterministic (P3 1a-prime).
-    The shipped arm's PAUSED semantics close it; the variant is kept red
-    by the mutation drill: remove ``AND NOT budget_paused``, watch THIS
-    suite fail, restore. The drill's red is RECORDED here."""
-    # The drill ran (the arm mutated, the paused row fired, the suite
-    # failed, the guard restored); the dragon's red lives in the redlog
+    The shipped arm's PAUSED semantics close it; the variant is kept failing
+    by the mutation test: remove ``AND NOT budget_paused``, watch THIS
+    suite fail, restore. The scenario's red is RECORDED here."""
+    # The scenario ran (the arm mutated, the paused row fired, the suite
+    # failed, the guard restored); the dragon's red lives in the failure log
     # + the guide's warning. This pin documents the DRAGON's shape and
-    # keeps its conviction in the suite (a reader who removes the leg
+    # keeps its recorded finding in the suite (a reader who removes the leg
     # and re-runs sees THIS file's paused-row pin red).
     loop_redlog.red(
         "pin1-consume-budget-dragon",
@@ -502,21 +503,22 @@ async def test_consume_budget_dragon_red_forever(
         {
             "held_loop_killed_mid_hold": True,
             "operator_approval_refused": "deliver -> False",
-            "conviction": "the shipped arm carries AND NOT budget_paused; the drill red is in t19-pin-reds.json",
+            "recorded finding": "the shipped arm carries AND NOT budget_paused; the scenario red is in t19-pin-reds.json",
         },
     )
-    # The shipped arm's paused-row refusal (the green side of the drill):
+    # The shipped arm's paused-row refusal (the green side of the scenario):
     app, name = _loop_app(None, budget_s=600.0)
     runner = await _runner_of(app, name, wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     loop_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+        "retry_kind, status, step_key, metadata, fairness_key, budget_deadline, budget_paused) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
-        "$2::jsonb, now() - interval '1 hour', true)",
+        "$2::jsonb, $3, now() - interval '1 hour', true)",
         loop_id,
         json.dumps({"flow_id": str(flow_id), "kind": "loop", "iteration": 0}),
+        str(flow_id),
     )
     await sweep_loop_budget(wf_pool, runner.wsql)
     status = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', loop_id)
@@ -537,10 +539,10 @@ async def test_carry_optimistic_apply_dragon_red_forever(
     write). The shipped law: THE CARRY IS FROZEN AT SPAWN and advanced
     EXACTLY ONCE per iteration, in the ADVANCE STATEMENT, one atomic
     write shared with THE CAP GUARD (the guide §9's own words). The
-    variant is kept red by the mutation drill: an advance issued at
+    variant is kept failing by the mutation test: an advance issued at
     hold-release time (outside the advance statement) double-applies —
     observed: the carry's counter jumped 2 for one iteration's work.
-    The drill's red is RECORDED here (the receipts law: a red is
+    The scenario's red is RECORDED here (the receipts law: a red is
     machine-generated or it doesn't exist)."""
     loop_redlog.red(
         "pin-carry-optimistic-apply-dragon",
@@ -549,12 +551,12 @@ async def test_carry_optimistic_apply_dragon_red_forever(
         {
             "carry_double_applied_on_resume": True,
             "iterations_run_for_one_work_unit": 2,
-            "conviction": "the shipped law: the carry advances EXACTLY ONCE per "
+            "recorded finding": "the shipped law: the carry advances EXACTLY ONCE per "
             "iteration, in the ADVANCE STATEMENT, one atomic write shared with "
-            "the cap guard; the drill red is in t19-pin-reds.json",
+            "the cap guard; the scenario red is in t19-pin-reds.json",
         },
     )
-    # The shipped arm's single-apply law (the green side of the drill):
+    # The shipped arm's single-apply law (the green side of the scenario):
     # the advance statement's own counter is the ONLY writer — after a
     # hold + resume cycle the iteration advanced EXACTLY ONCE (the
     # ledger's carry is the iteration's own, never re-applied).
@@ -567,11 +569,12 @@ async def test_carry_optimistic_apply_dragon_red_forever(
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, budget_paused) "
+        "retry_kind, status, step_key, metadata, fairness_key, budget_paused) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
-        "$2::jsonb, true)",
+        "$2::jsonb, $3, true)",
         loop_id,
         metadata,
+        str(flow_id),
     )
     # The resumed loop's own advance (the driver's path) moves the
     # counter ONCE: the metadata's iteration reads 2 after one
@@ -690,7 +693,7 @@ async def test_declared_carry_arrives_typed_at_iteration_zero(
 ) -> None:
     """THE CARRY'S DECLARED TYPE IS THE CONTRACT: a loop declared
     ``initial=Counter(...)`` hands the body a REAL ``Counter`` at iteration
-    0 — not the jsonb dict the init's dump produced. The pre-cure truth:
+    0 — not the jsonb dict the init's dump produced. The pre-fix truth:
     the typed carry NEVER reached the body (the init serialized it
     typeless; the pins' isinstance fallbacks masked the lie)."""
     seen: list[object] = []
@@ -721,7 +724,7 @@ async def test_carry_type_survives_a_kill_and_resume_mid_loop(
     (the reclaim's crashed row + the re-pend) is resumed by a FRESH
     driver pass; the resumed body receives the declared type with the
     EXACT accumulated state — the accumulation is exact across resumes
-    (no reset). The pre-cure truth: the resumed carry arrived as the
+    (no reset). The pre-fix truth: the resumed carry arrived as the
     jsonb dict and the masked pins reset the count (observed [1, 1, 2, 3]
     for a 3-step count)."""
     from unittest.mock import patch
@@ -783,7 +786,7 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
     """THE ADVANCE/EXHAUST FENCES: the loop's advance and exhaust carry
     the SAME claim-identity legs every other terminal write carries
     (worker + attempt + claim_epoch — the one-tx-finalize doctrine; the
-    unguarded statements were the doctrine's BACK DOOR). The pre-cure
+    unguarded statements were the doctrine's BACK DOOR). The pre-fix
     truth: a zombie driver's exhaust killed a HEALTHY RECLAIMED loop and
     wrote its escalation row; a stale payload moved the counter
     backward.
@@ -808,10 +811,10 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
     loop_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, locked_by_worker, attempt, "
+        "retry_kind, status, step_key, metadata, fairness_key, locked_by_worker, attempt, "
         "claim_epoch, deps_pending) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'counter', "
-        "$2::jsonb, $3, 6, 4, 0)",
+        "$2::jsonb, $3, $4, 6, 4, 0)",
         loop_id,
         json.dumps(
             {
@@ -822,6 +825,7 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
                 "carry": {"acc": 3},
             }
         ),
+        str(flow_id),
         fresh,
     )
     await wf_conn.execute(
@@ -908,7 +912,7 @@ async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
     recorded as the TYPED shape error — the iteration's ledger terminal
     says ``failed`` / ``LoopBodyShapeError``, the loop node's diagnosis
     names it, the flow terminalizes. The replay honors the recorded
-    truth: the pre-cure ledger recorded a SUCCEEDED iteration and the
+    truth: the pre-fix ledger recorded a SUCCEEDED iteration and the
     memo replay re-threaded the raw return AS A REFINE — the ledger
     fabricated."""
     calls = {"n": 0}

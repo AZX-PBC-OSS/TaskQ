@@ -1,11 +1,11 @@
 # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE DOCSHELF ADOPTION BLOCKERS' CURES (the engine-cures lane) — the
+"""THE DOCSHELF ADOPTION BLOCKERS' FIXES (the engine-fixes lane) — the
 adoption team's verdict was "Fix F1 + F4 + F2 and we would ship without
 hesitation"; F4 (the connection-hold) and F1 (the ladder's inheritance)
 re-probed against this branch are the HOLDMAP LANE's territory (the
-verdicts ride this lane's report); the REMAINING cures are HERE, each
-red-first (the pin convicted against the base head ``0e2f5cc09`` before
-its cure landed — the red receipts are this lane's captures):
+verdicts ride this lane's report); the REMAINING fixes are HERE, each
+failing-first (the pin rejected against the base head ``0e2f5cc09`` before
+its fix landed — the red receipts are this lane's captures):
 
 * **F2** — THE ROUTE ARMS' COHORTS NEVER PROJECTED AT BOOT: the arms
   fork at RUNTIME (the source's finalize stamps each arm's effective
@@ -13,7 +13,7 @@ its cure landed — the red receipts are this lane's captures):
   nodes only — an arm's rows stamped ``(actor, queue)`` pairs no
   ``ActorConfig`` carried: the rows STRANDED SILENTLY (no dispatch
   capacity, the strict-queue worker never listened) until the app
-  provisioned the cohorts itself. THE CURE: the boot projection's walk
+  provisioned the cohorts itself. THE FIX: the boot projection's walk
   extended to the arms' effective pairs
   (``_workflow_cohorts`` — the runner's ``_route_fork`` arithmetic, one
   vocabulary); a boot that strands silently is the defect.
@@ -21,7 +21,7 @@ its cure landed — the red receipts are this lane's captures):
   ``route()``'s derived join inherits the source's ACTOR and takes the
   route's ``queue=`` (default ``default``) — a source placed on a
   non-default queue split its actor over two queues, the conflict
-  discovered ONLY at the worker's boot, ``validate()`` clean. THE CURE
+  discovered ONLY at the worker's boot, ``validate()`` clean. THE FIX
   (``W6-actor-queue-cohort``, the W2 precedent's severity — the wiring
   warns, the boot projection's one-queue law stays the refusal door,
   because the split placement under one actor is also the taught
@@ -31,7 +31,7 @@ its cure landed — the red receipts are this lane's captures):
 * **F6** — THE FAN-IN BOUND'S ESCAPE EXPOSED ON THE MAP FACE: the
   1000-parent bound is real (the docshelf's ``FanInBoundExceededError``
   at 2335 chunks) and the child-driven escape was reachable only through
-  the raw ``JoinSpec`` — the authoring verbs exposed nothing. THE CURE:
+  the raw ``JoinSpec`` — the authoring verbs exposed nothing. THE FIX:
   ``child_driven=`` on ``map_source`` / ``route`` (one machinery, both
   spellings), threaded to the fork's ``JoinSpec`` — and the guide's
   fan-in section teaches it.
@@ -42,7 +42,7 @@ its cure landed — the red receipts are this lane's captures):
   shared tail with resolvable module-scope annotations). Per the
   doctrine, the honesty is HELD: this pin asserts the join body receives
   the DECLARED models — the silent type-mismatch is what's forbidden,
-  and the pin convicts it the day any face regresses to raw dicts.
+  and the pin rejects it the day any face regresses to raw dicts.
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ def test_f2_the_route_arms_forked_cohorts_project_at_boot() -> None:
     their own placements (the per-arm queue, the arm's DISTINCT actor —
     the one-queue law's remedy) must see BOTH arms' forked cohorts in
     the boot projection, beside the source's own and the derived join's.
-    The pre-cure walk read the declared nodes only: the arms' cohorts
+    The pre-fix walk read the declared nodes only: the arms' cohorts
     were absent — the arm rows stranded silently until the app
     provisioned the cohorts itself (the docshelf's workaround)."""
     seam.reset_app_registry_for_tests()
@@ -121,13 +121,13 @@ def test_f2_the_route_arms_forked_cohorts_project_at_boot() -> None:
 
         configs = [(c.actor, c.queue) for c in seam.project_workflow_actor_configs()]
         # THE SOURCE'S OWN + THE DERIVED JOIN'S cohorts (the declared
-        # nodes) — and THE ARMS' FORKED cohorts (the cure's subjects).
+        # nodes) — and THE ARMS' FORKED cohorts (the fix's subjects).
         assert ("wf", "default") in configs, (
             f"the source's own cohort vanished from the projection: {configs}"
         )
         assert ("wf-cpu", "cpu") in configs, (
             "F2: the cpu arm's forked cohort is ABSENT from the boot "
-            f"projection — the arm's rows strand silently (the pre-cure "
+            f"projection — the arm's rows strand silently (the pre-fix "
             f"walk read the declared nodes only): {configs}"
         )
         assert ("wf-gpu", "gpu") in configs, (
@@ -143,7 +143,7 @@ def test_f2_the_conflicting_arm_shape_skips_loud_never_silent() -> None:
     SECOND queue on the source's OWN actor (the one-queue-law breach)
     must go LOUD at boot — the workflow's cohorts project NOTHING and
     the defect is named (the projection-skipped arm) — never the silent
-    stranding the pre-cure boot shipped. The projection does NOT raise
+    stranding the pre-fix boot shipped. The projection does NOT raise
     for a workflow's OWN conflict (the isolation law — one broken build
     fn must not refuse the worker's whole boot); the READ is: no cohort
     of the broken workflow projects."""
@@ -172,16 +172,16 @@ def test_f2_the_conflicting_arm_shape_skips_loud_never_silent() -> None:
         seam.reset_app_registry_for_tests()
 
 
-# ── F3: the derived join's cohort conflict convicted at validate ─────────
+# ── F3: the derived join's cohort conflict rejected at validate ─────────
 
 
 def test_f3_the_derived_joins_cohort_conflict_is_convicted_at_validate() -> None:
     """THE CONFLICT AT THE WIRING, NOT AT THE WORKER'S 3AM: a route's
     source placed on a NON-DEFAULT queue — the derived join inherits the
     source's actor and takes the route's ``queue=`` (default
-    ``default``): one actor over two queues, and the pre-cure
+    ``default``): one actor over two queues, and the pre-fix
     ``validate()`` was CLEAN — the conflict surfaced only at the
-    worker's boot (the projection's cohort refusal). THE CURE (W6): the
+    worker's boot (the projection's cohort refusal). THE FIX (W6): the
     same law is REPORTED at validate — the diagnostic names the actor,
     both queues, and the distinct-actor remedy (the W2 precedent's
     severity: the wiring warns, the boot projection's one-queue law
@@ -202,7 +202,7 @@ def test_f3_the_derived_joins_cohort_conflict_is_convicted_at_validate() -> None
     cohort = [d for d in diagnostics if d.rule == "W6-actor-queue-cohort"]
     assert cohort, (
         "F3: the derived join's cohort conflict is INVISIBLE at validate — "
-        "the pre-cure law left the ambush to the worker's boot "
+        "the pre-fix law left the ambush to the worker's boot "
         f"(the diagnostics: {[d.rule for d in diagnostics]})"
     )
     message = cohort[0].message
@@ -277,7 +277,7 @@ def test_f6_the_child_driven_escape_is_exposed_on_the_map_face() -> None:
     child_driven=True)`` (and route()'s own spelling — one machinery)
     compiles the CHILD-DRIVEN join shape — the compiled node carries the
     declaration, so the fork's ``JoinSpec`` admits a corpus past
-    MAX_FAN_IN_PER_JOIN (the docshelf's 2335-chunk conviction) that the
+    MAX_FAN_IN_PER_JOIN (the docshelf's 2335-chunk recorded finding) that the
     default shape REFUSES. The witness is the compile face (the declared
     field rides the node); the bound's own refusals are the fan-in
     pins' (test_wf_fanin_bound_pins)."""

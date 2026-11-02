@@ -1,7 +1,7 @@
 """THE OPERATOR'S MARCH (T15 — the system tier's composed walk).
 
 ONE scenario walks the operator's own path end to end (the deploy
-matrix drills the CELLS; this march walks the DAY):
+matrix scenarios the CELLS; this march walks the DAY):
 
 1. DEPLOY — the fleet boots to the joined-fleet standard (every pod
    registered, health-green, its beat advancing).

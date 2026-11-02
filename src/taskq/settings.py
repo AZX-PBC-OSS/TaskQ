@@ -1145,7 +1145,7 @@ class WorkerSettings(TaskQSettings):
         "stay healthy while the index rots - keeps the probes on index choices the bound "
         "cannot position), so the bounded-stranding trade buys no robust end-to-end "
         "improvement; see tests/perf/test_mvcc_claim_degradation.py for the curves and the "
-        "TaskQClaimLatencyDegraded runbook for the primary cure. Enable it for fleets whose "
+        "TaskQClaimLatencyDegraded runbook for the primary fix. Enable it for fleets whose "
         "shape matches the isolated-surface measurement (single-queue, monotone claim "
         "streams, fresh statistics).",
     )
@@ -2026,7 +2026,7 @@ class WorkerSettings(TaskQSettings):
         "raise at settings load.",
     )
 
-    # -- Workflow flow-history retention (the TAStack P1's cure) -------
+    # -- Workflow flow-history retention -------------------------------
     # FIVE arms for the SIX tables that grow monotone-forever with no
     # retention arm and no FK for the job prune to cascade: wf_edge,
     # wf_step_ledger, wf_join_fire, wf_signals, wf_node_progress — and
@@ -2034,7 +2034,7 @@ class WorkerSettings(TaskQSettings):
     # round-2 R3's fold: one pass, two batch-bounded deletes — the
     # doomed flows' progress rows AND their stream rings; a dead node's
     # ring, nodes x 64 rows, never had a pruner of its own). Each arm is
-    # TWO-PASS (H-B1's law): the flows-side pass selects the
+    # TWO-PASS (the two-pass law): the flows-side pass selects the
     # TERMINAL-AGED ROOTS first (a tiny jobs-side set via
     # jobs_finished_at_idx — step_key '__flow__', a terminal status, the
     # root's finished_at past the period) and deletes each selected
@@ -2042,10 +2042,10 @@ class WorkerSettings(TaskQSettings):
     # orphan class — the row's pointee absent or not a flow root) rides
     # a separate batch-bounded walk on a coarser cadence, SEEKING
     # strictly past its arm's persisted cursor (wf_rootless_sweep_state,
-    # 01.00.36_01 — the round-2 R1's cure: a live PK front's rows are
+    # 01.00.36_01 — the persisted-cursor fix: a live PK front's rows are
     # visited once and the walk moves past them, never re-reading the
     # same first batch forever). The batch is the prune family's own
-    # knob (prune_batch_size — H-B2: the arms never borrowed
+    # knob (prune_batch_size: the arms never borrowed
     # event_writer_batch_size). The defaults are timedelta(0) — ZERO =
     # OFF — DELIBERATELY OPPOSITE to the outbox/step-cache precedents
     # (which default ON): those prune DERIVED data (a delivered outbox
@@ -2735,7 +2735,7 @@ class WorkerSettings(TaskQSettings):
         # operator only meets at the os._exit. Same watchdog gating as
         # the lease invariant above.
         #
-        # THE WARN BUDGET VS THE CHECK CADENCE (the LedgerWatch F6 cure —
+        # THE WARN BUDGET VS THE CHECK CADENCE (the LedgerWatch F6 fix —
         # the warning storm's config cannot boot): the tier-1 warn's
         # healthy baseline IS the sampling period — the detector polls
         # once per watchdog_check_interval and schedules the beat it
@@ -2745,7 +2745,7 @@ class WorkerSettings(TaskQSettings):
         # each warn dumps every live asyncio task, the dump blocks the
         # loop, the block triggers the next warn: a self-sustaining
         # storm (the adoption team's measured shape: warn 0.4 / check
-        # 0.5 passed this lattice's pre-cure legs, then 295 warn+dump
+        # 0.5 passed this lattice's pre-fix legs, then 295 warn+dump
         # pairs starved the worker's heartbeat past the fleet's
         # readiness timeout). Same watchdog gating as the lease
         # invariant above; the remedy is taught (raise the warn budget —

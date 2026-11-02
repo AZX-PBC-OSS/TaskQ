@@ -1,18 +1,18 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
 """T27's HOSTILE-REVIEW pins (the rv4 internals round, feat/taskqflow @
-fab8dbe6) — the typed route's convicted defects, pinned asserting the
+fab8dbe6) — the typed route's rejected defects, pinned asserting the
 SAFE behavior.
 
-Provenance: the rv4 internals review's live convictions, each reproduced
+Provenance: the rv4 internals review's live recorded findings, each reproduced
 against this head BEFORE pinning (the pre-pin repro shapes + outputs are
-in the pin pack's RECEIPTS.md). Per the doctrine, a LIVE finding is
+in the pin pack's (the pinning run's record). Per the doctrine, a LIVE finding is
 pinned under ``pytest.mark.xfail(strict=True, reason="LIVE FINDING
-rv4-<id>: …")`` asserting the SAFE behavior — the cure flips the pin
-XPASS-strict (a red that says: remove the marker WITH the cure). The one
+rv4-<id>: …")`` asserting the SAFE behavior — the fix flips the pin
+XPASS-strict (a red that says: remove the marker WITH the fix). The one
 GREEN guard (rv4-9's undeclared leg) pins the behavior that is already
-correct and must survive the cure.
+correct and must survive the fix.
 
-The findings (each convicted live; the receipts carry the verbatim reds):
+The findings (each rejected live; the receipts carry the verbatim reds):
 
 * F-RV4-1 (SEVERE) — the EMPTY-LIST route: ``_route_fork`` returns
   ``None`` over ``[]`` (api/_runner.py:1212-1213). With a CONSUMER of
@@ -48,7 +48,7 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   receives ``DocBase(doc_id=...)``, the ``text`` field GONE — observed
   live); ``item: BaseModel`` builds clean and dies raw
   ``PydanticUserError`` at the child. THE PIN (the direction named by
-  the finding, flagged for the maintainer in PINMAP.md): the arm param
+  the finding, flagged for the maintainer): the arm param
   must be EXACTLY the union member — a superclass/BaseModel param is a
   build refusal NAMING the truncation hazard.
 * F-RV4-5 — the SAME-TAG TWIN COLLAPSE: ``type_tag`` =
@@ -64,13 +64,13 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   second member's values AS THE FIRST silently (observed live: the
   fork's ``media.item:...AudioItem`` row carried ``note="from-b"`` and
   the consumer received it as ``SumA``). THE PIN (direction flagged in
-  PINMAP.md): a routed union whose members are field-identical (no
+  the recorded gap): a routed union whose members are field-identical (no
   discriminator) is a build-time diagnostic naming both members.
 * F-RV4-7 — the ARM-HELD HITL COMPILE-BLINDNESS: E14's ``_node_bodies``
   walks body/loop_body/map_item but NOT ``map_arms``
   (_validate.py:815-826) — a ``wait_signal`` inside a route arm raises
   NO E14 signal (no warning, no Mermaid hold) AND a gate declared on
-  the SOURCE convicts "declared-never-waited" though the arm waits
+  the SOURCE rejects "declared-never-waited" though the arm waits
   (both observed live). THE PIN (the contract per the house's
   zero-false-positive doctrine): the E14 walk covers ``map_arms`` — an
   arm wait with NO declared gate is the WARNING face; the declared gate
@@ -161,9 +161,9 @@ async def process_audio(ctx: object, item: AudioItem) -> AudioResult:
 # THE SAFE SEMANTICS (the map's empty-join shape is the named precedent —
 # ``_map_fork``'s own docstring: "the map over nothing — the join fires
 # empty"): the empty source list is a DEFINED outcome, never a wedge and
-# never a None. NOTE (PINMAP): at this head the MAP face's empty fork
+# never a None. NOTE: at this head the MAP face's empty fork
 # crashes raw too (the docstring's shape is aspirational) — the route's
-# cure and the map's cure share the empty-join semantics these pins assert.
+# fix and the map's fix share the empty-join semantics these pins assert.
 
 
 @pytest.mark.integration
@@ -373,7 +373,7 @@ async def arm_two(ctx: object, item: ImageItem, extra: object) -> ImageResult:
 def _assert_arm_arity_refusal(exc_info: pytest.ExceptionInfo[WorkflowValidationError]) -> None:
     """The refusal's contract (the rule SEAT is the maintainer's — E10's
     walk extended to arms, E12's deps-contract face, or E15 owning the
-    arms' whole shape; PINMAP flags the choice): an E-rule fires, and the
+    arms' whole shape; this choice is flagged): an E-rule fires, and the
     diagnostic NAMES the offending subject — the route child the arm
     drives (the source node's ``.item`` child key, the tag's seat). The
     arm function's own name is not the graph's subject — the rule firing
@@ -528,7 +528,7 @@ async def twin_source(ctx: StepContext) -> list[Any]:  # the union rides __annot
     return []
 
 
-twin_source.__annotations__["return"] = list[TwinA | TwinB]  # type: ignore[valid-type]  # Why: the two twins ARE the drill's union — the annotation must hold BOTH distinct types (a string annotation could not name them apart; that is the finding's point).
+twin_source.__annotations__["return"] = list[TwinA | TwinB]  # type: ignore[valid-type]  # Why: the two twins ARE the scenario's union — the annotation must hold BOTH distinct types (a string annotation could not name them apart; that is the finding's point).
 
 
 async def twin_arm_a(ctx: object, item: Any) -> dict[str, str]:
@@ -606,7 +606,7 @@ def test_rv4_6_field_identical_union_members_are_a_build_diagnostic() -> None:
     cannot round-trip the consumer's decode honestly — the dispatch is
     exact-type at the fork but the consumer's decode needs the tag. The
     build (the verb's door OR the validator's re-proof — the seat is the
-    maintainer's, PINMAP flags it) names BOTH members and the hazard."""
+    maintainer's, it is flagged) names BOTH members and the hazard."""
     app = WorkflowApp()
 
     @app.workflow("rv4_6_smart_union_hazard")
@@ -710,7 +710,7 @@ def test_rv4_7b_the_source_gate_covers_the_arms_waits() -> None:
     e14 = [d for d in validate_compiled(compiled) if d.rule == "E14-gate-wiring"]
     assert not e14, (
         f"F-RV4-7b: the source's declared gate covers the arms' waits — E14 "
-        f"falsely convicted: {[str(d) for d in e14]!r}"
+        f"falsely rejected: {[str(d) for d in e14]!r}"
     )
 
 
@@ -745,7 +745,7 @@ def test_rv4_8_every_double_attach_direction_speaks_the_designed_message() -> No
         return _route(src)
 
     def wire_map_after_route(src: Promise[object]) -> Promise[object]:
-        _route(src)  # THE CONVICTED DIRECTION: map_source's check reads map_item only
+        _route(src)  # THE REJECTED DIRECTION: map_source's check reads map_item only
         return _map(src)
 
     def wire_map_after_map(src: Promise[object]) -> Promise[object]:
@@ -793,8 +793,8 @@ def _make_unresolvable_source() -> tuple[Any, type[BaseModel]]:
     ``body_hints`` returns {} and the verb cannot read the union."""
     model = create_model("Rv4HiddenDoc", doc_id=(str, ...))
 
-    async def factory_source(ctx: StepContext) -> "list[Rv4HiddenDoc]":  # noqa: F821, UP037  # Why: the quoted, never-resolvable name IS the drill — a declared annotation the compile cannot resolve (the factory-built model's shape); a resolvable spelling would defeat the probe.  # pyright: ignore[reportUndefinedVariable, reportUnknownParameterType]  # Why: the same drill — the undefined name is the probe's subject, not a defect.
-        return cast("list[Rv4HiddenDoc]", [{"doc_id": "d1"}])  # noqa: F821  # Why: the same deliberate unresolved name — the body's code references no value (no closure cell), so the hint-resolution seam finds nothing.  # pyright: ignore[reportUndefinedVariable]  # Why: the same drill.
+    async def factory_source(ctx: StepContext) -> "list[Rv4HiddenDoc]":  # noqa: F821, UP037  # Why: the quoted, never-resolvable name IS the scenario — a declared annotation the compile cannot resolve (the factory-built model's shape); a resolvable spelling would defeat the probe.  # pyright: ignore[reportUndefinedVariable, reportUnknownParameterType]  # Why: the same scenario — the undefined name is the probe's subject, not a defect.
+        return cast("list[Rv4HiddenDoc]", [{"doc_id": "d1"}])  # noqa: F821  # Why: the same deliberate unresolved name — the body's code references no value (no closure cell), so the hint-resolution seam finds nothing.  # pyright: ignore[reportUndefinedVariable]  # Why: the same scenario.
 
     return factory_source, model
 

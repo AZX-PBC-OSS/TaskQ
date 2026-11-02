@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a test-fixture identifier, validated by render()/open_fleet upstream; every value is $-bound.
-"""Red-team pins: the double-run seams of the current combined main.
+"""Adversarial review pins: the double-run seams of the current combined main.
 
 The hunt class: one (job, attempt) executing twice, or one job running on
 two workers concurrently, through the NEW seams - the cancel ladder's

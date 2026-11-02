@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: rolling-deploy windows around migration 01.00.08 (denial counters).
+"""Adversarial review: rolling-deploy windows around migration 01.00.08 (denial counters).
 
 Old-code/new-schema: the previous release's prune CTE names its columns
 explicitly and predates ``snooze_count`` / ``rate_limit_blocked_count``. The

@@ -1727,7 +1727,7 @@ def test_lease_renewal_threshold_generous_lease_uses_half() -> None:
 
 
 def test_naive_half_lease_threshold_lapses_before_isolation_at_defaults() -> None:
-    """Red-team pin: the issue's naive candidate - skip while more than
+    """Adversarial review pin: the issue's naive candidate - skip while more than
     HALF the lease remains - is NOT safe at the default settings.
 
     At lease 60s / interval 10s / 3 tolerated failures, a worker whose

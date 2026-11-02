@@ -475,7 +475,7 @@ async def test_strict_fail_open_makes_no_retry_storm() -> None:
 
 
 async def test_batch_finalizer_refuses_unknown_queue_atomic() -> None:
-    """THE FINALIZER BYPASS (the red-team's blocking find): the
+    """THE FINALIZER BYPASS (the adversarial review's blocking find): the
     finalizer's args write through their OWN sites after the per-item
     verdict loop, which iterates items only — a finalizer routed to an
     unregistered queue stored the orphan SILENTLY (no refusal, no note)
@@ -733,7 +733,7 @@ async def test_empty_snapshot_never_refuses_first_deploy() -> None:
     stored-assignment snapshot that is EMPTY — no worker has ever
     started — carries ZERO evidence of stranding, so strict DISABLES
     itself (advisory posture, the note still fires) and the job is
-    ACCEPTED. Red-first: this exact submit raised at the base before the
+    ACCEPTED. Failing-first: this exact submit raised at the base before the
     rule landed."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))  # fresh store: nothing registered
     client = JobsClient(backend, settings=_strict_settings())

@@ -1,12 +1,5 @@
 # T25 — THE CROSS-RUN STEP CACHE: the Nix-style recursive address, the SUCCESS-ONLY store, the receipt-carrying hits
 
-Lane: `feat/taskqflow-cross-run-cache` off `37ab05b8` (the
-`feat/taskqflow` consolidator's measured-tax head). Worktree
-`/tmp/opencode/wt-cache`; own PG on `:5786`
-(`postgresql://postgres:taskq@localhost:5786/taskq`, `POSTGRES_PASSWORD=taskq`,
-`POSTGRES_DB=taskq`, `max_connections=1000`, `fsync=off`, the `taskq` role),
-destroyed at close. Push THIS BRANCH ONLY.
-
 Design-first: THIS ticket is the read's output; every claim below was
 verified against the tree at the base head before a line of code.
 
@@ -187,7 +180,7 @@ step(body, params, cache=True, cache_ttl=600)  # the explicit freshness
   `step()` docstring — the cache is the determinism DECLARATION's
   enforcement point, not its substitute.
 
-## THE PINS (red-first — `tests/test_wf_step_cache_pins.py`)
+## THE PINS (`tests/test_wf_step_cache_pins.py`)
 
 | Law | Pin | The red observed (at the base head) | The flip (the SAFE behavior) |
 |---|---|---|---|
@@ -206,9 +199,9 @@ ruff check + ruff format --check + pyright FULL 0/0/0 + the type gate +
 the pins green + the wf battery ×2 (leg 1 with the scoped coverage gate)
 + the fast tier ×1 at `-n 8` (full capture) + `mkdocs build --strict`
 (the guide's cache section: the two-claims law's user face + the
-determinism hazard + the TTL — the verified snippets). Red-first: the
-pins ran against the base head BEFORE the build; the receipts live in
-`.measurements/` (head-stamped).
+determinism hazard + the TTL — the verified snippets). The pins ran against
+the base head BEFORE the build; the captures are recorded with the evidence
+runs.
 
 ## THE DOCS
 

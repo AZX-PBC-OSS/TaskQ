@@ -3,9 +3,9 @@
 SSE node_state stream + the typed actions, against a REAL run on a real
 migrated schema (the fastapi marker tier: server-rendered pytest, no
 browser — the DoD's primary lane; the browser-level probe replay is the
-red-team's lane).
+adversarial review's lane).
 
-The pins (each with its convicted variant named in the docstring):
+The pins (each with its rejected variant named in the docstring):
 - suppress_refresh (the meta-refresh killer — the page without it reds
   the live-state pin by construction);
 - the boot JSON's graph is the ROWS-ALONE emission (the admin never
@@ -410,7 +410,7 @@ async def test_sse_reconnect_last_event_id_continues_the_cursor(
 async def test_sse_unknown_run_is_a_404_at_subscribe(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """THE STATES MATRIX (3), Q7's cure superseding the empty-snapshot
+    """THE STATES MATRIX (3), Q7's fix superseding the empty-snapshot
     pin: a stream for an UNKNOWN run id is a 404 AT SUBSCRIBE — the
     estate's own ``/sse/{topic}`` convention (an unknown topic is
     refused at subscribe; the empty-snapshot-forever stream was an
@@ -1347,7 +1347,7 @@ async def test_the_node_panel_honors_the_capture_policies(
 
 def test_the_page_js_carries_the_base_path_and_rerun_laws() -> None:
     """THE JS LAW' S SOURCE PIN: the page script builds every URL on the
-    boot's mounted prefix (the relative-URL 404 bug's conviction), asks
+    boot's mounted prefix (the relative-URL 404 bug's recorded finding), asks
     once before the rerun forms submit (form[data-confirm] →
     window.confirm), and escapes the row key before it touches a
     node-table selector (the poisoned-row defense)."""

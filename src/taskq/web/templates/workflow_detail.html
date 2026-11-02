@@ -58,7 +58,7 @@
 </div>
 
 {# THE FLOW FAMILY (the admin is not child-blind):
-   the parent↔child links are ROW facts (the child flows' receipts on
+   the parent↔child links are ROW facts (the child flows' records on
    the parent's node rows; the parent pointer on the child's root) —
    the identity faces the child line landed, surfaced: the operator can
    walk the family and see whose join waits (the cancel itself lives on
@@ -145,7 +145,7 @@
                     <div class="mt-1 text-xs text-amber-700 dark:text-amber-300" data-wf-node-deferral>{{ n.deferral_label }}</div>
                     {% endif %}
                     {% if n.deadline_label %}
-                    {# THE DEADLINE LINE (the wf start_to_close cure — the
+                    {# THE DEADLINE LINE (the wf start_to_close bound — the
                        bound where declared + the deadline's reality for a
                        RUNNING node: the claim's instant + the bound, with
                        the time left or the expiry's age). The row's own
@@ -189,7 +189,7 @@
     <ul class="space-y-3">
         {% for h in holds %}
         {% if h.is_timer %}
-        {# THE TIMER'S BRANCH (the timer-cures lane's cure 3): a timer
+        {# THE TIMER'S BRANCH: a timer
            hold renders AS a timer — the key, the scheduled instant, the
            clock as the resolver — and NO resolve affordance: the
            boundary is refuse-only (the clock is the only resolver this

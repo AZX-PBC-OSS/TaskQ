@@ -630,7 +630,7 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
         ([{"actor": "emails", "queue": "default"}], "both-keys-missing"),
         # The half-valid row: depth reads fine, oldest_age is malformed.
         # As call arguments the comprehensions ran update (a fresh depth
-        # cache) and then raised in comprehension , landing the fresh
+        # cache) and then raised in comprehension, landing the fresh
         # depth beside a FROZEN age cache, the alert's operand, a mixed
         # state; built as locals first, the
         # failure is atomic (neither cache is written).

@@ -1,5 +1,5 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: worker boot ordering vs migration currency (rolling-deploy window).
+"""Adversarial review: worker boot ordering vs migration currency (rolling-deploy window).
 
 The worker never applies migrations by design, and the only schema-currency
 guard on the whole boot path is the queue-cap query's UndefinedColumnError →

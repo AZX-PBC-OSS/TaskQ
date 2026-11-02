@@ -678,7 +678,7 @@ class EnqueueArgs:
     unique_states: tuple[JobStatus, ...] = DEFAULT_UNIQUE_STATES
     metadata: dict[str, object] = field(default_factory=dict[str, object])
     tags: tuple[str, ...] = ()
-    # The fan-out ledger (LIB-2): the enqueuing parent's job id, stamped
+    # The fan-out ledger: the enqueuing parent's job id, stamped
     # by the client layer from the ambient parent context (the sibling
     # contextvar to the tag-inheritance one, set at worker entry). A
     # plain column in the schema, deliberately NO foreign key: an FK
@@ -1132,7 +1132,7 @@ class JobRow:
     hot.
     """
     parent_id: JobId | None = None
-    """The fan-out ledger (LIB-2): the enqueuing parent's job id when this
+    """The fan-out ledger: the enqueuing parent's job id when this
     row is a child enqueue made under a parent's context (the sibling
     stamp to tag inheritance, set at worker entry). Plain column, no
     foreign key — a purged parent's pending children are a defined,

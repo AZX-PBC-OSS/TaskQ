@@ -1,4 +1,4 @@
-"""Red-team attacks on the bounded-sweep parameter boundary.
+"""Adversarial review attacks on the bounded-sweep parameter boundary.
 
 The bounded sweeps take ``batch_size`` and ``statement_timeout_ms`` as
 typed ints at a public boundary (``PostgresBackend.sweep_*`` staticmethods

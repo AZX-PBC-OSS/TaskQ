@@ -33,7 +33,6 @@ shared between ``consume_one_job`` and ``_consume_transactional``.
 
 import asyncio
 import time
-import traceback
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Final, Literal
@@ -76,6 +75,8 @@ from taskq.obs import (
     record_reservation_denial,
     render_exception,
     safe_str,
+    safe_traceback_text,
+    safe_type_name,
 )
 from taskq.retry import (
     ActorConfigLike,
@@ -227,7 +228,7 @@ async def _terminal_write_with_retry[T](
                     attempt=attempt,
                     elapsed_ms=int(elapsed * 1000),
                     budget_ms=int(budget_s * 1000),
-                    infra_error_class=type(infra_exc).__name__,
+                    infra_error_class=safe_type_name(infra_exc),
                     infra_error_message=str(infra_exc),
                 )
                 raise
@@ -240,7 +241,7 @@ async def _terminal_write_with_retry[T](
                 attempt=attempt,
                 max_attempts=_TERMINAL_WRITE_ATTEMPTS,
                 retry_in_ms=int(wait.total_seconds() * 1000),
-                infra_error_class=type(infra_exc).__name__,
+                infra_error_class=safe_type_name(infra_exc),
                 infra_error_message=str(infra_exc),
             )
             await asyncio.sleep(wait.total_seconds())
@@ -392,14 +393,14 @@ def _log_terminal_write_failed(
         job_id=str(job.id),
         actor=job.actor,
         actor_succeeded=job_exc is None,
-        job_error_class=type(job_exc).__name__ if job_exc is not None else None,
+        job_error_class=safe_type_name(job_exc) if job_exc is not None else None,
         # Why safe_str: job_exc is the actor's own exception, its __str__
         # can raise, and this log runs inside the terminal-write failure
         # handler - a raising str() here would escape the handler with a
         # fresh TypeError instead of logging the infra failure.
         job_error_message=(safe_str(job_exc) if job_exc is not None else None),
         job_error_traceback=_format_exc(job_exc) if job_exc is not None else None,
-        infra_error_class=type(infra_exc).__name__,
+        infra_error_class=safe_type_name(infra_exc),
         infra_error_message=str(infra_exc),
         infra_error_traceback=_format_exc(infra_exc),
     )
@@ -429,7 +430,7 @@ def _format_exc(exc: BaseException) -> str:
     parameter matches :func:`_log_terminal_write_failed` and is immune to
     call-site structure.
     """
-    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    return safe_traceback_text(exc)
 
 
 def _log_job_failed(
@@ -490,7 +491,7 @@ async def _post_write_row(backend: Backend, job: JobRow) -> JobRow:
             "terminal-hook-row-reread-failed",
             kind="terminal_hook_row_reread_failed",
             job_id=str(job.id),
-            error_class=type(exc).__name__,
+            error_class=safe_type_name(exc),
         )
         return job
     if updated is None:
@@ -616,9 +617,10 @@ async def _handle_timeout(
     # The sentinel is the MACHINERY's expiry; the row reports the deadline
     # class, not the private marker's own name. A body-raised TimeoutError
     # never reaches this handler (the dispatcher routes it to the generic
-    # path), so the stamp below stays ``type(exc).__name__`` there.
+    # path), so the stamp below stays the exception's own (guarded) name
+    # there.
     error_class = (
-        "TimeoutError" if isinstance(exc, _StartToCloseExceededError) else type(exc).__name__
+        "TimeoutError" if isinstance(exc, _StartToCloseExceededError) else safe_type_name(exc)
     )
     error_info = ErrorInfo(
         error_class=error_class,
@@ -627,8 +629,8 @@ async def _handle_timeout(
     )
     # The log channel leaves the trust boundary and carries the scrubbed text;
     # the fallback name is a constant, not exception text, so it needs neither.
-    log_message = text.message.nul_escaped() if raw_message else "start_to_close"
-    log_traceback = text.stacktrace.nul_escaped()
+    log_message = text.message.log_escaped() if raw_message else "start_to_close"
+    log_traceback = text.stacktrace.log_escaped()
     log.warning(
         "job_timeout",
         job_id=str(job.id),
@@ -1134,14 +1136,15 @@ async def _handle_generic_exception(
     # actor's failure). Raw text, not safe_exception_message: the
     # render-once invariant owns scrubbing (text above), the row keeps the
     # raw message exactly as before the guard.
+    error_class = safe_type_name(e)
     error_info = ErrorInfo(
-        error_class=type(e).__name__,
+        error_class=error_class,
         error_message=sanitize_nul_str(safe_str(e)),
         error_traceback=sanitize_nul_str(text.raw_stacktrace),
     )
     # The log channel leaves the trust boundary and carries the scrubbed text.
-    log_message = text.message.nul_escaped()
-    log_traceback = text.stacktrace.nul_escaped()
+    log_message = text.message.log_escaped()
+    log_traceback = text.stacktrace.log_escaped()
     log.warning(
         "job_exception",
         job_id=str(job.id),
@@ -1186,7 +1189,7 @@ async def _handle_generic_exception(
                 "consume-exception-noop",
                 from_state="running",
                 to_state="noop",
-                cause=type(e).__name__,
+                cause=error_class,
             )
             return "noop"
         if updated_row.status == "failed":
@@ -1213,14 +1216,14 @@ async def _handle_generic_exception(
             attributes={
                 "from_state": "running",
                 "to_state": "scheduled",
-                "error_class": type(e).__name__,
+                "error_class": error_class,
             },
         )
         log_state_change(
             log,
             from_state="running",
             to_state="scheduled",
-            cause=type(e).__name__,
+            cause=error_class,
         )
         return "scheduled"
     else:
@@ -1247,7 +1250,7 @@ async def _handle_generic_exception(
                 "consume-exception-noop",
                 from_state="running",
                 to_state="noop",
-                cause=type(e).__name__,
+                cause=error_class,
             )
             return "noop"
         await _report_terminal_failure(

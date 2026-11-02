@@ -1,7 +1,7 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE WF SNOOZE/RETRY-AFTER PINS — the body's control-flow signals, red-first.
+"""THE WF SNOOZE/RETRY-AFTER PINS — the body's control-flow signals, failing-first.
 
-THE CONVICTION (the OCR-429 exhaustion): a workflow body raising the
+THE RECORDED FINDING (the OCR-429 exhaustion): a workflow body raising the
 vanilla surface's typed control-flow signals —
 :class:`~taskq.exceptions.Snooze` (reschedule, does NOT consume retry
 budget) and :class:`~taskq.exceptions.RetryAfter(delay, consume_budget=)`
@@ -82,7 +82,7 @@ MODULE_NAME = "wf_snooze_demo_flows"
 #: waits read the constant, never a re-spelled literal.
 FLOOR_S = 1.0
 
-#: THE LOOP BODIES' INVOCATION LEDGER (the C2 pins' counter — the
+#: THE LOOP BODIES' INVOCATION LEDGER (the pins' counter — the
 #: module-level list the registered bodies append to; the refund re-mints
 #: the attempt ordinal so ``ctx.attempt`` cannot count, and the pin reads
 #: the CALLS to prove the resume re-ran the iteration).
@@ -240,7 +240,7 @@ def demo_app_module() -> Iterator[types.ModuleType]:
 
         return build(step(_body, Ingest(doc_id="d1"), key="solo"))
 
-    # THE LOOP PINS' FLOWS (C2 — the loop cliff): the bodies append to the
+    # THE LOOP PINS' FLOWS (the loop cliff): the bodies append to the
     # module-level _LOOP_CALLS so the pin can count the INVOCATIONS (the
     # rows cannot).
     @app_obj.workflow("loop_snooze_flow")
@@ -335,7 +335,7 @@ async def test_snooze_defers_the_row_and_never_burns_the_budget(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE HEADLINE PIN (the OCR-429 conviction's cure): a body raising
+    """THE HEADLINE PIN (the OCR-429 recorded finding's fix): a body raising
     ``Snooze`` re-schedules the node at the delay — the attempt UNCHANGED
     (the claim's increment refunded), the run alive, the ledger row
     rested ``awaited`` (never a failed row), the result capture empty —
@@ -715,7 +715,7 @@ async def test_defer_fences_a_cancel_marked_row(
     )
     worker_id, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
     # The claim's own ledger row (the record the terminal route keys —
-    # the real claim's H6 law: the claim and the running ledger row are
+    # the real claim's the law: the claim and the running ledger row are
     # one statement; the seed's shape supplies it here).
     from taskq.workflows.api._runner_defer import defer_row_law
     from taskq.workflows.engine import render_workflow_sql
@@ -850,7 +850,7 @@ async def test_defer_fences_a_zombie_attempt(
     assert row["status"] == "running", "the winner's row is untouched"
 
 
-# ── (8c) THE VANILLA CANCEL'S OWN MARK (C1 — the cancel launder) ──────────
+# ── (8c) THE VANILLA CANCEL'S OWN MARK (the cancel launder) ──────────
 
 
 async def test_defer_fences_a_vanilla_cancel_marked_row(
@@ -859,13 +859,13 @@ async def test_defer_fences_a_vanilla_cancel_marked_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE VANILLA CANCEL'S COLUMN MARK (C1): the admin job-page cancel
+    """THE VANILLA CANCEL'S COLUMN MARK: the admin job-page cancel
     (``cancel_running``'s own arm — ``cancel_requested_at = now,
     cancel_phase = 1`` on the RUNNING row) is a cancel in flight on the
     wf node row too — the deferral must fence it exactly like the wf's
     own metadata mark: the verdict ``cancel_fenced``, the row NOT
     rescheduled (it does not survive the cancel), the vanilla mark
-    untouched on the record. The convicted shape: the column mark fenced
+    untouched on the record. The rejected shape: the column mark fenced
     NOTHING — the deferral rescheduled the row (the cancel laundered:
     the body invoked twice, the run SUCCEEDED, the vanilla cancel door
     dead for life on that row)."""
@@ -1053,7 +1053,7 @@ async def test_the_deferral_resets_the_cancel_columns_for_the_later_claim(
     assert row["cancel_phase"] == 0, "the later claim's row is clean (no laundry)"
 
 
-# ── (8d) THE ZOMBIE'S FENCE vs THE RE-MINT (C5) ───────────────────────────
+# ── (8d) THE ZOMBIE'S FENCE vs THE RE-MINT  ───────────────────────────
 
 
 async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
@@ -1062,7 +1062,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE RE-MINT GUARD (C5): the refund re-mints the ordinal — the
+    """THE RE-MINT GUARD: the refund re-mints the ordinal — the
     arbiter re-use hands a LIVE winner the SAME ledger row a zombie once
     claimed. The zombie's by-id fence (the status='running' guard alone)
     would mark the WINNER's live attempt 'fenced' — the ledger lie. The
@@ -1156,7 +1156,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
     )
 
     # THE CLASSIC ARM (beside it): an UN-re-minted zombie row still
-    # fences — H1's law, never a running row left forever.
+    # fences — the law, never a running row left forever.
     flow2 = await seed_flow(clean_pg_conn, schema, status="running")
     node2 = await seed_running_node(clean_pg_conn, schema, flow2, step_key="solo")
     claim2 = await claim_step_ledger(
@@ -1204,7 +1204,7 @@ def test_the_signal_resolver_names_the_dispositions() -> None:
     )
 
 
-# ── (10) THE LOOP'S ITERATION SIGNALS (C2 — the loop cliff) ───────────────
+# ── (10) THE LOOP'S ITERATION SIGNALS (the loop cliff) ───────────────
 
 
 async def test_loop_body_snooze_defers_the_iteration(
@@ -1212,12 +1212,12 @@ async def test_loop_body_snooze_defers_the_iteration(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE LOOP'S DEFERRAL (C2): a loop ITERATION body raising Snooze
+    """THE LOOP'S DEFERRAL: a loop ITERATION body raising Snooze
     routes through the deferral disposition — the SAME NODE_DEFER_SQL arm
     the step bodies share: the loop node row re-schedules at the delay,
     the attempt REFUNDED (the ladder unburned), the iteration counters
     UNTOUCHED (the advance never ran — the loop resumes at THIS
-    iteration), the run alive. The pre-cure shape: the signal fell into
+    iteration), the run alive. The pre-fix shape: the signal fell into
     the loop's body-failure catch — the run terminalized on the FIRST
     signal (LoopBodyFailure, one invocation)."""
     schema = module_pg_schema.schema_name
@@ -1294,7 +1294,7 @@ async def test_loop_body_retry_after_consuming_past_budget_takes_the_body_failur
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE LADDER STILL BOUNDS LOOPS (C2's bound face): a loop body
+    """THE LADDER STILL BOUNDS LOOPS (the bound face): a loop body
     exhausting the budget via ``RetryAfter(consume_budget=True)`` past
     ``max_attempts`` takes the LOOP'S BODY-FAILURE FACE — the named
     state, the node failed ``MaxAttemptsExceeded``, the flow terminal
@@ -1349,14 +1349,14 @@ async def test_the_loops_zombie_fence_cannot_mark_a_reminted_live_row(
     demo_app_module: Any,
 ) -> None:
     """THE LOOP ROUTE'S RE-MINT GUARD (the re-review's required residual):
-    the C5 threading the step route carries must reach the LOOP's route
+    the threading the step route carries must reach the LOOP's route
     too — ``_execute_claimed`` → ``_run_loop_node`` → ``_defer_loop_step``
     → ``defer_row_law``. The reviewer's rig: the loop node claimed (the
     ledger row live), the refund re-mints the ordinal — the arbiter
     re-use hands a LIVE winner the SAME ledger row — then the zombie
     driver's deferral (its body's Snooze against a row it no longer
     holds). The fence must key the claim's OWN instant: the re-minted row
-    is the winner's — never 'fenced'. The pre-cure shape: the loop route
+    is the winner's — never 'fenced'. The pre-fix shape: the loop route
     got NO claim instant (the status-only fence) — the winner's live row
     went 'fenced'."""
     from taskq.workflows.ledger import claim_step_ledger

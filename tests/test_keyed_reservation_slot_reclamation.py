@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 
-"""Red-team pins for keyed-reservation slot reclamation.
+"""Adversarial review pins for keyed-reservation slot reclamation.
 
 Each distinct ``base_name:key`` materialises its own ``slots`` rows in
 ``reservation_slots`` (``ratelimit/registry.py:739`` → ``ensure_slots``).

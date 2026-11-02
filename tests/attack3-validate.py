@@ -1,4 +1,4 @@
-"""ATTACK-3 (phase-3 red team) — the compile-time surfaces: wf.validate()'s
+"""ATTACK-3 (phase-3 adversarial review) — the compile-time surfaces: wf.validate()'s
 rules, the wiring verbs' doors, the Mermaid byte-stability.
 
 No PG: every probe compiles or validates. RED = the observed half
@@ -44,7 +44,7 @@ async def _consumer(ctx: StepContext, r: Report) -> Report:
 # edge-less join (gather([]) is refused at the verb), so the dead rule is
 # unobservable through the verbs — but the RULE is the promised refusal,
 # and the compiled graph is public data a plugin/extension writes.
-# Proof: inject the shape the rule exists to convict (a join-shaped node
+# Proof: inject the shape the rule exists to reject (a join-shaped node
 # with zero parents) and validate says NOTHING.
 
 
@@ -57,7 +57,7 @@ def test_a3_e3_rule_is_dead_code() -> None:
         return build(produced)
 
     compiled = app.get("a3_e3_dead")
-    # THE CONVICTED SHAPE, injected post-compile: the verbs refuse it at
+    # THE REJECTED SHAPE, injected post-compile: the verbs refuse it at
     # the door, but the validator's own E3 rule (the report's "E1-E6")
     # must own the shape — it owns NOTHING (the append is unreachable).
     compiled.nodes["stranded"] = NodeDecl(
@@ -65,7 +65,7 @@ def test_a3_e3_rule_is_dead_code() -> None:
     )
     rules = [d.rule for d in _run_rules(compiled)]
     assert "E3-edgeless-join" in rules, (
-        f"E3 did NOT convict the edge-less join — the rule is dead code "
+        f"E3 did NOT reject the edge-less join — the rule is dead code "
         f"(the diagnostics.append sits after the continue): {rules}"
     )
 
@@ -194,7 +194,7 @@ def test_a3_e5_blind_to_untyped_and_duck_shapes() -> None:
         return build(step(_untyped_consumer, produced, key="consume"))
 
     # the PROBE SEAM (app._compile): the untyped consumer's graph is
-    # INVALID on purpose (E5's conviction is the pin's subject) — the
+    # INVALID on purpose (E5's recorded finding is the pin's subject) — the
     # door would raise before the diagnostics could be read.
     compiled = app._compile("a3_e5_blind")
     rules = [d.rule for d in _run_rules(compiled)]

@@ -1,7 +1,7 @@
 """THE WORKFLOWS-SCOPED COVERAGE GATE (the scoped branch floor as a gate leg) —
 RUNS AT THE HEAD.
 
-THE LAW (the evidence-integrity cure 1b): a coverage number is evidence
+THE LAW: a coverage number is evidence
 only OF THE TREE IT WAS MEASURED ON. The 90.03% capture of record
 predated the final commit (which edited ``definitions.py``); the honest
 re-run on that head read 89.84% — RED twice — while the stale artifact
@@ -9,7 +9,7 @@ stayed green. The gate therefore:
 
 1. **RECORDS THE HEAD** — every artifact carries ``head_sha`` (git
    rev-parse HEAD) + ``tree_dirty`` (the porcelain count). The artifact
-   IS the receipt (the head-stamp law, ``scripts/verify_evidence_heads``).
+   IS the record (the head-stamp law, ``scripts/verify_evidence_heads``).
 2. **REFUSES A STALE TREE** — the coverage data file's mtime PREDATING
    the HEAD commit's time means the number was measured on an ANCESTOR:
    the gate exits 2 and reports the mismatch, it never reports the
@@ -171,7 +171,7 @@ def main() -> int:
     runs.mkdir(parents=True, exist_ok=True)
     out = runs / f"wf-scoped-coverage-{time.strftime('%Y%m%dT%H%M%S')}.json"
     out.write_text(json.dumps(record, indent=2))
-    # THE CLAIMS REGISTRY (the de-slop round's cure 3): the manifest is
+    # THE CLAIMS REGISTRY: the manifest is
     # the estate's ONE index — the verifier reads CLAIMS.json, never the
     # filename's run-scoped tail. The writer appends the claim at the
     # write (atomic under the registry lock).

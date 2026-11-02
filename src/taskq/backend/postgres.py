@@ -250,9 +250,8 @@ def _cancel_notify_channels(schema: str, worker_id: UUID) -> list[str]:
 #: poll remains authoritative for signal delivery, and both call sites'
 #: swallow-and-warn already declare that a transport failure must not
 #: surface to the caller. A transport that never ANSWERS (a silently-dead
-#: socket: packets accepted, never delivered — the CI runner's weather
-#: class, convicted by the system-e2e (17) leg at f7155214, run
-#: 38053606389) is the one failure shape that swallow never saw: the
+#: socket: packets accepted, never delivered — seen in the system-e2e
+#: leg) is the one failure shape that swallow never saw: the
 #: execute hung forever and held the operator's own call past its every
 #: budget. The bound converts that hang into the documented
 #: swallow-and-warn, at-least-once (the missed knock costs one poll
@@ -309,7 +308,7 @@ class PostgresBackend:
 
     #: The workflow healing arms' admission marker — the ``_SweepSpec``
     #: tick table's hasattr gate probes it (``gated_on``). The arms live
-    #: in ``taskq.workflows._sweep`` (the §16.1 import law keeps them out
+    #: in ``taskq.workflows._sweep`` (the import law keeps them out
     #: of this package's module scope); their admission is THIS class's
     #: own capability declaration, the same seam every maintenance sweep
     #: uses (each capability its own marker — the arms never borrow

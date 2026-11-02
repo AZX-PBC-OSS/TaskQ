@@ -1,4 +1,4 @@
-"""Clock-domain isolation tests - the C3/C4/C5/C6/C11 skew series.
+"""Clock-domain isolation tests - the skew series (C3/C4/C5/C6/C11 — this file's own ledger).
 
 TaskQ runs two independent clocks: the injectable Python ``Clock`` and
 the PG server clock (``clock_timestamp()``).  Every predicate below is
@@ -116,7 +116,7 @@ async def test_schedule_to_close_interval_anchored_to_server_clock(pg_dsn: str) 
     interval`` in Python and stores a server_now+720 s absolute (drift
     +120 s).  The single arm already computes server-side - it is the
     regression guard; the batch arm is the failing case.  The COPY arm is
-    pinned by the C5/C6 tests below."""
+    pinned by the tests below."""
     stack, backend, schema = await _mk_backend(pg_dsn, timedelta(seconds=120))
     try:
         stamp = datetime.now(UTC) + timedelta(seconds=120)  # client-domain "now"
@@ -368,7 +368,7 @@ async def test_in_memory_parity_immediate_and_future() -> None:
 
 @_integration
 async def test_retry_backoff_not_voided_by_negative_skew(pg_dsn: str) -> None:
-    """C1 pin: fail a running job with ``retry_delay=30s`` while the worker's
+    """the pin: fail a running job with ``retry_delay=30s`` while the worker's
     Python clock is 120s BEHIND the server.  A caller that computes
     ``next_scheduled_at = python_now + 30s`` and SQL that stores/compares that
     Python-domain stamp - it lands 90s in the server's past, the
@@ -413,7 +413,7 @@ async def test_retry_backoff_not_voided_by_negative_skew(pg_dsn: str) -> None:
 
 @_integration
 async def test_retry_deadline_arbitrated_server_side(pg_dsn: str) -> None:
-    """C1/C2 pin: ``schedule_to_close`` = server_now + 10s, ``retry_delay`` =
+    """C1 — the pin: ``schedule_to_close`` = server_now + 10s, ``retry_delay`` =
     30s, worker Python clock skewed -120s (a caller-side deadline pre-check
     computed from that clock would still say Retry).  The SQL deadline guard
     is the single arbiter: ``clock_timestamp() + 30s > schedule_to_close`` →
@@ -454,7 +454,7 @@ async def test_retry_deadline_arbitrated_server_side(pg_dsn: str) -> None:
 
 
 def test_classifier_has_no_deadline_opinion() -> None:
-    """C2 pin: attempts remain and the kind is retryable → Retry, regardless
+    """the pin: attempts remain and the kind is retryable → Retry, regardless
     of ``schedule_to_close`` - the classifier takes NO deadline and NO
     clock input at all.  The SQL deadline guard in ``mark_failed_or_retry``
     (pinned above) is the only deadline arbiter; a Python-side pre-check
@@ -487,13 +487,13 @@ def test_classifier_has_no_deadline_opinion() -> None:
 
 @_integration
 async def test_retry_survives_worker_clock_skew_deadline_disagreement(pg_dsn: str) -> None:
-    """C2 pin (end-to-end): a worker whose Python clock is +300 s ahead of
+    """the pin (end-to-end): a worker whose Python clock is +300 s ahead of
     the server, with a LIVE server deadline (server_now + 200 s) and a
-    10 s retry delay.  Pre-C2 the classifier's Python pre-check
+    10 s retry delay.  Pre-the classifier's Python pre-check
     (python_now + 10 s >= schedule_to_close, i.e. 310 s >= 200 s) flipped
     the decision to Fail(DeadlineExceeded) - the row died early even
     though the server would have retried it (server_now + 10 s <=
-    server_now + 200 s).  Post-C2 the classifier has no deadline opinion
+    server_now + 200 s).  Post-the classifier has no deadline opinion
     and the SQL guard is the only arbiter → the retry lands ``scheduled``.
     A genuinely-expired deadline still fails server-side."""
     from taskq.backend._protocol import ErrorInfo

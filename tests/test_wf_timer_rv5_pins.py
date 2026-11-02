@@ -1,17 +1,16 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
 """THE DURABLE TIMER's rv5 HOSTILE-REVIEW pins (feat/taskqflow-durable-timers
-@ 08dccb92d) — the convicted defects of the T28 lane (+ the T29 redeploy
+@ 08dccb92d) — the rejected defects of the T28 lane (+ the T29 redeploy
 face's operator surfaces), pinned asserting the SAFE behavior.
 
-Provenance: the rv5 internals review's live convictions, each reproduced
-against this head BEFORE pinning (the pre-pin repro shapes + outputs are in
-the pin pack's RECEIPTS.md; the scripts in the pack's ``repro/``). Per the
+Provenance: the rv5 internals review's live recorded findings, each reproduced
+against this head BEFORE pinning (the pre-pin repro shapes + outputs were captured at the pinning run.) Per the
 doctrine, a LIVE finding is pinned under ``pytest.mark.xfail(strict=True,
-reason="LIVE FINDING rv5-t<id>: …")`` asserting the SAFE behavior — the cure
+reason="LIVE FINDING rv5-t<id>: …")`` asserting the SAFE behavior — the fix
 flips the pin XPASS-strict (a red that says: remove the marker WITH the
-cure).
+fix).
 
-The findings (each convicted live; the receipts carry the verbatim reds):
+The findings (each rejected live; the receipts carry the verbatim reds):
 
 * F-T1 (SEVERE) — THE TROJAN PREFIX: a payload model named
   ``__timer__Approval`` mints a "human hold" that is INVISIBLE to
@@ -31,9 +30,9 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   prefix filter (observed: ``HoldCreated(signal='__timer__leak')`` on
   BOTH the notify and the backfill legs; ``Backfilled.open_hold_ids``
   carries the timer id). THE PIN: the broadcast + the backfill never
-  surface a timer hold as a HUMAN hold (the filter cure; a typed
+  surface a timer hold as a HUMAN hold (the filter fix; a typed
   TimerScheduled event distinct from HoldCreated also satisfies —
-  flagged in PINMAP.md).
+  recorded here).
 * F-T3 — THE 10K-TIMER TAIL: ``sweep_due_timers`` is one bounded batch
   (``batch_size=100``, no drain) at the 30s default cadence → 10k due
   timers drain in ~50 minutes (observed: 1500 seeded due, ONE pass fired
@@ -69,34 +68,34 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   row stays ``pending``, the root stays ``running`` — NEVER terminal;
   the fleet's face parks it budget-free at the snooze cadence with only
   the stranded-detector's log — nothing surfaces ON THE RUN). THE PIN
-  (the house's loud law — direction flagged in PINMAP.md): the run whose
+  (the house's loud law — direction recorded here): the run whose
   pending node's key vanished from the registry TERMINAL-FAILS LOUDLY
   with a NAMED error class, never an eternal zombie.
 
-THE RESIDUAL-CURES LANE'S RECONCILED FLIPS (the adoption-with-flip-
+THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
 receipts law — the pack is the acceptance record; every flip green x2
-at the lane head; the reds' verbatim pre-flip captures in RECEIPTS.md):
+at the lane head; the reds' verbatim pre-flip captures in (the pinning run's record):
 
-* T1, T2, T3a — the markers are REMOVED WITH THE CURES (the
-  timer-cures lane's landed shapes: the E17 mint refusal, the broadcast
+* T1, T2, T3a — the markers are REMOVED WITH THE FIXES (the
+  timer-fixes lane's landed shapes: the E17 mint refusal, the broadcast
   + backfill prefix filters, the drain cascade — the pins were xpass-
-  strict at the reconciliation ground; the receipt rows name the cure
+  strict at the reconciliation ground; the receipt rows name the fix
   commits).
-* T3b — the marker is removed WITH the cure (the due-scan index ships:
+* T3b — the marker is removed WITH the fix (the due-scan index ships:
   ``01.00.34_01_pre_wf_timer_due_index.sql``, the partial index leading
   ``expires_at`` with the timer predicate — better than asked) AND the
   matcher is fixed to the honest shape (``IF NOT EXISTS`` — the
   original regex choked on the shipped spelling and read the
   better-than-asked index as NO index).
-* T4 — the marker is removed WITH the cure (the template branches
+* T4 — the marker is removed WITH the fix (the template branches
   ``is_timer`` via the holds projection's enrichment field) AND the
   render harness rides the PRODUCTION enrichment (``_normalize_hold``)
   — the raw-dict harness predates the field.
-* T5 — THE CLI DRIFT FACE'S OWN CURE (this lane): ``flows status``
+* T5 — THE CLI DRIFT FACE'S OWN FIX (this lane): ``flows status``
   reads the run's rows' §22.1 stamps and renders the drift line when
   they are >1 distinct — the drifted nodes named with their hashes,
   ONE coherent drift section with the stranded face.
-* T6 — THE VANISHED-NODE WEDGE'S OWN CURE (this lane): the typed
+* T6 — THE VANISHED-NODE WEDGE'S OWN FIX (this lane): the typed
   :class:`VanishedNodeError` (the wedge named, the registry-is-truth
   law, the cancel-then-restart remedy) terminal-fails the run LOUDLY —
   the node claimed then finalized through the ladder's deterministic
@@ -205,7 +204,7 @@ def cli_settings(module_pg_schema: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 async def _collect(listener: HitlListener, seconds: float) -> list[Any]:
     """The bounded event read (condition-not-clock: the window is the
-    SAFETY NET — the notifies land in ms; the cured tree simply has
+    SAFETY NET — the notifies land in ms; the fixed tree simply has
     nothing to deliver)."""
     events: list[Any] = []
 
@@ -253,7 +252,7 @@ async def test_t1_wait_signal_refuses_a_timer_prefixed_model(
     assert outcome == "terminal", outcome
     # THE WAIT-SITE REFUSAL FACE: the node terminal-fails LOUDLY with the
     # reserved-prefix rule NAMED — and NEVER with the self-fire's
-    # SignalPayloadError (the convicted shape: the trojan hold minted,
+    # SignalPayloadError (the rejected shape: the trojan hold minted,
     # invisible + unanswerable, then fired by the clock into the payload
     # mismatch).
     node = await wf_conn.fetchrow(
@@ -290,8 +289,8 @@ async def test_t2_the_broadcast_and_backfill_never_surface_timer_holds(
     for a ``__timer__`` signal (neither the live notify NOR the
     backfill), and no ``Backfilled`` reconcile carries the timer's id in
     ``open_hold_ids``. (A TYPED ``TimerScheduled``-style event distinct
-    from ``HoldCreated`` satisfies the law — the pin convicts only the
-    human-hold shape; PINMAP.md flags the alternative.)"""
+    from ``HoldCreated`` satisfies the law — the pin rejects only the
+    human-hold shape; the alternative is flagged above.)"""
     app = WorkflowApp()
 
     @app.workflow("rv5t2_leak")
@@ -397,7 +396,7 @@ async def test_t3a_the_timer_arm_drains_the_due_set_in_one_cascade(
     )
     start = time.monotonic()
     try:
-        await sweep_due_timers(wf_pool, schema=wf_schema, drain=True)  # type: ignore[call-arg]  # Why: the pin is written against the cure's natural face; the head's refusal (TypeError) IS the red.
+        await sweep_due_timers(wf_pool, schema=wf_schema, drain=True)  # type: ignore[call-arg]  # Why: the pin is written against the fix's natural face; the head's refusal (TypeError) IS the red.
     except TypeError:
         await sweep_due_timers(wf_pool, schema=wf_schema)
     elapsed = time.monotonic() - start
@@ -436,7 +435,7 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
     statements: list[str] = []
     for path in sorted(migrations.glob("*.sql")):
         statements += re.findall(
-            # THE HONEST MATCHER (the reconciled flip — rv5-t3b's receipt):
+            # THE HONEST MATCHER (the reconciled flip — the recorded finding'sreceipt):
             # the shipped index is the PARTIAL index leading expires_at
             # with the timer predicate, written CREATE INDEX IF NOT
             # EXISTS — the original regex's `\w+` choked on the "IF NOT
@@ -467,10 +466,10 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
     row renders NONE (the clock is the only resolver; a form that can
     only be refused-as-forgery is a lie on the page). The view-level
     alternative (timer rows never reach the holds projection) is flagged
-    in PINMAP.md.
+    in the pin's docstring.
 
     THE HARNESS RIDES THE PRODUCTION ENRICHMENT (the reconciled flip —
-    rv5-t4's receipt): the cured template branches on the ``is_timer``
+    the recorded finding'sreceipt): the fixed template branches on the ``is_timer``
     field the holds projection enriches (``web/admin/_wf_rows.py``'s
     ``_normalize_hold`` — the row's own truth, derived from the signal
     name), so the harness passes its hold rows through THE SAME
@@ -550,7 +549,7 @@ def test_t4_timer_rows_never_render_the_human_resolve_form() -> None:
     )
     forms = re.findall(r'data-wf-form="resolve" data-hold-id="([^"]+)"', html)
     assert "rv5t4human" in forms, (
-        "the HUMAN hold lost its resolve form — the cure must not amputate the real affordance"
+        "the HUMAN hold lost its resolve form — the fix must not amputate the real affordance"
     )
     assert "rv5t4timer" not in forms, (
         "F-T4: the TIMER hold row renders the human resolve form — a control "
@@ -637,7 +636,7 @@ async def test_t6_a_vanished_node_key_terminal_fails_loudly(
     tell the operator the truth — NEVER an eternal zombie (a 'running'
     root over a forever-pending node, surfaced only in a detector's
     log). The cancel-then-restart remediation alternative is flagged in
-    PINMAP.md."""
+    the recorded gap."""
     app = WorkflowApp()
     name = "rv5t6_wedge_flow"
 
@@ -665,7 +664,7 @@ async def test_t6_a_vanished_node_key_terminal_fails_loudly(
 
     runner2 = FlowRunner(app2.get(name), wf_pool, wf_schema)
     with suppress(Exception):
-        # the raw escape is the CONVICTED shape — the pin reads the ROWS.
+        # the raw escape is the REJECTED shape — the pin reads the ROWS.
         await runner2.drive(flow_id, tick=0.02, max_ticks=60)
 
     node = await wf_conn.fetchrow(

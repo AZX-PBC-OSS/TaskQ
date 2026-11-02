@@ -1,4 +1,4 @@
-"""Red-team attacks on the sweep breaker wiring (``_run_bounded_sweep``).
+"""Adversarial review attacks on the sweep breaker wiring (``_run_bounded_sweep``).
 
 ``PostgresBackend._run_bounded_sweep`` wraps every sweep call: it records
 the batch size the call will actually use, runs the sweep, and routes

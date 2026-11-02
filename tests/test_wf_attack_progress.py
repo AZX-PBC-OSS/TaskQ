@@ -4,17 +4,17 @@ Provenance: the T21/T20 attack front's live reproductions against the
 consolidated head (``af1b8779``; pinned here at the review tree's
 ``b2a1c122``). Every xfail-strict pin below was run RED FIRST — written
 as the SAFE behavior, executed against the real PG, the failure captured
-— then marked. The cure flips the pin to XPASS-strict (a red that tells
-you to remove the marker WITH the cure). The two guards are the front's
+— then marked. The fix flips the pin to XPASS-strict (a red that tells
+you to remove the marker WITH the fix). The two guards are the front's
 own repros of laws that HELD under attack — green, so they can never
 rot silently.
 
-The surfaces under conviction: ``taskq/workflows/_progress.py`` (the
+The surfaces under recorded finding: ``taskq/workflows/_progress.py`` (the
 emission op + the emitter) and migration ``01.00.28`` (the two-channel
 storage).
 
 THE FINDINGS (each landed live; the probe transcripts are in this pack's
-RECEIPTS.md):
+(the pinning run's record):
 
 * F-PROG-1 — ``validate_emission`` validates LAX and stores the
   PRE-VALIDATION dict: ``{"page": "42"}`` against a declared
@@ -71,13 +71,13 @@ class _PageDecl(BaseModel):
 # ── F-PROG-1: the gate validates lax and stores the PRE-VALIDATION dict ──
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-PROG-1]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-1: validate_emission …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-1: validate_emission …
 async def test_f_prog_1_the_stored_payload_is_the_validated_dump(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The law (the TypedGate-door pattern, the context-contract law): what
     the gate ADMITS is what the record STORES — the validated model dump,
-    never the raw pre-validation dict. Convicted shape: the gate's own
+    never the raw pre-validation dict. Rejected shape: the gate's own
     return carries the string '42' and the undeclared extra; the stored
     ``wf_node_progress.data`` row carries them too."""
     # THE GATE: the return must be the validated dump — the coerced int,
@@ -116,7 +116,7 @@ async def test_f_prog_1_the_stored_payload_is_the_validated_dump(
 # teeth ─────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-PROG-2b]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-2a: …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-2b]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-2a: …
 async def test_f_prog_2a_out_of_domain_pct_refused_and_check_constrained(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -129,7 +129,7 @@ async def test_f_prog_2a_out_of_domain_pct_refused_and_check_constrained(
     refused: Exception | None = None
     try:
         await emitter.emit(999, "out of domain", None)
-    except Exception as exc:  # the cure's door refusal (ProgressRefusedError or kin)
+    except Exception as exc:  # the fix's door refusal (ProgressRefusedError or kin)
         refused = exc
     await emitter.aclose()  # drains whatever the bypass armed — no leaked task either way
     stored = await wf_conn.fetchval(
@@ -167,7 +167,7 @@ async def test_f_prog_2a_out_of_domain_pct_refused_and_check_constrained(
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-PROG-2b]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-2b: the validated …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-2b]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-2b: the validated …
 async def test_f_prog_2b_the_validated_path_is_the_only_write_path(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -177,7 +177,7 @@ async def test_f_prog_2b_the_validated_path_is_the_only_write_path(
     must refuse a wrong shape exactly as ``validate_emission`` does."""
     submit = getattr(ProgressEmitter, "submit", None)
     if submit is None:
-        return  # no public bypass exists — the law holds (the cure's private shape)
+        return  # no public bypass exists — the law holds (the fix's private shape)
     flow = await seed_flow(wf_conn, wf_schema)
     node = await seed_running_node(wf_conn, wf_schema, flow)
     emitter = ProgressEmitter(wf_pool, wf_sql, flow_id=flow, node_id=node)
@@ -197,7 +197,7 @@ async def test_f_prog_2b_the_validated_path_is_the_only_write_path(
 # ── F-PROG-3: the auto-class path's trims are nowhere on the record ──────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-PROG-3]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-3: …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-3]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-3: …
 async def test_f_prog_3_auto_path_trims_are_counted_on_the_record(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
@@ -243,7 +243,7 @@ async def test_f_prog_3_auto_path_trims_are_counted_on_the_record(
 # ── F-PROG-4: the refusal laddered as transient ─────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-PROG-4]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-4: an uncaught …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-PROG-4]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (the attack landed at af1b8779) F-PROG-4: an uncaught …
 async def test_f_prog_4_the_refusal_classifies_permanent(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:

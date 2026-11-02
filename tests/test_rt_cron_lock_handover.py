@@ -1,4 +1,4 @@
-"""Red-team attacks on the cron tick's handover double-fire window (real PG).
+"""Adversarial review attacks on the cron tick's handover double-fire window (real PG).
 
 The advisory lock exists for exactly one property: during leader handover
 two ticks, on two real connections, both inside their own transactions,

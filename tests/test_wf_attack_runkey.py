@@ -3,7 +3,7 @@
 Provenance: the hostile review of the consolidated head (af1b8779) —
 the migrations front's F-CREATE-2 / F-RUNKEY-4 / F-RUNKEY-5. The pins
 assert the SAFE behavior; each carries its unmarked red run in the
-pack's RECEIPTS.md.
+pack's own record.
 
 F-CREATE-2 (LANDED): the retry interaction. ``create_flow(run_key=K)``
 after an interrupted create hits the arbiter's conflict path
@@ -96,7 +96,7 @@ async def _node_census(wf_conn: asyncpg.Connection, wf_schema: str, flow_id: Job
 # ── F-CREATE-2: THE RETRY COMPLETES THE CENSUS (OR REFUSES NAMED) ──────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-CREATE-2]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-CREATE-2 @ af1b8779: create_flow(run_key=K) …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-CREATE-2]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-CREATE-2 @ af1b8779: create_flow(run_key=K) …
 async def test_runkey_retry_after_interrupted_create_completes_the_census(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -107,7 +107,7 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
     (``_insert_static_nodes`` raises once), then RETRY with the same run
     key — the caller's recovery move. THE SAFE LAW (the shipped arm,
     pinned exactly): the retry returns the SAME run with a COMPLETE node
-    census (one static node for the one-step flow). The alternative cure
+    census (one static node for the one-step flow). The alternative fix
     shape once considered — the retry refuses with a named
     ``WorkflowRunError`` — is documented here as an alternative only,
     NOT an accepted arm: the census completion is what shipped (the flip
@@ -149,13 +149,13 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
 # ── F-RUNKEY-4: THE CONFLICT'S STATUS SURFACES ON THE CALL ─────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-RUNKEY-5]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-RUNKEY-5]; the marker was removed per the designed flip (the confirmation).
 
 
 # ── F-RUNKEY-5: THE GUIDE'S run() ENTRYPOINT RESOLVES (doc-lie smoke) ──
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-RUNKEY-5]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING F-RUNKEY-5 @ af1b8779: docs/guides/workflows.md …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-RUNKEY-5]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING F-RUNKEY-5 @ af1b8779: docs/guides/workflows.md …
 def test_the_guide_s_documented_run_entrypoint_resolves() -> None:
     """F-RUNKEY-5, the doc-reference smoke: the guide's named run-level
     idempotency surface resolves against the package, or the guide no

@@ -49,7 +49,7 @@ async def _body(ctx: object, params: Ingest) -> Report:
 
 
 def probe_object_decl_refused() -> None:
-    """THE CONVICTION: the fleet's ``-> object`` decl declares the
+    """THE RECORDED FINDING: the fleet's ``-> object`` decl declares the
     erasure while the body returns ``build(...)``'s ``Promise[R]`` — the
     decorator refuses it at the decoration site (the marker trails the
     decorator line, the line BOTH checkers name)."""

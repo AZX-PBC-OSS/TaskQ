@@ -1,8 +1,8 @@
-"""THE CONTENT DOOR'S PINS — the content-verdict mismatch's conviction.
+"""THE CONTENT DOOR'S PINS — the content-verdict mismatch's recorded finding.
 
 The head-stamp verifier's law checked the claims registry against HEAD
 (freshness + the supersession chain) but NEVER READ THE CAPTURE'S
-CONTENT. The convicted shape (the estate's REAL instances,
+CONTENT. The rejected shape (the estate's REAL instances,
 ``wf-battery-rv4-20261011T043000Z.txt`` and
 ``deslop-pin-packs-20261011T042947Z.txt``): a live capture whose own
 header records ``rc=1`` — the run FAILED, in the capture's own words —
@@ -22,27 +22,27 @@ three ways:
   at all (the summary line suppressed, the failures still named).
 
 The pre-door verifier returned rc=0 on exactly this estate (the red
-receipt is the cure's own capture); the doored verifier CONVICTS: the
+receipt is the fix's own capture); the doored verifier REJECTS: the
 content-verdict mismatch, the file, the LINE.
 
 And the HONESTY edges, pinned both ways:
 
 * the honest families (the rc=0 stamp + the pytest green tail, the JSON
-  band payload) stay GREEN — the door never over-convicts a truth;
+  band payload) stay GREEN — the door never over-rejects a truth;
 * the UNPARSABLE capture (no verdict shape at all — the staged-slot
   declaration, the new family) is the TYPED WARNING, not a silent pass:
   the verdict prints the warning naming the stem and the file, and the
-  silence (the defect class this cure kills) is never the outcome.
+  silence (the defect class this fix kills) is never the outcome.
 
 Each pin runs the verifier script as a subprocess against a synthetic
-runs-dir (the rv2-13 precedent: the script is the subject, its rc is
+runs-dir (the precedent: the script is the subject, its rc is
 the verdict).
 """
 
 from __future__ import annotations
 
 import json
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the rv2-13 pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
 import sys
 from pathlib import Path
 
@@ -62,7 +62,7 @@ def _head() -> str:
 
 HEAD = _head()
 
-#: The wf-battery capture's REAL shape (the convicted instance's own
+#: The wf-battery capture's REAL shape (the rejected instance's own
 #: words): the run-scoped stamp with the rc, then the pytest tail. The
 #: stamp says rc=1 — the battery FAILED in its own header.
 _RC1_CAPTURE = """\
@@ -112,7 +112,7 @@ bringing up nodes...
 #: The staged-slot declaration (the drain's honest intermediate): NO
 #: verdict shape at all — neither rc= nor a passed/failed summary.
 _SLOT_CAPTURE = """\
-# wf-battery-rv4's slot staged at head {head} — the green run's output fills this file in place (the estate-cures drain's own shape); no verdict recorded yet
+# wf-battery-rv4's slot staged at head {head} — the green run's output fills this file in place (the estate-fixes drain's own shape); no verdict recorded yet
 """
 
 
@@ -140,14 +140,14 @@ def _verify(runs: Path) -> subprocess.CompletedProcess[str]:
 
 def _e(stem: str, file: str, ts: str) -> dict[str, str]:
     """A FRESH live claim — head_sha = HEAD, the head-stamp law's own
-    green. Whatever convicts this capture can only be the CONTENT DOOR."""
+    green. Whatever rejects this capture can only be the CONTENT DOOR."""
     return {"stem": stem, "file": file, "head_sha": HEAD, "captured_at": ts}
 
 
 def test_the_rc1_stamp_convicts(tmp_path: Path) -> None:
     """THE COUNTEREXAMPLE (the estate's real instance): a FRESH live
     claim whose capture's own stamp records rc=1. The head-stamp law
-    greened exactly this (the sha is fresh); the content door convicts
+    greened exactly this (the sha is fresh); the content door rejects
     the mismatch — named, with the file and the line."""
     runs = _estate(
         tmp_path,
@@ -167,7 +167,7 @@ def test_the_forged_stamp_convicts(tmp_path: Path) -> None:
     """THE FORGED STAMP: the header says rc=0, the pytest tail says
     ``1 failed, 75 passed``. The stamp's word and the body's count
     disagree — the tail is the run's last word. The door reads BOTH and
-    convicts on the tail."""
+    rejects on the tail."""
     runs = _estate(
         tmp_path,
         [_e("deslop-pin-packs", "deslop-cap.txt", "t0")],
@@ -182,21 +182,21 @@ def test_the_forged_stamp_convicts(tmp_path: Path) -> None:
 def test_the_failed_short_summary_convicts(tmp_path: Path) -> None:
     """THE SUPPRESSED COUNT: no ``failed`` number in the summary line —
     but the short-summary still names a FAILED test. The failures are
-    named in the capture's own words; the door convicts."""
+    named in the capture's own words; the door rejects."""
     runs = _estate(
         tmp_path,
         [_e("lint-format", "lint-cap.txt", "t0")],
         {"lint-cap.txt": _FAILED_LINE_CAPTURE.format(head=HEAD)},
     )
     proc = _verify(runs)
-    assert proc.returncode == 1, "the FAILED short-summary line must convict"
+    assert proc.returncode == 1, "the FAILED short-summary line must reject"
     assert "CONTENT-VERDICT MISMATCH" in proc.stdout
 
 
 def test_the_honest_green_family_stays_green(tmp_path: Path) -> None:
     """THE CONTROL: rc=0 in the stamp + the green pytest tail — the
     honest capture under an honest claim stays GREEN, no warning, no
-    conviction (the over-conviction would red every honest re-stamp)."""
+    recorded finding (the over-recorded finding would red every honest re-stamp)."""
     runs = _estate(
         tmp_path,
         [_e("wf-battery-rv4", "green-cap.txt", "t0")],
@@ -236,7 +236,7 @@ def test_the_unparsable_capture_is_the_typed_warning(tmp_path: Path) -> None:
     slot's declaration) is not silently passed — the verifier prints the
     TYPED WARNING naming the stem and the file, and greens (the slot is
     the drain's honest intermediate, not a lie). Silence is the defect
-    class this cure kills."""
+    class this fix kills."""
     runs = _estate(
         tmp_path,
         [_e("wf-battery-rv4", "slot-cap.txt", "t0")],
@@ -271,11 +271,11 @@ def test_the_unparsable_json_is_the_typed_warning(tmp_path: Path) -> None:
 def test_the_chain_terminal_content_door(tmp_path: Path) -> None:
     """THE DOOR APPLIES WHERE THE CHAIN LANDS: a resolving supersession
     chain whose TERMINAL is fresh and on disk — but whose capture's
-    content records failure. The chain cure greens the terminal's
-    freshness; the content door convicts its words."""
+    content records failure. The chain fix greens the terminal's
+    freshness; the content door rejects its words."""
     claims = [
         {
-            "stem": "drill",
+            "stem": "scenario",
             "file": "drill-a.txt",
             "head_sha": HEAD,
             "captured_at": "t0",
@@ -286,7 +286,7 @@ def test_the_chain_terminal_content_door(tmp_path: Path) -> None:
     runs = _estate(
         tmp_path,
         claims,
-        {"drill-a.txt": "# the drill capture\n", "terminal.txt": _RC1_CAPTURE.format(head=HEAD)},
+        {"drill-a.txt": "# the scenario capture\n", "terminal.txt": _RC1_CAPTURE.format(head=HEAD)},
     )
     proc = _verify(runs)
     assert proc.returncode == 1, "the chain's terminal must pass the content door too"

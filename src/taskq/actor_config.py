@@ -100,7 +100,7 @@ class ActorConfig:
     # ref's validated values explicitly.
     max_attempts: int = 3
     retry_kind: str = "transient"
-    # THE CAPACITY OWNER (C15's opt-in): who owns the capacity columns
+    # THE CAPACITY OWNER (the ``capacity_owner`` opt-in): who owns the capacity columns
     # once this row exists. "operator" (the default) is today's law —
     # the stored value survives every subsequent upsert untouched.
     # "code" hands max_concurrent/result_ttl to the declaration: the

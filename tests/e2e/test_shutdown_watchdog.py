@@ -374,8 +374,8 @@ def _reap_gate_worker_env(
         "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         "TASKQ_LOCK_LEASE": "8.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "6.0",
-        # THE CHECK INTERVAL EXPLICIT (the holdmap-cures lane's validation
-        # cure: warn must be > check — the warning-storm lattice; 0.5
+        # THE CHECK INTERVAL EXPLICIT (the holdmap-fixes lane's validation
+        # fix: warn must be > check — the warning-storm lattice; 0.5
         # keeps the detector clear of its own cadence and the ladder
         # warn(1.0) < budget stays the tier-1-before-tier-2 shape)
         "TASKQ_WATCHDOG_CHECK_INTERVAL": "0.5",

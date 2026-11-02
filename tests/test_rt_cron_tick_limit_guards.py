@@ -1,4 +1,4 @@
-"""Red-team attacks on two boundary gaps the bounded-batch fix left open.
+"""Adversarial review attacks on two boundary gaps the bounded-batch fix left open.
 
 Both target the fix's own stated invariant - a degenerate row cap must
 fail loudly at the typed boundary, before any SQL runs - at the two

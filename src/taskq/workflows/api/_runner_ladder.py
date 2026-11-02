@@ -59,7 +59,7 @@ _FAILED_COUNT_SQL = (
 
 def is_infra_fault(exc: BaseException) -> bool:
     """THE LADDER-ROUTES-BY-FAILURE-CLASS classifier (T19's semantics
-    decision, stated once) — attack-3 H5's cure sharpened it to the
+    decision, stated once) — the escape-point contract sharpened it to the
     ESCAPE-POINT contract: the classifier reads WHERE the error escaped,
     never merely its type. It is consulted ONLY at the MACHINERY
     boundary (a driver/sweep/client statement failed — the loop's own
@@ -74,7 +74,7 @@ def is_infra_fault(exc: BaseException) -> bool:
     BODY raised is a body failure by WHERE it escaped — a body-raised
     ``ConnectionError`` exhausts the loop as the body failure it is (the
     body cannot forge an infra fault; the STRANDED-FLOW wedge — 20
-    crashed rows, a ``running`` flow forever — is the convicted variant,
+    crashed rows, a ``running`` flow forever — is the rejected variant,
     kept red by the attack probe)."""
     import asyncpg as _asyncpg
 
@@ -90,11 +90,11 @@ def is_infra_fault(exc: BaseException) -> bool:
 
 def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     """THE FAILURE-CLASS ROUTING RULE's deterministic leg (the T20/T21
-    fixer's cure — the rule stated once, pinned per class):
+    fixer's fix — the rule stated once, pinned per class):
     a DETERMINISTIC authoring failure never rides the retry ladder. The
     three classes the engine itself defines are deterministic BY
     CONSTRUCTION — each is raised by the engine's own gates for a defect
-    that re-running cannot cure:
+    that re-running cannot fix:
 
     * :class:`ProgressRefusedError` — a wrong-shaped emission (an
       authoring bug; the body will send the same shape on every retry);
@@ -104,7 +104,7 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     * :class:`MapIndexExhaustedError` — the smallint ceiling (the
       record's identity cannot grow past it on any retry);
     * :class:`FanInBoundExceededError` — the fork's fan-in past the
-      declared bound (the rv4 F8 cure: re-running cannot shrink the
+      declared bound (re-running cannot shrink the
       corpus; the refusal NAMES the child_driven escape — the remedy is
       a re-wiring, never a retry);
     * :class:`SpawnDepthExceededError` — the spawn's ancestor walk past
@@ -116,7 +116,7 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
       the purged rows — the respawn refusal is the honest face, the
       silent re-execution it replaced was the lie).
 
-    THE ROUTING RULE, per class (the pin drills all three legs):
+    THE ROUTING RULE, per class (the pin exercises all three legs):
     ``deterministic = the NAMED terminal`` (finalize immediately, the
     error class on the record, the ladder unburned — a retry budget
     spent on a deterministic death is the record's lie: three identical
@@ -142,8 +142,8 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
         PageDivergedError,
         MapIndexExhaustedError,
         FanInBoundExceededError,
-        # E17 — the reserved-timer-prefix mint refusal (the timer-cures
-        # lane's cure 1): the payload model's NAME is the code's own —
+        # E17 — the reserved-timer-prefix mint refusal (the timer-fixes
+        # lane's fix 1): the payload model's NAME is the code's own —
         # re-running the body re-raises the same refusal on every
         # attempt (a retry budget spent on it is the record's lie).
         ReservedTimerNamespaceError,
@@ -180,13 +180,13 @@ class LadderOps(_LadderHost):
     __slots__ = ()
 
     def _map_child_ladder_terms(self, node_key: str) -> tuple[int, str]:
-        """The fork-spawned map child's LADDER TERMS (the F3 cure): the
+        """The fork-spawned map child's LADDER TERMS (the F3 fix): the
         SOURCE's ``map_max_attempts`` + ``retry_kind`` — the same
         inheritance the progress schema's read carries
         (:meth:`_progress_schema`: the ``.item`` / ``.item:`` derived
         namespaces have no decl of their own). A step key that is no
         map child (an outbox consumer, the escalation step) keeps the
-        engine's defaults (3 / transient) — the pre-cure fallback,
+        engine's defaults (3 / transient) — the pre-fix fallback,
         correct for every key the fork never spawned."""
         source: Any = None
         if node_key.endswith(".item"):
@@ -210,17 +210,17 @@ class LadderOps(_LadderHost):
         """The ladder: an attempt failure emits NO terminal (P3 rule 7) —
         the node re-pends with backoff until ``max_attempts``, THEN
         terminal-fails (T06's propagation takes over). ``permanent`` retry
-        kinds fail immediately (cut #12's classifier knob). Returns the
+        kinds fail immediately (the classifier knob). Returns the
         route the ladder took — ``"retried"`` (the re-pend; the attempt's
         span echoes it on the ``wf.laddered`` event) or ``"failed"`` (the
         terminal landed).
 
-        THE MAP CHILD'S INHERITANCE (the LedgerWatch F3 cure): a
+        THE MAP CHILD'S INHERITANCE (the LedgerWatch F3 fix): a
         fork-spawned map child (``<src>.item`` / ``<src>.item:<tag>``)
         has NO compiled decl of its own — the ladder reads the SOURCE's
         ``map_max_attempts`` (the knob the operator wired onto the
         map_source, stamped on the child rows by the fork). The
-        pre-cure fallback (the bare 3) made the ROW LIE: the record
+        pre-fix fallback (the bare 3) made the ROW LIE: the record
         carried the operator's budget, the death came at the hardcoded
         ceiling (the team's probe: a plain step wired 7 laddered 7; a
         map item wired 7 died at 3).
@@ -240,7 +240,7 @@ class LadderOps(_LadderHost):
         # re-pend) is skipped entirely for a deterministic authoring
         # failure — the finalizer below runs on the first attempt.
         deterministic = is_deterministic_authoring_failure(exc)
-        # RESUME-NOT-RETRY (cut #5): the LADDER counts the ledger's
+        # RESUME-NOT-RETRY: the LADDER counts the ledger's
         # 'failed' rows — the claim's attempt ordinal increments on EVERY
         # claim (holds' resumes included), so a hold-heavy node keeps its
         # full retry curve (the shared-counter variant — 2 holds +
@@ -262,7 +262,7 @@ class LadderOps(_LadderHost):
         # The attempt's OWN ledger row terminalizes 'failed' (the claim
         # inserted it — the arbiter's key is the attempt's identity): an
         # INSERT here would collide with the claim (the UniqueViolation
-        # the runner pins convict). Ladder retries emit NO terminal on
+        # the runner pins reject). Ladder retries emit NO terminal on
         # the JOB row (P3 rule 7) — the node re-pends with backoff.
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -282,6 +282,7 @@ class LadderOps(_LadderHost):
                     render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
                     row["id"],
                     0.05 * (2 ** (failed_count)),
+                    attempt,
                 )
                 return "retried"
         final = await finalize_node(
@@ -339,13 +340,13 @@ class LadderOps(_LadderHost):
         * THE CANCEL WINS (the vanilla ``mark_retry``'s own law, mirrored
           in-statement — a phase-carrying row on EITHER carrier matches
           no arm of ``NODE_DEADLINE_REPEND_SQL``): the node terminalises
-          'cancelled' through the wf terminal door (the C4 deferral's
+          'cancelled' through the wf terminal door (the deferral's
           cancel_fenced shape — the cancel's vocabulary, the ledger row
           the cancel's record), never re-queued under the deadline's
           backoff;
         * THE ZOMBIE (the claim fence matched nothing — a newer attempt
           owns the row): the ledger records 'fenced' keyed on the claim's
-          OWN instant (the C5 re-mint guard's own shape), H1 — never a
+          OWN instant (the re-mint guard's own shape), — never a
           running row left forever.
 
         Returns the attempt's outcome label (the caller's log line — the
@@ -391,7 +392,7 @@ class LadderOps(_LadderHost):
                 claim_epoch,
             )
             if rec is None:
-                # THE ZOMBIE'S DEADLINE (H1): the claim fence matched
+                # THE ZOMBIE'S DEADLINE: the claim fence matched
                 # nothing — the row moved to a newer attempt, the winner
                 # owns it. The ledger's 'fenced' keyed on the claim's own
                 # instant (the re-mint guard — a re-minted row is the
@@ -409,7 +410,7 @@ class LadderOps(_LadderHost):
                 if ledger_id is not None:
                     if verdict == "cancel_fenced":
                         # THE CANCEL'S RECORD: the ledger row the cancel's
-                        # own vocabulary (the C4 cancel_fenced face),
+                        # own vocabulary (the cancel_fenced face),
                         # keyed on the claim's OWN instant (the re-mint
                         # guard — a re-minted row is the LIVE winner's).
                         await conn.execute(
@@ -451,7 +452,7 @@ class LadderOps(_LadderHost):
             return "fenced"
         if verdict == "cancel_fenced":
             # THE CANCEL WINS: the node terminalises through the wf
-            # terminal door (the C4's own route — the ledger's terminal +
+            # terminal door (the own route — the ledger's terminal +
             # finalize_node + the projection ride it).
             await route_defer_terminal(
                 self.pool,
@@ -524,7 +525,7 @@ class LadderOps(_LadderHost):
         self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception
     ) -> None:
         """THE STEP NODE'S MACHINERY RECLAIM (the claim tail's
-        escape-point contract — the K7 cure, the classifier's law applied
+        escape-point contract — the machinery boundary, the classifier's law applied
         SYMMETRICALLY): an INFRA fault escaping the claim tail's own
         statements (:meth:`_finalize_success` on EITHER face — the hit's
         and the miss's finalize share this ONE seat — plus the receipt
@@ -562,4 +563,5 @@ class LadderOps(_LadderHost):
                 render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
                 row["id"],
                 0.05,
+                attempt,
             )

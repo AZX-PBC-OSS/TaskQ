@@ -92,7 +92,7 @@ _parent_tags_var: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextV
     default=(),
 )
 
-# The fan-out ledger's contextvar (LIB-2): the enqueuing parent's job id,
+# The fan-out ledger's contextvar: the enqueuing parent's job id,
 # the sibling of the tag-inheritance var above. Set together at worker
 # entry (worker/run.py and worker/_consumer.py set BOTH — the ledger
 # stamp and the tag inheritance are one parent context), read by every
@@ -247,7 +247,7 @@ class SubJobEnqueuer:
     ) -> BackpressureSnapshot:
         """Read the submit path's backpressure state for *queues*.
 
-        The actor body's slice of the LIB-2 read (the fan-out decision
+        The actor body's slice of the read (the fan-out decision
         happens HERE, in the parent's execution): same contract as
         :meth:`JobsClient.backpressure` — the actor-scoped verdict, the
         fail-open ``unknown`` state, advisory semantics — reading this
@@ -322,7 +322,7 @@ class SubJobEnqueuer:
         ``_batch_id`` is a library-internal parameter used by
         :meth:`enqueue_batch` to stamp ``batch_id`` into metadata after
         :func:`build_enqueue_args` has stripped any caller-supplied
-        ``batch_id`` (H5 security boundary). Callers MUST NOT pass it.
+        ``batch_id`` (the security boundary). Callers MUST NOT pass it.
         """
         resolved_queue = actor_ref.queue
         identity_key_str = str(identity_key) if identity_key is not None else ""
@@ -367,14 +367,14 @@ class SubJobEnqueuer:
                 unique_for=unique_for,
                 unique_states=unique_states,
                 max_pending=effective_max_pending,
-                # LIB-2: the fan-out ledger stamp — the ambient parent's
+                # the fan-out ledger stamp — the ambient parent's
                 # job id when this runs under a parent context, None
                 # otherwise (the builder stays pure, the arm reads the
                 # contextvar once).
                 parent_id=current_parent_id(),
             )
             if _batch_id is not None:
-                # H5: stamp batch_id AFTER build_enqueue_args, which strips
+                #  stamp batch_id AFTER build_enqueue_args, which strips
                 # any caller-supplied batch_id as a security boundary.
                 args = replace(
                     args,

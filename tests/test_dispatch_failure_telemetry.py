@@ -384,7 +384,7 @@ async def test_cancelled_acquire_records_wait_not_failure(
     )
 
 
-# ── red-team: does the failure counter name the failure class? ──────────
+# ── adversarial review: does the failure counter name the failure class? ──────────
 
 
 async def test_dispatch_failure_counter_names_the_failure_class(

@@ -1,4 +1,4 @@
-"""Red-team check: on real Postgres, does the deadline arm that
+"""Adversarial review check: on real Postgres, does the deadline arm that
 terminalises a perpetually-denied job also count the denial that pushed
 it past its deadline?
 

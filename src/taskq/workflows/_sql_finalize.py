@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Final
 
-#: THE FAN-IN'S BYTE CAP (T18's UNBOUNDED-JSONB policy, GAPS-ESTATE D5):
+#: THE FAN-IN'S BYTE CAP (T18's UNBOUNDED-JSONB policy):
 #: the collect's ``failures`` jsonb truncates here — over the cap the
 #: join row COMPACTS to the bounded summary (the ``__truncated__`` marker
 #: + the ledger pointer); the full detail stays on the ledger/attempts.
@@ -21,7 +21,7 @@ from typing import Final
 #: normal collect's items never compact.
 FANIN_FAILURES_BYTE_CAP: Final[int] = 64 * 1024
 
-#: THE TRUNCATION'S RECEIPT (the F4 cure's read-side reconciliation): the
+#: THE TRUNCATION'S RECEIPT (the read-side reconciliation): the
 #: bounded collect's join row carries the ``__truncated__`` count in its
 #: METADATA (``wf_collect_truncated``) alongside the envelope's own
 #: markers — the decode unwraps the envelope at the consumer's typed
@@ -43,7 +43,7 @@ WITH upd AS (
         error_class = $5,
         error_message = $6,
         error_traceback = $7,
-        -- THE RESULT'S EXPIRY (H-A5 — the vanilla mark_succeeded's
+        -- THE RESULT'S EXPIRY (the vanilla mark_succeeded's
         -- lateral equivalent): the SUCCEEDED terminal stamps
         -- result_expires_at from the ROW'S OWN COHORT's stored
         -- actor_config.result_ttl (the projection seeded it — the
@@ -61,7 +61,7 @@ WITH upd AS (
     WHERE id = $1
       -- THE TERMINAL-MARK FENCE (P3 rule 6: the CAS IS the shape guard) —
       -- status + worker + ATTEMPT + claim_epoch. The attempt is the fencing
-      -- token (hardening H8): a status-only CAS loses to the zombie on the
+      -- token (the attempt-fencing law): a status-only CAS loses to the zombie on the
       -- next attempt's re-claim, corrupting the result AND the counter. A
       -- fenced-out write updates nothing, and tx2 never executes (the rowcount
       -- gate — 50 duplicate finalizes → 1 decrement).
@@ -71,7 +71,7 @@ WITH upd AS (
       AND claim_epoch = $10
     RETURNING id, status, attempt, started_at, scheduled_at
 ),
--- THE ATTEMPT LEDGER'S TERMINAL ROW (the deploy matrix's audit cure):
+-- THE ATTEMPT LEDGER'S TERMINAL ROW (the deploy matrix's audit fix):
 -- the workflow node's terminal write records the attempt row the SAME
 -- way every vanilla terminal write does (mark_succeeded / mark_failed
 -- shape): the shared tier invariant reads a terminal row's OWN attempt
@@ -192,23 +192,29 @@ VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 # API wraps it). A joined node is born with deps_pending = <declared parent
 # count> and blocking_reason='join' in metadata; vanilla enqueues never set
 # it (DEFAULT 0 — a semantic no-op for them). trace_id is stamped on the
-# same insert (§18.2's cheap survivor — one field, no extra write).
+# same insert (the cheap survivor — one field, no extra write).
 # priority is the RESOLVED value the caller computed (per-call > the
-# declaration > the column default 0) — the wf-priority cure's enqueue
+# declaration > the column default 0) — the priority surface's enqueue
 # face; the unset case binds the column default's own value, so the
-# pre-cure rows are byte-identical.
+# pre-fix rows are byte-identical.
 # start_to_close is the row's DECLARED DEADLINE (the wf start_to_close
-# cure): the RESOLVED value the caller computed, stamped into the
+# fix): the RESOLVED value the caller computed, stamped into the
 # column the vanilla rows always had (01.00.00_01:85 — nullable, no
-# default); the unset case binds NULL — the pre-cure row byte-identical
+# default); the unset case binds NULL — the pre-fix row byte-identical
 # (the enforcement falls to the worker's default_start_to_close at claim
 # time, the resolution chain's own tail).
+# fairness_key is the row's DISPATCH COHORT (the wf fairness stamp):
+# every claimable wf row is born with its run's flow_id as the value, so
+# the round-robin dispatch partitions the run's rows into ONE cohort per
+# run — a deep run's backlog cannot occupy the whole round against a
+# shallow run's. The flow ROOT stays unstamped (it is never work — the
+# dispatch fence's root-marker leg excludes it).
 NODE_INSERT_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
      parent_id, map_index, step_key, deps_pending, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority, start_to_close)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16)
+     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
 """
 
 
@@ -216,20 +222,24 @@ VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13,
 # never one round trip per child, the 1000-child fan-out tx band's shape).
 # status is omitted — every child is born 'pending' (the column DEFAULT);
 # retry_kind rides the vanilla vocabulary. priority is the child's RESOLVED
-# value (the builder's precedence arithmetic — the wf-priority cure); the
-# unset case binds 0, the column default's own value (pre-cure identical).
+# value (the builder's precedence arithmetic — the priority surface); the
+# unset case binds 0, the column default's own value (pre-fix identical).
 # start_to_close is the child's DECLARED DEADLINE (the wf start_to_close
-# cure — the column the vanilla rows always had); the unset case binds
-# NULL (pre-cure identical).
+# fix — the column the vanilla rows always had); the unset case binds
+# NULL (pre-fix identical).
+# fairness_key is the child's DISPATCH COHORT (the wf fairness stamp):
+# one cohort per run (the flow_id), so the round-robin dispatch
+# interleaves runs instead of draining them as one FIFO stream.
 FORK_CHILDREN_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority, start_to_close)
+     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[]
+    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[],
+    $16::text[]
 )
 """
 
@@ -257,16 +267,18 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 # idempotency keys are PARENT-SCOPED at the EMIT scope
 # (``wf:{flow}:emit:{map_index}:{step}``) and carry the per-child
 # ``map_index`` — the fork key's discipline (pin 18) at chain level, plus
-# the per-child trace_id the drill-down reads.
+# the per-child trace_id the recorded failure-down reads.
+# fairness_key is the child's DISPATCH COHORT (the wf fairness stamp) —
+# one cohort per run, the fork's own law at the emit's page inserts.
 EMIT_CHILDREN_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key)
+     idempotency_scope, idempotency_key, fairness_key)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[]
+    $11::jsonb[], $12::text[], $13::text[], $14::text[]
 )
 """
 
@@ -292,7 +304,7 @@ RETURNING id
 """
 
 
-# THE MAX-IN-FLIGHT BOUND'S COUNTER (T20 / DH9): the run's non-terminal
+# THE MAX-IN-FLIGHT BOUND'S COUNTER (T20): the run's non-terminal
 # row count (the ledger's truth), excluding the source's own claim row —
 # the admission's arithmetic input, read INSIDE the tx under the lock.
 EMIT_IN_FLIGHT_SQL = """\
@@ -316,8 +328,8 @@ FORK_JOIN_NODE_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, attempt, max_attempts, retry_kind,
      parent_id, step_key, deps_pending, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority, start_to_close)
-VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15)
+     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key)
+VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16)
 """
 
 
@@ -328,7 +340,7 @@ WHERE id = $1
 """
 
 
-#: THE FORK'S CONSUMER EDGES (the map-join consumption cure — the
+#: THE FORK'S CONSUMER EDGES (the map-join consumption fix — the
 #: ecosystem mapper's defect): the join's DOWNSTREAM consumers are wired
 #: like any node — the consumer's dep was RESERVED at create (the runner's
 #: static insert counts the fork-spawned join's edge before the join's id
@@ -491,8 +503,7 @@ WHERE e.parent_id = $1::uuid
 # by THIS child's item) — keyed per join row (the fan-in read above
 # returns the joins; this write lands the item). Keyed single row; the
 # append is jsonb concat on the array.
-# The fan-in's append, BOUNDED (T18's UNBOUNDED-JSONB policy, GAPS-ESTATE
-# D5 — the ONE home): the collect's ``failures`` array truncates at the
+# The fan-in's append, BOUNDED (T18's UNBOUNDED-JSONB policy): the collect's ``failures`` array truncates at the
 # byte cap — over the cap, the row COMPACTS: the array is replaced by the
 # bounded summary (the ``"__truncated__": N`` marker counting the items no
 # longer spelled on the row + the ledger pointer), and the FULL detail
@@ -550,7 +561,7 @@ RETURNING j.id
 # join must not become firable over a failed parent).
 #
 # THE FLOW-ALIVE GUARD IS THE FENCE, NOT THE POLICY (the phase-2 attack's
-# H2): when the flow is ALREADY terminal (the fail_closed leg flipped it
+# flow-fenced arm): when the flow is ALREADY terminal (the fail_closed leg flipped it
 # in this same tx), the refusing decrement is a FENCED resolution — and a
 # fenced decrement is NOT absorption. The edge's declared POLICY alone
 # absorbs nothing: the sweep's flow-fenced arm (REDERIVE_SWEEP_SQL) gives
@@ -645,7 +656,7 @@ RETURNING j.id, j.deps_pending
 #   * THE CLAIM FENCE (the finalize's own CAS vocabulary: status +
 #     worker + attempt + claim_epoch): a zombie's deferral matches
 #     NOTHING — no verdict row — and the runner records the attempt
-#     'fenced' on the ledger (H1: never a running row left forever);
+#     'fenced' on the ledger (never a running row left forever);
 #   * THE BUDGET GATE (the consuming arm's only vanilla exit —
 #     mark_retry_after_consume_true's max_attempts fence): a consuming
 #     retry past the budget answers the EXHAUSTED verdict — the runner

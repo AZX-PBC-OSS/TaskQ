@@ -94,7 +94,7 @@ ValueError per call, the cache never serves an unvalidated render).
 `backend/postgres.py`'s `heartbeat_jobs` / `extend_reservation_leases`
 render once at backend init (the schema is fixed for its lifetime).
 
-**Red/green** (`benchmarks/ab_sweep_sql_render.py` →
+**Failing/green** (`benchmarks/ab_sweep_sql_render.py` →
 `benchmarks/results/hotpath-fix-sweep-render.json`):
 direct render **1,242 ns/call** → cached **70 ns/call** (**17.8×**),
 byte-equality asserted per (template, schema), invalid-identifier

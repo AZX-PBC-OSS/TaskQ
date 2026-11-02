@@ -22,13 +22,13 @@ the TIME wall — and it is BLIND while the loop holds on a human
 (``budget_paused`` — the budget sweep's arm carries ``AND NOT
 budget_paused``; the CONSUME-BUDGET dragon — the consume variant that
 killed a held loop and refused the operator's later approval — is the
-convicted alternative, kept RED forever by the mutation drill).
+rejected alternative, kept RED forever by the mutation test).
 
 EXHAUSTION IS NAMED, NEVER SILENT: the cap or the budget wall terminates
 the loop into the ``iteration_cap_exhausted`` state (the metadata's
 ``iteration_state`` + the node's typed failure) — and the FLOW
 TERMINALIZES in the SAME transaction (STRANDED-FLOW: a wedged
-``running`` flow that ticks forever is the convicted variant).
+``running`` flow that ticks forever is the rejected variant).
 
 THE SEMANTICS DECISION, STATED ONCE: **infra fault ≠ body failure.**
 Connection-loss/reclaim-eligible faults route to RECLAIM (the ledger
@@ -74,7 +74,7 @@ __all__ = [
 #: The on-exhausted vocabulary (the named states, never a silent stop).
 ExhaustionPolicy = Literal["escalate", "fail"]
 
-#: The ESCALATION STEP KEY (attack-3 H1's cure): the workflow's registered
+#: The ESCALATION STEP KEY (the escalation fix): the workflow's registered
 #: escalation step — the outbox's ``consumer_step_key`` for EVERY
 #: ``on_exhausted="escalate"`` loop. The step's BODY resolves from the
 #: REGISTERED DEFINITION (D1 — ``_register_bodies`` puts it there at
@@ -110,7 +110,7 @@ class Refine[T]:
         self.feedback = feedback
 
 
-#: The ``until=`` predicate's TYPE (the fanout proof's cut #6, hit live):
+#: The ``until=`` predicate's TYPE (the fanout proof's, hit live):
 #: ``Callable[[], Awaitable[bool]]`` — AWAITED by the driver. A bare sync
 #: closure returning a coroutine object is TRUTHY (the spike's cancel
 #: test cancelled an IDLE flow — proving nothing); the predicate is
@@ -128,13 +128,13 @@ class LoopSpec:
     budget_s: float | None
     on_exhausted: ExhaustionPolicy
     carry_type: type[BaseModel] | None = None
-    #: THE CARRY'S TYPED SPLIT (the ergonomic tail's cure): the declared
+    #: THE CARRY'S TYPED SPLIT (the ergonomic tail's fix): the declared
     #: CARRIER-TYPE (the model the body's ``Refine[Feedback]`` must
     #: match — the W-rules' subject); ``None`` = no model declared (the
     #: type check is skipped, never guessed). DERIVED from ``initial``
     #: when it is a model instance and this is left unset.
     initial_carry: object = None
-    #: The REGISTERED ESCALATION STEP's body (attack-3 H1's cure): the
+    #: The REGISTERED ESCALATION STEP's body (the escalation fix): the
     #: author's ``escalates_to=`` when declared; the framework default
     #: otherwise. Registered under :data:`ESCALATION_STEP_KEY` at compile
     #: (D1 — the registry is the only body source), so the outbox's
@@ -201,7 +201,7 @@ def escalation_bindings(
     source), and the payload carries the exhaustion context as the
     consumer body's data args. ``None`` = the workflow registers no
     escalation body — the enqueue is SKIPPED (the named state is still
-    the record; a ghost row whose body never resolves is the convicted
+    the record; a ghost row whose body never resolves is the rejected
     dead letter, never written)."""
     if not workflow_name:
         return None
@@ -248,7 +248,7 @@ def loop(
     the Never-residual red (the API's E-rules); a body returning anything
     else is the shape error at run time.
 
-    THE CARRY'S TYPED SPLIT (the ergonomic tail's cure — one param, two
+    THE CARRY'S TYPED SPLIT (the ergonomic tail's fix — one param, two
     meanings was the conflation): ``initial=`` is the initial carry
     VALUE (a JSON scalar or a model instance) — the first iteration's
     ``(ctx, carry)``. ``carry_type=`` is the DECLARED CARRIER-TYPE (the
@@ -263,7 +263,7 @@ def loop(
     passing UNCHECKED).
 
     ``until=`` is AWAITED per iteration (``Callable[[], Awaitable[bool]]``
-    — a sync closure returning a coroutine object is the convicted
+    — a sync closure returning a coroutine object is the rejected
     dragon). ``max_iterations`` and ``budget_s`` are TWO DIFFERENT walls;
     unset ``until`` with both unset is the "waits forever" class — the
     validate warning.
@@ -276,7 +276,7 @@ def loop(
 
     ``on_exhausted="escalate"`` (the default) ENQUEUES the escalation
     through the SAME outbox the fired joins use, addressed to THIS
-    WORKFLOW'S REGISTERED ESCALATION STEP (attack-3 H1's cure): the
+    WORKFLOW'S REGISTERED ESCALATION STEP (the escalation fix): the
     step's body is *escalates_to* when declared, the framework's
     :func:`default_escalation_body` otherwise — registered under
     ``loop.escalation`` at compile (D1), so the drained consumer job
@@ -286,7 +286,7 @@ def loop(
     pinned end-to-end."""
     from taskq.workflows.api._graph import NodeDecl
 
-    # THE NAMING RULE (cut #6's API-compile face — the same refusal
+    # THE NAMING RULE (the API-compile face — the same refusal
     # step() runs): the loop's derived keys (``<key>.iter<i>``) own the
     # dot.
     if "." in name:
@@ -309,7 +309,7 @@ def loop(
     )
     node = NodeDecl(
         key=name,
-        # THE LOOP'S FALLBACK PLACEMENT (C6): the @app.workflow
+        # THE LOOP'S FALLBACK PLACEMENT: the @app.workflow
         # decorator's declared (actor, queue) when the workflow declares
         # its own placement — the loop's rows ride the SAME cohort the
         # definition's own rows (the escalation consumer rows) stamp;

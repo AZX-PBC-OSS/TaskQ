@@ -2,7 +2,7 @@
 UPDATE + the fork's child INSERTs + the join-row INSERT share ONE
 transaction — the writes land inside the CALLER's tx1 (never a second
 transaction, which would break the atomicity rule 5 and reopen the
-fork-debt window pin 19 convicts).
+fork-debt window pin 19 rejects).
 
 Fan-out inserts are chunked parallel-array statements (``_FORK_CHUNK``
 rows per statement — never one round trip per child; the 1000-child
@@ -64,9 +64,9 @@ async def insert_fork(
             [c.map_index for c in chunk],
             [c.step_key for c in chunk],
             [fork.trace_id] * len(chunk),
-            # PER-CHILD metadata: a child declaring admission terms (CURE
+            # PER-CHILD metadata: a child declaring admission terms (FIX
             # 2 — the arm's/map's bucket names, and the STRICT
-            # reservation names beside them — H-A1's own ride) carries
+            # reservation names beside them — the own ride) carries
             # them on its OWN row; the no-terms rows keep the base shape
             # byte-identical.
             [
@@ -86,16 +86,21 @@ async def insert_fork(
                 + (f":{c.map_index}" if c.map_index is not None else "")
                 for c in chunk
             ],
-            # THE CHILDREN'S RESOLVED PRIORITY (the wf-priority cure):
+            # THE CHILDREN'S RESOLVED PRIORITY (the priority surface):
             # each child's own resolution rides its row; the unset case
-            # coalesces to the column default's own value (the pre-cure
+            # coalesces to the column default's own value (the pre-fix
             # byte-identical row).
             [c.priority if c.priority is not None else 0 for c in chunk],
             # THE CHILDREN'S DECLARED DEADLINE (the wf start_to_close
-            # cure): each child's own resolution rides its row; the
+            # fix): each child's own resolution rides its row; the
             # unset case binds NULL (the column's own default — the
-            # pre-cure byte-identical row).
+            # pre-fix byte-identical row).
             [c.start_to_close for c in chunk],
+            # THE CHILDREN'S DISPATCH COHORT (the wf fairness stamp): one
+            # cohort per run (the flow_id) — the round-robin dispatch
+            # interleaves runs instead of draining them as one FIFO
+            # stream.
+            [str(flow_id)] * len(chunk),
         )
         await conn.execute(
             wsql.fork_edges,
@@ -110,7 +115,7 @@ async def insert_fork(
 
     join_id: JobId | None = None
     if fork.join is not None:
-        # THE ADOPTION PROBE (attack4's full-static-insert cure): the
+        # THE ADOPTION PROBE (the full-static-insert probe): the
         # API's create_flow pre-inserted EVERY node — the join included
         # (deps 1: its source edge). When the row exists, the fork
         # ADOPTS it: add the items' weight to the counter + stamp the
@@ -124,12 +129,27 @@ async def insert_fork(
             flow_id,
         )
         if join_id is not None:
+            # THE ADOPTED JOIN'S SHAPE = THE NON-ADOPTED JOIN'S: the
+            # pre-created row (the drain-precreated shape — the flow
+            # link + the cohort stamp, NO join-wait marker) leaves the
+            # adoption UPDATE carrying the marker AND the run's cohort
+            # (the source row's resolved names), so a nested fan-out
+            # over THIS join reads the stamp — the depth-N induction
+            # holds through adoption too.
+            join_doc = _join_metadata(
+                flow_id,
+                (),
+                child_driven=fork.join.child_driven,
+                reservations=fork.join.reservations,
+            )
+            join_doc.pop("flow_id", None)
             await conn.execute(
                 f"UPDATE {wsql.schema}.jobs "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is a bound parameter.
                 "SET deps_pending = deps_pending + $1, "
-                "metadata = jsonb_set(metadata, '{consumers}', $2::jsonb, true) "
-                "WHERE id = $3",
+                "metadata = jsonb_set(metadata || $2::jsonb, '{consumers}', $3::jsonb, true) "
+                "WHERE id = $4",
                 len(children),
+                _jsonb(join_doc),
                 _jsonb(
                     _join_metadata(
                         flow_id, fork.join.consumers, child_driven=fork.join.child_driven
@@ -154,22 +174,33 @@ async def insert_fork(
                 fork.trace_id,
                 _jsonb(
                     _join_metadata(
-                        flow_id, fork.join.consumers, child_driven=fork.join.child_driven
+                        flow_id,
+                        fork.join.consumers,
+                        child_driven=fork.join.child_driven,
+                        # THE SOURCE ROW'S RESOLVED RESERVATION NAMES (the
+                        # run's own cohort): the join carries them so a
+                        # nested fan-out over this join reads the stamp —
+                        # the depth-N cohort guarantee.
+                        reservations=fork.join.reservations,
                     )
                 ),
                 f"workflow:{flow_id}",
                 f"wf:{flow_id}:{parent_step_key}:{fork.join.step_key}",
-                # THE JOIN'S RESOLVED PRIORITY (the wf-priority cure): the
+                # THE JOIN'S RESOLVED PRIORITY (the priority surface): the
                 # SOURCE's resolution — the join is the source's own
                 # cohort (the placement fields say so); the arms'
                 # overrides apply to the arm children, never the join.
                 # The unset case coalesces to the column default's own
-                # value (the pre-cure byte-identical row).
+                # value (the pre-fix byte-identical row).
                 fork.priority if fork.priority is not None else 0,
                 # THE JOIN'S DECLARED DEADLINE (the wf start_to_close
-                # cure): the SOURCE's resolution (the join is the
+                # fix): the SOURCE's resolution (the join is the
                 # source's own cohort); the unset case binds NULL.
                 fork.start_to_close,
+                # THE JOIN'S DISPATCH COHORT (the wf fairness stamp):
+                # the run's flow_id — the join is claimable work like
+                # any node of the run.
+                str(flow_id),
             )
         # The join's edges: one per child (the ledger's truth — the
         # fan-out's children feed the join).
@@ -186,7 +217,7 @@ async def insert_fork(
                 [flow_id] * len(chunk_ids),
                 [fork.join.failure_policy] * len(chunk_ids),
             )
-        # THE FORK'S CONSUMER EDGES (the map-join consumption cure — the
+        # THE FORK'S CONSUMER EDGES (the map-join consumption fix — the
         # ecosystem mapper's defect): the join's DOWNSTREAM consumers are
         # wired like any node — the consumer's dep was RESERVED at create
         # (the runner's static insert counts the fork-spawned join's edge
@@ -208,7 +239,7 @@ async def insert_fork(
                 [c.failure_policy for c in fork.join.consumers],
             )
         if not children:
-            # THE BORN-ZERO JOIN'S FIRE RECEIPT (rv4 F1's exactly-once
+            # THE BORN-ZERO JOIN'S FIRE RECEIPT (the exactly-once
             # law): a join born deps_pending=0 never runs the decrement
             # path (there are no children to decrement it), so its fire
             # went UNLEDGERED — the empty route's consumer dispatched and

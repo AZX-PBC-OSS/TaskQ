@@ -120,7 +120,7 @@ async def e2e_schema(
         # work), and the strict count assertions below (started == 5,
         # finished == 5) cannot tolerate a mid-run reclaim: a reclaimed
         # attempt burns a retry and can duplicate or drop effects, which
-        # is the same flake class the fleet widening cured. Nothing the
+        # is the same flake class the fleet widening fixed. Nothing the
         # cap assertions measure depends on lease tightness - max
         # concurrency and total time are timing-independent of the lease
         # - so the wider lease costs nothing. The reservation-slot lease

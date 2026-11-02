@@ -7,7 +7,7 @@ pins the MVCC horizon, VACUUM cannot reclaim, and the claim query's
 B-tree scans degenerate through the dead tuples the claims themselves
 left behind - 15x lock-time degradation measured, and SKIP LOCKED only
 "lifts the floor, not the ceiling" (identical dead-tuple scans under
-both). The literature's first cure is the PREDICTOR: the degradation is
+both). The literature's first fix is the PREDICTOR: the degradation is
 visible in the claim-latency DISTRIBUTION before the backlog explodes.
 
 These gauges are that predictor, under the obs conventions (dotted
@@ -302,16 +302,16 @@ def test_the_health_dataclass_carries_exactly_the_runbook_operands() -> None:
 
 
 def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
-    """FINDING 11's PIN (RED-FIRST): the gauge callbacks scrape on the
+    """FINDING 11's PIN (FAILING-FIRST): the gauge callbacks scrape on the
     OTel collection THREAD while the claim path records on the EVENT-
-    LOOP thread — the pre-cure stores had no lock, and the two walkers
+    LOOP thread — the pre-fix stores had no lock, and the two walkers
     raced inside the deque/dict: **287 RuntimeErrors in 3 s of hot
     load** ("deque mutated during iteration"), every raise killing the
     callback's observation batch — the alert's operand VANISHED exactly
-    when the queue was hottest. THE CURE: the read is ATOMIC (the
+    when the queue was hottest. THE FIX: the read is ATOMIC (the
     stores' lock — the snapshot and the record each hold it for their
     whole walk). This pin hammers the record path on a writer thread
-    while a scraper thread snapshots continuously for 3 s and convicts:
+    while a scraper thread snapshots continuously for 3 s and rejects:
     ZERO RuntimeErrors, and the scrape's operands PRESENT (zero is a
     number, not an error — a warmed baseline reports a NUMBER)."""
     import threading
@@ -335,7 +335,7 @@ def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
                 record_claim_latency(f"hot-q{tid}", 0.001, now=ts)
                 ts += 0.05
                 time_mod.sleep(0.0005)
-        except BaseException as exc:  # Why: the pin convicts ANY raise on the hot path.
+        except BaseException as exc:  # Why: the pin rejects ANY raise on the hot path.
             with errors_lock:
                 errors.append(exc)
 
@@ -348,14 +348,14 @@ def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
                 with errors_lock:
                     operands_seen.append(bool(snap) and snap["hot-q0"].p99_seconds >= 0.0)
                 time_mod.sleep(0.001)
-        except BaseException as exc:  # Why: the convicted shape raised RuntimeError here.
+        except BaseException as exc:  # Why: the rejected shape raised RuntimeError here.
             with errors_lock:
                 errors.append(exc)
 
     # THE PRODUCTION SHAPE'S CONCURRENCY: several claim paths recording
     # (the loop + the fleet's rounds) AND several gauge callbacks
-    # scraping at once — the pre-cure race needed BOTH walkers live (the
-    # convicted run: 287 RuntimeErrors in 3 s).
+    # scraping at once — the pre-fix race needed BOTH walkers live (the
+    # rejected run: 287 RuntimeErrors in 3 s).
     threads = [threading.Thread(target=_record_hot, args=(i,)) for i in range(4)]
     threads += [threading.Thread(target=_scrape_hot) for _ in range(3)]
     for t in threads:

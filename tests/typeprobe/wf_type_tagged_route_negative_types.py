@@ -1,8 +1,8 @@
 """NEGATIVE TYPE PROBES — the type-tagged route (the routing proof's
-cure): the Route literal's TWO faces are checker-gated.
+fix): the Route literal's TWO faces are checker-gated.
 
 The type-tagged face's keys are the payload union's member TYPES — a
-raw STRING key (the enum face's habit, or the pre-cure author's guess)
+raw STRING key (the enum face's habit, or the pre-fix author's guess)
 is a checker error at the literal, and the declaration-time totality
 check would refuse it too; the probe holds the STATIC face. The green
 face: a route keyed by the union's member types passes UNMARKED (the
@@ -72,7 +72,7 @@ def probe_string_key_refused() -> None:
 
 def probe_string_key_on_enum_refused() -> None:
     """A STRING key on the enum face's route — the same static refusal
-    (the enum face's unknown-key drill, guarded at the annotation)."""
+    (the enum face's unknown-key scenario, guarded at the annotation)."""
     bad_enum_route = Route({"ok": DONE})  # MUST_ERROR(reportArgumentType, invalid-argument-type)
     Chain(
         name="string-key-enum-route",

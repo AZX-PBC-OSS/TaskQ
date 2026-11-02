@@ -621,7 +621,7 @@ origin/main, or unpushed local work):
 
 ```
 $ bash scripts/verify_merge_ready.sh
-/home/rich/src/TaskQ/scripts/verify_merge_ready.sh: line 13: 1: usage: verify_merge_ready.sh <PR_NUMBER>
+scripts/verify_merge_ready.sh: line 13: 1: usage: verify_merge_ready.sh <PR_NUMBER>
 ```
 
 ### Fault-injection connection patterns (file pointers)

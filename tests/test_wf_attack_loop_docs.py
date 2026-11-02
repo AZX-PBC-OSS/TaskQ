@@ -1,12 +1,12 @@
-"""DOCS-HONESTY PINS — the loop front's doc-truth convictions (the
+"""DOCS-HONESTY PINS — the loop front's doc-truth recorded findings (the
 hostile review of the consolidated head, af1b8779; the front's REPORT.md
 surface B carries the audit table).
 
-Pure file-system pins (no PG): each parses the doc/artifact it convicts
+Pure file-system pins (no PG): each parses the doc/artifact it rejects
 and asserts the honest shape. All are LIVE defects → strict-xfail; the
-cure (the artifact produced, the figure deleted, the counts reconciled,
+fix (the artifact produced, the figure deleted, the counts reconciled,
 the shipped surface documented) flips the pin to XPASS-strict — remove
-the marker WITH the cure. The full defect list with the exact cure per
+the marker WITH the fix. The full defect list with the exact fix per
 item: DEFECTS.md beside this file in the pin pack.
 
 The receipts law these pins enforce: a measured number cited by the
@@ -37,7 +37,7 @@ def _evidence_measurements_dir() -> Path:
 # locally without the estate (the partial-local-dir race). No local
 # registry → the pins walk the EVIDENCE BRANCH's staged copy — the same
 # files, one indirection; the sha cross-check stays the verifier's and
-# rv2-13's law.
+# the subprocess-seam law.
 MEASUREMENTS = (
     REPO / ".measurements"
     if (REPO / ".measurements" / "runs" / "CLAIMS.json").is_file()
@@ -99,7 +99,7 @@ def _measurements_bases() -> list[Path]:
     """EVERY real capture corpus the law reads — the staged evidence
     branch's estate PLUS the local tree's own overlay when one exists.
 
-    THE THREE-FACES CURE (the estate audit's conviction, live at -n 8):
+    THE THREE-FACES FIX (the estate audit's recorded finding, live at -n 8):
     the pool was EITHER the staged copy OR the local tree, chosen by
     which worker resolved first — a writer creating the local
     runs/CLAIMS.json mid-run flipped the other workers' pool to the
@@ -175,7 +175,7 @@ def _perf_doc_figures(text: str) -> list[tuple[int, str, str]]:
 # ── DOCS-1/2: the docs-numbers pin — every measured figure resolves ─────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [DOCS-RATIO]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [DOCS-RATIO]; the marker was removed per the designed flip (the confirmation).
 
 
 # ── DOCS-1/2: the docs-numbers pin — every measured figure resolves ─────
@@ -193,7 +193,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
       artifact at its cited precision. (A pure-number net admits
       coincidences — 477 rides an enqueue band's rounds array; the
       family layer below is the coincidence-proof core.)
-    * THE FAMILY LAYER — the convicted claims, each matched against its
+    * THE FAMILY LAYER — the rejected claims, each matched against its
       OWN artifact family only, so an unrelated metric's coincidence
       can never green a lie: the fan-out figure against
       ``fanout-1000-tx-band*``, the join-fire figure against
@@ -214,7 +214,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
                 "artifact in .measurements/"
             )
 
-    # THE FAMILY LAYER (the convicted claims).
+    # THE FAMILY LAYER (the rejected claims).
     if re.search(r"measured:\s*\*{0,2}51\.8\s*ms", text):
         fanout = {
             name: values
@@ -249,7 +249,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
             failures.append(
                 "'p50 477 ms / p95 1.73 s @ ~340 live joins' (perf-evidence-"
                 "workflows.md:30,46 and _sweep.py's own comment): NO artifact "
-                "carries the pair (the second conviction of this figure — the "
+                "carries the pair (the second recorded finding of this figure — the "
                 "prior round's finding is unrepaired)"
             )
 
@@ -288,13 +288,13 @@ def test_docs_the_api_reference_covers_every_shipped_validate_rule() -> None:
 # ── DOCS-3: the streaming ratio is cherry-picked against the captures ───
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the streaming doc's cited ratio now reads the NEWEST capture's (or the honest range): the cure landed [DOCS-RATIO]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the streaming doc's cited ratio now reads the NEWEST capture's (or the honest range): the fix landed [DOCS-RATIO]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_streaming_ratio_is_the_newest_capture_or_an_honest_range() -> None:
     """The capture law for the cited band ratio: the doc's number is the
     NEWEST run-scoped capture's, or the doc states the range across the
     captures (either form names the newest capture's ratio). A cited
     older capture whose figure the newest refutes is the cherry-pick
-    this pin convicts."""
+    this pin rejects."""
     text = STREAMING_DOC.read_text()
     captures = sorted(
         cap for base in _measurements_bases() for cap in base.glob("t20-streaming-bands-*.json")
@@ -341,12 +341,12 @@ def _t17_table_counts(ledger: str) -> dict[str, int]:
     return counts
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the T17 counts: the ledger header to the pin's contract + the guide's one-home doctrine enforced (the pointer present, the arithmetic absent)]; the marker is removed per the designed flip.
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the T17 counts: the ledger header to the pin's contract + the guide's one-home doctrine enforced (the pointer present, the arithmetic absent)]; the marker is removed per the designed flip.
 def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> None:
     """One count, one home: the ledger's table (the truth), the ledger's
     header line, and the guide's parenthetical must agree. (The
     ``applied`` class tolerates the #3b fold convention — the drifted
-    classes are the conviction; the two prose homes must additionally
+    classes are the recorded finding; the two prose homes must additionally
     agree with EACH OTHER on every class.)"""
     ledger = next(
         base / "t17-dispositions.md"
@@ -370,7 +370,7 @@ def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> Non
     for cls in keys:
         if header[cls] != table[cls]:
             drift.append(f"{cls}: the ledger header says {header[cls]}, the table has {table[cls]}")
-    # THE GUIDE'S ONE-HOME LAW (the doc-honesty round's own cure, which
+    # THE GUIDE'S ONE-HOME LAW (the doc-honesty round's own fix, which
     # REPLACED this pin's old two-prose-homes contract): the guide
     # carries NO arithmetic — it POINTS at the ledger (the one home).
     # The pin now enforces the pointer + the absence: the counts live
@@ -379,8 +379,8 @@ def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> Non
         drift.append(
             "the guide carries its own count arithmetic — the one-home law says the ledger is the only home"
         )
-    if ".measurements/t17-dispositions.md" not in guide:
-        drift.append("the guide lost its pointer to the disposition ledger (the one home)")
+    if "nowhere else" not in guide:
+        drift.append("the guide lost its one-home statement for the disposition counts")
     assert not drift, (
         "T17 disposition count drift (one count, one home):\n  - "
         + "\n  - ".join(drift)
@@ -389,11 +389,11 @@ def test_docs_the_t17_disposition_counts_agree_across_their_three_homes() -> Non
 
     # ── DOCS-5: the reference surface vs the shipped surface ───────────────
 
-    # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [DOCS-API]; the marker is removed per the designed flip (the confirmation receipt).
+    # THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [DOCS-API]; the marker was removed per the designed flip (the confirmation).
     assert not drift, "the API reference's validate surface drifted:\n  - " + "\n  - ".join(drift)
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the API reference documents the loop surface (loop(/Done/Refine all present): the cure landed [DOCS-API]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the API reference documents the loop surface (loop(/Done/Refine all present): the fix landed [DOCS-API]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_api_reference_documents_the_loop_surface() -> None:
     """``wf.loop`` / ``Done`` / ``Refine`` are v1 API; a reference that
     omits them sends the reader to the guide's (stale) signature as the
@@ -406,7 +406,7 @@ def test_docs_the_api_reference_documents_the_loop_surface() -> None:
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the guide §9 spells the shipped verb's own signature (every parameter, the bare names) [the guide-signature cure]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the guide §9 spells the shipped verb's own signature (every parameter, the bare names) [the guide-signature fix]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     """The guide's spelled signature must carry every parameter the
     shipped verb takes (a param the guide never names — carry_type,
@@ -427,7 +427,7 @@ def test_docs_the_guides_loop_signature_matches_the_shipped_verb() -> None:
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the inventory names the loop/HITL/phase3-cure/progress families]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the inventory names the loop/HITL/phase3-fix/progress families]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_pin_inventory_names_the_families_the_guide_relies_on() -> None:
     """ "Every invariant above is pinned by a test that can fail (the pin
     inventory at the foot of this page)" — the inventory is the map; a
@@ -455,13 +455,13 @@ def test_docs_the_pin_inventory_names_the_families_the_guide_relies_on() -> None
 # ── DOCS-6: the carry dragon's "red forever" claim has no receipt ──────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the carry dragon's drill receipt recorded (the machine-generated red)]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the carry dragon's scenario receipt recorded (the machine-generated red)]; the marker was removed per the designed flip (the confirmation).
 def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
     """The receipts law, applied to the carry dragon: the claim stands
     in two homes (the guide's §9 carry paragraph and the advance
     statement's own comment), so the run-scoped reds ledger must carry
-    the carry drill's receipt. If the claim is deleted instead (the
-    honest-shrink cure), the pin passes vacuously — the law binds claims
+    the carry scenario's receipt. If the claim is deleted instead (the
+    honest-shrink fix), the pin passes vacuously — the law binds claims
     to receipts, not the other way."""
     guide = GUIDE.read_text()
     sql_loop = SQL_LOOP_SRC.read_text()
@@ -487,6 +487,6 @@ def test_docs_the_carry_dragons_red_forever_claim_has_a_receipt() -> None:
         "the carry dragon's 'red forever' claim stands (guide §9 + "
         "LOOP_ADVANCE_SQL's comment) but t19-pin-reds.json carries NO "
         f"carry-mutation receipt ({len(receipts)} receipts on file, none for the "
-        "carry drill) — a red is machine-generated or it doesn't exist (the "
-        "receipts law). The cure: run the carry drill and record the receipt."
+        "carry scenario) — a red is machine-generated or it doesn't exist (the "
+        "receipts law). The fix: run the carry scenario and record the receipt."
     )

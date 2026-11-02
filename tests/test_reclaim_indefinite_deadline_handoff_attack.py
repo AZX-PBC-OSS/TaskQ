@@ -1,4 +1,4 @@
-"""Red-team attack: an ``indefinite`` job reclaimed with a backoff delay
+"""Adversarial review attack: an ``indefinite`` job reclaimed with a backoff delay
 that lands its ``scheduled_at`` past its own ``schedule_to_close``.
 
 Hypothesis under test: crash-reclaim's hand-back branch does not clamp

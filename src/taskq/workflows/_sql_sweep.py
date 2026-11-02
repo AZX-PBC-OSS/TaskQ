@@ -9,15 +9,15 @@ from __future__ import annotations
 
 from taskq.constants import require_schema
 
-# The sweep's lock-first re-derive — ONE batched statement (the fanout cut #4
-# cure; the per-join round-trip variant is the convicted shape — its
-# MEASURED conviction is P1's sweep-cost curve, 14.9 ms @ 200 joins vs the
-# unscoped seq-scan monster 83.7 ms @ 75k, the CITED-IMPORT artifact
-# .measurements/runs/sweep-cost-scale-curve-*.json — the spike's session
-# evidence directory is gone; the imported record IS the provenance. An
-# earlier revision of this comment cited the per-join variant at a p50/p95
-# figure for which no capture exists; the dead figure is DELETED —
-# provenance or silence). Lock FIRST (FOR UPDATE
+# The sweep's lock-first re-derive — ONE batched statement (the fanout
+# shape; the per-join round-trip variant is the rejected shape — its
+# MEASURED cost curve: 14.9 ms @ 200 joins vs the unscoped seq-scan
+# monster 83.7 ms @ 75k — the CITED-IMPORT artifact
+# (``.measurements/runs/sweep-cost-scale-curve-*.json``): the spike's
+# session evidence directory is gone; the imported record IS the
+# provenance. An earlier revision of this comment cited the per-join
+# variant at a p50/p95 figure for which no capture exists; the dead
+# figure is DELETED — provenance or silence). Lock FIRST (FOR UPDATE
 # SKIP LOCKED the join-wait children), then count un-terminal parents from
 # the edge ledger INSIDE the same transaction. In-flight decrements are
 # skipped this pass (the healthy worker wins); committed decrements are
@@ -31,7 +31,7 @@ from taskq.constants import require_schema
 # arm stamps metadata.blocking_reason='orphan_parent' (the blocked-with-
 # reason state, §17.2's chains render from it) and the firable arm excludes
 # them — "the record looked healthy while the work was wrong" is the
-# convicted shape.
+# rejected shape.
 REDERIVE_SWEEP_SQL = """\
 WITH locked AS (
     SELECT c.id, c.step_key, c.metadata->>'flow_id' AS flow_id, c.deps_pending
@@ -77,7 +77,7 @@ counts AS (
     -- stamped blocked-with-reason): silently stranded in join-wait
     -- forever with a healthy-looking record. The edge-less row blocks
     -- below (edge_count = 0 → orphan_parent), the 'record healthy, work
-    -- wrong' class convicted with a reason.
+    -- wrong' class rejected with a reason.
     LEFT JOIN {schema}.wf_edge e ON e.child_id = l.id
     LEFT JOIN {schema}.jobs p ON p.id = e.parent_id
     GROUP BY l.id
@@ -116,10 +116,10 @@ blocked_required AS (
       AND NOT j.metadata @> '{{"blocking_reason": "failed_parent"}}'::jsonb
     RETURNING j.id
 ),
--- THE FLOW-FENCED JOIN ARM (the phase-2 attack's H2 cure): a never-fired
+-- THE FLOW-FENCED JOIN ARM (the flow-fenced join fix): a never-fired
 -- join row whose resolution the FLOW'S OWN DEATH fenced — the fire's
 -- flow-status leg refuses a terminal flow, so this row can never fire
--- again, and (the convicted shape) the sweep's recount then RECONCILED
+-- again, and (the rejected shape) the sweep's recount then RECONCILED
 -- its counter to 0, leaving a claimable never-fired join row on a failed
 -- flow. THE FENCE IS NOT ABSORPTION: the resolution the direct path's
 -- cascade stamps is stamped HERE — 'failed_parent' naming the failed
@@ -191,7 +191,7 @@ firable AS (
       -- A fail_closed join with a failed parent is never firable (T06):
       -- the blocked_required arm owns its resolution.
       AND c.failed_required = 0
-      -- Nor is a flow-fenced join (the H2 arm owns its resolution — the
+      -- Nor is a flow-fenced join (the flow-fenced arm owns its resolution — the
       -- fire's flow-status leg would refuse it every pass forever).
       AND NOT EXISTS (SELECT 1 FROM flow_fenced ff WHERE ff.id = l.id)
 )
@@ -205,7 +205,7 @@ SELECT
 
 
 # The sweep's fire arm: SET-BASED (never one round trip per join — the
-# cut #4 crime), computing the firable set ITSELF inside the caller's
+# crime), computing the firable set ITSELF inside the caller's
 # still-open transaction (the rederive statement's row locks are held by
 # the same connection, so the re-derivation is deterministic). Fire ids are
 # minted APP-SIDE (uuid7 via the seam, never DB-side generation) as a bound
@@ -311,7 +311,7 @@ JOIN {schema}.jobs root ON root.id = w.flow_id
 
 OUTBOX_FETCH_UNDELIVERED_SQL = """\
 SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindings,
-       -- THE RUN-PRIORITY STAMP'S RESOLUTION (the wf-priority cure's
+       -- THE RUN-PRIORITY STAMP'S RESOLUTION (the priority surface's
        -- drain leg): the flow root's stamped per-call override, resolved
        -- with THE FLEET DOOR'S OWN ARITHMETIC mirrored in SQL — the
        -- regex and the domain bounds below are the shared constants the
@@ -319,7 +319,7 @@ SELECT o.id, o.join_job_id, o.flow_id, o.consumer_step_key, o.map_index, o.bindi
        -- (taskq.constants.PRIORITY_STAMP_INT_PATTERN, SMALLINT_MIN/MAX;
        -- unparseable or out-of-smallint-domain → NO override) and
        -- COALESCEd to the column default's own value (0 — the unset
-       -- case binds the column default's own value, the pre-cure
+       -- case binds the column default's own value, the pre-fix
        -- byte-identical row). The escalation is an interactive run's
        -- most latency-sensitive follow-up: its consumer row materializes
        -- at the RUN's priority, never the default.
@@ -347,24 +347,28 @@ FOR UPDATE OF o SKIP LOCKED
 # between fire-commit and consumer-insert re-drains; the arbiter makes the
 # retry a no-op (pin 20: the drain completes the dispatch EXACTLY ONCE).
 # priority is the RUN's stamped override the drain's fetch resolved (the
-# wf-priority cure — the loop escalation's consumer materializes at the
+# wf-priority fix — the loop escalation's consumer materializes at the
 # run's priority; the fleet door's own arithmetic, mirrored in the fetch's
 # SQL): resolved by OUTBOX_FETCH_UNDELIVERED_SQL, COALESCEd to the column
-# default's own value (0 — the pre-cure byte-identical row).
+# default's own value (0 — the pre-fix byte-identical row).
 # start_to_close is the CONSUMER'S DECLARED DEADLINE (the wf
-# start_to_close cure): the fire's bindings carry the downstream node's
+# start_to_close fix): the fire's bindings carry the downstream node's
 # own resolution (the join row's metadata `consumers` array, serialized
 # as SECONDS — the jsonb wire form); the unset case binds NULL
-# (pre-cure identical).
+# (pre-fix identical).
+# fairness_key is the consumer row's DISPATCH COHORT (the wf fairness
+# stamp): the run's flow_id, the same birth stamp every claimable wf
+# row of the run carries.
 OUTBOX_DRAIN_CONSUMERS_SQL = """\
 INSERT INTO {schema}.jobs
     (id, actor, queue, payload, max_attempts, retry_kind,
      parent_id, map_index, step_key, trace_id, metadata,
-     idempotency_scope, idempotency_key, priority, start_to_close)
+     idempotency_scope, idempotency_key, priority, start_to_close, fairness_key)
 SELECT * FROM unnest(
     $1::uuid[], $2::text[], $3::text[], $4::jsonb[], $5::smallint[],
     $6::text[], $7::uuid[], $8::smallint[], $9::text[], $10::text[],
-    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[]
+    $11::jsonb[], $12::text[], $13::text[], $14::smallint[], $15::interval[],
+    $16::text[]
 )
 ON CONFLICT (idempotency_scope, idempotency_key)
     WHERE idempotency_key IS NOT NULL
@@ -382,7 +386,7 @@ RETURNING id
 """
 
 
-# The body-unavailable stamp (the loudness cure, R2-2): the fire arm
+# The body-unavailable stamp (the loudness fix, R2-2): the fire arm
 # delivers a fired join's consumers even when no reducer body resolves —
 # at-least-once delivery is the contract — but the RECORD must not look
 # healthy while the work was wrong. Keyed single join row; the stamp rides
@@ -401,7 +405,7 @@ RETURNING id
 """
 
 
-# The fenced-attempt sweep arm (hardening H1-H3): reap phantom 'running'
+# The fenced-attempt sweep arm (the fenced-attempt arms): reap phantom 'running'
 # ledger rows on terminal flows so the rows-alone reconstruction reconciles
 # (a terminal flow is reconstructible from rows alone; pin 15).
 PHANTOM_REAP_SQL = """\
@@ -472,7 +476,7 @@ WITH orphans AS (
     WHERE f.id = o.id
     RETURNING f.id
 )
--- THE COUNT IS THE COUNT (finding 14's cure): the caller reads ONE scalar
+-- THE COUNT IS THE COUNT: the caller reads ONE scalar
 -- through ``fetchval`` — a RETURNING f.id here handed the caller the FIRST
 -- reaped row's UUID, and ``int(uuid)`` converts the 128-BIT IDENTITY into
 -- a garbage row-count (a hash fragment) straight into
@@ -481,7 +485,7 @@ WITH orphans AS (
 SELECT count(*) FROM reaped
 """
 
-# THE HOLD-STAMP WEDGE'S CURE (the D2 soak's P1): a non-terminal node row
+# THE HOLD-STAMP WEDGE'S FIX (measured in the soak): a non-terminal node row
 # carrying the held representation's stamp (``metadata.hold`` — the
 # claimable fence ``AND NOT metadata ? 'hold'`` excludes it from every
 # claim) whose HOLD ROW is no longer 'held' is UNCLAIMABLE FOREVER — the
@@ -532,7 +536,7 @@ RETURNING j.id, (sig.id IS NULL) AS hold_absent
 """
 
 
-# THE DELIVERED OUTBOX'S TTL (the D2 soak's P3): a delivered outbox row is
+# THE DELIVERED OUTBOX'S TTL (measured in the soak): a delivered outbox row is
 # narration — the consumer rows exist (the drain's arbiter inserted them),
 # wf_join_fire is the exactly-once ledger, and the D2 soak measured the
 # delivered population growing monotonically forever (5.9k at close, no
@@ -560,7 +564,7 @@ RETURNING o.id
 # corpses are dead weight — the lookup's freshness leg already refuses
 # them (a miss, the body re-runs), and without this arm the expired
 # population grows monotone-forever (the delivered-outbox arm's own
-# conviction class). The store's CAS re-fills an expired row on the
+# finding class). The store's CAS re-fills an expired row on the
 # re-run's success; this arm deletes what no re-run ever visits. The
 # DB clock is the comparison (the estate's doctrine); one bounded
 # committed batch per pass.
@@ -577,7 +581,7 @@ RETURNING o.content_address
 """
 
 
-# ── THE SIX FLOW-HISTORY RETENTION ARMS (the TAStack P1's cure) ──────────
+# ── THE SIX FLOW-HISTORY RETENTION ARMS ──────────────────────────────────
 # Six tables grow monotone-forever with no retention arm and no FK for
 # the job prune to cascade: wf_edge, wf_step_ledger, wf_join_fire,
 # wf_signals, wf_node_progress, wf_node_stream. The outbox/step-cache
@@ -585,19 +589,19 @@ RETURNING o.content_address
 # delivered; a deleted cache row re-fills); THESE prune the FLOW HISTORY
 # itself.
 #
-# THE TWO-PASS LAW (H-B1's cure — the convicted shape this replaces):
+# THE TWO-PASS LAW (the fix — the rejected shape this replaces):
 # the first cut selected doomed rows out of each wf TABLE — every row's
 # predicate probed the jobs side twice (terminal-EXISTS + rootless
 # NOT-EXISTS) and wf_edge, having no clock of its own, evaluated the
 # probe for EVERY row: the zero-doomed steady-state pass was a
 # full-table walk with 2 jobs-probes per row, TimeoutError at 3M rows,
 # the arms PERMANENTLY stopped pruning at exactly the scale they exist
-# for. The cure flips the selection to the FLOWS SIDE — two passes:
+# for. The fix flips the selection to the FLOWS SIDE — two passes:
 #
 # * THE FLOWS-SIDE PASS (every call): the TERMINAL-AGED ROOTS are
 #   selected FIRST — a tiny jobs-side set served by jobs_finished_at_idx
 #   (status, finished_at): ``step_key = '__flow__'`` (the root identity,
-#   H-B3 — the old EXISTS legs never checked it), a terminal status, and
+#   — the old EXISTS legs never checked it), a terminal status, and
 #   the root's own ``finished_at`` past the period. Each selected flow's
 #   rows then delete through the table's flow_id index (the delete joins
 #   the table's flow column), row-LIMITed to the batch. The floor is
@@ -614,20 +618,20 @@ RETURNING o.content_address
 # * THE ROOTLESS PASS (a separate, coarser-cadence statement — the
 #   leader wiring runs it every Nth call): the orphan class — the row's
 #   pointee is NOT a flow root AT ALL (absent, or a live NON-root job;
-#   H-B3's third orphan class the un-checked EXISTS legs could never
+#   the orphan identity's third orphan class the un-checked EXISTS legs could never
 #   classify) — cannot be found from the flows side, so its statement is
 #   a PK-ordered walk that visits AT MOST the batch (the LIMIT bounds
-#   the SCAN, not the result — the property the convicted shape lacked)
+#   the SCAN, not the result — the property the rejected shape lacked)
 #   and probes each visited row's pointee once. The walk advances as the
 #   table's aged front drains (the flows-side pass deletes the
 #   terminal-aged flows' rows ahead of it).
 #
-# THE PERSISTED CURSOR (the round-2 R1's cure — the walk that never
+# THE PERSISTED CURSOR (the persisted-cursor fix — the walk that never
 # advanced at a live PK front): ``ORDER BY pk LIMIT batch`` re-visits
 # the SAME first batch every pass when that batch's probes all answer
-# "live root" — the red-team's proof: a 3,000-row live front, batch
+# "live root" — the adversarial proof: a 3,000-row live front, batch
 # 1,000, five passes, deleted=0, the orphans beyond the front stranded
-# forever. The cure is the estate's own watermark precedent
+# forever. The fix is the estate's own watermark precedent
 # (``job_events_prune_state``, 01.00.20_02): a persisted cursor row per
 # arm (``wf_rootless_sweep_state``, 01.00.36_01) that the walk SEEKS
 # STRICTLY PAST — the cursor rides the last VISITED row (visited, not
@@ -641,7 +645,7 @@ RETURNING o.content_address
 # the batch still bounding every pass). The seek's fresh-cursor face is
 # a COALESCE to the below-everything sentinel (the nil uuid / seq 0 /
 # the empty channel) — deliberately NOT an ``OR cursor IS NULL`` leg,
-# which would cost the walk its PK index (the whole point of H-B1).
+# which would cost the walk its PK index (the whole point of the two-pass law).
 #
 # THE AGE CLOCKS (one per leg, stated once): the flows-side pass ages by
 # the ROOT's ``finished_at`` — the flow's terminalization stamp, the
@@ -655,7 +659,7 @@ RETURNING o.content_address
 # its rootless class deletes on sight: the pointee's absence IS the age
 # proof (a committed edge's root can only be absent by deletion).
 #
-# THE NULL-STAMP LEG (H-B4's conservative shape, the round-2 R2 flip):
+# THE NULL-STAMP LEG (the conservative shape, the round-2 R2 flip):
 # a terminal root whose ``finished_at`` was never stamped is SKIPPED —
 # NEVER doomed. The first cut included it ("aged by nothing") and was
 # degenerate BOTH ways: [idle] a seconds-old flow's entire history
@@ -663,7 +667,7 @@ RETURNING o.content_address
 # delete eager, the period meaningless); [busy] the ``ORDER BY
 # finished_at NULLS LAST`` tail put the NULL-stamped roots past the
 # LIMIT — never selected, never deleted, and the tripwire (keyed on
-# deletion) NEVER fired. The cure: the delete never eager — no history
+# deletion) NEVER fired. The fix: the delete never eager — no history
 # is removed that has no honest age — and the tripwire always live: the
 # flows-side statements OBSERVE the class (a ``null_observed`` count
 # over the same jobs_finished_at_idx face — the NULLs sit contiguous per
@@ -672,7 +676,7 @@ RETURNING o.content_address
 # warn cadence (``wf-retention-null-finished-at``): fix the stamping bug
 # or backfill the stamps — the rows stay until they carry an honest age.
 #
-# THE CLOCK VOCABULARY (H-B7): every comparison here is
+# THE CLOCK VOCABULARY: every comparison here is
 # ``statement_timestamp()`` — the prune family's own selection-bound
 # clock (STABLE: the bound is fixed at the statement's start, the
 # two-clock law test_index_audit.py documents — a VOLATILE
@@ -707,10 +711,10 @@ RETURNING o.content_address
 # is terminal).
 EDGE_RETENTION_SQL = """\
 WITH doomed_flows AS (
-    -- THE FLOWS-SIDE DOOMED SELECTION (H-B1): the terminal-aged ROOTS
+    -- THE FLOWS-SIDE DOOMED SELECTION (the two-pass law): the terminal-aged ROOTS
     -- first — a tiny jobs-side set via jobs_finished_at_idx; LIMIT $1
     -- bounds the flow set, the same batch bounds the row deletion
-    -- below. The root identity (step_key = '__flow__', H-B3) is stated
+    -- below. The root identity (step_key = '__flow__') is stated
     -- here, once per arm. The NULL-stamped terminal roots are NOT
     -- selected (R2's conservative shape: the delete never eager — a
     -- root with no honest age dooms nothing).
@@ -758,7 +762,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 EDGE_ROOTLESS_RETENTION_SQL = """\
 WITH cur AS (
     -- THE PERSISTED CURSOR (01.00.36_01, the job_events_prune_state
-    -- precedent; the round-2 R1's cure): the walk seeks strictly PAST
+    -- precedent; the persisted-cursor fix): the walk seeks strictly PAST
     -- the arm's last VISITED row — a live PK front's rows are visited
     -- once, answered 'live root', and the next pass starts behind them
     -- no more. FOR UPDATE serializes a concurrent pass of the same arm;
@@ -769,9 +773,9 @@ WITH cur AS (
     FOR UPDATE
 ),
 visited AS (
-    -- THE ROOTLESS LEG'S BOUNDED WALK (H-B1's second pass): the
+    -- THE ROOTLESS LEG'S BOUNDED WALK (the second pass): the
     -- PK-ordered scan visits AT MOST $1 rows (the LIMIT bounds the SCAN
-    -- — the convicted shape's predicate walked the whole table when
+    -- — the rejected shape's predicate walked the whole table when
     -- nothing matched), each visited row's pointee probed once by PK.
     -- THE SEEK past the cursor: COALESCE to the below-everything
     -- sentinel (the nil uuid) on a fresh/reset cursor — no OR leg, the
@@ -788,7 +792,7 @@ visited AS (
     LIMIT $1
 ),
 doomed AS (
-    -- THE ROOT IDENTITY (H-B3): the pointee must be a FLOW ROOT for the
+    -- THE ROOT IDENTITY: the pointee must be a FLOW ROOT for the
     -- row to have a live owner — absent, or a live NON-root job, are
     -- one NOT-EXISTS. wf_edge has no clock of its own: the pointee's
     -- absence (or non-rootness) IS the age proof — a committed edge's
@@ -848,7 +852,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 
 JOIN_FIRE_RETENTION_SQL = """\
 WITH doomed_flows AS (
-    -- THE FLOWS-SIDE DOOMED SELECTION (H-B1): see EDGE_RETENTION_SQL —
+    -- THE FLOWS-SIDE DOOMED SELECTION (the two-pass law): see EDGE_RETENTION_SQL —
     -- the same terminal-aged ROOTS first, the same batch bounding both
     -- the flow set and the row deletion, the same NULL-stamp SKIP (R2).
     SELECT f.id
@@ -887,7 +891,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 
 JOIN_FIRE_ROOTLESS_RETENTION_SQL = """\
 WITH cur AS (
-    -- THE PERSISTED CURSOR (01.00.36_01; R1's cure): see
+    -- THE PERSISTED CURSOR (migration 01.00.36_01): see
     -- EDGE_ROOTLESS_RETENTION_SQL.
     SELECT s.cursor_a AS cursor_a
     FROM {schema}.wf_rootless_sweep_state s
@@ -895,7 +899,7 @@ WITH cur AS (
     FOR UPDATE
 ),
 visited AS (
-    -- THE ROOTLESS LEG'S BOUNDED WALK (H-B1's second pass): the
+    -- THE ROOTLESS LEG'S BOUNDED WALK (the second pass): the
     -- PK-ordered scan visits AT MOST $1 rows, one PK probe each, SEEKING
     -- strictly past the cursor (the nil-uuid sentinel on a fresh/reset
     -- cursor — no OR leg, the PK index walk stays the plan).
@@ -907,7 +911,7 @@ visited AS (
     LIMIT $1
 ),
 doomed AS (
-    -- THE ROOT IDENTITY (H-B3) + the row's own clock (the rootless
+    -- THE ROOT IDENTITY  + the row's own clock (the rootless
     -- class cannot ride a root's finished_at — the row's creation clock
     -- is its honest age).
     SELECT v.id
@@ -957,7 +961,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 
 STEP_LEDGER_RETENTION_SQL = """\
 WITH doomed_flows AS (
-    -- THE FLOWS-SIDE DOOMED SELECTION (H-B1): see EDGE_RETENTION_SQL.
+    -- THE FLOWS-SIDE DOOMED SELECTION (the two-pass law): see EDGE_RETENTION_SQL.
     -- The NULL-stamped terminal roots are SKIPPED (R2's conservative
     -- shape), observed instead.
     SELECT f.id
@@ -981,7 +985,7 @@ doomed AS (
     -- leading flow_id column (flow_id, step_key, COALESCE(map_index,-1),
     -- attempt — 01.00.28_01): the narrowest flow probe the table ships
     -- (wf_step_ledger_flow_idx is NOT built — redundant write
-    -- amplification on the hottest table, H-B6).
+    -- amplification on the hottest table).
     SELECT o.id
     FROM {schema}.wf_step_ledger o
     JOIN doomed_flows df ON df.id = o.flow_id
@@ -999,7 +1003,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 
 STEP_LEDGER_ROOTLESS_RETENTION_SQL = """\
 WITH cur AS (
-    -- THE PERSISTED CURSOR (01.00.36_01; R1's cure): see
+    -- THE PERSISTED CURSOR (migration 01.00.36_01): see
     -- EDGE_ROOTLESS_RETENTION_SQL.
     SELECT s.cursor_a AS cursor_a
     FROM {schema}.wf_rootless_sweep_state s
@@ -1007,7 +1011,7 @@ WITH cur AS (
     FOR UPDATE
 ),
 visited AS (
-    -- THE ROOTLESS LEG'S BOUNDED WALK (H-B1's second pass): the
+    -- THE ROOTLESS LEG'S BOUNDED WALK (the second pass): the
     -- PK-ordered scan visits AT MOST $1 rows, one PK probe each, SEEKING
     -- strictly past the cursor.
     SELECT o.id, o.flow_id, o.created_at
@@ -1018,7 +1022,7 @@ visited AS (
     LIMIT $1
 ),
 doomed AS (
-    -- THE ROOT IDENTITY (H-B3) + the row's own clock.
+    -- THE ROOT IDENTITY  + the row's own clock.
     SELECT v.id
     FROM visited v
     WHERE v.created_at <= statement_timestamp() - $2::interval
@@ -1065,7 +1069,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 
 SIGNALS_RETENTION_SQL = """\
 WITH doomed_flows AS (
-    -- THE FLOWS-SIDE DOOMED SELECTION (H-B1): see EDGE_RETENTION_SQL.
+    -- THE FLOWS-SIDE DOOMED SELECTION (the two-pass law): see EDGE_RETENTION_SQL.
     -- The NULL-stamped terminal roots are SKIPPED (R2's conservative
     -- shape), observed instead.
     SELECT f.id
@@ -1106,7 +1110,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 
 SIGNALS_ROOTLESS_RETENTION_SQL = """\
 WITH cur AS (
-    -- THE PERSISTED CURSOR (01.00.36_01; R1's cure): see
+    -- THE PERSISTED CURSOR (migration 01.00.36_01): see
     -- EDGE_ROOTLESS_RETENTION_SQL.
     SELECT s.cursor_a AS cursor_a
     FROM {schema}.wf_rootless_sweep_state s
@@ -1114,7 +1118,7 @@ WITH cur AS (
     FOR UPDATE
 ),
 visited AS (
-    -- THE ROOTLESS LEG'S BOUNDED WALK (H-B1's second pass): the
+    -- THE ROOTLESS LEG'S BOUNDED WALK (the second pass): the
     -- PK-ordered scan visits AT MOST $1 rows, one PK probe each, SEEKING
     -- strictly past the cursor.
     SELECT o.id, o.workflow_id, o.created_at
@@ -1125,7 +1129,7 @@ visited AS (
     LIMIT $1
 ),
 doomed AS (
-    -- THE ROOT IDENTITY (H-B3) + the row's own clock. A terminal
+    -- THE ROOT IDENTITY  + the row's own clock. A terminal
     -- flow's HELD signals (the abandoned-hold class) delete with the
     -- flow via the flows-side pass; the rootless class here is the
     -- same narration with no root left to age by.
@@ -1175,7 +1179,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 
 NODE_PROGRESS_RETENTION_SQL = """\
 WITH doomed_flows AS (
-    -- THE FLOWS-SIDE DOOMED SELECTION (H-B1): see EDGE_RETENTION_SQL.
+    -- THE FLOWS-SIDE DOOMED SELECTION (the two-pass law): see EDGE_RETENTION_SQL.
     -- The NULL-stamped terminal roots are SKIPPED (R2's conservative
     -- shape), observed instead.
     SELECT f.id
@@ -1245,7 +1249,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 
 NODE_PROGRESS_ROOTLESS_RETENTION_SQL = """\
 WITH cur AS (
-    -- THE PERSISTED CURSORS (01.00.36_01; R1's cure): see
+    -- THE PERSISTED CURSORS (migration 01.00.36_01): see
     -- EDGE_ROOTLESS_RETENTION_SQL. The FOLD (R3) gives this statement
     -- TWO walks and TWO arm rows: the progress walk (the composite
     -- node_id/channel cursor) and the stream walk (the seq cursor).
@@ -1256,7 +1260,7 @@ WITH cur AS (
     FOR UPDATE
 ),
 visited AS (
-    -- THE PROGRESS WALK (H-B1's second pass): the PK-ordered scan
+    -- THE PROGRESS WALK (the second pass): the PK-ordered scan
     -- visits AT MOST $1 rows, one probe set each, SEEKING strictly past
     -- the composite cursor (the nil-uuid / empty-channel sentinels on a
     -- fresh/reset cursor — no OR leg, the PK index walk stays the plan).
@@ -1283,10 +1287,10 @@ stream_visited AS (
     LIMIT $1
 ),
 doomed AS (
-    -- THE NODE'S OWNER IDENTITY (H-B3): the progress row's owner is the
+    -- THE NODE'S OWNER IDENTITY: the progress row's owner is the
     -- NODE's flow link naming a FLOW ROOT. One NOT-EXISTS, three honest
     -- legs: the node GONE, the node WITHOUT the flow_id stamp (a
-    -- vanilla node — the convicted unprunable class), or the pointee
+    -- vanilla node — the rejected unprunable class), or the pointee
     -- NOT a flow root (absent, or a live NON-root job). A node whose
     -- pointee IS a live root survives; a node whose pointee is a
     -- TERMINAL root's rows are the flows-side pass's own (aged by the
@@ -1393,7 +1397,7 @@ SELECT (SELECT count(*) FROM deleted) AS deleted,
 
 
 def render_rootless_retention_sql(template: str, schema: str) -> str:
-    """The ROOTLESS-leg statements' renderer (H-B1's second pass).
+    """The ROOTLESS-leg statements' renderer (the second pass).
 
     The flows-side statements ride the :class:`WorkflowSql` bundle's own
     fields (the bundle renders them in ``build``); the rootless
@@ -1407,7 +1411,7 @@ def render_rootless_retention_sql(template: str, schema: str) -> str:
     constants, the reverse import would be a cycle.
 
     Each rootless statement is SELF-CONTAINED on its cursor (01.00.36_01,
-    the round-2 R1's cure): it seeks past the arm's persisted
+    the persisted-cursor fix): it seeks past the arm's persisted
     ``wf_rootless_sweep_state`` row, advances that row to the last
     VISITED key, and rewinds it on the exhausted pass — all in the
     delete's own statement/transaction, the job_events_prune_state

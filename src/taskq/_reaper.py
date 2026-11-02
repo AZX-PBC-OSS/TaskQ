@@ -5,7 +5,7 @@
 CancelledError contained — but a BARE
 ``contextlib.suppress(asyncio.CancelledError)`` also contains the
 REAPER'S OWN concurrent cancellation (the shutdown's cancel dies inside
-the suppress and the reaper runs on — the F-DEMO-2 conviction). The
+the suppress and the reaper runs on — the F-DEMO-2 finding). The
 helper suppresses only THE CHILD'S cancel: the uncancel accounting
 distinguishes the two (the child's cancel never touched this task's
 count; the reaper's own did) and re-raises what belongs to the reaper.

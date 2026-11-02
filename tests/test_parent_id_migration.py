@@ -76,9 +76,9 @@ def test_migration_index_serves_the_pending_children_count() -> None:
 def test_shipped_23_01_is_byte_frozen() -> None:
     """THE UPGRADE-PATH LAW: the merge base's own chain applied this file's
     exact bytes, and its ledger checksum (bfd0a070b649 at the d24f17b9 CI
-    conviction) refuses any rewrite of the version key. The consolidation's
+    recorded finding) refuses any rewrite of the version key. The consolidation's
     split-to-23_07 attempt edited the shipped file and the migrations gate
-    convicted it — the columns file is frozen to the shipped digest."""
+    rejected it — the columns file is frozen to the shipped digest."""
     import hashlib
 
     digest = hashlib.sha256(_migration_sql().encode()).hexdigest()

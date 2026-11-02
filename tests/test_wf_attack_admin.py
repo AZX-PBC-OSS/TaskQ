@@ -4,8 +4,8 @@
 Provenance: the hostile review of the consolidated head (af1b8779), the
 admin-workflow-page attack front. Five findings LANDED and are pinned
 strict-xfail, each asserting the SAFE behavior against the live defect —
-the cure flips each to XPASS-strict (a red that tells you to remove the
-marker WITH the cure, the same drill test_wf_attack_cancel.py's Face C
+the fix flips each to XPASS-strict (a red that tells you to remove the
+marker WITH the fix, the same scenario test_wf_attack_cancel.py's Face C
 documents). Three attacks FAILED and are pinned as green guards so the
 verified-safe behavior can never rot silently.
 
@@ -250,13 +250,14 @@ async def _seed_node(
     node_id = new_uuid()
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, $3, $4, $5::jsonb)",
+        "retry_kind, status, step_key, deps_pending, metadata, fairness_key) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, $3, $4, $5::jsonb, $6)",
         node_id,
         status,
         step_key,
         deps,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     return JobId(node_id)
 
@@ -267,7 +268,7 @@ async def _seed_node(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-1]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-1, landed @af1b8779): fetch_run_view passes the run ROOT id …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-1]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-1, landed @af1b8779): fetch_run_view passes the run ROOT id …
 async def test_the_map_collapse_counts_the_real_children(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -325,7 +326,7 @@ async def test_the_map_collapse_counts_the_real_children(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-2]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-2, landed @af1b8779): _validate_through_gates raises the …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-2]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-2, landed @af1b8779): _validate_through_gates raises the …
 async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -376,11 +377,11 @@ async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
 
 # ──────────────────────────────────────────────────────────────────────
 # F-ADM-3 — the run SSE stream has no mid-stream session re-check (the
-# #316 cure reached /sse/{topic}, never this stream).
+# #316 fix reached /sse/{topic}, never this stream).
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-4]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-3, landed @af1b8779): _wf_actions.run_stream authenticates …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-4]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-3, landed @af1b8779): _wf_actions.run_stream authenticates …
 async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -439,9 +440,9 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
 
         auth_state["session_valid"] = False
         tail = len(received)
-        # A revision change AFTER the revocation: the pre-cure stream SERVES
+        # A revision change AFTER the revocation: the pre-fix stream SERVES
         # the frame to the dead session (the finding's own words: it keeps
-        # receiving frames); the cured stream has already ended.
+        # receiving frames); the fixed stream has already ended.
         await module_pg_pool.execute(
             f'INSERT INTO "{module_pg_schema.schema_name}".wf_signals '
             "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, status) "
@@ -478,7 +479,7 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-ADM-4]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (F-ADM-4, landed @af1b8779): run_cancel's refusal redirect targets …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-ADM-4]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (F-ADM-4, landed @af1b8779): run_cancel's refusal redirect targets …
 async def test_the_refused_cancel_redirect_lands_on_a_rendered_refusal(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -527,7 +528,7 @@ async def test_the_refused_cancel_redirect_lands_on_a_rendered_refusal(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-ADM-5: the panel's read-side bound (_bound_for_panel, the shipped 10k cap with the shipped truncation marker)]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-ADM-5: the panel's read-side bound (_bound_for_panel, the shipped 10k cap with the shipped truncation marker)]; the marker was removed per the designed flip (the confirmation).
 async def test_the_node_panel_bounds_the_error_fields_it_serves(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
@@ -542,12 +543,13 @@ async def test_the_node_panel_bounds_the_error_fields_it_serves(
     flow_id = await seed_flow(wf_conn, schema, status="failed")
     await wf_conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata, error_class, "
+        "retry_kind, status, attempt, step_key, metadata, fairness_key, error_class, "
         "error_message, error_traceback, finished_at) "
         "VALUES ($1, 'wf', 'default', '{}', 1, 'transient', 'failed', 1, 'big', "
-        "$2::jsonb, 'AttackError', $3, $4, clock_timestamp())",
+        "$2::jsonb, $3, 'AttackError', $4, $5, clock_timestamp())",
         new_uuid(),
         json.dumps({"flow_id": str(flow_id), "error": "E" * _HUGE_CHARS}),
+        str(flow_id),
         "M" * _HUGE_CHARS,
         "T" * _HUGE_CHARS,
     )
@@ -571,7 +573,7 @@ async def test_the_node_panel_bounds_the_error_fields_it_serves(
             "reached the node panel"
         )
         # THE MARKER'S SHIPPED VOCABULARY: the panel's own
-        # '[truncated: +N characters stay in the row]' suffix (Q5's cure),
+        # '[truncated: +N characters stay in the row]' suffix (Q5's fix),
         # or the estate's older '... (N more characters)' shape — a silent
         # cut reads as the whole value.
         assert (

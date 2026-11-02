@@ -170,7 +170,7 @@ async def test_stale_entry_abandon_after_carveout_meets_a_terminalised_row(
         assert entry_a.cancel_phase == CancelPhase.FORCED
 
         # ── Stage 2: A's loop stalls; the lease lapses past the sweep's
-        # cancel carve-out (cg + cl + 60s). PR : the reclaim's cancel arm
+        # cancel carve-out (cg + cl + 60s). PR: the reclaim's cancel arm
         # outranks the retry budget, so the row terminalises 'cancelled' with
         # its cancel columns preserved. It never re-pends, so worker B's
         # dispatch finds nothing and no successor attempt can exist behind
@@ -192,7 +192,7 @@ async def test_stale_entry_abandon_after_carveout_meets_a_terminalised_row(
             )
             assert row is not None
             assert row["status"] == "cancelled", (
-                "PR : a cancel-phase row past the carve-out terminalises "
+                "PR: a cancel-phase row past the carve-out terminalises "
                 "'cancelled'. A re-pend here would hand a stale holder's "
                 "abandon a live successor to kill; the old reset-on-re-pend "
                 "shape is exactly what the CASE reorder removed."
@@ -209,7 +209,7 @@ async def test_stale_entry_abandon_after_carveout_meets_a_terminalised_row(
             worker_b, ["default"], limit=1, lock_lease=timedelta(seconds=60)
         )
         assert dispatched == [], (
-            "PR : the terminalised row cannot re-enter the claim cycle, so "
+            "PR: the terminalised row cannot re-enter the claim cycle, so "
             "worker B never receives an attempt 2 behind A's stale entry"
         )
 

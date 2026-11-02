@@ -443,7 +443,7 @@ def test_jitter_zero_keeps_exact_retry_after_compliance() -> None:
 #: The tracemalloc noise floor, from MEASURED bands: batch-to-batch
 #: bookkeeping jitter observed on CI runners is tens of bytes over 10k
 #: calls (32B in red run 37263479699; 0B in 10 consecutive local runs) —
-#: noise, not signal. The d24f17b9 CI conviction re-measured the ceiling
+#: noise, not signal. The d24f17b9 CI recorded finding re-measured the ceiling
 #: under the coverage leg's tracer on a co-tenant runner: 7007B over the
 #: second batch (0.7B/call — arithmetic no real allocation can produce;
 #: Python's smallest meaningful per-call object is ≥ 32B) against the
@@ -451,7 +451,7 @@ def test_jitter_zero_keeps_exact_retry_after_compliance() -> None:
 #: per-call allocation costs ≥ 32B/call ≈ 320KB/10k. The floor sits at
 #: 64KiB: ~9x the now-measured traced-noise ceiling and ~5x below the
 #: smallest real signal, so a real per-call allocation still reds while
-#: tracer bookkeeping cannot (teeth drilled by
+#: tracer bookkeeping cannot (teeth exercised by
 #: ``test_allocation_pin_has_teeth`` below).
 TRACEMALLOC_NOISE_FLOOR_BYTES = 64 * 1024
 
@@ -511,11 +511,11 @@ def test_miss_path_allocates_nothing() -> None:
 
 
 def test_allocation_pin_has_teeth() -> None:
-    """Drill: the allocation pin must actually red on the defect it
+    """Scenario: the allocation pin must actually red on the defect it
     exists for. A miss path that ALLOCATES AND RETAINS per call (the
     leak class the pin's linear-growth signal detects: a lookup table
     appended to per exception, never released) is run through the pin's
-    own harness — the drill asserts the pin's statistic EXCEEDS its
+    own harness — the scenario asserts the pin's statistic EXCEEDS its
     budget, i.e. the pin reds on this hardware, without depending on
     absolute speed. (A transient per-call allocation is freed by
     refcount before tracemalloc's current-size can see it — that class
@@ -524,7 +524,7 @@ def test_allocation_pin_has_teeth() -> None:
     leaked: list[dict[str, int]] = []
 
     def leaky_miss_path(exc: BaseException, attempt: int) -> RetryOverride | None:
-        # The defect under drill: a fresh allocation RETAINED per miss.
+        # The defect under scenario: a fresh allocation RETAINED per miss.
         leaked.append({"attempt": attempt})
         return rate_limit_aware_classifier(exc, attempt)
 
@@ -533,7 +533,7 @@ def test_allocation_pin_has_teeth() -> None:
     )
 
     print(
-        f"\n── drill: per-call-allocating miss path ──\n"
+        f"\n── scenario: per-call-allocating miss path ──\n"
         f"  second-batch growth {second_growth}B vs noise floor "
         f"{TRACEMALLOC_NOISE_FLOOR_BYTES}B"
     )

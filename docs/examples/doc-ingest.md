@@ -173,7 +173,7 @@ async def enrich_item(ctx: StepContext, doc_id: str) -> Summary | Unreadable:
 async def route_body(ctx: StepContext, enriched: list[Summary | Unreadable]) -> list[str]:
     """Shape 7 — the CONSUMED union: `match` + `assert_never` is the
     exhaustiveness idiom BOTH checkers reject a missing arm through.
-    Deleting the `Unreadable` arm must red the residual. The dead
+    Deleting the `Unreadable` arm must fail the residual check. The dead
     letters ride a durable step; the router's own result is declared
     fire-and-forget (the wiring's `sink` — produced, recorded, never
     silently dropped)."""
@@ -280,7 +280,7 @@ async def publish_body(
     )
 
 
-# ── the wiring (ONE flow — the join-body cure makes that true) ──────────
+# ── the wiring (ONE flow — the join-body rule makes that true) ──────────
 
 app = WorkflowApp()
 
@@ -453,15 +453,14 @@ Mermaid is byte-pinned.
 
 Each leg is a RUNNABLE path in the demo (`tests/test_wf_demo_legs.py` —
 the evidence-matrix's demo work order; every run's output is captured
-verbatim under `.measurements/demo-legs/` — the artifacts live on the
-evidence branch, `evidence/taskqflow`):
+by the leg's own test):
 
 | # | Capability | The runnable path | The captured evidence |
 |---|-----------|-------------------|-----------------------|
-| 1 | **Cancellation mid-flight** | trigger → the run holds mid-flight → `taskq flows cancel <run_id> --reason ...` → the explorer shows the story: the root `cancelled`, the nodes' named states (the held signal resolved, the downstream cancelled), the derived status `cancelled`, the audit ROW (the principal + the reason) | `.measurements/demo-legs/leg1-cancellation.json` |
-| 2 | **Resumability (the kill-and-resume)** | a PRODUCTION worker (`taskq worker --actors examples.workflows:ACTORS`) claims a node mid-run → **SIGKILL** → a fresh worker's lease-expiry + reclaim re-runs the killed node → **the run COMPLETES** (the ledger records the reclaim; nothing is lost — the killed attempt's rows are the record) | `.measurements/demo-legs/leg2-kill-resume.json` |
-| 3 | **Observability (the live scrape)** | a real run + the maintenance leader's sampler → `taskq.wf_progress_nodes_total{workflow,state}` rendered at the metrics surface → the /metrics ENDPOINT's response captured verbatim | `.measurements/demo-legs/leg3-wf-gauge-scrape.prom` |
-| 4 | **The conditional router (the T20 chain)** | the demo's `doc_screen_router` run: the chain's SCREEN step routes each record — READABLE → `index`, UNREADABLE → `dead_letter`; the totals are the FENCE (a non-total route refused at declaration; a body outcome with no arm = the loud `RouterNotTotal`) | `.measurements/demo-legs/leg4-router.json` |
+| 1 | **Cancellation mid-flight** | trigger → the run holds mid-flight → `taskq flows cancel <run_id> --reason ...` → the explorer shows the story: the root `cancelled`, the nodes' named states (the held signal resolved, the downstream cancelled), the derived status `cancelled`, the audit ROW (the principal + the reason) | the leg test's recorded output |
+| 2 | **Resumability (the kill-and-resume)** | a PRODUCTION worker (`taskq worker --actors examples.workflows:ACTORS`) claims a node mid-run → **SIGKILL** → a fresh worker's lease-expiry + reclaim re-runs the killed node → **the run COMPLETES** (the ledger records the reclaim; nothing is lost — the killed attempt's rows are the record) | the leg test's recorded output |
+| 3 | **Observability (the live scrape)** | a real run + the maintenance leader's sampler → `taskq.wf_progress_nodes_total{workflow,state}` rendered at the metrics surface → the /metrics ENDPOINT's response captured verbatim | the leg test's recorded output |
+| 4 | **The conditional router (the T20 chain)** | the demo's `doc_screen_router` run: the chain's SCREEN step routes each record — READABLE → `index`, UNREADABLE → `dead_letter`; the totals are the FENCE (a non-total route refused at declaration; a body outcome with no arm = the loud `RouterNotTotal`) | the leg test's recorded output |
 
 **The two doors' contracts differ — stated AT the example (the pick:
 document, don't shim):** the `step(...)` door COERCES — the example's
@@ -476,7 +475,7 @@ teaches: pass `model.model_dump()` at emit; hand the MODEL to `step`
 (the door coerces). (The small coercion shim at emit was considered and
 DECLINED: hiding the wire's vocabulary behind a shim moves the
 zero-copy discipline from the contract to the accident; the ergonomics
-cure is the T20 lane's ledger.)
+fix is on the T20 ledger.)
 
 The demo's worker subscription: the compose stack's workers SUBSCRIBE
 to the workflow cohorts' queues — per worker, per the placement

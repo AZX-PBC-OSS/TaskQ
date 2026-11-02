@@ -3,7 +3,7 @@
 
 TOTALITY IS THE FENCE, at TWO doors (the asymmetry doctrine — the spike's
 §3): the DECLARATION-time refusal (a non-total route is a coding error,
-convicted before any row exists) and the RUNTIME loud refusal
+rejected before any row exists) and the RUNTIME loud refusal
 (``RouterNotTotal`` — the step terminal-FAILS with
 ``error_class='RouterNotTotal'``, the record names the defect; the
 record's chain visibly dies, never silently drops).
@@ -13,7 +13,7 @@ chain step's finalize forks AT MOST ONE child (no fan-in, no join), the
 record's ``map_index`` + trace riding forward — the per-record lineage is
 one query (the drill-down by trace).
 
-Red-first: the declaration-refusal and the runtime-refusal pins ran RED
+Failing-first: the declaration-refusal and the runtime-refusal pins ran RED
 against the tree before the chain surface existed; the greens below are
 the built code's evidence. Captured:
 ``.measurements/t20-router-*.txt``.
@@ -144,7 +144,7 @@ def test_t20_route_not_total_is_refused_at_declaration() -> None:
                         {
                             ScreenOutcome.CLEAN: "enrich",
                             ScreenOutcome.FLAGGED: "enrich",
-                            "ghost": "enrich",  # type: ignore[dict-item]  # Why: the drill — the unknown key is the refusal's subject.
+                            "ghost": "enrich",  # type: ignore[dict-item]  # Why: the scenario — the unknown key is the refusal's subject.
                         }
                     ),
                 ),
@@ -189,7 +189,7 @@ def test_t20_router_not_total_loud_refusal() -> None:
     converts it to a terminal-FAILED finalize carrying
     ``error_class='RouterNotTotal'`` (the integration below pins the ROW).
     The silent-drop variant (a bare KeyError swallowing, a ``None``
-    returned) is the convicted shape — never shipped."""
+    returned) is the rejected shape — never shipped."""
     route = Route({ScreenOutcome.CLEAN: "enrich", ScreenOutcome.FLAGGED: "manual_review"})
     with pytest.raises(RouterNotTotal, match="'corrupted'"):
         route.next_step("corrupted")  # a foreign outcome at runtime
@@ -362,7 +362,7 @@ async def test_t20_router_not_total_fails_the_row_loudly(
     FOREIGN outcome (not the declared enum) terminal-FAILS with
     ``error_class='RouterNotTotal'`` — the record NAMES the defect; the
     chain visibly dies. The silent-drop variant (the record vanishing,
-    the run 'succeeding' minus one) is the convicted shape."""
+    the run 'succeeding' minus one) is the rejected shape."""
     from taskq.backend._protocol import JobId as JId
     from taskq.workflows._emit import emit_batch
     from taskq.workflows.engine import finalize_node
@@ -576,7 +576,7 @@ async def test_t20_chain_end_to_end_through_the_runner(
 
 async def t20_lying_screen(ctx: object, item: dict[str, object]) -> T20ScreenOutcome:
     """THE BODY THAT LIED: returns a raw string — not the declared enum."""
-    return "corrupted"  # type: ignore[return-value]  # Why: the drill — the foreign outcome IS the runtime door's subject.
+    return "corrupted"  # type: ignore[return-value]  # Why: the scenario — the foreign outcome IS the runtime door's subject.
 
 
 T20_LYING_CHAIN = Chain(
@@ -611,7 +611,7 @@ async def test_t20_router_not_total_through_the_runner(
     returns a foreign outcome fails the row LOUDLY —
     ``error_class='RouterNotTotal'`` on the record — and the RUN dies
     'failed' (the envelope cannot lie about a chain that died mid-route).
-    The silent-drop variant is the convicted shape."""
+    The silent-drop variant is the rejected shape."""
     from taskq.workflows import FlowRunner, WorkflowApp, build, chain_source
 
     app = WorkflowApp()

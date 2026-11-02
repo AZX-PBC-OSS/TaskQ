@@ -48,13 +48,13 @@ def test_actor_projects_the_estate_carrier() -> None:
     """Pin 9's composition assertion (the registry-omits variant reds):
     the workflow actor projects the ``ActorConfig``-compatible carrier —
     the same shape the config sync + the guards + ``TASKQ_QUEUES_STRICT``
-    consume, IN THE REAL PROJECTION'S ONE VOCABULARY (H-A12 — the
+    consume, IN THE REAL PROJECTION'S ONE VOCABULARY (the — the
     ``ActorConfig`` field set, the ``workflow_actor`` metadata mark; the
     pre-fix carrier's workflow-namespaced actor name and the
     ``ActorRef``-shaped max_attempts/retry_kind fields were a second,
     divergent scheme). The capacity terms declared ride the row; the
     reservations do NOT (no field — the ensure-slots pass owns their
-    materialization) and ``max_pending`` is off the wf surface (H-A6 —
+    materialization) and ``max_pending`` is off the wf surface (the —
     the row seeds it UNSET)."""
     app = WorkflowApp()
     decorate = app.actor(queue="gpu", max_attempts=5, retry_kind="permanent")
@@ -221,7 +221,7 @@ def test_mermaid_shape_vocabulary() -> None:
     text = app.get("shapes").mermaid()
     assert (
         'plain(["plain' in text
-    )  # the map source's stadium (it forks children — the rv4 arms-render cure)
+    )  # the map source's stadium (it forks children — the arms-render fix)
     assert "⇢ map:" in text  # the map's item body ON the label
     assert 'gather[["gather"]]' in text  # the gather join
     assert 'plain.join{{"plain.join"}}' in text  # the collapsed map join

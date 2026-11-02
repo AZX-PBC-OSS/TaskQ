@@ -1851,7 +1851,7 @@ class _SpacedCroniter:
 
 async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """The DAILY lane: _prune_loop skips when last_pruned_date == today
-    (UTC) — AND THE SKIP IS SURFACED (the D2 soak's P1 cure (a): the
+    (UTC) — AND THE SKIP IS SURFACED (the D2 soak's P1 fix (a): the
     latch's deferral is a NAMED event, never silence — 80+ minutes of
     ``*/5`` fires deferred silently read as "nothing to prune" while 88k
     eligible rows sat unpruned)."""
@@ -1913,21 +1913,21 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
     latched = [e for e in captured if e["event"] == "prune-skipped-day-latch"]
     assert latched, (
         "the day-latch deferred the second fire SILENTLY — the D2 soak's "
-        "conviction (the surfaced truth: the skip-reason states the latch "
+        "recorded finding (the surfaced truth: the skip-reason states the latch "
         "and the next fire)"
     )
     assert latched[0]["next_fire"]
 
 
 async def test_prune_loop_sub_daily_retention_lane_checks_every_tick(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
-    """THE RETENTION-CHECK LANE (the D2 soak's P1 cure (b) — the
+    """THE RETENTION-CHECK LANE (the D2 soak's P1 fix (b) — the
     at-most-daily class is DEAD): a SUB-DAILY prune cron with a 180 s
     retention and rows past retention is CHECKED EVERY LEADER TICK — the
     arm attempts (and prunes) on successive wakes within the observation
     window, the deleted count DROPS with each check, and the day-latch
     never gates it. The D2 shape (a ``*/5`` cron + 180 s retention + 88k
     eligible rows) sat on its hands for 80+ minutes under the old
-    latch-everything arm; this pin convicts the latch-gated variant as
+    latch-everything arm; this pin rejects the latch-gated variant as
     its red."""
     import croniter as croniter_mod
 
@@ -1968,7 +1968,7 @@ async def test_prune_loop_sub_daily_retention_lane_checks_every_tick(monkeypatch
     assert attempts >= 3, (
         f"the sub-daily retention lane attempted {attempts} time(s) — the "
         "day-latch converted a */5 retention policy to at-most-daily (the "
-        "D2 soak's P1, kept red forever by this pin)"
+        "D2 soak's P1, kept failing on purpose by this pin)"
     )
     # THE COUNT DROPS (measured): each attempt drained its batch — the
     # archive write consumed the eligible window.
@@ -3999,7 +3999,7 @@ async def test_transient_dedicated_conn_failure_keeps_the_lease_and_recovers(
 async def test_escaped_assume_failure_also_hands_the_won_lease_back(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
-    """The sibling entry point into : an exception ESCAPING
+    """The sibling entry point into: an exception ESCAPING
     ``_assume_leadership`` after a won elect (here, a courtesy-lock
     probe whose conn dies with a transient error the probe's own catch
     reclassifies as a miss-then-raise) leaves the same held-but-never-led

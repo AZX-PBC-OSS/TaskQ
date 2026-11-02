@@ -1,4 +1,4 @@
-"""Red-team: JobHandle.wait's timeout contract against a fetch that never returns.
+"""Adversarial review: JobHandle.wait's timeout contract against a fetch that never returns.
 
 The project's own rule (docs/guides/ops.md, enforced across the worker
 surface): "every wait on something outside the process is bounded, and

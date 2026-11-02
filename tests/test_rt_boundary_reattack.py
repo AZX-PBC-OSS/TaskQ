@@ -1,4 +1,4 @@
-"""Fresh red-team eyes on the boundaries of the five deployment-wave fixes.
+"""Fresh adversarial review eyes on the boundaries of the five deployment-wave fixes.
 
 The fixing pass verified each fix's headline contract; this file re-attacks
 the shapes at the EDGE of those pins - the reverse directions, the

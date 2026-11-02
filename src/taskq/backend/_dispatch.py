@@ -327,7 +327,7 @@ async def _dispatch_batch(
                 if round_bound is not None:
                     sql_stmt = sql.dispatch_strict_fifo_cursor
                 else:
-                    # THE FLIP-BACK (the rv2 finding's cure): the statement
+                    # THE FLIP-BACK: the statement
                     # is derived from THIS attempt's bound, never carried —
                     # a cursor render pinned by an earlier iteration must
                     # not survive its own bound's expiry (the expired entry

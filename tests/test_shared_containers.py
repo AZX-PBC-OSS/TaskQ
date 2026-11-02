@@ -7,10 +7,10 @@ intermittently). Its keep/remove and holder-registry decisions are pure file/OS
 state, so the whole contract is testable without Docker: the Docker I/O wrappers
 around them are exercised by every integration run and by the container census.
 
-The sweep contract pinned here is ported from the proven sibling implementation
-(cennan): a liveness-blind sweep once force-removed a CONCURRENTLY running pytest
-session's containers on a shared Docker daemon (~98x ConnectionRefusedError), so the
-label rules below are critical, not hygiene.
+The sweep contract pinned here exists because a liveness-blind sweep in the
+implementation this design was ported from once force-removed a CONCURRENTLY
+running pytest session's containers on a shared Docker daemon (~98x
+ConnectionRefusedError), so the label rules below are critical, not hygiene.
 """
 
 from __future__ import annotations
@@ -113,28 +113,29 @@ def test_creator_labels_record_this_process_and_its_parent() -> None:
     assert int(labels[sc.CONTROLLER_PID_LABEL]) == os.getppid()
 
 
-def test_owner_pid_label_re_matches_any_sibling_repo_shape() -> None:
-    """Cross-repo courtesy on a shared daemon: cennan/warden label with the same
-    ``<project>.test.(creator|controller)-pid`` key shape, and every repo's sweep
+def test_owner_pid_label_re_matches_any_project_shape() -> None:
+    """Cross-repo courtesy on a shared daemon: any project may label with the same
+    ``.test.(creator|controller)-pid`` suffix shape, and every repo's sweep
     must honor ANY of them so one checkout's sweep never kills another's live run."""
     assert sc.OWNER_PID_LABEL_RE.match("taskq.test.creator-pid")
-    assert sc.OWNER_PID_LABEL_RE.match("cennan.test.controller-pid")
-    assert sc.OWNER_PID_LABEL_RE.match("warden.test.creator-pid")
+    assert sc.OWNER_PID_LABEL_RE.match("otherproject.test.controller-pid")
+    assert sc.OWNER_PID_LABEL_RE.match("anotherapp.test.creator-pid")
     assert sc.OWNER_PID_LABEL_RE.match("myapp.test.controller-pid")
+    assert sc.OWNER_PID_LABEL_RE.match("com.example.test.creator-pid")
     assert not sc.OWNER_PID_LABEL_RE.match("org.testcontainers.session-id")
     assert not sc.OWNER_PID_LABEL_RE.match("taskq.test.creator-pid-extra")
     assert not sc.OWNER_PID_LABEL_RE.match("com.example.taskq.creator-pid")
 
 
 def test_labeled_pids_collects_parseable_pids_across_all_owner_labels() -> None:
-    """All parseable pid values across ours AND sibling repos' labels; an
+    """All parseable pid values across ours AND any other project's labels; an
     unparseable value cannot have come from a real labeling site (all write
     ``str(pid)``), protects no live run, and is dropped."""
     labels = {
         sc.CREATOR_PID_LABEL: "123",
-        "warden.test.controller-pid": "456",
+        "otherproject.test.controller-pid": "456",
         "unrelated": "789",
-        "cennan.test.creator-pid": "not-a-pid",
+        "anotherapp.test.creator-pid": "not-a-pid",
     }
     assert sc.labeled_pids(labels) == [123, 456]
 
@@ -274,14 +275,32 @@ def test_a_running_unlabeled_container_exactly_at_the_age_limit_is_kept() -> Non
 
 
 def test_a_foreign_repo_label_with_a_live_pid_is_honored() -> None:
-    assert _decide(labels={"warden.test.creator-pid": str(os.getpid())}) is False
+    """A created container (not running) carrying a foreign-shaped owner key
+    whose pid is alive is kept: the label arm decides, not the default arm."""
+    assert (
+        _decide(running=False, labels={"otherproject.test.creator-pid": str(os.getpid())}) is False
+    )
+
+
+def test_a_created_container_with_a_dotted_owner_key_and_a_live_pid_is_kept() -> None:
+    """The suffix shape honors whatever precedes ``.test.``: a created container
+    (not running) labeled ``com.example.test.creator-pid`` with a LIVE pid is
+    kept by the label arm — were the label missed, the default arm would sweep
+    the non-running container despite the live owner."""
+    assert (
+        _decide(
+            running=False,
+            labels={"com.example.test.creator-pid": str(os.getpid())},
+        )
+        is False
+    )
 
 
 def test_a_foreign_repo_label_whose_pids_are_all_dead_is_swept() -> None:
     assert (
         _decide(
             labels={
-                "warden.test.creator-pid": str(_dead_pid()),
+                "otherproject.test.creator-pid": str(_dead_pid()),
                 "myapp.test.controller-pid": str(_dead_pid()),
             }
         )

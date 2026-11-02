@@ -6,7 +6,7 @@ REGISTERED HERE — one JSON array of ``{stem, file, head_sha,
 captured_at}`` entries in append order — and the MACHINERY (the writers
 below, ``scripts/check_wf_coverage.py``, and the verifier
 ``scripts/verify_evidence_heads.py``) reads THE MANIFEST, never the
-filenames. The convicted shape this replaces: the verifier grouped the
+filenames. The rejected shape this replaces: the verifier grouped the
 estate by PARSING each filename's run-scoped tail (the ``_stem`` /
 ``_run_order`` heuristics) — a name-format law the machines enforced on
 the humans' own files. A name is for HUMANS; the registry is for the

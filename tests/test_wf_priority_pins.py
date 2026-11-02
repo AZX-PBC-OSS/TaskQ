@@ -1,6 +1,6 @@
-"""THE WF-PRIORITY PINS — the workflow surface's priority law, red-first.
+"""THE WF-PRIORITY PINS — the workflow surface's priority law.
 
-THE CONVICTION (the deepest downstream consumer's — TAStack, 36+ actors,
+THE RECORDED FINDING (the deepest downstream consumer — a 36+-actor deployment,
 23 ``priority=`` enqueue-time call sites, a BACKLOG/interactive split):
 the vanilla surface carries priority end to end — the ``jobs.priority``
 smallint column (``migrations/01.00.00_01_pre_initial.sql``, DEFAULT 0),
@@ -9,7 +9,7 @@ declared default), and the dispatch claim's ``priority DESC`` ORDER BY.
 The workflow surface carried NONE of it: every wf INSERT omitted the
 column, so a flow step landed at the column default — an interactive step
 could not jump a 100k-deep sweep backlog. A regression on a shipped
-surface, cured additively (the vanilla face byte-identical).
+surface, fixed additively (the vanilla face byte-identical).
 
 THE PRECEDENCE LAW (per row, first non-None wins):
 
@@ -221,7 +221,7 @@ async def test_actor_declared_priority_lands_on_the_rows(
     """THE ACTOR DECLARATION'S RIDE: ``@app.actor(priority=5)`` wired via
     ``step()`` without its own priority — the node's rows land with the
     actor's declared priority in the ``jobs.priority`` COLUMN (asserted
-    directly). The convicted variant: every wf INSERT omitted the column
+    directly). The rejected variant: every wf INSERT omitted the column
     and the row landed at the column default — the actor's declaration
     silently dropped."""
     app = WorkflowApp()
@@ -245,9 +245,9 @@ async def test_actor_declared_priority_lands_on_the_rows(
 async def test_undeclared_priority_keeps_the_column_default_and_the_row_shape(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE BYTE-IDENTITY LAW (the cure's own non-negotiable): no
+    """THE BYTE-IDENTITY LAW (the fix's own non-negotiable): no
     priority declared anywhere — the row's priority is the COLUMN DEFAULT
-    (0) and the row's metadata keeps the pre-cure shape exactly (the
+    (0) and the row's metadata keeps the pre-fix shape exactly (the
     flow_id stamp, no new keys). The no-kwarg surface is today's surface,
     byte for byte."""
     app = WorkflowApp()
@@ -275,7 +275,7 @@ async def test_the_precedence_law_all_four_levels(wf_schema: str, wf_pool: async
       step-declared step reads its own 7 (the step overrides the actor,
       never the reverse); the undeclared step reads the COLUMN DEFAULT 0.
     * run B (per-call 8): EVERY step reads 8 — the explicit per-call
-      overrides all declarations (TAStack's load-bearing face: the
+      overrides all declarations (the load-bearing face: the
       enqueue-time override wins).
 
     The resolution is per RUN and per ROW: the run-level override never
@@ -315,7 +315,7 @@ async def test_the_precedence_law_all_four_levels(wf_schema: str, wf_pool: async
 async def test_the_packaged_run_carries_the_per_call_override(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE PACKAGED DOOR (TAStack's ergonomic face): ``run(...,
+    """THE PACKAGED DOOR (the ergonomic face): ``run(...,
     priority=6)`` — the run's rows land at 6, the same law the
     create_flow face carries (the packaged run is create + drive, not a
     second enqueue semantics)."""
@@ -376,7 +376,7 @@ async def test_route_arm_priority_overrides_down_and_the_join_stays_the_sources(
     image arm's ``priority=9`` lands on the image rows ONLY; the bare
     audio arm keeps the source step's declared 2; the join (the SOURCE's
     cohort — the arm override does not retouch it) reads the source's 2.
-    The convicted variant: the arm's override either dropped silently or
+    The rejected variant: the arm's override either dropped silently or
     leaked onto the join."""
     app = WorkflowApp()
 
@@ -534,7 +534,7 @@ async def _stamp_capable_worker(conn: asyncpg.Connection, schema: str) -> UUID:
 async def test_the_claim_orders_the_high_priority_wf_row_first(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE CONVICTION'S OWN SCENARIO, IN MINIATURE: a small pending
+    """THE RECORDED FINDING'S OWN SCENARIO, IN MINIATURE: a small pending
     backlog (three vanilla rows, priority 0, older scheduled_at — they
     win every tie today) and ONE wf step carrying priority 5 → the
     dispatch's next round claims the wf row FIRST. The wf rows ride the
@@ -644,7 +644,7 @@ async def test_the_claim_orders_a_high_priority_vanilla_row_over_a_default_wf_ro
 def test_the_vanilla_per_call_priority_law_is_untouched() -> None:
     """The vanilla resolution law — per-call > the actor's declared
     default (``build_enqueue_args``) — reads exactly as before the wf
-    cure: the wf surface's changes added no parameter, no default, no
+    fix: the wf surface's changes added no parameter, no default, no
     rewrite to the vanilla path. The fence: the same two assertions the
     vanilla pins have always made, made here BESIDE the wf pins."""
     from taskq.actor import actor
@@ -659,7 +659,7 @@ def test_the_vanilla_per_call_priority_law_is_untouched() -> None:
     assert overridden.priority == 9, overridden.priority
 
 
-# ── (h) the review's cures — the drain, the arm-body handles, the ────────
+# ── (h) the review's fixes — the drain, the arm-body handles, the ────────
 #        adoption door, the post-parse domain clamp
 
 
@@ -667,12 +667,12 @@ def test_the_vanilla_per_call_priority_law_is_untouched() -> None:
 async def test_the_loop_escalation_materializes_at_the_run_priority(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """CURE 1 (review 3a-ii — the reviewer's preferred remedy): the
+    """FIX 1 (review 3a-ii — the reviewer's preferred remedy): the
     root's ``wf_priority`` stamp threads through the OUTBOX DRAIN —
     ``run(priority=10)`` whose loop exhausts enqueues the escalation
     through the outbox, and the drain's consumer INSERT lands the
     escalation row's ``jobs.priority`` at 10 (the run's interactive
-    follow-up jumps the backlog with the run). The convicted variant:
+    follow-up jumps the backlog with the run). The rejected variant:
     the drain's insert omitted the priority column — the escalation, an
     interactive run's most latency-sensitive follow-up, materialized at
     the column default while the pin's own invariant ("the per-call face
@@ -719,7 +719,7 @@ async def test_the_drain_materializes_consumers_at_the_stamped_priority(
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
 ) -> None:
-    """CURE 1's direct drain face: an outbox row whose flow root stamps
+    """FIX 1's direct drain face: an outbox row whose flow root stamps
     ``wf_priority`` 7 — the drain's consumer INSERT lands the consumer's
     ``jobs.priority`` at 7 (the stamp's own arithmetic, mirrored in the
     drain's SQL: one join to the root's metadata + COALESCE to the column
@@ -761,7 +761,7 @@ async def test_the_drain_degrades_a_malformed_stamp_to_the_default(
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
 ) -> None:
-    """CURE 1's degrade arm (the fleet door's own semantics, mirrored):
+    """FIX 1's degrade arm (the fleet door's own semantics, mirrored):
     a stamp a hand-crafted row rendered unparseable ("abc") or
     out-of-domain-but-parseable ("99999" — the smallint wedge) degrades
     to the COLUMN DEFAULT (0) — the drain delivers, never wedges. A
@@ -801,9 +801,9 @@ async def test_the_drain_degrades_a_malformed_stamp_to_the_default(
 async def test_map_body_handle_priority_reaches_the_children(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """CURE 2 (review F3 — the map's face): a map body that is an
+    """FIX 2 (review F3 — the map's face): a map body that is an
     ``@app.actor(priority=5)`` HANDLE — the arm children resolve the
-    handle's declared 5 (the actor level of the law). The convicted
+    handle's declared 5 (the actor level of the law). The rejected
     variant: the runner's only priority readers were the four
     ``_resolve_priority`` sites — a handle body's declaration dropped
     SILENTLY (the identical shape fails CLOSED for capacity terms —
@@ -838,7 +838,7 @@ async def test_map_body_handle_priority_reaches_the_children(
 async def test_route_arm_body_handle_priority_reaches_that_arms_children(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """CURE 2 (review F3 — the route's face): ``RouteArm(body=handle)``
+    """FIX 2 (review F3 — the route's face): ``RouteArm(body=handle)``
     where the handle declares 5 — THAT arm's children resolve 5 (the
     actor level), the OTHER arm's children stay at the source's declared
     2, and the JOIN stays the source's 2 (the per-arm level is per-ARM —
@@ -877,12 +877,12 @@ async def test_route_arm_body_handle_priority_reaches_that_arms_children(
 async def test_the_adoption_drive_resolves_the_run_priority_from_the_row(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """CURE 3 (review F2 — the dev door's arbiter-adoption path): the
+    """FIX 3 (review F2 — the dev door's arbiter-adoption path): the
     first create crashes (the echo died with the process); the re-drive's
     FRESH runner adopts the existing run — the per-call level resolves
     from the ROOT'S STAMP (one bounded PK read — the fleet door's own
     SELECT shape), so the fork's children land at 6. The re-drive passes
-    NO kwarg: the row is the law, never the echo. The convicted variant:
+    NO kwarg: the row is the law, never the echo. The rejected variant:
     the echo was set only inside ``if complete:`` — the adoption drove
     with ``_run_priority = None`` and forked the children at the
     declarations while the root's stamp said 6 (one run, split cohort)."""
@@ -920,13 +920,13 @@ async def test_the_adoption_drive_degrades_an_out_of_domain_stamp(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
     """THE ADOPTION DOOR'S POST-PARSE DOMAIN CLAMP (the re-review's
-    one-line residual — cure 4's own law at the adopt door): a
+    one-line residual — fix 4's own law at the adopt door): a
     hand-crafted root stamp ``wf_priority="99999"`` — PARSEABLE, past the
     smallint domain — degrades to NO override at the ADOPT door too, and
     the adopted drive PROCEEDS (the children + the join at the source's
-    DECLARED 2, never parked). The convicted variant: the adopt door
+    DECLARED 2, never parked). The rejected variant: the adopt door
     parsed with ``int()`` alone — the 99999 rode to the fork's smallint
-    bind and WEDGED the re-drive (the same DataError mid-finalize cure 4
+    bind and WEDGED the re-drive (the same DataError mid-finalize fix 4
     closed on the fleet door; the two doors share one arithmetic)."""
     app = WorkflowApp()
 
@@ -967,10 +967,10 @@ async def test_the_fleet_door_degrades_an_out_of_domain_stamp(
     wf_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """CURE 4 (the review's recommended — the post-parse domain clamp):
+    """FIX 4 (the review's recommended — the post-parse domain clamp):
     a hand-crafted root stamp ``wf_priority="99999"`` — PARSEABLE, past
     the smallint domain — degraded to NO override (the declarations — or
-    the column default — speak) and the fork PROCEEDED. The convicted
+    the column default — speak) and the fork PROCEEDED. The rejected
     variant: the parse accepted 99999 and the fork's smallint bind
     WEDGED the door (the DataError mid-finalize — the fork never landed,
     the run parked)."""

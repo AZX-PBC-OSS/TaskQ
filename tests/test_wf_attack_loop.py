@@ -1,11 +1,11 @@
 """ATTACK PINS — the loop machinery front (the heaviest front of the
 hostile review of the consolidated head, af1b8779).
 
-Provenance: the att_loop red-team's probes (a1a through a5, REPORT.md) run live
+Provenance: the att_loop adversarial review's probes (a1a through a5, REPORT.md) run live
 against PG. Each LANDED finding is pinned here asserting the SAFE
-behavior and marked ``pytest.mark.xfail(strict=True)``: the cure flips
+behavior and marked ``pytest.mark.xfail(strict=True)``: the fix flips
 the pin to XPASS-strict (a red that says: remove the marker WITH the
-cure). The GUARDS at the foot are the attacks the front FAILED — the
+fix). The GUARDS at the foot are the attacks the front FAILED — the
 machinery held; they run green so the fence cannot rot silently.
 
 The findings, one pin each (the front's REPORT.md carries the evidence):
@@ -38,7 +38,7 @@ The findings, one pin each (the front's REPORT.md carries the evidence):
   sweep returns 0.
 * F-LOOP-6 — loop()'s promised "waits forever" validate warning does
   not exist (no rule reads loop_until/max_iterations/budget_s).
-* F-LOOP-7 — E8 convicts at .validate()/FlowRunner() but app.get()
+* F-LOOP-7 — E8 rejects at .validate()/FlowRunner() but app.get()
   compiles + REGISTERS the bad definition (the boot projection compiles
   without validating): a fleet refuses at first claim, not at compile.
 """
@@ -89,7 +89,7 @@ class Carry(BaseModel):
 # ── F-LOOP-1: the typed carry never reaches the body ────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-CARRY0]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (af1b8779): loop(initial=Counter()) jsonables the model to a …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-CARRY0]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): loop(initial=Counter()) jsonables the model to a …
 async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -131,7 +131,7 @@ async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
     assert await runner.result(flow_id) == {"acc": 3}
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-CARRY]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (af1b8779): the crash-window resume replays the carry as a …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-CARRY]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): the crash-window resume replays the carry as a …
 async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
@@ -197,7 +197,7 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
 # ── F-LOOP-2: the advance/exhaust statements carry no claim fence ───────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-FENCE]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (af1b8779): LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL fence on …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-FENCE]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL fence on …
 def test_f_loop_2_the_advance_and_exhaust_statements_carry_the_claim_fence() -> None:
     """The statement face of the unfenced writes (the behavioral face is
     the zombie pin below). The estate's fence vocabulary is fixed — the
@@ -219,13 +219,13 @@ def test_f_loop_2_the_advance_and_exhaust_statements_carry_the_claim_fence() -> 
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-UNION]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-UNION]; the marker was removed per the designed flip (the confirmation).
 
 
 # ── F-LOOP-4: the non-union return is recorded as success, then laundered ─
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [LOOP-UNION]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: LIVE FINDING (af1b8779): a body returning neither Done nor Refine is …
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [LOOP-UNION]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: LIVE FINDING (af1b8779): a body returning neither Done nor Refine is …
 async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
@@ -313,14 +313,14 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
 
 
 # ── F-LOOP-5: the sweep's return counts every exhaustion ────────────────
-# CURED (the sweep-count cure): the budget sweep's return counts EVERY
+# FIXED (the sweep-count fix): the budget sweep's return counts EVERY
 # CAS-held exhaustion — the named state + the flow's terminalization
 # complete at the exhaust statement; the escalation arm is additional
 # work. The marker is gone, the green IS the receipt.
 
 
 # ── F-LOOP-3: the escalation's claim on the REAL dispatch path ──────────
-# CURED (this head): the ESCALATION-KIND exemption is shipped in BOTH
+# FIXED (this head): the ESCALATION-KIND exemption is shipped in BOTH
 # fences (the claim fence AND the probe fence — the two may not
 # disagree): the loop's registered escalation consumer is dispatchable ON
 # the terminal flow that spawned it. The marker is gone, the green IS the
@@ -463,7 +463,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
     )
 
 
-# CURED (this head): the claim identity's fence landed on BOTH the
+# FIXED (this head): the claim identity's fence landed on BOTH the
 # advance and the exhaust statements (LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL's
 # worker + attempt + claim_epoch legs — the one-tx-finalize doctrine's
 # back door closed); the zombie's stale strike is refused at the statement.
@@ -628,7 +628,7 @@ async def test_f_loop_5_the_sweep_counts_every_exhaustion(
 
 
 # ── F-LOOP-6: the promised 'waits forever' validate warning ─────────────
-# CURED (this head): the W3-eternal-loop warning rule landed — the
+# FIXED (this head): the W3-eternal-loop warning rule landed — the
 # docstring's promise is the shipped behavior; the marker is gone, the
 # green IS the receipt.
 
@@ -658,18 +658,18 @@ def test_f_loop_6_validate_warns_on_the_waits_forever_loop() -> None:
     )
 
 
-# ── F-LOOP-7: E8 convicts one seam late (registration, not validate) ────
+# ── F-LOOP-7: E8 rejects one seam late (registration, not validate) ────
 
 
-# ── F-LOOP-7: E8 convicts one seam late (registration, not validate) ────
-# CURED (this head): the registration door validates — app.get() runs
+# ── F-LOOP-7: E8 rejects one seam late (registration, not validate) ────
+# FIXED (this head): the registration door validates — app.get() runs
 # validate_compiled before recording/registering, so the mismatched
 # carrier is refused before any row exists; the marker is gone, the
 # green IS the receipt.
 
 
 def test_f_loop_7_the_carrier_type_refusal_fires_at_registration() -> None:
-    """The seam-late conviction: a body ``-> Refine[Foo] | Done[Foo]``
+    """The seam-late recorded finding: a body ``-> Refine[Foo] | Done[Foo]``
     with ``initial=Bar()`` must be refused at the compile/registration
     door — "refuse at compile" is E8's own docstring's claim; today the
     refusal lives one seam later (the first execution door)."""
@@ -891,7 +891,7 @@ async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
     survives the sweep untouched (holds are free); the un-paused twin at
     the same deadline fires. (The arm WITHOUT ``AND NOT
     budget_paused`` — the CONSUME-BUDGET dragon — is the mutation
-    drill's red in the shipped pins; this guard pins the fence as this
+    scenario's red in the shipped pins; this guard pins the fence as this
     front independently re-proved it.)"""
     app = WorkflowApp()
 
@@ -905,13 +905,14 @@ async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
     for paused in (True, False):
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, metadata, budget_deadline, budget_paused) "
+            "retry_kind, status, step_key, metadata, fairness_key, budget_deadline, budget_paused) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'heldl', "
-            "$2::jsonb, now() - interval '1 hour', $3)",
+            "$2::jsonb, $3, now() - interval '1 hour', $4)",
             new_uuid(),
             json.dumps(
                 {"flow_id": str(flow_id), "kind": "loop", "iteration": 0, "max_iterations": 100}
             ),
+            str(flow_id),
             paused,
         )
     await sweep_loop_budget(wf_pool, runner.wsql)
@@ -936,13 +937,13 @@ async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
 
 def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None:
     """THE LOOP-PARENTS GAP, refused at the construction door (the E11
-    rule). The convicted shape (probe-convicted at this head's pre-cure
+    rule). The rejected shape (probe-rejected at this head's pre-fix
     tree): ``loop("scan", body, initial=some_promise)`` — the natural
     reading of "the loop starts from the parent's result" — threaded the
     PROMISE HANDLE itself into the carry; the first claim died
     ``UnencodableValue: Type is not JSON serializable: Promise`` —
     mid-flow, untyped by any compile rule, after the rows existed. The
-    cure: validate() REFUSES the handle (E11-loop-promise-carry, error)
+    fix: validate() REFUSES the handle (E11-loop-promise-carry, error)
     and names the fix (a first step returns the initial carry; the loop
     starts from that value). The honest alternatives still build: a
     VALUE initial validates clean, and the loop-with-no-walls warning
@@ -963,7 +964,7 @@ def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None
         lp = loop("scan", refine_forever, initial=p, max_iterations=10)
         return build(lp, p)
 
-    # THE REGISTRATION DOOR (the F-LOOP-7 cure's own seam) refuses the
+    # THE REGISTRATION DOOR (the F-LOOP-7 fix's own seam) refuses the
     # handle BEFORE any row exists — the named rule, the named fix.
     from taskq.workflows.api._validate import WorkflowValidationError
 
@@ -980,5 +981,5 @@ def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None
 
     ok_diagnostics = _run_rules(app.get("aloop_value_init"))
     assert not any(d.rule == "E11-loop-promise-carry" for d in ok_diagnostics), (
-        "a VALUE initial carry was convicted — the refusal over-fires"
+        "a VALUE initial carry was rejected — the refusal over-fires"
     )

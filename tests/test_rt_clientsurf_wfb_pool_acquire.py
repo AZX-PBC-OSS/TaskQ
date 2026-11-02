@@ -1,4 +1,4 @@
-"""Red-team: wait_for_batch's pool acquire has no bound (PG/client path).
+"""Adversarial review: wait_for_batch's pool acquire has no bound (PG/client path).
 
 The blocking form of :func:`taskq.batch.wait_for_batch`
 (``snooze_via_exception=False`` - "Use this form from scripts and

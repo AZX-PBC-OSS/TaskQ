@@ -1,4 +1,4 @@
-"""Shared real-PG attack harness for the bounded cron tick red-team files.
+"""Shared real-PG attack harness for the bounded cron tick adversarial review files.
 
 No tests live here.  The ``tests/test_rt_cron_*.py`` files drive
 :func:`taskq.worker.cron_loop.tick_cron` against a real Postgres schema

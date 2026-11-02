@@ -72,7 +72,7 @@ _TAG = "sys-req"
 #: polls and primary-key selects — never a legitimately-long query — and
 #: the server-side ``statement_timeout`` the ``sys_ledger`` fixture
 #: carries bounds the slow-server class. This bound is the dead-socket
-#: half (the server never sees the statement at all): the convicted
+#: half (the server never sees the statement at all): the rejected
 #: shape (the system-e2e (17) leg, run 38053606389 — a scenario hung
 #: past its own 240s budget on ONE unbounded fetch) must end at a bound
 #: the HELPER owns, so the cap's DESIGNED assertion is the failure the

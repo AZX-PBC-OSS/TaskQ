@@ -1,4 +1,4 @@
-"""Red-team attack on duration_ms at DRAIN granularity.
+"""Adversarial review attack on duration_ms at DRAIN granularity.
 
 The bounded sweeps compute ``job_attempts.duration_ms`` from the driving
 UPDATE's own ``RETURNING ... clock_timestamp() AS now_ts`` - per row, per

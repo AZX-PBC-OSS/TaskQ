@@ -19,12 +19,12 @@ gates on live UNRESOLVED work —
             OR (status IN ('pending','scheduled')
                 AND NOT (metadata ? 'blocking_reason')))
 
-The blocked-stamp exclusion is exactly what keeps the phase-2 H1 wedge
-cured: a resolved-blocked join row (``blocking_reason`` stamped) is
+The blocked-stamp exclusion is exactly what keeps the phase-2 the wedge
+fixed: a resolved-blocked join row (``blocking_reason`` stamped) is
 RESOLVED — it must not hold the run; a pending CHAIN row (no stamp) is
 UNRESOLVED work — it must.
 
-Red-first: the 149-siblings pin ran RED against the shipped leg (the root
+Failing-first: the 149-siblings pin ran RED against the shipped leg (the root
 flipped ``failed`` with 149 live siblings — the stranding reproduced);
 the greens below are the fix's evidence. Captured:
 ``.measurements/t20-maintain-liveness-*.txt``.
@@ -67,13 +67,14 @@ async def seed_chain_node(
         meta["trace_id"] = trace_id
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, map_index, metadata, idempotency_scope, "
-        "idempotency_key) VALUES ($1, 'wf', 'default', '{}', 3, 'transient', "
-        "'pending', $2, $3, $4::jsonb, 'workflow', $5)",
+        "retry_kind, status, step_key, map_index, metadata, fairness_key, "
+        "idempotency_scope, idempotency_key) VALUES ($1, 'wf', 'default', '{}', 3, "
+        "'transient', 'pending', $2, $3, $4::jsonb, $5, 'workflow', $6)",
         node_id,
         step_key,
         map_index,
         json.dumps(meta),
+        str(flow_id),
         f"wf:{flow_id}:emit:{map_index}:{step_key}",
     )
     return JobId(node_id)
@@ -184,8 +185,8 @@ async def test_t20_failed_arm_wedge_cure_stands(
     wf_sql: WorkflowSql,
     t20_redlog: RedLog,
 ) -> None:
-    """THE BLOCKED-STAMP EXCLUSION IS LOAD-BEARING: the phase-2 H1 wedge's
-    cure must survive the fix — a resolved-blocked join row
+    """THE BLOCKED-STAMP EXCLUSION IS LOAD-BEARING: the wedge's
+    fix must survive the fix — a resolved-blocked join row
     (``blocking_reason='failed_parent'`` stamped by the crash-window heal)
     must NOT hold a failing run. With the fix, a stamped pending row is
     not 'unresolved work' — the root terminals 'failed' in the same pass
@@ -219,7 +220,7 @@ async def test_t20_failed_arm_wedge_cure_stands(
         "t20-failed-arm-blocked-stamp",
         "a has_unresolved predicate WITHOUT the blocked-stamp exclusion — "
         "every pending row (a resolved-blocked join row included) would "
-        "hold the run: the original H1 wedge returns (the root wedges "
+        "hold the run: the original wedge returns (the root wedges "
         "'running' forever over a stamped row nothing will ever "
         "terminalize)",
         {"root_status": root["status"]},

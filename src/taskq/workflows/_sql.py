@@ -1,5 +1,5 @@
 """The workflows engine's named statement constants — the bundle
-(GAPS-ESTATE F10).
+().
 
 Workflow SQL lives as named statement constants — the
 ``backend/_sql_templates.py`` / ``_dispatch_sql.py`` pattern, never inline
@@ -10,7 +10,7 @@ schema (the schema identifier is the ONLY interpolated value — validated
 via ``taskq.constants.require_schema``; every caller-controlled value uses
 asyncpg ``$N`` positional parameter binding).
 
-THE JSONB LANDMINE (the fanout proof's cut #1, HIGH — the rule's test
+THE JSONB LANDMINE (the fanout proof's, HIGH — the rule's test
 lives in the engine pins): asyncpg parses ``$N`` as a parameter placeholder
 EVEN INSIDE a quoted JSONB literal. An f-string that renders
 ``'{"peer":$3}'::jsonb`` fails with ``invalid input syntax for type json``
@@ -135,7 +135,7 @@ BLOCKING_REASON_FAILED_PARENT: Final[str] = "failed_parent"
 #: NOWHERE — the consumers' delivery continues (the delivery contract),
 #: but the record names the defect instead of looking healthy.
 BLOCKING_REASON_BODY_UNAVAILABLE: Final[str] = "body_unavailable"
-#: The flow-fenced join (the phase-2 attack's H2): a never-fired join row
+#: The flow-fenced join (the phase-2 attack's finding): a never-fired join row
 #: whose resolution the FLOW'S OWN DEATH fenced — the fire's flow-status
 #: leg refuses a terminal flow, so the join can never fire again. The
 #: sweep's flow-fenced arm stamps it (the blocked-with-reason terminal

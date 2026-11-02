@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a per-test fixed identifier, not user input; every value is $-bound.
 
-"""Red-team pins: readers must fence on a cancel request that lost the race.
+"""Adversarial review pins: readers must fence on a cancel request that lost the race.
 
 Three GREEN pins over the real PG protocol, covering the
 heartbeat/cancel/watchdog interplay's "lost race" corners:

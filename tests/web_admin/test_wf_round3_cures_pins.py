@@ -1,5 +1,5 @@
-"""THE ROUND-3 RED-TEAM CURES' PINS — the §H ROUND-3 subsection's
-residues on the admin surface, each cured and pinned:
+"""THE ROUND-3 ADVERSARIAL REVIEW'S FIXES' PINS — the round-3 subsection's
+residues on the admin surface, each fixed and pinned:
 
 - THE WALK BUDGET'S UNIT: ``_bounded_io_projection``'s size budget
   counts the SERVED size (keys + structure + values — the

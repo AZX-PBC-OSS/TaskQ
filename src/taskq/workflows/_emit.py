@@ -38,7 +38,7 @@ after EACH statement with ``emit:{1|2|3}``; the pins terminate the
 backend there (a real server-side kill) and prove zero re-emitted, zero
 lost children.
 
-THE EMIT BACKPRESSURE (DH9 — the ticket's decision 7): the
+THE EMIT BACKPRESSURE (the ticket's decision 7): the
 MAX-IN-FLIGHT bound is DECLARED at the workflow level (the runner
 supplies the workflow's declaration; ``None`` = the explicit
 unbounded). The emit admits its WHOLE page: the run's outstanding
@@ -47,7 +47,7 @@ excluding the source's own claim) + the page's width must fit under the
 bound, or the pager BLOCKS — the generator's laziness IS the pause (a
 bounded poll OUTSIDE any tx: no connection, no transaction held while
 waiting). The admission's second gate sits INSIDE the tx under the
-flow's ADMISSION LOCK (``pg_advisory_xact_lock`` — DH4's pattern: the
+flow's ADMISSION LOCK (``pg_advisory_xact_lock`` — the admission-lock pattern: the
 count and the insert serialize on the same lock, so two concurrent
 emitters of one run cannot both admit past the bound; a lost admission
 rolls the tx back WHOLE and the wait retries — a guard, never a timing
@@ -92,7 +92,7 @@ __all__ = [
 #: top level of the row's metadata under this one key.
 EMIT_CURSOR_KEY: Final[str] = "emit_cursor"
 
-#: THE MAX-IN-FLIGHT DEFAULT (DH9's fence is ON for the new surface): the
+#: THE MAX-IN-FLIGHT DEFAULT (the bound is ON for the new surface): the
 #: bound a workflow gets when it does not declare one. The author opts
 #: OUT loudly (``max_in_flight=None`` on the workflow declaration — the
 #: explicit unbounded, never a silent default).
@@ -141,12 +141,12 @@ class PageDivergedError(RuntimeError):
     the page never ran. The cursor and the row history have diverged:
     the atomic emit tx can produce this only from a cursor the row
     history outgrew (a hand-rewound checkpoint, a resumed source whose
-    body re-pages an already-committed page). THE RAW DEATH IT CURES:
+    body re-pages an already-committed page). THE RAW DEATH IT FIXES:
     the raw ``UniqueViolationError`` escaped the tx, the body boundary
     laddered it as transient, and the re-claim re-read the SAME cursor
     and collided again — the ladder burned to a raw-typed terminal,
     never named. THE NAMED DEATH: this error terminalizes the source
-    LOUDLY (the deterministic route — re-running cannot cure a diverged
+    LOUDLY (the deterministic route — re-running cannot fix a diverged
     cursor), and the message carries the remedy: RE-SYNC THE CURSOR (the
     checkpoint is the source row's metadata under
     :data:`EMIT_CURSOR_KEY` — point it at the last page the rows prove
@@ -172,7 +172,7 @@ class MapIndexExhaustedError(RuntimeError):
     SEMANTICS: a poison record kills ITSELF loudly, NEVER ITS MATES —
     the emit emits the VALID page-mates first (their tx commits; the
     valid work survives), THEN raises THIS naming the offending record.
-    THE RAW DEATH IT CURES: the smallint cast's raw DataError escaped
+    THE RAW DEATH IT FIXES: the smallint cast's raw DataError escaped
     MID-TX and rolled the whole page back — the valid page-mates died
     with the poison record, an accidental untyped ceiling. The
     deterministic route terminalizes the source with the ceiling on the
@@ -181,7 +181,7 @@ class MapIndexExhaustedError(RuntimeError):
 
 
 class EmitBackpressureTimeoutError(RuntimeError):
-    """THE MAX-IN-FLIGHT BOUND STALLED (DH9): the run's outstanding
+    """THE MAX-IN-FLIGHT BOUND STALLED: the run's outstanding
     non-terminal rows plus the page's width did not fit under the
     declared bound for the whole wait's term — the LOUD refusal, never a
     silent unbounded emit, never an infinite block. THE LADDER OWNS IT:
@@ -258,6 +258,10 @@ async def _emit_tx(
                 # emit scope + the per-record index.
                 [f"workflow:{flow_id}"] * len(chunk),
                 [f"wf:{flow_id}:emit:{c.map_index}:{c.step_key}" for c in chunk],
+                # THE CHILDREN'S DISPATCH COHORT (the wf fairness stamp):
+                # one cohort per run (the flow_id), the fork's own law at
+                # the page inserts.
+                [str(flow_id)] * len(chunk),
             )
         except asyncpg.UniqueViolationError as exc:
             raise PageDivergedError(
@@ -353,7 +357,7 @@ async def emit_batch(
     source that ALSO forks at its finalize can never key-collide with its
     own emitted chains.
 
-    THE MAX-IN-FLIGHT BOUND (DH9): *max_in_flight* is the DECLARED bound
+    THE MAX-IN-FLIGHT BOUND: *max_in_flight* is the DECLARED bound
     (the workflow-level declare — the runner supplies the workflow's;
     ``None`` = the explicit unbounded). The emit admits its WHOLE page:
     the run's outstanding non-terminal rows + the page's width must fit

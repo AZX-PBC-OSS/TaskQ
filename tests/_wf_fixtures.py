@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Final, cast
 from uuid import (
-    uuid4,  # noqa: TID251  # Why: the redlog RUN ID is deliberately NOT a persisted id — no B-tree, no ordering; randomness is the point (attribution token).
+    uuid4,  # noqa: TID251  # Why: the failure log RUN ID is deliberately NOT a persisted id — no B-tree, no ordering; randomness is the point (attribution token).
 )
 
 import asyncpg
@@ -90,7 +91,7 @@ OFF_BY_ONE_DIFF_EXCLUSIONS: tuple[str, ...] = (
     ":(exclude).gitignore",
 )
 
-#: THE DOCS-DERIVED STEMS (the review round's cure) — the in-suite
+#: THE DOCS-DERIVED STEMS (the review round's fix) — the in-suite
 #: mirror of the verifier's own ``_DOCS_SENSITIVE_STEM_PREFIXES``: the
 #: evidence kinds whose batteries READ the docs estate (mkdocs builds
 #: ``docs/`` strict; the docs-example tests'
@@ -124,7 +125,7 @@ def source_changes_since(
     a property of the tree THEY verified, not of the checkout that
     happens to be reading them).
 
-    THE DOCS-DERIVED STEMS' FALLBACK (the review round's cure): *stem*
+    THE DOCS-DERIVED STEMS' FALLBACK (the review round's fix): *stem*
     carrying a ``DOCS_SENSITIVE_STEM_PREFIXES`` prefix names an
     evidence kind whose battery READS the docs estate — mkdocs builds
     ``docs/`` strict and the docs-example tests' ``DOC_ROOTS`` execute
@@ -142,8 +143,8 @@ def source_changes_since(
     git world is fixed), so each distinct (claimed sha, stem) is
     resolved AT MOST ONCE per process. The guard's walk over every
     sink record collapses from O(records) git subprocesses (18k+ — the
-    per-test timeout's knife edge at 300 s, convicted: the wf battery's
-    redlog-guard timeout) to O(distinct heads). THE MEMO KEY IS THE
+    per-test timeout's knife edge at 300 s, rejected: the wf battery's
+    failure log-guard timeout) to O(distinct heads). THE MEMO KEY IS THE
     PAIR (the review round's own correctness fix): a docs-derived stem
     and a plain stem sharing a claimed head get DIFFERENT verdicts from
     DIFFERENT exclusion sets — keyed by the sha alone the first caller
@@ -190,7 +191,7 @@ _SOURCE_CHANGES_MEMO: dict[tuple[str, str | None, str | None], bool] = {}
 
 
 def head_sha() -> str:
-    """THE HEAD-STAMP LAW (the evidence-integrity round, cure 5): every
+    """THE HEAD-STAMP LAW (the evidence-integrity round, fix 5): every
     evidence artifact RECORDS ITS HEAD — the sha the verification
     (``scripts/verify_evidence_heads.py``) re-runs the artifact against.
     An unstamped capture is a rumor; a stale one is history, never the
@@ -214,9 +215,132 @@ def head_sha() -> str:
 REDLOG_LAW = "provenance-1"
 
 
+#: The environment variable that pins the redlog captures' directory.
+#: The battery that records evidence for the measurement estate sets it
+#: to the in-repo path (``.measurements/redlog-captures``) so the
+#: captures are harvested onto the evidence branch together with the
+#: sinks that cite them; unset, the captures go to the system temp dir.
+REDLOG_CAPTURES_DIR_ENV = "TASKQ_REDLG_CAPTURES_DIR"
+
+
+def redlog_captures_root() -> Path:
+    """The directory the redlog drills' capture files are written to.
+
+    Default: ``taskq-redlog-captures-<uid>`` under the system temp dir
+    (``tempfile.gettempdir()``, which honors ``TMPDIR``), created
+    private to the user (0700) — the captures are receipts, and a
+    shared-world-readable temp directory is neither. The path is
+    resolved to its absolute form so a reader in another working
+    directory resolves the same directory. The captures are per-run
+    scratch receipts; writing them into the repository tree left every
+    worktree littered with untracked per-run directories after each
+    pytest run. The explicit pin (``TASKQ_REDLG_CAPTURES_DIR``) moves
+    the root back into the tree for the battery that records evidence
+    for the measurement estate.
+    """
+    pinned = os.environ.get(REDLOG_CAPTURES_DIR_ENV)
+    if pinned:
+        return Path(pinned).resolve()
+    return (Path(tempfile.gettempdir()) / f"taskq-redlog-captures-{os.getuid()}").resolve()
+
+
+def _repo_root_containing(start: Path) -> Path | None:
+    """The nearest ancestor of *start* carrying ``pyproject.toml`` or
+    ``.git`` (a file in a worktree). ``None`` when no ancestor does."""
+    for ancestor in (start, *start.parents):
+        if (ancestor / "pyproject.toml").is_file():
+            return ancestor
+        git = ancestor / ".git"
+        if git.exists():
+            return ancestor
+    return None
+
+
+#: The GUARD'S OWN CHECKOUT — the tree carrying this file, resolved
+#: (an unresolved ``__file__`` through a symlinked checkout anchors the
+#: walk at the symlink's view, and a record root resolved to the real
+#: tree escapes it). The trust rule anchors there (never at the record's
+#: or the estate's location): a staged estate (no local
+#: ``.measurements``) lives in the temp dir, where no ancestor carries a
+#: repo marker — anchoring there would find no repository and trust an
+#: in-repo record root again. Anchored at the checkout, the in-repo
+#: refusal holds identically for a staged estate and a local one.
+_REPO_ROOT: Path | None = _repo_root_containing(Path(__file__).resolve())
+
+
+def resolve_redlog_capture(
+    measurements: Path, capture_rel: str, captures_root: str | None = None
+) -> tuple[Path, list[str], list[str]]:
+    """Locate a capture cited by a redlog sink entry.
+
+    Returns ``(capture, homes_searched, refused_roots)``: *capture* is
+    the first existing trusted candidate (the last trusted candidate
+    when none exists, so the missing-file verdict names a home);
+    *homes_searched* names every trusted root; *refused_roots* names
+    the record-declared roots the trust rule rejected.
+
+    THE TRUST RULE for candidate roots: the estate root being read by
+    the guard, the ``TASKQ_REDLG_CAPTURES_DIR`` pin, and the default
+    temp root are trusted. The record's own captures_root is trusted
+    only when it lies OUTSIDE the guard's own checkout (``_REPO_ROOT``,
+    the tree carrying this file — the anchor is the GUARD's home, never
+    the record's or the estate's, so a staged estate whose temp
+    location carries no repo marker refuses identically): a record is
+    data, and a record pointing its receipts into the checkout under
+    review would let that tree ship the capture that clears its own
+    receipt chain. The estate's own namespace still reaches an in-repo
+    pinned battery's captures (they live under the estate root), and a
+    battery whose captures went to an external directory resolves
+    through its record's root.
+
+    A citation that is absolute or carries ``..`` raises ValueError —
+    as does a candidate that resolves outside the root it was joined
+    to (a symlink planted inside would walk the read out). The caller
+    turns the refusal into its own named violation.
+    """
+    rel_path = Path(capture_rel)
+    if not capture_rel or rel_path.is_absolute() or ".." in rel_path.parts:
+        raise ValueError(
+            f"the cited capture path {capture_rel!r} is not an "
+            "estate-relative path (absolute, empty, or carrying '..'): it "
+            "points outside the estate, and a capture outside the estate "
+            "proves nothing"
+        )
+    rel_under_captures = capture_rel.removeprefix("redlog-captures/")
+
+    candidates: list[tuple[Path, Path]] = []
+    refused_roots: list[str] = []
+    if captures_root:
+        declared = Path(captures_root).resolve()
+        if _REPO_ROOT is not None and declared.is_relative_to(_REPO_ROOT):
+            refused_roots.append(str(declared))
+        else:
+            candidates.append((declared, declared / rel_under_captures))
+    pinned = os.environ.get(REDLOG_CAPTURES_DIR_ENV)
+    if pinned:
+        root = Path(pinned).resolve()
+        candidates.append((root, root / rel_under_captures))
+    estate_root = measurements.resolve()
+    candidates.append((estate_root, measurements / capture_rel))
+    default_root = redlog_captures_root()
+    candidates.append((default_root, default_root / rel_under_captures))
+
+    homes = [str(root) for root, _ in candidates]
+    for root, candidate in candidates:
+        if not candidate.resolve().is_relative_to(root):
+            raise ValueError(
+                f"the cited capture path {capture_rel!r} resolves to "
+                f"{candidate.resolve()} — outside its root {root}: a capture "
+                "outside the estate proves nothing"
+            )
+        if candidate.is_file():
+            return candidate, homes, refused_roots
+    return candidates[-1][1], homes, refused_roots
+
+
 def write_band_artifact(name: str, payload: dict[str, object]) -> Path:
     """THE APPEND-ONLY CONVERSION (the receipts law): a band artifact is
-    a RUN-SCOPED file, never a write_text-in-place name. The convicted
+    a RUN-SCOPED file, never a write_text-in-place name. The rejected
     defect: every run rewrote the SAME file whole — two concurrent runs'
     writes tore each other (the 11 torn rows the ledgers' union found),
     and a partial run's numbers falsified the recorded band (the newest
@@ -254,7 +378,7 @@ def latest_band_artifact(stem: str) -> Path | None:
     return None
 
 
-# ── THE LOADED BAR (the load-flake band's discipline — finding 3's cure) ─
+# ── THE LOADED BAR (the load-flake band's discipline — finding 3's fix) ─
 
 #: The bar: ambient load (1-min run-queue average) per core at or below
 #: which the box counts QUIET and a wall-clock band may assert honestly.
@@ -296,25 +420,25 @@ def band_assertion_allowed() -> bool:
     """Whether an ABSOLUTE wall-clock band may assert on this box, now:
     the loaded-bar gate. A loaded box waives the absolute bound honestly
     (the artifact records the waiver and the reading) — the RELATIVE
-    drills (red vs. green) assert unconditionally, load-invariantly."""
+    scenarios (red vs. green) assert unconditionally, load-invariantly."""
     return load_bar() <= LOADED_BAR_PER_CORE
 
 
 #: The terminal-status SQL set — the statement-side literal the engine's
 #: guards spell (the twin of statemachine.TERMINAL_STATUSES); the pins'
-#: convicted variants re-spell it.
+#: rejected variants re-spell it.
 TERMINAL_SQL = "('succeeded','failed','cancelled','crashed','abandoned')"
 
 
 class RedLog:
     """The red-output sink: a file that gets READ (BUILD-PROTOCOL §2).
-    Every pin's convicted variant appends its observed dragon here; the
+    Every pin's rejected variant appends its observed dragon here; the
     fixture flushes on teardown.
 
     THE PRESERVATION LAW (attack-3's hygiene finding, the fixer's own
     lane): the evidence sinks are APPEND-ONLY and RUN-SCOPED — flush()
     appends ONE JSONL record (``{"run": …, "entries": [...]}``) and
-    never rewrites the file. The convicted defect: ``write_text``
+    never rewrites the file. The rejected defect: ``write_text``
     rewrote the WHOLE sink per run, so a PARTIAL run (one pin file
     re-run in isolation) replaced the corpus with ONLY that subset's
     entries — a full run's evidence silently deleted, the recorded band
@@ -323,10 +447,10 @@ class RedLog:
     truncated. The run id (pid + a token + the timestamp) makes each
     record attributable.
 
-    THE PROVENANCE LAW (the evidence-integrity round, cure 3): every
-    entry cites a RECEIPT CHAIN — (a) its drill's run-id, (b) the
-    drill's captured output FILE PATH, (c) a sha256 of that file. The
-    capture is written at RECORD time (the drill's own observation,
+    THE PROVENANCE LAW (the evidence-integrity round, fix 3): every
+    entry cites a RECEIPT CHAIN — (a) its scenario's run-id, (b) the
+    scenario's captured output FILE PATH, (c) a sha256 of that file. The
+    capture is written at RECORD time (the scenario's own observation,
     machine-written, in the run's own capture directory); the guard
     (:mod:`tests.test_fv_redlog_guard`) re-verifies the chain at guard
     time — a cited capture that is missing or mismatching FAILS the
@@ -334,24 +458,30 @@ class RedLog:
     literal-only scan): that guard was defeatable twice over (a
     keyword-form payload skipped inspection; a name-laundered
     module-level constant walked past it) — the receipt chain inspects
-    the SINK, never the call's shape, and convictions are by provenance.
+    the SINK, never the call's shape, and recorded findings are by provenance.
 
-    The captures' home (``.measurements/redlog-captures/<run>/``) is
-    deliberately UNIGNORED-adjacent residue: ``.measurements/`` is
-    gitignored, the sinks live there as run records, and the guard
-    verifies captures of records still alive on this tree.
+    The captures are written outside the repository tree by default
+    (see :func:`redlog_captures_root`) — per-run scratch receipts, not
+    source. A battery recording evidence for the measurement estate
+    pins them into ``.measurements/redlog-captures/`` with
+    ``TASKQ_REDLG_CAPTURES_DIR`` so they are harvested onto the
+    evidence branch together with the sinks that cite them.
     """
 
     def __init__(self, filename: str) -> None:
         self._filename = filename
         self._run_id = f"{time.strftime('%Y%m%dT%H%M%S')}-{os.getpid()}-{uuid4().hex[:8]}"
+        self._captures_root = redlog_captures_root()
         self.entries: list[dict[str, str]] = []
 
     def red(self, pin: str, mutation: str, observed: Any) -> None:
-        """Record one convicted red WITH its receipt: the entry carries
-        the run-id, the drill's captured output file path, and the
-        capture's sha256 — the chain the guard verifies."""
-        capture_dir = MEASUREMENTS / "redlog-captures" / self._run_id
+        """Record one rejected red WITH its receipt: the entry carries
+        the run-id, the scenario's captured output file path, and the
+        capture's sha256 — the chain the guard verifies. The capture's
+        payload carries the same identity (the pin and the run), so a
+        cited capture self-identifies with the entry citing it."""
+        self._captures_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        capture_dir = self._captures_root / self._run_id
         capture_dir.mkdir(parents=True, exist_ok=True)
         sanitized = "".join(c if c.isalnum() or c in "-_" else "_" for c in pin) or "pin"
         capture = capture_dir / f"{sanitized}.json"
@@ -370,7 +500,11 @@ class RedLog:
                 "mutation": mutation,
                 "red": json.dumps(observed, default=str),
                 "run": self._run_id,
-                "capture": str(capture.relative_to(MEASUREMENTS)),
+                # The citation names the path under the estate root —
+                # the shape every reader resolves (see
+                # resolve_redlog_capture), wherever the captures'
+                # physical root sits.
+                "capture": f"redlog-captures/{self._run_id}/{sanitized}.json",
                 "sha256": digest,
             }
         )
@@ -382,10 +516,17 @@ class RedLog:
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "law": REDLOG_LAW,
             # THE HEAD-STAMP LAW: the sink record carries the head the
-            # drills ran on (the receipt chain's fourth link — the run
+            # scenarios ran on (the receipt chain's fourth link — the run
             # is attributable to a TREE, not just a process).
             "head_sha": head_sha(),
             "entries": self.entries,
+            # Where this run's cited captures live physically: the
+            # default root is the system temp dir, which a reader can
+            # have under a different TMPDIR (or a tmpfs reaper can have
+            # emptied), so the record carries its own — the resolver's
+            # most specific candidate. Absent on records written before
+            # the captures left the repository tree.
+            "captures_root": str(self._captures_root),
         }
         with (MEASUREMENTS / self._filename).open("a") as sink:
             sink.write(json.dumps(record) + "\n")
@@ -409,7 +550,7 @@ def ledger_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def hitl_redlog() -> Iterator[RedLog]:
-    """The red sink for the T10 HITL pins (the convicted variants)."""
+    """The red sink for the T10 HITL pins (the rejected variants)."""
     log = RedLog("t10-pin-reds.json")
     yield log
     log.flush()
@@ -417,7 +558,7 @@ def hitl_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def loop_redlog() -> Iterator[RedLog]:
-    """The red sink for the T19 loop pins (the mutation drills' reds)."""
+    """The red sink for the T19 loop pins (the mutation tests' reds)."""
     log = RedLog("t19-pin-reds.json")
     yield log
     log.flush()
@@ -433,7 +574,7 @@ def propagation_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def t20_redlog() -> Iterator[RedLog]:
-    """The red sink for the T20 streaming pins (the convicted variants)."""
+    """The red sink for the T20 streaming pins (the rejected variants)."""
     log = RedLog("t20-pin-reds.json")
     yield log
     log.flush()
@@ -441,7 +582,7 @@ def t20_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def progress_redlog() -> Iterator[RedLog]:
-    """The red sink for the T21 progress pins (the convicted variants)."""
+    """The red sink for the T21 progress pins (the rejected variants)."""
     log = RedLog("t21-pin-reds.json")
     yield log
     log.flush()
@@ -459,7 +600,7 @@ def createseam_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def wedge_redlog() -> Iterator[RedLog]:
-    """The red sink for the crashed-terminal wedge pins (the pre-cure
+    """The red sink for the crashed-terminal wedge pins (the pre-fix
     tree's corpse-greens: the reconstruction's running, the maintenance
     pass's non-heal, the G7 blind spot)."""
     log = RedLog("wedge-pin-reds.json")
@@ -470,7 +611,7 @@ def wedge_redlog() -> Iterator[RedLog]:
 @pytest.fixture
 def timer_redlog() -> Iterator[RedLog]:
     """The red sink for the T28 durable-timer pins (the pre-implementation
-    reds + the convicted variants)."""
+    reds + the rejected variants)."""
     log = RedLog("t28-timer-pin-reds.json")
     yield log
     log.flush()
@@ -487,10 +628,10 @@ def versioning_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def timer_cures_redlog() -> Iterator[RedLog]:
-    """The red sink for the timer-cures lane's pins (the six cures' reds:
+    """The red sink for the timer-fixes lane's pins (the six fixes' reds:
     the trojan prefix, the broadcast leak, the explorer's template, the
     10k tail, the versioning wedge's surface, the naive-datetime doc)."""
-    log = RedLog("timer-cures-pin-reds.json")
+    log = RedLog("timer-fixes-pin-reds.json")
     yield log
     log.flush()
 
@@ -523,13 +664,13 @@ async def wf_g7_status_truth(
     adds it to the wf-family files); catches status-drift continuously,
     not just in the dedicated pin's scenarios. A deliberately-lying
     fixture status (a root hand-written to a state the rows cannot
-    derive) reds the suite (the drill pin proves the teeth)."""
+    derive) reds the suite (the scenario pin proves the teeth)."""
     yield
     await g7_check(wf_conn, wf_schema, wf_sql)
 
 
 async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql) -> None:
-    """The G7 assertion's body (one home — the fixture and the teeth-drill
+    """The G7 assertion's body (one home — the fixture and the teeth-scenario
     pin both run THIS, never a re-spelled copy).
 
     THE LAW (the cache's semantics, stated from each terminal root's
@@ -552,9 +693,10 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
       stands) — nothing to assert against;
     * a LIVE root ('running'/'pending') may lag the rows' terminal
       verdict by one sweep pass — the maintenance leg's lag window (the
-      H1 cure heals it in one pass; the H1 pin carries that teeth).
+      fix heals it in one pass; the maintenance-liveness pin carries
+      that teeth).
 
-    THE WEDGE LEG (the crashed-terminal wedge's red-drill — the
+    THE WEDGE LEG (the crashed-terminal wedge's mutation pin — the
     attacker's proof was G7 staying green ON THE CORPSE): a live root
     whose rows reconstruct a TERMINAL verdict contradicts the rows.
     The lag window is ONE pass, so the check RUNS the maintenance leg
@@ -563,7 +705,7 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
     that still disagrees is THE WEDGE — a run the reported state claims
     is live while the rows say it terminalized and nothing will ever
     change either side (the corpse that reports 'running' forever). The
-    drill pin (tests/test_wf_t20_crashed_terminal_wedge.py) reds this
+    scenario pin (tests/test_wf_t20_crashed_terminal_wedge.py) reds this
     leg against a no-op maintenance mutant — the assertion can fail on
     a wedge, it is not a decoration."""
     from taskq.workflows._status import reconstruct_workflow_status
@@ -736,13 +878,16 @@ async def seed_join(
         meta["consumers"] = consumers
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata, scheduled_at) "
+        "retry_kind, status, step_key, deps_pending, metadata, fairness_key, scheduled_at) "
         f"VALUES ($1, 'wf', 'default', '{{}}', 3, 'transient', 'pending', $2, $3, "
-        f"$4::jsonb, {scheduled_sql})",
+        f"$4::jsonb, $5, {scheduled_sql})",
         join_id,
         step_key,
         deps,
         json.dumps(meta),
+        # THE RUN'S COHORT (the shipped shape the engine's own inserts
+        # stamp — jobs_wf_fairness_cohort_check enforces it).
+        str(flow_id),
     )
     return JobId(join_id)
 
@@ -769,13 +914,16 @@ async def seed_running_node(
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, attempt, locked_by_worker, lock_expires_at, "
-        "claim_epoch, step_key, metadata) "
+        "claim_epoch, step_key, metadata, fairness_key) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
-        "now() + interval '90 seconds', 0, $3, $4)",
+        "now() + interval '90 seconds', 0, $3, $4, $5)",
         node_id,
         worker_id,
         step_key,
         json.dumps({"flow_id": str(flow_id)}),
+        # THE RUN'S COHORT (the shipped shape — the CHECK backstop
+        # enforces it on every wf row).
+        str(flow_id),
     )
     return JobId(node_id)
 

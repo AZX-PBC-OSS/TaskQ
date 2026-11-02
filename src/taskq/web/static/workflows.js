@@ -21,7 +21,7 @@
   var graphHost = document.getElementById("wf-graph-host");
   if (!bootEl || !graphHost) return;
   var boot = JSON.parse(bootEl.textContent);
-  // THE BASE_PATH LAW (the relative-URL 404 bug's conviction): every
+  // THE BASE_PATH LAW (the relative-URL 404 bug's fix): every
   // URL this script builds rides the mounted prefix the server stamped
   // into the boot JSON — a relative "api/runs/…" from a page at
   // {base_path}/workflows/{id} resolves to
@@ -108,7 +108,7 @@
     }
   }
 
-  // ── the retry affordance's LIVE form (H-C9: the affordance tracks the
+  // ── the retry affordance's LIVE form (the affordance tracks the
   // row's state, never the page load — a node that ARRIVES at failed
   // while you watch gains the form; one that leaves it loses the form).
   // The form mirrors the server-rendered one exactly: native POST, the
@@ -185,7 +185,7 @@
         holdCell.removeAttribute("data-wf-held");
       }
     }
-    // THE ERROR COLUMN (H-C9): the frame carries the row's bounded
+    // THE ERROR COLUMN: the frame carries the row's bounded
     // error class — the cell patches live (the red: a node that failed
     // while you watched showed its class only after a reload).
     var errCell = row.querySelector('[data-wf-node-error]');
@@ -221,7 +221,7 @@
     } else if (deferLine) {
       deferLine.remove();
     }
-    // THE DEADLINE LINE (the wf start_to_close cure): the frame carries
+    // THE DEADLINE LINE (the wf start_to_close bound): the frame carries
     // the label — the bound where declared + the running face's reality
     // (the time left, or the expiry's age). A node whose row carries no
     // bound renders no line (an undeclared row reads as the unbounded
@@ -240,7 +240,7 @@
     } else if (deadlineLine) {
       deadlineLine.remove();
     }
-    // THE RETRY AFFORDANCE'S LIVE ADD/REMOVE (H-C9): a failed row
+    // THE RETRY AFFORDANCE'S LIVE ADD/REMOVE: a failed row
     // carries the retry form; a row that leaves failed reverts to the
     // dash. Only rows the ACTIONS column renders participate (the
     // cell hook exists only on an actions-enabled deployment).
@@ -383,7 +383,7 @@
       // THE MAP'S CHILDREN CENSUS: one clickable row per child, in map
       // order — the operator watches ONE child's story (its attempt
       // ladder) by (step, map_index), never a step-key-arbitrary read.
-      // THE BOUNDED RENDER (H-C9): the server caps the rows and carries
+      // THE BOUNDED RENDER: the server caps the rows and carries
       // the total — the "N more" arm names the rest, never a 10k DOM.
       var h = document.createElement("div");
       h.className = "font-semibold mt-2";
@@ -459,7 +459,7 @@
       if (capture.__truncated__ !== undefined) {
         captureText += "\n(the engine cut " + capture.__truncated__ + " characters at the write — the __truncated__ marker)";
       }
-      // THE CAPTURE'S LABEL (H-C6): WHICH attempt's capture this is —
+      // THE CAPTURE'S LABEL: WHICH attempt's capture this is —
       // the read prefers the LATEST FAILED attempt, so a later
       // success's NULL capture never hides the failure's.
       var which = io.capture_attempt !== undefined && io.capture_attempt !== null
@@ -467,7 +467,7 @@
         : "";
       blocks.push(["failure capture" + which + " — as the engine wrote it (redacted + truncated at persistence)", captureText]);
     } else if (io.capture_pruned) {
-      // THE PRUNED ARM (H-C7): the run's step history was deleted by
+      // THE PRUNED ARM: the run's step history was deleted by
       // the retention arms — the honest state, never the suppression
       // lie (the capture was not policy-suppressed; it is GONE).
       blocks.push(["failure capture", "the flow history was pruned by retention — this run's step ledger (and its failure captures) is gone; the capture was not policy-suppressed"]);

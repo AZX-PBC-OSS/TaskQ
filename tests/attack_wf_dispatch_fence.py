@@ -48,11 +48,12 @@ async def test_attack_dispatch_claims_workflow_child_of_cancelled_flow(
         child = new_uuid()
         await conn.execute(
             f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '  # noqa: S608  # Why: the module fixture's throwaway schema identifier, _IDENT_RE-validated; all values $n-bound.
-            "retry_kind, status, step_key, metadata, scheduled_at) "
+            "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
             "VALUES ($1, 'actor_a', 'default', '{}', 3, 'transient', 'pending', 'c', "
-            "$2::jsonb, now() - interval '1 hour')",
+            "$2::jsonb, $3, now() - interval '1 hour')",
             child,
             json.dumps({"flow_id": str(flow_id)}),
+            str(flow_id),
         )
     finally:
         await conn.close()

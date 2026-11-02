@@ -316,7 +316,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     "COLLECT_TRUNCATION_RECEIPT_SQL": (
         "WHERE id = $1",
         "the bounded collect's truncation receipt (the F4 read-side "
-        "cure): a keyed single-row UPDATE — the JOIN's own node row "
+        "fix): a keyed single-row UPDATE — the JOIN's own node row "
         "(jobs.id = $1), the metadata count write; never a scan, never "
         "the backlog",
     ),
@@ -357,7 +357,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     "JOIN_BODY_UNAVAILABLE_SQL": (
         "WHERE id = $1",
         "keyed single join row (the body-unavailable stamp — R2-2's "
-        "loudness cure rides the fire's own transaction)",
+        "loudness fix rides the fire's own transaction)",
     ),
     "LEDGER_CLAIM_SQL": (
         "ON CONFLICT (flow_id, step_key, COALESCE(map_index, -1), attempt)",
@@ -456,7 +456,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "AND result @> '{\"skipped\": true}'::jsonb",
         "the skip envelope's re-arm (H-C4): its write set is ONE run's "
         "exit-skipped rows (flow_id-bound, the engine's own "
-        "SKIPPED_RESULT containment predicate — the round-2 conviction "
+        "SKIPPED_RESULT containment predicate — the round-2 recorded finding "
         'replaced bare key-existence so a foreign writer\'s {"skipped": '
         "false} is never matched or destroyed; the root excluded) — "
         "cannot grow with the backlog, only with the run's own fan-out",
@@ -468,7 +468,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     "NODE_DEADLINE_REPEND_SQL": (
         "WHERE j.id = (SELECT job_id FROM params)",
         "keyed single node row (the deadline's disposition — the wf "
-        "start_to_close cure's own ladder arm: the re-pend CAS + the "
+        "start_to_close fix's own ladder arm: the re-pend CAS + the "
         "budget gate + the cancel mark fence name the ONE claimed row; "
         "the exhausted/cancel_fenced read arms write nothing)",
     ),
@@ -525,7 +525,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     "_SPAWN_SLOT_CLAIM_SQL": (
         "WHERE id = $1",
         "keyed single node row (the spawning node's own spawn-cursor "
-        "slot claim — the ATOMIC increment-and-return, rv5-C1's cure; the "
+        "slot claim — the ATOMIC increment-and-return; the "
         "write set is the ONE row the attempt claims)",
     ),
     "_HOLD_AWAITED_LEDGER_SQL": (

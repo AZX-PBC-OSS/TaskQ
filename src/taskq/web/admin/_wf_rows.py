@@ -13,7 +13,7 @@ Two pure derivations live here:
   (the ledger's max ids; the rows are the durable ring the replay
   reads).
 
-The status derivation is THE §17.5 derivation (``workflows._status``) —
+The status derivation is THE derivation (``workflows._status``) —
 one engine, three surfaces (backend, SSE, CLI), no mapping drift.
 """
 
@@ -30,7 +30,7 @@ from taskq._json import loads as _json_loads
 from taskq.backend._protocol import ConnLike
 
 if TYPE_CHECKING:
-    # THE §16.1 IMPORT LAW's typing-only carve-out: the name exists for
+    # THE IMPORT LAW's typing-only carve-out: the name exists for
     # the annotations alone — it is NEVER a runtime module-scope import
     # (the fresh-interpreter probes prove the package stays unloaded).
     from taskq.workflows._status import NodeView
@@ -72,7 +72,7 @@ _RUN_ROOT_SQL = (
 )
 
 # The run's edge read (the graph's edge set): COLLAPSED TO KEY PAIRS IN
-# SQL (Q1d's read-side bound — the join's incoming edges are ONE PER
+# SQL (the read-side bound — the join's incoming edges are ONE PER
 # CHILD, so a 10k fan-out carries 10k rows into every render/SSE poll
 # when read by id). The re-point: an edge whose PARENT is itself a
 # collapsed map child (a fan-out child feeding the fan-in join — the
@@ -100,7 +100,7 @@ _RUN_HOLDS_SQL = (
 )
 
 #: THE CHILD FLOWS' LINKS (the admin is not child-blind): the
-#: run's child-flow receipts (the parent's node rows' ``child_flows``),
+#: run's child-flow records (the parent's node rows' ``child_flows``),
 #: dedup'd and bounded (a 10k fan-out renders the count, the first ids
 #: capped by the display bound the runs list carries).
 _RUN_CHILD_FLOWS_SQL = (
@@ -127,12 +127,12 @@ class RunNode:
     map_done: int = 0
     hold: dict[str, Any] | None = None
     parents: tuple[str, ...] = ()
-    # THE COLLAPSE (Q1d's cure): this row is a fork/map CHILD of another
+    # THE COLLAPSE: this row is a fork/map CHILD of another
     # node in this run (its parent_id names a node row of the same run) —
     # the renderers COLLAPSE it into its parent source's hexagon (the
     # parent carries the done/total counter; the child detail lives in
-    # the drill-down). The derivation reads EVERY row — the child's
-    # status drives the §17.5 verdict exactly as before; only the RENDER
+    # the recorded failure-down). The derivation reads EVERY row — the child's
+    # status drives the derived verdict exactly as before; only the RENDER
     # collapses (a 10k fan-out renders ONE hexagon, never 10k lines).
     map_child: bool = False
     # THE DEFERRAL FACES (the run page's "why is this step sitting here"
@@ -145,7 +145,7 @@ class RunNode:
     scheduled_at: str | None = None
     snooze_count: int = 0
     deferral: dict[str, Any] | None = None
-    # THE DEADLINE FACES (the wf start_to_close cure): the row's own
+    # THE DEADLINE FACES (the wf start_to_close bound): the row's own
     # declared bound (the column's seconds) + the claim's instant (the
     # running face's age source) — the node panel's deadline line's
     # inputs. ``None`` = nothing declared (no line — the row is the
@@ -213,7 +213,7 @@ class RunNode:
             return None
         if stamped != self.attempt:
             return None
-        # THE SIGNAL'S BOUND (C3 — H-C9's law at the deferral's face): the
+        # THE SIGNAL'S BOUND (the display-bound law at the deferral's face): the
         # stamp is a row-sourced jsonb doc and its ``signal`` is free text
         # — a hostile write rides it into the label. The panel's own
         # error-text bound applies (the same truncation the class/
@@ -234,9 +234,9 @@ class RunNode:
         )
 
     def view(self) -> NodeView:
-        """The §17.5 derivation's input (the one conversion — the same
+        """The derivation's input (the one conversion — the same
         law the CLI's analysis module states)."""
-        # THE §16.1 IMPORT LAW: the workflows import stays LAZY (the
+        # THE IMPORT LAW: the workflows import stays LAZY (the
         # module-scope import coupled every admin-page load to the
         # package — this module is the one surface the law's pin had
         # caught importing at module scope).
@@ -267,14 +267,14 @@ class RunView:
     nodes: list[RunNode]
     holds: list[dict[str, Any]]
     derived: str = ""
-    # THE ROOT'S MAP COUNTER (Q1d's cure): the SUM across the run's map
+    # THE ROOT'S MAP COUNTER: the SUM across the run's map
     # sources — the run-level face of the collapse (the hexagons carry
     # the per-source counts; this is the run's total fan-out). Zero for
     # a run with no map/fork fan-out.
     root_map_done: int = 0
     root_map_children: int = 0
     # THE PARENT↔CHILD LINKS (the admin is not
-    # child-blind): the run's own child-flow receipts (the parent's
+    # child-blind): the run's own child-flow records (the parent's
     # page links each child's run page) and the run's OWN parent (a
     # child flow's page links back). Both are ROW facts — the identity
     # faces the child line landed, surfaced.
@@ -296,7 +296,7 @@ def _normalize_hold(row: Mapping[str, Any]) -> dict[str, Any]:
     and the clocks as text — the boot JSON and the SSE frames are JSON,
     and a UUID in them is the TypeError the frame must never carry.
 
-    THE TIMER'S BRANCH (the timer-cures lane's cure 3): a hold under
+    THE TIMER'S BRANCH: a hold under
     the reserved ``__timer__`` prefix IS a timer — the enrichment names
     it so (``is_timer``, the stripped ``timer_key``, and the wake's
     ``fired_by`` once delivered) so the renderers branch on the ROW's
@@ -366,7 +366,7 @@ def _decode_stamp(raw: Any) -> dict[str, Any] | None:
 
 
 def _start_to_close_seconds(raw: Any) -> float | None:
-    """The declared bound's seconds (the wf start_to_close cure): the
+    """The declared bound's seconds (the wf start_to_close bound): the
     interval column decodes to a :class:`timedelta` on coded
     connections — a str (an un-coded connection's ISO interval form) or
     anything else degrades to None (the line is a display, never
@@ -394,7 +394,7 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
     node_ids = [r["id"] for r in node_rows]
     edge_rows = await conn.fetch(_RUN_EDGES_SQL.format(schema=schema), node_ids) if node_ids else []
     hold_rows = await conn.fetch(_RUN_HOLDS_SQL.format(schema=schema), run_id)
-    # THE MAP PROGRESS READS THE TRUE PARENTS (Q1d's cure): the children
+    # THE MAP PROGRESS READS THE TRUE PARENTS: the children
     # group by the map SOURCE they were born parented at (the fork/emit
     # INSERT binds the source's job id) — the read passes THE RUN'S NODE
     # IDS, never the root's (the root parents nothing: the old read fed
@@ -415,7 +415,7 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
         [dict(r) for r in hold_rows],
         progress,
     )
-    # THE PARENT↔CHILD LINKS: the receipts' read rides the
+    # THE PARENT↔CHILD LINKS: the records' read rides the
     # SAME grouped read (one connection, the page's own query budget).
     child_rows = await conn.fetch(
         _RUN_CHILD_FLOWS_SQL.format(schema=schema), run_id, _CHILD_LINKS_DISPLAY_LIMIT
@@ -435,8 +435,8 @@ _CHILD_LINKS_DISPLAY_LIMIT: int = 50
 #: number): the node panel's error fields are row-sourced and a row can
 #: carry megabytes of failure text — the panel serves the bounded form
 #: with the remaining-count marker, truncation distinguishable from an
-#: actually-small value. ``error_class`` rides the SAME law (the rv2
-#: finding's cure): the class field is row-sourced free text too — a
+#: actually-small value. ``error_class`` rides the SAME law: the
+#: class field is row-sourced free text too — a
 #: hostile DB write's 200KB class served whole through the view and the
 #: SSE snapshot while the sibling fields were bounded.
 _TRACEBACK_DISPLAY_LIMIT: int = 2000
@@ -469,7 +469,7 @@ def _run_view_from_rows(
     derivation reads every row)."""
     node_ids = {r["id"] for r in node_rows}
 
-    # THE COLLAPSED CHILDREN (Q1d): a row parented at ANOTHER node of
+    # THE COLLAPSED CHILDREN: a row parented at ANOTHER node of
     # this run is the fan-out's child — the source node carries the
     # hexagon (map_done/map_children from the per-source progress read
     # keyed by the source's step_key); the child row itself collapses
@@ -525,7 +525,7 @@ def _run_view_from_rows(
                 # a dict): a corrupted stamp reads None (the label is a
                 # display, never load-bearing).
                 deferral=_decode_stamp(r["deferral"]),
-                # THE DEADLINE FACES (the wf start_to_close cure): the
+                # THE DEADLINE FACES (the wf start_to_close bound): the
                 # row's own bound (the interval's decode is the
                 # timedelta the column carries on coded connections) +
                 # the claim's instant. The read is TOLERANT of the
@@ -562,7 +562,7 @@ def _run_view_from_rows(
 
 
 def _mermaid_label(text: str) -> str:
-    """THE LABEL ESCAPE (H-C8's rows-side defense): a ROW-sourced key
+    """THE LABEL ESCAPE (the rows-side defense): a ROW-sourced key
     (pre-dating the compile's key charset law, or written by a hostile
     hand) can carry a raw ``"`` — inside the quoted Mermaid label that
     KILLS the render — or a raw NEWLINE — which injects a phantom line
@@ -579,7 +579,7 @@ def rows_mermaid(view: RunView) -> str:
     (sorted emission, the compile's own law). A node the map collapsed
     renders as the hexagon-with-counter shape ({{...}}); ZERO child
     boxes — the child detail lives in the paginated panel. THE COLLAPSE
-    IS THE BOUND (Q1d): the map/fork children (a row parented at another
+    IS THE BOUND: the map/fork children (a row parented at another
     run node) render ZERO lines — their parent source's hexagon carries
     the done/total counter — so a 10k fan-out renders ONE hexagon, never
     10k raw node lines."""
@@ -596,7 +596,7 @@ def rows_mermaid(view: RunView) -> str:
             label += " ⏳"
         if collapsed:
             label += f" {node.map_done}/{node.map_children}"
-        # THE LABEL IS ESCAPED (H-C8): the quote/newline-bearing hostile
+        # THE LABEL IS ESCAPED: the quote/newline-bearing hostile
         # row's label cannot kill the render or inject a line.
         lines.append(f'    {node.key}{open_}"{label}"{close}')
     edges: list[str] = []
@@ -617,7 +617,7 @@ def run_state_json(view: RunView, *, seq: int) -> dict[str, Any]:
     node's state (the client patches by ``data-node-key``; a full
     replacement — the reconnect's replay IS this snapshot, so a killed
     connection never loses state). The map children collapse OUT of the
-    frames (Q1d's client half): a 10k fan-out carries the source
+    frames (the client half of the collapse): a 10k fan-out carries the source
     hexagon's counts + the run's summed root counter, never 10k node
     entries per frame — the SSE poll is the render cadence, the frame
     must stay bounded."""
@@ -635,7 +635,7 @@ def run_state_json(view: RunView, *, seq: int) -> dict[str, Any]:
             {
                 "key": n.key,
                 "status": n.status,
-                # THE ERROR COLUMN'S CLASS (H-C9): the bounded error
+                # THE ERROR COLUMN'S CLASS (bounded): the bounded error
                 # class rides the frame — a node that fails while you
                 # watch shows its class without a reload (the Error
                 # column patches live, the same snapshot the chips
@@ -650,7 +650,7 @@ def run_state_json(view: RunView, *, seq: int) -> dict[str, Any]:
                 # the frame, so a node that ARRIVES at (or leaves) the
                 # snoozed state never needs a reload.
                 "deferral_label": n.deferral_label,
-                # THE DEADLINE LINE (the wf start_to_close cure): the
+                # THE DEADLINE LINE (the wf start_to_close bound): the
                 # bound where declared + the running face's reality —
                 # the same two-renderers pattern the deferral line
                 # keeps.
@@ -682,6 +682,6 @@ def summarize_map_children(
     """The per-map-SOURCE done/total pairs from
     ``WORKFLOW_MAP_PROGRESS_SOURCES_SQL``'s rows (the collapsed hexagon's
     counter — one read, no second instrument), keyed by the SOURCE
-    node's step_key: the children's TRUE parent (Q1d's cure), not the
+    node's step_key: the children's TRUE parent, not the
     child step vocabulary."""
     return {r["source_key"]: (int(r["done"]), int(r["total"])) for r in progress_rows}

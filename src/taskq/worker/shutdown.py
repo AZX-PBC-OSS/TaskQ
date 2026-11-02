@@ -86,8 +86,8 @@ def _orchestration_in_progress(
     """Check whether a shutdown orchestration is already running.
 
     Shared guard used by both the SIGTERM signal handler and the drain
-    monitor's ``_trigger_drain_shutdown`` to prevent double-orchestration
-    (H2). Returns True if ``orchestrator_holder`` is non-empty (an
+    monitor's ``_trigger_drain_shutdown`` to prevent double-orchestration.
+    Returns True if ``orchestrator_holder`` is non-empty (an
     orchestration task was already created) or ``deps.shutdown_phase`` is
     past ``NONE`` (an orchestration has started executing phases).
     """
@@ -814,7 +814,7 @@ def install_signal_handlers(
         nonlocal _sig_count
         _sig_count += 1
         if _sig_count == 1:
-            # H2 guard: skip if orchestration is already in progress
+            # Double-orchestration guard: skip if orchestration is already in progress
             # (e.g., drain monitor triggered first). The _sig_count is
             # NOT reset, the next SIGTERM correctly escalates the
             # already-running orchestration rather than starting a new one.

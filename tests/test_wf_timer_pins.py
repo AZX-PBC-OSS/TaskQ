@@ -9,10 +9,10 @@ EXPIRY'S: ``wait_signal``'s deadline-pass = the ``Expired`` member (the
 fail-close); ``wait_until``'s deadline-pass = THE WAKE — the
 continuation, never the fail-close.
 
-Red-first evidence: the pins ran against the PRE-IMPLEMENTATION tree
+Failing-first evidence: the pins ran against the PRE-IMPLEMENTATION tree
 (no ``wait_until``, no timer arm — the captures:
 ``.measurements/t28-timer-pin-reds-pre.txt``), then the implementation
-flipped them green. The convicted variants recorded through
+flipped them green. The rejected variants recorded through
 ``timer_redlog`` name the dragon each pin's guard holds shut.
 """
 
@@ -107,8 +107,10 @@ async def test_timer_wake_is_at_least_at_ts(
     assert wake.lateness_s >= 0.0
     timer_redlog.red(
         "pin-at-least-early-fire",
-        "the fire arm WITHOUT the `<= clock_timestamp()` gate (the mutation drill — an early wake)",
-        {"conviction": "the shipped gate never fires early; the drill red is the pre-cure tree"},
+        "the fire arm WITHOUT the `<= clock_timestamp()` gate (the mutation test — an early wake)",
+        {
+            "recorded finding": "the shipped gate never fires early; the scenario red is the pre-fix tree"
+        },
     )
 
 
@@ -213,10 +215,10 @@ async def test_crash_mid_wait_the_successor_sweep_wakes_the_body(
     assert substep_runs["n"] == 1, substep_runs
     timer_redlog.red(
         "pin-crash-wedge",
-        "the reclaim WITHOUT the successor sweep (the mutation drill — the "
+        "the reclaim WITHOUT the successor sweep (the mutation test — the "
         "wake never fires, the node wedges pending)",
         {
-            "conviction": "the shipped arm fires the row's own deadline; the drill red is the pre-cure tree"
+            "recorded finding": "the shipped arm fires the row's own deadline; the scenario red is the pre-fix tree"
         },
     )
 
@@ -366,7 +368,7 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
     assert verdict == "woken:forged:timer", verdict
 
 
-# ── pin 7: THE TIMER-THEN-SIGNAL STRAND (the I5c cure) ──────────────────
+# ── pin 7: THE TIMER-THEN-SIGNAL STRAND (the I5c fix) ──────────────────
 # One PLAIN step, the timer wait BEFORE the signal wait, disjoint names:
 # the timer's documented re-consume ("a replay/retry re-consumes it from
 # the answer queue") ran on the SHARED per-attempt cursor — it inflated
@@ -374,8 +376,8 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
 # behind forever, the wait re-held silently (the plain kind has no E13
 # teeth), the deadline swept the row to 'abandoned', the body returned
 # the fail-close arm, and THE RUN TERMINALIZED `succeeded` with the
-# operator's decision a dead letter (the C7 family's face on an
-# unwritten boundary). THE CURE — E13's per-site discipline generalized:
+# operator's decision a dead letter (the family's face on an
+# unwritten boundary). THE FIX — E13's per-site discipline generalized:
 # the answer queue's cursor is keyed to the WAIT SITE (its own signal
 # name, beneath the attempt), so every site counts ITS OWN
 # consumptions; the loop kind keeps the iteration counter (the ADVANCE

@@ -4,8 +4,8 @@ The provenance: the PoC's PROOF (t21-20261008T033005Z, PROVEN - DH1-DH8
 closed, 3 consecutive clean rounds) is the spec's proven shape; these pins
 port its obligations onto the BUILT surface, in the estate's pin idiom.
 
-The red-first evidence: each pin's CONVICTED VARIANT (the spike's dragons)
-is named in the docstring and — where the variant is observable — drilled
+The failing-first evidence: each pin's REJECTED VARIANT (the spike's dragons)
+is named in the docstring and — where the variant is observable — exercised
 with the red captured to ``.measurements/t21-pin-reds.json``. The unfenced
 variants stay RED FOREVER (they are the dragons, not bugs).
 
@@ -337,11 +337,12 @@ async def test_map_progress_line_reads_the_state_channel(
     for cid in child_ids:  # the map children: rows WITH the parent link
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, parent_id, metadata) "
-            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'item', $2, $3::jsonb)",
+            "retry_kind, status, step_key, parent_id, metadata, fairness_key) "
+            "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'item', $2, $3::jsonb, $4)",
             cid,
             source,
             json.dumps({"flow_id": str(flow)}),
+            str(flow),
         )
     for i, cid in enumerate(child_ids[:2]):  # two emitted, one silent
         await wf_conn.fetchrow(
@@ -371,14 +372,15 @@ async def test_child_results_read_is_the_aggregate_input(
     ):
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, parent_id, result, metadata) "
+            "retry_kind, status, step_key, parent_id, result, metadata, fairness_key) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, 'item', $3, "
-            "$4::jsonb, $5::jsonb)",
+            "$4::jsonb, $5::jsonb, $6)",
             jid,
             status,
             parent,
             result,
             json.dumps({"flow_id": str(flow)}),
+            str(flow),
         )
     rows = await wf_conn.fetch(wf_sql.progress_child_results, parent)
     assert len(rows) == 1 and rows[0]["id"] == ok
@@ -409,16 +411,16 @@ def test_zero_finalize_changes_probe() -> None:
     )
 
 
-# ── THE RED (DH1's convicted variant — kept RED FOREVER) ─────────────────
+# ── THE RED (DH1's rejected variant — kept failing FOREVER) ─────────────────
 
 
 async def test_red_every_emission_a_row_grows_unbounded(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql, progress_redlog: RedLog
 ) -> None:
-    """DH1's red, observed on the BUILT substrate: the convicted variant —
+    """DH1's red, observed on the BUILT substrate: the rejected variant —
     one row PER EMISSION (the 6.5M-row incident's shape) — grows the store
     with emissions; the two-channel design holds it at nodes x channels +
-    the ring bound. The unfenced variant stays RED FOREVER (the drill
+    the ring bound. The unfenced variant stays RED FOREVER (the scenario
     writes a scratch log table, never the shipped tables)."""
     flow = await seed_flow(wf_conn, wf_schema)
     node = await seed_running_node(wf_conn, wf_schema, flow)
@@ -459,7 +461,7 @@ async def test_red_every_emission_a_row_grows_unbounded(
                 "verdict": "the log grows with emissions; the state channel does not",
             },
         )
-        assert log_rows == emissions, "the convicted variant did not convict"
+        assert log_rows == emissions, "the rejected variant did not reject"
         assert state_rows == 1, "the state channel grew with emissions"
     finally:
         await wf_conn.execute(f'DROP TABLE "{wf_schema}".wf_progress_log_red')

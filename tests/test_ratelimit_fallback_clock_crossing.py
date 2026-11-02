@@ -165,7 +165,7 @@ async def test_token_bucket_acquire_ignores_client_visible_time_skew(
     through a client whose TIME is +2 min. The script measures elapsed with
     the SERVER's own TIME (a proxy cannot reach it): ~0 s have passed, the
     1.1-token acquire is DENIED. A client-supplied-now acquire (the shape
-    the C8 doctrine removed, whose now reads TIME client-side and passes
+    the doctrine removed, whose now reads TIME client-side and passes
     ARGV) would see 120 s of elapsed = 1.2 phantom tokens and ADMIT."""
     settings = _redis_settings(private_redis_url, "taskq_fallback_clock")
     name = f"tb_wire_{new_base62()}"

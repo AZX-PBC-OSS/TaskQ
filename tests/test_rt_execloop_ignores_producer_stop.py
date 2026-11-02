@@ -1,4 +1,4 @@
-"""Red-team: DRAINING re-pends local_queue rows but di_consumer_loop keeps
+"""Adversarial review: DRAINING re-pends local_queue rows but di_consumer_loop keeps
 dequeuing them, producing double-execution of actor side effects.
 
 Contract under attack: once DRAINING fires (``deps.producer_stop_event.set()``

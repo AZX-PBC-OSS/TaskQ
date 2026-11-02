@@ -276,7 +276,7 @@ def _warn_unregistered_workflow_reservations(
     unknown_names: list[str],
     rl_registry: RateLimitRegistry,
 ) -> None:
-    """THE STR-NAME RESERVATIONS' BOOT WARNING (C4 — the
+    """THE STR-NAME RESERVATIONS' BOOT WARNING (the
     ``workflow-rate-limit-name-unregistered`` twin's own shape): a
     workflow-declared plain-``str`` reservation name that NO registry
     entry backs (a vanilla actor's registration included) is the
@@ -309,7 +309,7 @@ def _emit_sub_enqueue_startup_warnings(
        that ``ctx.jobs.enqueue`` will use autonomous commit ().
        Mutually exclusive with 2 (early return).
     2. LOOP-scope conn registered but DSNs differ → warn about the
-       PgBouncer transaction-mode footgun (). Can fire alongside the
+       PgBouncer transaction-mode connection footgun. Can fire alongside the
        per-slot mode announcement from :func:`_maybe_open_slot_pool`.
     """
     resolved = loop_scope.resolved_cache()
@@ -964,7 +964,7 @@ def _fail_fast_on_unconsumed_workflow_queues(
     check): a projected workflow cohort whose queue is not in this
     worker's consumed set (``settings.queues``) — the STRICT gate
     refuses the boot; NON-strict, the aggregated WARNING fires and the
-    boot proceeds (H-A8: the vanilla twin's own opt-in law).
+    boot proceeds (the vanilla twin's own opt-in law).
 
     Why a raise HERE under strict, where the vanilla actors' same shape
     is only the aggregated warning: a workflow step's queue is a DEFAULT
@@ -976,7 +976,7 @@ def _fail_fast_on_unconsumed_workflow_queues(
     fires exactly where the trap is knowable: the boot that would claim
     those rows does not consume their queue.
 
-    THE STRICT GATE (H-A8 — the heterogeneous fleet's own opt-in): the
+    THE STRICT GATE (the heterogeneous fleet's own opt-in): the
     vanilla twin (``_fail_fast_on_unrouted_configured_queues``) fires
     ONLY on ``settings.queues_strict`` because a per-queue worker
     specialization legitimately imports the shared apps module while a
@@ -1024,7 +1024,7 @@ def _fail_fast_on_unconsumed_workflow_queues(
 
     strict = bool(getattr(settings, "queues_strict", False)) or any_app_declares_strict_queues()
     if not strict:
-        # THE NON-STRICT WARNING ARM (H-A8): the heterogeneous fleet's
+        # THE NON-STRICT WARNING ARM: the heterogeneous fleet's
         # own shape — a sibling worker may consume the queue; the boot
         # proceeds, the foreign cohorts named once, the remedy spelled.
         _startup_log.warning(
@@ -1757,7 +1757,7 @@ def _bootstrap_guards_and_registries(
                     collected_rl_names.append(rl_entry.name)
             for res_entry in actor_ref.reservations:
                 if isinstance(res_entry, ConcurrencyReservation):
-                    # THE ONE REBIND DOCTRINE (H-A2 + C2's register-step
+                    # THE ONE REBIND DOCTRINE (the register-step
                     # law): the declaration is constructed at module
                     # import — before settings exist — so its schema is
                     # the declaration's default, not this deployment's.
@@ -1765,7 +1765,7 @@ def _bootstrap_guards_and_registries(
                     # object is never mutated), the SAME rebind at the
                     # SAME phase the wf pass applies to the
                     # workflow-declared reservations below. The registry's
-                    # own register step completes the doctrine (C2): a
+                    # own register step completes the doctrine: a
                     # PRE-REGISTERED raw instance (the docs' explicit-
                     # registry pattern — the raw declaration registered on
                     # an owned RateLimitRegistry) is REBOUND to the
@@ -2135,7 +2135,7 @@ async def _main(
         # THE WORKFLOW EXECUTION PROJECTION (the F3 law's call site + the
         # dispatch fence's capability): resolved BEFORE register_worker —
         # the workers row's metadata carries the capability the dispatch
-        # fence reads as data. The lazy import keeps the §16.1 import law
+        # fence reads as data. The lazy import keeps the import law
         # (a worker that never installed taskq[flows] pays nothing, and
         # is not capable — the fence never hands it a workflow row).
         # The PROJECTION runs here too (compiling every imported app's
@@ -2143,7 +2143,7 @@ async def _main(
         # population in THIS process — the dispatch intercept's body
         # resolution answers from it. A cohort conflict (one actor name,
         # two queues) REFUSES the boot — the drift-guard precedent, the
-        # cure named in the error. The cohort rows' SYNC rides after the
+        # fix named in the error. The cohort rows' SYNC rides after the
         # plain actors' sync below (the startup-warnings ordering pin:
         # the observability emits precede every config-sync round trip).
         _wf_execution = None
@@ -2159,7 +2159,7 @@ async def _main(
             wf_execution_capable = _wf_execution.workflow_execution_capable()
             if wf_execution_capable:
                 _wf_cohort_configs = _wf_execution.project_workflow_actor_configs()
-                # THE WORKFLOW-DECLARED RATE LIMITS' COLLECTION (CURE 2):
+                # THE WORKFLOW-DECLARED RATE LIMITS' COLLECTION:
                 # the authoring face's bucket instances register into the
                 # SAME resolved registry the vanilla actors' collection
                 # pass fills (ONE registry, ONE acquire path); a str name
@@ -2190,11 +2190,13 @@ async def _main(
                 # ride the SAME ensure-slots pass below (their slot rows
                 # materialize at boot exactly like the vanilla ones').
                 # The registration REBINDS to this deployment's schema —
-                # the C2 doctrine (the registry's register step rebinds
+                # the rebind doctrine (the registry's register step rebinds
                 # any pre-registered raw instance to the same copy).
-                _wf_reservations, _wf_res_unknown = _wf_execution.collect_workflow_reservations()
+                _wf_reservations, _wf_res_unknown = _wf_execution.collect_workflow_reservations(
+                    resolved_rl_registry
+                )
                 for wf_res in _wf_reservations:
-                    # THE SCHEMA REBIND (the flows demo's conviction): a
+                    # THE SCHEMA REBIND: a
                     # workflow-declared reservation is constructed at module
                     # import — before settings exist — so its schema is the
                     # declaration's default, not this deployment's. The
@@ -2211,7 +2213,7 @@ async def _main(
                         "workflow-reservations-registered",
                         reservation_names=sorted(res.name for res in _wf_reservations),
                     )
-                # THE STR-NAME WARNING (C4 — the rate-limit twin's own
+                # THE STR-NAME WARNING (the rate-limit twin's own
                 # shape): a plain name NO registry entry backs (a vanilla
                 # actor's registration included) is probably a typo —
                 # the WARNING is the primary face, the claim-time
@@ -2879,8 +2881,7 @@ async def _main(
                 # earlier would make the detector dead code on the only path
                 # that matters. Both calls swallow their own errors.
                 #
-                # ── THE GROUP'S OWN QUIT-CUT, CONSUMED (the d24f17b9 CI
-                # conviction) ──
+                # ── THE GROUP'S OWN QUIT-CUT, CONSUMED (observed in CI) ──
                 # A failing sibling's completion handler cancels THIS task
                 # (the TaskGroup's abort: "stop the body, the group is
                 # quitting"). When that handler loses its race with this
@@ -3225,15 +3226,15 @@ async def _reload_coordinator_loop(
         try:
             await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's cure — the
+            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix — the
             # same shape the reload schedule's, the watchdog's, and the
             # producer's loops carry): CANCEL ALL the pending waiters
             # first, THEN reap each through the reaper helper. The
             # one-per-lap cancel + bare suppress(await) let the reaper's
             # OWN concurrent cancellation die inside the suppress (the
-            # F-DEMO-2 conviction's exact shape) and orphan the remaining
+            # F-DEMO-2's exact shape) and orphan the remaining
             # waiters — the two leaked Event.wait tasks the guard
-            # convicted. Our own cancel propagates: after the bounded
+            # caught. Our own cancel propagates: after the bounded
             # reap completes, never swallowed.
             pending = [t for t in waiters if not t.done()]
             for task in pending:

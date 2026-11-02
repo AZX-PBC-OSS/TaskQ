@@ -468,7 +468,7 @@ async def test_teardown_bounds_redis_close(
     has no terminate()) - no exception escapes. The timeout event carries
     ``close_timeout=`` - NOT ``drain_timeout=``, the reload path's
     drain-event field - so the teardown close bound stays distinguishable
-    from the reload drain bound in log alerts (review C9)."""
+    from the reload drain bound in log alerts."""
     _shrink_teardown_timeout(monkeypatch)
     settings = _make_settings()
     redis_client = _FakeRedisClient()
@@ -507,7 +507,7 @@ async def test_teardown_bounds_redis_close(
 
 async def test_teardown_nulls_redis_client_after_close() -> None:
     """After teardown closes a TaskQ-owned Redis client, ``deps.redis_client``
-    is None - mirroring the notify/leader conn guards (review C6). Reload
+    is None - mirroring the notify/leader conn guards. Reload
     interplay is safe: ``reload_credentials`` swaps the attr and drains the old
     client itself, so the guard reads the attr once, closes, and nulls - the
     same lifecycle as the conn siblings."""
@@ -532,7 +532,7 @@ async def test_teardown_nulls_redis_client_after_close() -> None:
     assert deps.redis_client is None
 
 
-# ── C9: teardown close events carry close_timeout=, not drain_timeout= ──
+# ── the close events carry close_timeout=, not drain_timeout= ──
 
 
 async def test_teardown_close_timeout_logs_close_timeout_field(
@@ -542,7 +542,7 @@ async def test_teardown_close_timeout_logs_close_timeout_field(
     ``drain_timeout=``, which is the reload path's drain-event field
     (``pool-draining``, ``pool-drain-timeout-terminating``). Sharing the
     field name conflates the teardown close bound with the reload drain
-    bound in log alerts (review C9)."""
+    bound in log alerts."""
     _shrink_teardown_timeout(monkeypatch)
     settings = _make_settings()
     dispatcher = _FakePool("dispatcher")

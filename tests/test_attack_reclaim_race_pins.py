@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is fixture-derived (module_pg_schema), not user input; every value is $-bound.
-"""Red-team race pins for the reclaim machinery (Area 9: reclaim & recovery).
+"""Adversarial review race pins for the reclaim machinery (Area 9: reclaim & recovery).
 
 The predicate and parity pins elsewhere in the suite run the reclaim
 sweep against a quiescent database. Every test here runs it against a

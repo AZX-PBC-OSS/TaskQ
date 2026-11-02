@@ -1,6 +1,6 @@
 """T17 — THE ERGONOMICS-CONTRACT PINS (the authoring session's paper cuts).
 
-The BLOCKER/CRITICAL cures landed with T09's flow API: these probes were
+The BLOCKER/CRITICAL fixes landed with T09's flow API: these probes were
 captured RED against the pre-API tree (strict-xfail — the cut IS the red;
 the red evidence: ``.measurements/t17-contract-first-run.txt``) and are
 GREEN here — the marker's removal in THIS commit is the flip. The bar-walk
@@ -73,7 +73,7 @@ def test_shipped_surfaces_carry_no_campaign_vocabulary() -> None:
             "|".join(_BANNED_DOMAIN_TERMS),
             *[str(repo / s) for s in surfaces],
             # This check names the banned terms in its own tuple — excluded
-            # by name, or the check convicts itself.
+            # by name, or the check rejects itself.
             "--exclude=test_wf_ergonomics_contract.py",
             "--exclude-dir=__pycache__",
         ],
@@ -144,7 +144,7 @@ async def _branch_b(ctx: StepContext, params: DocIngest) -> dict[str, int]:
 
 
 def test_bar_walk() -> None:
-    """THE BAR WALK (T17's red-first 2): the authoring agent's original
+    """THE BAR WALK (T17's failing-first 2): the authoring agent's original
     graph — the shapes the paper cuts were hit on — compiles with zero
     boilerplate: plain-type data, Promise wiring, a gather-join,
     sequencing, a consumed terminal, the input parameter on create_flow."""

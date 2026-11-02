@@ -1,4 +1,4 @@
-"""Red-team: external cancel detaches the transactional actor (E3).
+"""Adversarial review: external cancel detaches the transactional actor (E3).
 
 Contract under attack: an external cancel of the consume task must reach the
 transactional actor attempt - the row already says cancelled

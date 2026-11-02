@@ -137,12 +137,12 @@ class ExitOps(_ExitHost):
         principal: Any = None,
         reason: str | None = None,
     ) -> bool:
-        """THE COMPILED FACE'S DELEGATE (the round-2 conviction 5a): the
+        """THE COMPILED FACE'S DELEGATE (the round-2 finding 5a): the
         id-addressed verb ``retry_workflow_node`` is the ONE manual-resume
         implementation — this module's own parallel re-derivation (a
         second CAS + closure + audit walk) was dead in production AND
-        STALE (it lacked the H-C3 FOR-UPDATE serialization, the H-C4
-        skip re-arm, and the cancelled-run refusal the verb carries —
+        STALE (it lacked the FOR-UPDATE serialization, the exit-skip
+        re-arm, and the cancelled-run refusal the verb carries —
         the exact drift a copy invites). The runner's historical call
         shape stays (the phase-3 pins compose it), riding the verb's
         law. The import is the LAZY PUBLIC-SEAM form (the routes' own
@@ -189,7 +189,7 @@ async def _cancel_one_run(
     bounded_reason = bound_reason(reason or "cancel_workflow", 500)
 
     async with pool.acquire() as conn, conn.transaction():
-        # THE AUDIT LEG (the same cure CANCEL_ROOT carries): the cancel's
+        # THE AUDIT LEG (the same fix CANCEL_ROOT carries): the cancel's
         # flip is a mutation — the event names it.
         flipped = await conn.fetchval(
             render_sql(CANCEL_ROOT_SQL_TEMPLATE, schema),
@@ -229,11 +229,11 @@ async def cancel_cascade(
     principal: Any,
 ) -> int:
     """THE CANCEL CASCADE: the WORKLIST WALK, never
-    Python recursion (the pre-cure shape recursed per child — a
+    Python recursion (the pre-fix shape recursed per child — a
     1200-deep cascade raised ``RecursionError`` at the operator and
     left hundreds of runs running), and the children are read from the
     ROWS' crash-safe ``parent_flow_id`` direction FIRST — the receipts
-    are the accelerator, the rows the law (the pre-cure shape walked
+    are the accelerator, the rows the law (the pre-fix shape walked
     the receipts alone: a child created but never receipted — the crash
     between create and receipt-write — ESCAPED the cascade forever, the
     orphan window). Each run's cancel is atomic in its own tx
@@ -308,13 +308,13 @@ async def retry_workflow_node(
     statements for the caller that addresses the run BY ID (no compiled
     definition to import). A cancelled run REFUSES (the cancel was
     deliberate — re-opening it is a second decision, not a resume).
-    THE AUDIT (G4): the row.
+    THE AUDIT: the row.
 
     * THE ROOT KEY IS NOT A NODE (H-C1): ``node_key='__flow__'`` matches
       nothing (the CAS's own guard) — returns 0, the root's bytes stay
       put; the run's own re-run is the RUN-rerun's concern (a fresh run,
       or the run-rerun composition — never the per-node CAS).
-    * THE CANCEL/RETRY SERIALIZATION (H-C3): the root's status read
+    * THE CANCEL/RETRY SERIALIZATION: the root's status read
       takes ``FOR UPDATE`` — a cancel committing between the read and
       the CAS can no longer strand a PENDING node under a CANCELLED
       root: the refusal is race-free (the read sees the cancel's flip),
@@ -322,7 +322,7 @@ async def retry_workflow_node(
       own commit (the cancel's cascade then flips the re-armed node —
       never a pending row under a cancelled root, the wedged-forever
       shape).
-    * THE EXIT-SKIPPED BRANCHES RE-ARM (H-C4): the grant re-opens the
+    * THE EXIT-SKIPPED BRANCHES RE-ARM: the grant re-opens the
       run's skip-envelope rows (``result @> '{"skipped": true}'`` — the
       engine's own SKIPPED_RESULT contract, the typed early-exit's
       downstream mark) — pending, the envelope CLEARED — so the resumed
@@ -332,14 +332,14 @@ async def retry_workflow_node(
     Returns the number of NODE ROWS the CAS re-armed (0 when nothing
     was resumable — the node is live, unknown, not terminal-failed, or
     the run's own root key). THE ROW COUNT, NOT A GRANT BIT (the
-    round-2 conviction): a MAP's failed children share one step key —
+    round-2 finding): a MAP's failed children share one step key —
     one key's grant re-arms every failed row of the key at once, and
     the caller's applied-count counts ROWS (the audit row carries the
     count beside the key's)."""
     from taskq.audit import record_admin_action
 
     async with pool.acquire() as conn, conn.transaction():
-        # THE ROOT'S STATUS READ — FOR UPDATE (H-C3): the lock is the
+        # THE ROOT'S STATUS READ — FOR UPDATE: the lock is the
         # serialization point. A cancel's root flip now either landed
         # BEFORE this read (the refusal below sees it) or waits BEHIND
         # this transaction's commit (the cancel's cascade then flips the
@@ -361,7 +361,7 @@ async def retry_workflow_node(
         keys = [r["step_key"] for r in descendants]
         if keys:
             await conn.execute(render_sql(RETRY_REOPEN_CLOSURE_SQL_TEMPLATE, schema), flow_id, keys)
-        # THE SKIP ENVELOPE'S RE-ARM (H-C4): the run's exit-skipped rows
+        # THE SKIP ENVELOPE'S RE-ARM: the run's exit-skipped rows
         # (the typed early-exit's downstream mark — the engine's own
         # SKIPPED_RESULT contract, ``{"skipped": true}`` containment)
         # return to pending with the envelope CLEARED — the resumed run

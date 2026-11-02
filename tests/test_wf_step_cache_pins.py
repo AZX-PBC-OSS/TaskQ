@@ -327,7 +327,7 @@ async def test_concurrent_miss_one_winner(
     # payload (the winner's receipt rides it).
     #
     # THE BODY-COUNT DISCRIMINATION READS STATE, NOT THE CLOCK (the
-    # CI cure): the pin's `calls == 2` assumed BOTH concurrent bodies
+    # CI fix): the pin's `calls == 2` assumed BOTH concurrent bodies
     # ran — the two-claims law's own premise — but the lookup-before-
     # body is not atomic with the OTHER run's store: on a slow runner
     # the winner's body+store can complete INSIDE the loser's

@@ -1,9 +1,9 @@
-"""Red-team attacks on the cron tick's failure domains (real PG).
+"""Adversarial review attacks on the cron tick's failure domains (real PG).
 
 Three failure domains meet in one tick, and each owes different
 observable behaviour:
 
-* **Server-side enqueue failure** (C2): the batched INSERT itself fails
+* **Server-side enqueue failure** : the batched INSERT itself fails
   on the caller's connection - a genuine ``UniqueViolationError`` driven
   through the REAL ``enqueue_batch``.  The failure is attributed PER
   SCHEDULE, not per tick: the colliding plan takes one strike (identified
@@ -17,11 +17,11 @@ observable behaviour:
   per-schedule failure bookkeeping COMMITS and the tick returns 0
   instead of raising.  Both observables are correct for their domain;
   pinning them separately is what makes the boundary visible.
-* **Planning failure isolation** (C8): an actor with no ``actor_config``
+* **Planning failure isolation** : an actor with no ``actor_config``
   row fails exactly one schedule, with the exact ``LookupError`` text,
   while other actors in the same batch still fire; three such ticks
   auto-disable the schedule (CASE + ``enabled = true`` guard).
-* **The failures-UPDATE guard** (C3): a schedule disabled by another
+* **The failures-UPDATE guard** : a schedule disabled by another
   connection between the due SELECT and the UPDATE must be skipped -
   the rowcount shortfall warns, and the disabled row is neither
   re-enabled nor error-stamped.

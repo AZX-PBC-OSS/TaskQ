@@ -1,4 +1,4 @@
-"""THE SUPERSESSION CHAIN'S PINS — the estate-cures round, cure 1.
+"""THE SUPERSESSION CHAIN'S PINS — the estate-fixes round, fix 1.
 
 The evidence-heads verifier's law read "the link must resolve": a live
 claim marked ``superseded_by`` was judged by the HEAD link's existence
@@ -13,20 +13,20 @@ claim is marked ``superseded_by`` a capture whose file EXISTS — the old
 law's whole check — while the chain's END is a history entry recorded
 on a stale head, or a ghost, or the chain never terminates at all. The
 pre-fix verifier returned rc=0 on exactly this estate (the green
-receipt is the cure's own capture); the fixed verifier walks the chain
+receipt is the fix's own capture); the fixed verifier walks the chain
 to its TERMINAL entry and applies the head-sha rule THERE.
 
 Each pin runs the verifier script as a subprocess against a synthetic
-runs-dir (the rv2-13 precedent: the script is the subject, its rc is
-the verdict) and asserts the conviction — and the CONTROL pin proves
-the fix does not over-convict: an honest chain (resolving links, a
+runs-dir (the precedent: the script is the subject, its rc is
+the verdict) and asserts the recorded finding — and the CONTROL pin proves
+the fix does not over-reject: an honest chain (resolving links, a
 fresh on-disk terminal) stays GREEN.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the rv2-13 pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
 import sys
 from pathlib import Path
 
@@ -92,12 +92,12 @@ def test_the_stale_terminal_one_hop_reds(tmp_path: Path) -> None:
     """THE COUNTEREXAMPLE, one hop: A's live claim is superseded_by a
     capture whose file EXISTS (the old law's whole check), and the chain
     lands on a history entry recorded on a STALE head. The pre-fix
-    verifier greened exactly this estate (rc=0 — the cure's green
-    receipt); the fixed law convicts at the chain's END."""
+    verifier greened exactly this estate (rc=0 — the fix's green
+    receipt); the fixed law rejects at the chain's END."""
     runs = _estate(
         tmp_path,
         [
-            _e("drill", "drill-a.txt", HEAD, "t0", superseded_by="runs/proof.txt"),
+            _e("scenario", "drill-a.txt", HEAD, "t0", superseded_by="runs/proof.txt"),
             _e("proof", "proof.txt", _STALE_SHA, "t1"),
             _e(
                 "proof", "proof-fresh.txt", HEAD, "t2"
@@ -107,17 +107,17 @@ def test_the_stale_terminal_one_hop_reds(tmp_path: Path) -> None:
     proc = _verify(runs)
     assert proc.returncode == 1, "the stale terminal must red the verifier"
     assert "TERMINAL claim proof.txt is stale" in proc.stdout
-    assert "drill" in proc.stdout  # the stem whose EFFECTIVE claim is red
+    assert "scenario" in proc.stdout  # the stem whose EFFECTIVE claim is red
 
 
 def test_the_stale_terminal_two_hops_reds(tmp_path: Path) -> None:
     """THE WALK IS TO THE END: A → mid (fresh-looking, superseded) →
-    terminal (stale). The conviction must name the chain's LAST entry —
+    terminal (stale). The recorded finding must name the chain's LAST entry —
     a one-hop check would have stopped at the resolving first link."""
     runs = _estate(
         tmp_path,
         [
-            _e("deep-drill", "deep-a.txt", HEAD, "t0", superseded_by="runs/mid.txt"),
+            _e("deep-scenario", "deep-a.txt", HEAD, "t0", superseded_by="runs/mid.txt"),
             _e("mid", "mid.txt", HEAD, "t1", superseded_by="runs/end.txt"),
             _e("mid", "mid-fresh.txt", HEAD, "t2"),
             _e("end", "end.txt", _STALE_SHA, "t3"),
@@ -135,7 +135,7 @@ def test_the_ghost_terminal_reds(tmp_path: Path) -> None:
     a ghost. (The ghost file is built by the estate builder and then
     deliberately left off disk.)"""
     claims = [
-        _e("ghost-drill", "ghost-a.txt", HEAD, "t0", superseded_by="runs/mid.txt"),
+        _e("ghost-scenario", "ghost-a.txt", HEAD, "t0", superseded_by="runs/mid.txt"),
         _e("mid", "mid.txt", HEAD, "t1", superseded_by="runs/ghost.txt"),
         _e("mid", "mid-fresh.txt", HEAD, "t2"),
         _e("ghost", "ghost.txt", HEAD, "t3"),
@@ -182,8 +182,8 @@ def test_the_dangling_chain_reds(tmp_path: Path) -> None:
 
 def test_the_honest_chain_stays_green(tmp_path: Path) -> None:
     """THE CONTROL: a chain whose links resolve and whose TERMINAL is a
-    fresh, on-disk capture stays GREEN — the fix convicts the broken
-    chains, never the honest one (the over-conviction would break the
+    fresh, on-disk capture stays GREEN — the fix rejects the broken
+    chains, never the honest one (the over-recorded finding would break the
     live estate at every re-point)."""
     runs = _estate(
         tmp_path,
@@ -201,7 +201,7 @@ def test_the_stale_terminal_is_never_saved_by_its_stems_fresh_tail(tmp_path: Pat
     live claim — the old law saw the fresh tail and greened the estate
     while the CHAIN (pointing at the history entry behind it) proved
     nothing. The chain's walk indexes EVERY entry, history included:
-    the conviction stands."""
+    the recorded finding stands."""
     runs = _estate(
         tmp_path,
         [
@@ -223,7 +223,7 @@ def test_the_cited_import_terminal_is_history_by_declaration(tmp_path: Path, gho
     honest for an imported provenance record), while a ghost terminal is
     still a ghost (a declaration cannot conjure the file)."""
     claims = [
-        _e("import-drill", "i-a.txt", HEAD, "t0", superseded_by="runs/imported.txt"),
+        _e("import-scenario", "i-a.txt", HEAD, "t0", superseded_by="runs/imported.txt"),
         _e(
             "imported",
             "imported.txt",
