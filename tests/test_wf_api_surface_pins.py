@@ -229,6 +229,43 @@ def test_mermaid_shape_vocabulary() -> None:
     assert "⏳" in text and "Approval" in text  # the gate's policy rides it
 
 
+def test_mermaid_gate_timeout_renders_the_normalized_seconds() -> None:
+    """The hold node's timeout policy renders the duration law's own
+    form: the normalized seconds float. A ``timedelta`` declaration and
+    a bare-number declaration render the identical policy text —
+    Python's ``timedelta`` repr never leaks into the diagram."""
+    from datetime import timedelta
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> object:
+        # E14's law: the declared gate's body WAITS on it.
+        return await ctx.wait_signal((Approval,), timeout_s=None)  # pragma: no cover
+
+    def _emission(timeout_s: object) -> str:
+        app = WorkflowApp()
+
+        @app.workflow("timedelta-hold")
+        def timedelta_hold() -> Promise[object]:
+            gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=timeout_s)
+            return build(
+                step(
+                    hold_body,
+                    Ingest(doc_id="d"),
+                    key="hold",
+                    gates=(gate,),
+                )
+            )
+
+        return app.get("timedelta-hold").mermaid()
+
+    assert "⏳Approval/30.0s" in _emission(timedelta(seconds=30))
+    assert "⏳Approval/30.0s" in _emission(30.0)  # the dual form renders identically
+    assert "⏳Approval/90.0s" in _emission(
+        timedelta(minutes=1, seconds=30)
+    )  # 90s, the normalized form
+    assert "0:01:30" not in _emission(timedelta(minutes=1, seconds=30))  # no repr leak
+    assert "⏳Approval/∞" in _emission(None)  # the undeclared-timeout face
+
+
 def test_mermaid_label_and_shape_edges() -> None:
     """The emission's edge branches (the pure functions' unit lane): the
     unresolvable label's fallback, the class-path shortening, and the

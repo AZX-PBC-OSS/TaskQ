@@ -470,9 +470,17 @@ class WorkflowApp:
                     f"capture_policy={capture_policy!r} and capture={capture!r} are both given "
                     "and disagree — the capture policy is ONE value; pass capture_policy= only"
                 )
-            resolved_capture_policy = (
-                capture_policy if capture_policy is not None else (capture or "errors-only")
-            )
+            resolved_capture_policy = capture_policy if capture_policy is not None else capture
+            if resolved_capture_policy is None:
+                resolved_capture_policy = "errors-only"
+            elif resolved_capture_policy not in ("none", "errors-only", "all"):
+                # A DECLARED value (the empty string included) is a
+                # declaration, not a default: the invalid shape is
+                # refused at the declaration site.
+                raise ValueError(
+                    f"capture_policy={resolved_capture_policy!r} is not one of "
+                    "'none'/'errors-only'/'all'"
+                )
             handle = WorkflowActor(
                 body,
                 name=actor_name,
@@ -581,9 +589,13 @@ class WorkflowApp:
                 f"capture_policy={capture_policy!r} and capture={capture!r} are both given "
                 "and disagree — the capture policy is ONE value; pass capture_policy= only"
             )
-        resolved_capture = (
-            capture_policy if capture_policy is not None else (capture or "errors-only")
-        )
+        resolved_capture = capture_policy if capture_policy is not None else capture
+        if resolved_capture is None:
+            resolved_capture = "errors-only"
+        elif resolved_capture not in ("none", "errors-only", "all"):
+            raise ValueError(
+                f"capture_policy={resolved_capture!r} is not one of 'none'/'errors-only'/'all'"
+            )
 
         def decorate(build_fn: Callable[[], Promise[R]]) -> Callable[[], Promise[R]]:
             self._workflows[name] = build_fn

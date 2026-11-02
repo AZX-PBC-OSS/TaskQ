@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from taskq.workflows._types import duration_seconds
+
 if TYPE_CHECKING:
     from taskq.workflows.api._app import CompiledWorkflow
 
@@ -82,7 +84,9 @@ def render_mermaid(compiled: CompiledWorkflow) -> str:
         gate_note = ""
         if gated:
             policies = ",".join(
-                f"{g.name}{'/' + str(g.timeout_s) + 's' if g.timeout_s is not None else '/∞'}"
+                f"{g.name}/{duration_seconds(g.timeout_s)}s"
+                if g.timeout_s is not None
+                else f"{g.name}/∞"
                 for g in node.gates
             )
             gate_note = f" ⏳{policies}"

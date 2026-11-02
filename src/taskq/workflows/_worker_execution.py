@@ -502,7 +502,9 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
         )
     )
     if _projection_cache is not None and _projection_cache_key == signature:
-        return _projection_cache
+        # the callers own their lists: a fresh copy per call, the cache's
+        # own lists never leave the module
+        return list(_projection_cache[0]), list(_projection_cache[1])
     totals: dict[str, tuple[str, set[str]]] = {}
     capacity_totals: dict[str, _CapacityTerms] = {}
     failures: list[str] = []
