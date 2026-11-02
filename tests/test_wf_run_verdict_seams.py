@@ -227,9 +227,23 @@ async def test_a_succeeded_terminal_beside_a_failed_sink_branch_still_raises_the
     assert run_status == "failed", (
         f"the side branch's failure did not terminalise the run: {run_status!r}"
     )
+    # The terminal payload is NON-NULL and decodable: the failure verdict
+    # must win over it, never decode and return it.
+    payload = await wf_pool.fetchval(
+        f'SELECT result FROM "{wf_schema}".jobs WHERE step_key = $1 '
+        "AND (metadata->>'flow_id')::uuid = $2",
+        "finished",
+        flow_id,
+    )
+    assert payload is not None, (
+        "the terminal's payload is absent — the attack input needs it present"
+    )
 
-    with pytest.raises(WorkflowRunError):
+    with pytest.raises(WorkflowRunError) as exc_info:
         await runner.result(flow_id)
+    assert "the fire-and-forget branch failed" in str(exc_info.value), (
+        f"the raised verdict is not the failing branch's: {str(exc_info.value)[:300]}"
+    )
 
 
 async def test_a_cancelled_run_whose_terminal_succeeded_still_raises_cancelled(
@@ -269,6 +283,17 @@ async def test_a_cancelled_run_whose_terminal_succeeded_still_raises_cancelled(
     runner = FlowRunner(app.get("terminal_ok_run_cancelled"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id, until="held", max_ticks=10) == "held"
+    # THE HONEST None: the run is genuinely live (held), so the read
+    # answers None — the same None a cancelled run must never be handed.
+    assert await runner.result(flow_id) is None
+    # The terminal payload is present and decodable; the cancel must win.
+    payload = await wf_pool.fetchval(
+        f'SELECT result FROM "{wf_schema}".jobs WHERE step_key = $1 '
+        "AND (metadata->>'flow_id')::uuid = $2",
+        "finished",
+        flow_id,
+    )
+    assert payload is not None
     await cancel_workflow_run(
         wf_pool, flow_id=flow_id, schema=wf_schema, reason="the operator cancelled", principal=None
     )
