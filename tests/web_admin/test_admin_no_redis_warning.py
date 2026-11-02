@@ -106,7 +106,7 @@ def test_create_router_wires_the_no_redis_warning_behind_the_exact_predicate() -
     the predicate - the settings expecting Redis AND the app state
     lacking the client.
 
-    Red-team motivation: deleting the call leaves every helper-level
+    Adversarial review motivation: deleting the call leaves every helper-level
     behavioral test green (they drive create_router, not the call site
     shape), and dropping either predicate half mis-warns in a direction
     the behavioral tests above pin separately - so the guard shape is

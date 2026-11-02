@@ -3,12 +3,12 @@
 ``sync_actor_config``'s UPSERT deliberately omits the capacity columns
 from the ``DO UPDATE SET`` clause: an existing row's
 ``max_concurrent``/``max_pending``/``result_ttl`` survive every
-subsequent boot (the operator-owns law). Consequence (C15's conviction):
-for an actor whose capacity terms ride the CODE — TAStack's best-effort
-dampers ride ``max_concurrent`` — a changed literal deploys NOTHING after
-first boot; editing code silently does nothing.
+subsequent boot (the operator-owns law). Consequence (C15's recorded finding):
+for an actor whose capacity terms ride the CODE — best-effort dampers
+riding ``max_concurrent`` — a changed literal deploys NOTHING after first
+boot; editing code silently does nothing.
 
-The cure is a PER-ACTOR OPT-IN: ``@actor(capacity_owner="code")`` /
+The fix is a PER-ACTOR OPT-IN: ``@actor(capacity_owner="code")`` /
 ``@app.actor(capacity_owner="code")``. For code-owned actors the upsert's
 SET clause INCLUDES ``max_concurrent`` and ``result_ttl`` (the retry
 contract's own law, on the capacity axes); the queue and ``max_pending``
@@ -16,7 +16,7 @@ stay operator-owned for BOTH owners. The default is byte-identical: no
 code-owned rows → the operator statement alone, exactly the pre-opt-in
 shape.
 
-Pins here, red-first:
+Pins here:
 * a code-owned actor's capacity change deploys by code after first boot
   (real PG);
 * a default actor's row is untouched by a code change (real PG);
@@ -471,10 +471,10 @@ async def _read_row(conn: asyncpg.Connection, schema: str, actor: str) -> dict[s
 async def test_code_owned_capacity_change_deploys_after_first_boot(
     pg_conn: asyncpg.Connection,
 ) -> None:
-    """C15's CORE PIN (red-first): a code-owned actor's capacity change
+    """C15's CORE PIN (failing-first): a code-owned actor's capacity change
     deploys by code AFTER first boot. Boot 1 seeds the row from the
     literal; boot 2 carries a CHANGED literal — the stored row READS the
-    new values. The pre-cure shape left the row at boot 1's values
+    new values. The pre-fix shape left the row at boot 1's values
     forever: editing code silently did nothing."""
     schema = f"tacs_{new_base62()}".lower()
     await _ensure_schema(pg_conn, schema)
@@ -724,7 +724,7 @@ async def test_code_owned_uncapping_deploys_null_and_warns(
     record-wins law) — AND the deploy announces itself: the
     ``actor-config-capacity-code-change`` warning carrying
     ``registered=None`` against the STORED old value, one event per
-    field. The pre-cure shape left the stored cap at its
+    field. The pre-fix shape left the stored cap at its
     first-registration value forever: un-capping by code silently did
     nothing."""
     schema = f"tacs_{new_base62()}".lower()

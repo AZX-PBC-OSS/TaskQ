@@ -1,4 +1,4 @@
-"""NUL-guard red-team attacks on the schedule-update and cron-failure paths.
+"""NUL-guard adversarial review attacks on the schedule-update and cron-failure paths.
 
 Two boundaries bind caller- or exception-derived text straight into
 ``text`` columns without the guard their twins carry:

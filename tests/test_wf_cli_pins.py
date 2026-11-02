@@ -1,7 +1,7 @@
 """T12 — THE CLI PINS: ``taskq flows`` — one question, one surface.
 
-The red-first evidence: the three pins (taxonomy-drift, empty-snapshot,
-read-only) are collected with their CONVICTED VARIANTS — each drills the
+The failing-first evidence: the three pins (taxonomy-drift, empty-snapshot,
+read-only) are collected with their REJECTED VARIANTS — each scenarios the
 mutated shape and captures the observed red to
 ``.measurements/t12-pin-reds.json``. The surface-walk + output-contract
 pins ride the REAL engine (a live run on the migrated schema): every
@@ -300,7 +300,7 @@ async def test_retry_not_applied_copy_drops_the_impossible_cause_and_names_the_r
     assert "live" in copy and "unknown" in copy, copy
 
     # The RUN'S OWN ROOT key: refused by the verb-level guard's CAS leg —
-    # the copy names the root-key law and the cure.
+    # the copy names the root-key law and the fix.
     root = await to_thread(runner.invoke, app, ["flows", "retry", str(flow_id), "__flow__"])
     assert root.exit_code == 1, root.output
     root_copy = plain_cli_output(root.output)
@@ -428,7 +428,7 @@ def test_derive_flow_status_is_the_shared_derivation() -> None:
     assert derive_flow_status([FlowNodeRow(step_key="a", status="failed")]) == "failed"
 
 
-# ── the taxonomy pin (red-first 1) ───────────────────────────────────────
+# ── the taxonomy pin (failing-first 1) ───────────────────────────────────────
 
 
 def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
@@ -444,7 +444,7 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
 
     derived = set(typing.get_args(WorkflowStatus))
     # THE DERIVED SET IS EXACTLY THE G7 MAPPING'S KEYS (a new derived
-    # status without a root-row mapping row = the drift). The convicted
+    # status without a root-row mapping row = the drift). The rejected
     # variant: drop one mapping row → this assert reds.
     if derived != set(G7_DERIVED_TO_ROOT):
         engine_redlog.red(
@@ -475,7 +475,7 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
     engine_redlog.flush()
 
 
-# ── the read-only pin (red-first 3) ─────────────────────────────────────
+# ── the read-only pin (failing-first 3) ─────────────────────────────────────
 
 
 def test_read_only_pin_the_read_verbs_have_no_write_path() -> None:

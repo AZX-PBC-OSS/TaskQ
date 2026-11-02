@@ -842,8 +842,7 @@ def test_taskq_constructor_schema_env_beats_dotenv_and_explicit_wins_all(
 ) -> None:
     """Precedence for the schema default matches load()'s (process env
     beats .env), and an explicit ``schema=`` argument beats every layer:
-    the cennan/TAStack shape (they pass their loaded schema explicitly)
-    is untouched."""
+    callers that pass their loaded schema explicitly are untouched."""
     _dotenv_dir(
         tmp_path,
         monkeypatch,
@@ -1257,7 +1256,7 @@ _KNOB_DEFAULT_FIELDS: tuple[tuple[str, Any], ...] = (
     ("idempotency_lock_timeout_ms", 5000.0),
     ("max_retry_backoff", DEFAULT_MAX_RETRY_BACKOFF),
     # The claim cursor's knob, mirrored at the opt-in default (0 =
-    # disabled): the predictor is default-on, the cure waits for evidence.
+    # disabled): the predictor is default-on, the fix waits for evidence.
     ("claim_cursor_reset_seconds", 0.0),
 )
 """The BackendSettings members whose defaults the doubles must carry -

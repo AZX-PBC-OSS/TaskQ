@@ -4,7 +4,7 @@ Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
 home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
 file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
-the unfenced variants kept in this file forever as the convicted shapes.
+the unfenced variants kept in this file forever as the rejected shapes.
 """
 
 # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
@@ -58,7 +58,7 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, parent, flow_id)
 
-    # The interleave the pin convicts, deterministically: the snapshot
+    # The interleave the pin rejects, deterministically: the snapshot
     # read (un-terminal = 1) happens BEFORE a finalize's decrement
     # commits, the snapshot write lands AFTER.
     snapshot_count = await wf_conn.fetchval(
@@ -95,7 +95,7 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
         "AND j.deps_pending <> c.unterminal::smallint",
         "AND j.deps_pending = c.unterminal::smallint",
     )
-    assert mutated_rederive != wf_sql.rederive_sweep, "the mutation drill did not arm"
+    assert mutated_rederive != wf_sql.rederive_sweep, "the mutation test did not arm"
     monkeypatch.setattr(sql_module, "REDERIVE_SWEEP_SQL", mutated_rederive)
     mutated_sql = render_workflow_sql(wf_schema)
     await wf_conn.execute(
@@ -365,7 +365,7 @@ async def test_pin_25_concurrent_fire_window_one_row(
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """F-R4's drill: TWO fire paths race ONE join in one window — the
+    """F-R4's scenario: TWO fire paths race ONE join in one window — the
     engine's tx2 fire (``fired_by='finalize'``, the decrement just hit 0)
     and the sweep's healing fire (``fired_by='sweep'``, the rederive arm
     re-deriving firable from the LEDGER while the counter already says 0).
@@ -375,7 +375,7 @@ async def test_pin_25_concurrent_fire_window_one_row(
     return. THE REAL WINDOW the reviewer named: both paths pass their
     WHERE (the join row stays pending with the join marker; neither fire
     flips it), so the belt is the ONLY thing between the race and the
-    double fire — this drill stages it, and the belt's removal REDS (the
+    double fire — this scenario stages it, and the belt's removal REDS (the
     in-suite twin below; the source-level capture:
     ``.measurements/attack/R4-red-fire-belt.txt``)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -424,14 +424,14 @@ async def test_pin_25_concurrent_fire_window_one_row(
         },
     )
 
-    # THE CONVICTED TWIN (kept forever, the file's doctrine): the belt
+    # THE REJECTED TWIN (kept forever, the file's doctrine): the belt
     # DROPPED from the rendered statement — the second fire path RAISES
     # the UniqueViolation the belt absorbs (a sweep tick that errors into
     # its tolerance arm every pass, a finalize that 500s), and the double
     # insert is one constraint away from two continuation sets. The
     # constraint still holds the line (one row) — the belt is what makes
     # the loss GRACEFUL, which is why its removal greens the rowcount-only
-    # pins and needed its own drill.
+    # pins and needed its own scenario.
     twin_flow = await seed_flow(wf_conn, wf_schema)
     twin_join = await seed_join(wf_conn, wf_schema, twin_flow, deps=1)
     twin_parent = await seed_running_node(wf_conn, wf_schema, twin_flow, step_key="t")
@@ -443,14 +443,14 @@ async def test_pin_25_concurrent_fire_window_one_row(
     )
     await wf_conn.fetch(wf_sql.decrement, twin_parent, twin_flow)
     beltless = wf_sql.fire.replace("    ON CONFLICT (join_job_id) DO NOTHING\n", "")
-    assert beltless != wf_sql.fire, "the belt-mutation drill did not arm"
+    assert beltless != wf_sql.fire, "the belt-mutation scenario did not arm"
     first = await wf_conn.fetchrow(beltless, twin_join, twin_flow, new_uuid(), "finalize")
     assert first is not None, "the twin's first (beltless) fire did not win"
     with pytest.raises(asyncpg.exceptions.UniqueViolationError):
         await wf_conn.fetch(beltless, twin_join, twin_flow, new_uuid(), "sweep")
     assert await fire_count(wf_conn, wf_schema, twin_join) == 1, (
         "the constraint held the line even without the belt — the belt's "
-        "conviction is the graceful loss, not the row count"
+        "recorded finding is the graceful loss, not the row count"
     )
     engine_redlog.red(
         "pin25-beltless-fire-raises",
@@ -479,7 +479,7 @@ async def test_pin_13_attempt_fence(
     conjuncts) — the stale attempt's write no-ops."""
     flow_id = await seed_flow(wf_conn, wf_schema)
 
-    # THE CONVICTED VARIANT (status-only CAS, no attempt/epoch conjunct):
+    # THE REJECTED VARIANT (status-only CAS, no attempt/epoch conjunct):
     # the row is re-claimed to attempt 2, and the zombie (attempt 1's
     # worker) terminalizes it.
     node = await seed_running_node(wf_conn, wf_schema, flow_id)
@@ -565,14 +565,14 @@ async def test_pin_13_attempt_fence(
 
 
 # ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
-# (ported verbatim from the perf front's conviction —
+# (ported verbatim from the perf front's recorded finding —
 # feat/verify-perf @ c8822df4a, tests/perf/test_wf_overhead_ledger.py —
 # into the finalize-family pack: the bypassed write is THIS family's
 # TERMINAL_MARK face. The fixtures are this tree's own wf faces.)
 
 
 # ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
-# (ported from the perf front's conviction — feat/verify-perf @
+# (ported from the perf front's recorded finding — feat/verify-perf @
 # c8822df4a, tests/perf/test_wf_overhead_ledger.py — into the
 # finalize-family pack: the bypassed write is THIS family's
 # TERMINAL_MARK face. The model + the bodies live at module level so the
@@ -613,12 +613,12 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
     11.1x the 64 KiB cap; the ceiling at the fan-in bound with cap-sized
     children (5000 x 64 KiB) is ~305 MiB of jsonb in ONE row.
 
-    THE CURE'S SHAPE: the failures' own collect ALREADY compacts past
+    THE FIX'S SHAPE: the failures' own collect ALREADY compacts past
     its cap (``FANIN_FAILURES_BYTE_CAP`` + the ``__truncated__`` marker +
     the ledger pointer, pinned in ``test_wf_pruner_pins.py``) — the
     collected RESULT envelope lacks the same discipline. Mirroring it
     (compact past the cap, the full collect stays on the child rows the
-    read-side aggregate already reads) is the one-mechanism cure; this
+    read-side aggregate already reads) is the one-mechanism fix; this
     pin FLIPS GREEN the day it lands.
 
     THE PORT'S ONE DEVIATION (the repro's fidelity fix): the model and
@@ -654,7 +654,7 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
         f"the fan-in envelope is {int(size)} bytes — {int(size) / cap:.1f}x the "
         "estate's 64 KiB result cap: the wf terminal write bypasses the "
         "size discipline every plain job's terminal enforces (the "
-        "payload-bloat finding; the cure is the failures' own compaction "
+        "payload-bloat finding; the fix is the failures' own compaction "
         "mechanism mirrored to the collect)"
     )
 
@@ -676,26 +676,26 @@ async def test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
 ) -> None:
-    """THE F4 CURE'S READ SIDE (the envelope-cap cure's own regression,
-    convicted by the recertifier): the bounded collect's envelope is
+    """THE F4 FIX'S READ SIDE (the envelope-cap fix's own regression,
+    rejected by the recertifier): the bounded collect's envelope is
     THREE keys over the cap — ``{"value": […], "__truncated__": N,
-    "detail_home": …}`` — and the pre-cure decode unwrapped by
+    "detail_home": …}`` — and the pre-fix decode unwrapped by
     ``len(decoded) == 1``: the truncated envelope NEVER unwrapped, and
     every consumer wired past a truncating collect received the
     ENVELOPE DICT where its declared param says ``list[...]`` — the
     typed decode died ``Input should be a valid list, input_type=dict``
     and the run failed (the LedgerWatch chaos feed's live face:
-    ``__truncated__: 272``; the SAME tests PASS at the pre-cure
+    ``__truncated__: 272``; the SAME tests PASS at the pre-fix
     baseline 57d38c7e6).
 
-    THE CURE'S SHAPE: ``decode_result`` unwraps the runner's envelope
+    THE FIX'S SHAPE: ``decode_result`` unwraps the runner's envelope
     BY ITS KNOWN KEY SET — ``value`` alone OR ``value`` + the F4
     markers — so BOTH faces reach the consumer's typed decode as the
     declared list; and the truncated face's ``detail_home`` contract is
     HONORED: the runner re-reads the FULL collect off the children's
     own result rows (the same ordered parent read the join packed), so
     the consumer's decoded param is the WHOLE collect, never a silent
-    kept-prefix (the LedgerWatch drill's own demand — a 272-item
+    kept-prefix (the LedgerWatch scenario's own demand — a 272-item
     silent loss is the C7 family's dead letter wearing the cap's hat).
     THE TRUNCATION FACE STAYS HONEST: the raw row keeps the bounded
     markers, and the finalize's metadata receipt

@@ -309,7 +309,7 @@ def test_unclassified_event_fails_open(level: str) -> None:
     load-bearing one: the filter's first cut dropped every INFO-method
     event at ``off``, classified or not, silently failing CLOSED on
     unclassified INFO events while this test still passed on name
-    membership alone. Found by red-team.)"""
+    membership alone. Found by adversarial review.)"""
     obs_structlog.set_events_level(level)
     with structlog.testing.capture_logs(processors=[obs_structlog._events_level_filter]) as cap:
         log = obs_structlog.get_logger("test")

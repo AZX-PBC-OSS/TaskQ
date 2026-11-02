@@ -1,5 +1,5 @@
 """THE EXECUTION MACHINERY'S DIRECT TESTS (F2-1): the Python half of the
-production-execution cure — the door (:func:`~taskq.workflows.
+production-execution fix — the door (:func:`~taskq.workflows.
 _worker_execution.execute_flow_job`), the fleet-claimed step
 (:meth:`FlowRunner.run_fleet_claimed_step`), the boot projection
 (:func:`project_workflow_actor_configs`), and the intercept's engine
@@ -321,12 +321,13 @@ async def _seed_flow_with_step(
     )
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '  # noqa: S608  # Why: the schema identifier is the fixture's own (validated against _IDENT_RE); asyncpg cannot bind identifiers as parameters.  # noqa: S608  # Why: the schema identifier is the fixture's own (validated against _IDENT_RE); asyncpg cannot bind identifiers as parameters.,
-        "retry_kind, status, attempt, claim_epoch, step_key, metadata, scheduled_at) "
+        "retry_kind, status, attempt, claim_epoch, step_key, metadata, fairness_key, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, 1, "
-        "$2, $3::jsonb, now() - interval '1 hour')",
+        "$2, $3::jsonb, $4, now() - interval '1 hour')",
         node_id,
         step_key,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     return JobId(flow_id), JobId(node_id)
 

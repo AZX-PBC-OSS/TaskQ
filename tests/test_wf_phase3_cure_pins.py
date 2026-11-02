@@ -1,5 +1,5 @@
-"""THE PHASE-3 CURE PINS (fixer round 1) — the in-commit pins for the
-cures the attack-3 probes proved red first:
+"""THE PHASE-3 FIX PINS (the phase-3 fixes) — the in-commit pins for the
+fixes the attack-3 probes proved red first:
 
 * B2's BOTH-FIT arm: an ambiguous payload is the typed refusal UNLESS
   the gate declares an explicit discriminator (the small honest API).
@@ -13,10 +13,10 @@ cures the attack-3 probes proved red first:
 * H2's audit leg: the REFUSED resolve writes the audit row that names
   the refusal, and the hold still stands.
 * The EXIT sentinel (§17.1) and the MANUAL RESUME (§17.2) — the
-  alignment-audit's Missing #1, landed red-first.
+  alignment-audit's Missing #1, landed failing-first.
 * E8: the loop CARRIER-TYPE declaration enforced (pin 5's teeth).
 
-Each pin states the cure's law; the red evidence is the attack-3 corpus
+Each pin states the fix's law; the red evidence is the attack-3 corpus
 (``.measurements/attack3/``) plus this file's own captured first run.
 """
 
@@ -87,7 +87,7 @@ async def test_ambiguous_payload_refused_unless_the_gate_discriminates(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """A payload fitting MORE than one declared model is the typed
-    refusal (narrowing by declaration order is the convicted
+    refusal (narrowing by declaration order is the rejected
     mis-narrowing) — UNLESS the wait site declared an explicit
     discriminator, whose pick resolves the union. The both-fit shape:
     two all-optional models — the empty object fits BOTH (every field
@@ -179,7 +179,7 @@ async def test_both_fit_without_discriminator_is_refused_hold_survives(
     result = await client.resolve(holds[0].hold_id, {})
     assert result.status == "refused", (
         f"the both-fit payload was {result.status!r} — narrowing by "
-        "declaration order is the convicted mis-narrowing; the ambiguous "
+        "declaration order is the rejected mis-narrowing; the ambiguous "
         "delivery must be refused"
     )
     assert "Alpha" in (result.reason or "") and "Beta" in (result.reason or ""), (
@@ -272,7 +272,7 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
     fence, while its comment named 'the fleet worker's queue poll' —
     provably false).
 
-    THE CURE (the design decision, and why): a flow's death must not
+    THE FIX (the design decision, and why): a flow's death must not
     orphan its pages-a-human duty — the operator's page is the ONE thing
     that must survive the flow's terminality. The fence's terminal-flow
     leg gains the ESCALATION-KIND exemption: the ``loop.escalation``
@@ -462,7 +462,7 @@ async def test_escalates_to_registers_a_custom_body(
     assert escalated[0].get("loop") == "counter", escalated
 
 
-# ── the sweep-cap arm's REACHABILITY (the vacuous pin's cure) ──────────
+# ── the sweep-cap arm's REACHABILITY (the vacuous pin's fix) ──────────
 
 
 async def test_the_final_iteration_runs_and_the_counter_reaches_the_cap(
@@ -668,7 +668,7 @@ def test_carrier_type_mismatch_is_convicted() -> None:
         return build(loop("counter", _refines_wrong, initial=Counter(acc=0)))
 
     # the PROBE SEAM (app._compile): the carrier-mismatch graph is
-    # INVALID on purpose (E8's conviction is the pin's subject) — the
+    # INVALID on purpose (E8's recorded finding is the pin's subject) — the
     # door would raise before the diagnostics could be read.
     rules = [d.rule for d in _run_rules(app._compile("a3cure_carrier_flow"))]
     assert "E8-carrier-type" in rules, (
@@ -681,7 +681,7 @@ def test_carrier_type_mismatch_is_convicted() -> None:
 def test_carrier_type_match_is_clean() -> None:
     """The zero-false-positive arm: the matching carrier compiles clean
     (and the undeclared-carry loop — the unenforceable shape — is never
-    convicted on a guess)."""
+    rejected on a guess)."""
 
     async def refines_right(ctx: StepContext, carry: object) -> Done[Counter] | Refine[Counter]:
         return Done(Counter(acc=1))
@@ -715,10 +715,10 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """THE FIRST SHAPE EVERY MAP USER WIRES: a downstream `step` consuming
-    the map's JOIN promise. The convicted shape (the mapper's red): the
+    the map's JOIN promise. The rejected shape (the mapper's red): the
     downstream rode only the outbox's side-channel — no edge row, a
     duplicate consumer row whose arg resolution found no result (the
-    runner's own assert fired). THE CURE'S CONTRACT: the join's result is
+    runner's own assert fired). THE FIX'S CONTRACT: the join's result is
     consumable through the SAME typed door as any node result — the edge
     ledger + the counter (the downstream's dep is RESERVED at create, the
     fork writes the edge row at the source's finalize, the join's own
@@ -755,7 +755,7 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
     assert join_row is not None and join_row["status"] == "succeeded"
     assert '"value"' in (join_row["result"] or "") and "20" in (join_row["result"] or "")
     # EXACTLY ONE downstream row (the side-channel's duplicate is the
-    # convicted shape — the arbiter's key is the static row's own).
+    # rejected shape — the arbiter's key is the static row's own).
     tails = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs '
         "WHERE step_key = 'tail' AND (metadata->>'flow_id')::uuid = $1",
@@ -780,10 +780,10 @@ def test_e4_does_not_convict_a_fully_annotated_body() -> None:
     fully-annotated body whose return type is NOT module-level (a
     function-scope model the body's code never names — the annotation
     string creates no closure cell, the resolved hints are {}) is NOT
-    convicted: E4's question is the annotation's PRESENCE (read from the
+    rejected: E4's question is the annotation's PRESENCE (read from the
     raw signature), never its resolvability; the type-dependent rules
     (E5/E8, the codec) keep the resolved view and SKIP the unresolvable
-    (a guess is never convicted)."""
+    (a guess is never rejected)."""
 
     class Local(BaseModel):
         n: int
@@ -801,12 +801,12 @@ def test_e4_does_not_convict_a_fully_annotated_body() -> None:
         return build(step(annotated_body, Ingest(doc_id="d1"), key="a"))
 
     rules = [d.rule for d in _run_rules(app.get("a3cure_e4_fp_flow"))]
-    assert rules == [], f"the false positive: a fully-annotated body convicted: {rules}"
+    assert rules == [], f"the false positive: a fully-annotated body rejected: {rules}"
 
 
 def test_e4_still_convicts_the_genuinely_unannotated() -> None:
     """E4's teeth survive the raw-presence read: a body with NO return
-    annotation at all is the same conviction as before."""
+    annotation at all is the same recorded finding as before."""
     from taskq.workflows.api._validate import WorkflowValidationError
 
     async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingTypeStubs]  # Why: THE PROBE — the genuinely unannotated body is the mutation under test.
@@ -863,13 +863,13 @@ def test_loop_key_with_a_dot_is_refused() -> None:
         app.get("a3cure_dot_loop_flow")  # the build runs at COMPILE
 
 
-# ── E7 / W2's committed pins (the attack probes prove them red-first;
+# ── E7 / W2's committed pins (the attack probes prove them failing-first;
 #    the validate pins file's exact-one-rule matrix gains the new rules) ──
 
 
 def test_cross_graph_smuggle_is_convicted_at_validate() -> None:
     """E7: a promise from ANOTHER app's recorder — recorded by the verb,
-    convicted by validate (the attack's A3-V2 shape, committed)."""
+    rejected by validate (the attack's A3-V2 shape, committed)."""
     from taskq.workflows.api._graph import BuildGraph, Promise
 
     app = WorkflowApp()
@@ -883,7 +883,7 @@ def test_cross_graph_smuggle_is_convicted_at_validate() -> None:
         )
 
     # the PROBE SEAM (app._compile): the smuggle's graph is INVALID on
-    # purpose (E7's conviction is the pin's subject) — the door would
+    # purpose (E7's recorded finding is the pin's subject) — the door would
     # raise before the diagnostics could be read.
     rules = [d.rule for d in _run_rules(app._compile("a3cure_smuggle_flow"))]
     assert "E7-cross-graph-promise" in rules, rules

@@ -1,16 +1,16 @@
 """ATTACK PINS — the rv6 round's ESTATE pack: the content door's own holes
 (the evidence-integrity lane @ 3f69eaa32; the verifier under pin is
-``scripts/verify_evidence_heads.py`` there — the cured content door whose
+``scripts/verify_evidence_heads.py`` there — the fixed content door whose
 own scan is the subject).
 
-Provenance: the rv6 front's live convictions, each reproduced against this
+Provenance: the rv6 front's live recorded findings, each reproduced against this
 head BEFORE pinning (the pre-pin repro script + output are in the pin
 pack's ``repro/``; the receipts carry the verbatim verdicts). Per the
 doctrine, the pack landed ``pytest.mark.xfail(strict=True, reason="LIVE
-FINDING rv6-d<id>: …")`` asserting the SAFE behavior — red-first at the
-door-edges lane's base (58faf52b7: all five xfail, the redlog receipt in
-``.measurements/door-edges/``) — and the CURE ON THIS BRANCH flipped all
-five to XPASS-strict, so the markers are REMOVED WITH the cure (the
+FINDING rv6-d<id>: …")`` asserting the SAFE behavior — failing-first at the
+door-edges lane's base (58faf52b7: all five xfail, the failure log receipt in
+``.measurements/door-edges/``) — and the FIX ON THIS BRANCH flipped all
+five to XPASS-strict, so the markers are REMOVED WITH the fix (the
 doctrine's flip): these pins now run GREEN and guard the five edges
 permanently.
 
@@ -22,8 +22,8 @@ capture) and runs the verifier as a subprocess against it
 under pin can judge. The verifier's ``REPO`` is its own parent — the
 working tree's residue never enters.
 
-The findings (each WAS a live conviction — every estate exited rc=0
-before this branch's cure):
+The findings (each WAS a live recorded finding — every estate exited rc=0
+before this branch's fix):
 
 The method is the rv2-13 pin's own: every pin builds a SYNTHETIC ESTATE in
 a tmp dir (a ``runs/`` with a hand-written ``CLAIMS.json`` + the tampered
@@ -33,32 +33,32 @@ capture) and runs the verifier as a subprocess against it
 under pin can judge. The verifier's ``REPO`` is its own parent — the
 working tree's residue never enters.
 
-The findings (each convicted live — every estate below exits rc=0 today):
+The findings (each rejected live — every estate below exits rc=0 today):
 
-* F-D1 — THE SCAN WINDOW (CURED): the first cut's ``_scan_window`` read
+* F-D1 — THE SCAN WINDOW (FIXED): the first cut's ``_scan_window`` read
   only the first 3 + last 12 lines of a capture; a capture whose stamp
   says ``rc=0`` whose TRUE red verdict (``1 failed, N passed``) sat
   MID-FILE — pushed out of the tail window by trailing chatter —
-  greened silently. THE PIN (green): the door convicts a red verdict
+  greened silently. THE PIN (green): the door rejects a red verdict
   ANYWHERE in the capture — the scan is verdict-shaped, never
   line-counted.
-* F-D2 — THE JSON LAUNDER (CURED): a capture named ``*.json`` carrying
+* F-D2 — THE JSON LAUNDER (FIXED): a capture named ``*.json`` carrying
   ``{"rc": 1, "failed": 3}`` parsed as valid JSON and greened — the door
   never read verdict content inside JSON (the suffix alone was the
   exemption). THE PIN (green): JSON captures' verdict fields
   (``rc``/``failed``/``errors``) are read like any stamp; the band
   family's verdict-free measurements stay green.
-* F-D3 — THE EMPTY REGISTRY GREENS VACUOUSLY (CURED): a claims registry
+* F-D3 — THE EMPTY REGISTRY GREENS VACUOUSLY (FIXED): a claims registry
   with ``"claims": []`` passed ("the head-stamp law holds"). THE PIN
   (green): an empty registry is a loud refusal — an estate with no
   claims is unverifiable,
   per the verifier's own missing-registry law.
-* F-D4 — FUTURE-DATED CAPTURES (CURED): ``captured_at`` was never
+* F-D4 — FUTURE-DATED CAPTURES (FIXED): ``captured_at`` was never
   parsed — a capture dated 2030 with a fresh ``head_sha`` greened. THE
   PIN (green): ``captured_at`` (and the filename's embedded stamp,
   where present) must be sane — not future-dated beyond the law's
   stated tolerance (one day, in the verifier's docstring).
-* F-D5 — THE ENV-FORGED HEAD (CURED): ``GITHUB_EVENT_PATH`` pointing at
+* F-D5 — THE ENV-FORGED HEAD (FIXED): ``GITHUB_EVENT_PATH`` pointing at
   a hand-written payload made ``_head()`` return a sha that exists
   NOWHERE in the repo — the verifier then judged claims against the
   forgery and printed it as "THIS head". THE PIN (green): the verified
@@ -141,7 +141,7 @@ def _claim(stem: str, file: str, head_sha: str, captured_at: str) -> dict[str, s
 
 def test_d1_the_door_convicts_a_red_verdict_anywhere_in_the_capture(tmp_path: Path) -> None:
     """THE WINDOW MUST BE VERDICT-SHAPED, never line-counted: a red
-    verdict ANYWHERE in the capture convicts the claim. The estate: a
+    verdict ANYWHERE in the capture rejects the claim. The estate: a
     fresh claim whose capture's stamp greens (``rc=0`` in the first
     three lines) while the TRUE red verdict sits mid-file, outside the
     3+12 edge window — 20 lines of chatter ahead, 20 behind."""
@@ -172,10 +172,10 @@ def test_d1_the_door_convicts_a_red_verdict_anywhere_in_the_capture(tmp_path: Pa
 
 def test_d2_a_json_capture_verdict_is_never_laundered(tmp_path: Path) -> None:
     """The verdict inside a JSON capture is READ: a ``*.json`` capture
-    carrying failing verdict fields (``rc``/``failed``) is convicted,
+    carrying failing verdict fields (``rc``/``failed``) is rejected,
     exactly like the text families' stamps. The capture's name is
     deliberately OUTSIDE the band family's shape (``pytest-summary-…``,
-    never a ``*-band*``), so a cure declaring the measurements family
+    never a ``*-band*``), so a fix declaring the measurements family
     exempt BY NAME still judges this file on its content."""
     runs_dir = tmp_path / "runs"
     _write_estate(
@@ -256,7 +256,7 @@ def test_d5_the_verified_head_is_the_repos_own(tmp_path: Path) -> None:
     the repo's own history. The estate: a green capture stamped with the
     FORGED sha (a 40-hex string the repo cannot name), the event payload
     carrying the same forgery — today the claim is "fresh" against the
-    forgery and greens. Under any cure the forgery cannot judge: env
+    forgery and greens. Under any fix the forgery cannot judge: env
     ignored ⇒ the claim is stale at the repo's HEAD (the forged sha is
     not an ancestor — the off-by-one rule's own red); env cross-checked ⇒
     the unresolvable sha is refused."""

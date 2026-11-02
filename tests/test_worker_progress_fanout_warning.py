@@ -83,7 +83,7 @@ def test_main_wires_the_progress_fanout_warning() -> None:
     """Structural wiring pin: ``_main`` must call the emitter exactly once,
     with the resolved client.
 
-    Red-team motivation: deleting the production call leaves every
+    Adversarial review motivation: deleting the production call leaves every
     helper-level unit test green - they invoke the helper directly - so
     the call itself needs its own guard. AST-based, not source-text
     matching, so it is robust to reformatting (the

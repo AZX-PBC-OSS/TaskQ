@@ -1,4 +1,4 @@
-"""THE HOLD-STAMP WEDGE + THE OUTBOX TTL — the D2 soak's P1/P3 cures'
+"""THE HOLD-STAMP WEDGE + THE OUTBOX TTL — the D2 soak's P1/P3 fixes'
 pins (integration: real PG, the real engine surfaces).
 
 The soak's evidence (REPORT-D2-soak): a SIGKILL during a HELD loop leaves
@@ -8,7 +8,7 @@ excludes it FOREVER; TWENTY runs sat wedged at close, unclaimable,
 undetected, unnamed. And the delivered ``wf_outbox`` population grew
 monotonically forever — no retention law touched it.
 
-These pins hold the cures: the hold's state DECIDES (still 'held' → the
+These pins hold the fixes: the hold's state DECIDES (still 'held' → the
 held representation stands — the resume re-dispatches; delivered /
 abandoned / absent → the stamp cleared + the row re-claims, the body's
 re-execution landing the next NAMED state), and the delivered outbox has

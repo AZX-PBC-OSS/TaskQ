@@ -1805,7 +1805,7 @@ values and their transitions are in [State Machine](#state-machine).
 | `actor` | `text NOT NULL` | Actor name. Plain text, no FK to `actor_config` (deregistration keeps terminal history queryable). |
 | `queue` | `text NOT NULL` | Queue assignment. |
 | `identity_key` | `text` | "User-derived logical work unit. Used for serialization and unique-for. NOT idempotency." |
-| `fairness_key` | `text` | "User-derived cohort key. NULL collapses to one cohort via COALESCE in dispatch." |
+| `fairness_key` | `text` | "User-derived cohort key. NULL collapses to one cohort via COALESCE in dispatch. Workflow rows are stamped at birth (their run's `flow_id`), so each run is its own cohort." |
 | `payload` | `jsonb NOT NULL` | The actor's input. |
 | `payload_schema_ver` | `int NOT NULL DEFAULT 1` | Payload discriminator version. |
 | `status` | `job_status NOT NULL DEFAULT 'pending'` | See [State Machine](#state-machine). |

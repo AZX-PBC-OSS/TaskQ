@@ -46,7 +46,7 @@ __all__ = [
 #: THE MAP_INDEX CEILING — the wire-format fact the ceiling error
 #: documents: ``jobs.map_index`` is a SMALLINT (the ledger's claim
 #: arbiter column, 01.00.23_05), so a record's per-run identity tops out
-#: at 32767. Record #32768 is the convicted shape: the raw DataError the
+#: at 32767. Record #32768 is the rejected shape: the raw DataError the
 #: smallint cast raised MID-TRANSACTION took the valid page-mates down
 #: with it (an accidental untyped ceiling — the whole page rolled back
 #: and the raw error laddered as transient). The engine now refuses the
@@ -103,18 +103,18 @@ class ConsumerBinding:
     payload: dict[str, object] | None = None
     map_index: int | None = None
     #: The CONSUMER's declared incoming-edge failure policy (the map-join
-    #: consumption cure): the fork writes the join→consumer EDGE with it —
+    #: consumption fix): the fork writes the join→consumer EDGE with it —
     #: the downstream dispatches through the SAME edge-ledger door as any
     #: node result (the counter's decrement gates the claim), and T06's
     #: propagation reads the policy off the ledger when the JOIN itself
     #: terminal-fails.
     failure_policy: str = "fail_closed"
-    #: THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close cure): the
+    #: THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close bound): the
     #: downstream node's own resolution rides the binding — the join row's
     #: metadata `consumers` array (jsonb, serialized as SECONDS) → the
     #: fire's outbox bindings → the drain's consumer INSERT stamps the
     #: row's EXISTING ``jobs.start_to_close`` column. ``None`` = the
-    #: consumer declares none — the row's column NULL (the pre-cure row;
+    #: consumer declares none — the row's column NULL (the pre-fix row;
     #: the binding omits the key, the shape byte-identical).
     start_to_close: timedelta | None = None
 
@@ -130,29 +130,29 @@ class ChildSpec:
     queue: str
     payload: dict[str, object] | None = None
     map_index: int | None = None
-    #: The child's ADMISSION TERMS (the consumer-face lane's CURE 2): the
+    #: The child's ADMISSION TERMS (the admission-terms surface): the
     #: buckets' NAMES, stamped onto the child row's metadata — the claim
     #: path acquires them through the same registry + the same denial
     #: path the queue-concurrency fence rides. ``()`` = no bucket.
     rate_limits: tuple[str, ...] = ()
-    #: The child's STRICT CAPACITY TERMS (H-A1 — the reservations' own
+    #: The child's STRICT CAPACITY TERMS (the reservations' own
     #: ride): the reservation NAMES stamped onto the child row's metadata
     #: beside ``rate_limits`` — the claim path resolves them through the
     #: resolved registry (the instances live there) and acquires them
     #: with the same denial discipline. ``()`` = no reservation.
     reservations: tuple[str, ...] = ()
-    #: THE CHILD'S RESOLVED PRIORITY (the wf-priority cure): the
+    #: THE CHILD'S RESOLVED PRIORITY (the priority surface): the
     #: ``jobs.priority`` column value the fork's INSERT stamps — the
     #: builder's own resolution of the precedence law (per-call > the
     #: arm's > the source node's > the column default). ``None`` = the
-    #: column default (the insert coalesces it to 0 — the pre-cure
+    #: column default (the insert coalesces it to 0 — the pre-fix
     #: byte-identical value).
     priority: int | None = None
-    #: THE CHILD'S DECLARED DEADLINE (the wf start_to_close cure): the
+    #: THE CHILD'S DECLARED DEADLINE (the wf start_to_close bound): the
     #: ``jobs.start_to_close`` column value the fork's INSERT stamps — the
     #: builder's own resolution (the arm's own > the source node's > the
     #: row's NULL). ``None`` = nothing declared — the column NULL (the
-    #: pre-cure row; the enforcement falls to the worker's
+    #: pre-fix row; the enforcement falls to the worker's
     #: ``default_start_to_close`` at claim time, the resolution chain's
     #: own tail).
     start_to_close: timedelta | None = None
@@ -167,7 +167,7 @@ class EmitChild:
     discipline (the spike's 198 UniqueViolations). The certified fork's
     idempotency key AND the step-ledger's arbiter discriminate siblings
     by ``map_index``; the per-record ``trace_id`` is the one-query
-    lineage (the drill-down by trace). The fork's ``trace_id`` is
+    lineage (the recorded failure-down by trace). The fork's ``trace_id`` is
     per-fork; the emit's is per-child — the stamp-at-emit rule."""
 
     step_key: str
@@ -197,6 +197,13 @@ class JoinSpec:
     queue: str
     payload: dict[str, object] | None = None
     consumers: tuple[ConsumerBinding, ...] = ()
+    #: The SOURCE ROW'S already-resolved reservation names (the run's own
+    #: cohort — the static insert resolved them from the run's input and
+    #: the declared args): the join row's metadata carries them so a
+    #: NESTED fan-out (a map/route over this join) reads the stamp and
+    #: the depth-2 children ride the run's cohort — the guarantee is
+    #: depth-N, not depth-1.
+    reservations: tuple[str, ...] = ()
     #: The declared failure policy recorded on the join's incoming edges
     #: (T06): what a parent's TERMINAL failure does to this join.
     failure_policy: FailurePolicy = "fail_closed"
@@ -218,13 +225,13 @@ class ForkSpec:
     trace_id: str | None = None
     max_attempts: int = 3
     retry_kind: str = "transient"
-    #: THE JOIN ROW'S PRIORITY (the wf-priority cure): the fork's JOIN is
+    #: THE JOIN ROW'S PRIORITY (the priority surface): the fork's JOIN is
     #: the source's own cohort (the placement fields say so), so its row
     #: lands at the SOURCE's resolution of the precedence law — the arms'
     #: overrides apply to the arm children, never the join. ``None`` =
     #: the column default (the insert coalesces it to 0).
     priority: int | None = None
-    #: THE JOIN ROW'S DEADLINE (the wf start_to_close cure): the fork's
+    #: THE JOIN ROW'S DEADLINE (the wf start_to_close bound): the fork's
     #: JOIN is the source's own cohort — its row lands at the SOURCE's
     #: resolution (the arms' declarations govern the arm children, never
     #: the join). ``None`` = nothing declared — the column NULL.
@@ -262,18 +269,18 @@ class NodeSpec:
     retry_kind: str = "transient"
     idempotency_scope: str = ""
     idempotency_key: str | None = None
-    #: THE ROW'S PRIORITY (the wf-priority cure): the ``jobs.priority``
+    #: THE ROW'S PRIORITY (the priority surface): the ``jobs.priority``
     #: column value the insert stamps — the RESOLVED value (the caller's
     #: own precedence arithmetic: per-call > the declaration > the
     #: column default 0). The default is the column default's own value,
-    #: so a spec built without it stores exactly the pre-cure row.
+    #: so a spec built without it stores exactly the pre-fix row.
     priority: int = 0
-    #: THE ROW'S DECLARED DEADLINE (the wf start_to_close cure): the
+    #: THE ROW'S DECLARED DEADLINE (the wf start_to_close bound): the
     #: ``jobs.start_to_close`` column value the insert stamps — the
     #: RESOLVED value (the caller's own precedence arithmetic). The
-    #: default is the column's own NULL (the pre-cure row: the column is
+    #: default is the column's own NULL (the pre-fix row: the column is
     #: nullable with no default — migrations/01.00.00_01:85), so a spec
-    #: built without it stores exactly the pre-cure row.
+    #: built without it stores exactly the pre-fix row.
     start_to_close: timedelta | None = None
 
 
@@ -287,7 +294,7 @@ class DecrementHit:
 class FailureInfo:
     """One collected child failure (T06's Item failure — the fan-in item).
 
-    THE ENVELOPE IS THE ESTATE'S, never re-spelled (GAPS-ESTATE F9):
+    THE ENVELOPE IS THE ESTATE'S, never re-spelled:
     ``error`` IS :class:`taskq.backend._protocol.ErrorInfo` — the same
     typed envelope every terminal write uses, its bound constants
     (``ERROR_CLASS_MAX_CHARS`` et al.) carried as-is. ``attempts`` /
@@ -423,9 +430,9 @@ def _consumer_binding_doc(c: ConsumerBinding) -> dict[str, object]:
     :func:`_consumer_bindings` and copies them into the outbox
     bindings): the placement + payload + map index, PLUS the declared
     deadline as SECONDS when the consumer declared one (the wf
-    start_to_close cure — jsonb has no interval; seconds is the wire
+    start_to_close fix — jsonb has no interval; seconds is the wire
     form the drain parses back). The undeclared consumer omits the key
-    — the pre-cure shape byte-identical."""
+    — the pre-fix shape byte-identical."""
     doc: dict[str, object] = {
         "step_key": c.step_key,
         "actor": c.actor,
@@ -444,9 +451,9 @@ def _row_metadata(
     rate_limits: tuple[str, ...] = (),
     reservations: tuple[str, ...] = (),
 ) -> dict[str, object]:
-    """The node row's metadata WITH admission terms (CURE 2): the base
+    """The node row's metadata WITH admission terms (the admission terms): the base
     flow link plus the ``rate_limits`` names and the STRICT reservation
-    NAMES (H-A1 — the reservations' own ride) when the node declares
+    NAMES (the reservations' own ride) when the node declares
     them — the row its own admission terms, the claim path's read.
     Both empty = the base metadata, byte-identical (the no-terms rows
     never change shape)."""
@@ -463,14 +470,21 @@ def _join_metadata(
     consumers: tuple[ConsumerBinding, ...] = (),
     *,
     child_driven: bool = False,
+    reservations: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """The joined node's metadata: the flow link, the join-wait marker, the
     declared consumers — and T07's shape record (metadata.join_shape) when
     the child-driven escape declared it: the choice rides the ROW (the
-    sweep's re-derive reads it; the record never guesses)."""
+    sweep's re-derive reads it; the record never guesses). The SOURCE
+    ROW's already-resolved reservation names ride beside them (the run's
+    own cohort): a nested fan-out over this join reads the stamp, the
+    depth-2 children inherit the run's cap — the cohort guarantee is
+    depth-N."""
     meta = _metadata(flow_id, blocking_reason=BLOCKING_REASON_JOIN, consumers=consumers)
     if child_driven:
         meta["join_shape"] = "child_driven"
+    if reservations:
+        meta["reservations"] = list(reservations)
     return meta
 
 

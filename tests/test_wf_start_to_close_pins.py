@@ -1,12 +1,12 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE WF START_TO_CLOSE PINS — the step deadline's declaration + enforcement, red-first.
+"""THE WF START_TO_CLOSE PINS — the step deadline's declaration + enforcement, failing-first.
 
-THE CONVICTION: the vanilla machinery EXISTS end to end — the ``jobs``
+THE RECORDED FINDING: the vanilla machinery EXISTS end to end — the ``jobs``
 table's ``start_to_close interval`` column (``migrations/
 01.00.00_01_pre_initial.sql``:85, nullable, no default), the enforcement
 (``worker/_consumer.py``'s ``_enforce_start_to_close`` — the #791
-TimeoutError-conflation cure, the tx-unwind budget, the hostile-finally
-drills), and the resolution ``job.start_to_close if not None else
+TimeoutError-conflation fix, the tx-unwind budget, the hostile-finally
+scenarios), and the resolution ``job.start_to_close if not None else
 settings.default_start_to_close`` (``_consumer.py``'s
 ``_effective_start_to_close``). The WORKFLOW
 runner's body execution (``FlowRunner.run_fleet_claimed_step`` →
@@ -35,7 +35,7 @@ verbatim:
   the cancel wins — the deadline's re-pend arm is fenced in-statement
   (the vanilla ``mark_retry``'s own law: a phase-carrying row matches
   no arm), and the node terminalises 'cancelled' through the wf
-  terminal door (the C4 deferral's cancel_fenced shape).
+  terminal door (the deferral's cancel_fenced shape).
 
 THE RESOLUTION LAW per row, first non-``None`` wins:
 the step's/arm's own declaration > the actor's declaration (folded at
@@ -365,7 +365,7 @@ async def test_no_declaration_runs_the_body_inline_byte_identical(
     """THE CONTROL (the byte-identical law): a step with NO declaration
     anywhere — the row's column NULL, the body invoked INLINE (no
     enforcement task, no machinery, no deadline handle): the ctx's
-    body-task handle stays unset, the pre-cure execution shape
+    body-task handle stays unset, the pre-fix execution shape
     exactly."""
     schema = module_pg_schema.schema_name
     app_obj = WorkflowApp()
@@ -384,7 +384,7 @@ async def test_no_declaration_runs_the_body_inline_byte_identical(
     flow_id = str((await runner.create_flow(input=Ingest(doc_id="d1"))).flow_id)
 
     # THE ROW: the unset declaration stamps NULL — the column default's
-    # own value (the pre-cure row).
+    # own value (the pre-fix row).
     row = await _node_row(module_pg_pool, schema, flow_id, "solo")
     assert row["start_to_close"] is None, row["start_to_close"]
 
@@ -617,7 +617,7 @@ async def test_map_children_carry_the_source_step_declaration(
 ) -> None:
     """The fork's children (FORK_CHILDREN_SQL) stamp the SOURCE step's
     resolution — the children share the source's cohort (the priority
-    cure's own arithmetic)."""
+    fix's own arithmetic)."""
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("stc_map_children_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
@@ -641,7 +641,7 @@ async def test_route_arm_declaration_overrides_down_and_the_join_stays_the_sourc
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE ARM'S DOWN-OVERRIDE (the priority cure's own shape): the arm's
+    """THE ARM'S DOWN-OVERRIDE (the priority fix's own shape): the arm's
     children land at the ARM's declaration; an arm declaring none keeps
     the source's; the JOIN (the source's own cohort) stays the source's
     resolution."""
@@ -685,7 +685,7 @@ async def test_the_drain_materializes_consumers_at_the_declared_bound(
     declared bound the way priority's consumer rows inherit the run's
     stamp — the fire's bindings carry it, the drain's consumer INSERT
     stamps the ``jobs.start_to_close`` column. The unset case binds
-    NULL (the pre-cure row)."""
+    NULL (the pre-fix row)."""
     from tests._wf_fixtures import seed_flow
 
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -740,7 +740,7 @@ async def test_the_fork_bindings_carry_the_downstream_resolution(
     array carries the downstream node's own resolution (serialized as
     the binding's seconds) — the fire copies it into the outbox
     bindings, the drain stamps the fresh-materialized consumer row. The
-    undeclared downstream keeps the pre-cure shape (no key)."""
+    undeclared downstream keeps the pre-fix shape (no key)."""
     schema = module_pg_schema.schema_name
     app_obj = WorkflowApp()
 
@@ -924,14 +924,14 @@ async def test_the_deadline_fences_a_cancel_mark_and_the_cancel_wins(
     assert ledger and ledger[-1]["status"] == "cancelled", ledger
 
 
-# ── (7) the hostile-finally face (the vanilla drill's shape, wf face) ────
+# ── (7) the hostile-finally face (the vanilla scenario's shape, wf face) ────
 
 
 async def test_hostile_finally_cannot_defer_the_wf_deadline(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    """THE HOSTILE UNWIND (the vanilla drill's shape 3 — the deferrable
+    """THE HOSTILE UNWIND (the vanilla scenario's shape 3 — the deferrable
     deadline): a body whose ``finally`` sleeps past the deadline cannot
     hold the attempt hostage — the attempt ends AT the deadline, the
     disposition lands (the re-pend), and the body unwinds DETACHED
@@ -974,7 +974,7 @@ async def test_hostile_finally_cannot_defer_the_wf_deadline(
         f"unwinds detached), took {elapsed:.2f}s"
     )
     assert await _root_status(module_pg_pool, schema, flow_id) == "failed"
-    # THE UNWINDING ZOMBIE IS ACCOUNTED FOR (the vanilla drill's own
+    # THE UNWINDING ZOMBIE IS ACCOUNTED FOR (the vanilla scenario's own
     # assertion — the shutdown watchdog can see it): tracked, not
     # leaked. This pin's zombie is pending AT CALL END by design (the
     # hostile finally outlives the attempt), so the reap is the pin's
@@ -1081,7 +1081,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
     W2's finalize never refuses) — and W1's own attempt takes the ZOMBIE
     face (the ledger's 'fenced' record, keyed on the claim's own
     instant, stamped the deadline's truthful class — the C5 shape). The
-    pre-cure shape: the unfenced WHERE (id + status) flipped W2's row
+    pre-fix shape: the unfenced WHERE (id + status) flipped W2's row
     out from under it."""
     from tests._wf_fixtures import seed_flow, seed_running_node
 

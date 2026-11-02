@@ -100,7 +100,7 @@ async def main() -> None:
     pool = await asyncpg.create_pool(os.environ["TASKQ_PG_DSN"])
     try:
         result = await sweep_join_rederive(pool, render_workflow_sql(schema))
-        # THE EXECUTION IS THE CLAIM'S (the wedged-hold cure's contract):
+        # THE EXECUTION IS THE CLAIM'S (the wedged-hold fix's contract):
         # the fire marks + delivers; the fired row's own claim runs the
         # body with its PROPER convention (the registry's body is a step
         # body — ctx + the parents' list — never a zero-arg reducer). The
@@ -154,7 +154,7 @@ async def test_attack_sweep_fire_skips_the_reducer_body(
     no reducer memo, no shared state — and the body must still run,
     resolved from the REGISTERED DEFINITION via the flow root's stamped
     workflow name. The memo-only shape (the finalizing process's memory
-    as the source of truth) is the convicted variant: the sweep heals
+    as the source of truth) is the rejected variant: the sweep heals
     schema-wide, so the healer is never guaranteed to be the finalizer —
     the body would run ZERO times fleet-wide and the consumers would
     dispatch off an un-reduced join."""
@@ -242,7 +242,7 @@ async def test_attack_sweep_fire_skips_the_reducer_body(
     # own claim, the runner's own pins), never the fire's; the fire's
     # exactly-once + the claim's arbiter carry the at-least-once,
     # cross-process by construction (the registry is fleet-wide). The
-    # convicted variants: the row stamped body_unavailable (the record
+    # rejected variants: the row stamped body_unavailable (the record
     # lies — the resolution's loud face fired for a REGISTERED name) or
     # the row left unfired (the heal did not heal).
     assert verdict["claimable"] is True, (

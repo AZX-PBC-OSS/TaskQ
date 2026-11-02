@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team pins: the client-facing observables of the atomic batch path.
+"""Adversarial review pins: the client-facing observables of the atomic batch path.
 
 Three observables of ``JobsClient.enqueue_batch``'s single-transaction
 arm (``Backend.enqueue_batch_atomic``, src/taskq/backend/_batch_sql.py::

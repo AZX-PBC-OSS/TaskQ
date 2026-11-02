@@ -1,7 +1,7 @@
 """The workflow progress statement constants (T21) — the two-channel
 persistence's named surface.
 
-THE BUNDLE DISCIPLINE (GAPS-ESTATE F10, ``_sql.py``'s docstring applies
+THE BUNDLE DISCIPLINE (, ``_sql.py``'s docstring applies
 verbatim): workflow SQL lives as named statement constants — never inline
 f-strings at call sites. The schema identifier is the ONLY interpolated
 value (validated at :meth:`WorkflowSql.build`); every caller-controlled
@@ -49,7 +49,7 @@ __all__ = [
 
 # 1. THE STATE CHANNEL UPSERT — latest-wins + the occurrence counter + the
 # stream's dropped counter. ONE row per (node, channel) FOREVER, whatever
-# the emission rate (DH1's fence: the every-emission-a-row shape is
+# the emission rate (the fence: the every-emission-a-row shape is
 # structurally impossible — there is no insert path).
 PROGRESS_STATE_UPSERT_SQL = """\
 INSERT INTO {schema}.wf_node_progress AS p
@@ -69,9 +69,9 @@ RETURNING p.occurrences, p.dropped
 # 2. THE STREAM CHANNEL — append + the drop-oldest trim in ONE statement.
 # The ring keeps the newest $6 rows for the node; every trimmed row is
 # COUNTED (the dropped counter lands on the record in the same flush —
-# the honest emitted-vs-delivered pair, DH2's fence). The trim is
+# the honest emitted-vs-delivered pair, the coalesce fence). The trim is
 # rank-based per node (the global seq-window trim was rejected: it
-# under-retains under interleave — the PoC's red-team note).
+# under-retains under interleave — the PoC's adversarial note).
 PROGRESS_STREAM_APPEND_TRIM_SQL = """\
 WITH ins AS (
     INSERT INTO {schema}.wf_node_stream (node_id, flow_id, class, kind, payload)
@@ -91,7 +91,7 @@ WITH ins AS (
 SELECT (SELECT seq FROM ins) AS seq, (SELECT count(*) FROM trim)::int AS dropped
 """
 
-# 3. THE RETENTION SWEEP ARM (the ring's backstop — DH1's "prunes on
+# 3. THE RETENTION SWEEP ARM (the ring's backstop — "prunes on
 # schedule"): every over-bound node's ring trimmed to the bound in one
 # set-based pass, rank-based per node. Bounded twice: the owners set is
 # LIMITed ($2) and each owner's trim is the append-trim's own rank shape —
@@ -139,7 +139,7 @@ LIMIT $3::int
 
 # 6-7. THE RING-OLDEST CHECKS — the named-partial mode's predicate input:
 # the oldest seq the node's / the run's rings still retain. A cursor below
-# it is a cursor the ring pruned past (DH6 — the honest degraded mode).
+# it is a cursor the ring pruned past (the honest degraded mode).
 PROGRESS_RING_OLDEST_NODE_SQL = """\
 SELECT min(seq)::bigint FROM {schema}.wf_node_stream WHERE node_id = $1::uuid
 """
@@ -150,7 +150,7 @@ SELECT min(seq)::bigint FROM {schema}.wf_node_stream WHERE flow_id = $1::uuid
 
 # 8-9. THE STATE CHANNEL READS (the re-sync payload + the display's
 # backfill). Latest-wins needs no history: these rows alone reconstruct
-# the display's progress half at every connect (DH6's cure).
+# the display's progress half at every connect (the display fix).
 PROGRESS_STATE_READ_NODE_SQL = """\
 SELECT p.node_id, p.channel, p.pct, p.message, p.data, p.occurrences,
        p.dropped, p.last_seq, p.updated_at
@@ -173,7 +173,7 @@ WHERE (j.metadata->>'flow_id')::uuid = $1::uuid
 
 # 10. THE USER'S ``aggregate=`` FN INPUT (decision c): the children's
 # RESULT rows — a READ; the fn runs over these AT READ TIME. No join node
-# exists for this (DH8's fence: the join is for DATAFLOW, progress
+# exists for this (the dataflow-only fence: the join is for DATAFLOW, progress
 # aggregation is OBSERVABILITY).
 PROGRESS_CHILD_RESULTS_SQL = """\
 SELECT id, step_key, status::text AS status, result

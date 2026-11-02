@@ -1016,8 +1016,8 @@ addresses the outbox row) and the BACKEND's dispatch-fence templates
 (``taskq.backend._dispatch_sql``), whose terminal-flow leg carries the
 ESCALATION-KIND exemption — the one workflow row a TERMINAL flow's
 dispatch fence still admits (a flow's death must not orphan its
-pages-a-human duty). Backend must not import workflows (the §16.1
-import law), so the fence substitutes this constant as a token; the two
+pages-a-human duty). Backend must not import workflows (the import
+law), so the fence substitutes this constant as a token; the two
 faces cannot drift.
 """
 

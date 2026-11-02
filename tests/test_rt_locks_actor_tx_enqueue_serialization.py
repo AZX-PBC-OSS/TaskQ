@@ -1,5 +1,5 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team locks: an open actor-body transaction's hold on cross-actor enqueue serialization.
+"""Adversarial review locks: an open actor-body transaction's hold on cross-actor enqueue serialization.
 
 The transactional consumer runs the actor inside its transaction
 connection's transaction (``worker/_consumer.py`` - ``async with

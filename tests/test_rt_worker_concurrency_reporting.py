@@ -1,4 +1,4 @@
-"""Red-team pin: the workers row must expose the worker's effective
+"""Adversarial review pin: the workers row must expose the worker's effective
 binding concurrency.
 
 ``run.py`` binds the worker's whole dispatch capacity to

@@ -1,6 +1,6 @@
-"""Red-team attacks on the cron tick's time semantics (real PG, real clock).
+"""Adversarial review attacks on the cron tick's time semantics (real PG, real clock).
 
-* **Catch-up determinism (C4)** - beyond-window misses re-anchor on the
+* **Catch-up determinism ** - beyond-window misses re-anchor on the
   tick's server clock (next_fire_at strictly future, "cron missed slots
   skipped" warned); within-window misses fire their scheduled slot and
   advance one cadence (sequential catch-up, no warning).  The exact
@@ -10,7 +10,7 @@
   so those two tests run the tick on :class:`FrozenClockConn` (a real
   connection whose ONLY intercepted call is the tick's own
   ``SELECT clock_timestamp()``; every statement still hits real PG).
-* **DST ``allof`` at a future overlap (C5)** - America/New_York falls
+* **DST ``allof`` at a future overlap ** - America/New_York falls
   back on 2026-11-01 (02:00 EDT → 01:00 EST), so local 01:30 occurs at
   both 05:30Z and 06:30Z.  A yearly schedule pinned to that date and
   seeded due at the scenario's INJECTED clock (within window) owes TWO
@@ -20,11 +20,11 @@
   reads, which the pin injects along with the due bound and the
   planning clock, so the overlap stays future at every crossing).  A
   ``skip`` twin owes one.
-* **Cap semantics (C6)** - limit fires the EARLIEST due schedules and
+* **Cap semantics ** - limit fires the EARLIEST due schedules and
   leaves the remainder bit-for-bit untouched; a due set exactly equal to
   the limit fires all (no off-by-one) and the next tick fires nothing; a
   limit above the due set is not a truncation.
-* **Success-UPDATE alignment (C7)** - three schedules with distinct
+* **Success-UPDATE alignment ** - three schedules with distinct
   cadences (5-min, 10-min, hourly) and distinct due slots: each fired
   schedule's next_fire_at must equal ITS OWN slot plus ITS OWN cadence,
   exactly.  A rewrite that zipped the ids array against a misordered

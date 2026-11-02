@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team storm: the mass-reclaim cycle's redispatch damper and the
+"""Adversarial review storm: the mass-reclaim cycle's redispatch damper and the
 failure-retry ladder's floor.
 
 System-level question (the amplification question): when a systemic

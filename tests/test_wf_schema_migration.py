@@ -6,13 +6,13 @@ header, the additive-only rule (every file is a ``pre_`` file — no
 workflow ``post_`` ever ships for v1), and the dispatch-claim exclusion
 clause's presence at every claimable-row site. The IMPORT pin (§16.1's
 law) runs on the AST harness (``tests/_import_discipline.py``) + a fresh
-interpreter, with the mutated-``__init__`` red drill.
+interpreter, with the mutated-``__init__`` red scenario.
 
 Measured (PG): pin 1 — both table shapes built, 10k seeded rows, the
-heap/tuple deltas ≤ 8 B (the red drill's misaligned padding blows it);
+heap/tuple deltas ≤ 8 B (the mutation pin's misaligned padding blows it);
 pin 2 — each workflow partial index ≤ 1% of a same-column full index
 (the 100k-row clone carries the volume; the full control index doubles as
-the red drill's convicted shape).
+the mutation pin's rejected shape).
 """
 
 # Why: the f-string SQL interpolates only the fixture's own throwaway schema identifiers (validated by the migration runner's _IDENT_RE) or renders the bundled migration files; all values are $n-bound.
@@ -59,7 +59,7 @@ def test_round_is_split_into_single_lock_class_files() -> None:
     the columns file ONLY metadata-only ALTERs, the tables file ONLY CREATE
     TABLEs, the index file ONLY CREATE INDEXes. The runner wraps each FILE
     in one transaction, so a file's statements share ONE write-block
-    window — mixed lock classes in one file are the convicted shape (the
+    window — mixed lock classes in one file are the rejected shape (the
     lock-scope family's finding)."""
     names = [f.name for f in _round_files()]
     assert names == [
@@ -176,7 +176,7 @@ def test_dispatch_claim_carries_the_join_wait_exclusion() -> None:
 def test_import_law_taskq_never_imports_workflows() -> None:
     """A fresh interpreter's ``import taskq`` must leave ``taskq.workflows``
     absent from ``sys.modules``; the AST harness (module-scope invariants
-    parsed, not grepped) convicts the package ``__init__`` itself."""
+    parsed, not grepped) rejects the package ``__init__`` itself."""
     import taskq
     from tests import _import_discipline
 
@@ -223,7 +223,7 @@ _IMPORT_LAW_SURFACES = (
 def test_import_law_every_boot_surface_never_imports_workflows(surface: str) -> None:
     """The §16.1 law, widened (F-R5): importing ANY boot surface must
     leave ``taskq.workflows`` unloaded — a module-scope workflows import
-    anywhere in the surface's transitive tree is convicted. The admin's
+    anywhere in the surface's transitive tree is rejected. The admin's
     page modules are the proven violator (lazy-discovery loads them only
     when the pages render; their seams import lazily — the
     ``_wf_actions`` pattern)."""
@@ -244,8 +244,8 @@ def test_import_law_every_boot_surface_never_imports_workflows(surface: str) -> 
 
 
 def test_import_law_red_drill(tmp_path: Path) -> None:
-    """The revert drill: the pin CAN fail — a module-level import of the
-    workflows package in ``taskq/__init__.py`` is convicted by the same AST
+    """The revert scenario: the pin CAN fail — a module-level import of the
+    workflows package in ``taskq/__init__.py`` is rejected by the same AST
     harness (the fixture mutation, parsed in isolation; the RED output is
     the offender list). The mutated fixture module's scratch file rides
     pytest's ``tmp_path`` — never the repo tree (a stray untracked module
@@ -262,7 +262,7 @@ def test_import_law_red_drill(tmp_path: Path) -> None:
     scratch = tmp_path / "fixture_mutated_init.py"
     fixture.__dict__["__file__"] = str(scratch)
     # Point the harness's source getter at the mutated text: the harness
-    # parses module source, so the drill parses the MUTATED source and asks
+    # parses module source, so the scenario parses the MUTATED source and asks
     # the same question the pin asks.
     scratch.write_text(mutated)
     tree = ast.parse(mutated)
@@ -270,13 +270,13 @@ def test_import_law_red_drill(tmp_path: Path) -> None:
         name
         for node in tree.body
         if isinstance(node, ast.Import | ast.ImportFrom)
-        for name in _import_discipline._imported_names(node)  # pyright: ignore[reportPrivateUsage]  # Why: the drill reuses the harness's own parser on a synthetic tree.
+        for name in _import_discipline._imported_names(node)  # pyright: ignore[reportPrivateUsage]  # Why: the scenario reuses the harness's own parser on a synthetic tree.
     }
     # RED: the mutated module-level import is present — the same check that
     # stays clean (zero offenders) on the real package above.
     assert "taskq.workflows" in names
     assert not _import_discipline.couples_to_at_import_time(taskq, "taskq.workflows"), (
-        "the real package must stay clean while the fixture proves the drill fires"
+        "the real package must stay clean while the fixture proves the scenario fires"
     )
     del fixture
 
@@ -322,7 +322,7 @@ async def _seed_rows(conn: asyncpg.Connection, target: str, rows: int) -> None:
 async def width_schemas(pg_dsn: str) -> AsyncIterator[dict[str, str]]:
     """The extended shape (the full bundled set, the round applied) vs the
     pre-round control shape (every migration BEFORE the workflow round),
-    seeded identically; plus the RED-DRILL shape (the five columns PLUS
+    seeded identically; plus the MUTATION-PIN shape (the five columns PLUS
     deliberately-misaligned padding columns)."""
     suffix = new_base62(8, precision="random").lower()
     extended = f"t03x_{suffix}"
@@ -337,7 +337,7 @@ async def width_schemas(pg_dsn: str) -> AsyncIterator[dict[str, str]]:
         await apply_pending(conn, schema=extended)
         pre_round = set(_pre_round_migrations())
         await _apply_selected(conn, control, pre_round)
-        # The red-drill shape: the pre-round table + the round's five
+        # The mutation pin shape: the pre-round table + the round's five
         # columns + three boolean padding columns (forced attribute
         # headers - the misalignment the bound must catch).
         await _apply_selected(conn, padded, pre_round)
@@ -353,7 +353,7 @@ async def width_schemas(pg_dsn: str) -> AsyncIterator[dict[str, str]]:
             for c in _WF_COLUMNS
         ] + [
             # The misalignment: a wide text column with a per-row value --
-            # bytes alignment cannot absorb, the +16 B/row the drill needs.
+            # bytes alignment cannot absorb, the +16 B/row the scenario needs.
             f'ALTER TABLE "{padded}".jobs '
             "ADD COLUMN IF NOT EXISTS pad_probe text NOT NULL DEFAULT "
             "'0123456789abcdef'"
@@ -425,9 +425,9 @@ async def test_pin_1_row_width_residual(width_schemas: dict[str, str]) -> None:
 
 
 async def test_pin_1_red_drill_misaligned_padding(width_schemas: dict[str, str]) -> None:
-    """THE ROW-WIDTH PIN'S REVERT DRILL: a deliberately-misaligned padding
+    """THE ROW-WIDTH PIN'S REVERT PROOF: a deliberately-misaligned padding
     fixture (three boolean columns — forced attribute headers) MUST blow
-    the bound — the pin can fail. The RED output is the drill's measurement
+    the bound — the pin can fail. The RED output is the scenario's measurement
     file; the shipped shape above stays green."""
     conn = await asyncpg.connect(width_schemas["dsn"])
     try:
@@ -437,14 +437,14 @@ async def test_pin_1_red_drill_misaligned_padding(width_schemas: dict[str, str])
         _write_measurement(
             "pin1-red-pad-drift.json",
             {
-                "pin": "row-width-red-drill",
+                "pin": "row-width-mutation pin",
                 "vanilla": vanilla,
                 "padded": padded,
                 "tuple_delta_bytes": tuple_delta,
             },
         )
         assert tuple_delta > 8, (
-            f"the red drill did not fire: misaligned padding moved the tuple by "
+            f"the mutation pin did not fire: misaligned padding moved the tuple by "
             f"only {tuple_delta:.2f} B — the pin cannot fail, it is a decoration"
         )
     finally:
@@ -522,7 +522,7 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
             )
         partial_sizes["_red_drill"] = {
             "note": "the full control index against the smallest partial is the "
-            "convicted shape; its ratio is the RED the pin exists to flag"
+            "rejected shape; its ratio is the RED the pin exists to flag"
         }
         _write_measurement("pin2-partial-index.json", partial_sizes)
     finally:

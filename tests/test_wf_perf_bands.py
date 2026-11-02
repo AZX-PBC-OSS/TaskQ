@@ -4,7 +4,7 @@ Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
 home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
 file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
-the unfenced variants kept in this file forever as the convicted shapes.
+the unfenced variants kept in this file forever as the rejected shapes.
 """
 
 # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
@@ -87,7 +87,7 @@ async def test_fan_out_tx_band_1000_children(
     outbox = await wf_conn.fetchval(f'SELECT count(*) FROM "{wf_schema}".wf_outbox')
     assert int(outbox) == 0  # the join has deps 1000: nothing fired yet
     # THE APPEND-ONLY CONVERSION + THE HEAD-STAMP LAW (the stale-evidence
-    # hunt's source cure): the band is a RUN-SCOPED, head-stamped file
+    # hunt's source fix): the band is a RUN-SCOPED, head-stamped file
     # (the in-place write_text was the torn-write race + the unstamped
     # rumor the verifier refuses).
     write_band_artifact(
@@ -171,9 +171,9 @@ def _write_measurement(name: str, payload: object) -> None:
 async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
     """THE ENQUEUE-LATENCY NOISE BAND: vanilla enqueue p50 inside the
     recorded band with the workflow-schema build present (best-round p50 —
-    the house benchmark's noise-robust statistic). RED DRILL (recorded):
+    the house benchmark's noise-robust statistic). MUTATION PIN (recorded):
     a fixture hook touching the new columns on the hot path (extra
-    round-trip reads of the five columns per enqueue — the drill's dose
+    round-trip reads of the five columns per enqueue — the scenario's dose
     widened to out-signal a loaded box's noise floor) must move the
     band — the pin can fail. Both measurements land in .measurements/."""
     from taskq.backend._protocol import EnqueueArgs
@@ -200,13 +200,13 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
                 )
                 await backend.enqueue(args)
                 if extra_hook:
-                    # THE RED-DRILL HOOK: the hot path touching the new
+                    # THE MUTATION-PIN HOOK: the hot path touching the new
                     # columns — extra round-trip reads of all five, the
                     # cost-class regression the band must catch. The
                     # dose is THREE reads (the same defect class, the
-                    # drill's signal widened to the behavioral bound:
+                    # scenario's signal widened to the behavioral bound:
                     # one round-trip's delta drowns in a loaded box's
-                    # per-round noise — the drill must out-signal the
+                    # per-round noise — the scenario must out-signal the
                     # noise floor to discriminate at all).
                     for _ in range(3):
                         await pool.execute(
@@ -226,7 +226,7 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
     # THE NOISE FLOOR reads STATE (the discrimination's own bound): the
     # green rounds' per-round p50 spread is THIS box's observed
     # round-to-round noise at the moment of the measurement — the
-    # spread the drill's delta must clear to discriminate at all.
+    # spread the scenario's delta must clear to discriminate at all.
     green_p50s = [_percentile(r, 50) for r in rounds]
     noise_spread = max(green_p50s) - min(green_p50s)
 
@@ -236,13 +236,13 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
     red_p50 = _percentile(red_best, 50)
     drill_delta = red_p50 - p50
 
-    # THE LOADED BAR (finding 3's cure — condition-not-clock): the
+    # THE LOADED BAR (finding 3's fix — condition-not-clock): the
     # ABSOLUTE band asserts only on a quiet box; a loaded box waives it
     # honestly (the artifact names the reading and the waiver — a
     # wall-clock p50 under load measures the neighbors, not the
-    # enqueue). The RELATIVE red drill asserts against the box's own
+    # enqueue). The RELATIVE red scenario asserts against the box's own
     # OBSERVED noise floor (the green rounds' spread — the state, not
-    # the clock): a drill delta the noise floor could drown is the
+    # the clock): a scenario delta the noise floor could drown is the
     # box's reading, not the hook's cost — the waiver is recorded, the
     # teeth stay with the absolute band.
     bar = load_bar()
@@ -271,10 +271,10 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
     if allowed:
         assert p50 <= _PIN4_P50_BUDGET_US, f"enqueue p50 {p50 / 1000:.2f} ms exceeds the band"
     if drill_delta > 0:
-        pass  # the drill fired — the band's sensitivity is proven
+        pass  # the scenario fired — the band's sensitivity is proven
     elif noise_spread > -drill_delta:
-        # THE DRILL'S STATE-KEYED WAIVER (the loaded bar's own shape —
-        # the condition-not-clock discipline): the drill's delta did
+        # THE SCENARIO'S STATE-KEYED WAIVER (the loaded bar's own shape —
+        # the condition-not-clock discipline): the scenario's delta did
         # not move the band, but the green rounds' OWN spread exceeds
         # the red's advantage — this box's noise floor is larger than
         # the signal, the wall-clock comparison measures the neighbors,
@@ -283,7 +283,7 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
         pass
     else:
         raise AssertionError(
-            "the red drill did not fire OUTSIDE the box's own noise "
+            "the mutation pin did not fire OUTSIDE the box's own noise "
             f"(delta {drill_delta}µs, noise spread {noise_spread}µs): the "
             "hot-path column touch did not move the band — the pin cannot "
             "fail, it is a decoration"
@@ -297,7 +297,7 @@ async def test_pin_5_dispatch_claim_band(jobs_app: Any) -> None:
     """THE DISPATCH-CLAIM NOISE BAND: the claim statement's best-round p50
     inside the band WITH the ``AND deps_pending = 0`` exclusion clause
     present (a semantic no-op for vanilla rows — the pin proves it stays
-    that way). RED DRILL: a fixture plan regression (index plans disabled →
+    that way). MUTATION PIN: a fixture plan regression (index plans disabled →
     Seq Scan) must blow the band — the pin can fail."""
     from datetime import UTC, datetime, timedelta
 
@@ -383,7 +383,7 @@ async def test_pin_5_dispatch_claim_band(jobs_app: Any) -> None:
     p50 = _percentile(samples, 50)
     p99 = _percentile(samples, 99)
 
-    # THE RED DRILL: the fixture plan regression — force the Seq-Scan plan
+    # THE MUTATION PIN: the fixture plan regression — force the Seq-Scan plan
     # (the 83.7 ms monster class) and watch the band blow.
     red_samples = await measure(
         1,
@@ -394,7 +394,7 @@ async def test_pin_5_dispatch_claim_band(jobs_app: Any) -> None:
 
     # THE LOADED BAR (the pin_4 band's discipline — condition-not-clock):
     # the absolute band asserts only on a quiet box; the loaded waiver is
-    # NAMED in the artifact, and the relative red drill stays
+    # NAMED in the artifact, and the relative red scenario stays
     # unconditional.
     bar = load_bar()
     allowed = band_assertion_allowed()
@@ -418,7 +418,7 @@ async def test_pin_5_dispatch_claim_band(jobs_app: Any) -> None:
             f"dispatch claim p50 {p50 / 1000:.2f} ms exceeds the band (the clause must stay free)"
         )
     assert red_p50 > p50, (
-        "the red drill did not fire: the forced plan regression did not blow "
+        "the mutation pin did not fire: the forced plan regression did not blow "
         "the band — the pin cannot fail, it is a decoration"
     )
 
@@ -508,7 +508,7 @@ async def test_edge_join_scale_curve_across_the_bound(
     from the endpoints, the outlier named, the per-edge marginal checked
     against the BASE-DOMINATED argument, and the plan asserted
     INDEX-DRIVEN at a ≥ 100k-edge join (the 83.7 ms unscoped monster is
-    the convicted shape — the pin asserts the plan stays index-served).
+    the rejected shape — the pin asserts the plan stays index-served).
 
     The asserted BANDS are this machine's OWN measurements (the artifact
     records them); the bound moves only by the refit's argument in review.
@@ -542,13 +542,13 @@ async def test_edge_join_scale_curve_across_the_bound(
 
     # THE SHAPE BOUNDARY: the child-driven point must not cliff — its
     # per-edge marginal stays in the same class as the declared-edge
-    # points' (a discontinuity across the boundary is the convicted
+    # points' (a discontinuity across the boundary is the rejected
     # cliff).
     inside_marginal_us = (ms2 - ms1) / ((n2 - n1) * 1e-3)
     assert marginal_us_per_edge <= max(10.0, inside_marginal_us * 10), (
         f"the per-edge marginal blew past the boundary: refit "
         f"{marginal_us_per_edge:.2f} µs/edge vs inside {inside_marginal_us:.2f} "
-        "µs/edge — the shape switch is a cliff (the convicted discontinuity)"
+        "µs/edge — the shape switch is a cliff (the rejected discontinuity)"
     )
     # THE BASE-DOMINATED ARGUMENT's number: the marginal edge cost is
     # µs-class (the base is paid once per pass; the bound bounds the
@@ -559,7 +559,7 @@ async def test_edge_join_scale_curve_across_the_bound(
     )
 
     # THE ≥ 100k-EDGE JOIN: the plan must stay INDEX-DRIVEN (no seq scan
-    # of jobs or wf_edge — the unscoped monster's conviction). Seeded
+    # of jobs or wf_edge — the unscoped monster's recorded finding). Seeded
     # DIRECTLY (parallel-array chunks): the fork's map_index is smallint —
     # a fan-in past 32k cannot ride it, and the recount reads the EDGES.
     big_n = 100_000
@@ -574,11 +574,12 @@ async def test_edge_join_scale_curve_across_the_bound(
     # decided).
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata) "
+        "retry_kind, status, step_key, deps_pending, metadata, fairness_key) "
         f"VALUES ($1::uuid, 'wf', 'default', '{{}}', 3, 'transient', "
         f"'pending'::\"{wf_schema}\".job_status, 'big_join', 1, "
-        "to_jsonb(jsonb_build_object('flow_id', $2::text, 'blocking_reason', 'join')))",
+        "to_jsonb(jsonb_build_object('flow_id', $2::text, 'blocking_reason', 'join')), $3)",
         join_id,
+        str(join_id),
         str(join_id),
     )
     from taskq.workflows._types import _metadata
@@ -588,14 +589,14 @@ async def test_edge_join_scale_curve_across_the_bound(
         chunk = parent_ids[start : start + 500]
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, metadata, idempotency_scope, idempotency_key) "
+            "retry_kind, status, step_key, metadata, fairness_key, idempotency_scope, idempotency_key) "
             "SELECT u.id, u.actor, u.queue, u.payload, u.max_attempts, u.retry_kind, "
-            f'u.status::"{wf_schema}".job_status, u.step_key, u.metadata, '
+            f'u.status::"{wf_schema}".job_status, u.step_key, u.metadata, u.fairness_key, '
             "u.idempotency_scope, u.idempotency_key "
             "FROM unnest($1::uuid[], $2::text[], $3::text[], $4::jsonb[], "
-            "$5::smallint[], $6::text[], $7::text[], $8::text[], $9::jsonb[], $10::text[], $11::text[]) "
+            "$5::smallint[], $6::text[], $7::text[], $8::text[], $9::jsonb[], $10::text[], $11::text[], $12::text[]) "
             "AS u(id, actor, queue, payload, max_attempts, retry_kind, status, "
-            "step_key, metadata, idempotency_scope, idempotency_key) ",
+            "step_key, metadata, idempotency_scope, idempotency_key, fairness_key) ",
             chunk,
             ["wf"] * len(chunk),
             ["default"] * len(chunk),
@@ -607,6 +608,7 @@ async def test_edge_join_scale_curve_across_the_bound(
             [json.dumps(_metadata(flow_id, blocking_reason=None))] * len(chunk),
             [f"workflow:{flow_id}"] * len(chunk),
             [f"wf:{flow_id}:c:{i}" for i in range(start, start + len(chunk))],
+            [str(flow_id)] * len(chunk),
         )
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".wf_edge (child_id, parent_id, flow_id) '

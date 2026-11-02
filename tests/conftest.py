@@ -238,7 +238,7 @@ def _isolate_health_server_socket(  # pyright: ignore[reportUnusedFunction]  # W
 def _isolate_workflow_app_registry() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]  # Why: autouse fixture consumed implicitly by the test runner.
     """Clear the workflow app registry around every test.
 
-    THE LEAKED-PROJECTION CLASS (named and cured 2026-10-08; ported to
+    THE LEAKED-PROJECTION CLASS (named and fixed 2026-10-08; ported to
     this lane with the evidence-integrity round's executor tests): the
     boot projection (``project_workflow_actor_configs``) reads the
     process-global app registry at EVERY in-process worker boot, so a
@@ -422,18 +422,18 @@ def _reset_warn_once_stamps() -> Iterator[None]:  # pyright: ignore[reportUnused
     silently suppressed - a failure that depends on which tests ran
     before it in the same process, i.e. on pytest-randomly's shuffle.
     The red this fixture answers was observed on the publish half (the
-    pins in test_progress_publish.py, cured file-locally in 865565b1
+    pins in test_progress_publish.py, fixed file-locally in 865565b1
     when the window gate shipped); the dispatch and _consumer stamps
     have the same shape and the same 60s windows but no reset and, so
     far, no second warning-existence pin to suppress - the fixture
     closes the CLASS for every current and future pin instead of each
-    new pin rediscovering the file-local cure. The
-    ``_publish_failure_warned`` half was cured file-locally
+    new pin rediscovering the file-local fix. The
+    ``_publish_failure_warned`` half was fixed file-locally
     (monkeypatching a fresh dict per test); this fixture promotes the
     reset to every test, the same promotion ``_reset_notify_module_globals``
     made from five file-local copies.
 
-    Cleared IN PLACE, never rebound: the one file-local cure rebinds the
+    Cleared IN PLACE, never rebound: the one file-local fix rebinds the
     module attribute by monkeypatch, but importers that read the dict by
     value (``from module import _x_warned``) would be left holding a
     stale object - the same in-place discipline
@@ -733,13 +733,13 @@ def _publish_run_isolation_token(  # pyright: ignore[reportUnusedFunction]  # Wh
     regressed, distinct tokens would keep the runs' names from colliding on
     whatever they ended up sharing.
 
-    THE TOKEN IS THE FULL BASETEMP PATH (the mutual-drop class's root cure,
+    THE TOKEN IS THE FULL BASETEMP PATH (the mutual-drop class's root fix,
     2026-10-08): the invocation-unique numbered dir (``pytest-N``) PLUS the
     xdist worker's own subdirectory (``popen-gwK``) - invocation-unique AND
     worker-distinct in one string, which neither candidate alone is. The
     plain worker id is NOT invocation-unique: ``gw7`` is identical in every
     ``-n 8`` invocation on the box, so two overlapping invocations (or a
-    parent session and its own subprocess pytest - the scratch drills) hashing
+    parent session and its own subprocess pytest - the scratch scenarios) hashing
     (worker, module) landed the SAME database name on one cluster, and each
     side's ``DROP DATABASE ... WITH (FORCE)`` killed the other's live
     connections mid-test - the round-4 ``InvalidCatalogNameError`` at the
@@ -1188,7 +1188,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     safe, per-file default. The e2e namespace prefix keeps an e2e module from
     ever sharing a group with a same-stem integration module.
 
-    THE SPLIT-DROP CLASS (named and cured 2026-10-08, the recon run's 3
+    THE SPLIT-DROP CLASS (named and fixed 2026-10-08, the recon run's 3
     failed + 3 errors): grouping IS a correctness requirement for every
     module-scoped FIXTURE LIFECYCLE, not just its names. A fast-tier module
     whose tests take the module-scoped PG fixtures (``pg_dsn`` et al.) but
@@ -1200,7 +1200,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     (``terminating connection due to administrator command`` in the PG
     log) and the stranded tests died on ``InvalidCatalogNameError:
     database "tq_db_..." does not exist`` — rotating with pytest-randomly's
-    seed, every victim green solo. The cure is the same grouping the
+    seed, every victim green solo. The fix is the same grouping the
     integration modules have always had: any item requesting a
     module-scoped PG/Redis fixture joins its module's own group, so the
     whole module — one fixture lifecycle, one create/migrate/drop — runs
@@ -1218,7 +1218,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         if item.get_closest_marker("xdist_group") is not None:
             continue
         if "integration" not in item.keywords and not is_e2e:
-            # The split-drop cure: a fast-tier item riding a module-scoped
+            # The split-drop fix: a fast-tier item riding a module-scoped
             # PG/Redis fixture joins its module's group too — same law, the
             # lifecycle needs the single worker regardless of the tier.
             # (The Function narrow: ``fixturenames`` — the transitive
@@ -1237,7 +1237,7 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     # G7's ALWAYS-ON registration (T08): every ASYNC test in the WORKFLOW
     # pin files ends with the reported==reconstructed check (the fixture
     # in tests/_wf_fixtures.py). THE WIRING (the phase-2 attack's H4
-    # cure): a ``usefixtures`` MARKER added here is INERT — the items'
+    # fix): a ``usefixtures`` MARKER added here is INERT — the items'
     # fixture closures are computed before this hook runs, so the marker
     # never reached the fixture set (the attack's proof: two pins ended
     # root-contradicts-rows and passed their teardowns). Appending to

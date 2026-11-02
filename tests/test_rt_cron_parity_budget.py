@@ -1,4 +1,4 @@
-"""Red-team attacks on the bounded tick WITH policies in play (real PG).
+"""Adversarial review attacks on the bounded tick WITH policies in play (real PG).
 
 Two surfaces the bounded-tick contract has never been pinned against:
 

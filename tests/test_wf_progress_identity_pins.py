@@ -1,11 +1,11 @@
-"""THE PROGRESS READ'S IDENTITY PINS (the consumer-face lane's CURE 1 —
-the verified "not useful" conviction): the display's every node entry
+"""THE PROGRESS READ'S IDENTITY PINS (the consumer-face lane's FIX 1 —
+the verified "not useful" recorded finding): the display's every node entry
 carried the ROW UUID as the only identity — ``status``/``pct``/
 ``message``/``error_class`` with NO ``step_key``, NO ``map_index`` — so
 the cowork-UI holding a display could not say WHICH node any entry
 belonged to without an out-of-band join against the ledger.
 
-THE CURE'S SHAPE (the read face carries the node's identity):
+THE FIX'S SHAPE (the read face carries the node's identity):
 
 * every entry carries ``step_key`` + ``map_index`` — the ROW'S OWN
   fields, read off the LEDGER (the identity's authority); an entry the
@@ -18,7 +18,7 @@ THE CURE'S SHAPE (the read face carries the node's identity):
   ``map_index`` (``"fetch.item[3]"``) — keying bare would silently
   collapse N children into one entry (last-wins, the lie).
 
-Red-first: the pins ran RED at the pre-cure head (the identity keys
+Failing-first: the pins ran RED at the pre-fix head (the identity keys
 absent → the assert fires; the keyed view absent → ImportError); the
 reds are captured in ``.measurements/cons-cure1-reds.json``.
 """
@@ -56,7 +56,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def cons_redlog() -> RedLog:
-    """The red sink for the consumer-face lane's CURE 1 pins."""
+    """The red sink for the consumer-face lane's FIX 1 pins."""
     log = RedLog("cons-cure1-reds.json")
     return log
 
@@ -165,7 +165,7 @@ async def test_the_keyed_view_is_the_consumers_render_without_the_join(
     flow_id, runner = await _map_flow(wf_schema, wf_pool, children=2, name="keyed_map_flow")
     await runner.tick(flow_id)
     # The children emit: drive one child's claim+finalize so pct renders
-    # (the keyed entry's shape is the conviction's "ocr_node: {pct: …}").
+    # (the keyed entry's shape is the recorded finding's "ocr_node: {pct: …}").
     await runner.drive(flow_id, until="terminal")
 
     disp = await run_display(wf_pool, wf_sql, flow_id)

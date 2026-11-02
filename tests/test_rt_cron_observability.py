@@ -1,4 +1,4 @@
-"""Red-team attacks on the cron tick's post-write observability (real PG).
+"""Adversarial review attacks on the cron tick's post-write observability (real PG).
 
 C9, at real-PG level (the fake-conn pins in ``tests/test_cron_loop.py``
 cover the SQL shapes; these pin that the calls actually happen around

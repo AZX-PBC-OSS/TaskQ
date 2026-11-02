@@ -1,4 +1,4 @@
-"""Red-team attacks on the cron tick's policy preflight semantics (real PG).
+"""Adversarial review attacks on the cron tick's policy preflight semantics (real PG).
 
 Four attack surfaces against the singleton / ``max_pending`` preflight the
 cron tick runs between planning and the batched enqueue:

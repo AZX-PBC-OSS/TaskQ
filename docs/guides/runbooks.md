@@ -862,7 +862,7 @@ The warning's `frame` field is `file:line:function` of the deepest non-taskq fra
 
 **What not to do.** Do not hand-flip `deps_pending` to 0: the counter is a CACHE of the edge ledger's truth, and a hand-zeroed join fires over a partial record. Resolve the parents (or cancel the run) and let the re-derivation do the write.
 
-**The stuck-run drill** (the run-level face of the same alert — a run whose nodes are blocked is what this alert measures):
+**The stuck-run walk-through** (the run-level face of the same alert — a run whose nodes are blocked is what this alert measures):
 
 - CLI: `taskq flows status <run_id>` — every stuck node names its waiting-on state + its remedy (the held rows name the gate + the hold id + the deadline; the join-waits name the deps counter; the failures name the ladder headroom).
 - CLI: `taskq flows holds <run_id>` — the pending HITL holds. A hold past its `expires_at` is the expiry sweep's input (the sweep resolves it `expired` per the gate's `on_timeout`).
@@ -930,7 +930,7 @@ top to bottom.
    `run_key` (a terminal run's key is never re-used). The re-issue's
    re-execution is absorbed by the workflow's idempotent design (the
    step ledger replays `ctx.substep` records; idempotent upserts in
-   the bodies make data effects exact) — this is the drill-proven path
+   the bodies make data effects exact) — this is the scenario-proven path
    when the fleet is down and the driver is your only instrument.
 
 ---
@@ -952,6 +952,6 @@ BOTH `src/taskq/contrib/prometheus/rules.yaml` and
 alert cannot fire is a page that lies (the pinned cross-check:
 `tests/test_prometheus_metrics_review.py`'s runbook-anchor pin). The
 former `TaskQWfRunStuck` / `TaskQWfHoldExpired` rows had no shipped
-rule to fire — their operational content (the stuck-run drill, the
+rule to fire — their operational content (the stuck-run walk-through, the
 hold-expiry face) lives in `TaskQWorkflowBlockedStuck`'s row, the alert
 that actually measures the blocked/held shape.*

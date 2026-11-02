@@ -1,5 +1,5 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team locks: backend sweeps acquire the notify/dispatcher pool with no timeout.
+"""Adversarial review locks: backend sweeps acquire the notify/dispatcher pool with no timeout.
 
 ``backend/postgres.py``'s sweep entrypoints acquire with
 ``async with self._notify_pool.acquire() as conn:`` - no ``timeout=``

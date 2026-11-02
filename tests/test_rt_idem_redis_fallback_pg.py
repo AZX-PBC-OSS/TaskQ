@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""RED-TEAM pins: the redis fallback is one admission, never a replay (S6).
+"""The adversarial-review pins: the redis fallback is one admission, never a replay (S6).
 
 #421's widening: the rate-limit acquire's PG fallback absorbs the
 ``ResponseError`` siblings that mean "this store cannot serve right now"

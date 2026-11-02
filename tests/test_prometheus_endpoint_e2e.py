@@ -1,7 +1,7 @@
 """End-to-end pin: the documented Prometheus endpoint serves ``taskq_*``
 series after real worker activity against real Postgres.
 
-The adopter red team's repro shape, held green: follow the documented
+The adopter adversarial review's repro shape, held green: follow the documented
 quick-start (``pip install taskq-py[prometheus]``, no ``OTEL_*`` env vars),
 run real work, scrape ``GET /jobs/health/metrics`` as mounted by
 ``taskq ui serve`` - the served text must contain the ``taskq_*`` series

@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""T20's EMIT BACKPRESSURE pins — DH9's cure (the ticket's decision 7).
+"""T20's EMIT BACKPRESSURE pins — DH9's fix (the ticket's decision 7).
 
 THE DECLARED HOME (the design law — one home): the max-in-flight bound
 is the RUN's admission control — how many non-terminal rows the run may
@@ -26,9 +26,9 @@ re-claim resumes FROM THE CURSOR, and the blocked page emits fresh (it
 never ran — nothing was written). The degradation is the dispatch band's
 latency, never unbounded materialization.
 
-Red-first: the bound pins ran RED against the tree before the fence
+Failing-first: the bound pins ran RED against the tree before the fence
 existed (the declared surface absent — the TypeError IS the red); the
-unbounded variant's blow-out is the convicted red, captured live.
+unbounded variant's blow-out is the rejected red, captured live.
 Captured: ``.measurements/t20-backpressure-*.txt``.
 """
 
@@ -193,7 +193,7 @@ async def test_t20_emit_blocks_at_the_declared_bound(
     after_children = await committed_children(wf_conn, wf_schema, source_id)
     t20_redlog.red(
         "t20-backpressure-block",
-        "the bound REMOVED (the unbounded variant — the convicted red, "
+        "the bound REMOVED (the unbounded variant — the rejected red, "
         "test_t20_unbounded_emit_is_the_convicted_red): the same fast "
         "source emits page 1 immediately and the outstanding count blows "
         "the bound — unbounded materialization",
@@ -309,7 +309,7 @@ async def test_t20_unbounded_emit_is_the_convicted_red(
         )
     blown = await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id)
     assert blown > BOUND, (
-        f"the convicted red did not reproduce: the unbounded emit reached "
+        f"the rejected red did not reproduce: the unbounded emit reached "
         f"{blown}, the bound is {BOUND}"
     )
 

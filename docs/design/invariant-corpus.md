@@ -14,8 +14,8 @@ document defines the process that closes that gap.
 2. **Pin it.** The invariant gets a deterministic test (virtual clock, forced
    interleave, real-PG backdating - see `tests/test_rt_conservation_chaos.py`
    and `tests/test_attack_livelock_pins.py` for the established patterns).
-3. **Attack it.** Red-team the pin: mutation-test the src it guards (the pin
-   must red), and compose it with OTHER failures (single-failure tests miss the
+3. **Attack it.** Mutation-test the source the pin guards (the pin must
+   fail), and compose it with OTHER failures (single-failure tests miss the
    interleavings where real incidents live).
 4. **Merge only against the corpus.** A PR that touches a seam must say which
    corpus entries cover it.
@@ -47,7 +47,7 @@ the pin name that proves it, and its status (EXISTS / MISSING / ADDED).
 - **The full suite** on every PR - but understood correctly: it proves the
   encoded behaviors. The corpus + audit are what force the encoding to be
   complete.
-- **Combined-state red-team**: after every batch of src-affecting merges, the
+- **Combined-state attack**: after every batch of src-affecting merges, the
   merged state is attacked as a single system before the next src PR merges.
-  The 2026-09-22 regressions were found by reviewers, not by CI - the red-team
+  Past regressions were found by review, not by CI - the attack
   pass exists so the next one is found by a pin in CI instead.

@@ -495,6 +495,73 @@ buckets alongside old ones (a temporary over-admission window). Drain
 affected queues before deploying payload model changes that affect key
 derivation.
 
+### Workflow rows carry a fairness cohort
+
+> **Unreleased.** The dispatch BEHAVIOR change is confined to
+> `round_robin` queues hosting workflows; the STORAGE rides every
+> workflow row on every queue mode.
+
+Every claimable workflow row (static steps, fork/emit children, join
+nodes, outbox-drained consumers) is now born with its run's `flow_id`
+as `jobs.fairness_key`, so on a `round_robin` queue each workflow run
+dispatches as its own cohort — previously every workflow row collapsed
+into the single `__null__` cohort and drained as one FIFO stream, and
+a deep run could starve a shallow one. Queues serving no workflows see
+no dispatch change; vanilla enqueue callers still pass `fairness_key`
+explicitly. On `strict_fifo` queues the stamp is stored and ignored
+(the claim order is unchanged).
+
+**The storage face (every queue mode):** the stamp is a 36-char uuid
+text on every workflow row — about 40 B on the row itself, live until
+the row archives/prunes — and, while the row is `pending`, the same
+value in the probe indexes' key columns: the common pending probe
+(`jobs_round_robin_probe_idx`, partial on `pending`) carries EVERY
+pending row's stamp, and the population probes add a SECOND entry per
+pending wf row — `jobs_unrouted_round_robin_probe_idx` for the
+producer-placed rows, `jobs_assignment_routed_probe_idx` for the
+re-pended rows (the entries leave when the row leaves `pending`).
+Vanilla rows carry NULL: no workflow-face storage, no workflow-face
+index change (a producer's own user cohort rides the same indexes by
+design).
+
+**The pre-upgrade face:** rows still `pending` from the pre-stamp code
+keep the NULL cohort — the old code stamps nothing and no re-pend path
+ever touches the column — so they drain in the `__null__` FIFO cohort
+until they terminalize. The post-phase migration backfills the cohort
+for EVERY workflow row — terminal rows included (the full-history
+top-up: one statement over the flow-nodes expression index, the
+write-once column takes its value once) — and adds the structural
+backstop (`jobs_wf_fairness_cohort_check`, `NOT VALID`): every workflow
+row written after it carries its run's cohort — a regression's
+unstamped insert is refused by the database itself.
+
+**The deploy face (the HOW):** apply `taskq migrate up --phase pre` as
+the pre-deploy job while the workers roll (the pre phase for this
+feature is empty — the stamp rides the existing column); apply
+`taskq migrate up --phase post` once, by hand, AFTER THE LAST WORKER IS
+UP; then `VALIDATE CONSTRAINT jobs_wf_fairness_cohort_check` (the
+same two-phase pattern the denial-counters and retry-curve migrations
+document). THE BREAKAGE, PLAINLY: once the post phase is applied, an
+old worker cannot write workflow WORK — the flow ROOT row is exempt
+(its insert passes), but the STATIC NODE INSERTS are refused, so the
+old worker's `create_flow` still fails, and its forks and emits refuse
+the same way. The mixed old/new worker wave is viable in the
+PRE-PHASE WINDOW ONLY; schedule the post phase after the wave
+completes. The restart-based path cannot do this for you:
+`TASKQ_MIGRATE_ON_START` (honoured only by `taskq ui serve`) and the
+lifecycle migration path apply the PRE PHASE BY DEFAULT — the post
+phase stays behind an explicit `taskq migrate up --phase post` on an
+operator's decision, never a process lifecycle event.
+
+**The keyed rolling-deploy face:** a keyed admission term's concrete
+name (`base:key`) is stamped onto the row at the fork, and the worker
+that CLAIMS the row materializes the bucket. During a rolling deploy,
+an OLD worker claiming a keyed-stamped row cannot resolve the concrete
+name against its own (pre-keyed) registry — the row PARKS budget-free
+(the fail-closed arm, the warning naming the bucket) until the
+upgraded workers claim it. The row is never admitted unprotected and
+never lost; the run resumes when the upgrade wave reaches its queue.
+
 ### Dispatch-path malformed payloads fail immediately
 
 > **Unreleased.** Breaking for callers that relied on invalid payloads
@@ -1958,7 +2025,7 @@ changelog becomes the authoritative record and these notes age out.
 
 The workflow round's pending notes, moved here from hand-written
 `CHANGELOG.md` blocks (the generator owns that file — these entries were
-invisible to the release-notes pipeline there; CERT2 F-CERT2-1's cure —
+invisible to the release-notes pipeline there; CERT2 F-CERT2-1's resolution —
 nothing was lost, the move is documented here).
 
 
@@ -1966,7 +2033,7 @@ nothing was lost, the move is documented here).
 
 * **Admin (T11): the workflow-run explorer** — the runs list + the run
   page (`/taskq/workflows/{id}`): the rows-alone Mermaid graph (the
-  collapsed map = one hexagon + the done/total counter), the node drill
+  collapsed map = one hexagon + the done/total counter), the node detail
   panel (the attempts, the trace id, the captured error, one upstream
   hop, the attempt ledger), the holds & decisions panel (the waiting-on
   state + the declared payload schema + the prefilled example), the
@@ -1985,7 +2052,7 @@ nothing was lost, the move is documented here).
 * **CLI (T12): `taskq flows`** — list/status/holds/signal/resolve/
   cancel/retry: one question, one command; the analysis lives in the
   pure module (`workflows/_cli.py`, the `_doctor` seam — the shared
-  §17.5 derivation + the why-stuck arm); the typed door validates the
+  status derivation + the why-stuck arm); the typed door validates the
   shell's JSON against the bound gates (the named pydantic refusal; the
   hold survives); the write verbs ride the engine's audit rows with the
   `cli:<user>` principal; the read verbs are read-only (pinned).
@@ -2052,7 +2119,7 @@ nothing was lost, the move is documented here).
   escape (`JoinSpec(child_driven=True)`) counts terminal children from the
   edge ledger; the `maybe` edge policy (absorbed + SURFACED); the scale
   curve pinned across the boundary (the refit + the 100k-edge plan assert).
-* **Workflows (T08):** the status + progress rollup — the §17.5 derivation
+* **Workflows (T08):** the status + progress rollup — the status derivation
   table (the absorbed-failure clause stated first), the rows-only
   reconstruction (the two-source rule: the ledger for the attempted
   terminals, the node row's error jsonb for the never-granted ones), the
@@ -2373,7 +2440,7 @@ consumed set names none of a projected cohort's queues fails LOUD —
 gated on the vanilla queues' own opt-in law: strict mode
 (`TASKQ_QUEUES_STRICT=1`) REFUSES the boot —
 `WorkflowQueueUnconsumedError` (a `RuntimeError`) naming the unconsumed
-queues, the consumed set, and the two cures: add each queue to a
+queues, the consumed set, and the two remedies: add each queue to a
 worker's `TASKQ_QUEUES` / `--queues`, or route the step elsewhere
 (`step(..., queue=...)` / `@app.actor(queue=...)`). Non-strict boots
 proceed with the ONE aggregated `workflow-cohorts-on-unconsumed-queues`
@@ -2391,7 +2458,7 @@ is not a thing. One app's declaration tightens the gate for every
 co-resident app too: in a process importing several apps,
 `queues_strict=True` on ONE app makes the gate strict over the WHOLE
 projected cohort set — a co-resident app's sibling-served cohorts
-refuse as well (the refusal names the queues and the cure). The check
+refuse as well (the refusal names the queues and the remedy). The check
 runs before the cohorts'
 `actor_config` sync, so a refusing process writes nothing; a worker
 consuming nothing at all keeps the separate `worker-consumes-no-queues`
@@ -2853,7 +2920,7 @@ constraint cannot carry an expression), so the table's bare
 owed: variant history exists for databases that applied PREVIOUSLY
 PUBLISHED bytes, and no database ever applied these. If you applied a
 pre-release build that carried the older constraint: the files' checksums
-changed, and `taskq migrate status` will name the drift — the cure is the
+changed, and `taskq migrate status` will name the drift — the remedy is the
 same as the published-variants discipline below, except the honest
 bookkeeping here is "this pre-release build's ledger refers to a draft of
 01.00.24 that was never published"; re-run the round's files on a fresh
@@ -2890,3 +2957,20 @@ and the guard degrades to fail-closed refusal if an install loses them) —
 adding one is a PR, never a runtime knob. Never add a variant for a file
 that has not actually shipped amended bytes: a variant legitimises a
 checksum forever.
+
+## The flow-history retention round (01.00.35) — the sweep arms' indexes
+
+Migration `01.00.35_01` builds the `flow_id` indexes the flow-history
+retention arms' delete legs lean on (`wf_edge`, `wf_join_fire` — the
+file's own checked-against-the-existing-set analysis explains why the
+other three ledger tables need none). See [Workflows](workflows.md) for
+the arms' contract.
+
+**The migration's bytes are frozen.** Once a migration file exists on any
+branch a database could have applied, its bytes are checksum-frozen — tag or
+no tag. The ledger's checksum covers every byte, comments included, so a
+comment-only edit (a name scrub included) is checksum drift for every
+database that applied the original bytes: the drift warning fires on that
+database's next `migrate` and never stops. A documentation scrub that cannot
+preserve bytes does not touch migrations; prose fixes ride the next
+migration that touches the same tables, or not at all.

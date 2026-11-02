@@ -308,7 +308,7 @@ def _job_row_from_record(rec: "asyncpg.Record") -> JobRow:
         retry_jitter=rec["retry_jitter"],
         assignment_routed=rec["assignment_routed"],
         claim_epoch=rec["claim_epoch"],
-        # The fan-out ledger (LIB-2), read back on every row read, hot and
+        # The fan-out ledger, read back on every row read, hot and
         # archive tiers alike (the archive mirror carries the column) —
         # the F2 review fix: the column was write-only on PG, written by
         # enqueue and dropped by every read.

@@ -1,4 +1,4 @@
-"""Red-team attacks on ``max_pending`` backpressure overshoot (real PG + unit pin).
+"""Adversarial review attacks on ``max_pending`` backpressure overshoot (real PG + unit pin).
 
 Hypothesis: ``max_pending`` is a check-then-insert count
 (``src/taskq/backend/_enqueue.py``) with no serializing lock and no

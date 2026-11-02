@@ -61,8 +61,8 @@ async def sys_ledger(
     per-test budgets (240s) must be spent on the SCENARIO, not on one
     statement the server wedged on. The dead-socket half (the server
     never sees the statement at all) is the client-side bounds' job —
-    see ``delete_tagged_resilient`` and the convicted module's read
-    bounds (the system-e2e (17) lane's conviction, run 38053606389).
+    see ``delete_tagged_resilient`` and the rejected module's read
+    bounds (the system-e2e (17) lane's recorded finding, run 38053606389).
     """
     import asyncpg as _asyncpg
 

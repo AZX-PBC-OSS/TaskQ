@@ -40,8 +40,8 @@ async def test_get_redis_pool_yields_pingable_client(private_redis_url: str) -> 
         # when a band landed on the ping (measured 2026-09-27 on a
         # v1.39.0 Dragonfly replica: consecutive 5s-budget pings turned
         # into TimeoutError-at-read, the exact CI signature). The DURABLE
-        # cure is the private broker, not a bigger window - every
-        # budget-stretch cure found the next exposed ping in the next
+        # fix is the private broker, not a bigger window - every
+        # budget-stretch fix found the next exposed ping in the next
         # leg (this pin, then test_worker_deps's). The retry window is
         # RETAINED as belt-and-braces for the private container's first
         # handshake under runner load; it is DERIVED (the dd4572ff

@@ -1,6 +1,6 @@
-"""THE OFF-BY-ONE RULE'S EXEMPTION PINS — the docs-exemption round's cure.
+"""THE OFF-BY-ONE RULE'S EXEMPTION PINS — the docs-exemption round's fix.
 
-THE CONVICTION (today, twice): main's head-stamp lint job reds on EVERY
+THE RECORDED FINDING (today, twice): main's head-stamp lint job reds on EVERY
 merge — including #696's DOCS-ONLY merge (``LEDGER.md`` alone) — because
 the off-by-one rule's diff half (``scripts/verify_evidence_heads.py``'s
 ``_source_changes_since``) exempted only ``.measurements/`` (``.github/``
@@ -27,7 +27,7 @@ migrations, ``examples/`` (imported by the smoke tests — behavior),
 ``scripts/`` (the gates themselves), ``benchmarks/`` (the measurement
 pins read them).
 
-THE METHOD (new for this pack, the rv2-13 subprocess seam): the
+THE METHOD (new for this pack, the subprocess seam): the
 off-by-one rule's diff half is judged against the REPO'S OWN HEAD, and a
 script's ``REPO`` is its own home — so each pin builds a THROWAWAY GIT
 REPO in a tmp dir, copies the verifier into it BYTE-IDENTICAL (the copy
@@ -38,11 +38,11 @@ second commit. The git env is hermetic (no ambient global/system config
 — a machine's ``commit.gpgsign`` or hooks must never reach the pins'
 commits).
 
-The findings (each WAS the live conviction — the docs-only estates
-exited rc=1 before this branch's cure; the red-first tails are the
-cure's own receipt):
+The findings (each WAS the live recorded finding — the docs-only estates
+exited rc=1 before this branch's fix; the failing-first tails are the
+fix's own receipt):
 
-* F-X1 — THE DOCS-ONLY MERGE STALIFIES (CURED): a claim recorded on the
+* F-X1 — THE DOCS-ONLY MERGE STALIFIES (FIXED): a claim recorded on the
   source-final base H; the commits since H carry ``LEDGER.md`` /
   ``docs/**`` / the root ``*.md`` / ``README*`` / ``LICENSE`` /
   ``.gitignore`` / ``.github`` (one member per leg, the #696 shape
@@ -51,27 +51,27 @@ cure's own receipt):
   real, member by member.
 * F-X2 — THE TEETH: the same two-step shape, but the merge's delta
   touches a BEHAVIORAL path — the claim is STALE, the verifier reds
-  with its own named verdict. THE EDGE: this passed BEFORE the cure
-  too; it must KEEP passing — the cure widens the exemption set, never
+  with its own named verdict. THE EDGE: this passed BEFORE the fix
+  too; it must KEEP passing — the fix widens the exemption set, never
   the teeth.
-* F-X3 — ONE LAW, TWO FACES: the redlog guard's live/history scoping
+* F-X3 — ONE LAW, TWO FACES: the failure log guard's live/history scoping
   (``tests/_wf_fixtures.source_changes_since``) MIRRORS the verifier's
   diff half. The faces must carry the SAME sets — the full exclusion
   set, the NARROW set the docs-derived stems fall back to, and the
   docs-sensitive prefix tuple — a drift is one law reading two ways
   (the CI verifier greens a docs-only merge the suite's guard reds, or
   the reverse).
-* F-X4 — THE EXEMPTION'S OWN EDGE (the review round's cure, red-first):
+* F-X4 — THE EXEMPTION'S OWN EDGE (the review round's fix, failing-first):
   the DOCS-DERIVED stems — ``mkdocs-strict*`` (mkdocs builds ``docs/``
   strict), ``docs-examples*`` (the docs-example tests'
   ``tests/_docs_examples.py::DOC_ROOTS = ("docs", "README.md")``
   EXECUTE the fences) and the ``docs-lane*`` kinds — have the docs
   estate among their BATTERY'S INPUTS, so for them a docs-only merge
   IS a source change: the exemption set falls back to the NARROW one
-  and the claim goes STALE. RED-FIRST: the round-1 cure's verifier
+  and the claim goes STALE. FAILING-FIRST: the round-1 fix's verifier
   applied the docs exemption to EVERY stem and called these fresh —
-  the reds are this cure's receipt.
-* F-X5 — THE ROUND-1 CURE'S LEG KEEPS: the SAME docs-only merge
+  the reds are this fix's receipt.
+* F-X5 — THE ROUND-1 FIX'S LEG KEEPS: the SAME docs-only merge
   against a PLAIN stem (no docs-sensitive prefix) stays FRESH — the
   fallback narrows the exemption for the docs-derived stems only,
   never for the estate.
@@ -94,7 +94,7 @@ import importlib.util
 import json
 import os
 import shutil
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the rv2-13 pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
 import sys
 from pathlib import Path
 from typing import cast
@@ -197,7 +197,7 @@ def _stamp_estate(repo: Path, base_sha: str, stem: str = "proof-stem") -> None:
 def _run_verifier_copy(repo: Path) -> subprocess.CompletedProcess[str]:
     """The verifier COPY as a subprocess, cwd = the throwaway repo (the
     copy's ``REPO`` is its own home) and the estate passed explicitly —
-    the rv6 pack's ``PYTHONPATH`` seam: the venv's taskq resolves, the
+    the pack's ``PYTHONPATH`` seam: the venv's taskq resolves, the
     git face resolves to the throwaway repo. The ambient
     ``GITHUB_EVENT_PATH`` is neutralized (the F-D5 control)."""
     return subprocess.run(  # noqa: S603  # Why: the interpreter is sys.executable, the script is the repo's own verifier copied byte-identical; fixed argv, no shell.
@@ -266,7 +266,7 @@ def test_a_docs_only_merge_of_one_member_does_not_stalify(
     CANNOT change what the capture verifies — the source + test tree is
     content-identical — so the off-by-one rule must hold the claim
     FRESH (rc=0). The first cut's rule exempted only ``.measurements/``:
-    each leg red here before the cure (the red-first tails are the
+    each leg red here before the fix (the failing-first tails are the
     commit's receipt)."""
     repo, base = _init_repo(tmp_path)
     _stamp_estate(repo, base)
@@ -314,8 +314,8 @@ def test_a_behavioral_change_since_the_claimed_head_still_stalifies(
     """F-X2 — THE LAW'S TEETH, member by member: the same two-step
     shape, but the merge's delta touches a BEHAVIORAL path ({why}) — the
     exemption must never reach it. The claim is STALE, the verifier reds
-    with its own named verdict. This passed BEFORE the cure too; it must
-    KEEP passing — the cure widens the exemption set, never the
+    with its own named verdict. This passed BEFORE the fix too; it must
+    KEEP passing — the fix widens the exemption set, never the
     teeth."""
     repo, base = _init_repo(tmp_path)
     _stamp_estate(repo, base)
@@ -331,7 +331,7 @@ def test_a_behavioral_change_since_the_claimed_head_still_stalifies(
         "The output:\n" + proc.stdout + proc.stderr
     )
     assert "is stale — recorded on" in proc.stdout, (
-        f"F-X2: the {touched} conviction must be the STALE verdict (the "
+        f"F-X2: the {touched} recorded finding must be the STALE verdict (the "
         "head-stamp law's own named words), not some other failure. "
         "The output:\n" + proc.stdout + proc.stderr
     )
@@ -341,7 +341,7 @@ def test_a_behavioral_change_since_the_claimed_head_still_stalifies(
 
 
 def test_the_in_suite_mirror_carries_the_verifiers_exclusion_set() -> None:
-    """F-X3 — ONE LAW, TWO FACES: the redlog guard's live/history
+    """F-X3 — ONE LAW, TWO FACES: the failure log guard's live/history
     scoping (``tests/_wf_fixtures.source_changes_since``) mirrors the
     verifier's diff half. The faces must carry the SAME sets — the full
     exclusion set, the NARROW set the docs-derived stems fall back to,
@@ -349,7 +349,7 @@ def test_the_in_suite_mirror_carries_the_verifiers_exclusion_set() -> None:
     two ways: a claimed head one face calls fresh the other calls stale
     (the docs-exemption round's own risk: the mirror fixed while the
     verifier lagged re-reds the lint job, and the reverse re-reds the
-    redlog guard on a docs-only merge)."""
+    failure log guard on a docs-only merge)."""
     verifier = _verifier_law_constants()
     faces: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
@@ -395,9 +395,9 @@ def test_a_docs_only_merge_stalifies_a_docs_derived_stem(
     capture's verdict was measured against. For these stems the docs
     exemption must not apply: the exclusion set falls back to the
     NARROW one and a docs-only merge goes STALE, exactly as a src/
-    merge would. RED-FIRST: the round-1 cure's verifier applied the
+    merge would. FAILING-FIRST: the round-1 fix's verifier applied the
     docs exemption to EVERY stem and called these fresh — the reds are
-    this cure's receipt."""
+    this fix's receipt."""
     repo, base = _init_repo(tmp_path)
     _stamp_estate(repo, base, stem=stem)
     target = repo / touched
@@ -413,16 +413,16 @@ def test_a_docs_only_merge_stalifies_a_docs_derived_stem(
         "goes stale. The output:\n" + proc.stdout + proc.stderr
     )
     assert stem in proc.stdout, (
-        f"F-X4: the conviction must name the stem under pin ({stem}). "
+        f"F-X4: the recorded finding must name the stem under pin ({stem}). "
         "The output:\n" + proc.stdout + proc.stderr
     )
 
 
-# ── F-X5: the round-1 cure's leg keeps — a plain stem stays fresh ────────
+# ── F-X5: the round-1 fix's leg keeps — a plain stem stays fresh ────────
 
 
 def test_the_same_docs_only_merge_keeps_a_plain_stem_fresh(tmp_path: Path) -> None:
-    """F-X5 — THE ROUND-1 CURE'S LEG KEEPS: the SAME docs-only merge
+    """F-X5 — THE ROUND-1 FIX'S LEG KEEPS: the SAME docs-only merge
     (``LEDGER.md`` + ``docs/`` together, the #696 shape) against a
     PLAIN stem — no docs-sensitive prefix, a battery that cannot read
     the docs estate — stays FRESH (rc=0). The per-stem fallback narrows
@@ -437,8 +437,8 @@ def test_the_same_docs_only_merge_keeps_a_plain_stem_fresh(tmp_path: Path) -> No
     assert proc.returncode == 0 and "the head-stamp law holds" in proc.stdout, (
         "F-X5: the docs-derived fallback STALIFIED a PLAIN stem — the narrow "
         "set is for the stems whose batteries read the docs estate, never "
-        "for the estate at large: the round-1 cure's green must survive the "
-        "per-stem cure. The output:\n" + proc.stdout + proc.stderr
+        "for the estate at large: the round-1 fix's green must survive the "
+        "per-stem fix. The output:\n" + proc.stdout + proc.stderr
     )
 
 
@@ -449,7 +449,7 @@ def test_a_mixed_docs_and_src_merge_still_stalifies(tmp_path: Path) -> None:
     """F-X6 — THE MIXED DIFF: ONE commit touching BOTH ``docs/`` and
     ``src/``. The exemption cannot launder a source change behind its
     docs half: the walk judges the WHOLE diff, the ``docs/`` half is
-    exempt and the ``src/`` half convicts — the claim is STALE. (Green
+    exempt and the ``src/`` half rejects — the claim is STALE. (Green
     at base — the teeth already read the whole diff — pinned so the
     mixed shape survives any future per-path refinement.)"""
     repo, base = _init_repo(tmp_path)
@@ -461,7 +461,7 @@ def test_a_mixed_docs_and_src_merge_still_stalifies(tmp_path: Path) -> None:
     assert proc.returncode == 1 and "is stale — recorded on" in proc.stdout, (
         "F-X6: the MIXED commit (docs/ + src/ in one) did NOT stalify the "
         "claim — the exemption must never launder a source change behind its "
-        "docs half: the docs half is exempt, the src half convicts. "
+        "docs half: the docs half is exempt, the src half rejects. "
         "The output:\n" + proc.stdout + proc.stderr
     )
 

@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""RED-TEAM pins: the idempotency key is ONE outcome no matter how the world fails.
+"""The adversarial-review pins: the idempotency key is ONE outcome no matter how the world fails.
 
 Scenario 1 - enqueue-with-key across every failure point between client and
 row. The documented dedup channel for a caller's retry is the idempotency key

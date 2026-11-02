@@ -4,7 +4,7 @@ Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
 home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
 file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
-the unfenced variants kept in this file forever as the convicted shapes.
+the unfenced variants kept in this file forever as the rejected shapes.
 """
 
 # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
@@ -73,26 +73,26 @@ def test_pin_11_redact_before_persist(
     canary = "AKIAIOSFODNN7EXAMPLE"  # the canonical AWS access-key example
 
     # THE RED — A REAL ENGINE MUTATION: the composer runs the hook INSTEAD
-    # OF the chain (the convicted writer); the capture is built through the
+    # OF the chain (the rejected writer); the capture is built through the
     # SHIPPED build_capture with the mutation in place — the canary lands.
     def hook_only(text: str, *, redact: Callable[[str], str] | None = None) -> str:
         return text if redact is None else redact(text)
 
     monkeypatch.setattr(capture_module, "redact_capture", hook_only)
-    convicted = capture_module.build_capture(
+    rejected = capture_module.build_capture(
         policy="errors-only",
         node_input=f"payload with {canary}",
         error=f"boom at {canary}",
         redact=lambda t: t,  # an honest no-op hook — the chain is what's missing
     )
     monkeypatch.undo()
-    assert convicted is not None
+    assert rejected is not None
     engine_redlog.red(
         "pin11-redact-before-persist",
         "capture writer persists the hook's output without the chain pass",
-        {"canary_persisted": canary in json.dumps(convicted)},
+        {"canary_persisted": canary in json.dumps(rejected)},
     )
-    assert canary in json.dumps(convicted), (
+    assert canary in json.dumps(rejected), (
         "the mutated pipeline no longer leaks the canary — the red "
         "comparator is broken (the chain must be load-bearing)"
     )
@@ -189,7 +189,7 @@ def test_pin_16_body_from_definition(
     assert winner is defined_body and loser is defined_body
 
     # THE RED — A REAL ENGINE MUTATION: the dispatch's body resolution
-    # reads a per-call map (the convicted shape) — the CAS loser runs the
+    # reads a per-call map (the rejected shape) — the CAS loser runs the
     # WRONG body.
     per_call_map: dict[str, Any] = {"step_a": mutated_body}
     monkeypatch.setattr(

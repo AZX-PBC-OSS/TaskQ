@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 
-"""Red-team attacks on ``enqueue_with_conn``'s caller-owned connection.
+"""Adversarial review attacks on ``enqueue_with_conn``'s caller-owned connection.
 
 The caller owns the connection handed to ``enqueue_with_conn``; the
 contract under attack is what TaskQ hands BACK on a typed refusal.

@@ -1,4 +1,4 @@
-"""RED-team: NOTIFY listener lifecycle under spontaneous connection loss.
+"""adversarial-review pin: NOTIFY listener lifecycle under spontaneous connection loss.
 
 The reload-triggered rebuild (test_reload_credentials.py), the
 reconnect-re-fires-wake invariant, the backoff jitter sequence, and the

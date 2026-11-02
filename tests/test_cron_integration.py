@@ -912,7 +912,7 @@ async def test_tn3_actor_not_validated_at_create_time(pg_dsn: str) -> None:
         assert sched["consecutive_failures"] >= 1
 
 
-# ── Clock-domain isolation (C7): server clock owns the fire chain ──
+# ── Clock-domain isolation: server clock owns the fire chain ──
 #
 # The due-check is server-side (`next_fire_at <= now()`), so every seed the
 # loop feeds croniter must come from the same domain: the catch-up cutoff

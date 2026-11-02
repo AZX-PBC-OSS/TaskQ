@@ -118,7 +118,7 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
                 "TASKQ_SCHEMA_NAME": schema,
                 "TASKQ_HEARTBEAT_INTERVAL": str(_INTERVAL),
                 "TASKQ_LOCK_LEASE": "60",
-                # The loop-lag watchdog is the CURE's tripwire, not this
+                # The loop-lag watchdog is the FIX's tripwire, not this
                 # pin's instrument: its budgets stay at their defaults in
                 # production. Here the injected block would trip a tight
                 # tier-2 into a force exit mid-measurement, and a tier-1

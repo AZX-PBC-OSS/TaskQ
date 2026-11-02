@@ -1,4 +1,4 @@
-"""Red-team: workgroup TOML validation gaps beyond the known provider opt-out.
+"""Adversarial review: workgroup TOML validation gaps beyond the known provider opt-out.
 
 Two config shapes pass ``WorkgroupConfig.from_toml`` validation today
 that cannot produce a working child:

@@ -1,5 +1,5 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: round-trip fidelity of the serialization boundary for
+"""Adversarial review: round-trip fidelity of the serialization boundary for
 exotic-but-legal and adversarial-but-representable values.
 
 Pins the DESIRED observable at the ``taskq._json`` boundary (orjson):

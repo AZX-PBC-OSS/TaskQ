@@ -1,13 +1,13 @@
 """T27's pins — THE TYPED ROUTE AT THE GRAPH LEVEL (``route(promise, arms)``).
 
-THE CONVICTION (the reviewer's, lived on the routing-proof corpus): the
+THE RECORDED FINDING (the reviewer's, lived on the routing-proof corpus): the
 chain's route works but the chain is graph-INVISIBLE (no join-back, the
 items untyped, one placement per chain, the enum middleman), and the graph
-DSL's ``skip=``-predicates are STRINGLY — the live conviction: a "video"
+DSL's ``skip=``-predicates are STRINGLY — the live recorded finding: a "video"
 tag skipped BOTH arms and the run terminalized SUCCEEDED having routed
 NOTHING (the exact silent drop ``RouterNotTotal`` exists to prevent).
 
-THE CURE (T27 — the ticket is ``dag-research/tickets/T27-typed-route.md``):
+THE FIX (T27 — the ticket is ``dag-research/tickets/T27-typed-route.md``):
 the union MEMBERS key a route dict at the graph level —
 
     route(source_promise, {ImageItem: RouteArm(body=process_image, queue="gpu"),
@@ -22,7 +22,7 @@ keys, named), the validator's E15-route-totality (the checker-independent
 re-proof from the compiled graph), and the runtime ``RouterNotTotal`` (the
 no-match element dies loudly — the skip-silent shape is DEAD).
 
-Red-first: every pin below ran against the base head ``d0491207`` BEFORE
+Failing-first: every pin below ran against the base head ``d0491207`` BEFORE
 the surface existed (the lazy imports raise ``ImportError`` — the red
 receipt: ``.measurements/t27-typed-route-reds.txt``); the greens are the
 built code's evidence. Captured: ``.measurements/t27-*.txt``.
@@ -98,16 +98,18 @@ async def process_audio(ctx: object, item: AudioItem) -> AudioResult:
 
 
 async def lying_media_source(ctx: StepContext) -> list[ImageItem | AudioItem]:
-    """THE BODY THAT LIED (the reviewer's live conviction, inverted): the
+    """THE BODY THAT LIED (the reviewer's live recorded finding, inverted): the
     declared union is ImageItem | AudioItem but a "video" element rides
-    the list — at the pre-cure heads this element skipped BOTH arms (the
+    the list — at the pre-fix heads this element skipped BOTH arms (the
     stringly skip face) and the run terminalized SUCCEEDED having routed
-    NOTHING. The cast IS the drill (the runtime door exists for the body
+    NOTHING. The cast IS the scenario (the runtime door exists for the body
     that lies about its type — the checker cannot see a cast)."""
     ghost: object = VideoItem(doc_id="vid-999")
     return [
         ImageItem(doc_id="d1", uri="s3://b/d1.png"),
-        cast("ImageItem | AudioItem", ghost),  # the "video" tag — the live conviction's element
+        cast(
+            "ImageItem | AudioItem", ghost
+        ),  # the "video" tag — the live recorded finding's element
         AudioItem(doc_id="d2", uri="s3://b/d2.wav"),
     ]
 
@@ -119,7 +121,7 @@ def wire_the_scenario(
 ) -> None:
     """Wire the reviewer's exact scenario on *app*: the source step → the
     typed route (the two placements) → the typed-sum join (the terminal).
-    The lazy imports ARE the red-first door: at the base head they raise
+    The lazy imports ARE the failing-first door: at the base head they raise
     ``ImportError`` and every pin xfails."""
     from taskq.workflows import RouteArm, build, route, step
 
@@ -191,7 +193,7 @@ def test_r1_e15_route_totality_reds_the_validator() -> None:
     """THE VALIDATOR'S OWN DOOR (the checker-independent fence): E15 —
     the next free rule id — re-proves the route's totality from the
     COMPILED graph (public, mutable data — E3's precedent: the rule owns
-    the shape injected into it). Both directions convict: a MISSING
+    the shape injected into it). Both directions reject: a MISSING
     member and an UNKNOWN member, each named."""
     from taskq.workflows import RouteArm, WorkflowApp, build, route, step
     from taskq.workflows.api._validate import WorkflowValidationError, validate_compiled
@@ -247,7 +249,7 @@ async def test_r1_the_video_element_dies_loud_at_runtime(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE LIVE CONVICTION INVERTED: the same "video" scenario — a
+    """THE LIVE RECORDED FINDING INVERTED: the same "video" scenario — a
     third-type element where the route expects the declared union — now
     DIES LOUDLY: the source row terminal-FAILED with
     ``error_class='RouterNotTotal'``, NO child routed (the skip-silent
@@ -352,7 +354,7 @@ async def test_r3_the_arm_bodies_receive_their_declared_models(
 ) -> None:
     """R3: the arm bodies' params are the TYPED MODELS — the runner's
     codec validates the jsonb element into the arm's declared annotation
-    (the chain's dict face, the convicted gap, never exists here): the
+    (the chain's dict face, the rejected gap, never exists here): the
     arms' own attribute access proves the element arrived AS its type,
     and the rows carry the arms' own returns."""
     from taskq.workflows import FlowRunner, WorkflowApp
@@ -379,7 +381,7 @@ async def test_r3_the_arm_bodies_receive_their_declared_models(
 
 
 def test_r3_a_duck_typed_arm_param_refuses_at_build() -> None:
-    """THE DUCK-SHAPED HOLE (E5's own conviction shape, at the route's
+    """THE DUCK-SHAPED HOLE (E5's own recorded finding shape, at the route's
     arms): an arm body whose param is a plain dict (or unannotated/Any)
     consumes the element UNVALIDATED — the route is the typed boundary
     and the duck arm is the hole it exists to close. E15 refuses at

@@ -5,14 +5,14 @@ index + the pending-children aggregate, as NUMBERS for the PR body.
 
 Run against one PG server, once per tree, on separate databases/schemas:
 
-    # BASELINE (origin/main checkout — the column does not exist there):
+    # BASELINE (an origin/main checkout — the column does not exist there):
     python scripts/measure_parent_id_cost.py \
-        --src /tmp/opencode/baseline670/src --dsn $DSN --schema bench_base \
+        --src <baseline-checkout>/src --dsn $DSN --schema bench_base \
         --seed 100000 --stages write,migration
 
     # FEATURE (this tree — column + index + the staged reads):
     python scripts/measure_parent_id_cost.py \
-        --src /tmp/opencode/feat670/src --dsn $DSN --schema bench_feat \
+        --src <this-tree>/src --dsn $DSN --schema bench_feat \
         --seed 100000 --stages write,count
 
 The ``migration`` stage (baseline tree only, by construction) times the

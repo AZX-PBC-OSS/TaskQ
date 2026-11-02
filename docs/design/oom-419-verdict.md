@@ -6,12 +6,11 @@ owed; nothing in this note required a code change.
 
 ## The original symptom
 
-The issue-419 memory-hunt agent (session of 2026-09-21, residue in
-`/tmp/opencode/oom-419`, last activity 02:17) reported the coverage leg's
+An earlier investigation (2026-09-21) reported the coverage leg's
 test process vanishing silently at roughly 98% suite completion: no
 failed tests printed, no summary line, process gone. The working
 hypotheses were the retry-contract warning loop and the hypothesis twin
-pair. That session ended without a verdict.
+pair. That investigation ended without a verdict.
 
 ## What changed on main since the symptom
 
@@ -40,8 +39,8 @@ TOTAL                                          24266    834   6862    510    95%
 
 ## Evidence 2: two local runs, RSS-sampled, both complete
 
-Environment: `origin/main` at `c7277f78`, fresh worktree,
-`uv sync --locked --all-extras --group dev`, 32-core host, 120 GB RAM.
+Environment: `origin/main` at `c7277f78`, a clean checkout with
+`uv sync --locked --all-extras --group dev`.
 Command per run (the protocol's coverage-shaped fast tier):
 
 ```

@@ -5,7 +5,7 @@ Run:  uv run --no-sync python tests/typeprobe/_gate.py
       (the CI `type-probes` job's single step; the corpus is checked under
       THIS directory's own pyrightconfig.json — NOT the root pyproject)
 
-THE E5 DRILL (the engine-faces lane's conviction): the drill wired a
+THE E5 PROBE (the engine-faces lane's recorded finding): the test wired a
 ``list[Word]`` producer into a ``list[str]`` consumer — BUILD-TIME
 VALIDATION PASSED and the run died at RUNTIME with a pydantic
 ValidationError on every attempt. The typed wiring's law (the checkers +
@@ -22,12 +22,12 @@ cannot be misread):
   the covariant promise + the invariant list make the ELEMENT mismatch
   the checker's error, on both pinned checkers (the MUST_ERROR probe
   below, drill-typed: a MODEL's list into a SCALAR's list — the exact
-  wound the drill's pydantic ValidationError showed at runtime).
+  wound the scenario's pydantic ValidationError showed at runtime).
 * THE VALIDATOR'S FACE — the DECODED-payload flow: the bodies take
   decoded data, not handles, so the wiring call itself is erased
   (``*args: object``) and the checkers CANNOT see the edge's payload
   there. The wire-type walk was PROBED and refused honestly: a precise
-  ``step`` overload for the single-promise list seam cannot convict
+  ``step`` overload for the single-promise list seam cannot reject
   while a permissive fallback overload exists — the fallback always
   matched last (the seam the fallback erases is the two-faces boundary
   of ``wf_generic_step_negative_types``'s wiring-site probe, still
@@ -73,7 +73,7 @@ def _str_join_consumer(p: Promise[list[str]]) -> object:
 
 
 def probe_list_element_handle_mismatch() -> None:
-    """THE DRILL'S ELEMENT MISMATCH, on the handle: ``Promise[list[Word]]``
+    """THE ELEMENT MISMATCH, on the handle: ``Promise[list[Word]]``
     is not ``Promise[list[str]]`` — the covariant promise + the invariant
     list make the MODEL's-list-into-a-SCALAR's-list wiring the checker's
     error on both pinned checkers. This is the checker half of the law:
@@ -93,7 +93,7 @@ def probe_list_element_handle_mismatch() -> None:
 def probe_matching_list_element_is_the_green_face() -> None:
     """The element law's GREEN face — the element types AGREE — must stay
     clean under both checkers (the zero-false-positive budget: the law
-    convicts the mismatch, never the wiring)."""
+    rejects the mismatch, never the wiring)."""
     app = WorkflowApp()
 
     @app.workflow("probe_list_elem_ok")
@@ -105,11 +105,11 @@ def probe_matching_list_element_is_the_green_face() -> None:
 
 
 def probe_wiring_site_decoded_payload_is_the_validators_face() -> None:
-    """THE HONEST GAP — deliberately NOT an asserted probe: the drill's
+    """THE HONEST GAP — deliberately NOT an asserted probe: the scenario's
     wiring site itself (the consumer body takes the DECODED
     ``list[str]``; the promise carries ``list[Word]``). The checkers do
     NOT flag this call — the verbs' args are erased (``*args: object``),
-    and the wire-type walk cannot convict while the permissive fallback
+    and the wire-type walk cannot reject while the permissive fallback
     erases the seam (probed; see the module docstring's two-faces
     section). ``validate()``'s ``E5-incompatible-consumer`` element arm
     owns it at build — this line must stay CLEAN under both checkers (a

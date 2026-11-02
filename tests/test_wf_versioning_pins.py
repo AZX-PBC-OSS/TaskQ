@@ -9,12 +9,12 @@ claim seam (D1's resolution is per-claim, never per-run), and the
 §22.1 stamp (``jobs.code_version`` — the per-node canonical content
 hash written at claim) records WHICH code ran each row.
 
-Red-first evidence: the pins ran against the PRE-IMPLEMENTATION tree —
+Failing-first evidence: the pins ran against the PRE-IMPLEMENTATION tree —
 the doc's TODAY was the silent behavior change (no contract text, no
 stamp read taught); the captures ride
 ``.measurements/t29-versioning-pin-reds-pre.txt``. These pins are the
 contract's OWN proof (the adoption + the stamp are the shipped
-semantics, now named and taught), not mutation drills.
+semantics, now named and taught), not mutation scenarios.
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ async def test_redeploy_adopts_the_new_body_at_the_next_node_claim(
         "the pre-contract tree (the doc's TODAY): a mid-flow deploy changed the "
         "behavior SILENTLY — no contract text, no taught stamp read",
         {
-            "conviction": "the stamps landed with T03/§22.1; THIS pin pins the adopt + the stamp together"
+            "recorded finding": "the stamps landed with T03/§22.1; THIS pin pins the adopt + the stamp together"
         },
     )
 

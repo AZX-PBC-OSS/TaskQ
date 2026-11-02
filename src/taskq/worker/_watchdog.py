@@ -644,13 +644,13 @@ class ShutdownWatchdog:
                 # the finally, cancelling this task at the wait point leaks
                 # both inner event-wait tasks until loop teardown.
                 #
-                # THE TEARDOWN'S OWN ORDER (the same cure the reload
+                # THE TEARDOWN'S OWN ORDER (the same fix the reload
                 # schedule's loop carries — the leaked-task guard's
-                # conviction): CANCEL ALL the pending waiters first, THEN
+                # shape): CANCEL ALL the pending waiters first, THEN
                 # reap each. The one-per-lap shape let the reaper's OWN
                 # concurrent cancellation (cancel() landing mid-reap)
                 # re-raise out of the FIRST reap and orphan the SECOND
-                # waiter — the leaked Event.wait the pin convicts. Our
+                # waiter — the Event.wait leak the pin exercises. Our
                 # own cancel still propagates: after the bounded reap
                 # completes, never swallowed.
                 pending = [t for t in (shutdown_started, shutdown_task) if not t.done()]

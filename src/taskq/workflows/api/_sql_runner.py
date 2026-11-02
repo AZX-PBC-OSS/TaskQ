@@ -43,7 +43,7 @@ def _render_fence_tokens(template: str) -> str:
     )
 
 
-#: The flow input key on the root row's payload (cut #7: the input rides
+#: The flow input key on the root row's payload (the input rides
 #: the ROW — a restart between stages reads it back).
 INPUT_KEY = "wf_input"
 
@@ -69,17 +69,17 @@ WHERE id = $1
   )
   AND deps_pending = 0
   -- THE HOLD-STAMP LEG (the fence's last word — the two-driver race's
-  -- wedged-hold cure, the same leg the worker's claimable fence carries
+  -- wedged-hold fix, the same leg the worker's claimable fence carries
   -- since the D2 soak's wedge): the claimable SELECT's snapshot can
   -- PREDATE the hold's mint (the other driver's body minted the hold
   -- between this driver's SELECT and this WRITE) — a stamp that rides
   -- the mint's OWN transaction (the signal row + the held representation
   -- are ONE tx) means the row is HELD: re-claiming it strands the
   -- re-claimer's body parked on a delivery this driver can never see
-  -- (the parked-forever review row the two-drivers pin convicted).
+  -- (the parked-forever review row the two-drivers pin rejected).
   AND NOT metadata ? 'hold'
   -- THE TERMINAL-FLOW FENCE (the fleet's dispatch fence's parity —
-  -- rv6-e1's cure): a node row on a TERMINAL flow is not work — the
+  -- the terminal-flow fence): a node row on a TERMINAL flow is not work — the
   -- flow flip is the cancel's linearization point, and the claim CAS
   -- re-checks the flow status INSIDE its own statement (the same
   -- leg the dispatch fence carries at its own claim seat). A claimable
@@ -105,13 +105,36 @@ RETURNING attempt
 
 NODE_REPEND_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
-SET status = 'scheduled', locked_by_worker = NULL, scheduled_at = now() + ($2::double precision * interval '1 second')
+SET status = 'scheduled', locked_by_worker = NULL, scheduled_at = now() + ($2::double precision * interval '1 second'),
+    -- THE RE-PEND'S OWN PROVENANCE, stamped in the re-pend's own
+    -- statement — atomic with the re-pend, so the curve's evidence is
+    -- the applied value itself, never a poller's reconstruction: the
+    -- applied backoff, the re-pend's instant, and the due instant (one
+    -- now() read — due minus at IS the backoff the statement applied),
+    -- keyed PER ATTEMPT and ACCUMULATED (a later attempt's key wins
+    -- only ITS key; the stamp a row carries after it later SUCCEEDED
+    -- is history, harmless — nothing reads wf_repend as live state;
+    -- the row's own status/scheduled_at columns are the live face).
+    -- The instants ride the ISO-8 face the row's stamps carry (the
+    -- timer wake's payload shape).
+    metadata = metadata || jsonb_build_object(
+        'wf_repend',
+        COALESCE(metadata->'wf_repend', '{}'::jsonb) || jsonb_build_object(
+            $3::int::text,
+            jsonb_build_object(
+                'backoff', $2::double precision,
+                'at', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+                'due', to_char((now() + ($2::double precision * interval '1 second'))
+                               AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+            )
+        )
+    )
 WHERE id = $1
   AND status = 'running'
 RETURNING id
 """
 
-# THE DEADLINE'S RE-PEND (the wf start_to_close cure — the expiry's
+# THE DEADLINE'S RE-PEND (the wf start_to_close bound — the expiry's
 # disposition's own write): the ladder's re-pend shape
 # (NODE_REPEND_SQL_TEMPLATE) with THE CANCEL FENCE IN-STATEMENT and THE
 # BUDGET GATE — the vanilla ``mark_retry``'s own arms mirrored (the same
@@ -128,23 +151,22 @@ RETURNING id
 #     law: a phase-carrying row — the wf cancel's metadata mark OR the
 #     vanilla cancel's own column mark — matches NO arm; the deadline's
 #     backoff must never re-queue a row a cancel in flight owns): the
-#     caller routes the node through the wf terminal door, the C4
+#     caller routes the node through the wf terminal door, the
 #     deferral's cancel_faced shape;
 #   * None — the ZOMBIE (the claim fence matched nothing, a newer
 #     attempt owns the row): the caller records the ledger's 'fenced',
-#     H1.
 #
 # THE CLAIM IDENTITY'S FENCE (the fence legs bind the caller's own claim
 # — the NODE_DEFER_SQL's own shape): the deadline's disposition carries the
 # claim's own identity legs — worker + attempt + claim_epoch, the
-# terminal-mark CAS's full vocabulary. The pre-cure WHERE (id + status +
+# terminal-mark CAS's full vocabulary. The pre-fix WHERE (id + status +
 # the cancel marks) let a ZOMBIE W1's deadline disposition flip a
 # re-minted LIVE W2 row (the 90s wf lease lapses → the reclaim +
 # re-claim as W2 → W1's timer fires → W2's row to 'scheduled', its
 # ledger phantom-runs, its finalize refuses): the row the fence matches
 # must be the row the CALLER'S OWN CLAIM holds, or every arm refuses and
 # the no-match routes to the zombie face (the ledger's 'fenced' record,
-# keyed on the claim's own instant — the C5 shape).
+# keyed on the claim's own instant — the claim-instant shape).
 #
 # Keyed to the ONE claimed node row; the two read arms write nothing.
 NODE_DEADLINE_REPEND_SQL = """\
@@ -175,7 +197,7 @@ repended AS (
       -- terminal mark's fence).
       AND NOT (SELECT exhausted FROM params)
       -- THE CANCEL FENCE (the vanilla mark_retry's own law, mirrored —
-      -- the C1 cure's shape): a phase-carrying row on EITHER carrier
+      -- the phase-carry shape): a phase-carrying row on EITHER carrier
       -- matches NO arm.
       AND j.cancel_phase = 0
       AND NOT j.metadata ? 'cancel_phase'
@@ -199,7 +221,7 @@ cancel_fenced AS (
 SELECT 'repended'::text AS verdict, id FROM repended
 UNION ALL
 -- THE EXHAUSTED VERDICT (a pure read of the params + the two arms'
--- existence — the C4 NODE_DEFER_SQL's own arm order: the cancel mark
+-- existence — the NODE_DEFER_SQL arm order: the cancel mark
 -- outranks the budget's bound, the repended face outranks both). THE
 -- CLAIM IDENTITY'S FENCE rides this arm too: a budget-exhausted
 -- ZOMBIE's deadline is the ZOMBIE's face (no arm matched — the caller
@@ -225,7 +247,7 @@ SELECT p.id, p.step_key, p.result
 FROM {schema}.wf_edge e
 JOIN {schema}.jobs p ON p.id = e.parent_id
 WHERE e.child_id = $1
-  -- THE ABSORBED PARENT'S SLOT (T27's barrier cure — the envelope must
+  -- THE ABSORBED PARENT'S SLOT (T27's barrier fix — the envelope must
   -- not lie in the sum): on an ABSORBING edge (collect | maybe) a
   -- terminal-FAILED parent contributes NO result item to the packed
   -- join — its absence is ON THE RECORD (the join's metadata.failures
@@ -272,7 +294,7 @@ WHERE id = $1
 """
 
 CLAIMABLE_NODES_SQL_TEMPLATE = _render_fence_tokens("""
-SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close FROM {schema}.jobs
+SELECT id, step_key, map_index, attempt, trace_id, payload, start_to_close, metadata FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1
   AND status IN ('pending', 'scheduled')
   AND (scheduled_at IS NULL OR scheduled_at <= now())
@@ -280,7 +302,7 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND step_key <> '__flow__'
   AND NOT metadata ? 'hold'
   -- THE TERMINAL-FLOW FENCE (the fleet's dispatch fence's parity —
-  -- rv6-e1's cure): a terminal/cancelled flow's nodes are UNCLAIMABLE
+  -- the terminal-flow fence): a terminal/cancelled flow's nodes are UNCLAIMABLE
   -- through THIS door too — a bare tick() (the driver's public dispatch
   -- pass, never gated by drive()'s loop-top check) on a dead flow
   -- claims NOTHING and executes NOTHING. The fleet's dispatch carries
@@ -302,7 +324,7 @@ ORDER BY id
 
 #: THE NODE CENSUS (the create-seam's retry-completion read): the run's
 #: node-row count — a nodeless root (the orphan's signature: pending +
-#: zero nodes, the pre-cure debris shape) counts ZERO. The same
+#: zero nodes, the pre-fix debris shape) counts ZERO. The same
 #: lineage-and-not-the-root predicate every node read spells.
 FLOW_NODE_CENSUS_SQL_TEMPLATE = """
 SELECT count(*) FROM {schema}.jobs
@@ -311,7 +333,7 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND step_key <> '__flow__'
 """
 
-#: THE ROOT'S PRIORITY-STAMP READ (the wf-priority cure's ADOPTION leg):
+#: THE ROOT'S PRIORITY-STAMP READ (the priority surface's ADOPTION leg):
 #: ONE bounded primary-key read of the root's
 #: metadata, the fleet door's own SELECT shape
 #: (``_CLAIMED_NODE_READ_SQL_TEMPLATE``'s stamp leg). The arbiter adopted
@@ -399,7 +421,7 @@ SELECT id, step_key, result FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
 """
 
-#: THE FAILURE FACE (the teardown round's cure): the run's newest
+#: THE FAILURE FACE (the teardown fix): the run's newest
 #: terminal-FAILED NODE row (the root's own row carries the propagation
 #: verdict — UnabsorbedNodeFailure — but the NODE row carries the body's
 #: error class + message: the failed run's first question's ANSWER).
@@ -474,14 +496,14 @@ WHERE id = $1
   AND status = 'failed'
 """
 
-#: THE SKIP ENVELOPE'S RE-ARM (H-C4): the run's exit-skipped rows (the
+#: THE SKIP ENVELOPE'S RE-ARM: the run's exit-skipped rows (the
 #: typed early-exit's downstream mark) return to pending with the
 #: envelope CLEARED. A skip is not an attempt (zero ledger rows) — the
 #: re-arm restores exactly the pre-skip shape: a claimable row whose
 #: next claim is its FIRST attempt. The root's own row is out of the
-#: write set (the H-C1 guard's law: the root is not a node).
+#: write set (the root guard's law: the root is not a node).
 #:
-#: THE PREDICATE IS THE ENGINE'S OWN CONTRACT (the round-2 conviction):
+#: THE PREDICATE IS THE ENGINE'S OWN CONTRACT (the round-2 finding):
 #: ``result @> '{"skipped": true}'::jsonb`` — the shape the exit writer
 #: (``SKIPPED_RESULT``/the EXIT_SKIP mark) actually lands, TRUE with
 #: it. The old ``result ? 'skipped'`` was KEY-EXISTENCE: a foreign

@@ -1,20 +1,19 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
 """THE CROSS-RUN STEP CACHE's rv5 HOSTILE-REVIEW pins (feat/taskqflow-cross-run-cache
-@ 0839019c1) — the convicted defects of the T25 lane, pinned asserting the
+@ 0839019c1) — the rejected defects of the T25 lane, pinned asserting the
 SAFE behavior.
 
-Provenance: the rv5 internals review's live convictions, each reproduced
-against this head BEFORE pinning (the pre-pin repro shapes + outputs are in
-the pin pack's RECEIPTS.md; the scripts in the pack's ``repro/``). Per the
+Provenance: the rv5 internals review's live recorded findings, each reproduced
+against this head BEFORE pinning (the pre-pin repro shapes + outputs were captured at the pinning run.) Per the
 doctrine, a LIVE finding is pinned under ``pytest.mark.xfail(strict=True,
-reason="LIVE FINDING rv5-k<id>: …")`` asserting the SAFE behavior — the cure
+reason="LIVE FINDING rv5-k<id>: …")`` asserting the SAFE behavior — the fix
 flips the pin XPASS-strict (a red that says: remove the marker WITH the
-cure). The one GREEN guard (rv5-k2) pins the behavior that is already
-correct (the address IS input-sensitive) and must survive the cures — it is
+fix). The one GREEN guard (rv5-k2) pins the behavior that is already
+correct (the address IS input-sensitive) and must survive the fixes — it is
 the pack's own hole closed (the mutation that drops the input leg reds it;
-the drill's capture is in RECEIPTS.md).
+the scenario's capture is recorded).
 
-The findings (each convicted live; the receipts carry the verbatim reds):
+The findings (each rejected live; the receipts carry the verbatim reds):
 
 * F-K1 (MERGE-BLOCKER) — THE ROUTE-SOURCE WEDGE: ``cache=True`` on a
   typed-route SOURCE is accepted at wiring; run 1 stores; run 2 HITS and
@@ -24,7 +23,7 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   wedges FOREVER with the source row succeeded + the receipt on it
   (observed: ``drive()`` → ``max_ticks``, ``docs`` succeeded with
   ``wf_cache_hit`` naming run 1, zero ``docs.item:*`` rows, ``sum``
-  pending, the root ``running``). THE PIN (either cure satisfies — the
+  pending, the root ``running``). THE PIN (either fix satisfies — the
   wedge must be impossible): the combination is a BUILD REFUSAL naming
   the why, OR the hit re-forks (the children spawn, the join fires, the
   run completes).
@@ -33,9 +32,9 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   must MISS each other's entries (the mutation that drops the input leg
   survives all 11 shipped pins). THE GREEN GUARD: body B cached with
   input X then called with input Y → MISS + re-execute + separate
-  addresses. Green at the head already; the mutation drill (drop the
+  addresses. Green at the head already; the mutation test (drop the
   ``"input"`` leg from ``cache_address``'s doc) reds it — the capture
-  rides RECEIPTS.md.
+  was captured at the pinning run.
 * F-K3 — THE CTX.INPUT EXCLUSION: a cached body reading
   ``ctx.input["tenant"]`` serves the FIRST run's truth to a second run
   with a different ``ctx.input`` (observed: run 2 with
@@ -45,14 +44,14 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   W-rule direction per the house doctrine — the deterministic-looking
   body reading run-scoped state under the cache opt-in): a build-time
   diagnostic (warning-or-refusal) naming the hazard. The docs-only
-  alternative is flagged in PINMAP.md.
+  alternative is flagged in the pin's own docstring.
 * F-K4 — THE CLOSURE HOLE's LAW: the address covers the body's OWN
   source only; a changed HELPER keeps the address. THE PIN (the honest
   minimum, the campaign's docs-numbers pattern): the guide's cache
   section states the law — the address covers the body's own source and
   a changed helper does NOT move the address. (The stronger optional
   leg — a validator note when a cached body calls module-level
-  callables — is NOT pinned; see PINMAP.md. If the lanes cure at root
+  callables — is NOT pinned; the gap is recorded here. If the lanes fix at root
   with transitive hashing, the pin flips.)
 * F-K5 — THE EXIT DEAD-CACHE: ``cache=True`` on an ``Exit``-returning
   body silently never stores (api/_runner.py:727-733's
@@ -60,7 +59,7 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   no-ops SILENTLY (observed: two runs, zero cache rows, the body ran
   both times). THE PIN: refused at the wiring, the combination named
   (the Exit-annotation face is compile-visible). The store-instead
-  alternative is flagged in PINMAP.md.
+  alternative is flagged in the pin's own docstring.
 * F-K6 — THE EVICTION DOOR: no CLI verb / admin endpoint evicts a cache
   entry (raw SQL only — ``taskq cache purge`` exits 2). THE PIN:
   ``taskq cache purge <address>`` exists and works (a stored row is
@@ -78,35 +77,35 @@ The findings (each convicted live; the receipts carry the verbatim reds):
   the ladder): the node never terminal-fails, no ledger 'failed' row
   lands, and the cleared-fault re-drive completes via the hit.
 
-THE RESIDUAL-CURES LANE'S RECONCILED FLIPS (the adoption-with-flip-
+THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
 receipts law — the pack is the acceptance record; the receipt rows are
-in RECEIPTS.md; every flip green x2 at the lane head):
+at the pinning run; every flip green x2 at the lane head):
 
-* K1, K5 — the markers are REMOVED WITH THE CURES (the cache-cures
+* K1, K5 — the markers are REMOVED WITH THE FIXES (the cache-fixes
   lane's shapes: the cached route-source's refusal + the Exit+cache
   wiring refusal — the pins were xpass-strict at the reconciliation
   ground).
-* K3 — the marker removed WITH the cure: the hazard's face is the E18
+* K3 — the marker removed WITH the fix: the hazard's face is the E18
   RULE — a build REFUSAL (``WorkflowBuildError`` at the wiring verb,
   rule ``E18-cache-ctx-input``, the hazard + the remedy named); the
   pin's diagnostic-walk harness predates the rule face and is
   reconciled to it (the refusal face is STRICTER than the diagnostic
   the pin asked — never a weakening).
-* K4 — the marker removed WITH the cure: the closure law ships
+* K4 — the marker removed WITH the fix: the closure law ships
   VERBATIM in the guide's cache section ('A changed HELPER is invisible
   to the address'); the pin's matcher (the not/never spelling in one
   line-span) predates the verbatim and is reconciled to it.
-* K6 — the marker removed WITH the cure: the eviction verb ships as
+* K6 — the marker removed WITH the fix: the eviction verb ships as
   ``taskq wf cache evict`` — DRY-RUN by default, ``--yes`` deletes;
   the pin's ``cache purge <address>`` invocation predates the verb and
-  is reconciled to the cured face (the dry run reports + touches
-  nothing, then ``--yes`` evicts — the cured door's whole law pinned).
+  is reconciled to the fixed face (the dry run reports + touches
+  nothing, then ``--yes`` evicts — the fixed door's whole law pinned).
 * K7 — NOT flipped: the xfail stands at this lane (the hit's
   ``_finalize_success`` is still inside the ladder's try — my own run
-  confirmed the front's verdict: the asymmetry is REAL). The cure
+  confirmed the front's verdict: the asymmetry is REAL). The fix
   touches ``api/_runner.py``'s finalize/ladder path AND the docsfaces
   lane (still in flight) may touch the adjacent absorb path — the
-  single-writer-per-file law: K7's cure dispatches when docsfaces
+  single-writer-per-file law: K7's fix dispatches when docsfaces
   closes. The marker stays; the ledger note carries the dispatch.
 """
 
@@ -266,14 +265,14 @@ async def _cache_rows(conn: asyncpg.Connection, schema: str) -> list[asyncpg.Rec
     return await conn.fetch(f'SELECT * FROM "{schema}".wf_step_cache')
 
 
-# ── F-K1: THE ROUTE-SOURCE WEDGE (either cure satisfies) ────────────────
+# ── F-K1: THE ROUTE-SOURCE WEDGE (either fix satisfies) ────────────────
 
 
 @pytest.mark.integration
 async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE WEDGE MUST BE IMPOSSIBLE — either cure satisfies:
+    """THE WEDGE MUST BE IMPOSSIBLE — either fix satisfies:
 
     * THE BUILD REFUSAL: ``cache=True`` on a typed-route source refuses
       at the wiring/validate door NAMING the why (the route's fork is
@@ -293,7 +292,7 @@ async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
     try:
         compiled = app.get("rv5k1_route_cache")
     except (WorkflowBuildError, WorkflowValidationError) as exc:
-        # THE REFUSAL CURE: the why named (the combination + the cache).
+        # THE REFUSAL FIX: the why named (the combination + the cache).
         message = str(exc)
         assert "cache" in message and ("route" in message or "fork" in message), (
             f"the refusal does not name the route+cache combination: {message!r}"
@@ -323,7 +322,7 @@ async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
     src_row = await _node_row(wf_conn, wf_schema, claim_b.flow_id, "docs")
     assert _meta(src_row).get("wf_cache_hit") is not None, (
         "the second run's source row carries no receipt — the hit never happened "
-        "(this pin's drill REQUIRES the hit path)"
+        "(this pin's scenario REQUIRES the hit path)"
     )
     assert CALLS["k_source"] == 1, "the hit re-executed the source body"
     assert CALLS["k_arm_text"] == 2 and CALLS["k_arm_audio"] == 2, (
@@ -354,9 +353,9 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
     mutation that drops the address's input leg can never ship silently):
     ONE cached body under TWO different wired inputs → the second call
     MISSES the first's entry (the body re-executes) and the two calls
-    hold TWO distinct addresses. The mutation drill (drop the ``input``
+    hold TWO distinct addresses. The mutation scenario (drop the ``input``
     leg from ``cache_address``'s doc) reds this pin — the capture rides
-    the pack's RECEIPTS.md."""
+    the pinning run's record."""
     from taskq.workflows._cache import cache_address
 
     app = WorkflowApp()
@@ -409,7 +408,7 @@ def test_k3_a_cached_body_reading_ctx_input_is_a_build_diagnostic() -> None:
     doctrine — the deterministic-looking body reading run-scoped state):
     ``step(..., cache=True)`` whose body reads ``ctx.input`` is REFUSED
     AT THE WIRING — the E18 rule's face (the reconciled flip: the
-    cache-cures lane landed it as a build REFUSAL, a
+    cache-fixes lane landed it as a build REFUSAL, a
     :class:`WorkflowBuildError` raised by ``build()``/``app.get()``
     itself, not a post-compile diagnostic walk). The rule is named
     ``E18-cache-ctx-input``; the message names the hazard (the address
@@ -443,11 +442,11 @@ def test_k4_the_docs_carry_the_closure_holes_law() -> None:
     helper and watches the stale entry keep serving learns the law here
     or nowhere.
 
-    THE RECONCILED MATCHER (the residual-cures lane's flip — the
-    cache-cures lane landed the law VERBATIM as 'A changed HELPER is
+    THE RECONCILED MATCHER (the residual-fixes lane's flip — the
+    cache-fixes lane landed the law VERBATIM as 'A changed HELPER is
     invisible to the address'): the original regex demanded the
-    not/never spelling in one span and read the cured verbatim as NO
-    law; the matcher now reads the cured spelling (helper … invisible to
+    not/never spelling in one span and read the fixed verbatim as NO
+    law; the matcher now reads the fixed spelling (helper … invisible to
     the address / does not move the address — any spelling of the
     operational half)."""
     guide = (_DOCS / "guides" / "workflows.md").read_text()
@@ -465,7 +464,7 @@ def test_k4_the_docs_carry_the_closure_holes_law() -> None:
         lowered,
     ), (
         "F-K4: the guide names 'helper' but never states the law's operational "
-        "half — that a changed helper does NOT move the address (the cured "
+        "half — that a changed helper does NOT move the address (the fixed "
         "verbatim: 'A changed HELPER is invisible to the address')"
     )
 
@@ -479,7 +478,7 @@ def test_k5_cache_on_an_exit_returning_body_refuses() -> None:
     naming the combination (the Exit finalize is a DIFFERENT terminal —
     the cached envelope can never replay the skipped-downstream record;
     the opt-in is a lie the wiring must refuse). The store-instead
-    alternative is flagged in PINMAP.md."""
+    alternative is flagged in the pin's own docstring."""
     app = WorkflowApp()
 
     @app.workflow("rv5k5_exit_cache")
@@ -519,11 +518,11 @@ async def test_k6_the_cache_purge_verb_evicts(
     after the eviction the row is GONE and the next run MISSES (the body
     re-executes).
 
-    THE RECONCILED INVOCATION (the residual-cures lane's flip — the
-    cache-cures lane landed the verb as ``taskq cache evict``, DRY-RUN
+    THE RECONCILED INVOCATION (the residual-fixes lane's flip — the
+    cache-fixes lane landed the verb as ``taskq cache evict``, DRY-RUN
     by default: the command prints what WOULD go and touches nothing
     until ``--yes``; the bare positional address became the
-    ``--address-prefix`` selector). The reconciled pin drives the cured
+    ``--address-prefix`` selector). The reconciled pin drives the fixed
     verb's WHOLE face: the dry run REPORTS the row and deletes nothing,
     then ``--yes`` deletes (the row is gone, the next run misses)."""
     from typer.testing import CliRunner
@@ -543,7 +542,7 @@ async def test_k6_the_cache_purge_verb_evicts(
     assert len(rows) == 1, "the first run must store exactly one entry"
     address = rows[0]["content_address"]
 
-    # THE DRY RUN (the cured verb's own law): the row is reported, the
+    # THE DRY RUN (the fixed verb's own law): the row is reported, the
     # row SURVIVES — a door that deletes on a bare invocation is the
     # footgun the dry-run default exists to refuse.
     dry = await to_thread(
@@ -554,7 +553,7 @@ async def test_k6_the_cache_purge_verb_evicts(
         f"failed (exit={dry.exit_code}) — output: {dry.output[:300]!r}"
     )
     assert await _cache_rows(wf_conn, wf_schema), (
-        "the DRY RUN deleted the row — the cured verb's law is print-then-touch-nothing until --yes"
+        "the DRY RUN deleted the row — the fixed verb's law is print-then-touch-nothing until --yes"
     )
     # THE EVICTION (--yes): the row is gone.
     result = await to_thread(
@@ -575,12 +574,12 @@ async def test_k6_the_cache_purge_verb_evicts(
 
 
 # ── F-K7: THE CLASSIFIER ASYMMETRY (one fault, one semantics) ────────────
-# THE FLIP (the K7 cure): the strict-xfail marker is REMOVED WITH the
-# cure — the claim tail's machinery boundary classifies the infra fault
+# THE FLIP (the K7 fix): the strict-xfail marker is REMOVED WITH the
+# fix — the claim tail's machinery boundary classifies the infra fault
 # at EITHER finalize face as the reclaim class (the ledger says
 # 'crashed', the ladder unburned, the row re-pended reclaim-eligible,
 # the escape preserved) and the cleared-fault re-drive completes the run
-# via the HIT. The red receipt (the pre-cure live repro) rides the
+# via the HIT. The red receipt (the pre-fix live repro) rides the
 # receipts file's flip row.
 
 
@@ -654,7 +653,7 @@ async def test_k7_the_hit_finalize_infra_fault_is_the_reclaim_class(
         f"the reclaimed run ended {status!r} — the infra fault's reclaim never healed"
     )
     assert CALLS["k7_ocr"] == 1, (
-        "run B executed the body — the whole point of the drill is the HIT path's "
+        "run B executed the body — the whole point of the scenario is the HIT path's "
         "finalize (the body must NEVER run in the hit run)"
     )
     receipt = _meta(await _node_row(wf_conn, wf_schema, claim_b.flow_id, "ocr")).get("wf_cache_hit")

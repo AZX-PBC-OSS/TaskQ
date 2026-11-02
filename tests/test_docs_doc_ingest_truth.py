@@ -4,8 +4,8 @@ doc-ingest.md) is CODE THAT RUNS, and its OUTPUT claims are pinned where
 they are executable (the hostile review of af1b8779, demo lane).
 
 The fence ships four doc-vs-code divergences; three are executable
-claims and pin here, strict-xfail until the fence is cured (the cure
-flips the pin to XPASS-strict — remove the marker WITH the cure):
+claims and pin here, strict-xfail until the fence is fixed (the fix
+flips the pin to XPASS-strict — remove the marker WITH the fix):
 
 * (c) ``create_flow(input=…)`` is ACCEPTED but IGNORED — the ingest
   step's params are baked into the wiring (``IngestBatch(doc_ids=
@@ -23,7 +23,7 @@ PAST the hold, the ``max_ticks`` verdict silently discarded — pins as a
 static doc-truth assertion (the fence must drive ``until="held"`` before
 the resolve). (a) — the bare ``os.environ[...]`` KeyError on the
 undocumented env vars — is a fence-text defect with no feasible
-assertion shape; it lives in DEFECTS.md with the exact cure text.
+assertion shape; it lives in DEFECTS.md with the exact fix text.
 """
 
 from __future__ import annotations
@@ -100,7 +100,7 @@ async def _drive_to_terminal_report(
     return dict(report["value"])
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(b) second face]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(b) second face]; the marker was removed per the designed flip (the confirmation).
 def test_the_fence_drives_to_the_hold_not_past_it(example_fence: str) -> None:
     """The fence must drive ``until="held"`` before it lists and resolves
     the hold — the documented flow (hold → answer it) instead of the
@@ -113,7 +113,7 @@ def test_the_fence_drives_to_the_hold_not_past_it(example_fence: str) -> None:
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(c)]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(c)]; the marker was removed per the designed flip (the confirmation).
 async def test_the_run_input_is_honored(
     module_pg_schema: Any,
     wf_pool: asyncpg.Pool,
@@ -146,7 +146,7 @@ async def test_the_run_input_is_honored(
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(d)]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(d)]; the marker was removed per the designed flip (the confirmation).
 async def test_the_terminal_report_names_the_failures(
     module_pg_schema: Any,
     wf_pool: asyncpg.Pool,
@@ -186,7 +186,7 @@ async def test_the_terminal_report_names_the_failures(
     )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(e)]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(e)]; the marker was removed per the designed flip (the confirmation).
 async def test_the_published_list_names_each_doc_once(
     module_pg_schema: Any,
     wf_pool: asyncpg.Pool,

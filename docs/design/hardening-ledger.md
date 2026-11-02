@@ -30,7 +30,7 @@ Each family: the symptom CI showed, the mechanism, the kill, and the pin.
 3. **The command-budget starvation family** (heartbeat chaos, extend
    reservation leases, renewal probes). Timing-sensitive choreography rode
    connections carrying the 2s command_timeout; under parallel-CI load the
-   budget expires and the assertion never under test reds. Kill: dedicated
+   budget expires and the assertion under test never fires. Kill: dedicated
    no-timeout connections for test choreography (assertions untouched), and
    for the renewal probe, production semantics: a failed beat is tolerated
    exactly as production tolerates it (the isolate line at 3 consecutive).
@@ -52,18 +52,19 @@ Each family: the symptom CI showed, the mechanism, the kill, and the pin.
 
 6. **The clock-domain straddle** (cron singleton parity). Seeds read the
    runner clock while the tick's due predicate reads the PG clock; a ~12ms
-   skew across a grid boundary reds the strict-future assert. Kill: seeds
-   anchored to the PG clock domain; the skew-injection proof (red pre-fix
-   with a 5ms-behind fake clock, green post) is the standard for any
-   two-clock test.
+   skew across a grid boundary fails the strict-future assert. Kill: seeds
+   anchored to the PG clock domain; the skew-injection proof (failing
+   before the fix with a 5ms-behind fake clock, green after) is the
+   standard for any two-clock test.
 
-## Fix holes (found by red-team review of the fixes themselves)
+## Fix holes (found by reviewing the fixes themselves)
 
-A fix gets attacked by a separate agent. These are the holes the fixes
-shipped with; each was closed on the fixing branch before merge.
+A fix gets reviewed on its own merits after it works. These are the
+holes the fixes shipped with; each was closed on the fixing branch
+before merge.
 
 - **Uncommitted deliverable**: a fix whose template edits existed only in the
-  worktree - the committed tree failed its own suite. The red-team's
+  worktree - the committed tree failed its own suite. The reviewer's
   first check is now: does the committed tree contain everything the report
   claims.
 - **Vacuous pins**: a warning-existence pin that stayed green with the
@@ -93,13 +94,13 @@ shipped with; each was closed on the fixing branch before merge.
 - **Absorbed crashes**: teardown reaping that suppressed a residue task's
   real exception. Silent swallowing is a defect even in test infrastructure.
 
-## Ledgered follow-ups (the reviewed cures' known open faces)
+## Ledgered follow-ups (the reviewed fixes' known open faces)
 
-A reviewed cure's known-but-open face, itemized with the same rigor as the
-fix holes above: what the curing commit covers, what stays open, and the
-discipline the open part's future cure owes.
+A reviewed fix's known-but-open face, itemized with the same rigor as the
+fix holes above: what the fix covers, what stays open, and the
+discipline the open part's future fix owes.
 
-- **The chains' priority DECLARATION face** (the wf-priority cure's
+- **The chains' priority DECLARATION face** (the priority surface's
   ledgered follow-up — the feature review's own itemization). The
   priority surface's precedence law resolves every row it materializes —
   except a chain link's own declaration, which has no face today:
@@ -107,25 +108,24 @@ discipline the open part's future cure owes.
   child specs, the chain's fork children) accept no `priority` field, so
   `chain_fork` always resolves the column default — a consumer declaring
   per-chain-link priorities silently lands every link at 0, the exact
-  silent-drop shape the priority cure's other faces refuse at their
-  declaration sites. COVERED by the wf-priority cure: the rows the OUTBOX
+  silent-drop shape the priority surface's other faces refuse at their
+  declaration sites. COVERED by the priority surface: the rows the OUTBOX
   DRAIN materializes (the loop escalation's consumer — an interactive
   run's most latency-sensitive follow-up — and the fired joins' fresh
   item-shape consumers) resolve the run's stamped `wf_priority` (the
   drain's root-metadata join + COALESCE, the fleet door's parse-and-
-  degrade arithmetic mirrored in SQL; pinned red-first in
-  tests/test_wf_priority_pins.py: the escalation lands at the run's
+  degrade arithmetic mirrored in SQL; pinned in
+  tests/test_wf_priority_pins.py (the pin fails on the unfixed engine): the escalation lands at the run's
   override, a malformed or out-of-domain stamp degrades to the column
   default, never wedges the drain). OPEN: the chains' DECLARATION face —
   a `priority=` on the chain's links (the `EmitChild` field, the
   `chain_start`/`next_child` plumbing, and the smallint-domain refusal at
   the declaration site — `check_priority_domain`, the same law every
-  other priority face keeps). The future cure's red-first pin: a chain
+  other priority face keeps). The future fix's pin: a chain
   declaring per-link priorities lands its emit-start and link rows at
-  the declared values (today's rows are the default-0 conviction).
+  the declared values (today's rows are the default-0 shape).
 - **The drain's regex guard passes beyond-int4 digit strings to the
-  `::int` cast** (the wf-priority cure's drain residual — the
-  re-review's own ledger line). `OUTBOX_FETCH_UNDELIVERED_SQL`'s stamp
+  `::int` cast** (the priority surface's drain residual). `OUTBOX_FETCH_UNDELIVERED_SQL`'s stamp
   resolution guards the stamp text with `^[+-]?[0-9]+$` and then casts
   `(metadata->>'wf_priority')::int` inside the smallint `BETWEEN` guard
   (_sql_sweep.py:326-328). A digit string past int4's domain
@@ -146,24 +146,24 @@ discipline the open part's future cure owes.
   `{1,9}`-shaped digit cap), or cast `::numeric` FIRST and put the
   smallint `BETWEEN` on the numeric — the raise becomes the guard's own
   false-arm, the degrade reaching the COALESCE untouched. The
-  red-first pin's design: seed a flow root with
+  The pin's design: seed a flow root with
   `wf_priority="99999999999"` and one undelivered outbox row, run
-  `drain_outbox` — today the statement raises (the drain wedges; the
-  red), post-hardening the consumer lands at the column default 0 and
-  the outbox flips delivered (the green — the same degrade-to-default
-  law the in-domain malformed stamps already pin).
+  `drain_outbox` — today the statement raises (the drain wedges),
+  post-hardening the consumer lands at the column default 0 and the
+  outbox flips delivered (the same degrade-to-default law the in-domain
+  malformed stamps already pin).
 
 ## Follow-ups (deferred, with the judgment stated)
 
 - **The ratelimit elapsed-vs-ceiling pins** (test_ratelimit_pg_row_lock_bounded,
   test_ratelimit_sliding_window_pg_lock; ~15 pins). Each asserts a
   single-shot, server-bounded wait against a ceiling with 12-20x deliberate
-  headroom (a 100 ms budget under a 2.0 s ceiling), and no CI run has red
-  one receipt-class (a runner-starvation red of a timing pin). Marking the
-  family would move ~15 pins into the serial load-sensitive lane - a
-  lane-capacity decision deferred until the estate earns it. The stated
-  judgment: mark on the first receipt-class red, not on class resemblance
-  alone.
+  headroom (a 100 ms budget under a 2.0 s ceiling), and no CI run has
+  failed on one flake class (a runner-starvation failure of a timing
+  pin). Marking the family would move ~15 pins into the serial
+  load-sensitive lane - a lane-capacity decision deferred until the
+  estate earns it. The stated judgment: mark on the first observed
+  failure of that class, not on class resemblance alone.
 
 - **The system-e2e window family's marks** (13 files / 29 pins,
   unmarked): test_compound_failures 3, test_kill9_pg_crash 1,
@@ -171,8 +171,8 @@ discipline the open part's future cure owes.
   test_leader_loss 1, test_operational_loop 1, test_partition_recovery
   1, test_rolling_release_fleet 7, test_rolling_deploy 1,
   test_shutdown_requeue_states 2, test_wf_deploy_matrix 6,
-  test_wf_operator_march 2, test_redis_outage 1 — all the convicted
-  marches' class (scenario verdicts riding monotonic settle windows).
+  test_wf_operator_march 2, test_redis_outage 1 — all of that
+  march class (scenario verdicts riding monotonic settle windows).
   The routing must land TOGETHER with these marks plus a RE-PRICED
   lane cap from a MEASURED serial wall (the round-2 bound-derived band
   ~65-130 min of added serial wall -> a cap in the ~180 territory,
@@ -184,8 +184,9 @@ discipline the open part's future cure owes.
 
 ## The rules the campaign operates under
 
-- A rerun is not evidence. Every red gets the chain: symptom, mechanism,
-  root cause, deterministic repro, fix, red/green, mutation sharpness.
+- A rerun is not evidence. Every failure gets the chain: symptom,
+  mechanism, root cause, deterministic repro, fix, failing/green proof,
+  mutation sharpness.
 - Tests assert behavior through public surfaces. Scheduling order, wall
   clocks, and runner properties are not contracts; conservation, exactly
   once, and honest accounting are.

@@ -893,11 +893,11 @@ def test_session_publishes_run_isolation_token(
     runs: the invocation-unique basetemp PATH (the numbered invocation dir
     PLUS the xdist worker's own subdirectory - invocation-unique AND
     worker-distinct in one string, and distinct from any subprocess
-    pytest's own fresh numbered dir - the mutual-drop class's root cure).
+    pytest's own fresh numbered dir - the mutual-drop class's root fix).
     The OLD token (the bare worker id, or the basetemp NAME alone) failed
     one of the two uniqueness legs: ``gw7`` is identical in every ``-n 8``
     invocation on the box, so a parent session and its own subprocess
-    pytest (the scratch drills) hashed the same (token, module) pairs to
+    pytest (the scratch scenarios) hashed the same (token, module) pairs to
     the same database names on one cluster, and each side's
     ``DROP DATABASE ... WITH (FORCE)`` killed the other's live connections
     mid-test. The full path is unique per invocation, per worker, and per

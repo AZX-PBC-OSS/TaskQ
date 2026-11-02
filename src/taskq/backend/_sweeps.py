@@ -903,7 +903,7 @@ _SWEEP_RESULT_TTL_GUARD_SQL = """\
       -- while a joined node in join-wait (pending + deps_pending > 0,
       -- the join-wait representation) counts this row as a parent. The
       -- expiry passes the row by; after the join fires, the subtree
-      -- ages together (§10.3's retention). Oban-Pro's preserve_workflows
+      -- ages together (the retention). Oban-Pro's preserve_workflows
       -- lesson, in the sweep's own WHERE: the reduce's batch read
       -- (SELECT result ... WHERE parent_id = $1) must see EVERY
       -- child's result when it fires — a swept result mid-map reads
@@ -966,7 +966,7 @@ SET result = NULL,
     -- erase even the TTL-elapsed fact. The sweep's own eligibility
     -- guard (result IS NOT NULL) keeps the kept stamp from
     -- re-eligibility: a swept row never matches this statement again.
-    -- A retried job cannot inherit a stale receipt:
+    -- A retried job cannot inherit a stale expiry stamp:
     -- retry_job re-pends with result_expires_at = NULL, and
     -- mark_succeeded recomputes from the actor's TTL at the new
     -- completion.

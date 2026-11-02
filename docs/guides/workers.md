@@ -254,6 +254,14 @@ row default to `strict_fifo`, and nothing in TaskQ creates rows, so a queue is
     is exactly priority-then-time order: a `round_robin` queue where nothing
     sets a `fairness_key` behaves **identically to `strict_fifo`**.
 
+    The one producer that stamps by itself is the workflow engine: every
+    claimable workflow row (static steps, fork/emit children, join nodes,
+    outbox-drained consumers) is born with its run's `flow_id` as the
+    `fairness_key`, so workflow runs each get their own cohort on a
+    `round_robin` queue and interleave with each other and with any
+    vanilla keyed jobs. Vanilla `enqueue` calls still need the explicit
+    argument.
+
     Nothing warns you. `taskq queues set-mode` succeeds, the queue reports
     `round_robin`, and the starvation you set out to fix continues unchanged.
 

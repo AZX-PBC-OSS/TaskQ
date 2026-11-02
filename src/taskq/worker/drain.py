@@ -76,7 +76,7 @@ async def drain_monitor_loop(
      it returns, while the watchdog keeps sweeping until the
      orchestration's finally sets shutdown_event.
 
-     Double-orchestration guard (H2): if orchestrator_holder is already
+     Double-orchestration guard: if orchestrator_holder is already
      non-empty or deps.shutdown_phase is not ShutdownPhase.NONE, the
      monitor skips triggering, a SIGTERM-driven orchestration is already
      in progress.
@@ -223,7 +223,7 @@ async def _trigger_drain_shutdown(
     orchestrate_shutdown's finally sets it at the correct point (after
     all phase work completes).
 
-    Double-orchestration guard (H2): if orchestrator_holder is already
+    Double-orchestration guard: if orchestrator_holder is already
     non-empty or deps.shutdown_phase is not ShutdownPhase.NONE, skip
     triggering. The create_task/append pair is effectively atomic under
     CPython's signal delivery model, signal handlers fire between event

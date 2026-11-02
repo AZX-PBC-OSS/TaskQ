@@ -112,7 +112,7 @@ async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
     # lands on exactly that surface: a sibling test's broker-wide stretch
     # delays the fanout past the window and reds the pin with no defect in
     # the code under test (the historical weather class: subscriber wake,
-    # then the ping pins, then attack478's CLIENT PAUSE - each cured a
+    # then the ping pins, then attack478's CLIENT PAUSE - each fixed a
     # single test and the band found the next). A per-test disposable
     # Dragonfly (~1s boot) ends the class by construction: no co-tenants.
     # socket_timeout explicit: redis-py 8's 5s default fires on a fresh

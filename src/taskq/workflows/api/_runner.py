@@ -1,17 +1,17 @@
 """The flow RUNNER (T09): lowers a :class:`CompiledWorkflow` into the
-engine's rows and drives them — ``create_flow(spec, input)`` (cut #7: the
+engine's rows and drives them — ``create_flow(spec, input)`` (the
 run carries its input, cross-flow data never dies in a Python closure),
 the dispatch loop whose bodies resolve FROM THE REGISTERED DEFINITION
 (D1 — the registry is the only body source; a per-call body map is the
-convicted double-dispatch shape), and the test/demo driver
-``drive(flow_id, until=…)`` (cut #10 — no consumer hand-rolls a
+rejected double-dispatch shape), and the test/demo driver
+``drive(flow_id, until=…)`` (no consumer hand-rolls a
 dispatch-poll loop).
 
 THE DISPATCH CONTRACT: a claimable node is ``pending`` + ``deps_pending
 = 0`` on a live flow; the claim is ONE fenced statement (the row goes
 ``running`` under this worker's id, the attempt increments — the only
 grant of work, P3 rule 2); the body runs with the DECODED parent results
-(jsonb decoded ONCE, cut #14); the finalize is the engine's own
+(jsonb decoded ONCE); the finalize is the engine's own
 ``finalize_node`` (the two-tx shape unchanged). A body exception ladders:
 attempt failures emit NO terminal (P3 rule 7) — the node re-pends with
 backoff until ``max_attempts``, then terminal-fails and T06's propagation
@@ -100,6 +100,8 @@ from taskq.workflows.api._ctx_wait import NodeHeldError
 from taskq.workflows.api._deps import deps_param_declared
 from taskq.workflows.api._graph import (
     Exit,
+    keyed_rate_limit_names,
+    keyed_reservation_names,
     rate_limit_names,
     reservation_names,
     route_child_key,
@@ -155,7 +157,7 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
 def _bounded_collect(values: list[object]) -> dict[str, object]:
-    """THE COLLECTED RESULT'S CAP (the F4 cure — ONE mechanism with the
+    """THE COLLECTED RESULT'S CAP (the F4 fix — ONE mechanism with the
     failures'-collect's own discipline, ``_sql_finalize.py``'s
     ``COLLECT_FAN_IN_APPEND_SQL`` arms mirrored at the collect face): a
     join/gather's envelope — the identity packer's
@@ -163,7 +165,7 @@ def _bounded_collect(values: list[object]) -> dict[str, object]:
     result cap (``FANIN_FAILURES_BYTE_CAP``, the SAME 64 Ki bound the
     failures' array honors):
 
-    * under the cap: byte-identical to the pre-cure shape (the common
+    * under the cap: byte-identical to the pre-fix shape (the common
       case pays nothing);
     * over the cap: the fitted PREFIX of items stays spelled under
       ``value`` (the collect's arm-2 face — keep what fits), and the
@@ -176,7 +178,7 @@ def _bounded_collect(values: list[object]) -> dict[str, object]:
       failures' split: the ledger/children the detail, the row the
       summary).
 
-    The pre-cure face was the bypass: the wf finalize's TERMINAL_MARK
+    The pre-fix face was the bypass: the wf finalize's TERMINAL_MARK
     checked no ``result_max_bytes`` — a 700-child map landed a
     730,001-byte envelope (11.1x the cap every plain job's terminal
     enforces non-retryably); the ceiling at the fan-in bound was
@@ -209,7 +211,7 @@ def _bounded_collect(values: list[object]) -> dict[str, object]:
 
 
 def _resolve_priority(*levels: int | None) -> int:
-    """THE PRECEDENCE LAW'S ARITHMETIC (the wf-priority cure), stated
+    """THE PRECEDENCE LAW'S ARITHMETIC (the priority surface), stated
     once: the first non-``None`` level wins; ``None`` everywhere = the
     column default's own value (0). The levels, in the law's order: the
     explicit per-call override, the step's declaration, the arm's
@@ -221,7 +223,7 @@ def _resolve_priority(*levels: int | None) -> int:
 
 
 def _first_declared(*levels: timedelta | None) -> timedelta | None:
-    """THE DEADLINE RESOLUTION'S ARITHMETIC (the wf start_to_close cure
+    """THE DEADLINE RESOLUTION'S ARITHMETIC (the wf start_to_close bound
     — the priority helper's own shape, the coalesce the timedelta's
     ``None``-or-value face needs): the first non-``None`` level wins;
     ``None`` everywhere = nothing declared (the row's column NULL — the
@@ -288,7 +290,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # child flow's runner resolved ONCE per drive (the root's
         # stamped workflow name → the compile registry).
         self._child_runners: dict[str, FlowRunner] = {}
-        # THE RUN-PRIORITY ECHO (the wf-priority cure): the create-time
+        # THE RUN-PRIORITY ECHO (the priority surface): the create-time
         # per-call override (``create_flow(priority=…)``), echoed here so
         # the DEV door's fork builds (``_run_node``'s executions) resolve
         # the run's own law without re-reading the root. The ROW stays
@@ -297,13 +299,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # from the row; this echo only spares the dev loop a per-node
         # read. ``None`` = no override declared.
         self._run_priority: int | None = None
-        # THE WORKER'S DEFAULT DEADLINE (the wf start_to_close cure — the
+        # THE WORKER'S DEFAULT DEADLINE (the wf start_to_close bound — the
         # resolution chain's own tail): the worker settings' value the
         # FLEET door threads (``_worker_execution.execute_flow_job`` ←
         # ``run._dispatch_flow_job``'s deps.settings). The ROW's own
         # stamp outranks it (the vanilla ``_effective_start_to_close``
         # chain: ``job.start_to_close if not None else default``); the
-        # DEV door constructs without one — the pre-cure face (an
+        # DEV door constructs without one — the pre-fix face (an
         # undeclared row's deadline is UNBOUNDED there, the dev loop
         # never had a worker default). ``None`` = no default — the
         # undeclared row's body runs unbounded.
@@ -319,66 +321,66 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         root_metadata_extra: dict[str, object] | None = None,
         priority: int | None = None,
     ) -> RunClaim:
-        """Create the run: the flow root (its payload CARRIES the input —
-        cut #7) + every non-map node upfront (the join-wait rows among
-        them, edges declared in the same call). The map joins are
-        runtime-spawned by their source's fork (the engine's FORK
-        ATOMICITY) — the wiring's downstream consumers ride the join's
-        declared consumers (the outbox).
+        """Create the run: the flow root (its payload CARRIES the input) + every
+        non-map node upfront (the join-wait rows among
+         them, edges declared in the same call). The map joins are
+         runtime-spawned by their source's fork (the engine's FORK
+         ATOMICITY) — the wiring's downstream consumers ride the join's
+         declared consumers (the outbox).
 
-        THE CREATE ATOMICITY (the fork-atomicity law at creation
-        granularity): the ROOT INSERT rides the SAME transaction as the
-        static nodes + edges + ROOT_START. The pre-cure shape committed
-        the root ALONE (its own acquire) and the wiring rode a second
-        transaction — the kill in between stranded the ORPHAN ROOT
-        (pending, ZERO nodes): a root the maintenance derivation can
-        never develop (its rollup INNER-JOINS the node rows — a nodeless
-        root never derives, never terminalizes, never prunes) and one
-        that SQUATS THE RUN KEY (the retry's arbiter conflict answered
-        ``created=False`` and the nodes never landed — ``drive()`` ran to
-        ``max_ticks``). One transaction makes the orphan UNREPRESENTABLE
-        (the create-time face of the fleet-crash cure's own law — the
-        dispatch's visibility is bounded to the WHOLE wiring, and now to
-        the root that owns it).
+         THE CREATE ATOMICITY (the fork-atomicity law at creation
+         granularity): the ROOT INSERT rides the SAME transaction as the
+         static nodes + edges + ROOT_START. The pre-fix shape committed
+         the root ALONE (its own acquire) and the wiring rode a second
+         transaction — the kill in between stranded the ORPHAN ROOT
+         (pending, ZERO nodes): a root the maintenance derivation can
+         never develop (its rollup INNER-JOINS the node rows — a nodeless
+         root never derives, never terminalizes, never prunes) and one
+         that SQUATS THE RUN KEY (the retry's arbiter conflict answered
+         ``created=False`` and the nodes never landed — ``drive()`` ran to
+         ``max_ticks``). One transaction makes the orphan UNREPRESENTABLE
+         (the create-time face of the fleet-crash guard's own law — the
+         dispatch's visibility is bounded to the WHOLE wiring, and now to
+         the root that owns it).
 
-        THE CLAIM SURFACE HONEST (the run-key failure lie's cure): the
-        TYPED :class:`RunClaim` returns — ``created`` /
-        ``existing-running`` / ``existing-terminal`` (the
-        :attr:`RunClaim.kind` verdict) — never a bare id the caller
-        cannot read a status off.
+         THE CLAIM SURFACE HONEST (the run-key failure lie's fix): the
+         TYPED :class:`RunClaim` returns — ``created`` /
+         ``existing-running`` / ``existing-terminal`` (the
+         :attr:`RunClaim.kind` verdict) — never a bare id the caller
+         cannot read a status off.
 
-        THE RETRY-COMPLETION CENSUS (the belt's belt): an arbiter
-        conflict over a PENDING run with ZERO node rows is the orphan's
-        one remaining signature (the pre-cure debris) — the nodes
-        re-insert and the root starts IN THE SAME TRANSACTION (the retry
-        completes; the killed create's key is finished, not squatted). A
-        conflict over anything else is the G2 contract: the EXISTING run,
-        never a second silent run, and a terminal run's key is never
-        re-fired. THE REAP BELT: the census-grace arm
-        (:func:`taskq.workflows._sweep.reap_nodeless_roots`) reaps any
-        orphan that could ever exist (a future statement-order
-        regression's debris) past the grace.
+         THE RETRY-COMPLETION CENSUS (the belt's belt): an arbiter
+         conflict over a PENDING run with ZERO node rows is the orphan's
+         one remaining signature (the pre-fix debris) — the nodes
+         re-insert and the root starts IN THE SAME TRANSACTION (the retry
+         completes; the killed create's key is finished, not squatted). A
+         conflict over anything else is the run-key-arbiter contract: the EXISTING run,
+         never a second silent run, and a terminal run's key is never
+         re-fired. THE REAP BELT: the census-grace arm
+         (:func:`taskq.workflows._sweep.reap_nodeless_roots`) reaps any
+         orphan that could ever exist (a future statement-order
+         regression's debris) past the grace.
 
-        THE PROVENANCE STAMPS (T28 — the child flows' identity):
-        *root_metadata_extra* rides the SAME create transaction (the
-        child root's parent pointers land ATOMICALLY with the root —
-        never a post-create UPDATE that would re-open the orphan window
-        this seam closed). ``None`` (the default) = the shipped shape
-        byte-identical.
+         THE PROVENANCE STAMPS (T28 — the child flows' identity):
+         *root_metadata_extra* rides the SAME create transaction (the
+         child root's parent pointers land ATOMICALLY with the root —
+         never a post-create UPDATE that would re-open the orphan window
+         this seam closed). ``None`` (the default) = the shipped shape
+         byte-identical.
 
-        THE PER-CALL PRIORITY OVERRIDE (the wf-priority cure — the
-        load-bearing face): *priority* is the run's explicit override —
-        EVERY row this create materializes (the static nodes) lands at
-        the value in the ``jobs.priority`` column, and the ROOT's
-        metadata stamps it (``wf_priority``) so the FLEET door's fork
-        builds resolve the same override for rows materialized later
-        (the map/route children a worker forks mid-run). The law's
-        precedence: this override > the step's declaration > the actor
-        handle's > the column default. ``None`` (the default) = no
-        override — the declarations (or the column default) speak, the
-        pre-cure byte-identical shape. The domain is the smallint column's
-        (``check_priority_domain`` — the same refusal at every layer that
-        accepts a priority).
+         THE PER-CALL PRIORITY OVERRIDE (the priority surface — the
+         load-bearing face): *priority* is the run's explicit override —
+         EVERY row this create materializes (the static nodes) lands at
+         the value in the ``jobs.priority`` column, and the ROOT's
+         metadata stamps it (``wf_priority``) so the FLEET door's fork
+         builds resolve the same override for rows materialized later
+         (the map/route children a worker forks mid-run). The law's
+         precedence: this override > the step's declaration > the actor
+         handle's > the column default. ``None`` (the default) = no
+         override — the declarations (or the column default) speak, the
+         pre-fix byte-identical shape. The domain is the smallint column's
+         (``check_priority_domain`` — the same refusal at every layer that
+         accepts a priority).
         """
         from taskq.constants import check_priority_domain
 
@@ -399,7 +401,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 )
             if complete:
                 # THE CREATE IS ONE TRANSACTION (the deploy matrix's
-                # fleet-crash cure): the rows, the edges, the root's
+                # fleet-crash fix): the rows, the edges, the root's
                 # start — one commit. The create ran statement-autocommit
                 # before, and the fleet's dispatch round swept the
                 # not-yet-wired rows UP INSIDE the create: a join-wait
@@ -435,7 +437,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 # when the re-drive passes no kwarg — the adopted run's
                 # stamp is its own truth, and the fork's cohort never
                 # splits (the children riding the declarations while the
-                # root says 6 was the convicted shape).
+                # root says 6 was the rejected shape).
                 self._run_priority = await self._adopted_run_priority(conn, claim.flow_id)
         return claim
 
@@ -489,7 +491,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # non-join node is inserted upfront — a node whose parent is
             # a fork-spawned map join carries the RESERVED dep (below),
             # so it can never dispatch before the join's terminal. (The
-            # convicted shape: the descendant was NOT inserted and rode
+            # rejected shape: the descendant was NOT inserted and rode
             # only the outbox's side-channel — no edge row, an arg
             # resolution with no result to read, and a transitive
             # downstream that the side-channel never creates at all.)
@@ -508,34 +510,45 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 parents=(),
                 deps_pending=0,
                 max_attempts=node.max_attempts,
-                # THE ROW'S RESOLVED PRIORITY (the wf-priority cure): the
+                # THE ROW'S RESOLVED PRIORITY (the priority surface): the
                 # per-call override > the node's declared (the handle's
                 # folded in at the wiring) > the column default.
                 priority=_resolve_priority(run_priority, node.priority),
                 # THE ROW'S DECLARED DEADLINE (the wf start_to_close
-                # cure): the node's own resolution (the step's own or the
+                # fix): the node's own resolution (the step's own or the
                 # handle's folded in at the wiring) — no run-level face
                 # exists (a deadline is a per-node declaration, never a
                 # per-call override), so the value rides the row as-is;
                 # the undeclared case is the column's NULL.
                 start_to_close=node.start_to_close,
             )
-            # THE STATIC ROW'S OWN TERMS (CURE 2 + H-A1): a step
+            # THE STATIC ROW'S OWN TERMS (the admission-terms surface): a step
             # declaring rate_limits carries the bucket names on its
             # metadata, and a step declaring RESERVATIONS carries their
             # NAMES beside them (the claim path's read — the gate
             # resolves the names through the resolved registry); the
-            # no-terms rows keep the base shape byte-identical.
+            # no-terms rows keep the base shape byte-identical. A KEYED
+            # ref resolves its concrete name from the row's DECLARED
+            # payload values — for a parentless node THE RUN'S OWN INPUT
+            # first (the run's declared face: two runs, two inputs, two
+            # buckets — one bucket per run), then the node's data args
+            # (the values the body's signature binds); the wiring
+            # refuses the keyed shape on a node whose args resolve from
+            # parents, so a keyed decl here always has a face.
+            declared_args = tuple(v for kind, v in node.args if kind == "d")
+            key_payloads = (input, *declared_args) if not node.parents else declared_args
+            static_rl = rate_limit_names(
+                node.rate_limits, what=f"step {key!r}'s rate_limits"
+            ) + keyed_rate_limit_names(
+                node.rate_limits, key_payloads, what=f"step {key!r}'s rate_limits"
+            )
+            static_res = reservation_names(
+                tuple(node.reservations), what=f"step {key!r}'s reservations"
+            ) + keyed_reservation_names(
+                tuple(node.reservations), key_payloads, what=f"step {key!r}'s reservations"
+            )
             row_meta = (
-                _row_metadata(
-                    flow_id,
-                    rate_limits=rate_limit_names(
-                        node.rate_limits, what=f"step {key!r}'s rate_limits"
-                    ),
-                    reservations=reservation_names(
-                        tuple(node.reservations), what=f"step {key!r}'s reservations"
-                    ),
-                )
+                _row_metadata(flow_id, rate_limits=static_rl, reservations=static_res)
                 if node.rate_limits or node.reservations
                 else {"flow_id": str(flow_id)}
             )
@@ -557,10 +570,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 step_idempotency_key(spec.step_key),
                 spec.priority,
                 # THE ROW'S DECLARED DEADLINE (the wf start_to_close
-                # cure): the RESOLVED declaration (the step's own or the
+                # fix): the RESOLVED declaration (the step's own or the
                 # handle's folded default) — the NULL case binds the
-                # column's own default (the pre-cure row byte-identical).
+                # column's own default (the pre-fix row byte-identical).
                 spec.start_to_close,
+                # THE ROW'S DISPATCH COHORT (the wf fairness stamp): the
+                # run's flow_id — one cohort per run on the round-robin
+                # queues.
+                str(flow_id),
             )
         # The EDGES in a second pass (both endpoints exist).
         for key in sorted(self.compiled.nodes):
@@ -610,7 +627,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         max_ticks: int = 5000,
         execute: bool = True,
     ) -> str:
-        """The driver (cut #10): dispatch + sweeps until ``until`` —
+        """The driver: dispatch + sweeps until ``until`` —
         ``"terminal"`` (the flow row is terminal) or ``"held"`` (a node
         waits on a human / a deadline). BOUNDED: ``max_ticks`` caps the
         loop (a hang is a defect with no stack trace); the bound is
@@ -663,7 +680,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # THE EXPIRY ARM (the dev-drives parity): the tick
         # runs the signal sweep's expiry leg, so a ``timeout_s`` wait in
         # a DEV DRIVE fires the ``Expired`` member exactly as it does
-        # under the leader's belt — the pre-cure dev face parked on the
+        # under the leader's belt — the pre-fix dev face parked on the
         # hold until ``max_ticks`` (the deadline inert, the dev loop a
         # different engine from the fleet's).
         from taskq.workflows.api._hitl import sweep_expired_signals
@@ -672,7 +689,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         await drain_outbox(self.pool, self.wsql)
         from taskq.workflows.api._hitl import sweep_due_timers
 
-        # THE DRAIN (the timer-cures lane's cure 4): the dev loop's
+        # THE DRAIN (the timer drain's fix): the dev loop's
         # timer arm mirrors the leader's — the due set empties per tick.
         await sweep_due_timers(self.pool, schema=self.schema, drain=True)
         return ran
@@ -726,7 +743,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
             return None
         # THE WORKER'S DEFAULT DEADLINE THREADS (the wf start_to_close
-        # cure — the descendant's runner inherits its parent runner's
+        # fix — the descendant's runner inherits its parent runner's
         # value: the same worker's settings govern the descendant's
         # undeclared steps).
         child = FlowRunner(
@@ -748,7 +765,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         except WorkflowRunError as exc:
             # THE VANISHED-NODE WEDGE's LOUD TERMINAL:
             # the body resolves NOWHERE (the structural redeploy — the
-            # registry-is-truth law, D1). Before this cure the error
+            # registry-is-truth law, D1). Before this fix the error
             # escaped drive() RAW — the row stayed ``pending``, the root
             # ``running``, NOTHING surfaced on the run (the eternal
             # zombie). Now the node is CLAIMED (the attempt's ledger row
@@ -854,7 +871,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         """THE DEPS SEAM'S INJECTION (the DI capability's runtime face):
         the bound instance rides as the LAST positional argument when the
         body declares the deps shape (one positional param beyond ctx +
-        the wired sources — the SAME shape E12 convicts at build; the
+        the wired sources — the SAME shape E12 rejects at build; the
         runtime read is the signature's positional truth, so an
         unresolvable-annotations body still gets the injection it
         declared). The instance is the app's, bound once — never a copy,
@@ -867,13 +884,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
     def _body_deadline_seconds(self, row: dict[str, Any]) -> float | None:
         """THE DEADLINE RESOLUTION AT THE ENFORCEMENT (the wf
-        start_to_close cure — the vanilla consumer's own
+        start_to_close fix — the vanilla consumer's own
         ``_effective_start_to_close`` arithmetic):
         the ROW's own stamp (the declared bound the INSERTs wrote — the
         step's/arm's resolution) > the worker's default (the runner's
         field — the fleet door threads the worker settings' value);
         ``None`` everywhere = UNBOUNDED (the body invoked inline, the
-        pre-cure shape)."""
+        pre-fix shape)."""
         row_bound = row.get("start_to_close")
         effective = (
             row_bound  # pyright: ignore[reportUnknownVariableType]  # Why: the row dict's jsonb read is Any-typed; the interval's decode is the timedelta the column carries.
@@ -896,7 +913,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         run_priority: int | None = None,
     ) -> str:
         """THE WORKER-HOSTED EXECUTION DOOR (the execution verdict's gap-1
-        cure): *row* is a node the FLEET's queue-routed dispatch already
+        fix): *row* is a node the FLEET's queue-routed dispatch already
         claimed (``dispatch_batch`` — the row is ``running``, the attempt
         incremented, the claim epoch bumped, the lock held by the worker
         that dispatched it). This door borrows the runner's OWN machinery
@@ -914,7 +931,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         declared bound off the SAME decode).
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
-        cure), resolved by the CALLER from the root's metadata stamp
+        fix), resolved by the CALLER from the root's metadata stamp
         (``execute_flow_job``'s bounded read — the same round trip the
         workflow-name stamp rides): the fork builds this door performs
         resolve it as the law's first level. ``None`` = no override (the
@@ -989,12 +1006,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         log line — the ROW is the truth, this is the record's echo).
 
         ``ledger_claimed_at`` is the ledger claim's OWN RETURNING instant
-        (the re-mint guard's discriminator, C5) — threaded to the
+        (the re-mint guard's discriminator) — threaded to the
         deferral's zombie fence so a re-minted row is never fenced by the
         stale claimant.
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
-        cure): the fork builds (the map's children, the route's arms)
+        fix): the fork builds (the map's children, the route's arms)
         resolve it as the law's FIRST level — the dev door passes the
         create-time echo, the fleet door the root's metadata stamp's
         resolution. ``None`` = no override declared (the declarations —
@@ -1062,18 +1079,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         call in the step span; the semantics, the fences and the
         returns are untouched by it (the spans wrap the lifecycle
         points, they never steer them)."""
-        # THE §16.1 IMPORT LAW: the worker-module imports are LAZY (the
+        # THE IMPORT LAW: the worker-module imports are LAZY (the
         # deadline enforcement and its marker live in the worker's own
         # modules — ``import taskq`` never imports them through the
         # authoring surface).
         from taskq.worker._handlers import _StartToCloseExceededError
 
-        # THE PER-ATTEMPT CODE-VERSION RECORD (T03/§22.1 — the deploy
-        # matrix's audit cure): the record is "written at claim by the
+        # THE PER-ATTEMPT CODE-VERSION RECORD (T03 — the deploy
+        # matrix's audit fix): the record is "written at claim by the
         # workflow claim path" — every claim's execution stamps the
         # row's ``code_version`` with the body's canonical content hash,
         # so a re-claimed node's SECOND attempt rewrites the record (the
-        # §22.1 record rides BOTH claims). A RECORD, never a gate: a
+        # record rides BOTH claims). A RECORD, never a gate: a
         # hash failure is a logged loss, never a node failure.
         await self._stamp_code_version(JobId(row["id"]), row["step_key"], node, body)
 
@@ -1089,7 +1106,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             {"step_key": row["step_key"], "attempt": attempt, "map_index": row["map_index"]},
         )
 
-        # THE DISPATCH-TIME PREDICATE (cut #4): decided NOW, against the
+        # THE DISPATCH-TIME PREDICATE: decided NOW, against the
         # flow's state — never at create time.
         if (
             node is not None
@@ -1156,7 +1173,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             redact=self._redact_hook(),
             progress=emitter,
             claim_epoch=claim_epoch,
-            # THE MAX-IN-FLIGHT BOUND (T20 / DH9): the RUN's declared
+            # THE MAX-IN-FLIGHT BOUND (T20): the RUN's declared
             # admission control, handed to every ctx.emit_batch — the
             # workflow-level declare's runtime wiring.
             max_in_flight=getattr(self.compiled, "max_in_flight", None),
@@ -1168,7 +1185,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         )
         try:
             # THE LADDER'S BOUNDARY OPENS AT THE ARGS RESOLUTION (the
-            # deploy matrix's fleet-crash cure): the parents' results'
+            # deploy matrix's fleet-crash fix): the parents' results'
             # read and the arg resolution ran BEFORE the try — a
             # resolution failure (a parent with no result yet, a payload
             # decode) escaped the ladder's classification and killed the
@@ -1217,7 +1234,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     if hit is not None:
                         # THE HIT: the cached envelope IS the result —
                         # the finalize runs OUTSIDE the body boundary
-                        # (the claim tail, below — the unify cure): the
+                        # (the claim tail, below — the unify arm): the
                         # body NEVER runs, the same typed decode
                         # downstream.
                         cache_hit = hit
@@ -1225,7 +1242,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             if cache_hit is not None:
                 # THE HIT: the body NEVER runs — the cached envelope's
                 # finalize is the CLAIM TAIL'S (below, outside the body
-                # boundary: the unify cure — a finalize fault there is
+                # boundary: the unify arm — a finalize fault there is
                 # machinery, never a body failure).
                 pass
             elif body is None:
@@ -1248,11 +1265,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     parents_values = [
                         item for v in parents_values for item in cast(list[object], v)
                     ]
-                # THE COLLECTED RESULT'S CAP (the F4 cure): the envelope
+                # THE COLLECTED RESULT'S CAP (the F4 fix): the envelope
                 # compacts past the estate's result cap — the same
                 # discipline the failures'-collect ships (the cap, the
                 # honest __truncated__ marker, the detail on the child
-                # rows). Under the cap: byte-identical to the pre-cure
+                # rows). Under the cap: byte-identical to the pre-fix
                 # shape.
                 result = _bounded_collect(parents_values)
             else:
@@ -1261,14 +1278,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 if deadline_s is None:
                     # THE CONTROL (the byte-identical law): no declaration
                     # anywhere (the row's column NULL, no worker default)
-                    # — the body invoked INLINE, the pre-cure shape
+                    # — the body invoked INLINE, the pre-fix shape
                     # exactly (no task, no machinery, no deadline).
                     outcome_value = await body(ctx, *args, *deps_tail)
                 else:
-                    # THE DEADLINE (the wf start_to_close cure — the
+                    # THE DEADLINE (the wf start_to_close bound — the
                     # vanilla enforcement, imported: the #791
-                    # TimeoutError-conflation cure, the unwind budget,
-                    # the hostile-finally drills inherited). The body
+                    # TimeoutError-conflation fix, the unwind budget,
+                    # the hostile-finally handling inherited). The body
                     # runs in its own task; the deadline's expiry raises
                     # the marker (a bare TimeoutError the body raised
                     # stays its own ordinary failure — the same split the
@@ -1276,7 +1293,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # the window propagates (the deferral wins the race —
                     # the vanilla's own semantics).
                     from taskq.worker._consumer import (
-                        _enforce_start_to_close,  # pyright: ignore[reportPrivateUsage]  # Why: the deadline enforcement is the consumer module's shared machinery by design (the wf face imports the SAME function — the three holes, the unwind budget, the hostile-finally drills inherited); the private name is the honest boundary of that import.
+                        _enforce_start_to_close,  # pyright: ignore[reportPrivateUsage]  # Why: the deadline enforcement is the consumer module's shared machinery by design (the wf face imports the SAME function — the three holes, the unwind budget, the hostile-finally handling inherited); the private name is the honest boundary of that import.
                     )
 
                     async def _run_wf_body(
@@ -1412,8 +1429,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # (the enforcement raised it — a body-raised TimeoutError
             # propagates unchanged and takes the generic catch below,
             # the #791 split). The attempt BURNS — a real execution, the
-            # retry per the contract, never a deferral (the C4
-            # deferral's sibling; the vanilla's own race law mirrored: a
+            # retry per the contract, never a deferral (the
+            # deadline-deferral's sibling; the vanilla's own race law mirrored: a
             # body converting the deadline's cancellation to a Snooze
             # loses — the clock's win is final). The cancel mark is
             # fenced IN-STATEMENT (the vanilla mark_retry's own law: a
@@ -1443,7 +1460,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
             return "laddered"
         try:
-            # THE CLAIM TAIL'S MACHINERY BOUNDARY (the K7 cure — ONE
+            # THE CLAIM TAIL'S MACHINERY BOUNDARY (the machinery boundary — ONE
             # fault, ONE semantics): everything from here to the return
             # is the MACHINERY's own statements (the emitter close, the
             # finalize on EITHER face, the receipt write, the cache
@@ -1462,16 +1479,15 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             await emitter.aclose()
             if cache_hit is not None:
                 # THE HIT'S FINALIZE — THE CLAIM TAIL, OUTSIDE THE BODY
-                # BOUNDARY (the unify cure, CURE 6a): a fault escaping THIS
+                # BOUNDARY (the unify arm): a fault escaping THIS
                 # finalize is the MACHINERY's seat, never the body's — the
                 # body never ran, and the identical fault on the MISS path
                 # (below) escapes through this exact tail (the
                 # escape-point contract: the machinery boundary's
-                # classifier reads WHERE the error escaped). The pre-cure
+                # classifier reads WHERE the error escaped). The pre-fix
                 # seat routed the hit's finalize fault through the body
                 # ladder: a transient blip terminal-failed a
                 # max_attempts=1 step whose body never ran (the live
-                # repro: .measurements/cache-cures/hit_finalize_fault_repro.py —
                 # node failed, InterfaceError on the record, the run killed
                 # UnabsorbedNodeFailure). One fault, one seat: the infra
                 # class — the reclaim, the ladder unburned.
@@ -1489,12 +1505,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                         JobId(row["id"]), row["step_key"], flow_id, cache_hit
                     )
                 return "succeeded"
-            # THE FORK-VALIDATION RAISE IS IN THE LADDER'S TRY (rv4 F8's
-            # cure): the map fork's build (and the fork's own validation,
+            # THE FORK-VALIDATION RAISE IS IN THE LADDER'S TRY: the map fork's build (and the fork's own validation,
             # insert_fork's door) runs INSIDE _finalize_success — before this
             # wrapper, the fan-in bound's exceed escaped the ladder's
             # boundary, the finalize tx rolled back, and the reclaim
-            # re-crashed the node FOREVER (the wedge the conviction named).
+            # re-crashed the node FOREVER (the wedge the finding named).
             # The typed FanInBoundExceededError is a DETERMINISTIC authoring
             # failure: the ladder's deterministic route terminal-fails it on
             # the first attempt, the error class on the record — the reclaim
@@ -1536,11 +1551,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         cannot read (a builtin, a partial) records as NULL, the loss
         logged; the row's claim never fails on its own audit.
 
-        THE WRAPPER'S UNWRAP (the teardown round's cure): the
+        THE WRAPPER'S UNWRAP (the teardown fix): the
         ``@app.actor`` canonical path wires the ``WorkflowActor`` HANDLE
         into the node — the stamp read the WRAPPER's identity and
         ``getsource`` refused the instance outright (every canonical
-        node recorded ``node.code-version-unstamped``, §22.1's
+        node recorded ``node.code-version-unstamped``, the
         deploy-drift feature dead where the docs teach the path). The
         stamp reads the INNER function through
         :func:`taskq.workflows.api._hints.inner_fn` — the one-unwrap
@@ -1558,7 +1573,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             )
 
     def _body_code_version(self, node_key: str, node: Any, body: Any) -> str | None:
-        """The body's §22.1 canonical hash — the pure computation the
+        """The body's canonical hash — the pure computation the
         per-attempt RECORD's write (above) and the cross-run cache's
         ADDRESS (T25) both consume; ``None`` when the hash cannot read
         the body (a builtin, a partial, an unreadable source): the
@@ -1606,7 +1621,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
     def _redact_hook(self) -> Callable[[str], str] | None:
         """The workflow's OWN redact hook from the REGISTERED DEFINITION
-        (attack-3 H3's cure — nothing wired the workflow's hook into the
+        (the crash-window fix — nothing wired the workflow's hook into the
         hold surface): the hold context's chain-then-hook composition
         reads it from here (the registry is the source, D1)."""
         from taskq.workflows.definitions import get_registry
@@ -1637,7 +1652,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
     def _resolve_body(self, node_key: str, node: Any) -> Any:
         """D1: the body resolves from the REGISTERED DEFINITION — never
-        from a per-call map (the double-dispatch dragon's cure). A node
+        from a per-call map (the double-dispatch guard). A node
         that declares NO body (the join/gather kinds) returns ``None`` —
         the runner's default IDENTITY packer (the join's result IS the
         decoded parents' list). The registry answers FIRST: the
@@ -1676,7 +1691,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     async def _parent_results(
         self, node_id: Any
     ) -> tuple[list[tuple[str, object]], dict[str, object]]:
-        """The parents' decoded results (decoded ONCE, cut #14): the
+        """The parents' decoded results (decoded ONCE): the
         ORDERED list — edge order (uuid7 = wiring creation order), the
         default packer's input, map children DISTINCT (they share one
         step key) — and the step-key dict for the NAMED-arg lookup (a
@@ -1697,7 +1712,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     async def _decode_with_detail(
         self, conn: ConnLike, step_key: str, node_id: Any, raw: object
     ) -> object:
-        """THE BOUNDED COLLECT'S DETAIL RE-READ (the F4 cure's read-side
+        """THE BOUNDED COLLECT'S DETAIL RE-READ (the read-side
         reconciliation): a parent whose result row is the TRUNCATED
         envelope (the bounded summary — the cap kept the row honest)
         re-reads the FULL collect from the detail_home face the marker
@@ -1736,7 +1751,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     ) -> tuple[object, ...]:
         """THE WIRING RULE: argument order is signature order. A promise
         position resolves to its parent's decoded result; a data position
-        to the value RE-VALIDATED into its declared model (cut #8's typed
+        to the value RE-VALIDATED into its declared model (the typed
         boundary: the body sees the TYPE it declared, never a raw dict —
         the payload codec hook). The map child's item key is the fork's
         single-arg form."""
@@ -1745,7 +1760,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             return (self._coerce(item_raw, node, body, 0),)
         if node is None:
             # THE OUTBOX CONSUMER with no compiled NodeDecl (the
-            # escalation step — attack-3 H1's cure): its declared
+            # escalation step — the escalation fix): its declared
             # payload rides the row as data args (the bindings'
             # ``wf_args``), the body's OWN contract with the enqueue's
             # context. No parents exist for such a consumer — the
@@ -1836,7 +1851,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         cross-run cache's SUCCESS-ONLY store and the hit path's receipt
         merge both key on ``applied`` (a fenced write is a zombie's,
         never a terminal-succeeded). ``run_priority`` threads the RUN's
-        per-call override into the fork build (the wf-priority cure —
+        per-call override into the fork build (the priority surface —
         the map's children resolve it as the law's first level)."""
         fork: ForkSpec | None = None
         if node is not None and node.map_item is not None:
@@ -1879,7 +1894,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 record_step_join_fired(
                     trace.get_current_span(), [fired.step_key for fired in final.fired]
                 )
-            # THE TRUNCATION'S RECEIPT (the F4 cure's read-side
+            # THE TRUNCATION'S RECEIPT (the read-side
             # reconciliation): a bounded collect's envelope unwraps at
             # the consumer's typed boundary (decode_result's key-set
             # door), so the ``__truncated__`` count surfaces HERE — the
@@ -1977,7 +1992,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     async def _write_collect_receipt(
         self, job_id: JobId, node_key: str, flow_id: JobId, truncated: int
     ) -> None:
-        """THE TRUNCATION'S RECEIPT (the F4 cure's read-side
+        """THE TRUNCATION'S RECEIPT (the read-side
         reconciliation): the bounded collect's ``__truncated__`` count
         rides the join row's METADATA (``wf_collect_truncated`` — the
         wf_cache_hit receipt's own shape), because the decode's
@@ -2029,6 +2044,23 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 error=str(exc)[:200],
             )
 
+    @staticmethod
+    def _source_row_reservations(row: dict[str, Any], *, what: str) -> tuple[str, ...]:
+        """The claimed source row's ALREADY-RESOLVED reservation names
+        (its own metadata's stamp — the static insert resolved them from
+        the run's input and the declared args, keyed refs included): the
+        fork's children ride them verbatim (the run's own cohort, never
+        a per-item re-derivation). A row that carries no stamp (the
+        undeclared face) contributes nothing."""
+        raw: object = row.get("metadata")
+        meta: object = _json_loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(meta, dict):
+            return ()
+        names: object = meta.get("reservations")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType,reportAny]  # Why: the Any-contract walk — the jsonb round-trip's dict is Unknown by construction; the isinstance guards below assert the shape.
+        if not isinstance(names, list):
+            return ()
+        return tuple(str(n) for n in names if isinstance(n, str))  # pyright: ignore[reportUnknownVariableType]  # Why: the same walk — the list's members are Unknown; the isinstance IS the boundary.
+
     def _map_fork(
         self,
         row: dict[str, Any],
@@ -2040,12 +2072,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         """The map source's finalize fork: N children (the item body,
         one per list element — fresh jobs, per-item ledger identity) +
         the join whose consumers are the wiring's downstream nodes (the
-        outbox carries the consumer bindings — the cascade, cut #1's
-        cure). ``None`` when the body returned no list (the map over
+        outbox carries the consumer bindings — the cascade
+        fix). ``None`` when the body returned no list (the map over
         nothing — the join fires empty, the collect states it).
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
-        cure): the children AND the join land at the RESOLVED priority —
+        fix): the children AND the join land at the RESOLVED priority —
         the override > the source node's declaration > the column
         default (the children share the source's cohort, so the source's
         resolution is theirs). A map body wired as an ``@app.actor``
@@ -2076,12 +2108,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 "MAP_INDEX_CEILING — split the source's page)"
             )
         join_key = f"{row['step_key']}.join"
-        # THE CHILDREN'S RESOLVED PRIORITY (the wf-priority cure): the
+        # THE CHILDREN'S RESOLVED PRIORITY (the priority surface): the
         # map's children share the source's cohort — the source's
         # resolution is theirs (per-call override > the source node's
         # declaration > the column default).
         # THE MAP BODY HANDLE'S OWN LEVEL (the
-        # never-a-silent-drop law, the capacity terms' own H-A4 shape): a
+        # never-a-silent-drop law, the capacity terms' own passthrough shape): a
         # map body wired as an ``@app.actor(priority=…)`` HANDLE carries
         # its declaration as the CHILDREN'S actor level — read here, at
         # the fork, NEVER folded into the source node (the source's row
@@ -2099,7 +2131,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # handle's declaration governs the CHILDREN only — the join stays
         # the source's own).
         source_priority = _resolve_priority(run_priority, node.priority)
-        # THE CHILDREN'S DECLARED DEADLINE (the wf start_to_close cure —
+        # THE CHILDREN'S DECLARED DEADLINE (the wf start_to_close bound —
         # the priority arithmetic's own shape): the children share the
         # source's cohort — the map body handle's deadline is the
         # CHILDREN'S actor level (read here, at the fork, never folded
@@ -2117,12 +2149,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 queue=self.compiled.nodes[downstream].queue,
                 payload={},
                 # THE CONSUMER'S OWN EDGE POLICY (the map-join consumption
-                # cure): the fork writes the join→consumer edge with it —
+                # fix): the fork writes the join→consumer edge with it —
                 # T06's propagation reads the policy off the ledger when
                 # the JOIN terminal-fails.
                 failure_policy=self.compiled.nodes[downstream].on_failure,
                 # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
-                # cure): the downstream node's own resolution rides the
+                # fix): the downstream node's own resolution rides the
                 # binding (the join row's metadata → the fire's outbox
                 # bindings → the drain's consumer row's column).
                 start_to_close=self.compiled.nodes[downstream].start_to_close,
@@ -2138,25 +2170,38 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     queue=node.map_queue,
                     payload={ITEM_KEY: encode_data_arg(item)},
                     map_index=i,
-                    # THE ADMISSION TERMS STAMPED (CURE 2): the map's
+                    # THE ADMISSION TERMS STAMPED (the admission terms): the map's
                     # declared buckets' NAMES on every child row — the
-                    # claim path's read.
-                    rate_limits=rate_limit_names(
-                        node.map_rate_limits, what="map_source's rate_limits"
+                    # claim path's read. A KEYED ref resolves its
+                    # concrete name per child from the child's own item
+                    # payload (the fan-out is the keyed shape's home —
+                    # each tenant's items stamp their own bucket name).
+                    rate_limits=(
+                        rate_limit_names(node.map_rate_limits, what="map_source's rate_limits")
+                        + keyed_rate_limit_names(
+                            node.map_rate_limits,
+                            (item,),
+                            what=f"map {row['step_key']!r}'s child {i}",
+                        )
                     ),
-                    # THE STRICT CAPACITY TERMS STAMPED (H-A1): the map's
-                    # children share the source node's cohort, so the
-                    # source's declared reservations ride their rows — the
-                    # same stamp the static row carries.
-                    reservations=reservation_names(
-                        tuple(node.reservations), what=f"map {row['step_key']!r}'s reservations"
+                    # THE STRICT CAPACITY TERMS STAMPED: the map's
+                    # children share the source node's cohort — the
+                    # source ROW's already-resolved reservation names
+                    # (its own metadata's stamp: the static insert
+                    # resolved them from the run's input and the
+                    # declared args, keyed refs included) ride the
+                    # children's rows verbatim. NEVER a per-item
+                    # re-derivation: the reservation is the run's own
+                    # cohort, not each item's bucket.
+                    reservations=self._source_row_reservations(
+                        row, what=f"map {row['step_key']!r}"
                     ),
                     # THE CHILD'S RESOLVED PRIORITY (the wf-priority
-                    # cure): the source's resolution (above) rides every
+                    # fix): the source's resolution (above) rides every
                     # child row.
                     priority=child_priority,
                     # THE CHILD'S DECLARED DEADLINE (the wf start_to_close
-                    # cure): the source's resolution (above) rides every
+                    # fix): the source's resolution (above) rides every
                     # child row.
                     start_to_close=child_start_to_close,
                 )
@@ -2167,6 +2212,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 actor=node.actor,
                 queue=node.map_queue,
                 consumers=bindings,
+                # THE SOURCE ROW'S RESOLVED RESERVATION NAMES (the run's
+                # own cohort): the join row's metadata carries them — a
+                # NESTED fan-out over this join reads the stamp and the
+                # depth-2 children inherit the run's cap (depth-N, not
+                # depth-1).
+                reservations=self._source_row_reservations(row, what=f"map {row['step_key']!r}"),
                 failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators.
                 # THE FAN-IN BOUND'S ESCAPE, EXPOSED AT THE WIRING (the
                 # docshelf team's F6): the map_source's child_driven= —
@@ -2177,11 +2228,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             ),
             max_attempts=node.map_max_attempts,
             # THE JOIN'S PRIORITY = THE SOURCE'S RESOLUTION (the
-            # wf-priority cure): the join is the source's own cohort — the
+            # wf-priority fix): the join is the source's own cohort — the
             # map body handle's declaration governs the CHILDREN only.
             priority=source_priority,
             # THE JOIN'S DEADLINE = THE SOURCE'S RESOLUTION (the wf
-            # start_to_close cure — the map body handle's declaration
+            # start_to_close fix — the map body handle's declaration
             # governs the CHILDREN only).
             start_to_close=source_start_to_close,
         )
@@ -2210,18 +2261,18 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
         ``None`` when the body returned no list (the route over nothing —
         no fork is carried at all). An EMPTY LIST is NOT that case (the
-        rv4 F1 cure — the empty-join precedent): the empty list IS the
+        empty-join precedent): the empty list IS the
         typed sum's honest value, so the fork fires its join with zero
         children — the join is born ``deps_pending=0``, fires
         immediately, and ``result() == []`` (the run terminal, SUCCESS
         truthful — a night with no documents chunked zero documents, and
-        that is correct). The pre-cure ``None``-on-empty wedged the run
+        that is correct). The pre-fix ``None``-on-empty wedged the run
         (the join row never existed, the consumers' reserved deps never
         released — stuck ``running`` with zero error rows) or
         terminalized succeeded with the lying ``result() is None``.
 
         ``run_priority`` is the RUN's per-call override (the wf-priority
-        cure): each ARM's children resolve the law's levels — the
+        fix): each ARM's children resolve the law's levels — the
         override > the ARM's own ``priority=`` (the down-override) > the
         arm body HANDLE's declaration (the actor level, read per arm
         and never folded into the source node) > the
@@ -2236,13 +2287,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         items: list[object] = cast(
             "list[object]", outcome_value
         )  # Why: the isinstance narrowed the object-typed body return to list[Unknown] — the cast IS the declared laundering (the element walk below re-narrows per element; the codec's own seam shape).
-        # THE SOURCE'S RESOLUTION (the wf-priority cure): the JOIN's
+        # THE SOURCE'S RESOLUTION (the priority surface): the JOIN's
         # level — the arm overrides apply to the arm CHILDREN, never the
         # join (the join is the source's own cohort, the placement
         # fields' law).
         source_priority = _resolve_priority(run_priority, node.priority)
         # THE PER-ARM HANDLE LEVEL (the
-        # never-a-silent-drop law, the capacity terms' own H-A4 shape):
+        # never-a-silent-drop law, the capacity terms' own passthrough shape):
         # an arm body wired as an ``@app.actor(priority=…)`` HANDLE
         # carries its declaration as THAT ARM'S actor level — read per
         # arm here, at the fork, NEVER folded into the source node (the
@@ -2258,7 +2309,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             arm_tag: arm.body.priority if isinstance(arm.body, WorkflowActor) else None
             for arm_tag, arm in arms_typed.items()
         }
-        # THE ARM HANDLE'S OWN DEADLINE (the wf start_to_close cure — the
+        # THE ARM HANDLE'S OWN DEADLINE (the wf start_to_close bound — the
         # priority shape's own twin): an arm body wired as an
         # ``@app.actor(start_to_close=…)`` HANDLE carries its declaration
         # as THAT ARM'S actor level, read per arm here, never folded into
@@ -2275,12 +2326,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 queue=self.compiled.nodes[downstream].queue,
                 payload={},
                 # THE CONSUMER'S OWN EDGE POLICY (the map-join consumption
-                # cure): the fork writes the join→consumer EDGE with it —
+                # fix): the fork writes the join→consumer EDGE with it —
                 # T06's propagation reads the policy off the ledger when
                 # the JOIN terminal-fails.
                 failure_policy=self.compiled.nodes[downstream].on_failure,
                 # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
-                # cure): the downstream node's own resolution rides the
+                # fix): the downstream node's own resolution rides the
                 # binding (the join row's metadata → the fire's outbox
                 # bindings → the drain's consumer row's column).
                 start_to_close=self.compiled.nodes[downstream].start_to_close,
@@ -2309,44 +2360,60 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     queue=arm.queue or node.map_queue,
                     payload={ITEM_KEY: encode_data_arg(element)},
                     map_index=i,
-                    # THE ARM'S ADMISSION TERMS STAMPED (CURE 2): the arm's
+                    # THE ARM'S ADMISSION TERMS STAMPED (the admission terms): the arm's
                     # own buckets' NAMES on ITS children's rows — and the
                     # BARE arm (no own rate_limits, no actor override)
-                    # INHERITS THE SOURCE'S rate_limits (C5's
+                    # INHERITS THE SOURCE'S rate_limits (the
                     # symmetrization: the reservations' own ride-the-cohort
                     # law, the same stamp the source's rows carry). An arm
                     # declaring its own keeps its OWN — never a silent
-                    # merge.
+                    # merge. A KEYED ref resolves its concrete name per
+                    # child from the child's own element payload.
                     rate_limits=(
-                        rate_limit_names(arm.rate_limits, what="route arm's rate_limits")
+                        (
+                            rate_limit_names(arm.rate_limits, what="route arm's rate_limits")
+                            + keyed_rate_limit_names(
+                                arm.rate_limits, (element,), what=f"route arm {tag!r}'s child {i}"
+                            )
+                        )
                         or (
                             ()
                             if (arm.actor is not None and arm.actor != node.actor)
                             else rate_limit_names(
                                 tuple(node.rate_limits), what="the source node's rate_limits"
                             )
+                            + keyed_rate_limit_names(
+                                tuple(node.rate_limits),
+                                (element,),
+                                what=f"route arm {tag!r}'s child {i}",
+                            )
                         )
                     ),
-                    # THE ARM'S STRICT CAPACITY TERMS STAMPED (H-A1 +
-                    # H-A4's passthrough): the arm's own declaration rides
-                    # ITS rows; an arm declaring none KEEPS the source
-                    # node's stamp (the arm rides the source's cohort) and
-                    # an arm OVERRIDING the actor stamps none (a different
+                    # THE ARM'S STRICT CAPACITY TERMS STAMPED (the
+                    # passthrough): the arm's own STATIC
+                    # declaration rides ITS rows; an arm declaring none
+                    # KEEPS the source row's stamp (the arm rides the
+                    # source's cohort — the already-resolved names the
+                    # source row's metadata carries) and an arm
+                    # OVERRIDING the actor stamps none (a different
                     # cohort — inheriting the source's cap onto it would
                     # be the silent lie; the wiring refused a capped body
-                    # whose terms that override would drop).
+                    # whose terms that override would drop). The keyed
+                    # face never re-derives here: the run's cohort
+                    # resolved ONCE onto the source row (the arms' keyed
+                    # declarations are refused at the wiring).
                     reservations=(
                         reservation_names(tuple(arm.reservations), what="route arm's reservations")
                         or (
                             ()
                             if (arm.actor is not None and arm.actor != node.actor)
-                            else reservation_names(
-                                tuple(node.reservations), what="the source node's reservations"
+                            else self._source_row_reservations(
+                                row, what=f"route {row['step_key']!r}"
                             )
                         )
                     ),
                     # THE CHILD'S RESOLVED PRIORITY (the wf-priority
-                    # cure): the arm's DOWN-OVERRIDE — the override > the
+                    # fix): the arm's DOWN-OVERRIDE — the override > the
                     # arm's own declaration > the arm body HANDLE's
                     # declaration (the actor level)
                     # > the source node's declaration > the column
@@ -2360,7 +2427,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                         node.priority,
                     ),
                     # THE CHILD'S DECLARED DEADLINE (the wf start_to_close
-                    # cure — the priority's own down-override shape): the
+                    # fix — the priority's own down-override shape): the
                     # ARM's own declaration > the arm body HANDLE's
                     # declaration (the actor level — read per arm at the
                     # fork) > the source node's declaration. ``None`` on a
@@ -2380,6 +2447,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 actor=node.actor,
                 queue=node.map_queue,
                 consumers=bindings,
+                # THE SOURCE ROW'S RESOLVED RESERVATION NAMES (the run's
+                # own cohort): the join row's metadata carries them — a
+                # nested fan-out over this join inherits the run's cap
+                # (depth-N, not depth-1).
+                reservations=self._source_row_reservations(row, what=f"route {row['step_key']!r}"),
                 failure_policy=node.map_on_failure,  # type: ignore[arg-type]  # Why: the policy vocabulary is the compile's own — validated by the engine's validators (the map fork's own declaration, the same seam).
                 # THE FAN-IN BOUND'S ESCAPE (F6 — the same face the map
                 # fork carries): the route's child_driven= rides ITS join.
@@ -2387,13 +2459,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             ),
             max_attempts=node.map_max_attempts,
             # THE JOIN'S PRIORITY = THE SOURCE'S RESOLUTION (the
-            # wf-priority cure — the arm overrides never retouch it).
+            # wf-priority fix — the arm overrides never retouch it).
             priority=source_priority,
             # THE JOIN'S DEADLINE = THE SOURCE'S RESOLUTION (the wf
-            # start_to_close cure — the arm overrides never retouch it).
+            # start_to_close fix — the arm overrides never retouch it).
             start_to_close=node.start_to_close,
         )
-        # THE VALIDATED FORK (rv4 F8's cure — the raise INTO the ladder's
+        # THE VALIDATED FORK (the fork-validation fix — the raise INTO the ladder's
         # try): the fork validates HERE, at the body path — this call
         # site sits inside the execution ladder's try, so the fan-in
         # bound's exceed is the DETERMINISTIC named refusal
@@ -2441,11 +2513,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     # ── reads ────────────────────────────────────────────────────────
 
     async def result(self, flow_id: JobId) -> object:
-        """The flow's answer (cut #19): the terminal node's result,
+        """The flow's answer: the terminal node's result,
         DECODED — never a raw jsonb string. ``None`` before the terminal
         node finalizes.
 
-        THE FAILURE FACE (the teardown round's cure): a FAILED run's
+        THE FAILURE FACE (the teardown fix): a FAILED run's
         read raises the typed :class:`WorkflowRunError` carrying the
         failing node row's error class + message — the failed run's
         first question (WHAT failed, and why) answered AT the read face,
@@ -2515,7 +2587,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         return None
 
     async def _flow_state(self, flow_id: JobId) -> dict[str, object]:
-        """The dispatch-time predicate's view (cut #4): the input + the
+        """The dispatch-time predicate's view: the input + the
         completed results so far — the state a sibling-reading guard
         needs."""
         async with self.pool.acquire() as conn:

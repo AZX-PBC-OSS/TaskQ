@@ -52,7 +52,7 @@ def probe_exhaustion_policy_literal() -> None:
 
 def probe_sync_until_predicate() -> None:
     """The until= predicate's type: a SYNC closure (returning bool) is
-    the convicted dragon — the API demands Callable[[], Awaitable[bool]]."""
+    the rejected dragon — the API demands Callable[[], Awaitable[bool]]."""
     app = WorkflowApp()
 
     def sync_until() -> bool:

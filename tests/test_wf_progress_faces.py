@@ -3,8 +3,8 @@ progress-lie fence, the gauge's cardinality.
 
 The provenance: the PoC's PROOF 1/2/5/6 — the chain, the fan-out
 aggregation, the lie/crash dragons, the bounds — ported onto the BUILT
-surfaces. Each pin's CONVICTED VARIANT is named and — where observable —
-drilled with the red captured to ``.measurements/t21-pin-reds.json``.
+surfaces. Each pin's REJECTED VARIANT is named and — where observable —
+exercised with the red captured to ``.measurements/t21-pin-reds.json``.
 
 THE FENCE (DH4/DH7, the law of the display): the node's STATUS derives
 from the LEDGER; the progress renders INSIDE the terminal state, never
@@ -193,7 +193,7 @@ async def test_silent_gap_variant_is_structurally_impossible(
 ) -> None:
     """DH6's RED, kept forever: the silent-gap face — a replay that
     returns nothing over a pruned window while claiming success — is the
-    convicted variant. The BUILT face's mode logic refuses the shape:
+    rejected variant. The BUILT face's mode logic refuses the shape:
     whenever the cursor predates the retained window the mode is
     'partial' (named), so 'full' + zero-events-over-a-pruned-window
     cannot be constructed."""
@@ -215,7 +215,7 @@ async def test_silent_gap_variant_is_structurally_impossible(
     assert face.mode == "partial"
     progress_redlog.red(
         "silent_gap_variant_structurally_impossible",
-        "the convicted variant: a face that replays nothing over a pruned "
+        "the rejected variant: a face that replays nothing over a pruned "
         "window while claiming mode=full — the stale display forever",
         {"observed": "mode='partial' + the state re-sync; the variant cannot be built"},
     )
@@ -235,7 +235,7 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
     FAILS → the explorer shows FAILED with pct=99 rendered INSIDE it —
     never 99%-running. THE LIAR RED (the counterfactual display deriving
     the state from the progress events) shows running/99 on the dead node
-    — observed, kept red forever."""
+    — observed, kept failing on purpose."""
     app = WorkflowApp()
 
     async def liar(ctx: StepContext, params: Ingest) -> dict[str, object]:
@@ -293,7 +293,7 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
         {"liar_shows": liar_display, "truth": d},
     )
     assert liar_display["status"] == "running" and liar_display["pct"] == 99, (
-        "the convicted variant did not convict"
+        "the rejected variant did not reject"
     )
 
 
@@ -425,7 +425,7 @@ async def test_gauge_cardinality_stays_workflow_dimensioned(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, progress_redlog: RedLog
 ) -> None:
     """DH5 on the BUILT surface: a per-child-labeled progress series is
-    the convicted variant (a 200-child map would make 200 series — the
+    the rejected variant (a 200-child map would make 200 series — the
     metrics doctrine violated). The BUILT gauge's input groups by
     (workflow, state) — WORKFLOW-dimensioned; per-child progress lives in
     the ROWS (the map progress line / the display), read on demand."""

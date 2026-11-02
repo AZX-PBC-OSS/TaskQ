@@ -9,7 +9,7 @@ Decoration-time validation checks queue NAME FORMAT only, so bootstrap,
 where a process holds both every served actor's declared queue and its
 own consumed queues, is the only fix surface.
 
-Red-team rework notes pinned by this file:
+Adversarial review rework notes pinned by this file:
 
 - ONE aggregated event per boot, not one per actor: workgroup children
   each import the full actor registry while consuming a queue subset,
@@ -301,7 +301,7 @@ def test_main_wires_the_warning_after_worker_id_and_before_sync() -> None:
     row) and before ``sync_actor_config`` (whose drift raise or
     pool-acquire stall would swallow a warning placed after it).
 
-    Red-team motivation: deleting the production call leaves every
+    Adversarial review motivation: deleting the production call leaves every
     helper-level unit test green - they invoke the helper directly - so
     the call itself needs its own guard. AST-based, not source-text
     matching, so it is robust to reformatting (the

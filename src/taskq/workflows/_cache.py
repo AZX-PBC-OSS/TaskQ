@@ -39,7 +39,7 @@ THE ADDRESS'S SCOPE, STATED EXACTLY (the which-input-counts law):
   flow input) can only be cached when its input is wired IN as data —
   for a source node whose body reads the run input there is no sound
   address, only the refusal teaching the wire-it-in fix (the
-  import-probe's 640→60 stale hit, the refusal's red receipt).
+  import-probe's 640→60 stale hit).
   ``ctx.input``-shaped values that arrive as WIRED args (lifted into
   the dataflow by an uncached upstream step) DO enter the address —
   the wired-param version caches per value.
@@ -99,7 +99,7 @@ RECEIPT_KEY: Final[str] = "wf_cache_hit"
 
 
 def cache_address(code_version: str, inputs: list[object]) -> str:
-    """The Nix-style recursive address: the body's §22.1 code-version
+    """The Nix-style recursive address: the body's code-version
     canon + the resolved input's canonical jsonb.
 
     *inputs* must already be jsonb-safe (the runner's arg walk passes

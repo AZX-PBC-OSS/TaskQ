@@ -10,11 +10,11 @@ slot held — while the child's work sits in its OWN rows), and the
 crash-mid-wait (the wake arm delivers; the successor's reclaim joins;
 the hold-stamp reconcile is the belt for a lost resume).
 
-The red-first receipt: this suite ran against the PRE-T28 tree — every
+The failing-first receipt: this suite ran against the PRE-T28 tree — every
 import of the child-flow surface reds (``ChildHandle``/``ChildOk``/
 ``ChildFailed``/``ChildCancelled`` do not exist; ``ctx.spawn_flow`` is
 not on the context); the capture rides
-``.measurements/t28-childflow-red-first.txt``.
+``.measurements/t28-childflow-failing-first.txt``.
 """
 
 from __future__ import annotations
@@ -502,7 +502,7 @@ class TestCrashMidWait:
 
         # THE BELT (the lost-resume replica): a hold stamp that survived
         # the resolution is cleared + the row re-claims — the reconcile
-        # arm's law, drilled on the delivered hold's row.
+        # arm's law, exercised on the delivered hold's row.
         await wf_conn.execute(
             f'UPDATE "{wf_schema}".jobs SET metadata = metadata || '
             "'{\"hold\": \"orphan-stamp\"}'::jsonb, status = 'pending' "

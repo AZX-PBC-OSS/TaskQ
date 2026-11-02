@@ -1,19 +1,19 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
 """ATTACK PINS — the rv6 round's ENGINE pack (the pushed head 0e2f5cc09),
-PORTED TO the engine-cures lane and FLIPPED GREEN by its cures.
+PORTED TO the engine-fixes lane and FLIPPED GREEN by its fixes.
 
-Provenance: the rv6 front's live convictions, each reproduced against the
+Provenance: the rv6 front's live recorded findings, each reproduced against the
 pinned head BEFORE pinning. Per the doctrine, a LIVE finding is pinned
 under ``pytest.mark.xfail(strict=True, reason="LIVE FINDING rv6-e<id>: …")``
-asserting the SAFE behavior — the cure flips the pin to XPASS-strict (a
-red that says: remove the marker WITH the cure). THE FLIP IS DONE: both
+asserting the SAFE behavior — the fix flips the pin to XPASS-strict (a
+red that says: remove the marker WITH the fix). THE FLIP IS DONE: both
 pins ran xfail-strict at the base (the red receipts are in this pack's
-RECEIPTS file and the lane's captures) and the cures
+RECEIPTS file and the lane's captures) and the fixes
 (``_sql_runner.py``'s terminal-flow fence on BOTH claim seats;
 ``_hitl.py``'s hold-stamp-addressed wake) flipped them — the markers are
-REMOVED WITH the cure, the assertions stand as the permanent green pins.
+REMOVED WITH the fix, the assertions stand as the permanent green pins.
 
-The findings (each convicted live):
+The findings (each rejected live):
 
 * F-E1 (SEVERE) — THE IN-PROCESS POST-TERMINAL EXECUTION HOLE: the
   in-process driver's claim path (``CLAIMABLE_NODES_SQL_TEMPLATE`` /
@@ -30,7 +30,7 @@ The findings (each convicted live):
   terminal-flow fence — a body never executes on a terminal flow through
   ANY door.
 * F-E2 — THE HOLD→NODE WAKE'S MISSING MAP-INDEX LEG (the holdmap lane's
-  resume-addressing hole, pinned at THIS head — the map_index cure
+  resume-addressing hole, pinned at THIS head — the map_index fix
   (1528719d2) is NOT an ancestor of this tree; the shape pinned is the
   one this tree ships): the deliver path's wake
   (``workflows/api/_hitl.py``'s ``deliver_payload``) resolves the held
@@ -42,7 +42,7 @@ The findings (each convicted live):
   resumes; a wrong sibling re-runs). THE PIN: a middle-out resolve wakes
   the CORRECT sibling — the resume addresses the hold's OWN node (the
   hold id is already stamped in the node's ``metadata->>'hold'``; the
-  map_index-addressed cure's semantic), never a sibling's.
+  map_index-addressed fix's semantic), never a sibling's.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ from tests._wf_fixtures import seed_flow
 
 #: THE EXECUTION SENTINEL (F-E1): the staged body appends here when it
 #: runs. Module-level (the in-process driver executes in THIS process);
-#: cleared at the pin's start — the conviction is "the body NEVER ran".
+#: cleared at the pin's start — the recorded finding is "the body NEVER ran".
 _E1_SENTINEL: list[str] = []
 
 
@@ -71,7 +71,7 @@ _E1_SENTINEL: list[str] = []
 
 async def _e1_child_body(ctx: StepContext) -> str:
     """The born-on-cancelled child: if this EVER runs, the post-terminal
-    execution hole is live (the sentinel is the conviction)."""
+    execution hole is live (the sentinel is the recorded finding)."""
     _E1_SENTINEL.append("e1-body-ran")
     return "done"
 
@@ -89,7 +89,7 @@ async def test_e1_the_in_process_claim_never_executes_on_a_terminal_flow(
     root is CANCELLED must claim NOTHING and execute NOTHING. The staged
     shape is the drain's documented exemption window: the child row born
     (or still claimable) when the cascade landed — ``pending``,
-    ``deps_pending = 0``, no hold, on the cancelled root. The cure may
+    ``deps_pending = 0``, no hold, on the cancelled root. The fix may
     sit in the claimable SELECT or the claim CAS (the fleet's fence
     carries both seats' semantics); the pin reads the OUTCOME — the body
     never ran, the row never finalized executed-succeeded."""
@@ -104,10 +104,11 @@ async def test_e1_the_in_process_claim_never_executes_on_a_terminal_flow(
     flow_id = await seed_flow(wf_conn, wf_schema, status="cancelled")
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, deps_pending, metadata) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'only', 0, $2::jsonb)",
+        "retry_kind, status, step_key, deps_pending, metadata, fairness_key) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'only', 0, $2::jsonb, $3)",
         new_uuid(),
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await runner.tick(flow_id)
     assert _E1_SENTINEL == [], (
@@ -150,11 +151,11 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
 ) -> None:
     """ONE HOLD, ONE NODE, ONE RESUME: three map siblings (one step_key
     ``work.item``, map_index 0/1/2, each held on its OWN signal — the
-    pre-cure hold identity ``(workflow_id, node_key, signal_name,
+    pre-fix hold identity ``(workflow_id, node_key, signal_name,
     hold_epoch)`` admits the distinct names). Resolving the MIDDLE
     sibling's hold must resume THE HOLD'S OWN NODE — the row whose
     ``metadata->>'hold'`` IS the resolved hold's id (the stamp
-    register_hold writes; the map_index-addressed cure's semantic) — and
+    register_hold writes; the map_index-addressed fix's semantic) — and
     must leave the other siblings' held representations intact. The
     siblings are inserted in order so the arbitrary first-match wake
     lands on sibling 0: the red is deterministic."""
@@ -168,9 +169,9 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
         node_by_hold[str(hold_id)] = str(node_id)
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, deps_pending, map_index, metadata) "
+            "retry_kind, status, step_key, deps_pending, map_index, metadata, fairness_key) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', "
-            "'work.item', 0, $2, $3::jsonb)",
+            "'work.item', 0, $2, $3::jsonb, $4)",
             node_id,
             i,
             json.dumps(
@@ -180,6 +181,7 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
                     "held_signal": f"sig-{i}",
                 }
             ),
+            str(flow_id),
         )
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".wf_signals (id, workflow_id, node_key, '
@@ -202,7 +204,7 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
     )
     assert result.status == "delivered", (
         f"the staging must hold: the middle hold's delivery was {result.status!r} "
-        f"({result.reason!r}) — the conviction is the WAKE leg, not the CAS"
+        f"({result.reason!r}) — the recorded finding is the WAKE leg, not the CAS"
     )
     rows = await wf_conn.fetch(
         f"SELECT id, map_index, metadata ? 'hold' AS still_held FROM \"{wf_schema}\".jobs "

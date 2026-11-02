@@ -1,7 +1,7 @@
 """THE FLOW-HISTORY RETENTION MIGRATION'S PINS (H-B5, H-B6) — the
 01.00.35 index round's shape, structurally and on real PG.
 
-H-B5 (the boot-time SHARE locks → the boot-race deadlock): the file
+the (the boot-time SHARE locks → the boot-race deadlock): the file
 ORIGINALLY shipped in the runner's no-transaction +
 ``CREATE INDEX CONCURRENTLY`` shape and was REVERTED to the plain
 transactional shape — the 01.00.06_01 law, re-proven by the
@@ -20,7 +20,7 @@ statement anywhere, the re-run clean, and the by-hand CONCURRENTLY note
 for too-large deployments present (the maintenance-window escape that
 keeps the huge-table SHARE-lock window off the boot).
 
-H-B6 (the redundant index): ``wf_step_ledger_flow_idx`` is pure write
+the (the redundant index): ``wf_step_ledger_flow_idx`` is pure write
 amplification on the family's hottest table — the claim arbiter
 (``flow_id, step_key, COALESCE(map_index,-1), attempt``) already leads
 with the flow probe. The file ships exactly TWO indexes (the edge and
@@ -54,7 +54,7 @@ def _migration() -> migrate_mod.Migration:
     return discovered[0]
 
 
-# ── H-B5: the transactional plain shape (the boot-race deadlock law) ─────
+# ── the: the transactional plain shape (the boot-race deadlock law) ─────
 
 
 def test_migration_is_transactional_no_directive() -> None:
@@ -85,7 +85,7 @@ def test_migration_statements_are_the_plain_shape() -> None:
     deadlock law: a CIC under apply_pending_locked's advisory lock
     cycles with the parked waiters; a plain build's locks just queue).
     Transactional + IF NOT EXISTS stays idempotent: a re-run skips the
-    built indexes, and the DROP-first cures an INVALID HAND-built index
+    built indexes, and the DROP-first fixes an INVALID HAND-built index
     (an interrupted by-hand CONCURRENTLY build's debris)."""
     sql = _migration_file().read_text()
     assert "CONCURRENTLY" not in "\n".join(

@@ -53,7 +53,7 @@ LIMIT 1
 
 
 # The ledger's terminal-outcome write — rides the finalize's OWN transaction
-# (the ledger-terminal-atomic rule, hardening H9): a split write leaves
+# (the ledger-terminal-atomic rule, the terminal-atomicity rule): a split write leaves
 # node=succeeded with ledger=running, the phantom the fence prevents.
 #
 # TWO keyings, one invariant — the write touches EXACTLY the claimed row:
@@ -90,7 +90,7 @@ SET status = $2,
     capture = $6::jsonb,
     updated_at = clock_timestamp()
 WHERE id = $1
-  -- THE RE-MINT GUARD (the C5 law, LEDGER_FENCE_BY_ID_SQL's own — the
+  -- THE RE-MINT GUARD (the re-mint guard's law, LEDGER_FENCE_BY_ID_SQL's own — the
   -- deadline burn's hardening): a caller presenting its OWN claim's
   -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
   -- instance identity) writes ONLY the row that claim actually wrote.
@@ -99,14 +99,14 @@ WHERE id = $1
   -- REFUSES the write: a re-minted LIVE winner's ledger row can never
   -- inherit a stale claimant's stamp (the deadline's 'failed' burn
   -- included). A caller with no claim instant keeps the by-id-only
-  -- write (the pre-cure shape).
+  -- write (the pre-fix shape).
   AND ($7::timestamptz IS NULL OR updated_at = $7::timestamptz)
 RETURNING id
 """
 
 
 # A fenced-out attempt is recorded outcome='fenced' — never a running ledger
-# row left forever on a terminal flow (hardening H1: "neither landed nor
+# row left forever on a terminal flow ("neither landed nor
 # refused" is the state the linearization doctrine forbids). The same two
 # keyings as the terminal write (the arbiter tuple / the claim's own id);
 # both guard status = 'running' so a terminal row is never re-fenced.
@@ -131,21 +131,21 @@ SET status = 'fenced',
     updated_at = clock_timestamp()
 WHERE id = $1
   AND status = 'running'
-  -- THE RE-MINT GUARD (C5): a caller presenting its OWN claim's
+  -- THE RE-MINT GUARD: a caller presenting its OWN claim's
   -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
   -- instance identity) fences ONLY the row that claim actually wrote.
   -- The refund re-mints the ordinal — the arbiter re-use hands a LIVE
   -- winner the SAME ledger row (the DO UPDATE re-stamps updated_at) —
   -- and the stale instant REFUSES the fence: the winner's own terminal
   -- writes the row, the record never marks a live attempt 'fenced'. A
-  -- caller with no claim instant (the pre-cure shape — the engine's
+  -- caller with no claim instant (the pre-fix shape — the engine's
   -- fenced-out arm) keeps the status-only fence.
   AND ($3::timestamptz IS NULL OR updated_at = $3::timestamptz)
 RETURNING id
 """
 
 
-# The RUN-KEY claim (G2): the flow's root row inserted under the
+# The RUN-KEY claim: the flow's root row inserted under the
 # 'workflow-run' scope with the caller's key — the composite
 # (idempotency_scope, idempotency_key) arbiter is the rememberer. The root
 # row IS the run: its status is the run's status (the linearization point

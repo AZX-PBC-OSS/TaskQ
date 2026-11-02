@@ -206,7 +206,7 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
             # The PLAIN render's fragment, not the raw template: the
             # fragment carries the claim-cursor hole, and a raw hole in an
             # EXPLAIN is a PostgresSyntaxError (the CI red this constant
-            # exists to cure).
+            # exists to fix).
             _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN.format(schema=dispatch_schema)
         )
         # Mirrors the production candidates CTE's FROM shape

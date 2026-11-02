@@ -89,7 +89,7 @@ async def require_logout_csrf(request: Request, session_manager: "SessionManager
     closed with 403: no session cookie (there is nothing to end, and serving
     a success shape to an unauthenticated probe teaches nothing), or a
     missing/mismatched token. The token 403 names the remedy the action
-    doors' CSRF refusals carry (the round-3 cure — the 403 loop's other
+    doors' CSRF refusals carry (the round-3 fix — the 403 loop's other
     carrier: submit → 403 → submit → 403, forever, read as a bug) — the
     page's token is stale; a fresh page fixes it.
     """

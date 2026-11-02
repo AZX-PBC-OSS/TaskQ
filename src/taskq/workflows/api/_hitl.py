@@ -18,7 +18,7 @@ silent drop (the proven adversarial shape: the smuggled
 ``Approval.model_construct(verdict=42)`` is refused at the boundary with
 the named error, the hold SURVIVES, the worker never crashes).
 
-RESUME-NOT-RETRY (A-CRITICAL-3, cut #5): a hold's resume consumes NO
+RESUME-NOT-RETRY: a hold's resume consumes NO
 ladder attempts — the ledger distinguishes ``awaited`` from ``failed``;
 the ladder counts ``failed`` only (the proven matrix:
 ``awaited → failed → failed`` ENTERS the ladder; ``awaited →
@@ -89,7 +89,7 @@ HOLD_CHANNEL = "taskq_wf_holds"
 #: These are the TYPED legs (the listener's events decode them); the
 #: legacy :data:`HOLD_CHANNEL` knob above keeps its pinned pointer shape.
 #: The create leg's name is ``taskq_wf_hold_created`` (the hostile
-#: review's C3 rename: the first cut's ``taskq_wf_hold`` sat ONE LETTER
+#: the first cut's ``taskq_wf_hold`` sat ONE LETTER
 #: from the legacy ``taskq_wf_holds`` knob — an ops typo's recipe; the
 #: rename is additive, the lane unreleased).
 HOLD_CREATED_CHANNEL = "taskq_wf_hold_created"
@@ -130,7 +130,7 @@ TIMER_WAKE_SCHEMA_NAME = "TimerWake"
 
 # ── THE SIGNAL MODEL CATALOG (the typed door's runtime registry) ────────
 # The deliver path's boundary validates the payload against the WAIT
-# SITE's declared models (attack-3 B2/H2's cure) — but the wait site is
+# SITE's declared models (attack-3 B2/the fix) — but the wait site is
 # body code: the classes exist only where the body ran. The catalog is
 # the same D1 discipline the reducer memo uses: the process that ran the
 # wait site registers the models (every process in the fleet carries the
@@ -243,7 +243,7 @@ def resolve_payload_fit(
     payload: object,
     discriminator: Callable[[dict[str, object]], type[BaseModel]] | None = None,
 ) -> type[BaseModel]:
-    """THE BY-SHAPE RESOLUTION (attack-3 B2's cure): the payload is
+    """THE BY-SHAPE RESOLUTION (the attack-3 class): the payload is
     validated against EACH declared model (strict —
     :func:`_model_fits`); the models that fit are the candidates.
     EXACTLY ONE must fit — it is returned. ZERO fits → the typed
@@ -283,7 +283,7 @@ def resolve_payload_fit(
     raise SignalPayloadAmbiguousError(
         f"the delivered payload fits {len(fitting)} declared models "
         f"({names}) and the gate declared no discriminator — narrowing by "
-        "declaration order is the convicted mis-narrowing; declare a "
+        "declaration order is the rejected mis-narrowing; declare a "
         "discriminator on the wait site or deliver an unambiguous shape"
     )
 
@@ -350,9 +350,9 @@ WHERE id = $1
 RETURNING id
 """
 
-# THE HELD NODE'S ADDRESS (the F2 cure's resume leg): the hold id the
+# THE HELD NODE'S ADDRESS (the resume leg): the hold id the
 # register stamped into the node's metadata — ONE hold, ONE node. The
-# pre-cure lookup matched `metadata ? 'hold'` alone, which EVERY
+# pre-fix lookup matched `metadata ? 'hold'` alone, which EVERY
 # holding sibling satisfied: a resolve woke an arbitrary one (the map
 # siblings' shared step key made the match ambiguous).
 _HELD_NODE_BY_HOLD_SQL = """\
@@ -467,8 +467,8 @@ def starts_with_timer(signal_name: str) -> bool:
 
 
 def refuse_reserved_timer_name(name: str, *, mint: str) -> None:
-    """E17 — THE RESERVED NAMESPACE AT THE MINT (the timer-cures lane's
-    cure 1): a HAND-facing mint may not name a hold inside the durable
+    """E17 — THE RESERVED NAMESPACE AT THE MINT (the timer hardening's
+    fix 1): a HAND-facing mint may not name a hold inside the durable
     timer's reserved ``__timer__`` prefix. A payload model named
     ``__timer__Approval`` (or a ``wait_until`` key beginning with the
     prefix) would mint a hold every reader mis-identifies as the
@@ -504,7 +504,7 @@ async def mark_awaited(conn: ConnLike, schema: str, ledger_id: JobId) -> None:
     records ``awaited`` — the hold's resume consumes NO ladder attempts
     (the ladder counts ``failed`` only). The claim's OWN row is the
     record (an INSERT here would collide with the claim's arbiter key —
-    the UniqueViolation the pins convict)."""
+    the UniqueViolation the pins reject)."""
     await conn.execute(_render(_HOLD_AWAITED_LEDGER_SQL, schema), ledger_id)
 
 
@@ -532,19 +532,19 @@ async def register_hold(
     releases, no slot held); a LOOP node's budget PAUSES (the wall is
     blind while the loop waits on a human).
 
-    THE IDENTITY CARRIES THE MAP INDEX (the LedgerWatch F2 cure): the
+    THE IDENTITY CARRIES THE MAP INDEX (the LedgerWatch F2 fix): the
     unresolved-uniqueness arbiter is
     ``(workflow_id, node_key, signal_name, COALESCE(map_index, -1),
     hold_epoch)`` — MAP SIBLINGS of one source hold CONCURRENTLY as
     DISTINCT rows (the per-item approval — the natural
     moderation/approval pipeline shape — is the machinery's own shape,
     never a workaround). A plain step's hold carries ``map_index=None``
-    and keeps the pre-cure identity exactly. The resume addresses the
+    and keeps the pre-fix identity exactly. The resume addresses the
     hold's OWN node by the hold id stamped into that node's metadata —
     one hold, one node, one resume; a resolve can never wake a
     sibling.
 
-    THE CONTEXT RIDES THE INSERT'S OWN TRANSACTION (attack-3 H3's cure
+    THE CONTEXT RIDES THE INSERT'S OWN TRANSACTION (the crash-window fix
     — the crash-window's closure): reason/tool/args pass the redact
     pipeline (chain → the token-head pass → the workflow's hook,
     :func:`redact_hold_context`) and land in the SAME tx as the hold's
@@ -553,15 +553,15 @@ async def register_hold(
     to the hold row).
 
     THE LOOP'S BUDGET PAUSE IS DERIVED, NEVER ARGUED (the accept-and-
-    ignore hunt's cure): register_hold once took ``is_loop_node=`` — the
+    ignore hunt's fix): register_hold once took ``is_loop_node=`` — the
     caller's belief — and the INSERT ignored it: the pause rode the SQL's
     own marker (``metadata @> '{"kind": "loop"}'``), the row's KIND
     deciding. The kwarg was the accepted-and-ignored class exactly (a
     param consumed by nothing, its promise kept by something else); the
     param is GONE — the row's own kind marker is the only voice, and the
-    held-loop pause's pins drill the behavior on the row's kind.
+    held-loop pause's pins exercise the behavior on the row's kind.
 
-    THE CONTRACT IS MANDATORY (attack-4 F-P4-UNTYPED-COLD-DOOR's cure,
+    THE CONTRACT IS MANDATORY (the untyped-door class,
     the mint's half): ``payload_schema`` must carry at least one declared
     model — a contract-less hold is the audit hole (ANY payload delivers
     to it from a fresh process), so the mint REFUSES one. The boundary
@@ -569,7 +569,7 @@ async def register_hold(
     migration backfilled those to the explicit no-contract marker).
 
     THE DEADLINE'S TWO FACES (T28): *timeout_s* is the RELATIVE arm —
-    the DB clock's now plus the seconds (the C8 law: the wait site's
+    the DB clock's now plus the seconds (the law: the wait site's
     value arms the sweep); *expires_at* is the ABSOLUTE arm — the
     instant rides through UNCHANGED, the DB clock never re-bases it
     (the durable timer's datetime face). Exactly one meaning survives:
@@ -627,7 +627,7 @@ async def register_hold(
         # THE BROADCAST, CREATE LEG (T26 — TRANSACTIONAL: the NOTIFY
         # rides THIS tx, so a rolled-back hold-create is silent; the
         # payload carries the schema + the pointer, never the payload).
-        # THE TIMER'S EXCLUSION (the timer-cures lane's cure 2 — the
+        # THE TIMER'S EXCLUSION (the timer hardening's fix 2 — the
         # reserved prefix's ONE mechanism, applied at this face too):
         # this leg is the APPROVAL broadcast — a timer hold is NOT an
         # approval, and announcing one here surfaced the clock's hold as
@@ -696,7 +696,7 @@ async def register_timer_hold(
     float seconds — the DB clock's own now is the base). The row's
     ``expires_at`` IS the wake's ``scheduled`` stamp (the fire reads
     it back — the receipt and the row cannot disagree). The hold
-    identity carries the MAP INDEX (the holdmap lane's cure, the
+    identity carries the MAP INDEX (the map-index fix, the
     merge-order ruling's timer leg): a timer inside a map item mints
     EACH sibling its OWN row — the clock never collides across
     siblings."""
@@ -752,7 +752,7 @@ async def _boundary_verdict(
     hold_id: JobId,
     payload: object,
 ) -> tuple[str | None, str | None]:
-    """THE RUNTIME PAYLOAD BOUNDARY (attack-3 B2/H2's cure): the hold's
+    """THE RUNTIME PAYLOAD BOUNDARY (attack-3 B2/the fix): the hold's
     DECLARED models validate the payload — BY SHAPE, never by
     declaration order — BEFORE anything consumes the hold. Returns the
     pair (the refusal's REASON — a typed-face string naming WHY — when
@@ -800,7 +800,7 @@ async def _boundary_verdict(
     schema_doc = _json_loads(schema_ref) if isinstance(schema_ref, str) else schema_ref
     if not isinstance(schema_doc, dict) or not schema_doc:
         # THE SCHEMA-LESS HOLD REFUSES (attack-4 F-P4-UNTYPED-COLD-DOOR's
-        # cure): a hold with NO declared contract is the audit hole — ANY
+        # fix): a hold with NO declared contract is the audit hole — ANY
         # payload would deliver on THE audit-sensitive action, and the
         # door's teeth would depend on which process asks. There is no
         # honest delivery for an undeclared hold: the LOUD typed refusal,
@@ -900,12 +900,12 @@ async def deliver_payload(
         )
         resumed = None
         if cas["node_key"]:
-            # THE WAKE ADDRESSES THE HOLD'S OWN NODE (the F2 cure —
-            # rv6-e2's resume-addressing face, the same stamp both lanes
-            # cured): the node's ``metadata->>'hold'`` IS the resolved
+            # THE WAKE ADDRESSES THE HOLD'S OWN NODE (the F2 fix —
+            # the resume-addressing face, the same stamp both lanes
+            # carry): the node's ``metadata->>'hold'`` IS the resolved
             # hold's id (register_hold stamps it in the hold-mint's own
             # tx), so the wake resolves by the STAMP — one hold, one
-            # node, one resume. The pre-cure read matched step_key + flow
+            # node, one resume. The pre-fix read matched step_key + flow
             # + ``metadata ? 'hold'`` — no addressing leg for the map
             # siblings (one step_key, distinct signals): a middle
             # sibling's resolve woke the arbitrary first-matching row (a
@@ -972,7 +972,7 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
     AT-LEAST precision: it fires at the first sweep pass at-or-after
     ``expires_at``, never at a precise wall time (the listener's
     landmine doc, landmine 4). The arm's deadline comes from the WAIT
-    SITE's ``timeout_s`` (C8's precedence law — the gate declaration is
+    SITE's ``timeout_s`` (the precedence law — the gate declaration is
     the compile-visible face, never a second runtime clock)."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(_render(_EXPIRY_SWEEP_SQL, schema), batch_size)
@@ -981,12 +981,12 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
             # wait site's resume finds the row 'abandoned' → the typed
             # error (the re-execution doctrine: the body re-runs from
             # the top; pre-wait side effects are ctx.step-ledgered).
-            # THE WAKE ADDRESSES THE HOLD'S OWN NODE (rv6-e2's law at the
+            # THE WAKE ADDRESSES THE HOLD'S OWN NODE (the law at the
             # expiry seat — the same stamp addressing deliver_payload's
             # wake carries): the node's ``metadata->>'hold'`` IS this
             # hold's id, so the resolve matches the EXPIRED hold's own
             # node — a map sibling's expiry can never wake a sibling
-            # that was never timed out (the pre-cure read matched
+            # that was never timed out (the pre-fix read matched
             # step_key + flow + hold-marker: the arbitrary first-match
             # won, a live sibling re-ran with the Expired verdict).
             node_id = await conn.fetchval(
@@ -1000,7 +1000,7 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
             # THE BROADCAST, EXPIRED LEG (T26): the sweep's CAS UPDATE
             # committed the moment the autocommit statement returned —
             # the notify rides AFTER it, never before (a notify for a
-            # row that did not land is the convicted order). The leg is
+            # row that did not land is the rejected order). The leg is
             # BLIND TO NOTHING: a LOOP-kind hold (budget-paused) expires
             # through this same arm and its event delivers (pin
             # T26-P5's leg).
@@ -1088,11 +1088,11 @@ async def sweep_due_timers(
     the 'held' → 'delivered' CAS is the fence — a row resolved here
     can never resolve again, by the arm or by a hand.
 
-    THE DRAIN (the timer-cures lane's cure 4 — the 10k-timer tail): the
-    pre-cure arm fired ONE bounded batch per pass, so a backlog of *N*
+    THE DRAIN (the timer drain's fix — the 10k-timer tail): the
+    pre-fix arm fired ONE bounded batch per pass, so a backlog of *N*
     due timers needed ``ceil(N / batch_size)`` passes — at the 30 s
     sweep cadence and batch 100, 10k due timers measured a ~50-minute
-    worst-case tail (the drill's receipt). ``drain=True`` — the LEADER
+    worst-case tail (the measured tail). ``drain=True`` — the LEADER
     and the dev-loop ``tick`` pass it — sweeps due timers until the due
     set is EMPTY per tick: each iteration fires one ``batch_size``-
     bounded batch, and the loop ends at the SHORT batch (fewer rows
@@ -1101,7 +1101,7 @@ async def sweep_due_timers(
     correctness debt). ``max_batches`` bounds a pathological drain (a
     fire resuming a body that mints an ALREADY-due timer could feed
     itself): 1000 batches x batch 100 = 100k fires per tick, measured
-    far past the drill's 10k shape. The due-scan is INDEX-LED by the
+    far past the recorded failure's 10k shape. The due-scan is INDEX-LED by the
     timer's own partial index (``wf_signals_timer_due_idx`` —
     ``(expires_at, id) WHERE status = 'held' AND starts_with(signal_name,
     '__timer__')``): no seq scan, no sort.
@@ -1231,7 +1231,7 @@ async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size
             if node_id is not None:
                 await conn.execute(_render(_DELIVER_RESUME_SQL, wsql.schema), node_id)
             # THE BROADCAST (the pointer law): the knock rides AFTER the
-            # CAS committed (the convicted order's cure — T26's P1).
+            # CAS committed (the rejected order's fix — T26's P1).
             await _broadcast(
                 conn,
                 CHILD_TERMINAL_CHANNEL,
@@ -1265,7 +1265,7 @@ class HoldContext:
     node_key: str
     signal_name: str
     hold_epoch: int
-    #: The map item's index (the F2 cure's face): a MAP SIBLING's hold
+    #: The map item's index (the map-index face): a MAP SIBLING's hold
     #: carries its item index — the operator's UI addresses the item it
     #: renders; a plain step's hold carries ``None``.
     map_index: int | None
@@ -1293,7 +1293,7 @@ class HitlClient:
         redact: Any = None,
     ) -> None:
         """The read face's constructor — ONE schema convention (the
-        teardown round's cure): POSITIONAL, the majority the siblings
+        teardown round's fix): POSITIONAL, the majority the siblings
         carry (``FlowRunner(compiled, pool, schema)``,
         ``run(flow, pool, schema)``). The class is unreleased — the
         convention is fixed before it ships; keyword call sites
@@ -1307,7 +1307,7 @@ class HitlClient:
         """The pending holds for ONE run — a run with MULTIPLE
         concurrent holds lists ALL of them distinctly; the multi-
         workflow property: the filter is BY RUN, resolves never cross.
-        THE MAP SIBLINGS INCLUDED (the F2 cure): two map items of one
+        THE MAP SIBLINGS INCLUDED (the F2 fix): two map items of one
         source holding on one signal name are TWO rows — the hold
         identity carries the map index, each sibling's hold is
         addressable (its own ``hold_id``) and resolvable
@@ -1332,12 +1332,12 @@ class HitlClient:
     ) -> DeliveryResult:
         """THE REPLY (by id — one hold addressed): the decision payload
         validates through the hold's DECLARED models at the RUNTIME
-        boundary — BY SHAPE, before the CAS (attack-3 H2's cure): a bad
+        boundary — BY SHAPE, before the CAS (the shape fix): a bad
         payload is the TYPED ``refused``, the hold SURVIVES, nothing is
         consumed, and the refusal is AUDITED (the operator sees WHY).
         The transition + THE AUDIT + THE KNOCK share ONE transaction
         whose linearization point is the DELIVER CAS ITSELF (attack-3
-        H4's cure): the loser matches no rows and writes NOTHING — 0
+        the fix): the loser matches no rows and writes NOTHING — 0
         audit rows, 0 knocks for a lost race (the guard-tx shape wrote
         both BEFORE the CAS and doubled under concurrency). An
         already-resolved hold is the DEFINED no-op (the idempotence
@@ -1346,7 +1346,7 @@ class HitlClient:
         THE CHILD-JOIN REFUSAL (the honest face): a
         CHILD-JOIN hold (signal ``__child__:…``) is NOT operator-
         resolvable — its resolver is the CHILD'S TERMINAL (the wake
-        arm's own CAS). The pre-cure face DELIVERED on a matching
+        arm's own CAS). The pre-fix face DELIVERED on a matching
         payload, the parent's body re-executed, the live child
         re-held: the no-op bounce wearing a 200. The typed refusal now
         teaches where the resolution actually lives; the hold
@@ -1391,8 +1391,8 @@ class HitlClient:
         # THE RESOLVE TX: the CAS is the transition's only grant; the
         # audit + the knock ride the WINNING tx (exactly-once).
         #
-        # THE NODE PRE-LOCK (the deadlock cure — the resolve/cancel
-        # race pin's conviction at true concurrency): the cancel tx
+        # THE NODE PRE-LOCK (the deadlock fix — the resolve/cancel
+        # race pin's finding at true concurrency): the cancel tx
         # takes jobs (the root flip, then the nodes) → wf_signals (the
         # held signals); this tx took wf_signals (the CAS) → jobs (the
         # resume) — the opposite order, and the two verbs' overlap
@@ -1483,9 +1483,9 @@ class HitlClient:
             )
             resumed = None
             if cas["node_key"] and node_id is not None:
-                # THE HELD NODE'S ADDRESS (the F2 cure): by the hold id —
+                # THE HELD NODE'S ADDRESS (the F2 fix): by the hold id —
                 # one hold, one node, one resume — already locked above
-                # (the deadlock cure's pre-lock); the resume's UPDATE
+                # (the deadlock fix's pre-lock); the resume's UPDATE
                 # rides the lock this tx holds.
                 resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, self._schema), node_id)
             if resumed is None:
@@ -1502,9 +1502,9 @@ class HitlClient:
             return DeliveryResult(status="delivered")
 
     def _context(self, row: Any) -> HoldContext:
-        """The row → the context (decoded ONCE — cut #14's law; the
+        """The row → the context (decoded ONCE — law; the
         REDACT LAW: the payload passes the chain before anything
-        leaves). THE DEFAULT IS THE CHAIN (attack-3 H3's belt): a
+        leaves). THE DEFAULT IS THE CHAIN (the belt the attack probes check): a
         client constructed with no hook still runs the vetted chain +
         the hold-context token pass over the payload — a canary never
         reaches the enumeration surface verbatim even on a row written
@@ -1527,7 +1527,7 @@ class HitlClient:
         # THE HELD ROW'S CONTEXT IS THE REASON'S HOME: pre-delivery the
         # payload IS the redacted context doc (reason/tool/args —
         # register_hold wrote it); the contract's reason field reads it
-        # instead of lying None (the web demo's ROW read — C10 —
+        # instead of lying None (the web demo's ROW read
         # renders this). Post-delivery the payload is the decision; the
         # reason is gone with the held state it belonged to.
         reason: str | None = None

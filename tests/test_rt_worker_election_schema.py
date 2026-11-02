@@ -610,7 +610,7 @@ async def test_a_pinging_holder_without_a_lease_is_not_taken_over(
         await ping_conn.close()
 
 
-# ── Red-team: a sustained empty-row gap must not look like a single blip ──
+# ── Adversarial review: a sustained empty-row gap must not look like a single blip ──
 
 
 async def test_sustained_empty_row_records_contention_every_cycle_not_once(

@@ -72,8 +72,8 @@ class FlowNodeRow:
     hold: HoldContext | None = None
     max_attempts: int = 3
     attempt: int = 0
-    # THE 3AM FIELDS (the observability lane's cures; the ENGINE-FACES
-    # cure rides the engine query — WORKFLOW_NODES_SQL selects them at
+    # THE 3AM FIELDS (the observability lane's fixes; the ENGINE-FACES
+    # fix rides the engine query — WORKFLOW_NODES_SQL selects them at
     # the source, ONE read): the node row's own id + started_at (the
     # RUNNING face's age source) + the failed_parent stamp
     # (metadata.failed_parent — the dead parent NAMED on the record) +
@@ -87,7 +87,7 @@ class FlowNodeRow:
     last_heartbeat_at: datetime | None = None
 
     def view(self) -> NodeView:
-        """The §17.5 derivation's input — THE ONE CONVERSION (no second
+        """The derivation's input — THE ONE CONVERSION (no second
         derivation lives anywhere)."""
         return NodeView(
             status=self.status,
@@ -117,11 +117,11 @@ def derive_flow_status(nodes: Sequence[FlowNodeRow]) -> WorkflowStatus:
 
 
 def _bounded_line(text: object, limit: int = 120) -> str:
-    """THE DB-SOURCED TEXT'S DISCIPLINE (F-CLI-4's cure, the class seat):
+    """THE DB-SOURCED TEXT'S DISCIPLINE (the F-CLI-4 fix, the class seat):
     anything the RENDER surfaces print from a DB-sourced string is
     whitespace-COLLAPSED (embedded newlines cannot forge a remedy line —
     an attacker-shaped error_message or hold reason writing its own
-    'remedy: …' line is the convicted forgery) and BOUNDED (the length
+    'remedy: …' line is the rejected forgery) and BOUNDED (the length
     cap the event-detail line already carries). The escape sequences
     die in the collapse: an ANSI escape's carriage moves and line feeds
     are whitespace like any other."""
@@ -148,14 +148,14 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
     yields an empty list — a running row is not a finding.
 
     THE BLOCKED-BEFORE-JOIN-WAIT ORDER (attack-4 F-P4-WHYSTUCK-FALSE-
-    REMEDY's cure): a row whose parent ALREADY finalized as a failure
+    the remedy's own fix): a row whose parent ALREADY finalized as a failure
     carries ``blocking_reason='failed_parent'`` — the join can NEVER
     fire. Reading the join-wait arm first promised "the join fires when
     its parents finalize" for a join that never will; the blocking
     REASON wins the read, and each reason's remedy derives from the
     reason (truthful per state), never from the shape it resembles."""
     if node.hold is not None:
-        # THE TIMER'S BRANCH (the timer-cures lane's cure 3 — the same
+        # THE TIMER'S BRANCH (the timer hardening's fix 3 — the same
         # reserved-prefix split the template keeps): a hold under the
         # reserved ``__timer__`` prefix is the CLOCK's — the resolve
         # remedy is a lie the boundary would refuse. The line names the
@@ -199,7 +199,7 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
         and node.blocking_reason != "join"
         and node.view().is_blocked_row
     ):
-        # THE 'join' EXCLUSION (the 3am drill's false-remedy cure): the
+        # THE 'join' EXCLUSION (the 3am false-remedy fix): the
         # bare 'join' stamp is the HEALTHY join-wait shape every emitted
         # join carries — it must fall through to the JOIN-WAIT arm below
         # (the honest "the join fires when its parents finalize"), never
@@ -207,7 +207,7 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
         # failed node that does not exist.
         reason = node.blocking_reason
         if reason == "flow_dead":
-            # THE FENCE'S RECORD (the 3am drill's wedge face): flow_dead
+            # THE FENCE'S RECORD (the 3am wedge record): flow_dead
             # means the FLOW died — the failure cascade flipped the root
             # — and this join can never fire. The line says the path is
             # DEAD first; the retry command alone would read as if a
@@ -234,7 +234,7 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
                 "(or cancel the run: the path is dead)",
             ]
             if node.failed_parent:
-                # THE DEAD PARENT, NAMED ON THE RECORD (the 3am drill's
+                # THE DEAD PARENT, NAMED ON THE RECORD (the 3am operator-truth
                 # gap: the cascade stamps metadata.failed_parent with the
                 # parent's id — the line must PRINT it, never send the
                 # operator hunting through the run's other nodes).
@@ -259,9 +259,9 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
             "       remedy: none — the join fires when its parents finalize",
         ]
     if node.status in ("failed", "crashed", "abandoned"):
-        # THE TERMINAL-CRASH FOLD'S FACE (the 3am drill's cure): the
+        # THE TERMINAL-CRASH FOLD'S FACE (the 3am operator-truth fix): the
         # derivation folds crashed/abandoned into the failed class (the
-        # §17.5 row-0), and the why-stuck face must fold with it — a
+        # row-0), and the why-stuck face must fold with it — a
         # '1 crashed' count with no line left the row's story (the
         # WorkerCrashed class, the reclaim's death record) invisible.
         headroom = node.max_attempts - node.attempt
@@ -305,7 +305,7 @@ def stranded_lines(
     *,
     workflow: str,
 ) -> list[str]:
-    """THE VERSIONING WEDGE'S SURFACE (the timer-cures lane's cure 5 —
+    """THE VERSIONING WEDGE'S SURFACE (the timer hardening's fix 5 —
     the surface, not the semantics): the run's node inventory vs the
     CURRENT registry's compiled graph — a run node the current registry
     does not declare can never claim a body again, so an in-flight run
@@ -345,7 +345,7 @@ def stranded_lines(
 def code_version_drift_lines(
     stamps: Sequence[tuple[str, str | None]],
 ) -> list[str]:
-    """THE §22.1 STAMPS' DRIFT FACE (the surface, the
+    """THE STAMPS' DRIFT FACE (the surface, the
     stamps are the data): a run whose node rows carry >1 DISTINCT
     ``code_version`` was redeployed mid-flight — the run mixes pre- and
     post-deploy attempts, and the operator sees it HERE, from the run's
@@ -368,7 +368,7 @@ def code_version_drift_lines(
     multi = sorted(key for key, versions in by_key.items() if len(versions) > 1)
     lines = [
         f"code-version drift: {len(distinct)} distinct stamps on this run's rows "
-        f"(source: the node rows' jobs.code_version — the §22.1 record): "
+        f"(source: the node rows' jobs.code_version — the record): "
         + " ".join(f"{v[:12]}…" for v in distinct[:4])
         + (" …" if len(distinct) > 4 else ""),
     ]
@@ -394,7 +394,7 @@ def _running_lines(
     running_face_after_s: float,
     cap: int = 6,
 ) -> list[str]:
-    """THE RUNNING FACE (the 3am drill's stuck-vs-slow cure): a running
+    """THE RUNNING FACE (the 3am operator-truth stuck-vs-slow fix): a running
     row's AGE, named — a hung body (a long wait inside the step's own
     code) produces NO stuck finding (a running row is not a finding), so
     without this face every surface read the hang as a bare '1 running'
@@ -405,7 +405,7 @@ def _running_lines(
     *running_face_after_s* is live work, not a finding — its line would
     be noise on every progress report.
 
-    THE RECLAIM-REQUIRES-A-LEADER MARKER (the engine-faces lane's cure —
+    THE RECLAIM-REQUIRES-A-LEADER MARKER (the engine-faces lane's fix —
     the dead-fleet face): a running row whose ``lock_expires_at`` has
     passed is the OPPOSITE verdict — the holder is presumed dead and the
     row is RECLAIMABLE, but the reclaim sweep runs only under a leader:
@@ -509,9 +509,9 @@ def format_flow_status(
         )
     if code_version_stamps:
         lines.extend(code_version_drift_lines(code_version_stamps))
-    # THE ONE COHERENT VERSIONING-DRIFT SECTION (the timer-cures lane's
-    # cure 5 + the §22.1 stamps): the stranded-node surface (only when
-    # *registry_node_keys* is given: the --app door) + the §22.1 stamps'
+    # THE ONE COHERENT VERSIONING-DRIFT SECTION (the timer hardening's
+    # fix 5 + the stamps): the stranded-node surface (only when
+    # *registry_node_keys* is given: the --app door) + the stamps'
     # drift face (the stamps are the data, no --app needed).
     if registry_node_keys is not None and nodes:
         lines.extend(
@@ -536,7 +536,7 @@ def format_flow_status(
         return lines
     counts = ", ".join(f"{c} {s}" for s, c in _counts_by_status(nodes))
     lines.append(f"nodes: {len(nodes)} — {counts} (source: jobs rows by metadata.flow_id)")
-    # THE RUNNING FACE (the 3am drill's cure) — before the stuck lines:
+    # THE RUNNING FACE (the 3am operator-truth fix) — before the stuck lines:
     # a hung body's row is 'running', which no stuck arm ever names.
     running_face = _running_lines(
         nodes,

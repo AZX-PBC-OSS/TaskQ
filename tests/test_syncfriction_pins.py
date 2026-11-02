@@ -1,5 +1,5 @@
 """The sync-friction lane's pins: each test is RED at the audited tip and
-GREEN after its cure. One test per pinnable friction item.
+GREEN after its fix. One test per pinnable friction item.
 
 - item 4: ``taskq worker --queues a b c`` — the space-separated form fails
   with an error that teaches the repeat-the-flag contract, not "No such

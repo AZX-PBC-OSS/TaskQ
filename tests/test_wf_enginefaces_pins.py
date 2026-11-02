@@ -1,5 +1,5 @@
 """THE ENGINE-FACES PINS — the observability front's reported ENGINE
-findings, fenced red-first (the engine lane's evidence).
+findings, fenced failing-first (the engine lane's evidence).
 
 The 3am pins (``tests/test_wf_3am_pins.py``) fenced the CLI/explorer
 faces; the ENGINE findings behind them ride here:
@@ -64,7 +64,7 @@ def test_lapsed_lease_running_row_names_reclaimable_awaiting_a_leader() -> None:
     dead, no sweep will EVER touch it — must surface 'reclaimable,
     awaiting a leader' on the status face: the 3am question ('is this
     work slow or is everyone dead') is answerable from the surface
-    alone. The convicted variant: the row read as the ordinary RUNNING
+    alone. The rejected variant: the row read as the ordinary RUNNING
     face (or a bare '1 running' count) — the lease's lapse, the one fact
     that names the fleet's death, was invisible on every surface."""
     lines = format_flow_status(
@@ -178,7 +178,7 @@ class _CountingConn:
     async def fetchrow(self, sql: str, *args: object) -> Any:
         return {
             "status": "running",
-            "actor": "wf-drill",
+            "actor": "wf-scenario",
             "workflow": "drill_hang",
             "cancel_requested_at": None,
         }
@@ -217,7 +217,7 @@ def _node_row(**overrides: Any) -> dict[str, Any]:
         "failed_parent": None,
         "lock_expires_at": real_now + timedelta(minutes=5),
         "last_heartbeat_at": started,
-        # THE §22.1 STAMP (rv5-t5's cure — the drift face's data): the
+        # THE CODE-VERSION STAMP (the drift face's data): the
         # node row's code_version rides the row; the stamps' read names
         # a run whose rows straddle a redeploy.
         "code_version": None,
@@ -247,7 +247,7 @@ def test_the_node_face_rides_one_read_through_the_engine_query(
     """THE ONE-READ LAW: the CLI's status face is fed by the ENGINE's
     WORKFLOW_NODES_SQL — the query selects the 3am columns (started_at,
     failed_parent, the lease face's lock_expires_at) at the SOURCE, and
-    the CLI issues ONE jobs fetch for the node rows. The convicted
+    the CLI issues ONE jobs fetch for the node rows. The rejected
     variant: the engine query lacked the columns and the CLI bought them
     with its own supplement read — two reads where one suffices, the
     workaround the engine query's shape forced."""
@@ -292,7 +292,7 @@ def test_the_engine_query_names_the_3am_columns() -> None:
     surface reads — selects the columns the faces need (started_at, the
     failed_parent stamp, the lease face's lock_expires_at). The CLI's
     supplement read existed BECAUSE the engine query didn't; the columns
-    at the source are the cure's substance (the string law pins the
+    at the source are the fix's substance (the string law pins the
     query, the one-read pins above pin the wiring)."""
     sql = WorkflowSql.build("taskq").workflow_nodes
     assert "j.started_at" in sql

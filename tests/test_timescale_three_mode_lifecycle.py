@@ -278,7 +278,7 @@ async def test_full_lifecycle_on_each_of_the_three_modes(mode: StorageMode, mode
         # The compression family's first run fires seconds after the TSL
         # deploy registered it; defer it before any more DML, so no phase
         # below races it for a chunk (see _defer_compression_policies).
-        # THE RETENTION FAMILY JOINS THE DEFERRAL (the round-2 red, cured
+        # THE RETENTION FAMILY JOINS THE DEFERRAL (the round-2 red, fixed
         # 2026-10-08): the retention policy's first run fires seconds after
         # registration exactly like the compression one — and phase 3's
         # row-exactness window (the aged row must SURVIVE the row-level

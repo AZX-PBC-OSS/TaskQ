@@ -1,7 +1,7 @@
 """The flow RUNNER's row-codec seam (the split of ``api/_runner``): the
 jsonb envelope's boundary — every value that crosses a row (a wiring
 arg, a body return, the loop's carry, the flow's input) walks these
-typed helpers, decoded ONCE (cut #14), encoded jsonb-safe.
+typed helpers, decoded ONCE, encoded jsonb-safe.
 
 The envelope's law: a body's bare dict return never collides with the
 engine's envelope keys (the ``{"value": …}`` wrapper); the Any-contract
@@ -96,7 +96,7 @@ def rehydrate_carry(declared: object, raw: object) -> object:
     """
     if declared is None:
         return raw
-    # THE TYPED SPLIT (the ergonomic tail's cure): the declared face may
+    # THE TYPED SPLIT (the ergonomic tail's fix): the declared face may
     # arrive as the CLASS itself (the loop's ``carry_type=`` declaration
     # — the spec's own field since the split) or as an INSTANCE (the
     # initial carry's value — the derivation's other face). The class is
@@ -152,7 +152,7 @@ def encode_result(value: object) -> dict[str, object] | None:
     return {"value": encode_data_arg(value)}
 
 
-#: The runner's envelope key set (the F4 read-side reconciliation): the
+#: The runner's envelope key set (the bounded-collect reconciliation): the
 #: NON-truncated envelope is ONE key (``{"value": …}``); the
 #: ``_bounded_collect``'s TRUNCATED envelope adds exactly the TWO honest
 #: markers (the ``__truncated__`` count + the ``detail_home`` pointer).
@@ -163,14 +163,14 @@ _RESULT_ENVELOPE_KEYS: frozenset[str] = frozenset({"value", "__truncated__", "de
 
 
 def decode_result(raw: object) -> object:
-    """jsonb decoded ONCE (cut #14): asyncpg returns ``str`` on un-coded
+    """jsonb decoded ONCE: asyncpg returns ``str`` on un-coded
     connections — parse through the estate's seam, never per call site.
     The runner's own envelope unwraps BY ITS KNOWN KEY SET — ``value``
-    alone (the pre-cure envelope) or ``value`` + the F4 markers
+    alone (the pre-fix envelope) or ``value`` + the truncation markers
     (``__truncated__``, ``detail_home``; the bounded collect's shape) —
     NOT by ``len(decoded) == 1``: the truncated envelope is THREE keys,
     and the consumer's typed decode must see the declared ``list[...]``
-    either way (the pre-cure tree unwrapped the one-key form only, and
+    either way (the pre-fix tree unwrapped the one-key form only, and
     every consumer wired past a truncating collect received the envelope
     dict where its param declared a list — the merge regression this
     key-set door closes). The truncation face stays honest on the row:
@@ -197,7 +197,7 @@ def decode_result(raw: object) -> object:
 
 
 def result_truncation(raw: object) -> int | None:
-    """The RAW row's truncation face (the F4 marker's read): the count
+    """The RAW row's truncation face (the marker's read): the count
     when the envelope is the bounded collect's TRUNCATED shape, ``None``
     otherwise (a None raw, a plain envelope, a body's own dict). The
     decode's unwrap drops the markers from the consumer's value — THIS
@@ -213,7 +213,7 @@ def result_truncation(raw: object) -> int | None:
     return count if isinstance(count, int) and not isinstance(count, bool) else None
 
 
-# ── THE TYPED BOUNDARY IS COMPLETE (the phase-4 cure): a param's
+# ── THE TYPED BOUNDARY IS COMPLETE (the typed boundary): a param's
 # annotation — bare model, LIST, union, generic — re-validates the jsonb
 # round-trip's value. The collect's dicts reached the body RAW and the
 # union's `match` fell to the never-arm (the doc-ingest fence's route
@@ -248,7 +248,7 @@ def coerce_arg(
     re-validates the jsonb round-trip's value (the decode once, typed
     end to end). A BARE model is the fast path; a LIST/union/generic
     annotation walks the TypeAdapter. THE POSITION IS THE CALLER'S
-    GUARD (the accept-and-ignore hunt's cure): the caller owns the
+    GUARD (the accept-and-ignore fix): the caller owns the
     position arithmetic (``position >= len(params)`` is its early
     return) — this walk takes the RESOLVED annotation, nothing else;
     the ``position``/``params`` kwargs it once accepted were consumed

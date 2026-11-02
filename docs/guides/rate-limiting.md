@@ -522,10 +522,29 @@ How it honors them — ONE mechanism, the authoring face added:
   on another app the fleet serves). At claim time a row naming an
   unknown bucket is the FAIL-CLOSED arm: the row parks budget-free,
   LOUD — never admitted unprotected.
-- **A keyed ref (`KeyedRateLimitRef`) is refused** on the workflow
-  surface: its bucket materializes per payload, and a workflow row's
-  admission terms are stamped as NAMES at the fork — a declaration that
-  cannot name what it stamps is the wiring site's refusal.
+- **A keyed ref (`KeyedRateLimitRef`) resolves per child.** Declare it
+  on a map/route fan-out (`map_source(src, item,
+  rate_limits=[KeyedRateLimitRef.typed(ItemModel, ...)])`) or on the
+  entry step (the run's own input first, then its data args — two runs,
+  two inputs, two buckets): the fork/static-insert runs each child's
+  `key_fn` against THAT child's own declared payload and stamps the
+  concrete name (`f"{base_name}:{key}"`) onto the child's row. At claim
+  the concrete name resolves back through the boot's collected decls —
+  the per-key bucket materializes on first acquire (lazy registration,
+  the same entry cap — a cap hit is the budget-free park at the gate —
+  and idle-eviction bound the vanilla keyed acquires run), so each
+  tenant's children queue on THEIR OWN bucket. A child whose key cannot
+  resolve fails the fork loudly (the error names the child) — no row
+  lands half-stamped. A keyed term on a node whose args resolve from
+  parent results is refused at the wiring (no payload exists at
+  create). The RESERVATION face is cohort-scoped: a fan-out source's
+  children ride the source row's already-resolved names (one bucket per
+  run), a keyed reservation on a fan-out source must bind the source's
+  declared payload face, and an arm's keyed reservation refuses.
+  The runnable demonstration (two tenants, one keyed rate limit, one
+  `round_robin` queue) is `examples/tenant_fairness_demo/` — its run
+  prints the per-child bucket names, the per-key acquire/deny trace,
+  and both tenants' completion.
 
 **WHERE THE DENIAL RECEIPT LIVES — read the column for what it
 counts.** The job row's `rate_limit_blocked_count` column is bumped on

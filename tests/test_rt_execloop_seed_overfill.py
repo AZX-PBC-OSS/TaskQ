@@ -1,4 +1,4 @@
-"""Red-team: an oversized ``_local_queue_seed`` parks bootstrap forever (E5).
+"""Adversarial review: an oversized ``_local_queue_seed`` parks bootstrap forever (E5).
 
 Contract under attack: an oversized seed (``len(seed) > max_concurrency``)
 must fail loudly (raise) or be bounded - never park ``_main``'s bootstrap

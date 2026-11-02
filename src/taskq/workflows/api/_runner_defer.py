@@ -6,7 +6,7 @@ budget) and :class:`~taskq.exceptions.RetryAfter(delay, consume_budget=)`
 (reschedule, consumes by default) — into ONE bounded finalize
 disposition on the claimed node row.
 
-THE DEFECT THIS CURES (the OCR-429 exhaustion): the signals are
+THE DEFECT THIS FIXES (the OCR-429 exhaustion): the signals are
 ``TaskQError`` subclasses, so a body raising one fell into the runner's
 body-failure catch and LADDERED — the attempt budget burned on a
 deferral that never executed, the node parked at the backoff curve and
@@ -180,7 +180,7 @@ async def defer_row_law(
     ledger_id: JobId | None,
     ledger_claimed_at: Any,
 ) -> str:
-    """THE ROW LAW + THE LEDGER'S TRUTH, one transaction (the H9 law's own
+    """THE ROW LAW + THE LEDGER'S TRUTH, one transaction (the terminal-atomicity law's own
     shape — a split write leaves the row 'scheduled' with the ledger
     'running': the phantom the fence prevents) — the SHARED phase of both
     verdict routes (the STEP's and the LOOP's; the two mixins' own
@@ -192,9 +192,9 @@ async def defer_row_law(
       ``failed`` row the ladder's budget read would count);
     * ``"fenced"`` — the ZOMBIE's deferral: the claim fence matched
       nothing (a peer re-claimed the row at a newer attempt) and the
-      attempt records 'fenced' on the ledger (H1 — never a running row
+      attempt records 'fenced' on the ledger (never a running row
       left forever), keyed on the claim's OWN RETURNING instant (the
-      re-mint guard, C5 — a re-minted row is the LIVE winner's, never
+      re-mint guard — a re-minted row is the LIVE winner's, never
       ours);
     * ``"exhausted"`` / ``"cancel_fenced"`` — the row law wrote NOTHING
       (the verdict names the caller's own terminal door).
@@ -364,7 +364,7 @@ class DeferOps(_DeferHost):
         loop's own doors.)
 
         ``ledger_claimed_at`` is the claim's OWN RETURNING instant (the
-        re-mint guard's discriminator, C5): the zombie's fence keys on it,
+        re-mint guard's discriminator): the zombie's fence keys on it,
         so a claim the arbiter re-minted onto a LIVE winner (the refund's
         own row re-use) can never be fenced by the stale claimant.
 

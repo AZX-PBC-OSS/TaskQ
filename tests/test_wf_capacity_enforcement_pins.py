@@ -1,6 +1,6 @@
 """THE CAPACITY ENFORCEMENT PINS (§H-A's claim-path + finalize faces):
 
-* H-A1 — THE WF RESERVATIONS ARE ACQUIRED: the flow rows carry the
+* the — THE WF RESERVATIONS ARE ACQUIRED: the flow rows carry the
   step's declared reservation NAMES on their metadata (the static node
   inserts + the fork's children, the ``rate_limits`` stamp's own
   five-point ride: stamp → resolve → acquire → release → the fail-closed
@@ -12,7 +12,7 @@
   second gate DENIES (the row snoozed budget-free, its release_reason
   naming the reservation), and the release re-opens the gate. The
   overlap-guard tripwire (the flows demo's pattern) never fires.
-* H-A5 — result_ttl IS A LIVE KNOB: the wf finalize's terminal mark
+* the — result_ttl IS A LIVE KNOB: the wf finalize's terminal mark
   writes ``result_expires_at`` on the SUCCEEDED terminal rows from the
   cohort's stored ``actor_config.result_ttl`` (the vanilla
   ``mark_succeeded``'s lateral equivalent); a cohort with no TTL writes
@@ -180,7 +180,7 @@ class OverlapGuard:
             self.in_flight -= 1
 
 
-# ── H-A1: the stamp ──────────────────────────────────────────────────────
+# ── the: the stamp ──────────────────────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -228,7 +228,13 @@ async def test_the_reservation_stamp_rides_the_static_and_fork_rows(
             f"the fork's child row {item_key} carries the source's reservation stamp"
         )
     join_meta = stamped["src.join"]
-    assert "reservations" not in join_meta, "the join's packer body declares no reservation"
+    # THE JOIN RIDES THE RUN'S COHORT (the depth-N law): the join row's
+    # metadata carries the source row's already-resolved names, so a
+    # NESTED fan-out over this join reads the stamp — the depth-2
+    # children inherit the run's cap.
+    assert join_meta.get("reservations") == [GUARD_NAME], (
+        f"the join row rides the run's own reservation cohort; got {join_meta}"
+    )
 
 
 def _meta(raw: Any) -> dict[str, Any]:
@@ -237,14 +243,14 @@ def _meta(raw: Any) -> dict[str, Any]:
     return decoded
 
 
-# ── H-A1: the acquire — exactly ONE body at a time ──────────────────────
+# ── the: the acquire — exactly ONE body at a time ──────────────────────
 
 
 @pytest.mark.integration
 async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ACQUIRE (H-A1's conviction): two flow rows sharing a slots=1
+    """THE ACQUIRE (H-A1's recorded finding): two flow rows sharing a slots=1
     reservation, both CLAIMED concurrently — exactly ONE body runs at a
     time. The second gate DENIES (the row snoozed budget-free, its
     release_reason naming the reservation), and the release RE-OPENS the
@@ -399,7 +405,7 @@ async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
     assert guard.tripped == [], "THE TRIPWIRE: two bodies overlapped — the reservation did not hold"
 
 
-# ── H-A1: the fail-closed arms ──────────────────────────────────────────
+# ── the: the fail-closed arms ──────────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -448,14 +454,14 @@ async def test_malformed_reservation_metadata_parks_fail_closed(
     assert gate.dependency_failure is not None, "the metadata lies — the row parks"
 
 
-# ── H-A5: result_ttl is a live knob ─────────────────────────────────────
+# ── the: result_ttl is a live knob ─────────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_terminal_node_writes_result_expires_at_from_the_cohort_ttl(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """H-A5 (the (a) cure): the wf finalize's terminal mark writes
+    """H-A5 (the (a) fix): the wf finalize's terminal mark writes
     ``result_expires_at`` on the SUCCEEDED terminal rows from the
     cohort's stored ``actor_config.result_ttl`` — the vanilla
     ``mark_succeeded``'s lateral equivalent. A cohort with no TTL writes
@@ -531,7 +537,7 @@ async def test_terminal_node_writes_result_expires_at_from_the_cohort_ttl(
     assert failed_row["result_expires_at"] is None, "a FAILED terminal stamps no expiry"
 
 
-# ══ ROUND-2 RED-TEAM CONVICTIONS (§H-A's round-2 subsection) ═════════════
+# ══ ROUND-2 ADVERSARIAL REVIEW'S RECORDED FINDINGS ═════════════
 
 
 # ── C1: the fail-closed park snoozes (never disowns) ─────────────────────
@@ -596,7 +602,7 @@ async def _run_one_job_through_the_intercept(
         )
     )
     # THE PROCESSED SIGNAL: either arm settles the job (the fixed shape
-    # snoozes it; the convicted shape disowns it) — wait for either, then
+    # snoozes it; the rejected shape disowns it) — wait for either, then
     # stop the loop.
     for _ in range(1000):
         if backend.snoozes or deps.disowned_jobs:
@@ -611,7 +617,7 @@ async def _run_one_job_through_the_intercept(
 async def test_a_renamed_reservation_park_snoozes_and_stamps_never_disowns(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """C1 (THE CHURN CONVICTION): a flow row stamped with a reservation
+    """the (THE CHURN RECORDED FINDING): a flow row stamped with a reservation
     NAME the registry lacks hits the FAIL-CLOSED park arm — the park is
     a SNOOZE (``mark_snoozed`` called, the stamp landed: the
     ``released_reason`` naming the park, the arm's own kind beside it),
@@ -685,7 +691,7 @@ async def test_the_route_arm_stamp_symmetry_inherits_the_source_terms(
 ) -> None:
     """C5: THE ROUTE ARM'S INHERITANCE IS SYMMETRIC — a BARE arm (no own
     rate_limits, no actor override) inherits the SOURCE node's
-    ``rate_limits`` ALONGSIDE its ``reservations`` (the CURE-2 face's own
+    ``rate_limits`` ALONGSIDE its ``reservations`` (the FIX-2 face's own
     terms ride the cohort); an arm declaring its own terms keeps its OWN
     (no silent merge). The pre-fix asymmetry: the reservations flowed
     from the source, the rate_limits didn't — the bare arm's rows lost

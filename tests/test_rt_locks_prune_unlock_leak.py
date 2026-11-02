@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team locks: a failed prune-session unlock strands the fleet's lock on a live pooled session.
+"""Adversarial review locks: a failed prune-session unlock strands the fleet's lock on a live pooled session.
 
 The prune loop takes its session-level advisory lock with
 ``pg_try_advisory_lock`` and releases it in the attempt's ``finally`` via

@@ -4,7 +4,7 @@ Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
 home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
 file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
-the unfenced variants kept in this file forever as the convicted shapes.
+the unfenced variants kept in this file forever as the rejected shapes.
 """
 
 # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
@@ -54,10 +54,10 @@ async def test_pin_18_no_id_collision(
     flow_id = await seed_flow(wf_conn, wf_schema)
 
     # THE RED — A REAL ENGINE MUTATION: the fork's id mint site swapped
-    # for the convicted string-shape convention (ids derived from a
+    # for the rejected string-shape convention (ids derived from a
     # {parent}.{child}-style convention with no per-fork discriminator —
     # 10 distinct ids TOTAL): the second fork's children collide with the
-    # first's on the PRIMARY KEY — the convicted graph cannot even be
+    # first's on the PRIMARY KEY — the rejected graph cannot even be
     # built, and a convention WITHOUT the PK would silently land the
     # wrong graph (the same ids, the wrong parents' work). The shipped
     # mint (uuid7 via the seam) forks 20 x 10 distinct children.
@@ -299,7 +299,7 @@ async def test_pin_20_outbox_drain_exactly_once(
     # The child c is claimed (running) and finalizes → the join hits 0 and
     # fires in its tx2; the consumer's outbox row rides the same tx2. The
     # worker then DIES before the drain — the outbox row sits undelivered
-    # (the stranded-join state the drain exists to cure).
+    # (the stranded-join state the drain exists to fix).
     child_c = child_ids[0]
     c_worker = new_uuid()
     await wf_conn.execute(
@@ -353,12 +353,12 @@ async def test_pin_20_outbox_drain_exactly_once(
     # THE ARBITER'S KEY — the STATIC ROW's own convention
     # (``step_idempotency_key``: scope=workflow:{flow}, key=wf:{step}):
     # the map-join's downstream is a static row since create (the
-    # consumption cure), so the drain's consumer insert for it is the
+    # consumption fix), so the drain's consumer insert for it is the
     # arbiter's CONFLICT — the belt, never a second dispatch.
     assert consumers[0]["idempotency_key"] == "wf:consumer"
 
     # ...and the DOUBLE-INSERT variant reds: a second drain (the crash
-    # re-delivery) must be a no-op on the arbiter. The convicted shape
+    # re-delivery) must be a no-op on the arbiter. The rejected shape
     # (a drain without ON CONFLICT) would insert the second row.
     await drain_outbox(module_pg_pool, wf_sql)
     consumers = await wf_conn.fetchval(

@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on the batch CAS: live count, abort-vs-complete, and the
+"""Adversarial review attacks on the batch CAS: live count, abort-vs-complete, and the
 member-append window.
 
 Hunted interleavings, worked out on paper from ``_batch_sql.py`` first:

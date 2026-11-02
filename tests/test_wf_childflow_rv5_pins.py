@@ -2,15 +2,15 @@
 """RV5 — THE CHILD-FLOWS HOSTILE REVIEW'S PINS (feat/taskqflow-child-flows
 @ f8bfc5033 — the T28 child-flows lane under the rv5 hostile review).
 
-Provenance: the rv5 reviewer's live-convicted findings, this lane's pack.
+Provenance: the rv5 reviewer's live-rejected findings, this lane's pack.
 Per the doctrine, a LANDED finding is pinned asserting the SAFE behavior
-under ``pytest.mark.xfail(strict=True)`` — the cure flips the pin to
-XPASS-strict (a red that says: remove the marker WITH the cure); the pin
+under ``pytest.mark.xfail(strict=True)`` — the fix flips the pin to
+XPASS-strict (a red that says: remove the marker WITH the fix); the pin
 then stands as the green guard. Every pin ran UNMARKED first (the red
-captured verbatim in the pack's RECEIPTS.md) before the marker went on.
+captured at the pinning run) before the marker went on.
 
-The findings (each convicted live at the pin head; the attack scripts'
-harness shapes at the convictions' root):
+The findings (each rejected live at the pin head; the attack scripts'
+harness shapes at the recorded findings' root):
 
 * F-C1 (SEVERE) THE GATHER DRAGON — ``asyncio.gather`` over K
   ``ctx.spawn_flow`` in one body mints ONE child run, not K: the spawn
@@ -46,16 +46,16 @@ harness shapes at the convictions' root):
   wait site re-holds on the still-live child (the resolve consumed
   nothing; the operator's decision is a dead letter).
 
-THE RESIDUAL-CURES LANE'S RECONCILED FLIPS (the adoption-with-flip-
-receipts law — the receipt rows are in RECEIPTS.md; every flip green x2
+THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
+receipts law — the receipt rows were captured at the pinning run; every flip green x2
 at the lane head): C1, C4, C5, C6, C7's markers are REMOVED WITH THE
-CURES (the child-cures lane's landed shapes — the pins were xpass-strict
-at the reconciliation ground); C2 and C3 are RECONCILED to the cured
-shapes (C2: the fail-close AT THE RESPAWN ATTEMPT — the typed
+FIXES (the child-fixes lane's landed shapes — the pins were xpass-strict
+at the reconciliation ground); C2 and C3 are RECONCILED to the fixed
+shapes (the fail-close AT THE RESPAWN ATTEMPT — the typed
 ``ChildFlowLostError`` on the parent node, the root failed, the census
 zero; C3: the DEPTH BOUND — the ancestor-chain walk, the typed
 ``SpawnDepthExceededError``, the bounded tree terminalizing). Neither
-reconciliation weakens the pin: the cured shape carries every property
+reconciliation weakens the pin: the fixed shape carries every property
 the safe behavior asked, and the reconciled assertions read the ROWS.
 
 THE FIXTURE STACK (the pack's own, per the lane's prefix law): the
@@ -273,9 +273,9 @@ async def test_rv5_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
 ) -> None:
     """THE SAFE BEHAVIOR: K concurrent spawns in one body mint K DISTINCT
     child runs, each carrying its own input; the fan-in returns each
-    child's own verdict. (The alternative cure — a LOUD refusal of
+    child's own verdict. (The alternative fix — a LOUD refusal of
     concurrent spawns naming the sequential spelling — is flagged in
-    PINMAP.md; the pin asserts the distinct-children shape.)"""
+    the pin asserts the distinct-children shape.)"""
     _child_app("rv5c1_child").get("rv5c1_child")
     app = WorkflowApp()
 
@@ -325,7 +325,7 @@ async def test_rv5_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
         "fabricated for a sibling's wait or a dropped input (each spawn's OWN "
         "input must come back, exactly once)"
     )
-    # THE ORDER LEG'S RECONCILIATION (the residual-cures lane's flip): the
+    # THE ORDER LEG'S RECONCILIATION (the residual-fixes lane's flip): the
     # strict order is NOT the unkeyed fan-out's law — the spawn docstring's
     # own contract ('a concurrent fan-out that must join STABLY across the
     # resume passes key= — the slot's allocation order is the scheduler's'):
@@ -333,7 +333,7 @@ async def test_rv5_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
     # race re-associates the unkeyed handles, and the fan-in's verdict
     # order is the scheduler's. The LAW is the no-fabrication SET (above) +
     # the distinct children (below); the keyed stable-join face is the
-    # child-cures lane's own pin.
+    # child-fixes lane's own pin.
     assert await _child_census(wf_conn, wf_schema, "rv5c1_child") == 3
 
 
@@ -354,8 +354,8 @@ async def test_rv5_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
     run is minted (never a silent respawn) and the parent's run
     terminal-FAILS LOUDLY with the typed class on the record.
 
-    THE RECONCILED SHAPE (the residual-cures lane's flip — the
-    child-cures lane's cure landed the fail-close AT THE RESPAWN
+    THE RECONCILED SHAPE (the residual-fixes lane's flip — the
+    child-fixes lane's fix landed the fail-close AT THE RESPAWN
     ATTEMPT, not at the wait's arms): the resume re-runs the spawn site,
     the spawn's dangling-receipt walk finds the parent's receipt naming
     a child whose rows are GONE, and raises the TYPED
@@ -363,7 +363,7 @@ async def test_rv5_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
     node with the class on the record, T06's propagation fails the
     root. The original pin's wait-arm shape (the ``ChildFailed`` member
     through ``handle.wait()``) is unreachable behind spawn-then-wait —
-    the conviction's own words — so the cured pin reads the ROWS: the
+    the recorded finding's own words — so the fixed pin reads the ROWS: the
     node's error class names the wedge, the root followed it, the
     census stayed at zero."""
     _child_app("rv5c2_child").get("rv5c2_child")
@@ -419,7 +419,7 @@ async def test_rv5_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
 
     outcome = await runner.drive(flow_id, until="terminal", max_ticks=4000)
     assert outcome == "terminal"
-    # THE RECONCILED ASSERTIONS (the cured shape — the fail-close AT THE
+    # THE RECONCILED ASSERTIONS (the fixed shape — the fail-close AT THE
     # RESPAWN ATTEMPT): the parent's node row CARRIES the typed
     # ChildFlowLostError (the dangling-receipt refusal — the operator
     # reads WHY the child is gone), the root followed it (the loud
@@ -430,7 +430,7 @@ async def test_rv5_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
     )
     assert node_class == "ChildFlowLostError", (
         f"F-C2: the purged child's respawn attempt did not fail-close typed — "
-        f"the spawn_join node carries error_class {node_class!r} (the cured "
+        f"the spawn_join node carries error_class {node_class!r} (the fixed "
         "shape: ChildFlowLostError on the record, the run failed LOUDLY, never "
         "a silent respawn-and-join)"
     )
@@ -463,17 +463,17 @@ async def test_rv5_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
     typed ``SpawnDepthExceededError`` on the record (never an unbounded
     mint).
 
-    THE RECONCILED SHAPE (the residual-cures lane's flip — the
-    child-cures lane's cure landed the DEPTH BOUND, not the
+    THE RECONCILED SHAPE (the residual-fixes lane's flip — the
+    child-fixes lane's fix landed the DEPTH BOUND, not the
     first-spawn refusal): the ancestor chain is read from the rows'
     parent links — ONE walk serves the bound AND the cycle check — and
     the walk past the bound (:data:`DEFAULT_SPAWN_MAX_DEPTH` = 32)
     raises the TYPED ``SpawnDepthExceededError``, a DETERMINISTIC
     authoring failure (the ladder unburned, the class on the record).
     The original pin's first-spawn-refusal shape (census == 1) is NOT
-    the cured contract — the bomb's generations run UNTIL the bound,
+    the fixed contract — the bomb's generations run UNTIL the bound,
     then the bound's refusal names itself. The reconciled pin asserts
-    the cured shape's whole substance: the tree terminalizes, the
+    the fixed shape's whole substance: the tree terminalizes, the
     census is bounded at the depth arithmetic, and the typed refusal
     fired."""
     app = WorkflowApp()
@@ -501,7 +501,7 @@ async def test_rv5_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
 
     runner = FlowRunner(app.get("rv5c3_self"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # The cured engine's drive: the dev drive walks the descendant flows,
+    # The fixed engine's drive: the dev drive walks the descendant flows,
     # the generations run until the depth bound fires, and the BOUNDED
     # tree terminalizes (the unguarded engine minted a generation per
     # tick FOREVER — the drive never returned terminal).
@@ -558,7 +558,7 @@ async def test_rv5_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
 
 # ── F-C4: THE CASCADE'S STACK ───────────────────────────────────────────
 
-#: The convicted depth: the Python-recursive cascade died RecursionError
+#: The rejected depth: the Python-recursive cascade died RecursionError
 #: at ~984 of 1200 (observed live), leaving 216 roots RUNNING.
 C4_DEPTH = 1200
 
@@ -569,7 +569,7 @@ async def test_rv5_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
 ) -> None:
     """THE SAFE BEHAVIOR: the cascade is ITERATIVE (or depth-bounded with
     a loud partial-failure report naming the survivors — the alternative
-    flagged in PINMAP.md): cancelling the head of a depth-1200 child
+    recorded here): cancelling the head of a depth-1200 child
     chain cancels EVERY link and returns the count, never raising the
     stack. The chain is staged as raw root rows (the q8b attack's
     staging: each root's receipt names the next flow — the exact rows
@@ -675,7 +675,7 @@ async def test_rv5_c5_the_cascade_walks_both_directions_no_child_escapes(
     )
     child_flow_id = claim.flow_id
 
-    # The staging IS the convicted state: the child's provenance names
+    # The staging IS the rejected state: the child's provenance names
     # the parent (the crash-safe direction's data IS there)...
     provenance = await wf_conn.fetchval(
         f"SELECT metadata->>'parent_flow_id' FROM \"{wf_schema}\".jobs WHERE id = $1",
@@ -723,10 +723,10 @@ async def test_rv5_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
     ``Expired`` member to the resumed parent (the Expired face works in
     dev loops). The child parks on a never-resolved signal (the honest
     staging: a child that completes INSIDE one tick is legitimately
-    ChildOk under the deadline's at-least semantics — the conviction is
-    the arm's ABSENCE, not the race; see PINMAP.md). The alternative
-    cure — refusing timeout_s loudly on the dev path — is flagged in
-    PINMAP.md."""
+    ChildOk under the deadline's at-least semantics — the recorded finding is
+    the arm's ABSENCE, not the race). The alternative
+    fix — refusing timeout_s loudly on the dev path — is flagged in
+    the recorded gap."""
     capp = WorkflowApp()
 
     @capp.actor(queue="cpu", max_attempts=1)

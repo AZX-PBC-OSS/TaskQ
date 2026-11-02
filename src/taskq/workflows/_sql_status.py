@@ -12,7 +12,7 @@ parameter binding (the JSONB-landmine rule, _sql.py's docstring).
 from __future__ import annotations
 
 
-# ── THE ABSORPTION RECORD (T06/T07 + the phase-2 attack's H2 cure) ──────
+# ── THE ABSORPTION RECORD (T06/T07 + the flow-fenced join fix) ──────
 # The SQL predicate deciding whether a FAILED node's failure was
 # ABSORBED — shared VERBATIM by the per-node rollup (the derivation's
 # input) and the maintenance leg (the root finalize), so the two can
@@ -49,7 +49,7 @@ def _absorbed_exists(node_alias: str) -> str:
 # are what let the planner prove the partial index (01.00.26_02 — the
 # uuid-cast expression, the workflow-rows-only partial) serves this read
 # at the fleet shape: without them the read was a Seq Scan of the whole
-# jobs table per status read (the H3 conviction).
+# jobs table per status read.
 WORKFLOW_ROLLUP_SQL = """\
 SELECT status, count(*) AS count
 FROM {schema}.jobs
@@ -63,7 +63,7 @@ GROUP BY status
 # The PER-NODE variant (the admin page's read, bounded by the run's own
 # node count): the node's identity rides the row TOO (step_key +
 # map_index — the display's named view reads them; the consumer-face
-# lane's CURE 1), the derived view fields ride the row — the join
+# lane's the identity fix), the derived view fields ride the row — the join
 # counter (join-wait), the blocked-with-reason stamp, the hold shape (the
 # future scheduled_at + the unresolved signal), the ABSORPTION record
 # (the edge ledger's declared policy for this node's failure + the
@@ -72,7 +72,7 @@ GROUP BY status
 # admin run view collapses a row parented at another run node into its
 # source's hexagon; static nodes are parented at NULL).
 #
-# THE 3AM COLUMNS AT THE SOURCE (the engine-faces lane's cure): the row
+# THE 3AM COLUMNS AT THE SOURCE (the engine-faces lane's fix): the row
 # also carries started_at (the RUNNING face's age source), the
 # failed_parent stamp (metadata.failed_parent — the dead parent's id,
 # named on the record by the T06 cascade), and the LEASE face's columns
@@ -97,7 +97,7 @@ SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
        -- label renders from).
        j.scheduled_at, j.snooze_count,
        j.metadata->'wf_deferral' AS deferral,
-       -- THE DEADLINE FACE (the wf start_to_close cure): the row's own
+       -- THE DEADLINE FACE (the wf start_to_close bound): the row's own
        -- declared bound — the node panel's "the bound where declared +
        -- the deadline's reality for a RUNNING node" line (the claim's
        -- started_at is already read; the label derives from the pair).
@@ -140,7 +140,7 @@ ORDER BY j.id
 # T21 EXTENSION (the aggregation's map line, decision c): the same grouped
 # read LEFT JOINed to the STATE channel — the children's emitted progress
 # (avg pct, the freshest update) rides the SAME read, computed IN the
-# query, never a second instrument and never a per-child series (DH5's
+# query, never a second instrument and never a per-child series (the
 # fence: per-child progress lives in the ROWS this read serves on demand,
 # never in a metric label). A child that never emitted reads NULL avg_pct
 # — the LEFT JOIN keeps the counts complete without it.
@@ -161,7 +161,7 @@ GROUP BY c.step_key
 
 
 # The PER-SOURCE variant (the admin run-explorer's collapse feed — the
-# dead map-collapse's cure, Q1d): the same done/total aggregate, grouped
+# dead map-collapse's fix, Q1d): the same done/total aggregate, grouped
 # by the children's TRUE parent — the map-source node the fork/emit
 # parented every child at (the fork/emit INSERT binds the SOURCE's job
 # id, never the run root; the root's own id matches NOTHING). The fan-in
@@ -189,9 +189,9 @@ GROUP BY p.id, p.step_key
 
 
 # THE DERIVATION'S MAINTENANCE LEG (T08: the reported status is the
-# §17.5 derivation's output, never a cache the engine hand-maintains): the
+# derivation's output, never a cache the engine hand-maintains): the
 # rederive arm maintains each flow ROOT's status from the rows, per the
-# §17.5 table's terminal rows — a non-absorbed failed node → the root
+# table's terminal rows — a non-absorbed failed node → the root
 # 'failed' (§17.2's cascade's crash-window heal); all nodes
 # terminal-succeeded/absorbed → the root 'succeeded' (the run completed;
 # an ABSORBED failure derives through its parent — B2's clause). The
@@ -200,14 +200,14 @@ GROUP BY p.id, p.step_key
 # (FOR UPDATE SKIP LOCKED, LIMIT $2), and the per-root node scan rides
 # jobs_wf_flow_nodes_idx (01.00.26_02) — never a seq scan.
 #
-# THE ROWS ARE TRUTH, THE ROOT ROW IS A CACHE (the phase-2 attack's H1
-# cure): the maintenance leg derives the root's terminal state from THE
+# THE ROWS ARE TRUTH, THE ROOT ROW IS A CACHE (the
+# fix): the maintenance leg derives the root's terminal state from THE
 # NODE ROWS — the same reconstruction the debug view uses — and finalizes
 # the root IN THE SAME TX when the derivation is terminal and the root
-# row isn't. THE PRECEDENCE IS THE DERIVATION'S (§17.5, applied in
+# row isn't. THE PRECEDENCE IS THE DERIVATION'S (, applied in
 # order): a non-absorbed FAILURE finalizes the root 'failed' even while
 # resolved-blocked rows rest on the run — the failed row outranks the
-# blocked row. THE WEDGE THIS CURES: the crash-window fail_closed run
+# blocked row. THE WEDGE THIS FIXES: the crash-window fail_closed run
 # whose blocked_required heal stamps the join but whose root nothing
 # ever failed — the old gate required EVERY row terminal before the CASE
 # ran, and the stamped join row is terminalizable by nothing (nothing
@@ -255,12 +255,12 @@ per_flow AS (
            -- 'running/crashed/abandoned' spelling was the crashed-
            -- terminal wedge: a {succeeded, crashed} run's corpse root
            -- stayed 'running' forever (the att_t20 evidence roots).
-           -- THE 149-STRANDED-CHAINS WEDGE this cures: a no-fan-in
+           -- THE 149-STRANDED-CHAINS WEDGE this fixes: a no-fan-in
            -- streaming batch's FIRST chain failure must not finalize the
            -- root while the other chains are pending — the dispatch
            -- fence (workflow children of a terminal flow are
            -- unclaimable) would strand them forever. THE EXCLUSION IS
-           -- LOAD-BEARING: a blocked-with-reason row (the H1 wedge's
+           -- LOAD-BEARING: a blocked-with-reason row (the wedge's
            -- stamped join) is RESOLVED — it must not hold the run, or
            -- the original wedge returns.
            bool_or(n.status = 'running'
@@ -303,7 +303,7 @@ maintained AS (
           -- THE FAILED ROOT (precedence row 2): the non-absorbed failure
           -- finalizes the root only when NO live UNRESOLVED work rests
           -- on the run (T20: pending/scheduled chain rows hold it;
-          -- resolved-blocked stamps do not — the H1 wedge's cure).
+          -- resolved-blocked stamps do not — the wedge's fix).
           -- Row 1 outranks it: live unresolved work keeps the run live.
           (pf.has_failed AND NOT COALESCE(pf.has_unresolved, false))
           -- THE COMPLETED/CANCELLED ROOT: every row terminal (rows 4-5).
@@ -311,7 +311,7 @@ maintained AS (
       )
     RETURNING f.id, f.status::text AS to_state
 ),
--- THE AUDIT ROW RIDES THE DERIVATION (the deploy matrix's audit cure):
+-- THE AUDIT ROW RIDES THE DERIVATION (the deploy matrix's audit fix):
 -- the root's terminal is a mutation like any other — the events reader
 -- gets the state_change that names it (the shared tier invariant reads
 -- a terminal row's OWN event here; a derived write is not exempt).

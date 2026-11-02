@@ -31,7 +31,7 @@ lives in whoever remembers the key"): the run key makes the ARBITER the
 rememberer.
 
 CRON x WORKFLOW COMPOSITION (G3 — the rule's ONE home): a cron entry fires
-``wf.run`` with the CRON-SLOT KEY as the run key (G2's arbiter —
+``wf.run`` with the CRON-SLOT KEY as the run key (the run-key arbiter's arbiter —
 ``scope='workflow-run', key='<flow>:<slot-timestamp>'``), so the two dedup
 regimes COMPOSE instead of racing: same slot twice → ONE run.
 
@@ -76,7 +76,7 @@ __all__ = [
 
 #: The run-key arbiter's scope (G2). The step-level scope is
 #: ``workflow:{flow_id}`` (one flow run namespaces its own step keys).
-#: THE SCOPE IS NAMESPACED PER FLOW (the run-key collision attack's cure):
+#: THE SCOPE IS NAMESPACED PER FLOW (the run-key collision attack's fix):
 #: :func:`run_idempotency_scope` composes ``workflow-run:<flow name>`` —
 #: the bare constant is the PRE-FIX shape, a GLOBAL scope in which two
 #: DIFFERENT workflows sharing a naive key (a slot timestamp, ``"nightly"``)
@@ -161,7 +161,7 @@ class LedgerClaim:
     error_message: str | None
     ledger_id: JobId | None = None
     # THE CLAIM'S OWN INSTANCE IDENTITY (the re-mint guard's discriminator,
-    # C5): the RETURNING updated_at — the arbiter's re-use re-stamps it, so
+    # the re-mint guard): the RETURNING updated_at — the arbiter's re-use re-stamps it, so
     # a fence keyed on THIS instant can never mark a row a LATER claimant
     # re-minted onto the same arbiter tuple (the refund's own law: the
     # ledger re-claims the SAME arbiter row — the winner and the zombie
@@ -175,8 +175,8 @@ class RunClaim:
     run; a conflicting caller gets the EXISTING run's id + status — never a
     second silent run.
 
-    THE CLAIM SURFACE HONEST (the run-key failure lie's cure): the
-    pre-cure surfaces discarded ``status`` and returned a bare id — the
+    THE CLAIM SURFACE HONEST (the run-key failure lie's fix): the
+    pre-fix surfaces discarded ``status`` and returned a bare id — the
     caller could not tell 'already running' from 'already failed' without
     a second query, and a FAILED run's key replayed as a silent 202. The
     typed verdict is :attr:`kind`: ``created`` (THIS caller's run),
@@ -216,7 +216,7 @@ async def claim_step_ledger(
     shape — ``INSERT … ON CONFLICT DO UPDATE … RETURNING``, never
     check-then-insert; verified 30 reps x 10 concurrent).
 
-    THE LEDGER-CLAIM-ATOMIC RULE (hardening H6): the claim and the attempt's
+    THE LEDGER-CLAIM-ATOMIC RULE: the claim and the attempt's
     ``running`` ledger row are ONE statement — a two-transaction variant
     leaves a cancel in the window fencing NOTHING (the attempt isn't on the
     record yet), the row appears POST-CANCEL as a phantom ``running``.
@@ -282,7 +282,7 @@ async def insert_flow_run(
     run_key: str,
     extra_metadata: dict[str, object] | None = None,
 ) -> RunClaim:
-    """The RUN-KEY claim (G2): the flow's root row inserted under the
+    """The RUN-KEY claim: the flow's root row inserted under the
     ``workflow-run:<flow name>`` scope with the caller's key — the composite
     arbiter is the rememberer. A conflict returns the EXISTING run's id +
     status.
@@ -323,7 +323,7 @@ async def insert_flow_run(
 
     # The arbiter's conflict path: the EXISTING run's id + status, never a
     # second silent run (the founding-incident shape — "202 + a new run" —
-    # is the convicted variant, kept RED forever by the pin).
+    # is the rejected variant; the pin keeps its rejection honest).
     existing = await conn.fetchrow(wsql.flow_run_read, run_idempotency_scope(entry.name), run_key)
     assert existing is not None  # the arbiter conflict implies the row exists
     return RunClaim(

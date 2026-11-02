@@ -1,4 +1,4 @@
-"""Red-team: batch-scale dedup WARNINGs are unbounded per-item emissions.
+"""Adversarial review: batch-scale dedup WARNINGs are unbounded per-item emissions.
 
 The contract under attack: an ``enqueue_batch()`` whose items all dedup
 emits one ``enqueue_deduplicated`` line per item - WARNING for every item

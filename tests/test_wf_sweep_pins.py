@@ -4,7 +4,7 @@ Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
 home), the red-output sink flushes to ``.measurements/pin-reds.json`` (a
 file that gets READ — BUILD-PROTOCOL §2), the shipped invariants green,
-the unfenced variants kept in this file forever as the convicted shapes.
+the unfenced variants kept in this file forever as the rejected shapes.
 """
 
 # Why: every f-string SQL below interpolates only the module fixture's own throwaway schema identifier (validated against _IDENT_RE) or renders the engine's own named constants with a named mutation; all values are $n-bound.
@@ -38,7 +38,7 @@ from tests._wf_fixtures import (
 
 
 def _drop_flow_leg_sql(wf_sql: WorkflowSql, statement: str) -> str:
-    """THE CONVICTED SHAPE: the fire WITHOUT the flow-status EXISTS leg —
+    """THE REJECTED SHAPE: the fire WITHOUT the flow-status EXISTS leg —
     the any-two-are-insufficient proof's missing leg. The mutation drops
     every ``AND EXISTS (…)``
     clause (balanced parens — the leg's body nests a subquery's own)."""
@@ -61,7 +61,7 @@ def _drop_flow_leg_sql(wf_sql: WorkflowSql, statement: str) -> str:
                     break
         mutated = mutated[:head] + mutated[close + 1 :]
         legs_dropped += 1
-    assert legs_dropped >= 1, "the flow-leg mutation drill did not arm"
+    assert legs_dropped >= 1, "the flow-leg mutation scenario did not arm"
     return mutated
 
 
@@ -96,11 +96,11 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled' WHERE id = $1", flow_id
     )
 
-    # THE SHIPPED SWEEP: the flow-fenced join arm (the H2 cure) resolves
+    # THE SHIPPED SWEEP: the flow-fenced join arm (the fix) resolves
     # the join BEFORE the fire arm even attempts it — a never-fired join
     # row on a TERMINAL flow is stamped 'flow_dead' (never retried
     # forever); the fire's own flow-status leg remains the second fence
-    # (a fire racing the stamp still refuses). The drill's victim must be
+    # (a fire racing the stamp still refuses). The scenario's victim must be
     # PRISTINE (the stamp replaces the join marker, correctly dropping
     # the row out of every later sweep — the twin is the unfenced fire's
     # victim, the same pattern pin 8's comparator uses).
@@ -130,8 +130,8 @@ async def test_pin_5_sweep_fire_refuses_post_cancel(
         "is broken (the leg must be load-bearing)"
     )
 
-    # THE SHIPPED ARMS on an identical state: the flow-fenced arm (the H2
-    # cure) RESOLVES the join — a never-fired join row on a TERMINAL flow
+    # THE SHIPPED ARMS on an identical state: the flow-fenced arm (the
+    # fix) RESOLVES the join — a never-fired join row on a TERMINAL flow
     # can never fire, so the sweep stamps it 'flow_dead' instead of
     # reconciling it to a claimable never-fired row and re-firing-refusing
     # it every pass; the fire's flow-status leg remains the second fence.
@@ -169,10 +169,10 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     the flow-status EXISTS (the fence's second leg; the fire guard's leg
     and the finalize fence are the other two). The leg refuses cleanly and
     the sweep re-derives (the asymmetry doctrine: a refused claim is
-    re-derivable, a claimed one is not un-runnable). The RED drill is the
+    re-derivable, a claimed one is not un-runnable). The RED scenario is the
     fence dropped (recorded: ``.measurements/attack/B2-red-dispatch-fence.txt``
     — the shipped claim re-claims the dead flow's child); the attack file
-    ``tests/attack_wf_dispatch_fence.py`` keeps the same conviction on the
+    ``tests/attack_wf_dispatch_fence.py`` keeps the same recorded finding on the
     REAL backend path (``dispatch_batch`` over ``clean_jobs_app``).
 
     The plan stays serviceable: the fence short-circuits on the step_key
@@ -186,11 +186,12 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     child = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'c', "
-        "$2::jsonb, now() - interval '1 hour')",
+        "$2::jsonb, $3, now() - interval '1 hour')",
         child,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
@@ -232,11 +233,12 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     live_child = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live', "
-        "$2::jsonb, now() - interval '1 hour')",
+        "$2::jsonb, $3, now() - interval '1 hour')",
         live_child,
         json.dumps({"flow_id": str(live_flow)}),
+        str(live_flow),
     )
     dispatched = await dispatch_batch(
         wf_conn,
@@ -256,7 +258,7 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     # child is UNCLAIMABLE by a worker that cannot execute it — an
     # unregistered worker id (the COALESCE-safe default) and a registered
     # NON-capable worker both refuse. THE VACUITY LAW (F-R2, the fresh
-    # reviewer's mutation drill): each leg asserts on a pending flow row
+    # reviewer's mutation scenario): each leg asserts on a pending flow row
     # INSERTED WITHIN THE LEG — the row the dead fence leaks must be the
     # row the pin observes. The unregistered leg's row (``live2``) was
     # once passed to the INSERT inline and never re-observed: the earlier
@@ -269,11 +271,12 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     live2_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live2', "
-        "$2::jsonb, now() - interval '1 hour')",
+        "$2::jsonb, $3, now() - interval '1 hour')",
         live2_id,
         json.dumps({"flow_id": str(live_flow)}),
+        str(live_flow),
     )
     unregistered_worker = new_uuid()
     dispatched = await dispatch_batch(
@@ -331,11 +334,12 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     live3_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, scheduled_at) "
+        "retry_kind, status, step_key, metadata, fairness_key, scheduled_at) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'pending', 'live3', "
-        "$2::jsonb, now() - interval '1 hour')",
+        "$2::jsonb, $3, now() - interval '1 hour')",
         live3_id,
         json.dumps({"flow_id": str(live_flow)}),
+        str(live_flow),
     )
     dispatched = await dispatch_batch(
         wf_conn,
@@ -357,13 +361,13 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
         f"worker claimed flow rows (claimed flow rows={sorted(flow_rows)})"
     )
 
-    # THE CONVICTED TWIN (the comparator, kept forever as pin 2's flow leg
+    # THE REJECTED TWIN (the comparator, kept forever as pin 2's flow leg
     # keeps its unfenced twin): the capability CTE's SAFE DEFAULT flipped
     # — ``COALESCE(…, false)`` → ``true`` — the F-R2 mutation, composed on
     # the RENDERED statement (the same shape the production dispatch
     # runs). The unregistered worker then CLAIMS the still-pending
     # ``live2`` row: the leg is load-bearing, the damage observed and
-    # recorded to the red sink. (The external source-level drill — the
+    # recorded to the red sink. (The external source-level scenario — the
     # mutation in ``_WF_EXEC_CAPABLE_CTE`` itself, this pin RED at the
     # refusal above — is captured in
     # ``.measurements/attack/R2-red-exec-capable-leg.txt``.)
@@ -372,7 +376,7 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
         "           true\n         ) AS capable",
     )
     assert mutated_sql != DISPATCH_STRICT_FIFO_SQL.format(schema=wf_schema), (
-        "the capability-default mutation drill did not arm"
+        "the capability-default mutation scenario did not arm"
     )
     dispatched = await dispatch_batch(
         wf_conn,
@@ -425,7 +429,7 @@ def test_pin_21_sweep_arms_wired_into_the_maintenance_loop() -> None:
     drain, the phantom reaper) are REGISTERED in the leader's maintenance
     sweep loop — the registration was the gap: the arms existed in
     ``taskq.workflows._sweep`` and nothing outside the package called
-    them, so the healing was unreachable in production. The pin convicts
+    them, so the healing was unreachable in production. The pin rejects
     an unwired arm (a spec deleted from the tick table reds) AND the
     §16.1 import law (importing the worker module never imports
     ``taskq.workflows`` at module scope — the arms' imports stay lazy,
@@ -444,7 +448,7 @@ def test_pin_21_sweep_arms_wired_into_the_maintenance_loop() -> None:
     # The lazy-import law: a fresh interpreter importing the WORKER module
     # must leave taskq.workflows unimported (the arms ride per-call
     # imports; a module-scope import of the package in the sweep loop is
-    # the convicted shape).
+    # the rejected shape).
     out = subprocess.run(  # Why: fresh-interpreter probe, fixed argv, the repo's own package.
         [
             sys.executable,
@@ -463,7 +467,7 @@ def test_pin_21_sweep_arms_wired_into_the_maintenance_loop() -> None:
 
 
 def _drop_missing_parent_arm_sql(wf_sql: WorkflowSql) -> str:
-    """THE CONVICTED SHAPE (the spike's): the rederive has NO missing-parent
+    """THE REJECTED SHAPE (the spike's): the rederive has NO missing-parent
     arm — the count of un-terminal parents reads a MISSING parent as
     counted-and-terminal, and the join whose parent is GONE fires silently
     (the 'record healthy, work wrong' class)."""
@@ -471,18 +475,18 @@ def _drop_missing_parent_arm_sql(wf_sql: WorkflowSql) -> str:
         "count(*) FILTER (WHERE e.child_id IS NOT NULL AND p.id IS NULL) AS missing_parents,",
         "0::bigint AS missing_parents,",
     )
-    assert mutated != wf_sql.rederive_sweep, "the mutation drill did not arm"
+    assert mutated != wf_sql.rederive_sweep, "the mutation test did not arm"
     return mutated
 
 
 def _drop_missing_parent_arm_fire_sql(wf_sql: WorkflowSql) -> str:
-    """The FIRE arm's twin of the same conviction: no missing-parent arm in
+    """The FIRE arm's twin of the same recorded finding: no missing-parent arm in
     its counts either."""
     mutated = wf_sql.sweep_fire.replace(
         "count(*) FILTER (WHERE e.child_id IS NOT NULL AND p.id IS NULL) AS missing_parents,",
         "0::bigint AS missing_parents,",
     )
-    assert mutated != wf_sql.sweep_fire, "the fire's mutation drill did not arm"
+    assert mutated != wf_sql.sweep_fire, "the fire's mutation scenario did not arm"
     return mutated
 
 
@@ -496,7 +500,7 @@ async def test_pin_8_misnamed_child_blocked_with_reason(
 ) -> None:
     """A child edge pointing at a MISSING parent: the shipped arm stamps
     the blocked-with-reason state (metadata.blocking_reason='orphan_parent')
-    and NEVER fires; the convicted variant (a JOIN that drops the missing
+    and NEVER fires; the rejected variant (a JOIN that drops the missing
     parent) fires the orphan silently."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
@@ -513,7 +517,7 @@ async def test_pin_8_misnamed_child_blocked_with_reason(
     assert state_meta["blocking_reason"] == "orphan_parent", state
     assert await fire_count(wf_conn, wf_schema, join_id) == 0, "the orphan never fires"
 
-    # THE CONVICTED VARIANT REDS (on a throwaway twin join -- the shipped
+    # THE REJECTED VARIANT REDS (on a throwaway twin join -- the shipped
     # arm's stamp REPLACES the join marker, which correctly drops the
     # blocked row out of every later sweep; the twin is the pristine
     # victim): BOTH statements lose the missing-parent arm, the count
@@ -536,7 +540,7 @@ async def test_pin_8_misnamed_child_blocked_with_reason(
         {"orphan_fired": len(winners)},
     )
     assert len(winners) == 1, (
-        "the convicted variant did not fire the orphan — the red comparator "
+        "the rejected variant did not fire the orphan — the red comparator "
         "is broken (the missing-parent twin fires silently)"
     )
 
@@ -656,7 +660,7 @@ async def test_pin_22_reaped_flow_forgets_its_reducer_cache(
     forever (the unbounded-memo dragon on long-lived workers). The bound:
     the phantom reaper's pass — a TERMINAL flow's joins can never fire
     again (the fire's own flow-status leg refuses them), so its cache
-    entry is dead weight and the reap drops it. The pin convicts a reaper
+    entry is dead weight and the reap drops it. The pin rejects a reaper
     that stops forgetting (the cache entry survives the terminal flow).
 
     The cross-process contract this rides under (the attack file pins the
@@ -716,7 +720,7 @@ async def test_pin_17_empty_join_never_fires(
     """A NESTED join (a join-of-joins) whose children DO NOT EXIST YET must
     NOT fire — the child-row-recount variant reads 0 and fires early (the
     fanout proof's live hit at 1/6 decrements); the edge-ledger formula is
-    the cure."""
+    the fix."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     # J1: the inner join, waiting on parent P (running).
     j1 = await seed_join(wf_conn, wf_schema, flow_id, step_key="j1", deps=1)
@@ -727,7 +731,7 @@ async def test_pin_17_empty_join_never_fires(
     j2 = await seed_join(wf_conn, wf_schema, flow_id, step_key="j2", deps=1)
     await seed_edge(wf_conn, wf_schema, j2, j1, flow_id)
 
-    # THE CONVICTED VARIANT (the child-row recount): J2's children count = 0
+    # THE REJECTED VARIANT (the child-row recount): J2's children count = 0
     # (they don't exist yet) — it fires the EMPTY join.
     j2_child_rows = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1', j2
@@ -737,7 +741,7 @@ async def test_pin_17_empty_join_never_fires(
         "child-row recount (count children WHERE non-terminal)",
         {"j2_child_rows": int(j2_child_rows), "fires_early": int(j2_child_rows) == 0},
     )
-    assert int(j2_child_rows) == 0, "the convicted variant's blind count"
+    assert int(j2_child_rows) == 0, "the rejected variant's blind count"
 
     # THE SHIPPED FORMULA: J2's parent J1 is still pending (un-terminal) —
     # unterminal = 1, no fire, whatever J2's own children look like.
@@ -792,20 +796,20 @@ async def test_pin_17_empty_join_never_fires(
 
 
 def _gut_flow_leg_predicate_sql(wf_sql: WorkflowSql) -> str:
-    """THE STEALTH MUTANT (the evidence-integrity round's convicted
+    """THE STEALTH MUTANT (the evidence-integrity round's rejected
     shape): the flow-status EXISTS leg is KEPT — every shape-scanning
     comparator still finds an ``AND EXISTS (…)`` clause — but the
     PREDICATE inside it is gutted to a tautology (``status = status``).
     Unqualified, ``status`` resolves to the subquery's own row
     (``fl.status = fl.status``): TRUE wherever the flow row exists, DEAD
     OR ALIVE. The fence's letter survives; its substance is gone. The
-    drop-the-EXISTS mutant (pin 5's drill) is LOUD; this one greens 71+
+    drop-the-EXISTS mutant (pin 5's scenario) is LOUD; this one greens 71+
     tests — which is exactly why the leg's pin below is BEHAVIORAL."""
     gutted = "AND fl.status = status  -- STEALTH: the leg's letter, not its substance"
     mutated = wf_sql.sweep_fire.replace(f"AND fl.status NOT IN {TERMINAL_SQL_SET}", gutted)
-    assert mutated != wf_sql.sweep_fire, "the stealth mutation drill did not arm"
+    assert mutated != wf_sql.sweep_fire, "the stealth mutation scenario did not arm"
     assert "AND EXISTS" in mutated, (
-        "the stealth mutation must KEEP the EXISTS clause — the convicted "
+        "the stealth mutation must KEEP the EXISTS clause — the rejected "
         "shape is a gutted predicate behind an intact fence, not a dropped leg"
     )
     return mutated
@@ -819,15 +823,15 @@ async def test_pin_23_the_fire_refuses_a_dead_flow_behaviorally_even_stealthily_
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """THE BEHAVIORAL PIN (the evidence-integrity round, cure 2): 'never
+    """THE BEHAVIORAL PIN (the evidence-integrity round, fix 2): 'never
     fire on a dead flow' is held by the OBSERVED OUTCOME — the fire's
     absence read back from the rows — never by the mutated SQL's shape.
 
     Why this pin exists: the fire's flow-status leg rode only pins that
     (a) assert the SHIPPED behavior through the flow-fenced arm's
-    upstream stamp (pin 5 — the H2 fence resolves the row before the
+    upstream stamp (pin 5 — the flow-fenced fence resolves the row before the
     fire arm ever sees it, so gutting the fire's own leg reds nothing
-    there), or (b) drop the EXISTS leg wholesale (pin 5's drill — a
+    there), or (b) drop the EXISTS leg wholesale (pin 5's scenario — a
     mutation the stealth variant survives: keep the EXISTS, gut the
     predicate, and every shape-comparing comparator still greens). The
     STEALTH mutant shipped would pass 71+ tests.
@@ -882,7 +886,7 @@ async def test_pin_23_the_fire_refuses_a_dead_flow_behaviorally_even_stealthily_
     # 2. THE STEALTH MUTANT, on the SAME state plus a pristine twin —
     #    the mutant REDS the assertions above: the fire HAPPENS, in the
     #    same rows. (Both joins are firable on the dead flow; the
-    #    statement fires the set's head — the conviction is that A fire
+    #    statement fires the set's head — the recorded finding is that A fire
     #    row now exists where the shipped leg produced none.)
     twin = await seed_join(wf_conn, wf_schema, flow_id, step_key="twin", deps=1)
     await seed_edge(wf_conn, wf_schema, twin, parent, flow_id)
@@ -904,7 +908,7 @@ async def test_pin_23_the_fire_refuses_a_dead_flow_behaviorally_even_stealthily_
     )
     assert int(flow_fires) == 2, (
         f"the mutant's fires must be OBSERVABLE in the wf_join_fire rows "
-        f"(flow_fires={flow_fires}) — the conviction is the row, never the "
+        f"(flow_fires={flow_fires}) — the recorded finding is the row, never the "
         "mutated string"
     )
 
@@ -922,12 +926,12 @@ async def test_pin_body_unavailable_the_unregistered_name_is_loud(
 ) -> None:
     """R2-2 (the recertifier's MEDIUM): a flow root stamped with a workflow
     name NO process registers fires its join and delivers its consumers —
-    and the pre-cure record was SILENT (no exception, no warn, no stamp):
+    and the pre-fix record was SILENT (no exception, no warn, no stamp):
     'the record looked healthy while the work was wrong'. The asymmetry
     doctrine says LOUD: the delivery CONTINUES (the consumers' contract —
     never a crash, never a wedged join) but the join row is stamped
     ``blocking_reason='body_unavailable'`` and a WARNING names the join.
-    The legacy silent shape is the convicted variant, kept red here."""
+    The legacy silent shape is the rejected variant, kept failing here."""
     import structlog.testing
 
     flow_id = await seed_flow(wf_conn, wf_schema, workflow="ghost-flow-unregistered")
@@ -961,7 +965,7 @@ async def test_pin_body_unavailable_the_unregistered_name_is_loud(
         summary = await sweep_join_rederive(module_pg_pool, wf_sql)
 
     # THE DELIVERY CONTINUES: the join fired, the outbox row exists — the
-    # loudness cure must never become a wedged join or a crashed arm.
+    # loudness fix must never become a wedged join or a crashed arm.
     assert summary.firable == 1, summary
     assert await fire_count(wf_conn, wf_schema, join_id) == 1
     outbox_rows = await wf_conn.fetch(
@@ -971,12 +975,12 @@ async def test_pin_body_unavailable_the_unregistered_name_is_loud(
     )
     assert outbox_rows[0]["n"] == 1, "the consumers' delivery must continue"
 
-    # THE LOUD ARMS (both, red until the cure): the stamp on the record +
+    # THE LOUD ARMS (both, red until the fix): the stamp on the record +
     # the warn on the operator surface.
     state = await node_state(wf_conn, wf_schema, join_id)
     engine_redlog.red(
         "r2-2-body-unavailable",
-        "the silent fire (no stamp, no warn) — the pre-cure shipped shape",
+        "the silent fire (no stamp, no warn) — the pre-fix shipped shape",
         {
             "blocking_reason": state["metadata"].get("blocking_reason"),
             "warn_emitted": any(e.get("event") == "sweep-join-body-unavailable" for e in logs),

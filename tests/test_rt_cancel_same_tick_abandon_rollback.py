@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a per-test fixed identifier, not user input; every value is $-bound.
 
-"""Red-team: a same-tick abandon whose heartbeat transaction rolls back.
+"""Adversarial review: a same-tick abandon whose heartbeat transaction rolls back.
 
 When both cancel graces are already satisfied on the same tick, the
 phase-2 arm runs inside the caller's still-open heartbeat transaction:

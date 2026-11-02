@@ -1,4 +1,4 @@
-"""Red-team: both-done race drops a TAKEN job in the consumer loops (E2).
+"""Adversarial review: both-done race drops a TAKEN job in the consumer loops (E2).
 
 Contract under attack: a job TAKEN out of ``local_queue`` is never silently
 dropped - it must be either executed (routed to a consumer) or explicitly

@@ -650,7 +650,7 @@ def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
     ``await reap_cancelled_child(task)``), whose helper suppresses only
     THE CHILD'S cancel and re-raises the reaper's own (the uncancel
     accounting). Any direct ``suppress(asyncio.CancelledError)`` in
-    ``src/`` is the convicted swallow (the F-DEMO-2 class: the lifespan's
+    ``src/`` is the rejected swallow (the F-DEMO-2 class: the lifespan's
     cancel eaten, the task alive 12 s later; the run loop's poll that
     could never receive its own shutdown). The grep gate sweeps every
     seat: a new suppress must ride the reaper helper or name its own
@@ -669,7 +669,7 @@ def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
                 continue
             # THE CLASS LAW: a suppress(CancelledError) whose BODY awaits
             # (the suppress spans an await) swallows whatever cancel
-            # lands DURING that await — the convicted shape — unless the
+            # lands DURING that await — the rejected shape — unless the
             # body (or its immediate tail) RE-RAISES. A suppress whose
             # body is an INSTANT retrieve (``task.exception()`` — no
             # await inside) cannot swallow a landing cancel: nothing
@@ -689,7 +689,7 @@ def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
                 prev.strip().lstrip("#").strip() for prev in tl[max(0, i - 12) : i]
             )
             if "the class-4 sweep's finding" in body or "the class-4 sweep's finding" in preceding:
-                continue  # the HELD-OPEN seat: the cure's behavioral shift owed the worker lane's own verification (the seat's comment carries the finding's name)
+                continue  # the HELD-OPEN seat: the fix's behavioral shift owed the worker lane's own verification (the seat's comment carries the finding's name)
             offenders.append(f"{path.relative_to(root.parent.parent)}:{i}: {line.strip()}")
     assert not offenders, (
         "the silent-swallow class's seats (a CancelledError suppressed "

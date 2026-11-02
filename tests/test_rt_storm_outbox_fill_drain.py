@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team storm: the reclaim-event outbox under mass failure - fill
+"""Adversarial review storm: the reclaim-event outbox under mass failure - fill
 vs drain geometry.
 
 Model (from ``backend/_sweeps.py`` sweep 1, ``backend/_reads.py``

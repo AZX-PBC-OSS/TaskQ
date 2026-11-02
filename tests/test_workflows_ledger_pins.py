@@ -1,7 +1,7 @@
 """T05's pins — the step ledger, the run-key arbiter, the idempotency
 contract, driven against a live Postgres through the REAL engine.
 
-Method: every pin's convicted variant is made to manifest its dragon (the
+Method: every pin's rejected variant is made to manifest its dragon (the
 double-run, the two-transaction claim, the replay that launches a second
 run), the red output recorded to ``.measurements/ledger-pin-reds.json``,
 the shipped shape green. The contract the pins state: EXACTLY-ONCE for
@@ -96,7 +96,7 @@ async def test_pin_1_double_run_red_and_memoized_green(
     mutated = wf_sql.ledger_memoized.replace(
         "AND status IN ('succeeded', 'failed')", "AND status IN ('no-such-status')"
     )
-    assert mutated != wf_sql.ledger_memoized, "the mutation drill did not arm"
+    assert mutated != wf_sql.ledger_memoized, "the mutation test did not arm"
     monkeypatch.setattr(sql_module, "LEDGER_MEMOIZED_SQL", mutated)
     mutated_sql = render_workflow_sql(wf_schema)
     executions = 0
@@ -226,7 +226,7 @@ async def test_pin_4_run_key_replay_one_run(
 ) -> None:
     """Two concurrent ``run(key=k)`` — and the sequential replay — produce
     ONE run row; every caller gets the EXISTING run's id. The '202 + a new
-    run' variant (the founding incident's convicted shape) reds."""
+    run' variant (the founding incident's rejected shape) reds."""
     flow = FlowStandIn()
     key = "nightly:2026-10-07T03:00:00Z"  # the cron-slot key (G3)
 
@@ -257,7 +257,7 @@ async def test_pin_4_run_key_replay_one_run(
     # scope): a DIFFERENT flow with the same key is silently deduped onto
     # THIS flow's run — created=False, someone else's run id, nothing
     # launched. The shipped per-flow scope greens it (the attack file
-    # keeps the same conviction:
+    # keeps the same recorded finding:
     # tests/attack_wf_runkey_scope_collision.py).
     import taskq.workflows.ledger as ledger_module
 
@@ -288,7 +288,7 @@ async def test_pin_4_run_key_replay_one_run(
     assert shipped.created, "the per-flow scope lets another flow's run claim its own key"
 
 
-# ── Pin 5: LEDGER-CLAIM-ATOMIC (hardening H6) ───────────────────────────
+# ── Pin 5: LEDGER-CLAIM-ATOMIC  ───────────────────────────
 
 
 @pytest.mark.integration
@@ -302,7 +302,7 @@ async def test_pin_5_ledger_claim_atomic(
     """The claim and the attempt's ledger ``running`` row in SEPARATE
     transactions — a cancel landing in the window fences NOTHING (the
     attempt isn't on the record yet) and the row appears POST-CANCEL as a
-    phantom ``running``. THE CURE: claim + ledger insert = ONE statement
+    phantom ``running``. THE FIX: claim + ledger insert = ONE statement
     (the shipped shape — the ledger row IS the claim; the phantom the
     window produced is reconciled by the reaper arm, pin 15). The
     two-transaction variant reds."""
@@ -316,7 +316,7 @@ async def test_pin_5_ledger_claim_atomic(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled' WHERE id = $1",
         flow_id,
     )
-    # THE CONVICTED SHAPE: the post-cancel ledger write lands a 'running'
+    # THE REJECTED SHAPE: the post-cancel ledger write lands a 'running'
     # row on a TERMINAL flow — the phantom (the attempt is on the record
     # too late to be fenced by the cancel's own scan).
     phantom = await claim_step_ledger(
@@ -353,7 +353,7 @@ async def test_pin_5_ledger_claim_atomic(
     assert ledger_status == "fenced", ledger_status
 
 
-# ── Pin 6: LEDGER-TERMINAL-ATOMIC (hardening H9) ────────────────────────
+# ── Pin 6: LEDGER-TERMINAL-ATOMIC  ────────────────────────
 
 
 @pytest.mark.integration
@@ -367,17 +367,18 @@ async def test_pin_6_ledger_terminal_atomic(
 ) -> None:
     """The ledger's terminal-outcome write OUTSIDE the finalize TX — a
     cancel between the node flip and the ledger write leaves
-    node=succeeded with ledger=running. THE CURE: the ledger terminal write
+    node=succeeded with ledger=running. THE FIX: the ledger terminal write
     is IN the finalize TX (the shipped shape: ``_run_tx1`` co-locates
     them). The split-write variant reds."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     node_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, attempt, step_key, metadata) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, 'split', $2)",
+        "retry_kind, status, attempt, step_key, metadata, fairness_key) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, 'split', $2, $3)",
         node_id,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
 
     # THE SHIPPED SHAPE: the node's finalize tx1 carries the ledger's
@@ -434,7 +435,7 @@ async def test_pin_6_ledger_terminal_atomic(
     mutated_terminal = wf_sql.ledger_terminal.replace(
         "RETURNING id", "  AND status = 'no-such-status'\nRETURNING id"
     )
-    assert mutated_terminal != wf_sql.ledger_terminal, "the mutation drill did not arm"
+    assert mutated_terminal != wf_sql.ledger_terminal, "the mutation test did not arm"
     monkeypatch.setattr(sql_module, "LEDGER_TERMINAL_SQL", mutated_terminal)
     mutated_sql = render_workflow_sql(wf_schema)
     split_node = new_uuid()
@@ -442,12 +443,13 @@ async def test_pin_6_ledger_terminal_atomic(
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
-        "step_key, metadata) "
+        "step_key, metadata, fairness_key) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
-        "now() + interval '90 seconds', 0, 'split2', $3::jsonb)",
+        "now() + interval '90 seconds', 0, 'split2', $3::jsonb, $4)",
         split_node,
         split_worker,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     await claim_step_ledger(
         wf_conn,
@@ -500,8 +502,8 @@ async def test_pin_7_map_children_own_ledger_rows(
     """Two map children of ONE step key (map_index 0 and 1, first attempt
     each) claim DIFFERENT ledger rows and terminalize WITHOUT overwrite:
     each replay returns ITS OWN child's result (T05's key contract; the
-    conviction — an arbiter omitting map_index — is the RED drill, the
-    shipped statements are what the drill mutates)."""
+    recorded finding — an arbiter omitting map_index — is the RED scenario, the
+    shipped statements are what the scenario mutates)."""
     flow_id = new_uuid()
     node_0, node_1 = new_uuid(), new_uuid()
 
@@ -524,12 +526,13 @@ async def test_pin_7_map_children_own_ledger_rows(
         await wf_conn.execute(
             f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
             "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
-            "step_key, metadata) "
+            "step_key, metadata, fairness_key) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
-            "now() + interval '90 seconds', 0, 'enrich', $3::jsonb)",
+            "now() + interval '90 seconds', 0, 'enrich', $3::jsonb, $4)",
             node,
             worker_id,
             json.dumps({"flow_id": str(flow_id)}),
+            str(flow_id),
         )
         result = await finalize_node(
             module_pg_pool,
@@ -567,12 +570,13 @@ async def test_pin_7_map_children_own_ledger_rows(
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
         "retry_kind, status, attempt, locked_by_worker, lock_expires_at, claim_epoch, "
-        "step_key, metadata) "
+        "step_key, metadata, fairness_key) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 1, $2, "
-        "now() + interval '90 seconds', 0, 'enrich', $3::jsonb)",
+        "now() + interval '90 seconds', 0, 'enrich', $3::jsonb, $4)",
         node_2,
         worker_id,
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
     )
     result = await finalize_node(
         module_pg_pool,

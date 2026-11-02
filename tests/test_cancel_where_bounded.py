@@ -1069,7 +1069,7 @@ async def test_drain_batch_cost_does_not_grow_as_the_backlog_is_cancelled(
     statement flipped to the re-walk shape for the rest of the drain
     (measured on the red leg: ``[0, 0, 0, 0, 0, 0, 0, 141, 161, 181]`` -- the
     ``+ batch_size`` per batch and the +1 probe row are the seq scan visiting
-    every already-cancelled row). Re-ANALYZE between batches is not the cure
+    every already-cancelled row). Re-ANALYZE between batches is not the fix
     but the trigger at that scale: injecting ``VACUUM (ANALYZE)`` before
     every batch at 200 rows reproduces the flip deterministically
     (``[0, 0, 0, 0, 0, 101, 121, 141, 161, 0]``). At 2000 rows the choice is
@@ -1270,7 +1270,7 @@ async def test_running_arm_drain_batch_cost_does_not_grow_as_requests_accumulate
     choice between the cursor-bounded walk and the Seq Scan + Sort re-walk
     is a coin toss that a mid-drain autovacuum statistics refresh flips,
     and re-ANALYZE between batches is the flip's trigger at that scale, not
-    its cure. At 2000 rows the walk wins decisively whatever the stats
+    its fix. At 2000 rows the walk wins decisively whatever the stats
     refresh does, and the per-batch cost bound below is unchanged.
     """
     schema = module_pg_schema.schema_name

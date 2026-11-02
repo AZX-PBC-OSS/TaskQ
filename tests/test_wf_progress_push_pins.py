@@ -1,6 +1,6 @@
-"""THE PROGRESS PUSH PINS (the consumer-face lane's CURE 3 — the
+"""THE PROGRESS PUSH PINS (the consumer-face lane's FIX 3 — the
 deploy-matrix's PARTIAL): the SSE progress stream was 1s POLLING — every
-frame the poll's own round trip late. The cure rides the SAME
+frame the poll's own round trip late. The fix rides the SAME
 LISTEN/NOTIFY transport the HITL broadcast landed (the pattern proven:
 the in-tx NOTIFY, the listener's backfill+tail, the zero-window, the
 dedup):
@@ -24,7 +24,7 @@ dedup):
   interval, never correctness — the seq-cursor read stays the source of
   truth).
 
-Red-first: the pins ran RED at the pre-cure head (no notify, no
+Failing-first: the pins ran RED at the pre-fix head (no notify, no
 listener, no ``listener=`` param); the reds are captured in
 ``.measurements/cons-cure3-reds.json``.
 """
@@ -52,7 +52,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def cons3_redlog() -> RedLog:
-    """The red sink for the consumer-face lane's CURE 3 pins."""
+    """The red sink for the consumer-face lane's FIX 3 pins."""
     log = RedLog("cons-cure3-reds.json")
     return log
 
@@ -66,7 +66,7 @@ def _loads(raw: Any) -> Any:
 
 
 def _stale_knock_sql(schema: str) -> str:
-    """The drill's raw knock statement (the channel is a module
+    """The scenario's raw knock statement (the channel is a module
     constant; only $1 binds)."""
     return "SELECT pg_notify('taskq_wf_progress', $1)"
 
@@ -220,7 +220,7 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
         assert last_seq is not None and last_seq >= 1
 
         # A LATE SUBSCRIBER replays the history first (the
-        # buffer-then-consume behavior), then goes live — the drill's
+        # buffer-then-consume behavior), then goes live — the scenario's
         # collector runs until cancelled, so the dedup window and the
         # fresh knock both land in ONE stream.
         seen: list[Any] = []
@@ -249,7 +249,7 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
         )
 
         async def _wait_fresh() -> None:
-            # THE DRILL'S OWN POLL CADENCE (bounded ticks — the wake
+            # THE POLL CADENCE (bounded ticks — the wake
             # condition is the collector's list, not an event this test
             # owns).
             for _tick in range(100):
@@ -268,7 +268,7 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
 
 
 def _stale_knock_payload(schema: str, flow_id: JobId, node_id: JobId, seq: int) -> str:
-    """The drill's raw knock payload (the exact wire shape the write legs
+    """The scenario's raw knock payload (the exact wire shape the write legs
     send — the pointer only)."""
     return json.dumps(
         {"schema": schema, "flow_id": str(flow_id), "node_id": str(node_id), "seq": seq}
@@ -276,7 +276,7 @@ def _stale_knock_payload(schema: str, flow_id: JobId, node_id: JobId, seq: int) 
 
 
 async def _raw_knock(dsn: str, payload: str) -> None:
-    """A RAW pg_notify on a throwaway connection (the drill's knock —
+    """A RAW pg_notify on a throwaway connection (the scenario's knock —
     not the production write legs)."""
     conn = await asyncpg.connect(dsn)
     try:

@@ -1,8 +1,8 @@
 """THE PACKAGED RUN (the consumer report's ergonomic door — the
-create-seam's cure 4): ``taskq.workflows.run(flow, pool, schema,
+create-seam fix 4): ``taskq.workflows.run(flow, pool, schema,
 input=…, key=…)`` — the ONE-CALL surface that packages
 :meth:`FlowRunner.create_flow` + :meth:`FlowRunner.drive` (+ the decoded
-result read). The docs' pre-cure text taught
+result read). The docs' pre-fix text taught
 ``workflows.run(flow, input, key=…)`` — AN API THAT DID NOT EXIST (the
 doc lie). This is the REAL surface the docs now teach, and the pin runs
 it end to end.
@@ -107,14 +107,14 @@ async def run(
     correlated by the ``taskq.flow_id`` attribute. Telemetry off → no
     spans, the run unchanged.
 
-    *priority* is THE PER-CALL OVERRIDE (the wf-priority cure — the
+    *priority* is THE PER-CALL OVERRIDE (the priority surface — the
     enqueue-time face the vanilla ``enqueue(priority=…)`` always had):
     the run's rows land at the value in the ``jobs.priority`` column —
     the dispatch claim's ``priority DESC`` (the same ORDER BY the
     vanilla rows obey) then serves an interactive run ahead of a deep
     default-0 backlog. The law's precedence: this override > the step's
     declaration > the actor handle's > the column default. ``None``
-    (the default) = no override — the pre-cure byte-identical shape.
+    (the default) = no override — the pre-fix byte-identical shape.
     The domain is the smallint column's (``check_priority_domain`` — the
     same refusal at every layer that accepts a priority).
     """
@@ -144,7 +144,7 @@ async def run(
         try:
             claim = await runner.create_flow(input=input, run_key=key, priority=priority)
         except asyncpg.exceptions.UndefinedTableError as exc:
-            # THE FIRST CONTACT'S TRANSLATION (the teardown round's cure):
+            # THE FIRST CONTACT'S TRANSLATION (the teardown fix):
             # the packaged run on an unmigrated schema was the RAW driver
             # traceback; the client arm's typed SchemaNotMigratedError names
             # the remedy (the setup defect is actionable, not a raw

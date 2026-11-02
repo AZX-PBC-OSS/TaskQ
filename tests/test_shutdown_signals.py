@@ -435,7 +435,7 @@ def test_sigusr2_handler_dumps_task_stacks() -> None:
     assert mock_dump.call_count == 1
 
 
-# ── The H2 guard: an in-progress orchestration owns the first signal ────
+# ── The double-orchestration guard: an in-progress orchestration owns the first signal ────
 
 
 def test_first_signal_during_orchestration_starts_nothing_and_the_next_escalates(

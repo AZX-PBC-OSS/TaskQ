@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a per-test fixed identifier, not user input; every value is $-bound.
 
-"""Red-team: a claim landing inside isolate_self's join window.
+"""Adversarial review: a claim landing inside isolate_self's join window.
 
 ``isolate_self`` used to capture the re-pend's exclusion set once, before
 any await, then cancel its active entries and join them with a bound of

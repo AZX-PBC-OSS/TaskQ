@@ -1,9 +1,9 @@
 """T10 — THE HITL PINS: held rows, the deliver CAS, the timers, the
 cancel cascade, the reply handle.
 
-The red-first evidence: each pin's CONVICTED VARIANT (the spike's
+The failing-first evidence: each pin's REJECTED VARIANT (the spike's
 dragons) is named in the docstring and — where the variant is a
-guard-flip — drilled with the red captured to
+guard-flip — exercised with the red captured to
 ``.measurements/t10-pin-reds.json``. The unfenced variants stay RED
 FOREVER (they are the dragons, not bugs).
 
@@ -133,8 +133,11 @@ async def test_late_deliver_after_cancel_is_refused_no_zombie_wake(
     assert node_status != "running"
     hitl_redlog.red(
         "pin1-late-deliver",
-        "the deliver WITHOUT the CAS predicate (the mutation drill — the zombie wake)",
-        {"zombie_wake": True, "conviction": "the shipped CAS refuses; the drill red is recorded"},
+        "the deliver WITHOUT the CAS predicate (the mutation test — the zombie wake)",
+        {
+            "zombie_wake": True,
+            "recorded finding": "the shipped CAS refuses; the scenario red is recorded",
+        },
     )
 
 
@@ -181,7 +184,7 @@ async def test_resume_does_not_burn_the_retry_ladder(
     advance the ladder — a node that held twice then failed KEEPS its
     retry curve. The SHARED-ATTEMPT-COUNTER variant (the claim
     incrementing the ladder on every claim → terminal failure with ZERO
-    retries) is red forever (the mutation drill)."""
+    retries) is red forever (the mutation test)."""
     failures = {"n": 0}
 
     async def hold_twice_then_fail(ctx: StepContext, params: Ingest) -> Any:
@@ -408,7 +411,7 @@ async def test_hold_id_reply_handle_and_context_contract(
 async def test_hold_context_reason_is_none_after_delivery(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE FOLDED PIN (the docs lane's queued conviction — the
+    """THE FOLDED PIN (the docs lane's queued recorded finding — the
     held-gated read's OTHER face): ``HoldContext.reason`` is the wait's
     reason ONLY while the hold is held. Post-delivery the payload IS
     the decision; the reason is gone with the held state it belonged
@@ -473,7 +476,7 @@ async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
     + event) — NEVER the sole copy of the payload; a consumer that
     MISSES the knock still converges by polling ``client.hitl.list()``
     (the row is the truth). THE PIN ACTUALLY LISTENS (the vacuous-audit's
-    cure — the shipped pin assigned ``_ = HOLD_CHANNEL`` and pinned
+    fix — the shipped pin assigned ``_ = HOLD_CHANNEL`` and pinned
     nothing): a raw pg_notify consumer on the MODULE's database
     (pg_notify is per-database — the env DSN's db is not the module's)
     observes the resolved knock's SHAPE."""
@@ -528,14 +531,14 @@ async def test_signal_timeout_fires_on_db_clock(
 ) -> None:
     """Pin 13 (G6): the expiry arm compares PG's clock — the expired
     hold → the DEFINED 'abandoned' state; AND THE TYPED TIMEOUT FACE IS
-    REAL (the vacuous-audit's cure — the shipped pin's docstring claimed
+    REAL (the vacuous-audit's fix — the shipped pin's docstring claimed
     the face it never exercised). T26'S AMENDMENT: the face is a VALUE —
     the wait returns the ``Expired`` MEMBER (the closed union's second
     arm; the checker forces the fail-close); the body that wants the
     FAILURE raises :class:`taskq.exceptions.SignalTimeoutError` ITSELF
     off the member (the escalation ladder's own use) — the node
     terminal-fails through the ladder, and NO new epoch is ever minted
-    — hold → expire → re-hold → ∞ is the convicted dragon, kept red by
+    — hold → expire → re-hold → ∞ is the rejected dragon, kept failing by
     the attack probe."""
     from taskq.exceptions import SignalTimeoutError
     from taskq.workflows import Expired

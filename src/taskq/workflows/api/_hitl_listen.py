@@ -17,7 +17,7 @@ by polling ``HitlClient.list(run=…)``; the listener buys LATENCY, never
 correctness.
 
 THE RECONNECT RECONCILE (T26's fourth union member — the hostile
-review's C1): a hold RESOLVED or EXPIRED while the listener was down
+contract): a hold RESOLVED or EXPIRED while the listener was down
 never announces its own death (the notify went to no one — the
 connection was not listening). So every (re)backfill ends with ONE
 ``Backfilled(open_hold_ids=…)`` snapshot event: the consumer drops any
@@ -27,7 +27,7 @@ replayed history or the pre-outage raw queue (the ghost) is dropped by
 the same reconcile: the ghost may cross the stream; its card cannot
 survive the snapshot (P6).
 
-THE FAN-OUT, NOT A PARTITION (the hostile review's C2 — the product
+THE FAN-OUT, NOT A PARTITION (the fan-out contract — the product
 shape is ONE backend listener fanning out to N watching users, the
 progress stream's own pub/sub discipline): every subscriber —
 ``async for event in listener``, ``events()``, ``holds(run=…)``,
@@ -35,7 +35,7 @@ progress stream's own pub/sub discipline): every subscriber —
 two concurrent consumers each see EVERY event (a shared queue would
 PARTITION the stream, each consumer stealing the other's events, and a
 single sentinel on stop would strand all but one waiter — P7's
-convicted shape). A subscriber attaching late replays the bounded event
+rejected shape). A subscriber attaching late replays the bounded event
 history first (the buffer-then-consume behavior — a backfill announced
 before the subscribe is still delivered), then goes live.
 
@@ -169,7 +169,7 @@ class HoldExpired(BaseModel):
 
 class Backfilled(BaseModel):
     """THE RECONNECT-RECONCILE SNAPSHOT (T26's fourth union member —
-    the hostile review's C1): emitted after EVERY (re)backfill, carrying
+    the reconcile event's contract): emitted after EVERY (re)backfill, carrying
     the OPEN hold ids the ROWS witness right now (this schema's still-
     ``held`` rows). The consumer drops any open card the snapshot
     disowns — a hold resolved or expired during a listener outage never
@@ -177,7 +177,7 @@ class Backfilled(BaseModel):
     same reconcile is the death of the STALE events (a ghost
     ``HoldCreated`` replayed from the pre-outage history announces a
     hold the rows have moved past — its card cannot survive the
-    snapshot; P6/C7). The ``holds(run=…)`` filter passes this member
+    snapshot; the reconcile contract). The ``holds(run=…)`` filter passes this member
     through: every consumer reconciles its OWN cards against it."""
 
     event: Literal["backfilled"] = "backfilled"
@@ -241,11 +241,11 @@ class HitlListener:
         self._backoff_max = backoff_max
         self._acquire_timeout = acquire_timeout
         self._raw: asyncio.Queue[_Raw | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        # THE FAN-OUT (P7's cure): per-SUBSCRIBER queues (each its own
+        # THE FAN-OUT (the fan-out fix): per-SUBSCRIBER queues (each its own
         # sentinel on stop), a bounded history each late subscriber
         # replays first (the buffer-then-consume behavior), and the
         # single raw queue only the pump reads. A shared consumer queue
-        # here is the convicted shape: N consumers would PARTITION the
+        # here is the rejected shape: N consumers would PARTITION the
         # stream, each stealing the other's events.
         self._subs: dict[int, asyncio.Queue[HoldEvent | None]] = {}
         self._history: deque[HoldEvent] = deque(maxlen=_QUEUE_MAXSIZE)
@@ -266,9 +266,9 @@ class HitlListener:
 
     async def stop(self) -> None:
         """Stop the pump and release the dedicated connection, then end
-        EVERY subscriber with its OWN sentinel (the pre-cure single
+        EVERY subscriber with its OWN sentinel (the pre-fix single
         ``None`` on one shared queue stranded all but one waiter — P7's
-        convicted shape; the teardown is SHIELDED: a cancellation
+        rejected shape; the teardown is SHIELDED: a cancellation
         delivered while the pump's own finally releases the LISTEN
         connection must not strand it against the pool cap — the admin
         feed's release discipline, carried over)."""
@@ -432,7 +432,7 @@ class HitlListener:
         ``HoldCreated(source="backfill")`` — including a hold created
         BEFORE this listener existed (pin T26-P2). The snapshot's ids
         enter the dedup set: their own (already-queued) notifies yield
-        nothing. AND THE RECONCILE (the fourth member — P6's cure):
+        nothing. AND THE RECONCILE (the fourth member — the reconcile fix):
         after the snapshot's creations, ONE :class:`Backfilled` event
         carries the OPEN ids — the consumer drops any card the rows
         disown (a hold resolved/expired during the outage never
@@ -440,7 +440,7 @@ class HitlListener:
         rows = await conn.fetch(
             f"SELECT id, workflow_id, node_key, signal_name, created_at "  # noqa: S608  # Why: the f-string's ONLY interpolation is the require_schema-validated schema identifier — values never interpolate.
             f"FROM \"{self._schema}\".wf_signals WHERE status = 'held' "
-            # THE TIMER'S EXCLUSION (the timer-cures lane's cure 2 — the
+            # THE TIMER'S EXCLUSION (the timer hardening's fix 2 — the
             # reserved prefix's ONE mechanism, applied at this face too):
             # the snapshot is the pending-APPROVALS read — a timer hold
             # is the clock's, never a human's decision (the SAME split

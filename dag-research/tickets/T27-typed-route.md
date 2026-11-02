@@ -1,17 +1,9 @@
 # T27 — THE TYPED ROUTE AT THE GRAPH LEVEL: `route(promise, arms)` — the union's members as wiring keys, total or refused
 
-Lane: `feat/taskqflow-typed-route` off `feat/taskqflow-routing-proof` @ `d0491207`
-(the type-tagged `Route` foundation — the chain-surface cure + the 38-marker
-type gate — is THERE). Worktree `/tmp/opencode/wt-route2`; own PG on `:5774`
-(`postgresql://postgres:taskq@localhost:5774/taskq`, `POSTGRES_PASSWORD=taskq`,
-`POSTGRES_DB=taskq`, `max_connections=1000`, `fsync=off`, the `taskq` role),
-destroyed at close. Push THIS BRANCH ONLY (`feat/taskqflow` is the
-consolidator's; the PG17 lane's branch is its own).
-
 Design-first: THIS ticket is the 30-minute read's output; every claim below
 was verified against the tree at the base head before a line of code.
 
-## THE CONVICTION (the reviewer's, lived on the routing-proof corpus)
+## THE FINDINGS (lived on the routing-proof corpus)
 
 1. **The chain's route works but the chain is graph-INVISIBLE.** A chain's
    step rows exist only from the emit onward — no `NodeDecl`, no fan-in, no
@@ -23,14 +15,14 @@ was verified against the tree at the base head before a line of code.
    graph into the per-record stream (the guide's own decision paragraph).
 2. **The graph DSL's `skip=`-predicates are STRINGLY.** The predicate receives
    the flow's state — decoded JSON dicts — and evaluates a `bool`. The live
-   conviction: a `"video"` tag skipped BOTH arms and the run terminalized
+   finding: a `"video"` tag skipped BOTH arms and the run terminalized
    SUCCEEDED having routed NOTHING — the exact silent drop
    `RouterNotTotal` exists to prevent, alive at the graph level. The typed
    fence must replace the predicate's teaching; the predicate's face is
    deprecated honestly (never silently removed — the battery's corpus rides
    it).
 
-## THE DESIGN (the reviewer's prescription, verified against the tree)
+## THE DESIGN (verified against the tree)
 
 ### (a) The wiring verb — `route(promise, arms)`
 
@@ -57,7 +49,7 @@ machinery (`chain._type_tag`, the `module.qualname` tag) extended to the
 graph level.
 
 `map_source(src, {A: fn_a, B: fn_b})` — the SAME machinery: the per-element
-case spelled at the map face (the reviewer's (b)). `map_source` gains the
+case spelled at the map face (the (b)). `map_source` gains the
 dict form by overload; both spellings lower through ONE
 `_attach_route(source, arms, ...)` helper. A source carries the attachment
 ONCE (`map_item` and `map_arms` are mutually exclusive — a node finalizes
@@ -112,14 +104,14 @@ skip-silent shape is DEAD at the graph level (R1's runtime door).
 The arm body's declared param type IS the decode's target: the child's
 payload element is the jsonb dict; the runner's existing item-codec path
 (`ITEM_KEY in payload` → `_coerce` → `coerce_arg`) validates it into the
-arm body's annotation — the chain's dict face (the convicted gap) never
+arm body's annotation — the chain's dict face (the rejected gap) never
 exists here. A mis-declared arm (the body claiming the WRONG arm's model)
 dies LOUDLY in the coercion (`ValidationError`, the row fails, named) —
-the chain lane's misroute drill, now at the graph level.
+the chain surface's misroute probe, now at the graph level.
 
-The arm-param contract is also a COMPILE conviction (E15's walk): an arm
+The arm-param contract is also a COMPILE finding (E15's walk): an arm
 body whose first param beyond `ctx` is un-annotated / `Any` / a plain dict
-(the duck-shaped hole, E5's own conviction shape at the consumer face) is
+(the duck-shaped hole, E5's own finding shape at the consumer face) is
 refused — the route is the typed boundary, and a duck arm is the hole the
 route exists to close. A param declaring an UNRELATED model is refused too
 (the wiring promises data the arm cannot accept).
@@ -154,11 +146,11 @@ data (E3's own precedent), and the rule owns the shape injected into it.
 
 The `skip=` predicates' stringly face: DEPRECATED in the docs — the guide's
 routing section teaches the typed route; `SkipPredicate`'s docstring names
-the conviction (the `"video"` tag that skipped both arms and
+the finding (the `"video"` tag that skipped both arms and
 succeeded-having-routed-nothing). No code removal — the battery's corpus
 rides the predicate; the deprecation is honest.
 
-## THE PINS (xfail-strict, red-first — `tests/test_wf_typed_route_pins.py`)
+## THE PINS (xfail-strict — `tests/test_wf_typed_route_pins.py`)
 
 | Rule | Pin | The red observed (at the base head) | The flip (the SAFE behavior) |
 |---|---|---|---|
@@ -171,7 +163,7 @@ rides the predicate; the deprecation is honest.
 | R3 | `test_r3_the_mis_declared_arm_dies_loudly` (integration) | red | the wrong-model arm's row fails with a named coercion error |
 | R3 | `test_r3_a_duck_typed_arm_param_refuses_at_build` | red | E15 refuses the `dict`-param arm, naming the arm's key |
 | R4 | `test_r4_the_child_rows_stamp_their_arms_placement` (integration) | red | the image children's rows queue `gpu`, the audio children's rows queue `io` |
-| the e2e | `test_e2e_the_reviewers_scenario` ×2 (integration) | red | the images/audio map → the typed route → the two placements → the typed-sum join; the rows are the receipt, ×2 |
+| the e2e | `test_e2e_the_reviewers_scenario` ×2 (integration) | passes | the images/audio map → the typed route → the two placements → the typed-sum join; the rows are the record, ×2 |
 
 Plus the honest STATIC face in the typeprobe corpus
 (`wf_graph_route_negative_types.py`, wired into `_CORPUS`): a STRING key on
@@ -182,21 +174,21 @@ count) — recorded in the receipts.
 
 ## THE PROOF (the battery at the stamped sha)
 
-The e2e (the reviewer's exact scenario) ×2 + the wf battery ×2 (leg 1 with
+The e2e (the exact scenario) ×2 + the wf battery ×2 (leg 1 with
 `--cov=src/taskq/workflows --cov-branch` + the scoped coverage gate
 `scripts/check_wf_coverage.py` at the 90.0 floor; leg 2 plain) + the type
 gate (`tests/typeprobe/_gate.py`) + ruff check / ruff format --check /
-pyright FULL 0/0/0 + the fast tier ×1 at `-n 8` under the CI's lane filter
+pyright clean + the fast tier ×1 at `-n 8`
 (`-m "not slow and not load_sensitive"`, full capture) + `mkdocs build
---strict`. Red-first: the pins ran against the base head BEFORE the build;
-the receipts live in `.measurements/` (head-stamped).
+--strict`. The pins ran against the base head BEFORE the build;
+the evidence is recorded with the runs, head-stamped.
 
 ## THE DOCS
 
 `docs/guides/workflows.md`: §1 gains THE TYPED ROUTE (the `route()` verb,
 the `RouteArm` placement, the `map_source` dict form) in the flow API's
 concept list; the dispatch-time-predicates paragraph names the skip=
-conviction honestly (deprecated — the typed route is the taught face); the
+finding honestly (deprecated — the typed route is the taught face); the
 §10 router section gains the graph-level route beside the chain's (the
 "Chain or DAG?" decision guide extends: converge-and-dispatch is the
 route's shape).

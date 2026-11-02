@@ -9,7 +9,7 @@ package emitted ZERO: the fleet intercept bypasses ``consume_one_job``
 never enters it, so a consumer running otel (an Azure Monitor or a
 ddtrace backend) sees its flows as silence.
 
-THE CURE reuses the vanilla machinery — no new otel machinery, no new
+THE FIX reuses the vanilla machinery — no new otel machinery, no new
 metrics (the vanilla's one wf-relevant instrument is the maintenance
 leader's fleet gauge ``taskq.wf_progress_nodes_total``; no per-run wf
 metric exists in the vanilla to mirror):

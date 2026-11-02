@@ -1,4 +1,4 @@
-"""Red-team pins for the #463 audit binding choke point, round 2 (attack
+"""Adversarial review pins for the #463 audit binding choke point, round 2 (attack
 review of the fix): credential shapes the first pass's mask chain missed.
 
 The first fix proved ``Authorization: Bearer <JWT>`` cannot reach the
@@ -104,7 +104,7 @@ async def _record_and_fetch(
         action="job.cancel",
         target_type="job",
         target_id=target_id,
-        reason="red-team probe",
+        reason="adversarial review probe",
     )
     subject: str | None = await conn.fetchval(
         f'SELECT principal_subject FROM "{schema}".admin_audit WHERE target_id = $1',  # Why: schema is a test-fixture identifier, validated by the fixtures upstream.

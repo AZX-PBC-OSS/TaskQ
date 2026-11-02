@@ -327,7 +327,7 @@ async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
     """THE CAST'S BOUND (the re-review's required residual — the 500): a
     hostile deferral stamp whose ``attempt`` overflows the int4 domain
     (an 11-digit write) must not kill the WHOLE Workflows list — the
-    pre-cure regex admitted it and the ``::int`` cast 500'd every render.
+    pre-fix regex admitted it and the ``::int`` cast 500'd every render.
     The page renders; the hostile stamp is refused the badge (the CASE
     degrades it to NULL — the badge's law keeps its discriminator, the
     degrade is honest: an unverifiable stamp never reads as a live

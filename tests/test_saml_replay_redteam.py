@@ -1,4 +1,4 @@
-"""Red-team checks for the cross-site SAML fix's dual AuthnRequest binding.
+"""Adversarial review checks for the cross-site SAML fix's dual AuthnRequest binding.
 
 The cookie-less fallback (see saml.py's _PendingAuthnRequests), opt-in
 since via ``allow_cookieless_fallback``, accepts a callback with no

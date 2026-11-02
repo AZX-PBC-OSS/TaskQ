@@ -1,4 +1,4 @@
-"""Red-team attacks on cron-fire parity with the client enqueue stamps (real PG).
+"""Adversarial review attacks on cron-fire parity with the client enqueue stamps (real PG).
 
 Two halves of one defect, pinned together because either half alone is
 wrong:

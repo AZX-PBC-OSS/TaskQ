@@ -1,4 +1,4 @@
-"""Red-team pin: the unique_for dedup arm's caller-detectability floor.
+"""Adversarial review pin: the unique_for dedup arm's caller-detectability floor.
 
 The arm's terminal-hit ESCALATION contract (a dedup whose target job is
 terminal warns and names the status - the strand risk) is
@@ -7,7 +7,7 @@ pinned at its home in ``tests/test_dedup_logging.py``
 beside the idempotency-half twin), against the shared
 ``_log_enqueue_dedup`` helper every dedup site funnels through; the
 duplicate of that pin this file carried while the contract was red was
-retired on landing (the red-team note's "one of the two pins should be
+retired on landing (the adversarial review note's "one of the two pins should be
 retired" resolution, naming test_dedup_logging.py as the home).
 
 What this file keeps is the other half of the story: the caller's

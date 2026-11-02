@@ -1,4 +1,4 @@
-"""THE WF-OTEL PINS — the workflow spans' contract, red-first.
+"""THE WF-OTEL PINS — the workflow spans' contract.
 
 THE DEFECT (the consumers' report): the vanilla lifecycle emits spans at
 every messaging point — ``enqueue {actor}`` (PRODUCER), ``process
@@ -6,10 +6,10 @@ every messaging point — ``enqueue {actor}`` (PRODUCER), ``process
 ``cron fire`` (PRODUCER) — and the workflows package emitted ZERO: the
 fleet intercept bypasses ``consume_one_job`` (the rows never ride the
 vanilla consumer path) and the dev drive never enters it, so a consumer
-running otel (TAStack's Azure Monitor, a ddtrace backend) sees
+running otel (an Azure Monitor backend, a ddtrace backend) sees
 its flows as silence.
 
-THE CURE'S LAW (mirroring the vanilla exactly — no new otel machinery):
+THE FIX'S LAW (mirroring the vanilla exactly — no new otel machinery):
 
 * the SAME ``safe_start_span`` at the wf lifecycle's own points; the
   SAME no-op law (telemetry off → no spans, the flow runs, nothing

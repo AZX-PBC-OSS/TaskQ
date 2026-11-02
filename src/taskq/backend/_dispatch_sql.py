@@ -301,8 +301,7 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # widen the cancel transaction's write set. Refusal is the cheap,
 # recoverable direction; that is the asymmetry the doctrine prefers.
 #
-# PLAN SHAPE (serviceable, EXPLAIN recorded in
-# .measurements/attack/explain-hot-statements.txt): the leg short-circuits
+# PLAN SHAPE (serviceable, EXPLAIN-verified): the leg short-circuits
 # on the step_key probe — vanilla rows (step_key IS NULL, the fleet's whole
 # population in the depth oracles) evaluate NO subplan, so the candidate
 # chain's row-visit counts and the depth contract are unchanged; workflow
@@ -329,7 +328,7 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
       -- Short-circuits on the step_key probe — vanilla rows evaluate no
       -- subplan.
       --
-      -- THE ROOT-MARKER LEG (the deploy matrix's fleet-crash cure): the
+      -- THE ROOT-MARKER LEG (the fleet-crash guard): the
       -- flow ROOT's row (step_key '__flow__') is a CACHE — the run's
       -- derived-status carrier, never a job (the ROOT_START derivation
       -- owns its lifecycle; no body exists for it, and the door's body
@@ -341,14 +340,14 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
       -- dispatch carries the SAME exclusion — one vocabulary, the root
       -- is never work.
       --
-      -- THE EXECUTION LEG (the execution verdict's cure): a workflow
+      -- THE EXECUTION LEG: a workflow
       -- row's body resolves from the registered workflow definition
       -- (D1), which lives only in a worker whose process imported the
-      -- flow definitions (the boot's F3 projection —
+      -- flow definitions (the boot's registration projection —
       -- ``taskq.workflows._worker_execution``). A worker that never
       -- imported them cannot resolve any body: claiming the row buys a
-      -- claim-snooze-claim loop (the actor-not-found snooze, the
-      -- execution probe A2's red). So the fence admits flow rows ONLY
+      -- claim-snooze-claim loop (the actor-not-found snooze; the
+      -- execution probe recorded that shape). So the fence admits flow rows ONLY
       -- when THIS round's worker registered itself
       -- ``workflow_execution`` capable (the workers row's metadata —
       -- stamped at boot by the projection's own sync). The capability
@@ -455,7 +454,7 @@ def _wf_probe_fence(alias: str) -> str:
 # from the production one.
 #
 # THIS round's worker's workflow-execution capability: the workers row's
-# own metadata, stamped at boot by the F3 projection's sync
+# own metadata, stamped at boot by the registration projection's sync
 # (``workflow_execution: true`` iff the process imported flow
 # definitions). One primary-key probe per round, evaluated once as an
 # InitPlan; the read is the VALUE (::boolean), never the key-existence

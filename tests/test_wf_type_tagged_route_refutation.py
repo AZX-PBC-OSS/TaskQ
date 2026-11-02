@@ -8,7 +8,7 @@ reducer, the failures to the dead-letter — WITHOUT a manual isinstance
 ladder in a single body, and with the type story visible in the editor
 (the narrowed arms).
 
-THE ANSWER AT THE PRE-CURE HEAD (87a77a90): REFUTED. The
+THE ANSWER AT THE PRE-FIX HEAD (87a77a90): REFUTED. The
 :class:`Route` dispatch key is the LITERAL TAG — the body's returned
 outcome enum member's ``.value`` string (:meth:`Route.next_step` keys
 on it; :meth:`Chain.next_child` normalizes enum → value and raises the
@@ -19,7 +19,7 @@ the exhaustiveness idiom PER-NODE). The closest working shape is the
 enum-ladder chain — the ladder lives IN the body, which is exactly what
 the scenario forbids.
 
-THE CURE (this lane's implementation — the Route surface's honest
+THE FIX (this lane's implementation — the Route surface's honest
 extension, additive and small): the route's keys may be the union's
 member TYPES (a TYPE-TAGGED route); the body returns the union ELEMENT
 itself; the router dispatches on the element's runtime type; on a
@@ -33,7 +33,7 @@ doors: declaration (the route must be total over the union's member
 types) and runtime (``RouterNotTotal`` for the element type with no
 arm — the body that lied about its type).
 
-Red-first: the proof's pins ran RED at the pre-cure head (the receipt:
+Failing-first: the proof's pins ran RED at the pre-fix head (the receipt:
 ``.measurements/type-tagged-route-reds.json`` — the union declaration
 itself refused, ``TypeError`` out of the enum-only bind).
 """
@@ -179,7 +179,7 @@ async def lying_screen(ctx: object, item: dict[str, object]) -> Summary | Unread
     class Ghost(BaseModel):
         doc_id: str
 
-    return Ghost(doc_id="ghost-1")  # type: ignore[return-value]  # Why: the drill — the foreign element IS the runtime door's subject.
+    return Ghost(doc_id="ghost-1")  # type: ignore[return-value]  # Why: the scenario — the foreign element IS the runtime door's subject.
 
 
 # ── THE PROOF: the flow, lived end-to-end ───────────────────────────────
@@ -377,7 +377,7 @@ def test_router_not_total_unit_face_on_the_type_tagged_arms() -> None:
     with pytest.raises(RouterNotTotal) as exc_info:
         chain.next_child(
             "screen",
-            {"doc_id": "not-a-model"},  # type: ignore[arg-type]  # Why: the drill — a foreign element IS the door's subject.
+            {"doc_id": "not-a-model"},  # type: ignore[arg-type]  # Why: the scenario — a foreign element IS the door's subject.
             payload={"wf_item": {"doc_id": "x"}},
             map_index=0,
         )

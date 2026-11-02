@@ -178,7 +178,7 @@ async def test_the_resolve_racing_the_cancel_one_outcome_honest_codes(
     named terminal, and the audit rows tell the same story the outputs
     did — no silent loser.
 
-    THE RACE'S TWO HONEST LOSERS (both cured at this head): (1) the
+    THE RACE'S TWO HONEST LOSERS (both fixed at this head): (1) the
     cascades can DEADLOCK (the resolve's CAS vs the cancel's cascade) —
     PG kills one writer, and BOTH verbs now answer the deadlock with the
     NAMED refusal + exit 1 (the diagnostics-first law: never a rich
@@ -364,13 +364,13 @@ async def test_the_why_stuck_arm_names_the_TRUE_blocker(
     name the FAILED row as the thing to retry (with its remedy), and the
     blocked row's answer must be TRUE — run5's observed output failed
     both honesty halves (the attack-4 report's F-P4-WHYSTUCK-*); both
-    cures are pinned here as hard asserts (the xfail was the pre-cure
+    fixes are pinned here as hard asserts (the xfail was the pre-fix
     shape, the attack-4 fixer's round 1 removed it):
 
-    * F-P4-WHYSTUCK-LADDER-LIE (cured): the status read carries the
+    * F-P4-WHYSTUCK-LADDER-LIE (fixed): the status read carries the
       attempt counters — an EXHAUSTED ladder reads "the ladder is
       EXHAUSTED", never "ladder headroom 3";
-    * F-P4-WHYSTUCK-FALSE-REMEDY (cured): the create path stamps the
+    * F-P4-WHYSTUCK-FALSE-REMEDY (fixed): the create path stamps the
       join marker (the engine's own law on the static path), so the
       failed-parent cascade resolves the row to BLOCKED-failed_parent —
       the remedy derives from the REASON, the join-fires promise is
@@ -392,12 +392,12 @@ async def test_the_why_stuck_arm_names_the_TRUE_blocker(
     assert "doomed: FAILED" in out, f"the failed row is not named: {out!r}"
     assert "the upstream blew up" in out, "the error message did not ride the why-stuck line"
     assert "taskq flows retry" in out, "the remedy is missing"
-    # THE LADDER'S TRUTH (F-P4-WHYSTUCK-LADDER-LIE, CURED): the ladder was
+    # THE LADDER'S TRUTH (F-P4-WHYSTUCK-LADDER-LIE, FIXED): the ladder was
     # max_attempts=1 and it spent its attempt — the honest note is
     # "the ladder is EXHAUSTED", not "headroom 3". The status read carries
     # the row's own attempt counters now.
     assert "the ladder is EXHAUSTED" in out, f"the exhausted ladder is misreported: {out!r}"
-    # THE CONSEQUENCE'S TRUTH (F-P4-WHYSTUCK-FALSE-REMEDY, CURED): the
+    # THE CONSEQUENCE'S TRUTH (F-P4-WHYSTUCK-FALSE-REMEDY, FIXED): the
     # blocked row's answer derives from the blocking REASON — the parent
     # finalized as a FAILURE, so the row reads BLOCKED-failed_parent and
     # the join-fires promise is GONE (the create path stamps the join
@@ -471,7 +471,7 @@ async def test_the_stale_app_resolve_is_the_named_refusal_never_a_traceback(
     run whose workflow is NOT declared on the --app module (the
     stale-deploy world) meets 'flows resolve' — the typed door must
     refuse with the NAMED error + exit 1, never a rich traceback. The
-    pre-cure shape: gate_models_for → app.get(workflow) → the uncaught
+    pre-fix shape: gate_models_for → app.get(workflow) → the uncaught
     KeyError → the traceback (the admin's twin catches it; the CLI did
     not)."""
 
@@ -558,7 +558,7 @@ async def test_the_torn_cancel_the_signal_leg_rides_a_second_connection(
     rolls back after the signal leg ran, the signals stay 'cancelled'
     while the run is NOT cancelled — the torn cancel. This probe forces
     the rollback (the audit write raises) and asserts the damage is
-    VISIBLE (a red here is the finding; the fixer owns the cure)."""
+    VISIBLE (a red here is the finding; the fix owes its own pin)."""
     from taskq.workflows.api._hitl import HitlClient
     from taskq.workflows.api._runner_exit import cancel_workflow_run
 
@@ -608,7 +608,7 @@ async def test_the_torn_cancel_the_signal_leg_rides_a_second_connection(
             f"root={root!r}) — a held operator's decision is gone on a run "
             "that never cancelled"
         )
-    # Either the cure exists (both rolled back) or the shape differs —
+    # Either the fix exists (both rolled back) or the shape differs —
     # never a silent pass over the torn pair.
     assert (root == "cancelled") == (signal == "cancelled"), (
         f"the cancel is torn: root={root!r}, signal={signal!r}"

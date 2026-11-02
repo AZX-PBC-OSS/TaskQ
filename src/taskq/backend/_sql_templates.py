@@ -110,7 +110,7 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     "budget_remaining_ms",
     # THE WORKFLOW ROUND (01.00.24): the archive-mirror columns, THE
     # MERGED LINES' ONE parent_id (the workflow edge's wiring parent AND
-    # the LIB-2 fan-out ledger — the same nullable column, two writers:
+    # the fan-out ledger — the same nullable column, two writers:
     # the engine's node inserts stamp the wiring parent, the enqueue
     # contextvar stamps the fan-out parent; plain column, no FK — see
     # 01.00.23_01_pre_jobs_parent_id.sql). The archive sweep's INSERT
@@ -150,7 +150,7 @@ _COPY_ENQUEUE_OMITTED: Final[frozenset[str]] = frozenset(
         # The workflow columns (01.00.24): vanilla enqueues never set them
         # (the DDL defaults apply -- deps_pending DEFAULT 0, the rest NULL);
         # the workflow-row INSERT path is the engine's own statements.
-        # parent_id is NOT omitted: the LIB-2 fan-out ledger's trailing
+        # parent_id is NOT omitted: the fan-out ledger's trailing
         # member rides the COPY (the enqueue contextvar stamps it; the
         # merge's ONE parent_id — two writers, one column).
         "deps_pending",
@@ -450,7 +450,7 @@ SELECT * FROM upd""",
         # same statement, clock_timestamp() + effective_delay <=
         # schedule_to_close retries; past it, the deadline_failed CTE
         # lands 'failed' with error_class='DeadlineExceeded'.  The caller
-        # never passes a Python-domain timestamp (C1: a skewed caller could
+        # never passes a Python-domain timestamp (a skewed caller could
         # otherwise void the backoff or kill a live job).
         #
         # Every arm that hands the job back for another dispatch (this
@@ -2089,7 +2089,7 @@ SELECT pruned_through_id FROM "{s}".job_events_prune_state WHERE singleton = tru
             f"WHERE queue = ANY($1::text[]) "
             f"AND status IN ('pending', 'scheduled', 'running')"
         ),
-        # ── LIB-2: the backpressure read ───────────────────────────
+        # ── the backpressure read ───────────────────────────
         # The DEPTH half: grouped by queue over exactly the statuses the
         # admission cap counts (enqueue_max_pending_count's
         # pending+scheduled), so the snapshot's "over" compares the cap

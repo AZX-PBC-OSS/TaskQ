@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is a per-test fixture identifier, not user input; every value is $-bound.
 
-"""Red-team pins: a keyed rate limit's ``rate_limit_buckets`` row must be
+"""Adversarial review pins: a keyed rate limit's ``rate_limit_buckets`` row must be
 recorded for reclamation by EVERY flow that can create it, not only by a
 publish that happened to succeed.
 

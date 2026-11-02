@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team attacks on the admin jobs list's absolute time filters (PG tier).
+"""Adversarial review attacks on the admin jobs list's absolute time filters (PG tier).
 
 Hunt scope: ``src/taskq/web/admin/jobs.py`` - ``/jobs`` and ``/jobs/count``
 input validation for ``time_from``/``time_to``.

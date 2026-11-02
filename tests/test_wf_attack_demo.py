@@ -2,11 +2,11 @@
 """ATTACK PINS — the demo/examples front (the hostile review of the
 consolidated head af1b8779, demo lane).
 
-The demo's own machinery was convicted on four LIVE findings and the
+The demo's own machinery was rejected on four LIVE findings and the
 evidence law on a fifth; the ergonomics contract carries an inflated
 claim. Each pin asserts the SAFE behavior, red against the shipped tree,
-strict-xfail until the cure lands (the cure flips the pin to XPASS-
-strict — a red that tells you to remove the marker; the drill is
+strict-xfail until the fix lands (the fix flips the pin to XPASS-
+strict — a red that tells you to remove the marker; the scenario is
 test_wf_attack_cancel.py's face C).
 
 * F-DEMO-1 — the demo's drive loop is poisonable by a FOREIGN run:
@@ -64,7 +64,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # ── F-DEMO-1: the foreign run poisons the drive pass ─────────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(b)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: the live finding
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: the live finding
 async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
@@ -136,7 +136,7 @@ async def test_the_drive_loop_isolates_a_foreign_run_and_never_starves_the_pass(
 _CANCEL_BOUND_S = 5.0
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-4(b)]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: the live finding
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-4(b)]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: the live finding
 async def test_the_drive_task_cancel_completes_within_a_bounded_window(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
@@ -177,7 +177,7 @@ async def test_the_drive_task_cancel_completes_within_a_bounded_window(
 # ── F-DEMO-3: the node panel cannot address a map child ──────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-3]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-3]; the marker was removed per the designed flip (the confirmation).
 async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
@@ -208,7 +208,7 @@ async def test_the_node_panel_addresses_a_map_child_by_step_key_and_map_index(
     deadline = time.monotonic() + 90
     while (
         doomed is None and time.monotonic() < deadline
-    ):  # Why: the condition-not-clock poll IS the cure's shape (the boot-race class's repro) — the bounded milestone poll, never a fixed clock
+    ):  # Why: the condition-not-clock poll IS the fix's shape (the boot-race class's repro) — the bounded milestone poll, never a fixed clock
         await runner.tick(run_id)
         doomed = await wf_conn.fetchrow(
             f'SELECT map_index, attempt FROM "{wf_schema}".jobs '
@@ -263,7 +263,7 @@ _PROM_LINE_RE = re.compile(
 )
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's cure has landed [F-DEMO-5]; the marker is removed per the designed flip (the confirmation receipt). The finding's record, verbatim: the live finding
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the finding's fix has landed [F-DEMO-5]; the marker was removed per the designed flip (the confirmation). The finding's record, verbatim: the live finding
 def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> None:
     """THE EVIDENCE-LAW GUARD: every ``.prom`` artifact under
     ``.measurements`` must parse as VALID Prometheus text exposition —
@@ -272,7 +272,7 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
 
     THE GUARD GENERATES ITS OWN SUBJECT (the state-not-clock law: a
     guard tests the VALIDATOR, never the estate's leftovers): the valid
-    exposition's shapes and the convicted illegal-dots shape are minted
+    exposition's shapes and the rejected illegal-dots shape are minted
     in *tmp_path* and driven through the same validator the estate walk
     uses. The estate's real .prom artifacts — the local walk when the
     registry is present, the evidence branch's ls-tree/show face when
@@ -322,7 +322,7 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
         "validator's teeth are miscalibrated:\n" + "\n".join(subject_violations)
     )
 
-    # THE TEETH: the convicted illegal-dots name MUST red (the finding
+    # THE TEETH: the rejected illegal-dots name MUST red (the finding
     # that minted this guard — dots are illegal in the exposition
     # grammar; the validator that greens one is the fabrication-enabler).
     _validate("the-illegal-dots-shape.prom", "taskq.wf_progress_nodes_total 1.0\n")
@@ -360,7 +360,7 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
 # ── F-DEMO-6: the compose stack's decorative placement ───────────────────
 
 
-# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the cure landed [F-DEMO-6: the compose workers subscribe the demo's declared cohorts + the default queue]; the marker is removed per the designed flip (the confirmation receipt).
+# THE FLIP (2026-10-09): this pin XPASSed-strict on the PR head — the fix landed [F-DEMO-6: the compose workers subscribe the demo's declared cohorts + the default queue]; the marker was removed per the designed flip (the confirmation).
 def test_the_compose_workers_subscribe_the_demos_declared_queues() -> None:
     """The wiring truth: every queue the demo's workflows DECLARE must be
     SUBSCRIBED by the shipped compose stack's workers — else the

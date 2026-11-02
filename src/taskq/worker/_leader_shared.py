@@ -464,8 +464,8 @@ _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL = (
 # missing row). A row that is NO parent (no wf_edge row points at it)
 # prunes on the normal schedule, and a TERMINAL/CANCELLED run's rows
 # prune on the NORMAL schedule too (the guard is LIVENESS-scoped, not a
-# retention exemption -- the over-hold shape is its own convicted
-# variant, the pin rides it). Index-backed: the guard's probe rides
+# retention exemption -- the over-hold shape is its own
+# defect variant, the pin rides it). Index-backed: the guard's probe rides
 # wf_edge_parent_idx + the flow root's primary key, one bounded probe
 # per candidate. The rolling-deploy tolerance composes it AWAY (see
 # _compose_candidate_sql): a pre-workflow schema has no wf_edge table,

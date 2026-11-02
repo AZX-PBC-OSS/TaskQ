@@ -119,7 +119,7 @@ class ChildFlowLostError(RuntimeError):
     still names a child flow whose rows are GONE (the retention purge's
     own law: the purge must walk the parent links first).
 
-    The pre-cure shape SILENTLY RE-MINTED a fresh child on the resume —
+    The pre-fix shape SILENTLY RE-MINTED a fresh child on the resume —
     the child's side effects (emails, payments) ran twice while the
     parent run SUCCEEDED (the worst face: the fabricated health). The
     spawn now REFUSES: the dangling pointer is the failure, the run
@@ -434,12 +434,12 @@ class CtxSpawnOps(_SpawnHost):
         needs it — the bound's typed arm is
         :class:`SpawnDepthExceededError`.
 
-        THE SPAWN'S ATOMICITY FACE (the gather dragon's cure):
+        THE SPAWN'S ATOMICITY FACE (the gather guard):
         the default slot's read+write is ONE atomic claim at the row
         (an ``UPDATE … RETURNING`` increment), so K CONCURRENT spawns
         (``asyncio.gather(*[ctx.spawn_flow(...) …])`` — the natural
         fan-out spelling) take K DISTINCT slots and mint K DISTINCT
-        children — the pre-cure shape raced the cursor's read and
+        children — the pre-fix shape raced the cursor's read and
         write, all K spawns adopted the same slot (run key), minted ONE
         child, and every caller received tenant-0's verdict wearing K
         labels (the silent fabricated result). A SAME-key concurrent
@@ -470,7 +470,7 @@ class CtxSpawnOps(_SpawnHost):
 
         # THE FAIL-CLOSE: a dangling child pointer on the
         # parent's own receipts — a receipt whose child rows are GONE —
-        # is the TYPED refusal, never a silent respawn. The pre-cure
+        # is the TYPED refusal, never a silent respawn. The pre-fix
         # shape re-minted a fresh child on the resume (the purge took
         # the arbiter's row with it): the child's side effects ran
         # twice, the parent SUCCEEDED.
@@ -534,7 +534,7 @@ class CtxSpawnOps(_SpawnHost):
         # execute through the doors that own them (the fleet's
         # ``execute_flow_job``, the dev drive's ``_runner_for_flow``) —
         # each threads the worker's default deadline itself (the wf
-        # start_to_close cure's own resolution chain).
+        # start_to_close fix's own resolution chain).
         child_runner = FlowRunner(compiled_obj, self._pool, self._wsql.schema)
         claim = await child_runner.create_flow(
             input=input,
@@ -594,7 +594,7 @@ SET metadata = jsonb_set(
 WHERE id = $1
 """
 
-#: THE SPAWN'S ATOMIC SLOT CLAIM (the gather dragon's cure):
+#: THE SPAWN'S ATOMIC SLOT CLAIM (the gather guard):
 #: the per-attempt cursor's read+write is ONE statement — the row's
 #: jsonb counter increments IN the UPDATE and the allocated slot
 #: RETURNS from it. Concurrent claims serialize on the row lock and

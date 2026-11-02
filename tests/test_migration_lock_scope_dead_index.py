@@ -639,7 +639,7 @@ async def test_strict_fifo_lateral_probe_rides_the_unrouted_index(
                 # The PLAIN render's fragment, not the raw template: the
                 # fragment carries the claim-cursor hole, and a raw hole
                 # in an EXPLAIN is a PostgresSyntaxError (the CI red this
-                # constant exists to cure).
+                # constant exists to fix).
                 _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN,
                 mixed_population_schema,
                 rr_keys=False,

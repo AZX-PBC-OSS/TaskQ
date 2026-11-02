@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Red-team: DRAINING must re-pend rows the worker claimed but never started (E1).
+"""Adversarial review: DRAINING must re-pend rows the worker claimed but never started (E1).
 
 Contract under attack: ``drain_local_queue_to_pending`` must re-pend every row
 this worker CLAIMED but never started executing - the rows sitting in the

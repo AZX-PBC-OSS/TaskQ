@@ -100,9 +100,9 @@ async def _run_until_ready(
     timeout: float = _BOOT_POLL_TIMEOUT,  # noqa: ASYNC109  # Why: the timeout is the poll deadline's bound, not an async-with timeout pattern — the poll loop IS the condition wait.
 ) -> None:
     """Run ``_main``-wrapping coroutine until ``ready()`` answers truthy —
-    the boot-race cure: poll the CONDITION, never the clock.
+    the boot-race fix: poll the CONDITION, never the clock.
 
-    THE BOOT-RACE CLASS (named and cured 2026-10-08): the boot tests used to
+    THE BOOT-RACE CLASS (named and fixed 2026-10-08): the boot tests used to
     sleep a fixed 2-4s and then assert the boot's durable effects (the
     actor_config sync, the worker registration). The sleeps were sized on a
     quiet box; under a loaded one — a parallel battery, the 10-container

@@ -1,14 +1,14 @@
-"""THE 3AM DRILL PINS — the operator-truth faces fenced (the
-observability lane's evidence, red-first).
+"""THE 3AM PINS — the operator-truth faces fenced (the
+observability lane's evidence, failing-first).
 
-Each pin is a drill gap's fence: the surface MUST say X, where X is the
+Each pin is a scenario gap's fence: the surface MUST say X, where X is the
 truth an operator needs at 3am with ONLY the documented surfaces (the
-CLI, the explorer, the rows). Collected against the drilled failures:
+CLI, the explorer, the rows). Collected against the exercised failures:
 
 1. THE STUCK RUN — a healthy join-wait row must get the HONEST join-wait
    arm (the join fires when its parents finalize), never the
    retry-the-failed-upstream remedy (a false remedy the blocking-reason
-   arm's order was printing for reason='join'; the drill's planted hang
+   arm's order was printing for reason='join'; the scenario's planted hang
    showed the face). And a RUNNING node's age must be NAMED (stuck vs
    slow is the 3am question; a silent running row is indistinguishable
    from a dead one).
@@ -55,7 +55,7 @@ _NOW = datetime(2026, 10, 12, 17, 0, 0, tzinfo=UTC)
 def test_healthy_join_wait_gets_the_join_wait_arm_not_the_retry_remedy() -> None:
     """A join-wait row whose blocking_reason is the bare 'join' stamp (the
     HEALTHY shape — every emitted join carries it) must read as a join
-    that fires when its parents finalize. The convicted variant: the
+    that fires when its parents finalize. The rejected variant: the
     blocking-reason arm caught reason='join' first and printed
     'remedy: retry the failed upstream node' — a false remedy for a
     healthy join (no upstream has failed; the retry command names no
@@ -77,7 +77,7 @@ def test_a_crashed_terminal_node_renders_its_story() -> None:
     WorkerCrashed) must render the why-stuck line (class + message +
     remedy), because the derivation folds it into the failed class and
     the run reads '1 crashed' with no explanation otherwise. The
-    convicted variant: the crashed row produced NO line — the operator
+    rejected variant: the crashed row produced NO line — the operator
     saw the count and nothing else."""
     row = FlowNodeRow(
         step_key="hang",
@@ -133,7 +133,7 @@ def test_running_node_age_is_named_with_the_lease_check_remedy() -> None:
     """A running node must have its running AGE named on the status
     report (since started_at, source-named) with the lease-check remedy
     (job show's lease face + job events' lock_expired record). The
-    convicted variant: a hung body read as a bare '1 running' count —
+    rejected variant: a hung body read as a bare '1 running' count —
     the operator could not name the hung node or distinguish stuck from
     slow on ANY surface."""
     started = _NOW - timedelta(minutes=5, seconds=31)
@@ -187,8 +187,8 @@ _JOB_ID = "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
 def _job_row(**overrides: Any) -> dict[str, Any]:
     row: dict[str, Any] = {
         "id": _JOB_ID,
-        "actor": "wf-drill",
-        "queue": "drill",
+        "actor": "wf-scenario",
+        "queue": "scenario",
         "status": "running",
         "priority": 0,
         "attempt": 1,
@@ -201,7 +201,7 @@ def _job_row(**overrides: Any) -> dict[str, Any]:
         "error_class": None,
         "error_message": None,
         "idempotency_key": None,
-        # THE TAGS COLUMN (the sync-friction lane's operator-face cure):
+        # THE TAGS COLUMN (the sync-friction lane's operator-face fix):
         # tags ride the pointed read (the recurring-run's display
         # identity — an absent set renders `(none)`).
         "tags": None,
@@ -235,7 +235,7 @@ def test_job_show_names_the_lapsed_lease(monkeypatch: pytest.MonkeyPatch) -> Non
     """A running row whose lock_expires_at has passed: job show must say
     the lease LAPSED and what happens next (the reclaim sweep repends it
     within the sweep interval once a leader is up) — 'the worker died',
-    not 'the work is slow'. The convicted variant: the lease columns were
+    not 'the work is slow'. The rejected variant: the lease columns were
     invisible on the CLI; the operator needed raw SQL for the
     distinction."""
     _patch_db(
@@ -275,7 +275,7 @@ def test_job_show_names_a_fresh_lease_as_held(monkeypatch: pytest.MonkeyPatch) -
 def test_job_show_renders_the_cache_hit_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
     """The cross-run cache hit's receipt (metadata.wf_cache_hit) must be
     visible on job show: a step that never executed must not read like
-    one that did (the audit drill's provenance question)."""
+    one that did (the audit scenario's provenance question)."""
     _patch_db(
         monkeypatch,
         _job_row(
@@ -345,10 +345,10 @@ async def test_node_panel_renders_the_cache_hit_receipt(
     clean_pg_conn: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The provenance drill's explorer face: a run over the SAME input as
+    """The provenance scenario's explorer face: a run over the SAME input as
     an earlier run reads the cross-run cache — its ``cached`` node NEVER
     executed, and the panel must say so (the receipt: the producing run +
-    the address). The convicted variant: the panel had no cache_hit key —
+    the address). The rejected variant: the panel had no cache_hit key —
     a cache-hit step read exactly like an executed one."""
     import httpx
 

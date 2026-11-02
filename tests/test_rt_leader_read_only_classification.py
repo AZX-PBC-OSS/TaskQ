@@ -1,4 +1,4 @@
-"""Red-team unit pin: a read-only PG failover (SQLSTATE 25006) must be classified survivable.
+"""Adversarial review unit pin: a read-only PG failover (SQLSTATE 25006) must be classified survivable.
 
 During a PG failover the surviving primary is briefly read-only: every pure read
 succeeds (the leader watchdog's ``SELECT 1`` probes, the election loop's probe -

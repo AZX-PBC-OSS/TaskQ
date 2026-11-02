@@ -73,10 +73,9 @@ the new round-trip pins in `tests/test_round_trip_budgets.py`.
   acquires on a single-connection pool, 20 warm-up + 200 measured per
   path; round trips counted by a pool/transaction proxy that counts every
   statement AND every BEGIN/COMMIT/SAVEPOINT/RELEASE boundary (asyncpg
-  sends transaction control as its own round trips). Harness:
-  `/tmp/opencode/measure_228.py` (scratch, not committed); OLD = the
-  pre-fusion files restored from `HEAD` in this worktree, NEW = this
-  change — same venv, same container, interleaved runs. The wire shapes
+  sends transaction control as its own round trips). The harness ran
+  the OLD files (the pre-fusion files restored from `HEAD`) against the
+  NEW files (this change) — same venv, same container, interleaved runs. The wire shapes
   are additionally pinned deterministically by
   `tests/test_round_trip_budgets.py` on the statement-recording fake.
 * **Contention probe** (log-style, the advisory-lock path): 8 concurrent

@@ -99,7 +99,7 @@ class LoopOps(_LoopHost):
         ledger_claimed_at: Any = None,
     ) -> str:
         """THE LOOP'S DEFERRAL DISPOSITION (the loop body's signals route
-        through the SAME disposition the step bodies share — the C2
+        through the SAME disposition the step bodies share — the
         decision: the loop's iteration machinery already resumes a
         mid-iteration hold; the deferral is the same resume, later by the
         delay).
@@ -274,12 +274,12 @@ class LoopOps(_LoopHost):
         read of the wall (holds are free).
 
         ``ledger_claimed_at`` is the ledger claim's OWN RETURNING instant
-        (the re-mint guard's discriminator, C5) — threaded to the loop's
+        (the re-mint guard's discriminator) — threaded to the loop's
         deferral route (``_defer_loop_step``) so the loop's zombie fence
         can never mark a re-minted live winner's row, the SAME threading
         the step route carries.
 
-        THE ESCAPE-POINT CONTRACT (attack-3 H5's cure): the driver's
+        THE ESCAPE-POINT CONTRACT (the escape-point contract): the driver's
         drive runs under the machinery boundary — an INFRA fault raised
         by the driver's own statements reclaims (the ledger says
         'crashed', the ladder untouched); anything else re-raises. The
@@ -304,7 +304,7 @@ class LoopOps(_LoopHost):
                 claim_epoch=claim_epoch,
                 ledger_claimed_at=ledger_claimed_at,
             )
-        except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped, never its type (attack-3 H5's cure). BLE001 is the boundary's shape: ANY machinery exception is classified, then re-raised or reclaimed.
+        except Exception as exc:  # Why: the MACHINERY boundary — the classifier reads WHERE the error escaped, never its type (the escape-point contract). BLE001 is the boundary's shape: ANY machinery exception is classified, then re-raised or reclaimed.
             if is_infra_fault(exc):
                 return await self._reclaim_loop(flow_id, row, attempt, exc)
             raise
@@ -323,7 +323,7 @@ class LoopOps(_LoopHost):
         ledger_claimed_at: Any = None,
     ) -> None:
         """The loop driver's own drive (the machinery side of the
-        escape-point contract — attack-3 H5's cure): every exception
+        escape-point contract — the escape-point contract): every exception
         raised by THIS method's own statements (the state reads, the
         ledger claims, the advance, the exhaust) is a TRANSPORT/INFRA
         fault of the machinery — the caller's reclaim owns it, the
@@ -404,7 +404,7 @@ class LoopOps(_LoopHost):
         max_wall = 10_000  # the driver's own bound (a hang is a defect with no stack)
         for _ in range(max_wall):
             # THE UNTIL PREDICATE — awaited (a sync closure returning a
-            # coroutine object is the convicted dragon).
+            # coroutine object is the rejected dragon).
             if node.loop_until is not None and await node.loop_until():
                 await self._finalize_success(
                     flow_id,
@@ -473,7 +473,7 @@ class LoopOps(_LoopHost):
                 # THAT class and message (the diagnosis names it), the
                 # body is never re-run (one invocation per iteration),
                 # and the raw return is never re-threaded AS A REFINE
-                # (the fabrication the pre-cure ledger committed: a
+                # (the fabrication the pre-fix ledger committed: a
                 # SUCCEEDED row laundering a wrong-shape return).
                 await self._exhaust_loop(
                     flow_id,
@@ -550,8 +550,8 @@ class LoopOps(_LoopHost):
                     # heart) — holds are free.
                     return
                 except (Snooze, RetryAfter) as exc:
-                    # THE LOOP'S DEFERRAL DISPOSITION (C2 — the loop
-                    # cliff's cure): the iteration's control-flow signals
+                    # THE LOOP'S DEFERRAL DISPOSITION (the loop
+                    # cliff's fix): the iteration's control-flow signals
                     # route through the SAME deferral disposition the
                     # step bodies share (``api/_runner_defer``'s row law —
                     # the NODE_DEFER_SQL arm: the reschedule, the refund,
@@ -579,7 +579,7 @@ class LoopOps(_LoopHost):
                     )
                     return
                 except Exception as exc:
-                    # THE BODY BOUNDARY (attack-3 H5's cure): EVERY
+                    # THE BODY BOUNDARY (the escape-point contract): EVERY
                     # exception crossing it is a BODY failure — the
                     # loop's typed failure (the named class, the flow
                     # terminalized in the same tx). The escape-point
@@ -619,7 +619,7 @@ class LoopOps(_LoopHost):
                     # body returning neither Done nor Refine is the TYPED
                     # shape error — the iteration's terminal ALREADY
                     # recorded it (above), and the loop exhausts with the
-                    # named class so the diagnosis names it. The pre-cure
+                    # named class so the diagnosis names it. The pre-fix
                     # bare assert laundered the wrong-shape return into a
                     # SUCCEEDED iteration whose memo replayed AS A REFINE.
                     await self._exhaust_loop(
@@ -683,7 +683,7 @@ class LoopOps(_LoopHost):
         returning neither Done nor Refine records a FAILED terminal with
         the TYPED ``LoopBodyShapeError`` class — never a SUCCEEDED row
         whose feedback-shaped payload the memo replay would re-thread as
-        a Refine (the fabrication the pre-cure recorder committed: the
+        a Refine (the fabrication the pre-fix recorder committed: the
         'other' kind was laundered into ``{"done": false, "feedback":
         …}`` and its computed kind deleted)."""
         from taskq.workflows.api._loop import Done, Refine
@@ -723,7 +723,7 @@ class LoopOps(_LoopHost):
     async def _reclaim_loop(
         self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception
     ) -> None:
-        """The MACHINERY reclaim (attack-3 H5's other half): an infra
+        """The MACHINERY reclaim (the attack-3 contract's other half): an infra
         fault raised by the DRIVER'S OWN statements — never by the body
         — records 'crashed' and re-pends WITHOUT burning the ladder
         (the vanilla lease machinery re-claims from the ledger). The
@@ -748,6 +748,7 @@ class LoopOps(_LoopHost):
                 render_sql(NODE_REPEND_SQL_TEMPLATE, self.schema),
                 row["id"],
                 0.05,
+                attempt,
             )
 
     async def _exhaust_loop(
@@ -765,7 +766,7 @@ class LoopOps(_LoopHost):
         and the body failure; the SWEEP's arm runs the same statement):
         the named state + the FLOW TERMINALIZED in the SAME tx
         (STRANDED-FLOW) — and, when the REGISTERED policy says
-        ``escalate`` (attack-3 H1's cure: the policy is READ by the
+        ``escalate`` (the escalation fix: the policy is READ by the
         driver AND the sweep), the ESCALATION ENQUEUES through the same
         outbox in the SAME tx, addressed to the workflow's REGISTERED
         escalation step (the body resolves from the definition registry
@@ -793,7 +794,7 @@ class LoopOps(_LoopHost):
 
         error_class = error_class or LOOP_ERROR_CAP
         if error_class in (LOOP_ERROR_BODY, ERROR_CLASS_MAX_ATTEMPTS_EXCEEDED):
-            # THE BODY-FAILURE FACE (the C2 bound face): the deferral
+            # THE BODY-FAILURE FACE (the bound face): the deferral
             # disposition's budget exhaustion — the body's OWN signal
             # (RetryAfter(consume_budget=True)) past max_attempts — is the
             # loop's body failure arriving through the ladder's bound: the

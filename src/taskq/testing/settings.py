@@ -29,7 +29,7 @@ _DEFAULTS: dict[str, str] = {
     # Keeps the lag-lease invariant satisfied for these fast defaults
     # (1.2 + 0.5 < 3.0): a stalled loop dies before its 3s lease expires,
     # without the detector tripping on its own sampling cadence. The
-    # lag lattice (the LedgerWatch F6 cure included) pins ALL THREE
+    # lag lattice (the LedgerWatch F6 fix included) pins ALL THREE
     # gaps: the check interval 0.25 < the warn budget 0.6 (a warn at or
     # below the sampling cadence warns + dumps every healthy poll — the
     # warning storm) < the terminal budget 1.2 (a warn at or above it

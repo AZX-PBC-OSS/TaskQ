@@ -150,15 +150,15 @@ def test_encode_step_result_the_model_and_the_plain_form() -> None:
     assert '"n"' in encoded_plain
 
 
-# ── _reducers.py: the resolution's verdict (the adapter's cure) ─────────
+# ── _reducers.py: the resolution's verdict (the adapter's fix) ─────────
 
 
 async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: str) -> None:
-    """THE ADAPTER'S DEFECT, CURED AT THE SOURCE (the wedged-hold cure,
+    """THE ADAPTER'S DEFECT, FIXED AT THE SOURCE (the wedged-hold fix,
     2026-10-09): the old adapter called the registry's body with ONE
     argument (``definition_body(None)``) — a step body (ctx + params)
     raised TypeError, the fire's tx rolled back, and the sweep re-fired
-    FOREVER (the wedged arm, the drive's max_ticks). THE CURE'S VERDICT:
+    FOREVER (the wedged arm, the drive's max_ticks). THE FIX'S VERDICT:
     the registry's bodies are STEP bodies — never reducers — so the
     resolution returns NO body for a graph that resolves (the row's own
     claim owns the execution, the wired args), and the LOUD face is
@@ -188,7 +188,7 @@ async def test_resolve_reducer_the_definition_fallback(wf_pool: Any, wf_schema: 
     resolved = resolve_flow_reducer(
         "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f", "solo", workflow_name="reducer_fallback_xf"
     )
-    # THE CURE'S VERDICT: the registered STEP body is NEVER adapted to
+    # THE FIX'S VERDICT: the registered STEP body is NEVER adapted to
     # the reducer convention — no body (the claim's own execution), and
     # the graph RESOLVED (the name is registered here) so the face is
     # the healthy one, never the loud stamp.

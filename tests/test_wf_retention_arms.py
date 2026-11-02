@@ -1,10 +1,10 @@
-"""THE FLOW-HISTORY RETENTION ARMS — the TAStack P1's cure's pins
+"""THE FLOW-HISTORY RETENTION ARMS — the pins
 (integration: real PG).
 
 Five workflow tables grew monotone-forever — no retention arm, no FK
 for the job prune to cascade: ``wf_edge``, ``wf_step_ledger``,
 ``wf_join_fire``, ``wf_signals``, ``wf_node_progress``. These pins hold
-the cure's shape (THE TWO-PASS LAW — the H-B1 rewrite): every arm runs
+the fix's shape (THE TWO-PASS LAW — the rewrite): every arm runs
 
 * a FLOWS-SIDE pass — the TERMINAL-AGED ROOTS are selected FIRST from
   the tiny jobs side (``step_key='__flow__'`` + a terminal status +
@@ -13,7 +13,7 @@ the cure's shape (THE TWO-PASS LAW — the H-B1 rewrite): every arm runs
   each selected flow's rows delete through the table's flow_id index,
   row-LIMITed to the batch. The zero-doomed steady state is
   O(terminal flows), never a walk of the wf table probing jobs per row
-  (the convicted shape: TimeoutError at 3M rows — the arms permanently
+  (the rejected shape: TimeoutError at 3M rows — the arms permanently
   stopped pruning at exactly the scale they exist for); and
 * a ROOTLESS pass — the orphan class (the row's pointee is NOT a flow
   root at all: absent, or a live NON-root job) cannot be found from the
@@ -91,12 +91,13 @@ async def _seed_terminal_node(conn: asyncpg.Connection, schema: str, flow_id: Jo
     node_id = new_uuid()
     await conn.execute(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, finished_at) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'succeeded', $2, $3, "
-        "clock_timestamp() - $4::interval)",
+        "retry_kind, status, step_key, metadata, fairness_key, finished_at) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'succeeded', $2, $3, $4, "
+        "clock_timestamp() - $5::interval)",
         node_id,
         "done",
         json.dumps({"flow_id": str(flow_id)}),
+        str(flow_id),
         _OLD,
     )
     return JobId(node_id)
@@ -515,7 +516,7 @@ async def test_live_hold_on_nonterminal_flow_survives_a_terminal_neighbors_reap(
 async def test_a_flow_whose_root_row_was_pruned_is_still_swept(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ORPHAN-ROOT LEG (the meta-audit's conviction): the jobs archive
+    """THE ORPHAN-ROOT LEG (the meta-audit's recorded finding): the jobs archive
     and the hard prune DELETE old flow-root rows; an arm whose doomed
     predicate requires the root to EXIST-and-be-terminal can never match
     a rootless row — every pruned flow's wf history is unprunable
@@ -545,7 +546,7 @@ async def test_a_flow_whose_root_row_was_pruned_is_still_swept(
         assert remaining == 0, f"{table} kept {remaining} orphaned row(s) of a pruned flow"
 
 
-# ── (f) H-B1: the scale pin — the loaded pass, the drain, the zero-doomed
+# ── (f) the: the scale pin — the loaded pass, the drain, the zero-doomed
 #    steady state — every pass completes under the dispatcher command
 #    timeout and deletes at most the batch ────────────────────────────────
 
@@ -581,10 +582,10 @@ async def _bulk_node(conn: asyncpg.Connection, schema: str, flow_id: JobId, *, s
     reconstruct 'complete' — the node row survives retention)."""
     await conn.executemany(
         f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata, finished_at) "
-        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, 'done', $3::jsonb, "
+        "retry_kind, status, step_key, metadata, fairness_key, finished_at) "
+        "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', $2, 'done', $3::jsonb, $4, "
         "clock_timestamp() - interval '2 hours')",
-        [(new_uuid(), status, json.dumps({"flow_id": str(flow_id)}))],
+        [(new_uuid(), status, json.dumps({"flow_id": str(flow_id)}), str(flow_id))],
     )
 
 
@@ -610,7 +611,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
       index, row-LIMITed);
     * the drain (repeated passes) empties every aged flow's rows and the
       live flows' rows ALL survive;
-    * the ZERO-DOOMED steady-state pass — the convicted shape's kill:
+    * the ZERO-DOOMED steady-state pass — the rejected shape's kill:
       the old arm walked the whole table probing jobs twice per row and
       TimeoutError'd at 3M — completes under the timeout deleting
       nothing, flows-side AND rootless."""
@@ -651,7 +652,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     assert deleted <= batch, f"the loaded pass deleted {deleted} > batch {batch}"
     assert loaded_elapsed < settings.dispatcher_command_timeout, (
         f"the loaded pass took {loaded_elapsed:.2f}s — past the dispatcher "
-        "command timeout the leader's pool runs under (H-B1's conviction: "
+        "command timeout the leader's pool runs under (H-B1's recorded finding: "
         "the arm Times Out and PERMANENTLY stops pruning)"
     )
 
@@ -683,7 +684,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     assert deleted == 0
     assert steady_elapsed < settings.dispatcher_command_timeout, (
         f"the ZERO-DOOMED steady-state pass took {steady_elapsed:.2f}s — the "
-        "full-table walk is the convicted shape (H-B1)"
+        "full-table walk is the rejected shape (H-B1)"
     )
     start = time.monotonic()
     rootless = await prune_wf_edge_rootless(wf_pool, wsql, batch_size=batch)
@@ -707,7 +708,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     )
 
 
-# ── (g) H-B3: the root identity — a row pointing at a live NON-root job
+# ── (g) the: the root identity — a row pointing at a live NON-root job
 #    is rootless-class; a live ROOT's rows survive; a terminal-aged
 #    root's rows belong to the flows-side pass ────────────────────────────
 
@@ -789,7 +790,7 @@ async def test_non_root_pointee_rows_prune_and_live_root_rows_survive(
     )
 
 
-# ── (h) H-B3: the node_progress legs — a node WITHOUT the flow_id stamp
+# ── (h) the: the node_progress legs — a node WITHOUT the flow_id stamp
 #    is prune-eligible; the node-gone leg; the live-root pointee survives ─
 
 
@@ -798,7 +799,7 @@ async def test_node_progress_orphan_legs_are_honest(
 ) -> None:
     """PIN (h): the progress row's owner is the NODE's flow link — a row
     whose node (i) is GONE, (ii) carries NO flow_id stamp (a vanilla
-    node: the convicted unprunable class), or (iii) points at something
+    node: the rejected unprunable class), or (iii) points at something
     that is NOT a flow root, is prune-eligible past the period; a node
     whose pointee IS a live root survives."""
     from taskq.workflows._sweep import prune_wf_node_progress_rootless
@@ -818,13 +819,15 @@ async def test_node_progress_orphan_legs_are_honest(
     await _seed_progress(wf_conn, wf_schema, JobId(new_uuid()), age=_OLD, channel="user")
     # (iii) a node whose flow_id points at a NON-root job.
     stamped_to_non_root = new_uuid()
+    foreign_flow = str(new_uuid())  # the flow row does not exist
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".jobs (id, actor, queue, payload, max_attempts, '
-        "retry_kind, status, step_key, metadata) "
+        "retry_kind, status, step_key, metadata, fairness_key) "
         "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'compute', "
-        "$2::jsonb)",
+        "$2::jsonb, $3)",
         stamped_to_non_root,
-        json.dumps({"flow_id": str(new_uuid())}),  # the flow row does not exist
+        json.dumps({"flow_id": foreign_flow}),
+        foreign_flow,  # the stamp IS the flow link (the CHECK's own law)
     )
     await _seed_progress(wf_conn, wf_schema, JobId(stamped_to_non_root), age=_OLD, channel="user")
     # (c) a node whose pointee IS a live root.
@@ -849,7 +852,7 @@ async def test_node_progress_orphan_legs_are_honest(
     assert kept == 1, "the LIVE ROOT's node progress deleted — the identity leg is dishonest"
 
 
-# ── (i) H-B4 / R2: the NULL-stamp leg's CONSERVATIVE shape — the
+# ── (i) the / R2: the NULL-stamp leg's CONSERVATIVE shape — the
 #    NULL-stamped terminal roots are SKIPPED (never doomed: the delete is
 #    never eager), the pass OBSERVES them and the named warning fires in
 #    BOTH the busy and the idle shapes (the tripwire always live) ────────
@@ -946,7 +949,7 @@ async def test_null_stamp_busy_shape_warning_not_starved(
     )
     warnings = [e for e in logs if e.get("event") == "wf-retention-null-finished-at"]
     assert warnings, (
-        f"the tripwire starved behind the batch (the busy shape's conviction: "
+        f"the tripwire starved behind the batch (the busy shape's recorded finding: "
         f"the NULL root never selected, the warning never fired): {logs}"
     )
     assert warnings[0]["table"] == "wf_edge"
@@ -1018,7 +1021,7 @@ def test_arms_batch_derives_from_the_prune_family_knob() -> None:
                     borrowed += 1
         assert knob_calls >= 1, (
             f"{name} does not take the prune family's own batch knob "
-            "(H-B2: the borrowed event_writer_batch_size is the conviction)"
+            "(H-B2: the borrowed event_writer_batch_size is the recorded finding)"
         )
         assert borrowed == 0, f"{name} still borrows event_writer_batch_size (H-B2)"
         assert rootless_calls == 1, (
@@ -1034,7 +1037,7 @@ def test_outbox_and_step_cache_arms_derive_from_the_prune_family_knob() -> None:
     """PIN (j2) — the mirror of (j) for the two DERIVED-DATA retention
     arms: the delivered outbox's TTL arm and the step cache's
     expired-corpses arm borrowed ``event_writer_batch_size`` (100) the
-    same way the five flow-history arms did (H-B2's conviction class —
+    same way the five flow-history arms did (the recorded finding class —
     a monotone population drained 100 rows per pass). Their wiring is
     the prune family's own knob (``prune_batch_size``, the
     deletion-sweep family's batch both arms' docstrings already
@@ -1070,12 +1073,12 @@ def test_outbox_and_step_cache_arms_derive_from_the_prune_family_knob() -> None:
                     borrowed += 1
         assert knob_calls >= 1, (
             f"{name} does not take the prune family's own batch knob "
-            "(the borrowed event_writer_batch_size is H-B2's conviction class)"
+            "(the borrowed event_writer_batch_size is H-B2's recorded finding class)"
         )
         assert borrowed == 0, f"{name} still borrows event_writer_batch_size (H-B2)"
 
 
-# ── (k) H-B7: one clock face across the five arms' statements ───────────
+# ── (k) the: one clock face across the five arms' statements ───────────
 
 
 def test_the_five_arms_tell_one_clock() -> None:
@@ -1117,7 +1120,7 @@ def test_the_five_arms_tell_one_clock() -> None:
 
 # ── (l) R1: the rootless walk ADVANCES at a live PK front — the
 #    persisted cursor (the job_events_prune_state precedent), the exact
-#    red-team story ────────────────────────────────────────────────────────
+#    adversarial review story ────────────────────────────────────────────────────────
 
 
 def _pk_uuid(*, high: bool, i: int) -> str:
@@ -1136,7 +1139,7 @@ _OLD_SQL = "clock_timestamp() - interval '2 hours'"
 async def _seed_rootless_story(
     conn: asyncpg.Connection, schema: str, table: str, live_root: JobId, live_node: JobId
 ) -> tuple[str, list[str], list[str]]:
-    """The red-team story's estate, per table: a live PK FRONT of
+    """The adversarial review story's estate, per table: a live PK FRONT of
     ``_FRONT_N`` rows (every probe answers 'live root') and
     ``_ORPHAN_N`` orphans ABOVE it in the walk's own ORDER BY (the
     pointee absent). Returns ``(state_arm, front_keys, orphan_keys)`` —
@@ -1191,10 +1194,10 @@ async def _seed_rootless_story(
         orphans = [_pk_uuid(high=True, i=i) for i in range(1, _ORPHAN_N + 1)]
         await conn.executemany(
             f'INSERT INTO "{schema}".jobs (id, actor, queue, payload, max_attempts, '
-            "retry_kind, status, step_key, metadata) "
+            "retry_kind, status, step_key, metadata, fairness_key) "
             "VALUES ($1, 'wf', 'default', '{}', 3, 'transient', 'running', 'compute', "
-            "$2::jsonb)",
-            [(k, json.dumps({"flow_id": str(live_root)})) for k in front],
+            "$2::jsonb, $3)",
+            [(k, json.dumps({"flow_id": str(live_root)}), str(live_root)) for k in front],
         )
         await conn.executemany(
             f'INSERT INTO "{schema}".wf_node_progress (node_id, channel, pct, updated_at) '
@@ -1297,7 +1300,7 @@ async def test_rootless_walk_advances_past_a_live_pk_front(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, table: str
 ) -> None:
     """PIN (l) — R1's exact story: a 3,000-row live PK front, batch 1,000,
-    five passes. THE RED (the pre-cure walk): every pass re-visited the
+    five passes. THE RED (the pre-fix walk): every pass re-visited the
     SAME first 1,000 rows — the probes answered 'live root', nothing
     deleted, the cursor nowhere — five passes, deleted=0, the 50 orphans
     above the front stranded forever. THE GREEN: pass 1 still deletes 0
@@ -1332,7 +1335,7 @@ async def test_rootless_walk_advances_past_a_live_pk_front(
     )
     assert await _orphan_remaining(wf_conn, wf_schema, table, orphan_keys) == 0, (
         f"{table}: the orphans above the front survived all five passes — "
-        "stranded forever (R1's conviction)"
+        "stranded forever (R1's recorded finding)"
     )
     # THE WALK'S SCAN START ADVANCED: the cursor is set after pass 1 and
     # MOVES pass over pass; after pass 3 it IS the front's last key (the
@@ -1364,7 +1367,7 @@ async def test_rootless_walk_advances_past_a_live_pk_front(
 def test_rootless_gates_fire_phase_offset_never_two_in_one_tick() -> None:
     """PIN (q): the five gates' counters ran in LOCKSTEP (every 8th call,
     all five) — on tick 8 all five rootless walks + the five flows-side
-    passes ran in ONE tick (the convicted spike). The per-arm phase
+    passes ran in ONE tick (the rejected spike). The per-arm phase
     offset (``turns % 8 == arm_index % 8``) spreads them: over 16
     consecutive ticks each arm's rootless pass fires exactly TWICE and
     never two in one tick. The behavioral read drives the gate factory;
@@ -1428,7 +1431,7 @@ def test_truncate_list_names_every_wf_table() -> None:
     the schema ships. THE RED: wf_node_stream was in neither the arms nor
     the list — a dead node's ring survived the reset, the last test's
     rows leaked into the next test's counts (and the production face:
-    nodes x 64 ring rows unbounded, R3's conviction)."""
+    nodes x 64 ring rows unbounded, R3's recorded finding)."""
     from taskq.testing.pg import (
         _TRUNCATE_TABLES,  # pyright: ignore[reportPrivateUsage]  # Why: the pin IS about this list's completeness.
     )

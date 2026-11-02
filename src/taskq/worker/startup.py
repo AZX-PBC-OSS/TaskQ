@@ -97,7 +97,7 @@ _UPSERT_ACTOR_CONFIG_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.replace(
     "{capacity_set}", _OPERATOR_CAPACITY_SET
 ).strip()
 
-# THE CODE-OWNED CAPACITY UPSERT (C15's opt-in): the SAME statement as
+# THE CODE-OWNED CAPACITY UPSERT (the ``capacity_owner="code"`` opt-in): the SAME statement as
 # ``_UPSERT_ACTOR_CONFIG_SQL`` except the ``DO UPDATE SET`` clause also
 # rewrites ``max_concurrent`` and ``result_ttl`` from the declared
 # literal — the retry contract's own law, on the capacity axes. It runs
@@ -120,7 +120,7 @@ _UPSERT_ACTOR_CONFIG_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.replace(
 #   like the queue is (``taskq actor-config set``), and a code flip
 #   would retune live admission out from under producers still holding
 #   the cached cap. The claim-side cannot bound a backlog (claiming is
-#   the only drain — the H-A6 law), so the stored row is the only
+#   the only drain), so the stored row is the only
 #   enforcement seat there is.
 _UPSERT_CODE_OWNED_CAPACITY_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.replace(
     "{capacity_set}", _CODE_OWNED_CAPACITY_SET
@@ -240,8 +240,8 @@ async def sync_actor_config(
            record must win on every boot, and no operator surface can
            write them.
          - **A ``capacity_owner="code"`` actor's** ``max_concurrent`` and
-           ``result_ttl`` join the retry contract's family (C15's
-           opt-in): a differing registered literal is logged at
+           ``result_ttl`` join the retry contract's family (the
+           ``capacity_owner="code"`` opt-in): a differing registered literal is logged at
            ``actor-config-capacity-code-change`` (warning level) and the
            UPSERT overwrites the stored pair with the registered value —
            a changed literal deploys by code on every boot instead of
@@ -262,7 +262,7 @@ async def sync_actor_config(
          that declared ``capacity_owner="code"`` ride a SECOND statement
          (same transaction, disjoint actors) whose ``SET`` clause adds
          ``max_concurrent = EXCLUDED.max_concurrent, result_ttl =
-         EXCLUDED.result_ttl`` — the C15 opt-in; with no code-owned
+         EXCLUDED.result_ttl`` — the code-owned opt-in; with no code-owned
          actors the operator statement alone runs, byte-identical to the
          pre-opt-in shape.
 
@@ -316,7 +316,7 @@ async def sync_actor_config(
                         cfg.capacity_owner == CAPACITY_OWNER_CODE
                         and field in _CODE_OWNED_CAPACITY_FIELDS
                     ):
-                        # THE CODE DEPLOY IS VISIBLE (C15): the code-owned
+                        # THE CODE DEPLOY IS VISIBLE: the code-owned
                         # actor's literal is about to WIN — the upsert's
                         # SET clause below rewrites this field from the
                         # declaration. Warning, never silent: the stored

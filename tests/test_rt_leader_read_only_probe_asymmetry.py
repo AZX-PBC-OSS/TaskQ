@@ -1,6 +1,6 @@
 # Why: schema is a fixed test identifier, not user input; every value is $-bound.
 # (No file-level S608 noqa: none of this file's statements match the S608 SELECT-interpolation pattern.)
-"""Red-team pin (PG): the leader probes cannot see a read-only server - writes can.
+"""Adversarial review pin (PG): the leader probes cannot see a read-only server - writes can.
 
 The leader's liveness probes are pure reads - ``SELECT 1`` on ``deps.leader_conn``
 (election loop) and on the monitor conn (watchdog loop, leader.py ``fetchval``

@@ -8,7 +8,7 @@ overlapping transaction pins the MVCC horizon, VACUUM cannot reclaim,
 and the claim query's B-tree scans degenerate through the dead tuples
 the claims themselves left behind (brandur measured 15x lock-time
 degradation; PlanetScale: SKIP LOCKED "lifts the floor, not the
-ceiling" - identical dead-tuple scans under both). The worker-side cure
+ceiling" - identical dead-tuple scans under both). The worker-side fix
 is brandur's own: bound the claim predicate at the worker's last
 successfully-claimed id (UUIDv7, time-ordered, so the bound is a
 position in creation order) and the seek lands on live tuples instead

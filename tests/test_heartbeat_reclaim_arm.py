@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: schema is fixture-derived (module_pg_schema), not user input; every value is $-bound.
 
-"""Red-team attacks on the reclaim sweep's heartbeat arm.
+"""Adversarial review attacks on the reclaim sweep's heartbeat arm.
 
 The settled direction is ENFORCEMENT (the earlier stack direction -
 refusal at the enqueue boundary, reclaim stays lease-based - was
@@ -14,7 +14,7 @@ served by the partial index ``jobs_running_heartbeat_deadline_idx``
 ``tests/test_index_audit.py``.
 
 This file attacks what those pins do not reach. Verdicts expected at
-commit time (the reds are the deliverable - they stay red until fixed):
+commit time (the reds are the deliverable - they stay failing until fixed):
 
 * RED ``test_heartbeat_reclaim_attempt_row_must_not_claim_the_lock_expired``
   - the batched ``job_attempts`` INSERT hardcodes
@@ -309,7 +309,7 @@ async def test_deadline_boundary_just_short_just_past(
     cancel carve-out: 5s past the deadline is far inside the 60s margin,
     so a rewrite that drops the ``cancel_phase = 0 OR`` disjunct leaves
     this row running while the sibling file's 1h-stale row (past every
-    margin) stays green - exactly the gap a red-team pass exists to hold.
+    margin) stays green - exactly the gap a adversarial review pass exists to hold.
     """
     schema = module_pg_schema.schema_name
     worker_id = new_uuid()

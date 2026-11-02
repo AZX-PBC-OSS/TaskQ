@@ -4,13 +4,13 @@
 THE FACES (decision f):
 * :func:`progress_sse_face` — the SSE face: the seq-cursor replay over
   the ONE stream, with the NAMED partial mode (the reconnect-after-prune)
-  + the state channel's re-sync payload. THE CONNECT SHAPE (the DH6 law
+  + the state channel's re-sync payload. THE CONNECT SHAPE (the degraded-mode law
   applied at EVERY connect, not only after prune): the consumer loads the
   display from the STATE channel + the LEDGER first, then applies the
   replayed tail — latest-wins needs no history.
 * :func:`rebuild_display` — the run explorer's display model, the PURE
   function over (ledger rows, state rows, replayed events). THE
-  PROGRESS-LIE FENCE (DH4/DH7): the node's STATUS renders from the LEDGER
+  PROGRESS-LIE FENCE (the progress-lie fence): the node's STATUS renders from the LEDGER
   rows — the user progress renders INSIDE the terminal state, never over
   it; the progress row is ADVISORY. THE LEDGER WINS: the fold's last word
   on status is the ledger row's, so a projection that missed it cannot
@@ -20,12 +20,12 @@ THE FACES (decision f):
   progress), the state channel's avg pct riding the same read.
 * :func:`read_map_aggregate` — the user's DECLARED ``aggregate=`` fn: a
   pure, READ-SIDE fn evaluated AT READ TIME over the children's RESULT
-  rows (decision c — DH8's fence: the join node is for DATAFLOW; progress
+  rows (decision c — the dataflow-only fence: the join node is for DATAFLOW; progress
   aggregation is OBSERVABILITY, never a blocking node). Writes nothing.
 
-THE GAUGE'S LAW (DH5 — the metrics doctrine): per-child progress lives in
+THE GAUGE'S LAW (the metrics doctrine): per-child progress lives in
 THESE ROWS, read on demand — it is NEVER a metric label series (the
-workflow gauge stays workflow-dimensioned; the pin convicts the
+workflow gauge stays workflow-dimensioned; the pin rejects the
 per-child-label counterfactual).
 """
 
@@ -70,7 +70,7 @@ class ReplayFace:
 
     * ``mode='full'`` — the cursor is inside the retained window; the
       replay alone reconstructs the display.
-    * ``mode='partial'`` — NAMED (DH6): the cursor predates the ring's
+    * ``mode='partial'`` — NAMED: the cursor predates the ring's
       oldest retained seq (the window was pruned under it). The partial
       tail is served AND the state channel's latest-wins rows ride along
       as the re-sync payload — NEVER a silent empty-success (the
@@ -122,13 +122,13 @@ async def progress_sse_face(
     )
 
 
-# ── THE DISPLAY MODEL (the progress-lie fence, DH4/DH7) ─────────────────
+# ── THE DISPLAY MODEL (the progress-lie fence, the progress-lie fence) ─────────────────
 
 
 def _empty_entry() -> dict[str, Any]:
     """One display entry's blank shape — status/pct/message/error_class
     PLUS the node's IDENTITY (``step_key`` + ``map_index``, the
-    consumer-face lane's CURE 1: the uuid alone cannot say which node
+    identity surface: the uuid alone cannot say which node
     the entry renders). The ghost's identity fills when the ledger row
     lands (the LEDGER-WINS pass)."""
     return {
@@ -179,11 +179,11 @@ def rebuild_display(
     """The run explorer's display model, reconstructed FROM THE ROWS — the
     PURE function (the connect shape and the replay fold are THIS).
 
-    THE FENCE (DH4/DH7): the node's STATUS renders from the LEDGER rows —
+    THE FENCE (the progress-lie fence): the node's STATUS renders from the LEDGER rows —
     the user progress renders INSIDE whatever the state is; it can never
     flip a terminal state back to running. The progress row is ADVISORY.
 
-    THE IDENTITY (the consumer-face lane's CURE 1): every entry carries
+    THE IDENTITY (the identity surface): every entry carries
     ``step_key`` + ``map_index`` — the LEDGER ROW'S OWN fields, stamped
     at the first pass and again at the LEDGER-WINS pass (a ghost the
     first pass missed still gets named when the ledger lands). The
@@ -192,7 +192,7 @@ def rebuild_display(
 
     * ``ledger_rows`` — the LEDGER read (the authority: the jobs rows).
     * ``state_rows`` — the STATE channel's latest-wins backfill (the
-      pruned window's cure — latest-wins needs no history).
+      pruned window's fix — latest-wins needs no history).
     * ``events`` — the replayed stream (the freshness), folded in SEQ
       ORDER (the seq-cursor law); the LEDGER WINS last: where a ledger
       row exists its status is the final word, so a projection that
@@ -208,7 +208,7 @@ def rebuild_display(
             "step_key": r.get("step_key"),
             "map_index": r.get("map_index"),
         }
-    # The STATE channel's latest-wins backfill (the pruned window's cure).
+    # The STATE channel's latest-wins backfill (the pruned-window fix).
     for s in state_rows:
         if s["channel"] != "progress":
             continue
@@ -250,9 +250,9 @@ async def run_display(
     """The run explorer's display READ (the connect shape): the LEDGER +
     the STATE channel — the replayed tail applies on top via
     :func:`rebuild_display` as the SSE delivers it. THE DISPLAY'S STATE IS
-    LEDGER-DERIVED AT EVERY CONNECT (the DH7 law) — a stale progress row
+    LEDGER-DERIVED AT EVERY CONNECT (the ledger-wins law) — a stale progress row
     costs freshness, never the state. THE DISPLAY'S IDENTITY IS THE
-    ROW'S OWN (CURE 1): every entry carries ``step_key`` +
+    ROW'S OWN: every entry carries ``step_key`` +
     ``map_index`` off the ledger read; the keyed view
     (:func:`keyed_display`) renders it name-first."""
     async with pool.acquire() as conn:
@@ -261,7 +261,7 @@ async def run_display(
     return rebuild_display([dict(r) for r in ledger_rows], [dict(r) for r in state_rows], [])
 
 
-# ── THE AGGREGATION (decision c — derived at read, DH8's fence) ──────────
+# ── THE AGGREGATION (decision c — derived at read, the dataflow-only fence) ──────────
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,7 +322,7 @@ async def read_map_aggregate(
     results: list[Any] = []
     for r in rows:
         # the runner's own envelope ({"value": …}) unwraps — the fn sees
-        # EXACTLY what the body returned, decoded once (cut #14's shape)
+        # EXACTLY what the body returned, decoded once
         raw: Any = _loads(r["result"])
         assert isinstance(raw, dict)  # the Any-contract walk: the envelope's shape
         envelope: dict[str, Any] = {str(k): v for k, v in raw.items()}  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the parse hands back Unknown members; the assert above is the runtime guard.
@@ -374,7 +374,7 @@ async def map_progress_line(
     """The map's progress LINE (decision c): the certified grouped read —
     done/running/blocked IN the query — LEFT JOINed to the state channel
     (the children's avg pct). ONE read, never a second instrument, never
-    a per-child metric series (DH5's fence — per-child progress lives in
+    a per-child metric series (the fence — per-child progress lives in
     the rows this serves on demand)."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(wsql.workflow_map_progress, parent_id)
@@ -399,7 +399,7 @@ async def progress_stream_generator(
     the testable machine, T11's seq-cursor law applied to the progress
     stream).
 
-    THE CONNECT SHAPE (the DH6 law at EVERY connect): the DISPLAY frame
+    THE CONNECT SHAPE (the degraded-mode law at EVERY connect): the DISPLAY frame
     first (the ledger + the state channel — the state is ledger-derived,
     never stream-derived), then the replayed tail as ``progress`` frames
     in seq order (``id:`` the seq — the SSE reconnect contract). A cursor
@@ -408,7 +408,7 @@ async def progress_stream_generator(
     empty-success. Idle ticks emit nothing (the keepalive is the HTTP
     layer's).
 
-    THE PUSH PRIMARY, THE POLL BELT (the consumer-face lane's CURE 3):
+    THE PUSH PRIMARY, THE POLL BELT (the push-primary surface):
     with *listener* wired (a started :class:`ProgressListener` — the
     SAME LISTEN/NOTIFY transport the HITL broadcast landed), the write's
     own knock wakes the replay IMMEDIATELY — sub-poll latency, the

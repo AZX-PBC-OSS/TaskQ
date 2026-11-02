@@ -1,4 +1,4 @@
-"""The workflow failure IO-capture writer (T04, G1 — §10.3's policy).
+"""The workflow failure IO-capture writer (T04, G1 — the policy).
 
 The capture WRITE belongs at failure-finalize (tx1 — a row already being
 updated; the success path writes NOTHING extra). The failed node's input +
@@ -145,7 +145,7 @@ def build_capture(
     if total > max_bytes:
         # Truncate the LARGEST field until the whole payload fits — the
         # error (the reason the capture exists) survives a bloated input.
-        # THE MARKER IS NOT PAYLOAD (the second-pass crash's cure): the
+        # THE MARKER IS NOT PAYLOAD (the second-pass crash's fix): the
         # truncation count is an INT — summing it into the byte total
         # crashed utf8_byte_len on the SECOND pass (the loop re-entered
         # with the marker present); the marker is metadata, excluded
@@ -166,7 +166,7 @@ def build_capture(
     return capture
 
 
-#: THE HOLD CONTEXT'S TOKEN-HEAD PASS (attack-3 H3's cure — the default
+#: THE HOLD CONTEXT'S TOKEN-HEAD PASS (the crash-window fix — the default
 #: redact the hold row gets): bearer/key-shaped VALUES the vetted chain's
 #: credential-family patterns deliberately do not model (the chain's own
 #: doctrine: broader NAME lists would redact non-credential parameters —
@@ -198,8 +198,8 @@ def redact_hold_context(
 ) -> dict[str, Any]:
     """THE HOLD CONTEXT through the redact pipeline (chain → the
     token-head pass → the workflow's hook), BEFORE persistence
-    (REDACT-BEFORE-PERSIST extended to the hold row — attack-3 H3's
-    cure): reason/tool/args never reach the ``wf_signals`` payload raw,
+    (REDACT-BEFORE-PERSIST extended to the hold row — the attack-3
+    fix): reason/tool/args never reach the ``wf_signals`` payload raw,
     so the default ``HitlClient`` surface cannot leak what the row never
     carried. The composition is the capture pipeline's own verdict
     (TORS-REV-0.16 §G1): the vetted chain runs FIRST and ALWAYS; the

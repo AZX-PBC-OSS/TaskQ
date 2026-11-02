@@ -1,4 +1,4 @@
-"""Red-team attacks on the admin UI's mutation inputs, renders, and logs.
+"""Adversarial review attacks on the admin UI's mutation inputs, renders, and logs.
 
 Hunt scope: ``src/taskq/web/admin/`` - cancel/retry mutation inputs, the job
 detail render, and log framing for caller-controlled fields.
@@ -391,7 +391,7 @@ def test_sso_group_allowlist_gates_mutations_not_only_reads() -> None:
     job_id = new_uuid()
     backend = _RecordingBackend(make_job_row(status="pending"))
     manager = SessionManager(
-        secret="rt-web-red-team-session-secret",
+        secret="rt-web-adversarial review-session-secret",
         max_age_seconds=3600,
         secure_cookie=False,
     )

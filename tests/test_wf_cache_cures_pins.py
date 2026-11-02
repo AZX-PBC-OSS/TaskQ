@@ -1,15 +1,15 @@
-"""THE CACHE CURES' PINS — the cache-attack front's convictions, cured.
+"""THE CACHE FIXES' PINS — the cache-attack front's recorded findings, fixed.
 
-The lane's red receipts (all captured live BEFORE the cures, on the base
+The lane's red receipts (all captured live BEFORE the fixes, on the base
 head ``0e2f5cc09`` against :5810 — the files live in
-``.measurements/cache-cures/``):
+``.measurements/cache-fixes/``):
 
-* CURE 1 (P8f, the ROUTE-SOURCE WEDGE): ``route_wedge_repro.py`` — run 1
+* FIX 1 (P8f, the ROUTE-SOURCE WEDGE): ``route_wedge_repro.py`` — run 1
   stores, run 2 HITS and the hit path never rebuilds the route fork →
   the run wedged FOREVER (``running``), the source row reading
   ``succeeded`` wearing the ``wf_cache_hit`` receipt, ZERO route
   children, ZERO join rows.
-* CURE 3 (P2d, the ctx.input CROSS-TENANT LEAK):
+* FIX 3 (P2d, the ctx.input CROSS-TENANT LEAK):
   ``ctx_input_leak_repro.py`` — tenant B's run terminal-succeeded with
   tenant A's answer (the body never ran), audits clean.
 * AMENDMENT A (the import-probe's #4, the SOURCE-NODE INPUT BLINDNESS):
@@ -19,13 +19,13 @@ head ``0e2f5cc09`` against :5810 — the files live in
   ``unverifiable_source_silent_repro.py`` — ``cache=True`` accepted at
   wiring, the body ran EVERY run, zero cache rows, the only trace a log
   line.
-* CURE 6a (the HIT-FINALIZE FAULT'S TWO SEATS):
+* FIX 6a (the HIT-FINALIZE FAULT'S TWO SEATS):
   ``hit_finalize_fault_repro.py`` — an InterfaceError inside the hit's
   finalize was ABSORBED by the body ladder: the node terminal-FAILED on
   a ``max_attempts=1`` step whose body NEVER ran, the run killed
   ``UnabsorbedNodeFailure``.
 
-The cure choices are the READS' choices, and the pins hold them:
+The fix choices are the READS' choices, and the pins hold them:
 
 * the route wedge is REFUSED, not rebuilt — the arm dispatch reads the
   element's RUNTIME type and the cached envelope carries only encoded
@@ -128,7 +128,7 @@ async def tenant_read(ctx: StepContext) -> str:
 
 
 async def tenant_body(ctx: StepContext, tenant: str) -> Report:
-    """THE CACHED BODY, CURED: the tenant is a PARAM — it enters the
+    """THE CACHED BODY, FIXED: the tenant is a PARAM — it enters the
     address (the wired-param version caches per value)."""
     CALLS["tenant_body"] = CALLS.get("tenant_body", 0) + 1
     return Report(ref=f"{tenant}:{CALLS['tenant_body']}")
@@ -160,7 +160,7 @@ def _reset_calls() -> None:
     CALLS.clear()
 
 
-# ── CURE 1: THE ROUTE-SOURCE WEDGE'S REFUSAL (E17) ──────────────────────
+# ── FIX 1: THE ROUTE-SOURCE WEDGE'S REFUSAL (E17) ──────────────────────
 
 
 def test_route_source_cache_refuses_at_the_route_attachment() -> None:
@@ -168,7 +168,7 @@ def test_route_source_cache_refuses_at_the_route_attachment() -> None:
     refused at the wiring — the typed refusal names WHY (the hit path
     cannot rebuild the fork: the arm dispatch reads the element's runtime
     type) and the ALTERNATIVE (cache the arms' work, not the
-    fork-spawning source). The pre-cure shape wired clean and wedged
+    fork-spawning source). The pre-fix shape wired clean and wedged
     forever at the first hit — the red receipt is the lane's live repro."""
     app = WorkflowApp()
 
@@ -218,12 +218,12 @@ def test_route_source_cache_refused_by_validate_e17() -> None:
         return build(routed)
 
     compiled = app.get("e17_flow")
-    compiled.nodes["source"].cache = True  # the mutated shape E17 convicts
+    compiled.nodes["source"].cache = True  # the mutated shape E17 rejects
     with pytest.raises(WorkflowValidationError, match="E17-cache-route-source"):
         validate_compiled(compiled)
 
 
-# ── CURE 3: THE ctx.input CROSS-TENANT LEAK'S REFUSAL (E18) ────────────
+# ── FIX 3: THE ctx.input CROSS-TENANT LEAK'S REFUSAL (E18) ────────────
 
 
 def test_ctx_input_cache_refuses_at_the_wiring() -> None:
@@ -259,7 +259,7 @@ def test_ctx_input_cache_refused_by_validate_e18() -> None:
         return build(step(leaking_tenant_body, key="tstep"))  # cache=False passes
 
     compiled = app.get("e18_flow")
-    compiled.nodes["tstep"].cache = True  # the mutated shape E18 convicts
+    compiled.nodes["tstep"].cache = True  # the mutated shape E18 rejects
     with pytest.raises(WorkflowValidationError, match="E18-cache-ctx-input"):
         validate_compiled(compiled)
 
@@ -268,7 +268,7 @@ def test_ctx_input_cache_refused_by_validate_e18() -> None:
 async def test_the_wired_param_version_caches_per_value(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TEACHING EXAMPLE, GREEN (CURE 3's positive face): the tenant
+    """THE TEACHING EXAMPLE, GREEN (FIX 3's positive face): the tenant
     lifted into the dataflow by an UNcached upstream step and wired as
     the cached body's PARAM — the param enters the address, and two
     DIFFERENT flow inputs are two DIFFERENT addresses: both bodies run,
@@ -343,7 +343,7 @@ def test_unverifiable_source_cache_refuses_at_the_wiring() -> None:
     the face from a MISSING HIT: the precondition refuses here, by
     name."""
     ns: dict[str, object] = {"Report": Report, "StepContext": StepContext}
-    exec(  # noqa: S102  # Why: the exec'd body IS the pin's subject — the unverifiable source the refusal convicts.
+    exec(  # noqa: S102  # Why: the exec'd body IS the pin's subject — the unverifiable source the refusal rejects.
         """
 async def ghost_body(ctx: StepContext, d: Report) -> Report:
     return Report(ref=d.ref)
@@ -371,7 +371,7 @@ def test_unverifiable_source_refused_by_validate_e20() -> None:
     from taskq.workflows.api._validate import validate_compiled
 
     ns: dict[str, object] = {"Report": Report, "StepContext": StepContext}
-    exec(  # noqa: S102  # Why: the exec'd body IS the pin's subject — the unverifiable source the refusal convicts.
+    exec(  # noqa: S102  # Why: the exec'd body IS the pin's subject — the unverifiable source the refusal rejects.
         """
 async def ghost_body(ctx: StepContext, d: Report) -> Report:
     return Report(ref=d.ref)
@@ -387,16 +387,16 @@ async def ghost_body(ctx: StepContext, d: Report) -> Report:
         return build(step(ghost_body, Report(ref="r"), key="ghost"))  # type: ignore[arg-type]
 
     compiled = app.get("e20_flow")
-    compiled.nodes["ghost"].cache = True  # the mutated shape E20 convicts
+    compiled.nodes["ghost"].cache = True  # the mutated shape E20 rejects
     with pytest.raises(WorkflowValidationError, match="E20-cache-unverifiable-source"):
         validate_compiled(compiled)
 
 
-# ── CURE 6b: THE Exit NO-OP'S REFUSAL (E19) ────────────────────────────
+# ── FIX 6b: THE Exit NO-OP'S REFUSAL (E19) ────────────────────────────
 
 
 def test_exit_body_cache_refuses_at_the_wiring() -> None:
-    """THE NO-OP'S DOOR (CURE 6b): cache=True on an Exit-returning body
+    """THE NO-OP'S DOOR (FIX 6b): cache=True on an Exit-returning body
     is the silent no-op — the sentinel terminalizes through the exit
     finalize, which the success-only store never sees. Refused (the
     picked door), bare AND inside a union (the union face is the next
@@ -442,25 +442,25 @@ def test_exit_body_cache_refused_by_validate_e19() -> None:
         return build(step(exit_body, Doc(doc_id="d1"), key="x"))  # cache=False passes
 
     compiled = app.get("e19_flow")
-    compiled.nodes["x"].cache = True  # the mutated shape E19 convicts
+    compiled.nodes["x"].cache = True  # the mutated shape E19 rejects
     with pytest.raises(WorkflowValidationError, match="E19-cache-exit-body"):
         validate_compiled(compiled)
 
 
-# ── CURE 6a: THE HIT-FINALIZE FAULT'S ONE SEAT ──────────────────────────
+# ── FIX 6a: THE HIT-FINALIZE FAULT'S ONE SEAT ──────────────────────────
 
 
 @pytest.mark.integration
 async def test_hit_finalize_fault_is_infra_never_a_body_failure(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """ONE FAULT, ONE SEAT (CURE 6a): a transient blip escaping the HIT
+    """ONE FAULT, ONE SEAT (FIX 6a): a transient blip escaping the HIT
     path's finalize is the MACHINERY's seat — the same seat the MISS
     path's finalize faults own (the escape-point contract: the
-    classifier reads WHERE the error escaped). The pre-cure seat routed
+    classifier reads WHERE the error escaped). The pre-fix seat routed
     the blip through the body ladder: the node terminal-FAILED on a
     max_attempts=1 step whose body NEVER ran (the red receipt — the
-    live repro's exact shape). The cure: the blip ESCAPES the claim tail
+    live repro's exact shape). The fix: the blip ESCAPES the claim tail
     (the reclaim-eligible transport fault — the ledger says crashed, the
     ladder unburned, no error record, the node reclaimable)."""
     app = WorkflowApp()
@@ -512,16 +512,16 @@ async def test_hit_finalize_fault_is_infra_never_a_body_failure(
     )
 
 
-# ── CURE 4a: THE INPUT-SENSITIVITY PIN ──────────────────────────────────
+# ── FIX 4a: THE INPUT-SENSITIVITY PIN ──────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_two_different_inputs_two_addresses_no_cross_serve(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE INPUT-SENSITIVITY PIN (CURE 4a — the strengthened pack): the
+    """THE INPUT-SENSITIVITY PIN (FIX 4a — the strengthened pack): the
     pack feeds TWO DIFFERENT inputs to one body — different addresses,
-    different results, NO cross-serve. The pre-cure pack had no pin
+    different results, NO cross-serve. The pre-fix pack had no pin
     feeding distinct inputs through one cached body: the mutation (an
     address that ignores the input) SURVIVED it — the amendment's
     640→60 red is that mutation's live face. Here the pin dies only if
@@ -561,14 +561,14 @@ async def test_two_different_inputs_two_addresses_no_cross_serve(
     assert ref_a1 != ref_b1, "the two inputs' results differ"
 
 
-# ── CURE 4b: THE CAS-FRESHNESS PIN ──────────────────────────────────────
+# ── FIX 4b: THE CAS-FRESHNESS PIN ──────────────────────────────────────
 
 
 @pytest.mark.integration
 async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any
 ) -> None:
-    """THE CAS-FRESHNESS PIN (CURE 4b — the strengthened pack): the TWO
+    """THE CAS-FRESHNESS PIN (FIX 4b — the strengthened pack): the TWO
     SEMANTICS distinguished, both arms provable.
 
     * FIRST-WINNER-KEEPS: a store against a FRESH row LOSES (the
@@ -656,7 +656,7 @@ async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
     assert final_row in ("racer-a", "racer-b"), "the race's row carries ONE racer's payload"
 
 
-# ── CURE 5: THE EVICTION FACE'S PINS (the CLI) ──────────────────────────
+# ── FIX 5: THE EVICTION FACE'S PINS (the CLI) ──────────────────────────
 
 
 @pytest.fixture
@@ -679,7 +679,7 @@ async def test_cache_evict_bare_refuses(cache_cli_env: Any) -> None:
 async def test_cache_evict_dry_run_default_then_yes(
     cache_cli_env: Any, wf_pool: asyncpg.Pool, wf_schema: str, wf_sql: Any
 ) -> None:
-    """THE DRY-RUN DEFAULT (CURE 5's spine): ``evict`` prints what WOULD
+    """THE DRY-RUN DEFAULT (FIX 5's spine): ``evict`` prints what WOULD
     go and touches NOTHING; ``--yes`` deletes. The row the eviction took
     out is a MISS for the next run — the lie's service ends when the
     operator says so, never silently."""
@@ -718,7 +718,7 @@ async def test_cache_evict_dry_run_default_then_yes(
 
 
 async def test_cache_list_shows_rows_and_receipts(cache_cli_env: Any) -> None:
-    """THE HIT OBSERVABILITY (CURE 5's other half): ``wf cache list``
+    """THE HIT OBSERVABILITY (FIX 5's other half): ``wf cache list``
     shows the cache rows AND the hits' wf_cache_hit receipts — the
     receipt already existed on the node rows; the surface folds it into
     the operator's one command."""
