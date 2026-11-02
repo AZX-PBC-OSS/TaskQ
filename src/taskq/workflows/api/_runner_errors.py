@@ -6,12 +6,27 @@ refused loudly; never a silent wedge."""
 
 from __future__ import annotations
 
-__all__ = ["VanishedNodeError", "WorkflowRunError"]
+__all__ = ["VanishedNodeError", "WorkflowRunCancelledError", "WorkflowRunError"]
 
 
 class WorkflowRunError(RuntimeError):
     """The run cannot proceed — the graph is not registered, or the flow
     row is missing (a caller bug, refused loudly)."""
+
+
+class WorkflowRunCancelledError(WorkflowRunError):
+    """A CANCELLED run's read raises this — the same family as the
+    failed run's read (existing ``except WorkflowRunError`` clauses
+    catch it). Carries the terminal ``status`` ("cancelled") and the
+    cancel ``reason`` the cancel verb recorded on the root row — the
+    cancelled run's first question (was it cancelled, and why) answered
+    AT the read face, never the empty read that made cancelled and
+    not-yet-terminal indistinguishable."""
+
+    def __init__(self, flow_id: object, reason: str | None) -> None:
+        self.status = "cancelled"
+        self.reason = reason
+        super().__init__(f"run {flow_id} was cancelled" + (f": {reason}" if reason else ""))
 
 
 class VanishedNodeError(WorkflowRunError):

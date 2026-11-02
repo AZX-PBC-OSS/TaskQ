@@ -48,7 +48,8 @@ export TASKQ_QUEUES=enrich,cpu,io,classify
 # in-process driver executes every body regardless, but declaring the
 # queues keeps the graph's validate() at ZERO findings — the zero-warning
 # budget counts WARNINGs too (W2-unknown-queue: a queue no worker may
-# listen on).
+# listen on). validate() RETURNS the diagnostics (empty when clean), so
+# the budget is assertable: `assert compiled.validate() == ()`.
 ```
 
 Without `TASKQ_PG_DSN` the fence stops at the named error, not a bare

@@ -354,6 +354,11 @@ FLOW_PAYLOAD_SQL_TEMPLATE = """
 SELECT payload FROM {schema}.jobs WHERE id = $1
 """
 
+FLOW_CANCELLED_SQL_TEMPLATE = """
+SELECT error_class, error_message FROM {schema}.jobs
+WHERE id = $1 AND status = 'cancelled'
+"""
+
 SUCCEEDED_RESULTS_SQL_TEMPLATE = """
 SELECT step_key, result FROM {schema}.jobs
 WHERE (metadata->>'flow_id')::uuid = $1 AND status = 'succeeded'

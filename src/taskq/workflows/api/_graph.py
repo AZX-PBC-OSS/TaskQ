@@ -373,7 +373,9 @@ def _capped_handle_of(body: object) -> WorkflowActor | None:
     with no caps is RETURNED (wired owner-only at the honoring sites,
     refused NAMED at the dropping sites), never the zero-signal no-op
     the pre-fix predicate was."""
-    from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
+    from taskq.workflows.api._app import (  # the cycle-break (inner_fn's own pattern)
+        WorkflowActor,
+    )
 
     if not isinstance(body, WorkflowActor):
         return None
@@ -1040,7 +1042,11 @@ def step[R](
     # (``actor=``/``queue=``) stays the step's own decision (the handle's
     # name is NOT the node's actor: the wiring's placement law is
     # unchanged).
-    from taskq.workflows.api._app import WorkflowActor  # the cycle-break (inner_fn's own pattern)
+    from taskq.workflows.api._app import (  # the cycle-break (inner_fn's own pattern)
+        ACTOR_MAX_ATTEMPTS_DEFAULT,
+        ACTOR_RETRY_KIND_DEFAULT,
+        WorkflowActor,
+    )
 
     # THE CAPACITY OWNER (C15): "operator" unless the wired body is a
     # code-owned handle (below) — the per-actor declaration, defaulted.
@@ -1061,6 +1067,20 @@ def step[R](
         # DEFAULT — the explicit step param overrides, never the reverse.
         if start_to_close is None:
             start_to_close = getattr(handle, "start_to_close", None)
+        # THE RETRY TERMS' FOLD: the handle's DECLARED retry terms are the
+        # step's defaults — a declared value (different from the
+        # decorator's own defaults) fills the step's unset slot, and the
+        # step's explicit param still overrides. A bare handle declares
+        # nothing: its decorator defaults are not a declaration, so an
+        # undeclared wiring leaves the node byte-identical to the
+        # unwired form (max_attempts 3, retry_kind None).
+        if (
+            max_attempts == 3
+            and getattr(handle, "max_attempts", None) != ACTOR_MAX_ATTEMPTS_DEFAULT
+        ):
+            max_attempts = handle.max_attempts
+        if retry_kind is None and getattr(handle, "retry_kind", None) != ACTOR_RETRY_KIND_DEFAULT:
+            retry_kind = handle.retry_kind
         # THE CAPACITY OWNER: the handle's declaration is the
         # node's — the projection carries it into the cohort's
         # ActorConfig, where the config sync's code-owned upsert reads

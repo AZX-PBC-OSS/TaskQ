@@ -896,6 +896,56 @@ row) parks at the snooze cadence budget-free, `released_reason=
 'workflow-body-unresolvable'`, the stranded-jobs detector the witness —
 LOUD, never a silent wedge.
 
+### THE WORKFLOW-ONLY WORKER — how the worker imports definitions
+
+The worker imports definitions through `--actors`, the only registration
+mechanism the boot has: the module at `module:attr` is IMPORTED, and that
+import is what mounts every `WorkflowApp` the module constructs (the boot
+projection walks the imported apps). A definitions module whose only
+content is the app boots a workflow-only worker:
+
+```python
+# myapp/workflows.py — the definitions module
+from pydantic import BaseModel
+
+from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
+
+
+class Ingest(BaseModel):
+    doc_id: str
+
+
+class Report(BaseModel):
+    ref: str
+
+
+app = WorkflowApp()
+
+
+@app.actor(max_attempts=7)
+async def extract(ctx: StepContext, params: Ingest) -> Report:
+    return Report(ref=params.doc_id)
+
+
+@app.workflow("ingest")
+def ingest_flow() -> Promise[object]:
+    return build(step(extract, Ingest(doc_id="d"), key="extract"))
+
+
+ACTORS = {}
+```
+
+```sh
+taskq worker --actors myapp.workflows:ACTORS
+```
+
+The empty `ACTORS` mapping is legal exactly when the import mounted at
+least one app: the boot gate counts workflow-execution capability from
+the same inputs the worker would use, and the worker dispatches workflow
+steps only. The refusal (`nothing to dispatch … refusing to boot`) names
+both ingredients — the actor registry and the workflow app — and stays
+for a module with genuinely neither.
+
 ### THE SPLIT PLACEMENT — one actor, one queue (the design law)
 
 `actor_config` is keyed by actor name: ONE queue per actor, the estate's
@@ -1007,9 +1057,13 @@ carries the migration faces (the pre-upgrade rows' NULL cohort, the
 post-phase backfill, and the `jobs_wf_fairness_cohort_check` backstop —
 the database itself refuses an unstamped workflow row).
 
-THE TERMS FLOW: an `@app.actor(max_concurrent=1, ...)` handle wired via
-`step()` carries its terms into the node as the node's ADMISSION
-DEFAULTS — the explicit `step()` params override, never the reverse.
+THE TERMS FLOW: an `@app.actor(max_concurrent=1, max_attempts=7, ...)`
+handle wired via `step()` carries its declared terms into the node as
+the node's ADMISSION AND RETRY DEFAULTS — the explicit `step()` params
+override, never the reverse. The decorator's own defaults (`max_attempts=3`,
+`retry_kind="transient"`) are not declarations: an actor that does not
+state them changes nothing about a step's retry shape (the node keeps
+`max_attempts=3, retry_kind=None`, byte-identical to the unwired form).
 (PLACEMENT stays the step's own decision: the handle's NAME is not the
 node's actor — the split-placement law above is unchanged.) The
 non-negative-int law is the vanilla one, enforced at the declaration
@@ -1548,7 +1602,12 @@ terminal's result, DECODED ONCE through the estate's JSON seam; on a
 FAILED run the read is the FAILURE's face — the typed
 `WorkflowRunError` carrying the failing node row's error class +
 message (WHAT failed, and why, answered AT the read; failed and
-running are never indistinguishable). The driver
+running are never indistinguishable). A CANCELLED run's read is the
+CANCEL's face: the typed `WorkflowRunCancelledError` — a
+`WorkflowRunError` subclass, so existing `except WorkflowRunError`
+clauses catch it — carrying the terminal status and the cancel reason
+the cancel verb recorded (cancelled, failed, and running are never
+indistinguishable). The driver
 `drive(flow_id, until="held" | "terminal")` (landed with T19's
 loop; the bound `max_ticks` is the hang's fence).
 
@@ -1857,6 +1916,11 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+The child actor's declared retry terms are its steps' defaults: the
+`max_attempts=1` on `sub_investigate` ladders the probe node's attempts
+at 1 — a declared term folds into every step that does not state its
+own, and an actor that states none changes nothing.
 
 The identity runs BOTH directions: the parent's node row carries the
 child's flow id (`metadata.child_flows` — the receipt), the child's

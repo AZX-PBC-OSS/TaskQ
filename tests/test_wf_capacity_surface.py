@@ -112,6 +112,77 @@ def test_handle_terms_flow_into_the_node_decl() -> None:
     assert node.reservations == (guard,)
 
 
+def test_handle_retry_terms_flow_into_the_node_decl() -> None:
+    """An ``@app.actor(max_attempts=…, retry_kind=…)`` handle wired via a
+    bare ``step()`` carries its retry terms into the node's decl — the
+    explicit step params override, never the reverse."""
+    app = WorkflowApp()
+
+    @app.actor(max_attempts=7, retry_kind="permanent")
+    async def seven(
+        ctx: StepContext, params: Ingest
+    ) -> Report:  # pragma: no cover - the runner drives real bodies
+        return Report(ref=params.doc_id)
+
+    @app.workflow("retry-terms-flow")
+    def retry_terms_flow() -> Promise[object]:
+        return build(step(seven, Ingest(doc_id="d"), key="probe"))
+
+    node = app.get("retry-terms-flow").nodes["probe"]
+    assert node.max_attempts == 7
+    assert node.retry_kind == "permanent"
+
+
+def test_undeclared_actor_retry_defaults_do_not_leak() -> None:
+    """An actor that declares NO retry terms leaves the node's retry
+    shape byte-identical to the unwired form: ``max_attempts`` 3,
+    ``retry_kind`` None — the decorator's own defaults are not a
+    declaration and never fold into the node."""
+    app = WorkflowApp()
+
+    @app.actor(max_concurrent=2)
+    async def bare(
+        ctx: StepContext, params: Ingest
+    ) -> Report:  # pragma: no cover - the runner drives real bodies
+        return Report(ref=params.doc_id)
+
+    @app.workflow("retry-defaults-quiet")
+    def retry_defaults_quiet() -> Promise[object]:
+        return build(step(bare, Ingest(doc_id="d"), key="probe"))
+
+    node = app.get("retry-defaults-quiet").nodes["probe"]
+    assert node.max_attempts == 3
+    assert node.retry_kind is None
+
+
+def test_explicit_step_retry_terms_override_the_handle() -> None:
+    """The step's own retry terms beat the handle's — the fold only
+    fills what the step left unset."""
+    app = WorkflowApp()
+
+    @app.actor(max_attempts=7, retry_kind="permanent")
+    async def seven(
+        ctx: StepContext, params: Ingest
+    ) -> Report:  # pragma: no cover - the runner drives real bodies
+        return Report(ref=params.doc_id)
+
+    @app.workflow("retry-override")
+    def retry_override() -> Promise[object]:
+        return build(
+            step(
+                seven,
+                Ingest(doc_id="d"),
+                key="probe",
+                max_attempts=2,
+                retry_kind="transient",
+            )
+        )
+
+    node = app.get("retry-override").nodes["probe"]
+    assert node.max_attempts == 2
+    assert node.retry_kind == "transient"
+
+
 def test_explicit_step_params_override_the_handle_terms() -> None:
     """The explicit step params OVERRIDE the handle's terms, never the
     reverse; an unoverridden term still flows (the handle's reservations

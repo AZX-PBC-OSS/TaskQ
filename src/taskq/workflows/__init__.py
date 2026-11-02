@@ -89,7 +89,12 @@ from taskq.workflows.api._progress_listen import (
     ProgressUpdated,
 )
 from taskq.workflows.api._run import WorkflowRunResult, run
-from taskq.workflows.api._runner import FlowRunner, StepContext, WorkflowRunError
+from taskq.workflows.api._runner import (
+    FlowRunner,
+    StepContext,
+    WorkflowRunCancelledError,
+    WorkflowRunError,
+)
 from taskq.workflows.api._runner_exit import cancel_workflow_run, retry_workflow_node
 from taskq.workflows.chain import (
     DONE,
@@ -146,6 +151,7 @@ __all__ = [
     "TimerWake",
     "WorkflowApp",
     "WorkflowBuildError",
+    "WorkflowRunCancelledError",
     "WorkflowRunError",
     "WorkflowRunResult",
     "build",

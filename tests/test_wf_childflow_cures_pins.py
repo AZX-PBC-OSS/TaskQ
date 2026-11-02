@@ -646,6 +646,55 @@ class TestRv5C3ChildLostFailClose:
         assert node_class == "ChildFlowLostError", node_class
 
 
+# ── THE CANCELLED RUN'S READ FACE ────────────────────────────────────────
+
+
+async def test_a_cancelled_run_s_result_is_loud(wf_pool: asyncpg.Pool, wf_schema: str) -> None:
+    """A cancelled run's ``result()`` raises the typed cancellation
+    error — the same family as the failed run's read, carrying the
+    terminal status and the cancel reason. The cancelled run's first
+    question (was it cancelled, and why) is answered at the read face,
+    never the empty read that made cancelled and not-yet-terminal
+    indistinguishable."""
+    from taskq.workflows import WorkflowRunCancelledError, WorkflowRunError
+
+    app = WorkflowApp()
+
+    @app.actor(queue="cpu", max_attempts=3)
+    async def waiter(ctx: StepContext, params: ParentIn) -> Verdict:
+        _ = params
+        outcome = await ctx.wait_signal(
+            (ContinueApproval,), reason="cancelled-read", timeout_s=None
+        )
+        match outcome:
+            case ContinueApproval():
+                return Verdict(v="approved")
+            case Expired():
+                return Verdict(v="expired")
+        raise AssertionError("unreachable: the union is closed")  # pragma: no cover
+
+    gate = GateDecl(name="ContinueApproval", payload_models=(ContinueApproval,))
+
+    @app.workflow("cancelled_read_parent")
+    def cancelled_read() -> Promise[object]:
+        return build(step(waiter, ParentIn(doc_id="d1"), key="hold", gates=(gate,)))
+
+    runner = FlowRunner(app.get("cancelled_read_parent"), wf_pool, wf_schema)
+    flow_id = (await runner.create_flow()).flow_id
+    await runner.drive(flow_id, until="held", max_ticks=10)
+    await cancel_workflow_run(
+        wf_pool, flow_id=flow_id, schema=wf_schema, reason="operator stopped it", principal=None
+    )
+
+    with pytest.raises(WorkflowRunCancelledError) as exc_info:
+        await runner.result(flow_id)
+    assert exc_info.value.status == "cancelled"
+    assert exc_info.value.reason == "operator stopped it"
+    # THE FAMILY LAW: existing ``except WorkflowRunError`` clauses catch it.
+    with pytest.raises(WorkflowRunError):
+        await runner.result(flow_id)
+
+
 # ── RV5-C5a: THE DEV-DRIVE PARITY (the tick runs the expiry arm) ────────
 
 

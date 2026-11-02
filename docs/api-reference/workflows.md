@@ -169,7 +169,11 @@ refuses two different declarations for one actor name.
 
 ## `wf.validate()` — the checker-independent validator
 
-Runs in pytest, CI, and at worker boot; the TWENTY-SEVEN rules shipped (read
+Runs in pytest, CI, and at worker boot; RETURNS the diagnostics — the
+one-pass report as a tuple of validation errors, EMPTY when clean (the
+zero-warning budget a doc example claims is assertable against the
+return); the ERROR-class diagnostics also raise. The TWENTY-SEVEN rules
+shipped (read
 from `taskq/workflows/api/_validate.py`'s `_run_rules` — E1–E20, W1, the
 two W2 faces, W3, W4, W5, and W6), each classified —
 **the zero-false-positive doctrine: over-refusing valid graphs is the

@@ -116,13 +116,18 @@ from taskq.workflows.api._runner_codec import (
     result_truncation,
 )
 from taskq.workflows.api._runner_defer import DeferOps
-from taskq.workflows.api._runner_errors import VanishedNodeError, WorkflowRunError
+from taskq.workflows.api._runner_errors import (
+    VanishedNodeError,
+    WorkflowRunCancelledError,
+    WorkflowRunError,
+)
 from taskq.workflows.api._runner_exit import ExitOps
 from taskq.workflows.api._runner_ladder import LadderOps, is_infra_fault
 from taskq.workflows.api._runner_loop import LoopOps
 from taskq.workflows.api._sql_runner import (
     CLAIMABLE_NODES_SQL_TEMPLATE,
     EDGE_INSERT_SQL_TEMPLATE,
+    FLOW_CANCELLED_SQL_TEMPLATE,
     FLOW_FAILURE_SQL_TEMPLATE,
     FLOW_NODE_CENSUS_SQL_TEMPLATE,
     FLOW_PAYLOAD_SQL_TEMPLATE,
@@ -2526,6 +2531,8 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         status = await self._flow_status(flow_id)
         if status == "failed":
             raise await self._failure_verdict(flow_id)
+        if status == "cancelled":
+            raise await self._cancellation_verdict(flow_id)
         terminal = self.compiled.terminal
         if terminal is None:
             raise WorkflowRunError(
@@ -2549,6 +2556,17 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 row["id"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
                 row["result"],  # pyright: ignore[reportUnknownArgumentType]  # Why: same walk.
             )
+
+    async def _cancellation_verdict(self, flow_id: JobId) -> WorkflowRunCancelledError:
+        """The cancelled run's typed verdict: the root row's stamped
+        cancel reason (the cancel verb's own record — the audit row is
+        the operator's trail; THIS is the row truth the read face
+        answers from)."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(render_sql(FLOW_CANCELLED_SQL_TEMPLATE, self.schema), flow_id)
+        if row is None:
+            return WorkflowRunCancelledError(flow_id, None)
+        return WorkflowRunCancelledError(flow_id, row["error_message"])
 
     async def _failure_verdict(self, flow_id: JobId) -> WorkflowRunError:
         """The failed run's typed verdict (the error the read raises):

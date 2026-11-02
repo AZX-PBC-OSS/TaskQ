@@ -612,6 +612,47 @@ async def test_bootstrap_fails_fast_on_redis_rate_limit_without_redis_url() -> N
         )
 
 
+async def test_a_workflow_only_worker_boots_and_stamps_the_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker whose process mounts a WorkflowApp and whose actor
+    registry is empty boots and runs its loops: the workflow cohorts'
+    dispatch is this worker's job (the capability stamp lands on the
+    workers row), and the loader's gate admits the empty registry for
+    exactly this shape."""
+    from taskq.workflows import Promise, StepContext, WorkflowApp, build, step
+    from taskq.workflows._worker_execution import (
+        project_workflow_actor_configs,
+        reset_app_registry_for_tests,
+    )
+
+    reset_app_registry_for_tests()
+    app = WorkflowApp()
+
+    async def probe_body(ctx: StepContext) -> dict[str, object]:
+        return {}
+
+    @app.workflow("boot-probe-flow")
+    def boot_probe_flow() -> Promise[object]:
+        return build(step(probe_body, key="noop"))
+
+    try:
+        loops_started: list[str] = []
+        rc = await _run_main_with_mocked_deps(
+            _settings(), actor_registry={}, loops_started=loops_started
+        )
+        cohorts = project_workflow_actor_configs()
+    finally:
+        reset_app_registry_for_tests()
+    assert rc == 0
+    assert "producer" in loops_started
+    assert "consumer" in loops_started
+    # THE DISPATCH'S RAW MATERIAL: the boot projection yields the mounted
+    # app's workflow cohorts from THIS process — the rows the fleet
+    # claim's capability fence admits to this worker.
+    assert any(c.actor == "wf" and c.queue == "default" for c in cohorts)
+
+
 async def test_worker_boots_without_redis_extra_installed_and_no_redis_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
