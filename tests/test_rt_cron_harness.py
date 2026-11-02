@@ -590,9 +590,14 @@ class FallbackTransition:
 
     The walls are naive and dated (``range_end`` may sit on the date after
     ``range_start`` - a repeated range that crosses local midnight), the
-    instants are UTC.  A repeated range plays twice: every wall inside
-    ``[range_start, range_end)`` occurs once at the pre-transition offset
-    (fold 0) and once at the post-transition offset (fold 1).
+    instants are UTC.  The stored walls carry ``fold=0`` - a wall's two
+    passes are named by the fields, not the fold - so the obvious
+    ``wall.replace(tzinfo=zone)`` resolves to the pre-transition occurrence;
+    the passes are read through the ``*_utc`` fields or :meth:`fold_instant`,
+    which apply the fold explicitly.  A repeated range plays twice: every
+    wall inside ``[range_start, range_end)`` occurs once at the
+    pre-transition offset (fold 0) and once at the post-transition offset
+    (fold 1).
     """
 
     zone: str
@@ -638,22 +643,12 @@ def _offset_at(instant: datetime, tz: ZoneInfo) -> timedelta:
 
 
 @cache
-def fallback_transitions(zone: str, first_year: int, last_year: int) -> list[FallbackTransition]:
-    """The zone's fall-back transitions whose repeated wall range starts
-    inside the fixed window ``[first_year, last_year)``, discovered from the
-    installed zoneinfo.
-
-    The DST drives date their instants from a zone's OWN rules rather than
-    hardcoded calendar dates: a zone's rule is a fact of the installed zone
-    database, and that database moves between vintages - a rule change can
-    remove a transition a hardcoded date was built on, leaving the drive's
-    premise false and the pin red on every vintage that no longer contains
-    it.  Discovery over a fixed window keeps the premise true on any vintage
-    carrying the zone's history, reads nothing but the named zone, and never
-    consults the runner's clock or ``TZ`` environment.  The ranges are
-    characterized by the scheduler's own ``repeated_range_bounds`` so a
-    drive's walls are the same bounds the tick's delivery hop walks.
-    """
+def _scan_fallback_transitions(
+    zone: str, first_year: int, last_year: int
+) -> tuple[FallbackTransition, ...]:
+    """The scan behind :func:`fallback_transitions`, memoized per zone and
+    window.  The cached value is a tuple - an immutable shape cannot be
+    re-dated through a caller's reference."""
     tz = ZoneInfo(zone)
     found: list[FallbackTransition] = []
     step = timedelta(days=1)
@@ -680,6 +675,12 @@ def fallback_transitions(zone: str, first_year: int, last_year: int) -> list[Fal
                 bounds = repeated_range_bounds(transition_utc.astimezone(tz), tz)
                 if bounds is not None:
                     range_start, range_end = bounds
+                    # The scheduler's bounds carry the seed wall's fold (the
+                    # transition instant resolves as a fold-1 wall), which
+                    # would smuggle the later pass into every naive reading
+                    # of the stored wall - the stored walls are fold-0.
+                    range_start = range_start.replace(fold=0)
+                    range_end = range_end.replace(fold=0)
                     width = int((range_end - range_start).total_seconds() // 60)
                     found.append(
                         FallbackTransition(
@@ -692,7 +693,30 @@ def fallback_transitions(zone: str, first_year: int, last_year: int) -> list[Fal
                     )
             offset_before = offset_after
         cursor = probe
-    return found
+    return tuple(found)
+
+
+def fallback_transitions(zone: str, first_year: int, last_year: int) -> list[FallbackTransition]:
+    """The zone's fall-back transitions whose repeated wall range starts
+    inside the fixed window ``[first_year, last_year)``, discovered from the
+    installed zoneinfo.
+
+    The DST drives date their instants from a zone's OWN rules rather than
+    hardcoded calendar dates: a zone's rule is a fact of the installed zone
+    database, and that database moves between vintages - a rule change can
+    remove a transition a hardcoded date was built on, leaving the drive's
+    premise false and the pin red on every vintage that no longer contains
+    it.  Discovery over a fixed window keeps the premise true on any vintage
+    carrying the zone's history, reads nothing but the named zone, and never
+    consults the runner's clock or ``TZ`` environment.  The ranges are
+    characterized by the scheduler's own ``repeated_range_bounds`` so a
+    drive's walls are the same bounds the tick's delivery hop walks.
+
+    Returns a fresh list per call: the result is the caller's to order or
+    trim, and a shared cached list would let one caller's reordering re-date
+    every later caller's discovery.
+    """
+    return list(_scan_fallback_transitions(zone, first_year, last_year))
 
 
 # ── The wedge: planning-time pause inside the tick's transaction ───────

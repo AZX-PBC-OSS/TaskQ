@@ -41,7 +41,7 @@ which is what the injection removes.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -1745,75 +1745,74 @@ across zone-database vintages; a rule-derived future date is not).
 """
 
 
+class _DiscoveryPremiseError(AssertionError):
+    """A drive's zone premise is false in the installed zoneinfo - the zone
+    holds no fall-back of the shape the drive selects for in the discovery
+    window.  Raised, not asserted, so the named failure survives
+    ``python -O``'s stripped ``assert`` statements."""
+
+
+def _first_fallback_matching(
+    zone: str, premise: str, shape: Callable[[FallbackTransition], bool]
+) -> FallbackTransition:
+    """The zone's earliest fall-back in the discovery window whose range has
+    *shape*, refusing to invent a premise the installed zoneinfo cannot
+    answer."""
+    matches = [
+        transition
+        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
+        if shape(transition)
+    ]
+    if not matches:
+        raise _DiscoveryPremiseError(
+            f"{zone}: the installed zoneinfo holds no fall-back {premise} in "
+            f"[{_DISCOVERY_FIRST_YEAR}, {_DISCOVERY_LAST_YEAR}) - the drive's "
+            "premise is false in this environment"
+        )
+    return matches[0]
+
+
 def _first_midnight_starting_fallback(zone: str) -> FallbackTransition:
     """The zone's earliest fall-back whose repeated range starts exactly at
     local midnight (01:00 DST -> 00:00 standard): the fold-0 pass crosses the
     local date boundary and both passes' walls carry the same local date."""
-    matches = [
-        transition
-        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
-        if transition.range_start.hour == 0 and transition.range_start.minute == 0
-    ]
-    assert matches, (
-        f"{zone}: the installed zoneinfo holds no fall-back whose repeated "
-        f"range starts at local midnight in [{_DISCOVERY_FIRST_YEAR}, "
-        f"{_DISCOVERY_LAST_YEAR}) - the drive's premise is false in this "
-        "environment"
+    return _first_fallback_matching(
+        zone,
+        "whose repeated range starts at local midnight",
+        lambda transition: transition.range_start.hour == 0 and transition.range_start.minute == 0,
     )
-    return matches[0]
 
 
 def _first_midnight_ending_fallback(zone: str) -> FallbackTransition:
     """The zone's earliest fall-back whose repeated range ends exactly at
     local midnight (24:00 DST -> 23:00 standard): the range's end is the next
     local date's first wall."""
-    matches = [
-        transition
-        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
-        if transition.range_end.hour == 0 and transition.range_end.minute == 0
-    ]
-    assert matches, (
-        f"{zone}: the installed zoneinfo holds no fall-back whose repeated "
-        f"range ends at local midnight in [{_DISCOVERY_FIRST_YEAR}, "
-        f"{_DISCOVERY_LAST_YEAR}) - the drive's premise is false in this "
-        "environment"
+    return _first_fallback_matching(
+        zone,
+        "whose repeated range ends at local midnight",
+        lambda transition: transition.range_end.hour == 0 and transition.range_end.minute == 0,
     )
-    return matches[0]
 
 
 def _first_same_day_fallback(zone: str) -> FallbackTransition:
     """The zone's earliest fall-back whose repeated range stays inside one
     local date - the same-day shape the New York drives anchor on."""
-    matches = [
-        transition
-        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
-        if transition.range_start.hour != 0 and transition.range_end.hour != 0
-    ]
-    assert matches, (
-        f"{zone}: the installed zoneinfo holds no fall-back whose repeated "
-        f"range stays inside one local date in [{_DISCOVERY_FIRST_YEAR}, "
-        f"{_DISCOVERY_LAST_YEAR}) - the drive's premise is false in this "
-        "environment"
+    return _first_fallback_matching(
+        zone,
+        "whose repeated range stays inside one local date",
+        lambda transition: transition.range_start.hour != 0 and transition.range_end.hour != 0,
     )
-    return matches[0]
 
 
 def _first_non_hour_fallback(zone: str) -> FallbackTransition:
     """The zone's earliest fall-back whose repeated range is not a whole
     number of hours wide - the non-hour repeat width the minute walk of
     ``repeated_range_bounds`` exists for."""
-    matches = [
-        transition
-        for transition in fallback_transitions(zone, _DISCOVERY_FIRST_YEAR, _DISCOVERY_LAST_YEAR)
-        if transition.width_minutes % 60 != 0
-    ]
-    assert matches, (
-        f"{zone}: the installed zoneinfo holds no fall-back whose repeated "
-        f"range is a non-hour width in [{_DISCOVERY_FIRST_YEAR}, "
-        f"{_DISCOVERY_LAST_YEAR}) - the drive's premise is false in this "
-        "environment"
+    return _first_fallback_matching(
+        zone,
+        "whose repeated range is a non-hour width",
+        lambda transition: transition.width_minutes % 60 != 0,
     )
-    return matches[0]
 
 
 class TestFoldParityBeyondNewYork:

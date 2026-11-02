@@ -140,7 +140,11 @@ def test_a_discovered_wall_is_a_plain_wall_not_a_latent_fold() -> None:
         f"{fold.range_start_fold0_utc.isoformat()}"
     )
     assert fold.range_end.fold == 0, f"{fold.zone}: range_end carries fold={fold.range_end.fold}"
-    assert fold.range_start.replace(tzinfo=tz) == fold.range_start_fold0_utc, (
+    # A fold-carrying ZoneInfo wall never compares == to a UTC rendering of
+    # either of its own resolutions (PEP 495's mixed-tzinfo comparison), so
+    # both sides normalize to UTC - the codebase's cross-zone comparison
+    # rule - before the equality.
+    assert fold.range_start.replace(tzinfo=tz).astimezone(UTC) == fold.range_start_fold0_utc, (
         f"{fold.zone}: wall {fold.range_start!s} must resolve to the "
         "pre-transition occurrence the dataclass documents"
     )
