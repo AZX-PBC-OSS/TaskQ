@@ -321,7 +321,15 @@ async def test_tc3_pool_exhaustion(pg_dsn: str) -> None:
                 name="heartbeat-tc3-exhausted",
             )
 
-            await asyncio.sleep(deps.settings.heartbeat_interval * 3)
+            # THE FAILURE'S OWN ARRIVAL (poll-with-deadline): the
+            # exhausted pool's acquire fails the tick inside its own
+            # interval bound; the poll reads the counter the loop
+            # writes, never a blind sleep racing the tick.
+            deadline = time.monotonic() + 10.0
+            while (  # noqa: ASYNC110  # Why: the bounded poll IS the seam — the counter is a plain int the loop writes, no event to await.
+                time.monotonic() < deadline and deps.heartbeat_failures < 1
+            ):
+                await asyncio.sleep(0.05)
             assert deps.heartbeat_failures >= 1, (
                 f"expected heartbeat_failures >= 1, got {deps.heartbeat_failures}"
             )
@@ -331,12 +339,21 @@ async def test_tc3_pool_exhaustion(pg_dsn: str) -> None:
                 await tick_task
 
         finally:
-            # Release all held connections
+            # Release all held connections. The release-time reset is
+            # the POOL's own hygiene (the connection's fate at test end
+            # is not this pin's subject): a reset whose budget a
+            # contended database burns times the release out, and the
+            # release's failure says nothing about the failure
+            # counter's law.
             for ctx in holders:
-                with contextlib.suppress(asyncpg.InterfaceError):
+                with contextlib.suppress(
+                    asyncpg.InterfaceError, TimeoutError, asyncio.TimeoutError
+                ):
                     await ctx.__aexit__(None, None, None)
 
-        # Next tick should succeed and reset counter
+        # Next tick should succeed and reset counter — its arrival read
+        # the same way (the poll on the counter, a deadline for the
+        # loaded case).
         deps.heartbeat_failures = 2
         shutdown2 = asyncio.Event()
         success_task = asyncio.create_task(
@@ -344,7 +361,11 @@ async def test_tc3_pool_exhaustion(pg_dsn: str) -> None:
             name="heartbeat-tc3-recovered",
         )
         try:
-            await asyncio.sleep(deps.settings.heartbeat_interval * 2)
+            deadline = time.monotonic() + 10.0
+            while (  # noqa: ASYNC110  # Why: the bounded poll on the counter — the reset's arrival is a plain int read, no event to await.
+                time.monotonic() < deadline and deps.heartbeat_failures != 0  # pyright: ignore[reportUnnecessaryComparison]  # Why: the loop's task mutates the counter concurrently; the literal's narrowing cannot see it.
+            ):
+                await asyncio.sleep(0.05)
             assert deps.heartbeat_failures == 0, (
                 f"expected counter reset to 0 after success, got {deps.heartbeat_failures}"
             )
