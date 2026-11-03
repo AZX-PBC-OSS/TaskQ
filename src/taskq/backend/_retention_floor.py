@@ -34,6 +34,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
+from weakref import WeakKeyDictionary
 
 if TYPE_CHECKING:
     from taskq.backend._protocol import ConnLike
@@ -41,6 +42,19 @@ if TYPE_CHECKING:
 __all__ = ["retention_policy_floor"]
 
 logger = logging.getLogger(__name__)
+
+# The availability gate's two pieces: the pre-check's statement (one
+# unprivileged catalog read — "is the extension installed on THIS
+# server?") and the answer's cache. The cache is keyed per CONNECTION
+# and weakly: pooled connections are long-lived, so per-connection is
+# per-pool in effect; a multi-server process (the test matrix, a
+# multi-DSN deployment) keys per server naturally; and the entry dies
+# with the connection. Extensions cannot be removed mid-connection in
+# practice, so the negative never goes stale; an AMBIGUOUS answer (the
+# pre-check itself erroring) is never cached — the next sweep re-asks.
+_TIMESCALEDB_PRESENT_PROBE_SQL = "SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'"
+
+_TIMESCALEDB_PRESENT: WeakKeyDictionary[ConnLike, bool] = WeakKeyDictionary()
 
 # One round trip answering both probe questions: is *schema.table* a
 # hypertable with a registered retention policy (the information views'
@@ -114,6 +128,13 @@ async def retention_policy_floor(
     Returns None — and the caller's sweep then runs full-range, byte-
     identical to vanilla behavior — when ANY of:
 
+    * the server has no ``timescaledb`` extension installed (the
+      availability pre-check answers before any catalog statement is
+      built; the negative is cached per connection, so a vanilla
+      deployment pays one ``pg_extension`` read, not one guaranteed-
+      failing probe per sweep),
+    * the availability pre-check itself errors (an ambiguous answer —
+      returned as None and NOT cached; the next sweep re-asks),
     * the table is not a hypertable (no row in
       ``timescaledb_information.hypertables``),
     * the hypertable carries no ``policy_retention`` job (nothing owns
@@ -124,20 +145,22 @@ async def retention_policy_floor(
       aged end with nobody deleting it,
     * the hypertable is partitioned on a column other than
       *partition_col*,
-    * the probe or the ROW PARSE fails for ANY reason — vanilla Postgres
-      above all (the ``timescaledb_information`` views do not exist there
-      and the statement raises on first execution), but also permission
-      gaps, extension upgrades, config shapes the cast cannot parse, and
-      connection wrappers whose fetched rows are not keyed the way the
-      real driver's are (a row without the ``drop_after``/``db_now`` keys
-      must read as "no answer", never as a crash).
+    * the probe or the ROW PARSE fails for ANY reason — permission
+      gaps, extension upgrades, config shapes the cast cannot parse,
+      and connection wrappers whose fetched rows are not keyed the way
+      the real driver's are (a row without the ``drop_after``/``db_now``
+      keys must read as "no answer", never as a crash).
 
-    That vanilla UndefinedTable is BY DESIGN the smoke guard's one plan
-    carve-out: ``tests/test_sql_templates_smoke_pg.py`` keeps its parse
-    teeth on this probe but excuses it from the PLAN demand vanilla cannot
-    meet (``_PLAN_ON_VANILLA_BY_DESIGN``, keyed on the statement's own
-    ``timescaledb_information.hypertables`` marker) — the probe's shape,
-    not a defect.
+    The probe's template keeps the smoke guard's one plan carve-out:
+    ``tests/test_sql_templates_smoke_pg.py`` keeps its parse teeth on
+    this probe but excuses it from the PLAN demand a server without the
+    views cannot meet (``_PLAN_ON_VANILLA_BY_DESIGN``, keyed on the
+    statement's own ``timescaledb_information.hypertables`` marker). At
+    RUNTIME the availability gate answers the absent-extension server
+    before this statement is built — the statement the guard excuses
+    never reaches a vanilla wire. The fail-open below keeps its teeth
+    for the residual shapes: the views' permission gaps, an extension
+    removed under a long-lived connection, and every parse failure.
 
     A probe or parse failure must never break a sweep: the failure is
     logged at debug and the sweep keeps today's exact behavior.  *now*
@@ -156,6 +179,40 @@ async def retention_policy_floor(
     chunk interval after the row crosses the floor — chunk granularity,
     not row precision, is the trade.
     """
+    # THE AVAILABILITY GATE: ask whether the extension is installed on
+    # this server BEFORE building the catalog statement the views'
+    # absence would fail. On a vanilla server (managed offerings
+    # included) the probe below can never succeed, and issuing it every
+    # sweep bought one guaranteed-failing round trip and one
+    # UndefinedTableError exception event per sweep, forever. The
+    # pre-check is one unprivileged catalog read whose answer is cached
+    # per connection; the fail-open contract below is unchanged, and
+    # the Timescale-present path reaches the same probe bytes as
+    # before.
+    present = _TIMESCALEDB_PRESENT.get(conn)
+    if present is None:
+        try:
+            available = await conn.fetch(_TIMESCALEDB_PRESENT_PROBE_SQL)
+        except Exception as exc:  # Why: the pre-check is part of the fail-open surface — an erroring gate is ambiguity, never an answer; it is not cached, and the next sweep re-asks.
+            logger.debug(
+                "retention_policy_floor_availability_ambiguous schema=%s table=%s error=%r",
+                schema,
+                table,
+                exc,
+            )
+            return None
+        present = bool(available)
+        _TIMESCALEDB_PRESENT[conn] = present
+        if not present:
+            logger.debug(
+                "retention_policy_floor: timescaledb not present on this server "
+                "(cached for the connection) schema=%s table=%s",
+                schema,
+                table,
+            )
+    if not present:
+        return None
+
     # The row-parse lives INSIDE the same fail-open try as the fetch:
     # the fetch and the parse are one probe, and any probe failure —
     # including the parse hitting a row shape it cannot read (no
@@ -170,7 +227,7 @@ async def retention_policy_floor(
         drop_after: timedelta = rows[0]["drop_after"]
         floor_now: datetime = now if now is not None else rows[0]["db_now"]
         return floor_now - drop_after
-    except Exception as exc:  # Why: ANY probe or parse failure must fail open to None — on vanilla Postgres this is the UndefinedTable the views' absence raises, no probe error may ever break a sweep, and a fetched row without the probe's own keys (a stub conn) reads as "no answer", not a KeyError.
+    except Exception as exc:  # Why: ANY probe or parse failure must fail open to None — no probe error may ever break a sweep (the absent-extension server is answered by the gate above; this except covers the residual shapes: the views' permission gaps, an extension removed under a long-lived connection, and a fetched row without the probe's own keys reading as "no answer", not a KeyError).
         logger.debug(
             "retention_policy_floor_probe_failed schema=%s table=%s error=%r",
             schema,

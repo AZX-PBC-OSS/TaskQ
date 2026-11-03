@@ -1318,8 +1318,9 @@ async def test_vanilla_postgres_probe_fails_open_and_sweeps_run_full_range(
     pg_dsn: str,
 ) -> None:
     """H10a, the regression pin: on vanilla Postgres the floor probe fails
-    open to None (the ``timescaledb_information`` views do not exist — the
-    probe's very first execution raises UndefinedTable and the probe
+    open to None (the availability gate asks ``pg_extension`` first — the
+    extension is not installed, the negative is cached per connection, and
+    the ``timescaledb_information`` statement is never built — the floor
     answers None, logging at debug, never raising) and both sweeps run
     FULL-RANGE, byte-identical to the pre-floor behavior: aged rows
     delete, fresh rows survive, counts exact.
