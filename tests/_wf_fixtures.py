@@ -981,8 +981,10 @@ async def expire_holds(
     pin says so. ``timer_only`` scopes to the clock's reserved prefix;
     the human gates' expiry face passes ``False``."""
     scope = "AND starts_with(signal_name, '__timer__') " if timer_only else ""
-    await conn.execute(  # Why: the schema is a fixture-derived test identifier; the value is $-bound.
-        f'UPDATE "{schema}".wf_signals SET expires_at = now() - interval \'1 second\' '
-        f"WHERE workflow_id = $1 AND status = 'held' {scope}-- the injected expiry\n",
-        flow_id,
+    await (
+        conn.execute(  # Why: the schema is a fixture-derived test identifier; the value is $-bound.
+            f"UPDATE \"{schema}\".wf_signals SET expires_at = now() - interval '1 second' "
+            f"WHERE workflow_id = $1 AND status = 'held' {scope}-- the injected expiry\n",
+            flow_id,
+        )
     )

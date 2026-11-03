@@ -818,7 +818,15 @@ async def test_dispatch_duration_is_recorded_when_the_dispatch_query_fails(
     reader = setup_meter(monkeypatch)
     monkeypatch.setattr(deps, "dispatcher_pool", statement_timeout_dispatcher_pool)
 
-    with pytest.raises(_asyncpg.PostgresError):
+    # The abort reaches this test in EITHER of its two real faces: the
+    # server's clean cancel (a PostgresError — QueryCanceledError) or the
+    # driver's own protocol wedge when the 1ms cancel lands in the
+    # statement's setup (an InternalClientError — the pool-shorting shape
+    # this pool's warm-up narrows but cannot close; the fixture's
+    # docstring). BOTH faces are the aborted round, and the pin's subject
+    # — the duration sample the product's own except records before the
+    # re-raise — is exception-type-agnostic by construction.
+    with pytest.raises((_asyncpg.PostgresError, _asyncpg.exceptions.InternalClientError)):
         await backend.dispatch_batch(
             worker_id=worker_id,
             queues=["default"],
