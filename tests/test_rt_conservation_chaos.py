@@ -630,7 +630,23 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
 
     worker_task = asyncio.create_task(_runner(), name=f"consv-s2-{trial}")
     try:
-        await asyncio.sleep(2.0)  # bootstrap: sync_actor_config persists max_pending=2
+        # Bootstrap is a row fact, not a wait: the producer-side enqueue
+        # admission reads the stored actor_config row, so the storm's
+        # premise (the cap enforced at max_pending=2) exists only once the
+        # row does.
+        bootstrap_deadline = time.monotonic() + 30.0
+        stored: int | None = None
+        while time.monotonic() < bootstrap_deadline:
+            stored = await conn.fetchval(
+                f"SELECT max_pending FROM \"{schema}\".actor_config WHERE actor = 'consv_slow'"
+            )
+            if stored == 2:
+                break
+            await asyncio.sleep(0.05)
+        assert stored == 2, (
+            "the worker's bootstrap never persisted max_pending=2: the "
+            "storm's cap premise is not in force"
+        )
 
         stack, _deps, backend = await _open_pg_backend_on_schema(pg_dsn, schema)
         try:
@@ -639,7 +655,7 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
                 await client.enqueue(consv_slow, ConsvPayload(), tags=[tag])
 
             running: int | None = None
-            deadline = time.monotonic() + 10.0
+            deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
                 running = await conn.fetchval(
                     f'SELECT count(*)::int FROM "{schema}".jobs '
@@ -663,14 +679,14 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
                 try:
                     while not stop_chaos.is_set():
                         result = await kconn.fetchval(
+                            f"WITH killed AS ("
                             f'UPDATE "{schema}".jobs SET cancel_phase = 2, '
                             "cancel_requested_at = clock_timestamp() "
                             "WHERE tags @> ARRAY[$1::text] AND status = 'running' "
-                            "RETURNING 1",
+                            "RETURNING 1) SELECT count(*)::int FROM killed",
                             tag,
                         )
-                        if result is not None:
-                            kills += 1
+                        kills += result or 0
                         await asyncio.sleep(1.0)
                 finally:
                     await kconn.close()
@@ -680,9 +696,21 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
 
             admitted = 0
             refused = 0
-            for _attempt_no in range(80):
+            # The composition runs to its own shape: four storm admissions
+            # AND two slot deaths (the abandoned rows the deaths land as),
+            # bounded by a wall deadline no loaded tick outlives. Ending on
+            # admissions alone could close the window before the second
+            # death — the composition's pacing, not the product's cap.
+            storm_deadline = time.monotonic() + 60.0
+            while time.monotonic() < storm_deadline:
                 if admitted >= 4:
-                    break
+                    abandoned_now = await conn.fetchval(
+                        f'SELECT count(*)::int FROM "{schema}".jobs '
+                        "WHERE tags @> ARRAY[$1::text] AND status = 'abandoned'",
+                        tag,
+                    )
+                    if (abandoned_now or 0) >= 2:
+                        break
                 try:
                     await client.enqueue(consv_slow, ConsvPayload(), tags=[tag])
                     admitted += 1
