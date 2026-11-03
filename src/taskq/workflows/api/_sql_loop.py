@@ -66,8 +66,8 @@ RETURNING id
 #: THE ADVANCE STATEMENT — the carry advanced EXACTLY ONCE per
 #: iteration, ATOMIC with THE CAP GUARD: advancing TO iteration i+1
 #: admits iteration i+1's spawn, so the guard refuses the advance that
-#: would START spawn #max_iterations+2 (the cap bounds TOTAL SPAWNS —
-#: the spike's cut 4): the guard lets the advance reach EXACTLY the cap
+#: would START spawn #max_iterations+2 (the cap bounds TOTAL SPAWNS):
+#: the guard lets the advance reach EXACTLY the cap
 #: (``i+1 <= max``), so the FINAL iteration runs and the metadata's
 #: counter reaches ``max`` — the state the crash window (a worker death
 #: after the final advance, before the driver's top-of-loop cap check)
@@ -109,7 +109,7 @@ RETURNING (metadata->>'iteration')::int AS iteration
 #: (STRANDED-FLOW): the loop node gets the ``iteration_cap_exhausted``
 #: state (the metadata's ``iteration_state`` + the typed failure class on
 #: the row) and the flow root FLIPS TERMINAL in the same statement — a
-#: wedged ``running`` flow that ticks forever (the spike's cut 5) is the
+#: wedged ``running`` flow that ticks forever is the
 #: rejected variant, kept RED forever. Idempotent: a terminal loop row
 #: (or a terminal flow) updates nothing.
 #:
