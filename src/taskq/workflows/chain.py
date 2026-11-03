@@ -1,7 +1,7 @@
 """THE TYPED-OUTCOME CHAIN SURFACE (T20) — the router: conditional edges
 over a step's OWN typed outcomes, total or refused.
 
-THE SPIKE'S PICKED SHAPE (PROOF.md §4 — the ergonomics bar):
+THE PICKED SHAPE (the ergonomics bar):
 
     CHAIN = Chain(
         name="application-enrichment",
@@ -250,7 +250,7 @@ class Chain:
         step-ledger's arbiter both discriminate siblings by it — the
         record's index rides EVERY row of its chain, and the child
         carries it forward. Without it, two records' children of one step
-        collide onto one row (the spike's 198 UniqueViolations).
+        collide onto one row (the measured 198 UniqueViolations).
 
         THE TRACE IS THE FORK'S OWN DOOR (the accept-and-ignore hunt's
         fix): ``next_child`` once accepted ``trace_id=`` and consumed

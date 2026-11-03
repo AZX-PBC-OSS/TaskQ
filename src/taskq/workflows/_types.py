@@ -180,7 +180,7 @@ class EmitChild:
 
     The :class:`ChildSpec` shape PLUS the per-record identity stamps the
     emit owns — BOTH REQUIRED, not defaulted: the refuted-claim
-    discipline (the spike's 198 UniqueViolations). The certified fork's
+    discipline (the measured 198 UniqueViolations). The certified fork's
     idempotency key AND the step-ledger's arbiter discriminate siblings
     by ``map_index``; the per-record ``trace_id`` is the one-query
     lineage (the recorded failure-down by trace). The fork's ``trace_id`` is

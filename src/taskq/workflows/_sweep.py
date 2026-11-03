@@ -17,9 +17,9 @@ write. SET-BASED, NOT N+1: ONE batched statement (the per-join round-trip
 variant is the fanout proof's crime; its MEASURED cost curve —
 14.9 ms @ 200 joins, the unscoped seq-scan monster 83.7 ms @ 75k — is
 the CITED-IMPORT artifact
-(``.measurements/runs/sweep-cost-scale-curve-*.json``): the spike's
-session evidence directory is gone; the imported record IS the
-provenance. The scope pin
+(``.measurements/runs/sweep-cost-scale-curve-*.json``): the
+originating session's evidence directory is gone; the imported record IS
+the provenance. The scope pin
 rejects the unscoped shape. An earlier revision of this comment cited
 the per-join variant at a p50/p95 figure for which no
 capture exists; the dead figure is DELETED — provenance or
@@ -890,8 +890,8 @@ async def sweep_loop_budget(
     Exhaustion = the NAMED state (``iteration_cap_exhausted`` /
     ``budget_exhausted`` in the loop's metadata + the typed failure
     class) and the FLOW TERMINALIZES IN THE SAME TRANSACTION
-    (STRANDED-FLOW — the spike's cut 5: a wedged ``running`` flow that
-    ticks forever is the rejected variant). The escalation outbox row
+    (STRANDED-FLOW — a wedged ``running`` flow that ticks forever is
+    the rejected variant). The escalation outbox row
     (``on_exhausted="escalate"``) rides the same tx — no second delivery
     mechanism. §22.6's exclusivity: the arm never touches a reclaim-owned
     row; the clock comparison is PG's own (the DB-clock doctrine).

@@ -16,7 +16,7 @@ carry advanced at hold/retry time is the optimistic-apply dragon (the
 double-apply/lost-apply variants) — the advance runs in the owning
 iteration's terminal tx, never earlier.
 
-THE TWO WALLS ARE DIFFERENT (the spike's cut 4): the ITERATION CAP
+THE TWO WALLS ARE DIFFERENT: the ITERATION CAP
 bounds total spawns regardless of time; the BUDGET (``budget_s``) is
 the TIME wall — and it is BLIND while the loop holds on a human
 (``budget_paused`` — the budget sweep's arm carries ``AND NOT
@@ -114,9 +114,8 @@ class Refine[T]:
 
 #: The ``until=`` predicate's TYPE (the fanout proof's, hit live):
 #: ``Callable[[], Awaitable[bool]]`` — AWAITED by the driver. A bare sync
-#: closure returning a coroutine object is TRUTHY (the spike's cancel
-#: test cancelled an IDLE flow — proving nothing); the predicate is
-#: awaited, never trusted as a value.
+#: closure returning a coroutine object is TRUTHY — a value the
+#: driver must never trust; the predicate is awaited.
 UntilPredicate = Callable[[], Awaitable[bool]]
 
 

@@ -33,7 +33,7 @@ never its mates), and the deterministic route terminalizes the source.
 The ceiling is per-map-index, NOT per-run.
 
 THE STATEMENT-WINDOW KILL PINS: ``emit_batch`` accepts ``_window_hook``
-(the attack suite's seam — the spike's storm drove the same hook), fired
+(the attack suite's seam), fired
 after EACH statement with ``emit:{1|2|3}``; the pins terminate the
 backend there (a real server-side kill) and prove zero re-emitted, zero
 lost children.
@@ -385,7 +385,7 @@ async def emit_batch(
                 "emit stamps map_index per record (the discriminator the "
                 "fork's idempotency key and the ledger's arbiter both "
                 "ride); without it every record's children collide onto "
-                "one row (the spike's 198 UniqueViolations)"
+                "one row (the measured 198 UniqueViolations)"
             )
         if not child.trace_id:
             raise ValueError(

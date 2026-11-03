@@ -262,7 +262,7 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 # re-pends the source (it never finalized), the re-claim re-emits exactly
 # the lost page.
 #
-# THE REFUTED-CLAIM DISCIPLINE (the spike's 198 UniqueViolations — the
+# THE REFUTED-CLAIM DISCIPLINE (the measured 198 UniqueViolations — the
 # design's proof the discriminator is load-bearing): the children's
 # idempotency keys are PARENT-SCOPED at the EMIT scope
 # (``wf:{flow}:emit:{map_index}:{step}``) and carry the per-child
