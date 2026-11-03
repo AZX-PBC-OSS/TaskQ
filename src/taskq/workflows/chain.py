@@ -1,4 +1,4 @@
-"""THE TYPED-OUTCOME CHAIN SURFACE (T20) — the router: conditional edges
+"""THE TYPED-OUTCOME CHAIN SURFACE — the router: conditional edges
 over a step's OWN typed outcomes, total or refused.
 
 THE PICKED SHAPE (the ergonomics bar):
@@ -73,7 +73,7 @@ def type_tag(cls: type) -> str:
     canonical ``module.qualname`` — the tag the router matches a body's
     returned ELEMENT against (``type(element)``), and the tag the
     declaration's totality check compares the route's keys to. PUBLIC
-    since T27: the graph-level typed route (``api/_graph.route``) shares
+    since the graph-level typed route landed: the graph-level typed route (``api/_graph.route``) shares
     the tag — the dispatch key is ONE vocabulary at both levels (the
     chain's steps and the graph's arms route the same union the same
     way)."""

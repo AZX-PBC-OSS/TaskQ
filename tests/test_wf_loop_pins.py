@@ -593,7 +593,7 @@ async def test_carry_optimistic_apply_dragon_red_forever(
 async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Spike1's subject at the composition (the loop drive bound x the hold machinery): a loop iteration
+    """THE COMPOSITION'S OWN SUBJECT (the loop drive bound x the hold machinery): a loop iteration
     that HOLDS — the loop node's budget PAUSES (the wall is blind), the
     operator's approval RESUMES (the pause lifts, the remaining is the
     on-wake read), the loop COMPLETES — zero budget_exhausted events,

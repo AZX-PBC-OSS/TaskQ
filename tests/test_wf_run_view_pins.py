@@ -699,13 +699,12 @@ def test_9_e10_counts_the_actual_params() -> None:
     * a REAL mismatch refuses AND the message names the REAL arity
       ("takes 2 param(s)"), never the annotated count.
 
-    THE WIRING NOTE (the run-view fix's reconciliation): leg 2's body
-    wired ONE arg was a real mismatch when this pin was cut, but the
-    consolidated head's E10/E12 partition (5402a4b8) reclassified the
-    exactly-one-param-beyond-the-wiring shape as the DEPS class — E12's
-    contract, not E10's arity. E10 owns TWO-OR-MORE beyond the wiring,
-    so leg 2 wires ZERO args: still a real mismatch, still the
-    signature's numbers in the message.
+    THE WIRING NOTE (the run-view fix's reconciliation): the
+    exactly-one-param-beyond-the-wiring shape belongs to the DEPS class
+    — E12's contract, not E10's arity (the rules' own partition of the
+    arity surface). E10 owns TWO-OR-MORE beyond the wiring, so leg 2
+    wires ZERO args: still a real mismatch, still the signature's
+    numbers in the message.
 
     TODAY both legs reject: the runnable shape is refused, and the
     refusal's message reports 0 params for a 2-param body."""
@@ -897,13 +896,11 @@ def test_11_the_bad_source_declaration_still_refuses_loudly() -> None:
     rule id in the record, and no cohort for it projects. A fix that
     instead SILENCED the arity rules would flip this red.
 
-    THE RULE ID (the run-view fix's reconciliation): at the pack's cut
-    the record named ``E10-arity``; the consolidated head's E10/E12
-    partition (5402a4b8) reclassified the exactly-one-param-beyond-the-
-    wiring shape as the DEPS class — the refusal now names
-    ``E12-deps-contract`` (the same loudness, the rule that OWNS the
-    shape, the message still naming the fix). The guard follows the
-    owner."""
+    THE RULE ID (the run-view fix's reconciliation): the exactly-one-
+    param-beyond-the-wiring shape belongs to the DEPS class — the
+    refusal names ``E12-deps-contract`` (the same loudness, the rule
+    that OWNS the shape, the message still naming the fix). The guard
+    follows the owner."""
     import enum
     from unittest.mock import patch
 

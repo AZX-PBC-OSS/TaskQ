@@ -1,4 +1,4 @@
-"""THE HITL LISTENER (T26): the typed, public face over the approval
+"""THE HITL LISTENER: the typed, public face over the approval
 broadcast — ONE dedicated connection, LISTEN → BACKFILL → TAIL — fanning
 out to N concurrent subscribers.
 
@@ -16,7 +16,7 @@ holds at the knock). A consumer that misses everything still converges
 by polling ``HitlClient.list(run=…)``; the listener buys LATENCY, never
 correctness.
 
-THE RECONNECT RECONCILE (T26's fourth union member — the hostile
+THE RECONNECT RECONCILE (the fourth union member — the hostile
 contract): a hold RESOLVED or EXPIRED while the listener was down
 never announces its own death (the notify went to no one — the
 connection was not listening). So every (re)backfill ends with ONE
@@ -67,7 +67,7 @@ the guide's HITL section carries the same four):
    Never promise a precise 120 s: the expiry is a floor, and the
    fail-close is the guarantee, not the stopwatch.
 
-THE CHANNELS ARE GLOBAL; THE SCHEMA RIDES THE PAYLOAD (T26's read:
+THE CHANNELS ARE GLOBAL; THE SCHEMA RIDES THE PAYLOAD (the read:
 ``pg_notify`` is per-database and the schema-per-module estate shares
 one database across many schemas — the listener filters by the
 payload's ``schema`` field, never by channel arithmetic; that payload
@@ -168,7 +168,7 @@ class HoldExpired(BaseModel):
 
 
 class Backfilled(BaseModel):
-    """THE RECONNECT-RECONCILE SNAPSHOT (T26's fourth union member —
+    """THE RECONNECT-RECONCILE SNAPSHOT (the fourth union member —
     the reconcile event's contract): emitted after EVERY (re)backfill, carrying
     the OPEN hold ids the ROWS witness right now (this schema's still-
     ``held`` rows). The consumer drops any open card the snapshot
@@ -200,7 +200,7 @@ type _Conn = asyncpg.Connection | PoolConnectionProxy
 
 class HitlListener:
     """THE TYPED LISTENER (public — the SSE face and programmatic
-    consumers share it), DIRECTLY ASYNC-ITERABLE (T26's amendment — no
+    consumers share it), DIRECTLY ASYNC-ITERABLE (the amendment — no
     ceremony between the author and the events):
 
     >>> listener = HitlListener(pool, schema)
@@ -294,7 +294,7 @@ class HitlListener:
     # ── the surfaces ─────────────────────────────────────────────────
 
     def __aiter__(self) -> AsyncGenerator[HoldEvent, None]:
-        """THE CEREMONY-FREE FORM (T26's amendment): ``async for event
+        """THE CEREMONY-FREE FORM: ``async for event
         in listener:`` — the typed stream directly; no ``.events()``
         lookup between the author and the events. The keepalive form
         stays on :meth:`frames` (the SSE face's)."""
@@ -310,7 +310,7 @@ class HitlListener:
                 yield event
 
     async def holds(self, run: JobId | str) -> AsyncGenerator[HoldEvent, None]:
-        """THE TYPED FILTER (T26's amendment): one run's events —
+        """THE TYPED FILTER (the amendment): one run's events —
         ``listener.holds(run=flow_id)`` — the approval stream for ONE
         flow, typed. The unfiltered stream still flows (the raw tail's
         surface: every schema-routed event reaches it). The
@@ -430,7 +430,7 @@ class HitlListener:
         """The OPEN holds, FROM THE ROWS (the snapshot the zero-window
         law leans on): every still-``held`` row in the schema becomes a
         ``HoldCreated(source="backfill")`` — including a hold created
-        BEFORE this listener existed (pin T26-P2). The snapshot's ids
+        BEFORE this listener existed. The snapshot's ids
         enter the dedup set: their own (already-queued) notifies yield
         nothing. AND THE RECONCILE (the fourth member — the reconcile fix):
         after the snapshot's creations, ONE :class:`Backfilled` event
@@ -513,7 +513,7 @@ class HitlListener:
         if channel == HOLD_CREATED_CHANNEL:
             # THE DEDUP (the zero-window's other half): a hold the
             # backfill already announced yields nothing — one id, ONE
-            # created event per connection (pin T26-P2's dedup leg).
+            # created event per connection (the snapshot's dedup leg).
             if hold_id in self._backfilled:
                 self._backfilled.discard(hold_id)
                 return None

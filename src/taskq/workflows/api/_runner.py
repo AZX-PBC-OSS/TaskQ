@@ -1,4 +1,4 @@
-"""The flow RUNNER (T09): lowers a :class:`CompiledWorkflow` into the
+"""The flow RUNNER: lowers a :class:`CompiledWorkflow` into the
 engine's rows and drives them — ``create_flow(spec, input)`` (the
 run carries its input, cross-flow data never dies in a Python closure),
 the dispatch loop whose bodies resolve FROM THE REGISTERED DEFINITION
@@ -14,7 +14,7 @@ grant of work, P3 rule 2); the body runs with the DECODED parent results
 (jsonb decoded ONCE); the finalize is the engine's own
 ``finalize_node`` (the two-tx shape unchanged). A body exception ladders:
 attempt failures emit NO terminal (P3 rule 7) — the node re-pends with
-backoff until ``max_attempts``, then terminal-fails and T06's propagation
+backoff until ``max_attempts``, then terminal-fails and the failed-parent propagation
 takes over (the cascade / the collect fan-in, per the edges' declared
 policy).
 
@@ -30,8 +30,8 @@ seams are the engine's own sweeps/fences/dispatch shape):
 * ``_runner_errors`` — :class:`WorkflowRunError` (the loud refusal);
 * ``_ctx`` / ``_ctx_wait`` — the body's runtime context + the HITL
   wait/deliver machinery;
-* ``_runner_loop`` — the T19 loop driver (the machinery + the reclaim);
-* ``_runner_chain`` — the T20 chain step's routed finalize;
+* ``_runner_loop`` — the loop driver (the machinery + the reclaim);
+* ``_runner_chain`` — the chain step's routed finalize;
 * ``_runner_ladder`` — the retry ladder + the failure-class classifier;
 * ``_runner_exit`` — §17.1's typed early-exit + §17.2's manual resume;
 * ``_runner`` (this module) — the driving loop: create, dispatch,
@@ -284,14 +284,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # checkpoint) then names the worker that actually holds the row
         # (the fleet-claimed door, _worker_execution).
         self._worker_id = worker_id if worker_id is not None else JobId(new_uuid())
-        # THE ROUTER'S RESOLUTION (T20): the workflow's declared chains —
+        # THE ROUTER'S RESOLUTION: the workflow's declared chains —
         # a chain STEP row (fork-spawned or emitted) has no compiled
         # NodeDecl; its route resolves from HERE (the compiled chain),
         # its body from the registry (D1).
         self._chain_steps: dict[str, Any] = {
             step_key: chain for chain in getattr(compiled, "chains", ()) for step_key in chain.steps
         }
-        # THE DESCENDANT RUNNERS' CACHE (T28 — the child flows): the
+        # THE DESCENDANT RUNNERS' CACHE (the child flows): the
         # child flow's runner resolved ONCE per drive (the root's
         # stamped workflow name → the compile registry).
         self._child_runners: dict[str, FlowRunner] = {}
@@ -367,7 +367,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
          orphan that could ever exist (a future statement-order
          regression's debris) past the grace.
 
-         THE PROVENANCE STAMPS (T28 — the child flows' identity):
+         THE PROVENANCE STAMPS (the child flows' identity):
          *root_metadata_extra* rides the SAME create transaction (the
          child root's parent pointers land ATOMICALLY with the root —
          never a post-create UPDATE that would re-open the orphan window
@@ -685,7 +685,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         """One dispatch pass: claim + run + finalize every claimable node
         (``execute=True`` — the dev-loop driver); then the sweep arms
         (the crash-window heal + the outbox drain + the DURABLE TIMER's
-        fire — T28: the dev loop's timer arm mirrors the leader's, so a
+        fire — the dev loop's timer arm mirrors the leader's, so a
         timer flow completes in-process exactly as it completes on the
         fleet). With ``execute=False`` the sweep arms only — the
         orchestration-only pass. Returns whether ANY node ran."""
@@ -694,7 +694,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             for row in await self._claimable(flow_id):
                 ran = True
                 await self._run_node(flow_id, row)
-            # THE DESCENDANT FLOWS (T28 — the child flows): the child is
+            # THE DESCENDANT FLOWS (the child flows): the child is
             # a REAL flow — the dev-loop driver walks the receipts and
             # claims its rows too (the fleet door needs nothing: the
             # child's rows are queue-dispatched like any flow's).
@@ -702,7 +702,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         from taskq.workflows._sweep import drain_outbox, sweep_join_rederive
 
         await sweep_join_rederive(self.pool, self.wsql)
-        # THE CHILD-JOIN WAKE (T28): the child's terminal is the join
+        # THE CHILD-JOIN WAKE: the child's terminal is the join
         # hold's resolver — the arm runs AFTER the root-maintain leg (a
         # child terminalized THIS tick wakes its waiter THIS tick).
         from taskq.workflows.api._hitl import sweep_child_joins
@@ -727,7 +727,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
 
     async def _drive_descendants(self, flow_id: JobId, *, execute: bool) -> bool:
         """The descendant flows' one claim pass (the dev-loop driver's
-        face — T28): the receipts' recursive walk (the UNION's dedup
+        face): the receipts' recursive walk (the UNION's dedup
         terminates it), each descendant's claimable nodes run through
         ITS OWN runner (the child's compiled graph resolves its bodies
         and args — never the parent's)."""
@@ -802,7 +802,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             # zombie). Now the node is CLAIMED (the attempt's ledger row
             # exists — the record's truth) and routed through the
             # ladder, whose DETERMINISTIC route terminal-fails it on the
-            # first attempt with the typed class on the record; T06's
+            # first attempt with the typed class on the record; the
             # propagation fails the root. The driver never raises; the
             # rows tell the operator the truth.
             await self._fail_vanished_node(flow_id, row, exc)
@@ -810,7 +810,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # THE CLAIM (two fenced writes, one grant of work): the JOB row
         # goes running under this worker (the attempt increments — the
         # fence's token), and the LEDGER claim inserts the attempt's
-        # running row (T05's contract — the terminal write keys the
+        # running row (the contract — the terminal write keys the
         # claim's own row; a skipped ledger claim strands the terminal).
         ledger_id: JobId | None = None
         ledger_claimed_at: Any = None
@@ -867,7 +867,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         key the registry does not carry), so the ladder's deterministic
         route terminal-fails the node ON THE FIRST ATTEMPT with the typed
         class + the cancel-then-restart remedy on the record, the ladder
-        unburned; T06's propagation fails the root.
+        unburned; the failed-parent propagation fails the root.
 
         A lost CAS (a peer claimed the row first — or the flow died)
         touches nothing: the winner's own drive owns the verdict."""
@@ -984,7 +984,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # WorkflowBodyUnresolvableError parking (the loud, budget-free
         # snooze) and the fleet's OTHER workers — the new deploy's
         # rolling wave — re-claim and finish the run. This is the skew
-        # face, deliberately NOT T6's terminal: the dev drive
+        # face, deliberately NOT the terminal-fail door: the dev drive
         # (:meth:`_run_node`) is the workflow-OWNING process (no other
         # resolver exists — the vanished key is the run's own wedge, and
         # THAT door terminal-fails loudly); the fleet worker is one
@@ -1116,7 +1116,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # authoring surface).
         from taskq.worker._handlers import _StartToCloseExceededError
 
-        # THE PER-ATTEMPT CODE-VERSION RECORD (T03 — the deploy
+        # THE PER-ATTEMPT CODE-VERSION RECORD (the deploy
         # matrix's audit fix): the record is "written at claim by the
         # workflow claim path" — every claim's execution stamps the
         # row's ``code_version`` with the body's canonical content hash,
@@ -1125,7 +1125,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         # hash failure is a logged loss, never a node failure.
         await self._stamp_code_version(JobId(row["id"]), row["step_key"], node, body)
 
-        # THE AUTO PROJECTION — STARTED (T21 decision b): the claim seam's
+        # THE AUTO PROJECTION — STARTED: the claim seam's
         # additive write, class='auto', the ONE stream. Best-effort: a
         # lost projection is a logged freshness loss, never a node
         # failure (the asymmetry — the projection never runs inside the
@@ -1147,7 +1147,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             await self._finalize_skipped(flow_id, row, node, claim_epoch=claim_epoch)
             return "skipped"
 
-        # THE EMISSION OP's BUFFER (T21): the attempt's own emitter — the
+        # THE EMISSION OP's BUFFER: the attempt's own emitter — the
         # declared progress schema rides the node's decl (a MAP CHILD
         # inherits its source's: the fork-spawned keys have no decl of
         # their own).
@@ -1159,7 +1159,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             schema_decl=self._progress_schema(row["step_key"], node),
         )
 
-        # THE LOOP NODE (T19): the driver owns the node's lifecycle
+        # THE LOOP NODE: the driver owns the node's lifecycle
         # (the iterations, the walls) — the caller's body path never
         # runs for it. The emitter rides in; the driver's ctx gets it,
         # and the close is THIS call's finally (bounded, best-effort —
@@ -1181,7 +1181,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             return "loop"
 
         route_fork: ForkSpec | None = (
-            None  # the typed route's prebuilt fork (T27 — the body path builds it from the LIVE elements)
+            None  # the typed route's prebuilt fork (the body path builds it from the LIVE elements)
         )
 
         # THE RESULT'S BINDING (the tail's read): the miss path's
@@ -1204,7 +1204,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             redact=self._redact_hook(),
             progress=emitter,
             claim_epoch=claim_epoch,
-            # THE MAX-IN-FLIGHT BOUND (T20): the RUN's declared
+            # THE MAX-IN-FLIGHT BOUND: the RUN's declared
             # admission control, handed to every ctx.emit_batch — the
             # workflow-level declare's runtime wiring.
             max_in_flight=getattr(self.compiled, "max_in_flight", None),
@@ -1232,7 +1232,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             payload_doc: dict[str, object] = payload  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the seed wrote the shape; the assert is the runtime check.
             args = self._resolve_args(node, body, parents_by_key, payload_doc)
 
-            # THE CROSS-RUN CACHE'S CLAIM-PATH SEAM (T25 — the TEMPORAL
+            # THE CROSS-RUN CACHE'S CLAIM-PATH SEAM (the TEMPORAL
             # dedup; the arbiter owns the CONCURRENT one). Opt-in per
             # step (``cache=``), the PLAIN step face only: the address
             # is the Nix-style recursive hash — the body's §22.1
@@ -1337,7 +1337,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     )
                 chain = self._chain_steps.get(row["step_key"])
                 if chain is not None:
-                    # THE CHAIN STEP (T20): the body's typed outcome IS
+                    # THE CHAIN STEP: the body's typed outcome IS
                     # the router's decision — the finalize routes it (at
                     # most one forked child, no join). The engine's
                     # fork-at-finalize machinery owns the child row; the
@@ -1363,13 +1363,13 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     )
                     return "succeeded"
                 if node is not None and node.map_arms is not None:
-                    # THE TYPED ROUTE'S ARM DISPATCH (T27) — on the LIVE
+                    # THE TYPED ROUTE'S ARM DISPATCH — on the LIVE
                     # elements (the runtime TYPE is the dispatch key; the
                     # encoded envelope's dicts arrive too late). The
                     # no-arm element is the LOUD death (the chain face's
                     # shape): terminal-FAILED with
                     # ``error_class='RouterNotTotal'``, NOTHING routes —
-                    # the skip-silent shape is dead (T27's R1).
+                    # the skip-silent shape is dead.
                     from taskq.workflows.chain import RouterNotTotal
 
                     try:
@@ -1401,7 +1401,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                         return "succeeded"
                 result = encode_result(outcome_value)
         except NodeHeldError as held:
-            # THE HOLD (T10): the node rests in the held representation
+            # THE HOLD: the node rests in the held representation
             # (pending + the deadline + the signal row as truth) — NO
             # terminal, NO ledger failure; the resume re-executes the
             # body from the top. The runner's tick reports it ran. The
@@ -1563,7 +1563,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 )
                 record_step_laddered(trace.get_current_span(), exc, retried=route == "retried")
                 return "laddered"
-            # THE SUCCESS-ONLY STORE (T25): the miss ran the body — the
+            # THE SUCCESS-ONLY STORE: the miss ran the body — the
             # cache fill happens ONLY on the terminal that actually landed
             # (a fenced write is a zombie's, never a terminal-succeeded).
             # The CAS inside the store keeps ONE winner per address.
@@ -1576,7 +1576,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             raise
 
     async def _stamp_code_version(self, job_id: JobId, node_key: str, node: Any, body: Any) -> None:
-        """The per-attempt ``code_version`` record's write (T03/§22.1):
+        """The per-attempt ``code_version`` record's write (§22.1):
         the claim's own stamp — the body's canonical content hash onto
         the row. Best-effort (a record, never a gate): a body the hash
         cannot read (a builtin, a partial) records as NULL, the loss
@@ -1606,7 +1606,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     def _body_code_version(self, node_key: str, node: Any, body: Any) -> str | None:
         """The body's canonical hash — the pure computation the
         per-attempt RECORD's write (above) and the cross-run cache's
-        ADDRESS (T25) both consume; ``None`` when the hash cannot read
+        ADDRESS both consume; ``None`` when the hash cannot read
         the body (a builtin, a partial, an unreadable source): the
         record's loss is logged, and an UNADDRESSABLE body caches
         NOTHING (the cache seam decides — a key that cannot be
@@ -1663,10 +1663,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             return None
 
     def _progress_schema(self, node_key: str, node: Any) -> type[BaseModel] | None:
-        """The node's DECLARED progress payload schema (T21 decision a):
+        """The node's DECLARED progress payload schema:
         the node's own decl; a MAP CHILD (the fork-spawned ``<src>.item``
         keys — no decl of their own) inherits its SOURCE's declaration;
-        a ROUTE child (the fork-spawned ``<src>.item:<type-tag>``, T27)
+        a ROUTE child (the fork-spawned ``<src>.item:<type-tag>``)
         inherits the same way (the ``.item:`` segment is the derived
         namespace's marker)."""
         if node is not None and getattr(node, "progress_schema", None) is not None:
@@ -1843,7 +1843,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         reason: str | None = None,
         principal: Any = None,
     ) -> int:
-        """P3 rule 4's cancel (T10): ONE transaction per run — the flow
+        """P3 rule 4's cancel: ONE transaction per run — the flow
         flip is the linearization point; every non-terminal node + held
         signal resolves in the same snapshot; running children take the
         existing two-phase cooperative cancel; terminal rows untouched;
@@ -1878,7 +1878,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         run_priority: int | None = None,
     ) -> FinalizeResult:
         """The success finalize (the fenced terminal + the ledger row +
-        the fork): the FinalizeResult is RETURNED now (T25) — the
+        the fork): the FinalizeResult is RETURNED now — the
         cross-run cache's SUCCESS-ONLY store and the hit path's receipt
         merge both key on ``applied`` (a fenced write is a zombie's,
         never a terminal-succeeded). ``run_priority`` threads the RUN's
@@ -1888,7 +1888,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         if node is not None and node.map_item is not None:
             fork = self._map_fork(row, node, result, run_priority=run_priority)
         elif node is not None and node.map_arms is not None and prebuilt_route_fork is not None:
-            # THE TYPED ROUTE'S FORK (T27) — built at the body path from
+            # THE TYPED ROUTE'S FORK — built at the body path from
             # the LIVE elements (the arm dispatch reads the element's
             # runtime TYPE; the encoded envelope's dicts cannot).
             fork = prebuilt_route_fork
@@ -1906,7 +1906,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             fork=fork,
             map_index=row["map_index"],
         )
-        # THE AUTO PROJECTION — TERMINAL (T21 decision b): the finalize
+        # THE AUTO PROJECTION — TERMINAL: the finalize
         # seam's additive write, AFTER the two-tx finalize returned (the
         # projection is never inside the finalize's transactions — the
         # zero-finalize-changes probe pins the terminal-mark statement's
@@ -1950,7 +1950,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     async def _store_step_result(
         self, address: str, result: dict[str, object], flow_id: JobId, node_key: str
     ) -> None:
-        """THE SUCCESS-ONLY STORE (T25): the terminal-succeeded body's
+        """THE SUCCESS-ONLY STORE: the terminal-succeeded body's
         result fills the cache — the CAS inside keeps ONE winner per
         address (a fresh winner never loses its row; an expired corpse
         is re-filled). Best-effort (the projection's asymmetry): a lost
@@ -1992,7 +1992,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     async def _write_cache_receipt(
         self, job_id: JobId, node_key: str, flow_id: JobId, hit: CachedStep
     ) -> None:
-        """THE RECEIPT'S WRITE (T25): the hit run's node row carries the
+        """THE RECEIPT'S WRITE: the hit run's node row carries the
         provenance (the address + the producing run's id + the store
         instant) in its metadata. Best-effort (the projection's
         asymmetry — a lost receipt is a logged freshness loss, never a
@@ -2056,7 +2056,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
     async def _project_auto(
         self, flow_id: JobId, node_id: JobId, kind: str, payload: dict[str, Any]
     ) -> None:
-        """One auto-class projection, best-effort (T21 decision e): a lost
+        """One auto-class projection, best-effort: a lost
         projection is a FRESHNESS loss — counted and warned, never raised
         into the node's path."""
         try:
@@ -2181,7 +2181,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 payload={},
                 # THE CONSUMER'S OWN EDGE POLICY (the map-join consumption
                 # fix): the fork writes the join→consumer edge with it —
-                # T06's propagation reads the policy off the ledger when
+                # the failed-parent propagation reads the policy off the ledger when
                 # the JOIN terminal-fails.
                 failure_policy=self.compiled.nodes[downstream].on_failure,
                 # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
@@ -2276,7 +2276,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         *,
         run_priority: int | None = None,
     ) -> ForkSpec | None:
-        """THE TYPED ROUTE'S FORK (T27 — the map fork's arm-dispatch
+        """THE TYPED ROUTE'S FORK (the map fork's arm-dispatch
         sibling): the source's body returned the elements' LIST; each
         element's RUNTIME type tag picks its arm and the fork stamps the
         child's own derived step key (``<source>.item:<type-tag>`` — the
@@ -2358,7 +2358,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                 payload={},
                 # THE CONSUMER'S OWN EDGE POLICY (the map-join consumption
                 # fix): the fork writes the join→consumer EDGE with it —
-                # T06's propagation reads the policy off the ledger when
+                # the failed-parent propagation reads the policy off the ledger when
                 # the JOIN terminal-fails.
                 failure_policy=self.compiled.nodes[downstream].on_failure,
                 # THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close
@@ -2382,7 +2382,7 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     "members): this is a defect, not a dead end — the body "
                     "lied about its union, or the union drifted from the "
                     "route. NOTHING routes: the run fails loudly (the "
-                    "skip-silent shape is dead — T27's R1)."
+                    "skip-silent shape is dead)."
                 )
             children.append(
                 ChildSpec(

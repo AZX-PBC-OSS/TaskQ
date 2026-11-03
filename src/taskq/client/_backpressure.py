@@ -1,4 +1,4 @@
-"""The backpressure read's orchestration (issue #670).
+"""The backpressure read's orchestration.
 
 A read-only typed read on the submit path, mirroring the reader-method
 precedent (``get_row`` / ``list``): one call, one typed

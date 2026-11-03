@@ -692,7 +692,7 @@ until one returns. Confirm the death: taskq job events <id>
 
 The distinction is the 3am question's answer: a `running` row whose lease is fresh is work in progress; a `running` row whose lease has lapsed has a dead holder. The reclaim sweep writes one `job_events` row per reclaimed job (`state_change`, `reason: lock_expired`, carrying the dead worker's id), so `taskq job events` confirms the death from the record. A terminal row prints no lease face — its lease columns are history, not liveness.
 
-**The cache-hit receipt.** A workflow node whose result came from the cross-run step cache (T25 — the body never executed; an earlier run's result was delivered) prints the receipt the row carries at `metadata.wf_cache_hit`:
+**The cache-hit receipt.** A workflow node whose result came from the cross-run step cache (the body never executed; an earlier run's result was delivered) prints the receipt the row carries at `metadata.wf_cache_hit`:
 
 ```
 cache_hit: the body did NOT run — an earlier run's cached result was delivered (source: the jobs row's metadata.wf_cache_hit)

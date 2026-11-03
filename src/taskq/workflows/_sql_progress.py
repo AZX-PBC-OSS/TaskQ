@@ -1,4 +1,4 @@
-"""The workflow progress statement constants (T21) — the two-channel
+"""The workflow progress statement constants — the two-channel
 persistence's named surface.
 
 THE BUNDLE DISCIPLINE (, ``_sql.py``'s docstring applies
@@ -8,7 +8,7 @@ value (validated at :meth:`WorkflowSql.build`); every caller-controlled
 value uses asyncpg ``$N`` positional parameter binding (the JSONB-landmine
 rule).
 
-THE TEN STATEMENTS (the PoC's PROVEN enumeration — T21's engine needs,
+THE TEN STATEMENTS (the PoC's PROVEN enumeration — the progress engine needs,
 ported verbatim from the proof's shape):
 
 1.  ``PROGRESS_STATE_UPSERT_SQL`` — the STATE channel: latest-wins +
@@ -27,7 +27,7 @@ ported verbatim from the proof's shape):
     children's RESULT rows — a READ; the fn runs at read time; no join).
 
 The eleventh read — the map's progress line — is NOT new: it is the
-CERTIFIED ``WORKFLOW_MAP_PROGRESS_SQL`` (T08) LEFT JOINed to the state
+CERTIFIED ``WORKFLOW_MAP_PROGRESS_SQL`` LEFT JOINed to the state
 channel (the consolidation is the point; the grouped read and the
 progress line are one read, never a second instrument).
 """

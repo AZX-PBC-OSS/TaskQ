@@ -275,7 +275,8 @@ def _bound_untyped_subject(raw: str) -> str:
     is by contract the identity field, and over-redacting identity is its
     own falsification -- but not the DETECTION: the same mask chain runs
     on the subject and a credential-shaped one is logged with the same
-    loud event, so the operator learns of the leak either way (#463). A
+    loud event, so the operator learns of the leak either way (the
+    redact-and-log binding). A
     HOSTILE ``.subject`` is still bounded and control-escaped by
     :func:`_bound_subject`.
     """

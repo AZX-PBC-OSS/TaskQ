@@ -1,4 +1,4 @@
-"""The workflow status derivation + the rows-only reconstruction (T08).
+"""The workflow status derivation + the rows-only reconstruction.
 
 THE DERIVATION TABLE — the workflow-level status derived from the
 NODE statuses, precedence applied IN ORDER. No status cache exists to
@@ -8,7 +8,7 @@ derivation's corollary — the status can be RECONSTRUCTED from rows alone;
 there is no cache, only rows to re-read).
 
 THE ABSORBED-FAILURE CLAUSE COMES FIRST (the clause that
-makes T06's gate and T07's maybe pin hold): a ``failed`` node whose
+makes the fail-closed gate and the maybe policy hold): a ``failed`` node whose
 failure was ABSORBED by its edge's declared policy (``collect``, or a
 ``maybe`` edge — the edge ledger records the policy; the join row's
 ``failures`` array records the absorption) derives through its PARENT'S
@@ -23,7 +23,7 @@ join-wait = ``pending`` + ``deps_pending > 0``; held = ``pending`` + the
 ``pending_join`` status exists to group — both are pending-row
 representations, derived to ``blocked`` here.
 
-THE TERMINAL-CRASH CLASS (T20/T21's crashed-terminal wedge — the
+THE TERMINAL-CRASH CLASS (the crashed-terminal wedge — the
 semantics decision, the design law): a jobs row in status ``crashed`` or
 ``abandoned`` is TERMINAL-FOR-REAL, and the derivation folds it into the
 FAILED-CLASS terminal. THE WHY: the state machine's totality table gives
@@ -90,14 +90,14 @@ _TERMINAL_CRASH_CLASS: Final[frozenset[str]] = frozenset({"crashed", "abandoned"
 @dataclass(frozen=True, slots=True)
 class NodeView:
     """One node's derived view — the per-node rollup row's inputs plus the
-    pending-row shapes (T08's canonical vocabulary):
+    pending-row shapes (the canonical vocabulary):
 
     * ``status`` — the jobs row's status;
     * ``deps_pending`` — the join counter (join-wait = pending + > 0);
     * ``blocking_reason`` — the row's metadata.blocking_reason (a
       blocked-with-reason row: orphan_parent / failed_parent /
       body_unavailable);
-    * ``held`` — the held-row representation (T03: pending + the
+    * ``held`` — the held-row representation (pending + the
       ``scheduled_at`` deadline + the unresolved signal row);
     * ``absorbed`` — the node's failure was ABSORBED by its edge's
       declared policy (collect / maybe — the edge ledger + the join row's
@@ -117,8 +117,8 @@ class NodeView:
 
     @property
     def is_join_wait(self) -> bool:
-        """Join-wait: pending + deps_pending > 0 (T03's representation —
-        the name T08/T15 reference)."""
+        """Join-wait: pending + deps_pending > 0 (the held representation's own
+        shape)."""
         return self.status == "pending" and self.deps_pending > 0
 
     @property
@@ -187,7 +187,7 @@ def derive_workflow_status(nodes: tuple[NodeView, ...]) -> WorkflowStatus:
         return "blocked"
     # 4. all terminal-succeeded/skipped → complete. An ABSORBED failure
     #    derives through its parent here: the collect's workflow completes
-    #    with the failure report (T06's gate; T07's maybe pin).
+    #    with the failure report (the fail-closed gate; the maybe policy).
     if nodes and all(n.status in ("succeeded", "failed", "skipped") or n.absorbed for n in nodes):
         return "complete"
     # 5. any cancelled → cancelled.

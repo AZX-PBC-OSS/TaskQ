@@ -2058,7 +2058,7 @@ nothing was lost, the move is documented here).
 
 ### Added
 
-* **Admin (T11): the workflow-run explorer** — the runs list + the run
+* **Admin: the workflow-run explorer** — the runs list + the run
   page (`/taskq/workflows/{id}`): the rows-alone Mermaid graph (the
   collapsed map = one hexagon + the done/total counter), the node detail
   panel (the attempts, the trace id, the captured error, one upstream
@@ -2076,14 +2076,14 @@ nothing was lost, the move is documented here).
   through the MOUNTED WorkflowApp's bound gates (`create_router(
   workflow_app=...)`); without definitions the doors answer 501 — no
   untyped deliver surface ships.
-* **CLI (T12): `taskq flows`** — list/status/holds/signal/resolve/
+* **CLI: `taskq flows`** — list/status/holds/signal/resolve/
   cancel/retry: one question, one command; the analysis lives in the
   pure module (`workflows/_cli.py`, the `_doctor` seam — the shared
   status derivation + the why-stuck arm); the typed door validates the
   shell's JSON against the bound gates (the named pydantic refusal; the
   hold survives); the write verbs ride the engine's audit rows with the
   `cli:<user>` principal; the read verbs are read-only (pinned).
-* **Examples (T13): the doc-ingest pipeline** — the nine shapes
+* **Examples: the doc-ingest pipeline** — the nine shapes
   (heterogeneous fork, batch collect with the partial failures, the
   typed HITL hold inside the budget-capped loop, the worked duality of
   the edge policies, the union routing with `assert_never`, the typed
@@ -2092,7 +2092,7 @@ nothing was lost, the move is documented here).
   the examples lane: the join fires exactly once across 3 rounds; the
   cron slot's idempotency live). The grep gate: zero case-study strings
   in the shipped tree.
-* **Demo (T16): the doc_ingest graph LIVE** — `examples/workflows.py` +
+* **Demo: the doc_ingest graph LIVE** — `examples/workflows.py` +
   the app's trigger route (the F3 envelope) + the mounted WorkflowApp +
   the in-process drive loop; the admin's run explorer renders the
   demo's runs live.
@@ -2133,7 +2133,7 @@ nothing was lost, the move is documented here).
 
 ### Added
 
-* **Workflows (T06):** the failed-parent propagation — a parent's TERMINAL
+* **Workflows:** the failed-parent propagation — a parent's TERMINAL
   failure resolves the joins counting it by the edge's declared
   `failure_policy`: `fail_closed` (the default) blocks the join (the record
   names the failed parent), peer-cancels the running siblings
@@ -2141,12 +2141,12 @@ nothing was lost, the move is documented here).
   `collect` fans the failure in as a typed `FailureInfo` item (the estate's
   `ErrorInfo` envelope, the full attempt history) and fires the join with
   the partial result. A skip fans in with zero ledger rows.
-* **Workflows (T07):** the declared maximum fan-in per join (1000) refused
+* **Workflows:** the declared maximum fan-in per join (1000) refused
   at validate with the child-driven alternative named; the child-driven
   escape (`JoinSpec(child_driven=True)`) counts terminal children from the
   edge ledger; the `maybe` edge policy (absorbed + SURFACED); the scale
   curve pinned across the boundary (the refit + the 100k-edge plan assert).
-* **Workflows (T08):** the status + progress rollup — the status derivation
+* **Workflows:** the status + progress rollup — the status derivation
   table (the absorbed-failure clause stated first), the rows-only
   reconstruction (the two-source rule: the ledger for the attempted
   terminals, the node row's error jsonb for the never-granted ones), the

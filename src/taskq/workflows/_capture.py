@@ -1,4 +1,4 @@
-"""The workflow failure IO-capture writer (T04, G1 — the policy).
+"""The workflow failure IO-capture writer (the policy).
 
 The capture WRITE belongs at failure-finalize (tx1 — a row already being
 updated; the success path writes NOTHING extra). The failed node's input +
@@ -63,7 +63,7 @@ _CAPTURE_POLICIES: Final[frozenset[str]] = frozenset(
 #: records HOW MUCH was cut, explicitly, so a renderer can say so.
 TRUNCATED_MARKER: Final[str] = "__truncated__"
 
-#: The default capture byte cap (the configurable cap, T09's settings row).
+#: The default capture byte cap (the configurable cap, the settings row).
 DEFAULT_CAPTURE_MAX_BYTES: Final[int] = 8 * 1024
 
 
@@ -198,7 +198,7 @@ def redact_hold_context(
 ) -> dict[str, Any]:
     """THE HOLD CONTEXT through the redact pipeline (chain → the
     token-head pass → the workflow's hook), BEFORE persistence
-    (REDACT-BEFORE-PERSIST extended to the hold row — the attack-3
+    (REDACT-BEFORE-PERSIST extended to the hold row — the smuggle
     fix): reason/tool/args never reach the ``wf_signals`` payload raw,
     so the default ``HitlClient`` surface cannot leak what the row never
     carried. The composition is the capture pipeline's own verdict

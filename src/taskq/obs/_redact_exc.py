@@ -32,7 +32,7 @@ Two concrete leaks, both verified by execution rather than assumed:
   which is what catches an OPAQUE token the JWT shape cannot see. Presigned
   AWS query strings carry the same class of credential as
   ``X-Amz-Signature=``/``Signature=``/``sig=`` values. All are masked
-  (issue #317, verified by an end-to-end repro through the
+  (verified by an end-to-end repro through the
   pg-credential-refresh failure log site). Stated limits, so the next
   reader knows they are decisions rather than gaps: a token whose header
   name was corrupted by homoglyphs is not caught (the masks are literal,
@@ -236,7 +236,7 @@ _URI_PARAM_CRED_RE = re.compile(
 
 #: ``Authorization: <scheme> <token>`` in any casing and loose around the colon
 #: and spaces, for the scheme words a credential header carries: ``bearer``,
-#: and -- #463's round 2 -- ``token`` (the GitHub scheme still in the wild)
+#: and -- the later revision -- ``token`` (the GitHub scheme still in the wild)
 #: and ``basic`` (whose value is base64 ``user:password``). Group 1 keeps the
 #: header text verbatim so the masked form still
 #: reads ``Bearer ***``; the token class stops at whitespace and the list
@@ -654,7 +654,7 @@ def mask_credentials(text: str) -> str:
     password-family connection parameters, and the tors token families.
     Clean text pays only the substring prefilters and returns unchanged -
     so callers can compare before/after to DETECT credential material (the
-    audit subject's redact-and-log binding, #463) without a second
+    audit subject's redact-and-log binding) without a second
     detector to keep in sync with this chain.
     """
     return _scrub_text(text)

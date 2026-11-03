@@ -194,8 +194,9 @@ def register(router: APIRouter) -> None:
             q["stranded_count"] = stranded_by_queue.get(str(q["queue"]), 0)
         realtime_mode, mode_label = realtime_ctx
         # The jobs page's partial-poll pattern, split by mode so both
-        # refresh transports never fire at once (that double-fetch was
-        # #337's complaint) and the polling contract keeps its teeth
+        # refresh transports never fire at once (the double-fetch defect: both
+        # transports firing re-fetched the page) and the polling contract
+        # keeps its teeth
         # (test_web_admin_integration pins it): POLLING mode renders the
         # meta refresh - the page stays live without JS - and the htmx
         # poll is off; REALTIME mode suppresses the meta refresh and the

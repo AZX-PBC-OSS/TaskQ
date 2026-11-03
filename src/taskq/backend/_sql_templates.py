@@ -117,7 +117,7 @@ COPY_FROM_COLUMNS: Final[tuple[str, ...]] = (
     # names every column explicitly (the positional `SELECT j.*` doctrine
     # died with 01.00.03), so the mirror parity the pin enforces
     # (test_copy_from_columns_match_jobs_table_exactly) needs them here;
-    # the workflow-aware pruner (T18) defines their retention.
+    # the workflow-aware pruner defines their retention.
     # THE TRAILING LAW (93b255ff's restoration, carried): parent_id is
     # the LIST'S LAST member — the record builder writes it last (the
     # ARITY pin's coherence: 40-wide records against 40 columns), the
@@ -1949,7 +1949,7 @@ WHERE EXISTS (SELECT 1 FROM fixed WHERE status = 'pending')""",
         get_job=f"""\
 SELECT * FROM "{s}".jobs WHERE id = $1""",
         # Same shape as get_job against the archive tier: the client
-        # read's jobs-then-archive fallback (issue #314) probes this only
+        # read's jobs-then-archive fallback probes this only
         # when the hot read misses, so an archived id answers instead of
         # reading as missing. jobs_archive mirrors every jobs column plus
         # the archive-only archived_at/expire_at stamps (see
@@ -1960,7 +1960,7 @@ SELECT * FROM "{s}".jobs_archive WHERE id = $1""",
         get_attempts=f"""\
 SELECT * FROM "{s}".job_attempts WHERE job_id = $1 ORDER BY attempt""",
         # Same shape as get_attempts against the archive tier: the client
-        # read's hot-then-archive fallback (issue #314) probes this only
+        # read's hot-then-archive fallback probes this only
         # when the hot read comes back empty, so an archived job's moved
         # attempt history answers instead of reading as never-happened.
         # job_attempts_archive mirrors every job_attempts column (the

@@ -1,5 +1,5 @@
 """The chain step's ROUTER SURFACE (the split of ``api/_runner`` — §7b's
-concerns-separate law): the T20 chain step's finalize — the body's typed
+concerns-separate law): the chain step's finalize — the body's typed
 outcome IS the router's decision, at most one forked child, no fan-in.
 
 Module homes: the chain's declaration verbs live in
@@ -55,7 +55,7 @@ class ChainOps(_ChainHost):
         *,
         claim_epoch: int = 0,
     ) -> None:
-        """THE CHAIN STEP'S ROUTED FINALIZE (T20): the body's typed
+        """THE CHAIN STEP'S ROUTED FINALIZE: the body's typed
         outcome is the router's decision —
 
         * an arm to a step key → the certified fork-at-finalize carries

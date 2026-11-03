@@ -38,7 +38,7 @@ producer-link pattern — linked, never parented, to the ambient trace),
 created at the flow's first claim (the run-key claim the packaged
 :func:`taskq.workflows.run` performs) and ended at the run's terminal
 (the drive's stop). One per ``run()`` call — the ROOT run's; child
-flows (T28) spawn through ``create_flow`` and carry no run span of
+flows spawn through ``create_flow`` and carry no run span of
 their own (their steps ride the tree below them).
 
 ``step {step_key}`` — the STEP span: ONE attempt of one node through
@@ -263,7 +263,7 @@ def record_step_laddered(span: Span, exc: Exception, *, retried: bool) -> None:
 
 
 def record_step_held(span: Span, hold_id: str, signals: Sequence[str]) -> None:
-    """Record the hold (T10) on the STEP span as the ``wf.held`` event.
+    """Record the hold on the STEP span as the ``wf.held`` event.
 
     The hold is not a terminal and not a failure — the node rests in
     the held representation and the resume re-executes the body; the

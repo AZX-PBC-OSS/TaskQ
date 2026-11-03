@@ -2009,13 +2009,13 @@ class WorkerSettings(TaskQSettings):
         "zero-means-now. Negative values raise at settings load.",
     )
 
-    # -- Workflow step-cache retention (T25) --------------------------
+    # -- Workflow step-cache retention --------------------------
     workflow_step_cache_sweep_period: timedelta = Field(
         default=timedelta(hours=1),
         validator=_non_negative_timedelta,
         description="TASKQ_WORKFLOW_STEP_CACHE_SWEEP_PERIOD. How often "
         "the leader's retention arm prunes the cross-run step cache's "
-        "EXPIRED rows (T25: the in-DB TTL's corpses — the lookup's "
+        "EXPIRED rows (the in-DB TTL's corpses — the lookup's "
         "freshness leg already refuses them; this arm deletes the dead "
         "weight so the expired population never grows monotone-forever). "
         "One bounded committed batch per pass; FRESH rows are never "

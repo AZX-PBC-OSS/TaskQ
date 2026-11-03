@@ -2,7 +2,7 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* ── the workflow-run page's state fills (T11) ─────────────────────────
+/* ── the workflow-run page's state fills ─────────────────────────
    The graph node's fill keys off the node's status class
    (workflows.js paints data-node-key groups). THE BARE-<path> RULE
    (P2's pin): the collapsed map node renders its shape as a BARE

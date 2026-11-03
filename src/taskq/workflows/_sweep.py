@@ -1,4 +1,4 @@
-"""The workflow sweep arms (T04): the lock-first re-derive + its fire arm,
+"""The workflow sweep arms: the lock-first re-derive + its fire arm,
 the outbox drain, the phantom-ledger reaper.
 
 Each arm is its own function on its own statement constants (concerns
@@ -125,7 +125,7 @@ class SweepResult:
     blocked: int
     reconciled: int
     firable: int
-    #: T06's heal: fail_closed joins whose parent terminal-failed while
+    #: The heal: fail_closed joins whose parent terminal-failed while
     #: their own tx2 never ran — blocked-with-reason by this pass.
     blocked_required: int = 0
     #: The flow-fenced fix: never-fired join rows whose resolution the FLOW'S own
@@ -148,7 +148,7 @@ async def sweep_join_rederive(
     """The lock-first re-derive arm: ONE batched statement (lock the
     join-wait children SKIP LOCKED → count un-terminal parents from the
     edge ledger → reconcile the cache → block the orphan-parent rows →
-    block the fail-closed joins whose parent terminal-failed (T06's heal)
+    block the fail-closed joins whose parent terminal-failed (the heal)
     → stamp the flow-fenced joins (the flow-fenced join fix: a never-fired join row on
     a TERMINAL flow can never fire again — the fence is not absorption,
     the arm resolves it blocked-with-reason) → report counts), then the
@@ -271,7 +271,7 @@ async def sweep_join_rederive(
             ]
             if outbox_rows:
                 await conn.executemany(wsql.outbox_insert, outbox_rows)
-        # THE DERIVATION'S MAINTENANCE LEG (T08): the reported status is
+        # THE DERIVATION'S MAINTENANCE LEG: the reported status is
         # the derivation's output — the sweep maintains each flow
         # ROOT's status from the rows (the crash-window heals: a
         # non-absorbed failure → failed; all-terminal → succeeded). Bounded
@@ -393,7 +393,7 @@ async def sweep_progress_ring_prune(
     ring_bound: int = PROGRESS_RING_BOUND,
     batch_size: int = 200,
 ) -> int:
-    """THE PROGRESS RING'S PRUNE ARM (T21) — the STREAM channel's
+    """THE PROGRESS RING'S PRUNE ARM — the STREAM channel's
     backstop: every node whose retained ring grew past the ring bound is
     trimmed back to it, rank-based per node (the append statement's own
     trim is the first fence — this arm prunes the LEAKED rings: nodes
@@ -545,7 +545,7 @@ async def prune_expired_step_cache(
     *,
     batch_size: int = 200,
 ) -> int:
-    """THE STEP CACHE'S RETENTION ARM (T25): an EXPIRED cache row is
+    """THE STEP CACHE'S RETENTION ARM: an EXPIRED cache row is
     dead weight — the lookup's freshness leg already refuses it (a
     miss; the body re-runs and the store's CAS re-fills the corpse on
     success), and without this arm the expired population grows
@@ -877,7 +877,7 @@ async def sweep_loop_budget(
     *,
     batch_size: int = 100,
 ) -> int:
-    """THE BUDGET SWEEP ARM (T19) — the loop walls' enforcer: the BUDGET
+    """THE BUDGET SWEEP ARM — the loop walls' enforcer: the BUDGET
     wall (a running loop whose ``budget_deadline`` is past PG's
     ``clock_timestamp()``) and the ITERATION CAP wall (a running loop at/
     over ``max_iterations`` — the crash-dead-worker path; a live worker's

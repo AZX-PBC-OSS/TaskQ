@@ -121,7 +121,7 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     # leaked into the next test's counts. The STREAM channel truncates
     # with the STATE channel or not at all.
     "wf_node_stream",
-    # The cross-run step cache (T25) is FK-less like its ledger kin (the
+    # The cross-run step cache is FK-less like its ledger kin (the
     # no-FK decision) — the CASCADE never reaches it; a cache-asserting
     # suite must not see the previous test's entries.
     "wf_step_cache",

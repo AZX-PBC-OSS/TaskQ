@@ -1,4 +1,4 @@
-"""The loop's statement constants (T19) — the budget columns' reads and
+"""The loop's statement constants — the budget columns' reads and
 writes, the atomic carry-advance + cap guard, and the named-exhaustion
 terminalization. The schema identifier is the ONLY interpolated value
 (validated at :meth:`WorkflowSql.build`'s callers); every
@@ -251,7 +251,7 @@ WHERE flow_id = $1
 ORDER BY id
 """
 
-#: The index-driven plan's assert target (the ≤ 5 ms-class band — T08's
+#: The index-driven plan's assert target (the ≤ 5 ms-class band — the
 #: gate class): the arm's plan must walk the budget predicate from an
 #: index, never a seq scan of the jobs table (the EXPLAIN pin's subject).
 LOOP_BUDGET_EXPLAIN_SQL = """\

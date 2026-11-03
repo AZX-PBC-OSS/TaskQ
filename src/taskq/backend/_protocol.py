@@ -1120,7 +1120,7 @@ class JobRow:
     archived: bool = False
     """The row was read from the archive tier, not the hot ``jobs`` table.
 
-    Set only by a read that fell back to the archive tier (issue #314):
+    Set only by a read that fell back to the archive tier:
     the hot table's rows always read ``False``, and so does every row
     from a read that did not probe the archive. Both backends' ``get``
     applies the fallback (PG probes ``jobs_archive``, the twin probes
@@ -2519,7 +2519,7 @@ class Backend(Protocol):
         the archive tier (an archive hit is marked ``archived=True``),
         the same jobs-then-archive probe the CLI applies, so an id whose
         row a prune archived still answers instead of reading as missing
-        (issue #314): PG probes ``jobs_archive``, the twin probes its
+        (the archive fallback): PG probes ``jobs_archive``, the twin probes its
         prune simulation's ``_archive`` via ``get_archived``'s storage.
         The result-TTL sweep touches only the hot tier on both backends,
         so an archive hit reads the result columns it was archived with.

@@ -1,4 +1,4 @@
-"""The cross-run STEP CACHE (T25) — the TEMPORAL dedup's machinery.
+"""The cross-run STEP CACHE — the TEMPORAL dedup's machinery.
 
 THE TWO-CLAIMS LAW (the design's spine): the run-key arbiter dedups
 CONCURRENT (two callers racing one key get ONE run); THIS cache dedups

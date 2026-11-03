@@ -1,4 +1,4 @@
-"""The registered-definition registry (T04, D1 — dispatch resolves bodies
+"""The registered-definition registry (D1 — dispatch resolves bodies
 from the REGISTERED definition).
 
 DISPATCH RESOLVES BODIES FROM THE REGISTERED DEFINITION: per-call body maps
@@ -41,7 +41,7 @@ __all__ = [
 #: A step body: the coroutine the dispatch runs for one step.
 StepBody = Callable[[Any], Awaitable[Any]]
 
-#: The map's DECLARED read-side aggregate fn (T21 decision c): a PURE fn
+#: The map's DECLARED read-side aggregate fn: a PURE fn
 #: over the children's decoded result rows, evaluated AT READ TIME by the
 #: aggregation surfaces — never a blocking fan-in (the fence: the join
 #: is for DATAFLOW, progress aggregation is OBSERVABILITY).
@@ -58,7 +58,7 @@ class DuplicateStepBodyError(TypeError):
 
 @dataclass(frozen=True, slots=True)
 class WorkflowDef:
-    """The registered workflow definition (T09's API formalizes the authoring
+    """The registered workflow definition (the API formalizes the authoring
     surface; the engine needs the body map + the placement fields)."""
 
     name: str
@@ -75,7 +75,7 @@ class WorkflowDef:
     #: no policy face, and the node row's metadata is the counter's
     #: cache, never the declaration's source.
     loop_policies: dict[str, str] = field(default_factory=dict[str, str])
-    #: The maps' DECLARED read-side aggregates (T21 decision c), keyed by
+    #: The maps' DECLARED read-side aggregates, keyed by
     #: the SOURCE step key (the children's parent — the read surfaces
     #: resolve by the parent row's own step key), resolved DURABLY at
     #: read time (the flow root's stamped workflow name → THIS
@@ -162,11 +162,11 @@ def resolve_step_body(name: str, step_key: str) -> StepBody:
 # the DB anyway; the validators are the door the API layer composes).
 
 
-#: The declared failure policies (T06/T07) — the edge ledger's
+#: The declared failure policies — the edge ledger's
 #: ``failure_policy`` column's vocabulary; a fork/join declaring anything
 #: else is refused at build time (the runtime never sees an unknown
 #: policy — the propagation rule's split would silently take the default).
-#: ``maybe`` is T07's optional edge: a maybe child's TERMINAL failure is
+#: ``maybe`` is the optional edge: a maybe child's TERMINAL failure is
 #: ABSORBED like collect's (fan-in + the join fires) but is SURFACED —
 #: the fan-in item names the policy that absorbed it, so the result
 #: envelope cannot lie about which policy ran.
@@ -218,7 +218,7 @@ def validate_fork(fork: ForkSpec) -> None:
             f"join {fork.join.step_key!r} declares unknown failure_policy "
             f"{fork.join.failure_policy!r} — one of {FAILURE_POLICIES}"
         )
-    # T07'S FAN-IN BOUND (the fork's door): the fork's join over more
+    # THE FAN-IN BOUND (the fork's door): the fork's join over more
     # children than the bound is refused unless it declares the
     # child-driven shape explicitly (the choice is recorded on the joined
     # node's metadata — the docs state when child-driven engages).
@@ -239,7 +239,7 @@ def validate_fork(fork: ForkSpec) -> None:
         )
 
 
-#: The DECLARED MAXIMUM FAN-IN PER JOIN (T07's operational bound): the
+#: The DECLARED MAXIMUM FAN-IN PER JOIN (the operational bound): the
 #: join's re-derive cost scales with the edge-ledger row count per join,
 #: and the measured curve's honest reading (P1's three points — 200 →
 #: 14.9 ms, 1000 → 23.8 ms, 5000 → 39.3 ms — are NOT one line: the 1000
@@ -272,7 +272,7 @@ def validate_join_spec(step_key: str, parents: tuple[JobId, ...], deps_pending: 
             f"{len(parents)} parents — the counter's cache must equal the "
             "declared edge count"
         )
-    # T07'S FAN-IN BOUND: past the operational bound the declared-edge
+    # THE FAN-IN BOUND: past the operational bound the declared-edge
     # shape is refused — the error NAMES the bound and the child-driven
     # alternative (the documented escape for the genuinely-needed case:
     # the child-driven join counts its terminal children from the edge

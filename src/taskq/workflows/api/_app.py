@@ -1,4 +1,4 @@
-"""The flow API's app surface (T09): ``WorkflowApp`` — the authoring
+"""The flow API's app surface: ``WorkflowApp`` — the authoring
 entry — ``@app.actor`` / ``@app.workflow``, the compiled workflow, and the
 signal channel's TYPED-GATE door.
 
@@ -180,7 +180,7 @@ class TypedGate[G: BaseModel]:
     """The BOUND-DOOR form (Package B, finding 1): the payload type is
     bound ONCE at the gate; the wrong model is not assignable at the
     deliver call site. One door, two addresses: by ``(run, node, gate)``
-    for the wire form, by hold id for the reply form (T10's client)."""
+    for the wire form, by hold id for the reply form (the client's forms)."""
 
     def __init__(self, channel: SignalChannel, *payload_models: type[BaseModel]) -> None:
         self._channel = channel
@@ -190,7 +190,7 @@ class TypedGate[G: BaseModel]:
 
 class SignalChannel:
     """The per-workflow signal channel: the declared gates' registry. Its
-    runtime delivery is wired by T10's HITL module (the row is the truth);
+    runtime delivery is wired by the HITL module (the row is the truth);
     the DECLARATION is the compile's — mermaid's hold nodes and the
     validate warnings read it from here."""
 
@@ -200,7 +200,7 @@ class SignalChannel:
 
     def gate[G: BaseModel](self, *payload_models: type[G]) -> TypedGate[G]:
         """Bind the payload type(s) ONCE at the gate. The delivery
-        runtime (the CAS'd resume, the refusal shape) is T10's HITL
+        runtime (the CAS'd resume, the refusal shape) is the HITL
         module — the DECLARATION is the compile's: this registry is what
         the mermaid render's hold nodes, the validate warnings and the
         typed delivery all read."""
@@ -232,19 +232,19 @@ class CompiledWorkflow:
     #: the deps shape is E12's refusal.
     deps: object | None = None
     input_type: object = None
-    #: The workflow's declared chains (T20) — the chain SOURCE node owns
+    #: The workflow's declared chains — the chain SOURCE node owns
     #: its Chain; the runner resolves chain-step routes from here.
     chains: tuple[object, ...] = ()
-    #: THE MAX-IN-FLIGHT BOUND (T20): the RUN's admission control,
+    #: THE MAX-IN-FLIGHT BOUND: the RUN's admission control,
     #: declared at the workflow level; the runner hands it to every
     #: ``ctx.emit_batch``. ``None`` = the explicit unbounded.
     max_in_flight: int | None = EMIT_MAX_IN_FLIGHT_DEFAULT
-    #: The cross-graph smuggles the wiring verbs recorded (attack-3 M3's
+    #: The cross-graph smuggles the wiring verbs recorded (the smuggle defect's
     #: fix): ``(consumer_key, parent_key)`` pairs — validate's E7 reads
     #: it.
     smuggled: tuple[tuple[str, str], ...] = ()
     #: The app's declared queue universe (``"default"`` + every workflow
-    #: actor's queue + TASKQ_QUEUES' names — attack-3 M5's fix):
+    #: actor's queue + TASKQ_QUEUES' names — the fail-fast's fix):
     #: validate's W2 reads it; ``None`` = no universe declared, nothing
     #: to reject.
     known_queues: frozenset[str] | None = None
@@ -330,7 +330,7 @@ class WorkflowApp:
         self._workflows: dict[str, Callable[..., object]] = {}
         #: The app's declared queue universe (the workflow actors'
         #: queues — validate's W2 rule reads the compiled projection;
-        #: attack-3 M5's fix).
+        #: the fail-fast's fix).
         self._actor_queues: set[str] = set()
         # THE APP REGISTRY (the worker-hosted execution seam): the app
         # registers weakly, so the boot projection can find every
@@ -516,7 +516,7 @@ class WorkflowApp:
     ) -> Callable[[Callable[[], Promise[R]]], Callable[[], Promise[R]]]:
         """``@app.workflow(name, actor=…, queue=…, capture=…, redact=…,
         max_in_flight=…)`` — the per-workflow declaration (the
-        policies). The declaration is what T04's capture writer and every
+        policies). The declaration is what the capture writer and every
         export surface consume; ``redact=fn`` POST-COMPOSES on the
         default chain's output (it can only redact more, never less —
         TORS-REV-0.16 §G1).
@@ -550,7 +550,7 @@ class WorkflowApp:
         checkers). The type story no longer dies at the first line the
         user writes: the builder's own signature is the typed door.
 
-        THE MAX-IN-FLIGHT BOUND (T20): the RUN's admission control
+        THE MAX-IN-FLIGHT BOUND: the RUN's admission control
         — how many non-terminal rows the run may materialize. The emit
         admits its WHOLE page under the bound; a fast source outpacing
         its workers BLOCKS at the bound (the generator's laziness is the
@@ -711,7 +711,7 @@ class WorkflowApp:
     def _known_queues(self) -> frozenset[str]:
         """The app's declared queue universe: ``default`` + the workflow
         actors' queues + TASKQ_QUEUES' names (the strict boot's own list
-        — the same universe the worker's fail-fast reads; attack-3 M5's
+        — the same universe the worker's fail-fast reads; the fail-fast's
         build-side face)."""
         import os
 
@@ -764,7 +764,7 @@ def _register_bodies(
         # carry.
         if node.map_item is not None:
             bodies[f"{node.key}.item"] = node.map_item
-        # THE TYPED ROUTE'S ARMS (T27) resolve under their OWN derived
+        # THE TYPED ROUTE'S ARMS resolve under their OWN derived
         # keys (``<source>.item:<type-tag>`` — the row's step_key NAMES
         # its arm): each arm's body registered under the key its child
         # rows carry (the same D1 doctrine, one arm per key — the arms'
@@ -790,7 +790,7 @@ def _register_bodies(
                         "fold them"
                     )
                 escalation_body = candidate
-        # THE MAP'S DECLARED AGGREGATE (T21): keyed by the SOURCE node's
+        # THE MAP'S DECLARED AGGREGATE: keyed by the SOURCE node's
         # step key — the children's PARENT (the read surfaces resolve by
         # the parent row's own step key; the durable leg is the flow
         # root's stamped workflow name).
@@ -798,7 +798,7 @@ def _register_bodies(
             aggregates[node.key] = node.map_aggregate
     if escalation_body is not None:
         bodies[ESCALATION_STEP_KEY] = escalation_body
-    # THE CHAIN STEP BODIES (T20): registered under their own step keys
+    # THE CHAIN STEP BODIES: registered under their own step keys
     # (D1 — the emitted + fork-spawned chain rows resolve their bodies
     # from the registry; the chain's steps have no compiled NodeDecl).
     from taskq.workflows.chain import Chain

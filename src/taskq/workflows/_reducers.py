@@ -1,4 +1,4 @@
-"""The flow-run reducer resolution (T04's tx1→tx2 crash window, hardened
+"""The flow-run reducer resolution (the tx1→tx2 crash window, hardened
 across processes).
 
 THE WINDOW: ``finalize_node`` = tx1 (the fenced terminal) then tx2 (the

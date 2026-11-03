@@ -926,7 +926,7 @@ def register(router: APIRouter) -> None:
             }
         )
 
-        # The redis outage family the #421 fallback pins exactly, mirrored
+        # The redis outage family the redis-outage fallback family pins exactly, mirrored
         # here because the reset path has NO PG fallback to absorb them
         # (deliberately: the PG rows for a redis-backed bucket are a
         # worker-published read model, so a PG-side "reset" cannot reset

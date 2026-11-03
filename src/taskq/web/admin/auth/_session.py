@@ -183,7 +183,7 @@ class SessionManager:
     # The secret the current _serializer was built with; verify_session_cookie
     # compares it against self.secret per verification so a rotated secret
     # (``manager.secret = ...``) is picked up without rebuilding the manager
-    # or the router -- the long-lived SSE re-check (#316) holds the manager
+    # or the router -- the long-lived SSE re-check  holds the manager
     # object a live stream captured at router construction, so a lazy rebuild
     # here is the only path a rotation has to the already-streaming session.
     _serializer_secret: str = field(default="", repr=False)
@@ -216,7 +216,7 @@ class SessionManager:
         """Verify signature + expiry; return claims or ``None`` on any failure."""
         from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-        # Rotation-aware: a live SSE stream's re-check (#316) runs THIS method
+        # Rotation-aware: a live SSE stream's re-check  runs THIS method
         # on the manager object it captured at router construction. If the
         # operator rotated the secret by assigning ``manager.secret``, the
         # serializer built at construction still holds the old key, and the
@@ -296,7 +296,7 @@ def create_session_verifier(
     session_manager: SessionManager,
     allowed_groups: frozenset[str] = frozenset(),
 ) -> Callable[[Request], Awaitable[bool]]:
-    """Build the session re-check that long-lived SSE streams re-invoke (#316).
+    """Build the session re-check that long-lived SSE streams re-invoke .
 
     A stream that authenticates only at request acceptance keeps delivering
     frames after its session is invalidated. The routers that own such streams
@@ -366,7 +366,7 @@ def create_auth_dependency(
         _sso_logout_token.set(logout_csrf_token(session_manager.secret, cookie))
         return claims
 
-    # The re-check long-lived SSE streams re-invoke (#316): same session
+    # The re-check long-lived SSE streams re-invoke : same session
     # inputs as this dependency, exposed as an attribute so
     # create_router(auth_dependency=...) can derive it without a second
     # parameter every host must remember to pass.

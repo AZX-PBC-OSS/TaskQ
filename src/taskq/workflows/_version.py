@@ -1,4 +1,4 @@
-"""The per-attempt code-version record's canonical hash (T04, G8).
+"""The per-attempt code-version record's canonical hash.
 
 ``jobs.code_version`` is the "code-version hash per attempt": the deploy
 computes the module hash, or the decorator pins it — written at claim by the
@@ -7,10 +7,10 @@ content-addressed machinery stays dead).
 
 THE HASH COMPUTES VIA THE TORS CONTENT HASH — the golden-tested canonical
 serializer. ``docs/design/tors-adoption-map.md`` recorded ``content_hash`` as
-SKIP because "no canonical-hash call site exists"; T03's ``code_version``
+SKIP because "no canonical-hash call site exists"; the ``code_version``
 column CREATES that call site, voiding the skip verdict's premise (the
-adoption map's row updates at T14's maintenance tail; the rev's disposition
-is ADOPT on T03's landing).
+adoption map's row updates at the maintenance tail; the rev's disposition
+is ADOPT on the landing).
 
 Why tors and not a hand-rolled ``hashlib`` walk: the cores are GIL-free —
 the claim path runs on the worker's event loop, and a GIL-holding hash over

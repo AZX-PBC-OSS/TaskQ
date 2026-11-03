@@ -493,7 +493,7 @@ see [configuration.md](configuration.md#timing-and-liveness)); the
 - [architecture.md](../architecture.md#which-component-drives-each-transition): the trailing-watermark derivation the batch bounds enforce.
 - [upgrading.md](upgrading.md): adopt-by-restart for the lock rename and the migration 01.00.06_01 maintenance-window note.
 
-## 7. The workflow-liveness guard (T18)
+## 7. The workflow-liveness guard
 
 The retention and result-expiry arms are WORKFLOW-AWARE: two WHERE-class
 guards on the EXISTING arms (no new sweep process, the redispatch exclusivity
@@ -525,7 +525,7 @@ no liveness to protect), logged once per process
 (`prune-workflow-guard-fallback`).
 
 **The rolling-deploy note:** the result-expiry arm tolerates the missing
-workflow tables the same way the candidate predicate does — the T18 guard
+workflow tables the same way the candidate predicate does — the liveness guard
 probes `wf_edge`, a schema the workflow round has not landed on has no
 such table, and the guarded statement's miss (`UndefinedTableError`) is
 tolerated PER CALL: the fallback runs the UNGUARDED base statement

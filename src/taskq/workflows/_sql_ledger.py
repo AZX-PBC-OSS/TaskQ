@@ -1,4 +1,4 @@
-"""The ledger statement constants (T04/T05): the step-ledger claim (one round trip), the memoized-result read, the terminal + fence writes, the run-key arbiter's insert/read.
+"""The ledger statement constants : the step-ledger claim (one round trip), the memoized-result read, the terminal + fence writes, the run-key arbiter's insert/read.
 
 The schema identifier is the ONLY interpolated value (validated at
 WorkflowSql.build); every caller-controlled value uses ``$N`` parameter
@@ -18,7 +18,7 @@ from __future__ import annotations
 # transaction.
 #
 # THE ARBITER KEYS ON COALESCE(map_index, -1): map children of one step key
-# are DIFFERENT claims (T05's key contract) — a conflict target omitting
+# are DIFFERENT claims (the run-key contract) — a conflict target omitting
 # map_index collapses them onto one row (child 1's claim returns child 0's
 # row, the terminal write overwrites, the memoized replay returns the wrong
 # child's result). The expression spells the index verbatim — an ON CONFLICT

@@ -119,7 +119,7 @@ async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
     # connection's handshake read under a loaded runner; the scenario's
     # real bounds are the tests' own overall_timeouts.
     # socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS: the same
-    # loader's DNS/connect band (PR #682's red 3.13 leg) - redis-py's 5s
+    # loader's DNS/connect band (one observed red on Python 3.13's connect band) - redis-py's 5s
     # CONNECT default fired mid-getaddrinfo on this fixture's first
     # publish; the connect phase is setup weather, not a pin's subject.
     client = aioredis.from_url(

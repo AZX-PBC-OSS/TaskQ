@@ -1,4 +1,4 @@
-"""The workflow-run explorer's MACHINE routes (T11): the node panel API,
+"""The workflow-run explorer's MACHINE routes: the node panel API,
 the SSE node_state stream (the revisioned-snapshot replay), and the
 typed actions (deliver / resolve / cancel — each guarded, each audited).
 
@@ -1136,7 +1136,7 @@ def register_actions(router: APIRouter) -> None:
         sse_slot = await acquire_sse_slot(
             "wf-run-stream", settings.admin_max_sse_connections, surface="admin"
         )
-        # THE SESSION LAW's binding (the #316 pattern, sse.py): the
+        # THE SESSION LAW's binding (the sse.py re-check pattern): the
         # verifier reads the same session cookie the request arrived
         # with; a session revoked mid-stream fails the re-check at the
         # next tick even though those bytes are unchanged.
@@ -1322,7 +1322,7 @@ def register_actions(router: APIRouter) -> None:
         base_path: str = Depends(get_base_path),
     ) -> RedirectResponse:
         """Re-arm ONE terminal-failed node (THE NODE RERUN) — the
-        ENGINE'S OWN manual-resume verb (``retry_workflow_node``, T12):
+        ENGINE'S OWN manual-resume verb (``retry_workflow_node``):
         the failed→pending CAS + the blocked closure's re-open + the
         terminal-FAILED flow's re-open; the attempt ordinal CONTINUES
         (the next claim buys exactly one more attempt). No engine

@@ -83,7 +83,7 @@ class LoopWaitShapeError(RuntimeError):
 
 
 class Expired(BaseModel):
-    """THE TYPED EXPIRY MEMBER (T26's amendment — the timeout face is a
+    """THE TYPED EXPIRY MEMBER (the amendment — the timeout face is a
     VALUE, not an exception): the hold's deadline passed the DB clock
     (the sweep abandoned it) and the wait site RETURNS this member
     instead of raising — the wait's outcome is the CLOSED union
@@ -149,7 +149,7 @@ class CtxWaitOps(WaitHost):
         args: dict[str, object] | None = None,
         discriminator: Callable[[dict[str, object]], type[BaseModel]] | None = None,
     ) -> M | Expired:
-        """THE TYPED WAIT (T10), THE EXPIRY IS A VALUE (T26's amendment):
+        """THE TYPED WAIT, THE EXPIRY IS A VALUE (the amendment):
         the TUPLE FORM is the typed wait — ``await ctx.wait_signal((Approval,
         Escalate))``; the single-payload form is the one-member overload.
         The return is the CLOSED UNION of the declared models joined with
@@ -199,7 +199,7 @@ class CtxWaitOps(WaitHost):
         attempt) is a NEW body decision: it registers a NEW hold with a
         NEW epoch.
 
-        ``discriminator=`` (attack-3 B2's small honest API): when the
+        ``discriminator=`` (the shape-keyed resolution's small honest API): when the
         payload fits MORE than one declared model, the gate's explicit
         picker resolves the union — its pick must be one of the fitting
         candidates. Without one, an ambiguous payload is the typed
@@ -217,7 +217,7 @@ class CtxWaitOps(WaitHost):
             signals if isinstance(signals, tuple) else (signals,),
         )
         if not models:
-            # THE CONTRACT IS MANDATORY AT HOLD TIME (attack-4
+            # THE CONTRACT IS MANDATORY AT HOLD TIME (the
             # F-P4-UNTYPED-COLD-DOOR's fix, the authoring half): a hold
             # minted without a declared payload schema is the audit hole —
             # ANY payload delivers to it from a fresh process (the row's
@@ -467,7 +467,7 @@ class CtxWaitOps(WaitHost):
                         self.job_id,
                         dumps_jsonb_str({face_key: int(abandoned_row["hold_epoch"])}),
                     )
-                    # THE TIMEOUT FACE, AS A VALUE (T26's amendment): the
+                    # THE TIMEOUT FACE, AS A VALUE (the amendment): the
                     # EXPIRY MEMBER returns — the closed union's second
                     # arm, the fail-close the checker forces. The body
                     # that wants the FAILURE raises SignalTimeoutError
@@ -524,7 +524,7 @@ class CtxWaitOps(WaitHost):
     ) -> Any:
         """The delivered payload re-validates into the declared model
         (the typed wait's return — narrows with ``isinstance``). BY
-        SHAPE, never by declaration order (the attack-3 class): every
+        SHAPE, never by declaration order (the shape-keyed law): every
         declared model is tried STRICTLY; exactly one must fit (it is
         returned); zero or more than one is the typed refusal —
         :class:`taskq.exceptions.SignalPayloadError` /

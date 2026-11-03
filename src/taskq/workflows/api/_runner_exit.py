@@ -161,7 +161,7 @@ class ExitOps(_ExitHost):
         return granted > 0
 
 
-# ── the run-operator verbs (the id-addressed forms — T12) ───────────────
+# ── the run-operator verbs (the id-addressed forms ) ───────────────
 #
 # The runner's methods own the rows work for a COMPILED flow; the CLI's
 # ``flows cancel`` / ``flows retry`` address a RUN BY ID (no compiled
@@ -280,7 +280,7 @@ async def cancel_workflow_run(
     reason: str | None = None,
     principal: Any = None,
 ) -> int:
-    """P3 rule 4's cancel (T10): the flow flip is the linearization
+    """P3 rule 4's cancel: the flow flip is the linearization
     point; every non-terminal node + held signal resolves in the same
     snapshot; the CASCADE walks the children ITERATIVELY (the worklist
     — depth 1200 cancels clean, no RecursionError) from the
@@ -304,7 +304,7 @@ async def retry_workflow_node(
     reason: str | None = None,
     principal: Any = None,
 ) -> int:
-    """THE MANUAL RESUME (T12), id-addressed: the ExitOps' own CAS
+    """THE MANUAL RESUME, id-addressed: the ExitOps' own CAS
     statements for the caller that addresses the run BY ID (no compiled
     definition to import). A cancelled run REFUSES (the cancel was
     deliberate — re-opening it is a second decision, not a resume).

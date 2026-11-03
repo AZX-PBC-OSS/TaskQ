@@ -1,4 +1,4 @@
-"""The ``taskq flows`` analysis engine (T12): one question, one surface.
+"""The ``taskq flows`` analysis engine: one question, one surface.
 
 Every function here is pure analysis — fetched rows in, report lines out.
 Nothing in this module touches Typer, a connection, or any CLI state: the
@@ -147,7 +147,7 @@ def stuck_lines(node: FlowNodeRow, run_id: str) -> list[str]:
     on and the ONE command that answers it. A live (non-stuck) node
     yields an empty list — a running row is not a finding.
 
-    THE BLOCKED-BEFORE-JOIN-WAIT ORDER (attack-4 F-P4-WHYSTUCK-FALSE-
+    THE BLOCKED-BEFORE-JOIN-WAIT ORDER (the false-remedy defect's
     the remedy's own fix): a row whose parent ALREADY finalized as a failure
     carries ``blocking_reason='failed_parent'`` — the join can NEVER
     fire. Reading the join-wait arm first promised "the join fires when
@@ -620,7 +620,7 @@ def parse_decision(raw: str) -> dict[str, object]:
 
 def gate_models_for(app: Any, workflow: str, node_key: str) -> tuple[type[BaseModel], ...]:
     """The bound gates' payload models for ONE node (the typed door's
-    runtime half — T09's compile bound them at the gate; the CLI loads
+    runtime half — the compile bound them at the gate; the CLI loads
     the app and reads the SAME registry, never a second one)."""
     compiled = app.get(workflow)
     decl = compiled.nodes[node_key]

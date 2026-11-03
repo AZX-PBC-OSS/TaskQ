@@ -593,7 +593,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             )
 
     async def wf_join_rederive_call() -> int:
-        # THE WORKFLOW HEALING ARMS (T04) — wired here, not in the
+        # THE WORKFLOW HEALING ARMS — wired here, not in the
         # backend: THE IMPORT LAW keeps every workflows import out
         # of module scope outside the package (the arms live in
         # taskq.workflows._sweep; this is their REGISTRATION), so each
@@ -627,9 +627,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_child_join_wake_call() -> int:
-        # THE CHILD-JOIN WAKE ARM (T28): the child flow's terminal is
+        # THE CHILD-JOIN WAKE ARM: the child flow's terminal is
         # the join hold's resolver — the terminal child CAS-delivers the
-        # held join, the parent node resumes, the T26 transport knocks.
+        # held join, the parent node resumes, the transport knocks.
         # The lazy import keeps the import law.
         from taskq.workflows.api._hitl import sweep_child_joins
         from taskq.workflows.engine import render_workflow_sql
@@ -640,10 +640,10 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_signal_sweep_call() -> int:
-        # THE SIGNAL SWEEP'S TWO ARMS (T10 + T28): the expiry arm — the
+        # THE SIGNAL SWEEP'S TWO ARMS: the expiry arm — the
         # deadline is DB-CLOCK compared; the expired HUMAN hold → the
         # DEFINED 'abandoned' state (never a silent orphan) — and the
-        # TIMER arm (T28, the hold whose resolver is the clock): the
+        # TIMER arm (the hold whose resolver is the clock): the
         # due timer hold → RESOLVED 'delivered' with the clock's own
         # wake record (the inverted face: the wake, never the
         # fail-close). The lazy import keeps the import law.
@@ -707,7 +707,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_step_cache_retention_call() -> int:
-        # THE STEP CACHE'S RETENTION ARM (T25): the cross-run cache's
+        # THE STEP CACHE'S RETENTION ARM: the cross-run cache's
         # EXPIRED rows pruned — the lookup's freshness leg already
         # refuses them (a miss; the body re-runs and the store's CAS
         # re-fills), this arm deletes the dead weight so the expired
@@ -896,7 +896,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return deleted
 
     async def wf_loop_budget_call() -> int:
-        # THE LOOP'S WALL ARM (T19): the budget sweep — the budget wall +
+        # THE LOOP'S WALL ARM: the budget sweep — the budget wall +
         # the iteration-cap wall, ONE arm, `AND NOT budget_paused` (the
         # held-loop inertness); the exhaustion is the NAMED state and the
         # flow terminalizes in the same tx. The lazy import keeps the
@@ -934,7 +934,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_progress_ring_prune_call() -> int:
-        # THE PROGRESS RING'S PRUNE ARM (T21): the STREAM channel's
+        # THE PROGRESS RING'S PRUNE ARM: the STREAM channel's
         # backstop — leaked rings (emissions that stopped before the
         # append-trim could hold, any future writer bug's unpruned shape)
         # are trimmed back to the ring bound, rank-based per node. The
@@ -1105,7 +1105,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             on_rows=_log_stale_batches_completed,
         ),
         _SweepSpec(
-            # THE WORKFLOW HEALING ARMS (T04) — the three sweep arms
+            # THE WORKFLOW HEALING ARMS — the three sweep arms
             # registered into the tick's table (the registration WAS the
             # gap: the arms existed, nothing outside taskq.workflows called
             # them). Gated on THIS backend's own workflow capability
@@ -1159,7 +1159,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_outbox_drain_tick"),
         ),
         _SweepSpec(
-            # wf_signal_sweep — THE HELD ROWS' TIMER (T10): the expiry
+            # wf_signal_sweep — THE HELD ROWS' TIMER: the expiry
             # arm (the only live timer on a held row; the DB-clock
             # comparison).
             name="wf_signal_sweep",
@@ -1172,7 +1172,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_signal_sweep_tick"),
         ),
         _SweepSpec(
-            # wf_child_join_wake — THE CHILD-JOIN WAKE (T28): the child
+            # wf_child_join_wake — THE CHILD-JOIN WAKE: the child
             # flow's terminal is the join hold's resolver; a lost resume
             # is the hold-stamp reconcile arm's belt.
             name="wf_child_join_wake",
@@ -1219,7 +1219,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_outbox_retention_tick"),
         ),
         _SweepSpec(
-            # wf_loop_budget — THE LOOP'S WALLS (T19): the budget wall +
+            # wf_loop_budget — THE LOOP'S WALLS: the budget wall +
             # the iteration-cap wall, one arm, `AND NOT budget_paused`
             # (the held-loop inertness — the budget is not consumed while
             # a hold waits); the exhaustion is the NAMED state and the flow
@@ -1267,7 +1267,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_nodeless_root_reap_tick"),
         ),
         _SweepSpec(
-            # wf_progress_ring_prune — THE STREAM RING'S BACKSTOP (T21):
+            # wf_progress_ring_prune — THE STREAM RING'S BACKSTOP:
             # leaked rings trimmed back to the bound, rank-based per
             # node. A drain: a leak deeper than one pass's owner batch
             # drains over passes (the PoC's 801-row leak pruned in one,
@@ -1283,7 +1283,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         ),
         _SweepSpec(
             # wf_step_cache_retention — THE CROSS-RUN STEP CACHE'S
-            # EXPIRY ARM (T25): the in-DB TTL's corpses deleted — the
+            # EXPIRY ARM: the in-DB TTL's corpses deleted — the
             # lookup's freshness leg already refuses them (a miss; the
             # body re-runs and the store's CAS re-fills), this arm
             # deletes the dead weight. NOT a drain (the retention
@@ -2319,7 +2319,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         _sampler_read_failed(
                             ctx, "cancel_pending", "cancel-pending-sampling-failed", exc
                         )
-                    # THE WORKFLOW PROGRESS ROLLUP (T08): sampled at THIS
+                    # THE WORKFLOW PROGRESS ROLLUP: sampled at THIS
                     # tick — the maintenance leader is the PG-rollup reader,
                     # the admin's health/metrics surface the reading plane
                     # (never a worker scrape, never the worker metrics

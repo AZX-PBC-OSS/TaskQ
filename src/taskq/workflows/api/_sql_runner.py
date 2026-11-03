@@ -248,7 +248,7 @@ SELECT p.id, p.step_key, p.result
 FROM {schema}.wf_edge e
 JOIN {schema}.jobs p ON p.id = e.parent_id
 WHERE e.child_id = $1
-  -- THE ABSORBED PARENT'S SLOT (T27's barrier fix — the envelope must
+  -- THE ABSORBED PARENT'S SLOT (the barrier fix — the envelope must
   -- not lie in the sum): on an ABSORBING edge (collect | maybe) a
   -- terminal-FAILED parent contributes NO result item to the packed
   -- join — its absence is ON THE RECORD (the join's metadata.failures
@@ -265,7 +265,7 @@ SELECT id FROM {schema}.jobs WHERE step_key = $1
   AND (metadata->>'flow_id')::uuid = $2
 """
 
-#: The streaming source's checkpointed cursor read (T20): the key is the
+#: The streaming source's checkpointed cursor read: the key is the
 #: bound EMIT_CURSOR_KEY constant — never an f-string SQL (the S608 rule);
 #: the row is the SOURCE's own.
 SOURCE_CURSOR_SQL_TEMPLATE = """
@@ -281,7 +281,7 @@ INCREMENT_DEPS_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
 SET deps_pending = deps_pending + 1,
     -- THE JOIN-WAIT MARK (the engine's own law, obeyed on the static
-    -- create path too — attack-4 F-P4-WHYSTUCK-FALSE-REMEDY's root):
+    -- create path too — the false-remedy defect's root):
     -- "a JOINED node is born in join-wait: metadata carries
     -- blocking_reason='join'" (insert_node's contract). The static
     -- node pass inserted bare metadata and bumped the counter without

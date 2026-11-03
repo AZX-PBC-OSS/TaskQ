@@ -724,7 +724,7 @@ async def stop_worker_and_reap_bootstrap(
 # load_sensitive: the soak's entire subject is wall-clock settling under
 # load — the settle-cap comment above says a still-moving population that
 # outlives the cap is "the runner being slow, not the system being stuck",
-# and PR #695's slow-lane receipt is exactly that red: the 1944s cap
+# and the slow lane's receipt is exactly that red: the 1944s cap
 # (4s/job x 486 jobs) expired with the system still moving. The marker
 # moves the three trials to the serial load-sensitive lane, where no xdist
 # sibling starves the settle — the confound that produced the receipt

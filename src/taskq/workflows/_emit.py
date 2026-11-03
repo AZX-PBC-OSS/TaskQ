@@ -1,4 +1,4 @@
-"""THE EMIT TX (T20) — the streaming source's per-page statement group,
+"""THE EMIT TX — the streaming source's per-page statement group,
 the design's ONE new primitive (PROOF.md §6a).
 
 The shipped fork inserts children ONLY inside the parent's terminal-mark

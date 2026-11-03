@@ -1,4 +1,4 @@
-"""The fork (T04's fork-atomicity rule): the parent's guarded terminal
+"""The fork (the fork-atomicity rule): the parent's guarded terminal
 UPDATE + the fork's child INSERTs + the join-row INSERT share ONE
 transaction — the writes land inside the CALLER's tx1 (never a second
 transaction, which would break the atomicity rule 5 and reopen the
@@ -108,7 +108,7 @@ async def insert_fork(
             [parent_id] * len(chunk),
             [flow_id] * len(chunk),
             # The fork's own child edges carry the DEFAULT policy: these
-            # edges reconcile fork debt; the propagation rule (T06) reads
+            # edges reconcile fork debt; the propagation rule reads
             # the JOIN's incoming edges only.
             ["fail_closed"] * len(chunk),
         )
@@ -209,7 +209,7 @@ async def insert_fork(
             await conn.execute(
                 wsql.fork_edges,
                 # child_id = the join; parent_id = each child. EACH EDGE
-                # RECORDS THE JOIN'S DECLARED FAILURE POLICY (T06): the
+                # RECORDS THE JOIN'S DECLARED FAILURE POLICY: the
                 # propagation rule reads it off the ledger — the absorption
                 # is on the record, never inferred.
                 [join_id] * len(chunk_ids),

@@ -949,7 +949,7 @@ def register(router: APIRouter) -> None:
             # realtime.js is this page's transport in EVERY mode (the
             # script block below: the stream in real-time mode, the state
             # poll everywhere else). The meta refresh alongside it was the
-            # #337 double-fetch on this page - a full-document reload
+            # The double-fetch defect on this page - a full-document reload
             # racing the driver's own poll every interval.
             suppress_refresh=True,
         )
@@ -1032,7 +1032,7 @@ def register(router: APIRouter) -> None:
         # (or lands in the host's own routes).
         return RedirectResponse(url=f"{base_path}/jobs/{job_id}", status_code=303)
 
-    # ── THE WORKFLOW PROGRESS STREAM (T21 — the SSE face's HTTP mapping) ────
+    # ── THE WORKFLOW PROGRESS STREAM (the SSE face's HTTP mapping) ────
 
     @router.get("/api/flow/{flow_id}/progress/stream")
     async def flow_progress_stream(  # pyright: ignore[reportUnusedFunction, reportUntypedFunctionDecorator]  # Why: registered via FastAPI decorator; pyright cannot see the route registration, and the router's `.get` is the untyped decorator shape the file's other registrations already carry their ignores for.
@@ -1043,7 +1043,7 @@ def register(router: APIRouter) -> None:
         settings: TaskQSettings = Depends(get_settings),
         last_event_id: int | None = Query(default=None),
     ) -> Any:
-        """The run's progress stream (T21): the seq-cursor replay over the ONE
+        """The run's progress stream: the seq-cursor replay over the ONE
         workflow stream, mapped onto SSE.
 
         THE CONNECT SHAPE: a ``display`` frame first (the LEDGER + the state

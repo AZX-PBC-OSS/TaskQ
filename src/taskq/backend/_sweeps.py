@@ -898,7 +898,7 @@ WHERE (r.bucket_name, r.slot_index) = (expired.bucket_name, expired.slot_index)
   AND r.job_id IS NOT NULL"""
 
 _SWEEP_RESULT_TTL_GUARD_SQL = """\
-      -- THE WORKFLOW-LIVENESS GUARD (T18, EXPIRY-EATS-CHILDREN): a
+      -- THE WORKFLOW-LIVENESS GUARD (the expiry-eats-children face): a
       -- child row's result may not expire while its join is UN-FIRED —
       -- while a joined node in join-wait (pending + deps_pending > 0,
       -- the join-wait representation) counts this row as a parent. The
@@ -974,7 +974,7 @@ FROM expired
 WHERE j.id = expired.id
   AND j.result IS NOT NULL"""
 
-# THE GUARDED STATEMENT (the shipped shape) = the base + the T18
+# THE GUARDED STATEMENT (the shipped shape) = the base + the liveness
 # workflow-liveness guard, spliced at the window's LIMIT (the
 # _leader_shared composition pattern — ONE statement text, both
 # constants from one home; the rolling-deploy tolerance's fallback
@@ -2044,7 +2044,7 @@ async def sweep_expired_results(
     comment.
 
     THE ROLLING-DEPLOY TOLERANCE (the doc's named mechanism, real): the
-    T18 workflow-liveness guard probes ``wf_edge`` — a schema the
+    workflow-liveness guard probes ``wf_edge`` — a schema the
     workflow round has not landed on has NO such table, and the guarded
     statement's miss is ``UndefinedTableError``. The arm TOLERATES it
     per call, the way the prune's candidate predicate does: the fallback

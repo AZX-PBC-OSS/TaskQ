@@ -1,11 +1,11 @@
-"""The workflow progress emission surface (T21): ``ctx.progress`` — the
+"""The workflow progress emission surface: ``ctx.progress`` — the
 emission op, the client-side coalesce, and the auto-class projection.
 
 DECISION (a) — THE EMISSION OP: typed + bounded. ``pct`` is an int in
 0..100 or None (validated — a wrong shape is the TYPED refusal,
 :class:`ProgressRefusedError`, never a silent coercion); ``message`` is
 chars-capped (the ErrorInfo chars discipline); ``data`` is jsonb, capped
-T18's truncation shape (truncated WITH the ``__truncated__`` marker, never
+the truncation shape (truncated WITH the ``__truncated__`` marker, never
 silent), optionally validated against the node's DECLARED payload schema
 (the TypedGate-door pattern — the declaration is what makes a separate UI
 render the emission, the context-contract law applied to progress).
@@ -128,7 +128,7 @@ async def knock_progress(
 
 # ── THE BOUNDS (decision a + e) ──────────────────────────────────────────
 
-#: The stream ring's per-node bound (decision d; T18's retention owns the
+#: The stream ring's per-node bound (decision d; the retention owns the
 #: bounds — the sweep arm prunes leaked rings back to it).
 PROGRESS_RING_BOUND: Final[int] = 64
 #: The coalesce cadence bound — the PoC's ~20 deltas/s measured shape.
@@ -138,7 +138,7 @@ MESSAGE_MAX: Final[int] = 1024
 #: The finalize's terminal projection's message cap (the ledger terminal's
 #: own 500-char rule — the projection carries no traceback).
 MESSAGE_TERMINAL_MAX: Final[int] = 500
-#: The emission op's data cap (T18's truncation cap shape — the tors call shape:
+#: The emission op's data cap (the truncation cap shape — the tors call shape:
 #: truncate WITH the marker, never silently).
 DATA_MAX_BYTES: Final[int] = 8 * 1024
 
@@ -221,7 +221,7 @@ def validate_emission(
 
 
 def _cap_data(data: dict[str, Any]) -> dict[str, Any]:
-    """T18's truncation cap shape: oversize data truncated WITH THE MARKER (never
+    """the truncation cap shape: oversize data truncated WITH THE MARKER (never
     silently — the reader must know it read a truncation)."""
     raw = _json_dumps(data)
     if len(raw) <= DATA_MAX_BYTES:

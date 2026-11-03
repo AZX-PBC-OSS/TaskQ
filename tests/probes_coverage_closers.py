@@ -30,7 +30,7 @@ BRANCH arcs (``583->596`` et al.) that exist only as doubled guard
 conditions over one runtime shape — a test can only re-enter the same
 line; and ``_runner.py``'s 901/922-class arms whose setup requires a
 forked child process mid-finalize (the crash-window world is the
-t20-fence probe's lane; the duplication here would pin nothing new).
+fence probe's lane; the duplication here would pin nothing new).
 """
 
 from __future__ import annotations

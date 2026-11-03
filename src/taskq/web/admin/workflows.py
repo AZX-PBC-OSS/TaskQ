@@ -1,4 +1,4 @@
-"""The workflow-run explorer's PAGES (T11 + the run-explorer addendum):
+"""The workflow-run explorer's PAGES:
 the runs list (the inventory question) and the run page (the graph, the
 holds, the audit trail — all from the rows). The machine routes (the
 node panel, the SSE stream, the typed actions) register from
@@ -131,7 +131,7 @@ def _json_of(raw: object) -> object:
 
 def _field_of(payload: object, field_name: str) -> str | int | float | bool | None:
     """The hold's reason/tool/args — they ride INSIDE the held row's
-    payload jsonb until the deliver overwrites it (T10's deliver-no-drop
+    payload jsonb until the deliver overwrites it (the deliver-no-drop
     shape; the panel reads the SAME rows the knock carries)."""
     doc = _json_of(payload)
     if not isinstance(doc, dict):

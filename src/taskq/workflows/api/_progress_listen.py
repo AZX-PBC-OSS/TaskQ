@@ -3,8 +3,8 @@ HitlListener's sibling): the typed, public face over the progress push —
 ONE dedicated connection, LISTEN → BACKFILL → TAIL — fanning out to N
 concurrent subscribers.
 
-THE ZERO-WINDOW CONSTRUCTION (the #316 mid-stream re-check pattern, the
-T26 broadcast's proven shape): the connection LISTENS FIRST, THEN the
+THE ZERO-WINDOW CONSTRUCTION (the mid-stream re-check pattern, the
+broadcast's proven shape): the connection LISTENS FIRST, THEN the
 backfill snapshot reads the run's STATE-channel rows. Any emission
 visible to the snapshot either knocked BEFORE we listened (no knock will
 ever come — the snapshot is the only witness) or AFTER (its knock is
@@ -27,7 +27,7 @@ push face): every queue is drop-oldest on overflow. The writer NEVER
 blocks; the NEWEST events survive; a slow consumer loses OBSERVABILITY
 FIRST, correctness never — the row is the truth, the poll converges.
 
-THE OPERATIONAL LANDMINES (the T26 listener's own four, verbatim): the
+THE OPERATIONAL LANDMINES (the listener's own four, verbatim): the
 PgBouncer transaction-pooling mode silently breaks LISTEN (the
 dedicated connection IS the fix); the dedicated connection is ONE POOL
 SLOT for the stream's life (size the pool for the streams you run);
@@ -76,7 +76,7 @@ __all__ = [
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 #: The listener's own queue bound (the same tradeoff the admin's
-#: ``_listen.py`` and the T26 listener made: a slow consumer drops the
+#: ``_listen.py`` and the HITL listener made: a slow consumer drops the
 #: OLDEST event — the row is the truth, the poll converges). Bounds the
 #: raw queue, every subscriber queue, and the late-subscriber replay
 #: history alike.
@@ -99,7 +99,7 @@ class ProgressUpdated(BaseModel):
 
 
 class ProgressBackfilled(BaseModel):
-    """THE RECONCILE SNAPSHOT (the T26 listener's fourth member): emitted
+    """THE RECONCILE SNAPSHOT (the listener's fourth member): emitted
     after EVERY (re)backfill, carrying the node → ``last_seq`` map the
     ROWS witness right now (this run's STATE channel). The consumer
     drops any progress card whose node the snapshot has moved past; the
@@ -117,13 +117,13 @@ ProgressEvent = Annotated[ProgressUpdated | ProgressBackfilled, Field(discrimina
 type _Raw = tuple[str, str]
 
 # The pool hands out BOTH faces (the proxy and the bare connection) —
-# the T26 listener's own union.
+# the HITL listener's own union.
 type _Conn = asyncpg.Connection | PoolConnectionProxy
 
 
 class ProgressListener:
     """THE TYPED PROGRESS LISTENER (public — the SSE face and
-    programmatic consumers share it), DIRECTLY ASYNC-ITERABLE (the T26
+    programmatic consumers share it), DIRECTLY ASYNC-ITERABLE (the
     amendment — no ceremony between the author and the events):
 
     >>> listener = ProgressListener(pool, schema, flow_id=flow_id)
@@ -223,7 +223,7 @@ class ProgressListener:
     # ── the surfaces ─────────────────────────────────────────────────
 
     def __aiter__(self) -> AsyncGenerator[ProgressEvent, None]:
-        """THE CEREMONY-FREE FORM (the T26 amendment): ``async for event
+        """THE CEREMONY-FREE FORM: ``async for event
         in listener:`` — the typed stream directly."""
         return self.updates()
 
@@ -283,7 +283,7 @@ class ProgressListener:
         """Register ONE subscriber: its own bounded queue, seeded with
         the bounded event history (a backfill announced before the
         subscribe is still delivered — the buffer-then-consume
-        behavior). ATOMIC by construction (the T26 listener's own
+        behavior). ATOMIC by construction (the listener's own
         argument): no await between the history copy and the registry
         insert."""
         queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)

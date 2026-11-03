@@ -1005,8 +1005,8 @@ TEST_REDIS_CONNECT_TIMEOUT_SECS: float = 30.0
 redis-py 8 defaults ``socket_connect_timeout`` to 5s. On a loaded runner
 that budget is a red band, not a safety net: the testcontainer's address
 resolution (``getaddrinfo``, in the loop's executor) can out-run 5s and
-the first command dies with ``Timeout connecting to server`` — the
-rotating one-test-in-~12.7k red (PR #682's 3.13 leg). The connect phase
+the first command dies with ``Timeout connecting to server`` — one
+observed red in ~12.7k runs on Python 3.13's connect band. The connect phase
 is setup weather, never a pin's subject — the pins' own bounds are the
 tests' ``overall_timeout``s and the suite-wide pytest-timeout — so every
 fixture client dials with this budget instead: the tree's outside-system
@@ -1038,9 +1038,9 @@ def module_redis_url(
     # 5s CONNECT default is its own band - on a loaded runner the
     # testcontainer's address resolution (getaddrinfo in the loop's
     # executor) can out-run 5s and the first command dies with
-    # ``Timeout connecting to server`` (the red 3.13 leg of PR #682, one
-    # test in ~12.7k). The connect phase is setup weather, not a pin's
-    # subject: bound it at the tree's outside-system budget.
+    # ``Timeout connecting to server`` (one observed red in ~12.7k runs,
+    # Python 3.13's connect band). The connect phase is setup weather, not
+    # a pin's subject: bound it at the tree's outside-system budget.
     with redis_sync.from_url(
         url,
         decode_responses=False,

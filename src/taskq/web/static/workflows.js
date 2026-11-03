@@ -1,4 +1,4 @@
-/* The workflow-run page's live machinery (T11): render-once SVG +
+/* The workflow-run page's live machinery: render-once SVG +
  * data-node-key patches + the SSE revisioned-snapshot feed + the node
  * panel (with the node I/O) + the Resolve form + the rerun forms'
  * confirm dialogs + the node table's live patch. The conventions are
@@ -12,7 +12,7 @@
  *   resumes the cursor; the next frame carries the whole state, so a
  *   killed connection cannot strand the page;
  * - every async surface has a DEFINED loading, empty, AND error state —
- *   a blank region that reads as a healthy zero is a defect (#673).
+ *   a blank region that reads as a healthy zero is a defect.
  */
 (function () {
   "use strict";

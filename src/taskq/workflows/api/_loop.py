@@ -1,10 +1,10 @@
-"""The loop machinery (T19): ``wf.loop`` — PROMOTED TO V1 by the
+"""The loop machinery: ``wf.loop`` — PROMOTED TO V1 by the
 maintainer's ruling (*"you do not cut must haves"*).
 
 THE SHAPE: ``wf.loop(name, body, carry, until, max_iterations, budget,
 on_exhausted)``. Each iteration = FRESH jobs — the iteration-scoped step
 keys ``(workflow, loop_key, iteration, step)`` keep the idempotency
-ledger per-iteration (T05's contract unchanged; the keys are TEXT
+ledger per-iteration (the ledger's contract unchanged; the keys are TEXT
 business keys). The control union ``Done[DoneT] | Refine[FooT]`` is the
 body's return: ``Done`` stops the loop (its payload is the loop's
 result); ``Refine`` threads the carry.
@@ -269,7 +269,7 @@ def loop(
     unset ``until`` with both unset is the "waits forever" class — the
     validate warning.
 
-    ``gates=`` declares the body's HOLD gates (T16's addition — the
+    ``gates=`` declares the body's HOLD gates (the hold gate's addition — the
     typed door's compile visibility): a mid-loop ``wait_signal`` the
     body makes is INVISIBLE to the admin's resolve/deliver doors unless
     the gate is DECLARED on the node — the same law the step wiring's

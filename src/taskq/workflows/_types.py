@@ -1,6 +1,6 @@
-"""The workflow engine's data types (T04): the specs the enqueue/fork/finalize
+"""The workflow engine's data types: the specs the enqueue/fork/finalize
 paths carry, and the results they return. One home for the wire shapes —
-the engine, the fork, and the sweep each import from here, and T09's API
+the engine, the fork, and the sweep each import from here, and the API
 composes them without re-deriving.
 
 Id discipline: every ``*_id: JobId`` is uuid7 via the ``taskq._ids`` seam —
@@ -73,7 +73,7 @@ __all__ = [
 #: terminalizes the source with the ceiling documented here.
 MAP_INDEX_CEILING: Final[int] = 32767
 
-#: A join edge's declared failure policy (T06's two semantics):
+#: A join edge's declared failure policy (the two semantics):
 #:
 #: * ``fail_closed`` (the default) — a parent's TERMINAL failure fails the
 #:   join closed: the joined node blocks (``blocking_reason='failed_parent'``
@@ -89,10 +89,10 @@ FailurePolicy = Literal["fail_closed", "collect"]
 
 
 #: The ABSORBING policies (the edges whose declared policy absorbs a
-#: failure): T06's ``collect`` and T07's ``maybe``. A ``fail_closed``
+#: failure): ``collect`` and ``maybe``. A ``fail_closed``
 #: edge absorbs NOTHING — the cascade owns its resolution — so the
 #: envelope's policy marker can never claim it (the typed door: the
-#: envelope must not lie about which policy ran, T07's C).
+#: envelope must not lie about which policy ran).
 AbsorbingPolicy = Literal["collect", "maybe"]
 
 
@@ -121,7 +121,7 @@ class ConsumerBinding:
     #: The CONSUMER's declared incoming-edge failure policy (the map-join
     #: consumption fix): the fork writes the join→consumer EDGE with it —
     #: the downstream dispatches through the SAME edge-ledger door as any
-    #: node result (the counter's decrement gates the claim), and T06's
+    #: node result (the counter's decrement gates the claim), and the
     #: propagation reads the policy off the ledger when the JOIN itself
     #: terminal-fails.
     failure_policy: str = "fail_closed"
@@ -176,7 +176,7 @@ class ChildSpec:
 
 @dataclass(frozen=True, slots=True)
 class EmitChild:
-    """One chain-start row a streaming source's emit tx inserts (T20).
+    """One chain-start row a streaming source's emit tx inserts.
 
     The :class:`ChildSpec` shape PLUS the per-record identity stamps the
     emit owns — BOTH REQUIRED, not defaulted: the refuted-claim
@@ -221,9 +221,9 @@ class JoinSpec:
     #: depth-N, not depth-1.
     reservations: tuple[str, ...] = ()
     #: The declared failure policy recorded on the join's incoming edges
-    #: (T06): what a parent's TERMINAL failure does to this join.
+    #: The declared policy: what a parent's TERMINAL failure does to this join.
     failure_policy: FailurePolicy = "fail_closed"
-    #: T07's child-driven escape: the join past the declared fan-in bound
+    #: The child-driven escape: the join past the declared fan-in bound
     #: counts its terminal children FROM THE EDGE LEDGER at fire time (the
     #: counter-as-cache is never trusted; the choice is RECORDED on the
     #: joined node's metadata — metadata.join_shape). The declared-edge
@@ -273,9 +273,9 @@ class NodeSpec:
     parent_id: JobId | None = None
     parents: tuple[JobId, ...] = ()
     #: The failure policy recorded on THIS node's incoming edges when it is
-    #: a joined node (the public join path's declaration — T06).
+    #: a joined node (the public join path's declaration).
     failure_policy: FailurePolicy = "fail_closed"
-    #: T07's child-driven escape (recorded on the joined node's metadata).
+    #: The child-driven escape (recorded on the joined node's metadata).
     child_driven: bool = False
     map_index: int | None = None
     deps_pending: int = 0
@@ -308,7 +308,7 @@ class DecrementHit:
 
 @dataclass(frozen=True, slots=True)
 class FailureInfo:
-    """One collected child failure (T06's Item failure — the fan-in item).
+    """One collected child failure (the fan-in item).
 
     THE ENVELOPE IS THE ESTATE'S, never re-spelled:
     ``error`` IS :class:`taskq.backend._protocol.ErrorInfo` — the same
@@ -317,7 +317,7 @@ class FailureInfo:
     ``node_key`` / ``map_index`` are the workflow-only extensions.
 
     ``attempts`` carries the FULL attempt history (one entry per ladder
-    attempt, every error payload — P3 spike3's measured invariant); a
+    attempt, every error payload — the measured invariant); a
     SKIP's fan-in carries ``attempts=()`` (a skip is not an attempt —
     zero ledger rows).
     """
@@ -326,7 +326,7 @@ class FailureInfo:
     map_index: int | None
     error: ErrorInfo
     attempts: tuple[tuple[int, str | None, str | None], ...] = ()
-    #: The edge's OWN declared policy that absorbed this failure (T07's C:
+    #: The edge's OWN declared policy that absorbed this failure (the
     #: the envelope must not lie about which policy ran — 'collect' and
     #: 'maybe' absorb; the marker is on the item, TYPED to the absorbing
     #: vocabulary — a fail_closed claim is unconstructible at this door).
@@ -489,7 +489,7 @@ def _join_metadata(
     reservations: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """The joined node's metadata: the flow link, the join-wait marker, the
-    declared consumers — and T07's shape record (metadata.join_shape) when
+    declared consumers — and the shape record (metadata.join_shape) when
     the child-driven escape declared it: the choice rides the ROW (the
     sweep's re-derive reads it; the record never guesses). The SOURCE
     ROW's already-resolved reservation names ride beside them (the run's

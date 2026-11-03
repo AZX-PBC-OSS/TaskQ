@@ -29,7 +29,7 @@ the resilience defaults over the fork-guard:
   escaping the kill/idle-drop into the consumer. ONE attempt is the
   doctrine (see ``RETRY_RETRIES``): the retry buys the reconnect, never
   the outage — a multi-attempt budget measured starving the worker's
-  dispatcher tick on real CI runners (PR #647).
+  dispatcher tick on real CI runners.
 
 ``socket_timeout`` IS pinned — to redis-py 8.x's own asyncio default
 (5s, ``redis._defaults.DEFAULT_SOCKET_TIMEOUT``). This is a
@@ -76,10 +76,9 @@ RETRY_RETRIES: int = 1
 ONE attempt, deliberately. The retry buys the RECONNECT — a command that
 consumed a dropped pooled connection gets exactly one fresh-connect
 attempt, which lands in milliseconds when the broker is alive — and never
-the OUTAGE: the fail-closed surfaces own that. The original draft's
-3-attempt/1.0s-cap budget was measured (PR #647's CI, 3/3 runs, both
-supported Pythons) starving the worker's dispatcher of its funded tick
-budget: the rate limiter's acquire runs inside the dispatcher's
+the OUTAGE: the fail-closed surfaces own that. An earlier draft's
+3-attempt/1.0s-cap budget was measured (3/3 runs, both supported Pythons)
+starving the worker's dispatcher of its funded tick budget: the rate limiter's acquire runs inside the dispatcher's
 ~4.5s funded tick, and a 3-attempt retry multiplies every dead-broker
 command to ~0.35s — the acquire alone consumed the tick, the claim rolled
 back with it, and the probe's cancel escalation never landed (zero

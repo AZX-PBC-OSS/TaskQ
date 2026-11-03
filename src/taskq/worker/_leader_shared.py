@@ -331,7 +331,7 @@ _QUERY_CANCEL_PENDING_SQL_TEMPLATE = (
     "AND status IN ('pending', 'scheduled', 'running')"
 )
 
-#: The workflow progress rollup (T08): per (declared workflow, node state)
+#: The workflow progress rollup: per (declared workflow, node state)
 #: node counts — ONE grouped read for the wf-progress gauge and the
 #: admin's status panel alike (the query-count pin). Index-driven: the
 #: node rows ride jobs_wf_flow_nodes_idx (01.00.26_02 — the uuid-cast
@@ -457,7 +457,7 @@ _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL = (
     "   AND finished_at < statement_timestamp() - $2::interval"
 )
 
-# THE WORKFLOW-LIVENESS GUARD (T18, PRUNED-PARENT): retention must not
+# THE WORKFLOW-LIVENESS GUARD (the pruned-parent face): retention must not
 # prune a PARENT row of a NON-TERMINAL run -- the sweep's ledger recount
 # (the lock-first re-derive) reads parent rows as truth; a pruned parent
 # mid-run breaks the recount (the recount's count is corrupted by the
@@ -1008,7 +1008,7 @@ async def prune_terminal_jobs(
                     sizer=sizer,
                 )
             except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
-                # THE ROLLING-DEPLOY TOLERANCE (T18's own guard's edge): a
+                # THE ROLLING-DEPLOY TOLERANCE (the liveness guard's edge): a
                 # schema the 01.00.24 round has not landed on yet has NO
                 # wf_edge table — the guard cannot resolve, and an
                 # untolerated miss is the prune's death (a

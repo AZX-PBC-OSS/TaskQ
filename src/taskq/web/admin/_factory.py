@@ -320,7 +320,7 @@ def get_schema(request: Request) -> str:
 
 
 def get_workflow_app(request: Request) -> Any | None:
-    """Dependency: the host's WorkflowApp (T11's typed door), or None.
+    """Dependency: the host's WorkflowApp (the typed door), or None.
 
     ``getattr`` fallback: a host assembled before the workflow surface
     existed (or one that deliberately mounts without definitions) keeps
@@ -336,7 +336,7 @@ def get_redis_client(request: Request) -> Any | None:
 
 
 def get_session_verifier(request: Request) -> Callable[[Request], Awaitable[bool]] | None:
-    """Dependency: the SSE session re-check from ``app.state`` (#316).
+    """Dependency: the SSE session re-check from ``app.state`` .
 
     Long-lived SSE streams re-invoke it (before every yielded event, at every
     keepalive tick) so a session revoked mid-stream stops receiving frames.
@@ -621,13 +621,13 @@ class AdminBundle:
     # flags. None keeps the residual: a standalone admin process cannot
     # know, and the fire stamps nothing (disclosed in ops.py, not silent).
     actor_fire_policies: Mapping[str, ActorFirePolicyLike] | None = None
-    # The host's WorkflowApp (T09's authoring surface), when the host
+    # The host's WorkflowApp (the authoring surface), when the host
     # process HAS the workflow definitions (the demo app, the worker).
     # The typed deliver/resolve doors validate through its bound gates;
     # None is the honest residual: the doors answer 501 (no untyped
     # deliver surface ships), never a silent untyped write.
     workflow_app: Any = None
-    # The SSE session re-check (#316), derived from auth_dependency when the
+    # The SSE session re-check , derived from auth_dependency when the
     # factory was not given one explicitly; setup_admin_state copies it onto
     # app.state where the /sse/{topic} endpoint resolves it per request.
     session_verifier: Callable[[Request], Awaitable[bool]] | None = None
@@ -890,7 +890,7 @@ def create_router(
     stamps nothing (disclosed here and in ops.py, not silent).
 
     ``session_verifier`` is the optional async re-check long-lived SSE streams
-    re-invoke (#316) -- ``Callable[[Request], Awaitable[bool]]`` returning
+    re-invoke  -- ``Callable[[Request], Awaitable[bool]]`` returning
     whether the session that opened the stream is still valid. When omitted,
     it is derived from the ``session_verifier`` attribute the taskq auth
     dependencies (``create_auth_dependency``, ``token_auth``) attach to the
@@ -933,7 +933,7 @@ def create_router(
             ),
         )
 
-    # Session re-check derivation (#316): prefer the explicit parameter, fall
+    # Session re-check derivation : prefer the explicit parameter, fall
     # back to the attribute the taskq auth dependencies attach. An auth
     # dependency without a re-check cannot be safely re-invoked by us (it may
     # need FastAPI dependency injection), so the fallback is no re-check --

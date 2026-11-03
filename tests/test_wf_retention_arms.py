@@ -592,7 +592,7 @@ async def _bulk_node(conn: asyncpg.Connection, schema: str, flow_id: JobId, *, s
 # load_sensitive: this pin asserts WALL TIME — four elapsed asserts against
 # dispatcher_command_timeout (default 5.0s) on passes whose healthy runtime
 # is a fraction of that budget. Under xdist co-tenancy a sibling's CPU churn
-# pushed the loaded pass to 15.93s (PR #695's 3.13 leg): runner speed, not
+# pushed the loaded pass to 15.93s (Python 3.13's leg): runner speed, not
 # the arm's shape. The serial load-sensitive lane is where a wall-time
 # assert measures the code under test and not the packing. The pin's
 # row-count asserts (batch bound, drain total, live survival) ride along;

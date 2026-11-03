@@ -135,7 +135,7 @@ async def _resolve_review_holds(
 # load_sensitive (PR #698's recorded finding, the hold round law): the march's
 # verdict is its settle windows — the cron-kickoff loop (_KICKOFF_BOUND_S),
 # the map-fork loop (MARCH_SETTLE_BOUND_S), and wait_flow_terminal's
-# settle bound — and PR #698's run expired the settle with the rows STILL
+# settle bound — and an observed run expired the settle with the rows STILL
 # MOVING (pending/scheduled, one item at attempt 2, nothing errored): the
 # runner-starvation red, not a lost march — the receipt's own row dump is
 # the "still moving, not stuck" signature. All three marches in this file

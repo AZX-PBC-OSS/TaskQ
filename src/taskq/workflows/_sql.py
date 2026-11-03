@@ -123,11 +123,11 @@ __all__ = [
 #: to the Python frozenset is pinned by test.
 TERMINAL_SQL_SET: Final[str] = "('succeeded','failed','cancelled','crashed','abandoned')"
 
-#: metadata.blocking_reason values (the blocked-row representation, T03:
+#: metadata.blocking_reason values (the blocked-row representation:
 #: carried on the row's metadata jsonb, never a new ENUM).
 BLOCKING_REASON_JOIN: Final[str] = "join"
 BLOCKING_REASON_ORPHAN_PARENT: Final[str] = "orphan_parent"
-#: The fail-closed block (T06): a join whose parent TERMINAL-failed — the
+#: The fail-closed block: a join whose parent TERMINAL-failed — the
 #: joined node's side of the counter is RESOLVED by this stamp (the
 #: rederive locks 'join' rows only); metadata.failed_parent names it.
 BLOCKING_REASON_FAILED_PARENT: Final[str] = "failed_parent"
@@ -201,7 +201,7 @@ class WorkflowSql:
     workflow_map_progress: str
     workflow_map_progress_sources: str
     workflow_root_maintain: str
-    # T21's progress surface (the two-channel persistence + the faces).
+    # The progress surface (the two-channel persistence + the faces).
     progress_state_upsert: str
     progress_stream_append: str
     progress_ring_prune: str

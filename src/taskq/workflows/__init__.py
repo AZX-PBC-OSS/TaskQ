@@ -27,7 +27,7 @@ their homes WITHOUT the tax:
   ``_runner_errors``/``_ctx``/``_ctx_wait``/``_runner_loop``/
   ``_runner_chain``/``_runner_ladder``/``_runner_exit`` — §7b's split)
   own create/drive/result; ``api._loop`` owns the loop verbs;
-  ``_childflow`` owns the child flows (T28 — the spawn face + the join
+  ``_childflow`` owns the child flows (the spawn face + the join
   handle); the progress READ surface (``run_display``/``keyed_display``
   — the operator's display contract, the progress guide's taught
   import) is re-exported HERE from ``_progress_read`` (the LedgerWatch

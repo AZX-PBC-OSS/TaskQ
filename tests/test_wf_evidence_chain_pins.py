@@ -229,7 +229,7 @@ def test_the_cited_import_terminal_is_history_by_declaration(tmp_path: Path, gho
             "imported.txt",
             _STALE_SHA,
             "t1",
-            kind="CITED-IMPORT (the P1 spike's session evidence gone; the import IS the provenance)",
+            kind="CITED-IMPORT (the originating session's evidence gone; the import IS the provenance)",
         ),
     ]
     runs = _estate(tmp_path, claims, ghosts=("imported.txt",) if ghost else ())

@@ -56,7 +56,7 @@ async def _get(pool: "asyncpg.Pool", sql: SqlTemplates, job_id: JobId) -> JobRow
     """One job row by id, hot table first, archive tier on a hot miss.
 
     The same jobs-then-archive fallback ``taskq job show`` applies
-    (issue #314): a terminal row survives its prune only in
+    (the archive fallback): a terminal row survives its prune only in
     ``jobs_archive``, so answering the hot table alone reported an
     archived job as if it never existed -- ``None`` to ``JobsClient.get``
     and a bare ``KeyError`` from every ``JobHandle`` read-back, while the
@@ -232,7 +232,7 @@ async def _get_attempts(
 
     The prune moves the job's attempt rows to ``job_attempts_archive``
     in the same statement that moves the job row to ``jobs_archive``
-    (issue #314's tier pair): answering the hot table alone reported an
+    (the tier pair): answering the hot table alone reported an
     archived job's history as empty while the same job's ``get`` answered
     its archived row -- the row claimed an attempt happened, the history
     claimed nothing did. An empty hot read for a LIVE job (never started,

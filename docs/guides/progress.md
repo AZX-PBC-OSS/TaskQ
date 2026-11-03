@@ -432,7 +432,7 @@ Without the `redis` extra:
 
 ---
 
-## Workflow node progress (T21)
+## Workflow node progress
 
 ACTOR progress (above) is the JOB's surface. WORKFLOW nodes have their
 own, per-NODE — the two-channel persistence:

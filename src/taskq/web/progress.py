@@ -30,7 +30,7 @@ Design notes
 - On client disconnect, ``try/finally`` in the generator calls
   ``pubsub.unsubscribe()`` and ``pubsub.aclose()`` to prevent stale Redis
   subscriptions.
-- Session re-check (#316): the router-level ``Depends(auth_dependency)`` runs
+- Session re-check : the router-level ``Depends(auth_dependency)`` runs
   once at request acceptance; a stream that authenticated once would otherwise
   keep delivering frames long after its session was revoked. The generator
   therefore re-invokes an optional ``session_verifier`` -- the re-check the
@@ -137,7 +137,7 @@ _BROKER_READ_GRACE_SECS: float = 0.5
 _MAX_PROGRESS_SEQ: int = 2**31 - 1
 
 # Cap on the effective keepalive/re-check cadence of a live stream. The
-# keepalive tick is what bounds post-revocation staleness (#316): the
+# keepalive tick is what bounds post-revocation staleness : the
 # generator re-checks the session once per tick, so a host configuring
 # ``sse_heartbeat_interval`` to hours would silently move the revocation
 # bound to hours. Whatever the configured interval, a quiet stream re-checks
@@ -380,7 +380,7 @@ async def _event_generator(
                 )
                 raise
 
-            # Session re-check (#316): once per streaming-loop iteration --
+            # Session re-check : once per streaming-loop iteration --
             # this point is both the keepalive tick and "before each yielded
             # event" -- and the read above suspends at most one heartbeat, so
             # a revoked session ends the stream within one keepalive
@@ -575,7 +575,7 @@ def create_router(
         FastAPI dependency: it may declare ``request: Request``.
     session_verifier:
         Optional async re-check for long-lived SSE streams
-        (#316): ``Callable[[Request], Awaitable[bool]]`` returning whether the
+        : ``Callable[[Request], Awaitable[bool]]`` returning whether the
         session that opened the stream is still valid. Live streams re-invoke
         it before every yielded event and at every keepalive tick and end on
         failure, so a session revoked mid-stream (secret rotation, expiry, an
@@ -638,7 +638,7 @@ def create_router(
 
     router = APIRouter(**router_kwargs)
 
-    # Session re-check derivation (#316): prefer the explicit parameter, fall
+    # Session re-check derivation : prefer the explicit parameter, fall
     # back to the attribute the taskq auth dependencies attach to the callable
     # they return. An auth dependency without a re-check cannot be safely
     # re-invoked by us (it may need FastAPI dependency injection), so the
@@ -661,7 +661,7 @@ def create_router(
 
     _schema = schema
     _heartbeat_secs = sse_heartbeat_interval.total_seconds()
-    # Why the cap: the keepalive tick is the revocation bound (#316) -- the
+    # Why the cap: the keepalive tick is the revocation bound  -- the
     # generator re-checks the session once per tick -- so a host-configured
     # interval of hours would silently move that bound to hours. The loop and
     # the fallback ping below are both capped at _SSE_HEARTBEAT_CAP_SECS.
@@ -678,7 +678,7 @@ def create_router(
                 "sse_heartbeat_interval exceeds the "
                 f"{_SSE_HEARTBEAT_CAP_SECS:g} s cap and is clamped: the "
                 "keepalive tick is also the session re-check cadence "
-                "(#316), so a longer interval would silently loosen the "
+                ", so a longer interval would silently loosen the "
                 "bound on how long a revoked session keeps receiving "
                 "frames."
             ),
@@ -924,7 +924,7 @@ def create_router(
                 # We emit our own keepalive comments via the get_message timeout
                 # loop; sse-starlette's ping is only a fallback. Bounded at twice
                 # the effective (capped) heartbeat: the old 24-hour value was a
-                # no-lifetime-cap stream -- exactly the property the #316 fix
+                # no-lifetime-cap stream -- exactly the property the re-check bound
                 # removes -- while ping=0 causes a tight loop (anyio.sleep(0)
                 # returns immediately).
                 ping=_effective_heartbeat_secs * 2,

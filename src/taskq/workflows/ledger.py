@@ -1,4 +1,4 @@
-"""The step ledger + the run-key arbiter + the idempotency contract (T05).
+"""The step ledger + the run-key arbiter + the idempotency contract.
 
 Idempotency keys are assigned as ``scope = workflow run``,
 ``key = (step_key [, map_index])`` against the EXISTING composite
@@ -95,7 +95,7 @@ TERMINAL_JOB_STATUSES: Final[frozenset[str]] = frozenset(TERMINAL_STATUSES)
 class FlowEntry(Protocol):
     """The flow definition's registered shape the run-key claim needs (the
     typed door — a bare ``int`` or attribute-less object is a checker
-    error, the T01 negative probes pin it). ``name`` namespaces the
+    error, the negative type probes pin it). ``name`` namespaces the
     arbiter's scope (``workflow-run:<name>``)."""
 
     name: str
@@ -143,7 +143,7 @@ class LedgerClaim:
     attempt increments at claim); a conflicting claim returns the EXISTING
     row, whose terminal ``result`` is the memoized answer.
     ``result`` is the TYPED door: the memoized payload is a JSON value —
-    never a bare ``Any`` (the T01 probe: any method call on it is a checker
+    never a bare ``Any`` (the type probe: any method call on it is a checker
     error).
     ``ledger_id`` is the claimed LEDGER ROW's own id (the RETURNING id) —
     the strongest terminal-write key: the finalize that holds it pins the
@@ -193,7 +193,7 @@ class RunClaim:
 
     @property
     def kind(self) -> RunClaimKind:
-        """The typed verdict (the T01 door's law: a member access, never a
+        """The typed verdict (the verdict door's law: a member access, never a
         bare value to decode at the call site)."""
         if self.created:
             return "created"
@@ -287,9 +287,9 @@ async def insert_flow_run(
     arbiter is the rememberer. A conflict returns the EXISTING run's id +
     status.
 
-    *entry* is the flow definition's registered shape (T09's API; the
+    *entry* is the flow definition's registered shape (the API; the
     TYPED door — :class:`FlowEntry`, the protocol the negative probes
-    pin). *extra_metadata* rides the SAME insert (T28's provenance
+    pin). *extra_metadata* rides the SAME insert (the child flow's provenance
     stamps — the child root's parent pointers land in the create's ONE
     transaction; ``None`` = the shipped shape byte-identical).
     """

@@ -283,7 +283,7 @@ __all__ = [
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
-# ── THE DISPATCH FENCE (P3 rule 4's second leg, T04) ────────────────────
+# ── THE DISPATCH FENCE (P3 rule 4's second leg) ────────────────────
 # Cancel = one transaction — the flow flip is the linearization point, and
 # every other statement re-checks flow status inside its own statement.
 # THREE legs ship: the fire guard's flow-status EXISTS, the FINALIZE fence
@@ -311,7 +311,7 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 # _render_dispatch_sql (never .format — the templates keep {schema} for the
 # call-site render).
 _WF_DISPATCH_FENCE_TEMPLATE = """\
-      -- THE DISPATCH FENCE (P3 rule 4's second leg, T04, + the worker
+      -- THE DISPATCH FENCE (P3 rule 4's second leg, + the worker
       -- EXECUTION capability): a workflow row is claimable only by a
       -- worker that can EXECUTE it, and never on a TERMINAL flow —
       -- EXCEPT the loop's REGISTERED ESCALATION step
@@ -552,7 +552,7 @@ rr_tail_keys AS (
   ) nxt
 ),
 -- The round's precomputed per-actor RUNNING counts, CAPPED ACTORS ONLY
--- (#283): one evaluation per capped live actor per round, read by all
+-- (one evaluation per capped live actor per round, read by all
 -- three former count sites (both capacity CTEs' residuals and
 -- eligible_candidates' post-lock re-check). The correlated-count form
 -- this replaces re-evaluated the count per CLAIMED ROW in
@@ -563,7 +563,7 @@ rr_tail_keys AS (
 -- round whether or not any actor declared a cap. Here the count runs
 -- ONCE per capped live actor.
 --
--- Compose-only-when-declared, the #281/#226 discipline: the gate is the
+-- Compose-only-when-declared (the compose discipline): the gate is the
 -- CASE branch inside this CTE, not a render-time seam, because the
 -- fleet's cap declarations are runtime state the static template cannot
 -- see (the same reason queue_cap_headroom is gated in SQL below). A
@@ -842,7 +842,7 @@ per_actor_capacity AS (
            ELSE GREATEST(
                   ac.max_concurrent
                   -- The actor's live running count, PRECOMPUTED in the
-                  -- capped_running CTE above (#283): read here as one
+                  -- capped_running CTE above: read here as one
                   -- in-CTE lookup per capped actor per round, never a
                   -- per-claimed-row recount (the correlated form this
                   -- replaced paid O(oversample x cap^2) running-index
@@ -1232,7 +1232,7 @@ eligible_candidates AS (
   ) ac
   -- The claimed row's actor running count: NOT a fleet-wide
   -- running_per_actor read, and NOT a correlated per-claimed-row recount
-  -- (#282) whose per-round work is O(oversample x cap^2) -- the count
+  -- whose per-round work is O(oversample x cap^2) -- the count
   -- runs once per CLAIMED row, each scanning that actor's running-row
   -- index entries, so a capped fleet measures 28/648/2550/10100
   -- running-index rows at caps 5/25/50/100. It is a lookup of the

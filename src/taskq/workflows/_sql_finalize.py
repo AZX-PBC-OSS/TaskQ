@@ -1,4 +1,4 @@
-"""The finalize-path statement constants (T04): the terminal-mark fence, the guarded decrement, the guarded fire, the outbox insert, the node/fork writes.
+"""The finalize-path statement constants: the terminal-mark fence, the guarded decrement, the guarded fire, the outbox insert, the node/fork writes.
 
 The schema identifier is the ONLY caller-controlled interpolated value
 (validated at WorkflowSql.build); the ONE further token
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Final
 
-#: THE FAN-IN'S BYTE CAP (T18's UNBOUNDED-JSONB policy):
+#: THE FAN-IN'S BYTE CAP (the UNBOUNDED-JSONB policy):
 #: the collect's ``failures`` jsonb truncates here — over the cap the
 #: join row COMPACTS to the bounded summary (the ``__truncated__`` marker
 #: + the ledger pointer); the full detail stays on the ledger/attempts.
@@ -188,7 +188,7 @@ VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 """
 
 
-# The single-node insert (the workflow-row enqueue path's core write; T09's
+# The single-node insert (the workflow-row enqueue path's core write; the
 # API wraps it). A joined node is born with deps_pending = <declared parent
 # count> and blocking_reason='join' in metadata; vanilla enqueues never set
 # it (DEFAULT 0 — a semantic no-op for them). trace_id is stamped on the
@@ -250,7 +250,7 @@ SELECT * FROM unnest($1::uuid[], $2::uuid[], $3::uuid[], $4::text[])
 """
 
 
-# ── T20: THE EMIT TX — the streaming source's per-page statement group ──
+# ── THE EMIT TX — the streaming source's per-page statement group ──
 # The certified fork shapes RE-BOUND (the children INSERT + the edge rows
 # are byte-shape FORK_CHILDREN_SQL / FORK_EDGES_SQL — named separately so
 # the emit's call site and its pins grep THIS concern) + the ONE new leg:
@@ -304,7 +304,7 @@ RETURNING id
 """
 
 
-# THE MAX-IN-FLIGHT BOUND'S COUNTER (T20): the run's non-terminal
+# THE MAX-IN-FLIGHT BOUND'S COUNTER: the run's non-terminal
 # row count (the ledger's truth), excluding the source's own claim row —
 # the admission's arithmetic input, read INSIDE the tx under the lock.
 EMIT_IN_FLIGHT_SQL = """\
@@ -377,7 +377,7 @@ SELECT id, status FROM {schema}.jobs WHERE id = $1
 """
 
 
-# ── T06: the failed-parent propagation ──────────────────────────────────
+# ── The failed-parent propagation ──────────────────────────────────
 
 # The FAIL-CLOSED peer-cascade: a parent's TERMINAL failure resolves every
 # fail_closed join counting this parent by a FLOW-SCOPED transition set,
@@ -459,7 +459,7 @@ SELECT (SELECT count(*) FROM blocked) AS blocked,
 """
 
 
-# The ABSORBED fan-in (T06's collect / T07's maybe): a failed child whose
+# The ABSORBED fan-in (the collect / maybe policies): a failed child whose
 # edge declared an ABSORBING policy does NOT cascade — its failure fans in
 # as the typed FailureInfo item APPENDED to each absorbing join's
 # ``metadata.failures`` array (the full attempt history rides the item —
@@ -470,7 +470,7 @@ SELECT (SELECT count(*) FROM blocked) AS blocked,
 # lands in the same tx, before the fire's decrement reads 0). The
 # statement returns the HISTORY + THE EDGE'S OWN POLICY (the item names
 # the policy that absorbed it — the envelope must not lie about which
-# policy ran, T07's C); the engine builds the typed item through the
+# policy ran); the engine builds the typed item through the
 # FailureInfo door — one wire shape, never a re-spelled envelope.
 COLLECT_FAN_IN_SQL = """\
 WITH history AS (
@@ -503,7 +503,7 @@ WHERE e.parent_id = $1::uuid
 # by THIS child's item) — keyed per join row (the fan-in read above
 # returns the joins; this write lands the item). Keyed single row; the
 # append is jsonb concat on the array.
-# The fan-in's append, BOUNDED (T18's UNBOUNDED-JSONB policy): the collect's ``failures`` array truncates at the
+# The fan-in's append, BOUNDED (the UNBOUNDED-JSONB policy): the collect's ``failures`` array truncates at the
 # byte cap — over the cap, the row COMPACTS: the array is replaced by the
 # bounded summary (the ``"__truncated__": N`` marker counting the items no
 # longer spelled on the row + the ledger pointer), and the FULL detail
@@ -554,7 +554,7 @@ RETURNING j.id
 """
 
 
-# The failed child's ABSORBED-side decrement (T06/T07): DECREMENT_SQL's
+# The failed child's ABSORBED-side decrement (the absorbing policies): DECREMENT_SQL's
 # shape scoped to the ABSORBING policies (collect | maybe — the edges
 # whose declared policy absorbs the failure) — a fail_closed edge's side
 # is resolved by the cascade's block stamp (never by a decrement: the
@@ -569,7 +569,7 @@ RETURNING j.id
 # record (WORKFLOW_NODES_SQL / the maintenance leg's has_failed) reads
 # the join row's terminal-block stamp — never the edge's declaration —
 # so the derivation can say 'failed' for the failed-closed run (the
-# envelope never lies, T07's C).
+# envelope never lies).
 DECREMENT_ABSORBED_SQL = """\
 WITH flow_alive AS (
     SELECT 1 AS ok
@@ -661,7 +661,7 @@ RETURNING j.id, j.deps_pending
 #     mark_retry_after_consume_true's max_attempts fence): a consuming
 #     retry past the budget answers the EXHAUSTED verdict — the runner
 #     routes it through the wf terminal door (the ledger's failed row +
-#     the T06 cascade ride finalize_node; the vanilla's own class +
+#     the failed-parent cascade ride finalize_node; the vanilla's own class +
 #     message). The refunding arms are unconditional here: a deferral
 #     that never ran spends nothing.
 #

@@ -1,4 +1,4 @@
-"""The workflow progress READ surfaces (T21): the faces + the aggregation
+"""The workflow progress READ surfaces: the faces + the aggregation
 — every face a VIEW over the same rows, no face owns state (decision f).
 
 THE FACES (decision f):
@@ -16,7 +16,7 @@ THE FACES (decision f):
   on status is the ledger row's, so a projection that missed it cannot
   lie.
 * :func:`map_progress_line` — the map's progress: the certified grouped
-  read (T08's law — "417/1000 · 3 retrying · 580 blocked" IS the map's
+  read (the law — "417/1000 · 3 retrying · 580 blocked" IS the map's
   progress), the state channel's avg pct riding the same read.
 * :func:`read_map_aggregate` — the user's DECLARED ``aggregate=`` fn: a
   pure, READ-SIDE fn evaluated AT READ TIME over the children's RESULT
@@ -302,7 +302,7 @@ async def read_map_aggregate(
     # join row rides the same parent and its result IS the collected list
     # (the items again — doubly counted). The items' step key is the
     # parent's own ``<parent>.item`` (or the typed route's per-arm
-    # ``<parent>.item:<type-tag>``, T27); the fork's join is the parent's
+    # ``<parent>.item:<type-tag>``); the fork's join is the parent's
     # ``<parent>.join`` — excluded BY NAME (the runner's fork names them).
     def _is_item_key(key: str) -> bool:
         return key.endswith(".item") or ".item:" in key
@@ -396,7 +396,7 @@ async def progress_stream_generator(
 ) -> AsyncIterator[dict[str, str]]:
     """The run's progress SSE stream — the frames the HTTP face maps onto
     ``sse-starlette`` (the route is the thin mapping; this generator is
-    the testable machine, T11's seq-cursor law applied to the progress
+    the testable machine, the seq-cursor law applied to the progress
     stream).
 
     THE CONNECT SHAPE (the degraded-mode law at EVERY connect): the DISPLAY frame

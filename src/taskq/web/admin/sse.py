@@ -71,7 +71,7 @@ def _session_gate(
     session_verifier: Callable[[], Awaitable[bool]] | None,
     schema: str | None,
 ) -> Callable[[], Awaitable[bool]]:
-    """The #316 mid-stream re-check, built once per stream: runs before
+    """The mid-stream re-check, built once per stream: runs before
     the first frame and once per loop iteration — before every yielded
     event and at every keepalive tick. A failure ends the stream (fail
     closed); a verifier exception is revocation; a check that outlives
@@ -122,7 +122,7 @@ async def _sse_generator(
     """Stream admin state_change events (or keepalives) as SSE strings.
 
     ``session_verifier`` is the request-scoped re-check for post-revocation
-    auth (#316): it runs before the first frame and once per loop iteration --
+    auth : it runs before the first frame and once per loop iteration --
     before every yielded event and at every keepalive tick -- and a failure
     ends the stream, the finally releasing the topic's semaphore slot. Any
     exception out of the verifier is treated as revocation (fail closed), and
@@ -259,7 +259,7 @@ async def _holds_generator(
     session_verifier: Callable[[], Awaitable[bool]] | None = None,
     topic: str = "holds",
 ) -> AsyncGenerator[str, None]:
-    """Stream the HITL broadcast (T26) as SSE ``hold`` frames — the
+    """Stream the HITL broadcast as SSE ``hold`` frames — the
     TYPED listener's events (``HoldCreated`` / ``HoldResolved`` /
     ``HoldExpired`` / ``Backfilled``) straight to the browser, the open
     holds BACKFILLED at subscribe (a page render sees the pending
@@ -267,7 +267,7 @@ async def _holds_generator(
     rides every (re)backfill: a hold resolved or expired during an
     outage never announces its own death — the browser board drops any
     card the snapshot disowns. The resolve/deliver door is UNCHANGED —
-    this is the read face only. The #316 session re-check gates every
+    this is the read face only. The session re-check gates every
     frame exactly as the state_change feed's does; the bounded shielded
     close is the same shape (a client disconnect closes THIS generator;
     the listener's pump and its dedicated LISTEN connection must
@@ -389,13 +389,13 @@ def register(router: APIRouter) -> None:
         # Bind the request into the re-check once: the verifier reads the same
         # session cookie the request arrived with, and a session revoked
         # mid-stream fails the re-check even though those bytes are unchanged
-        # (#316). None when the host wired no verifier: the stream then
+        # . None when the host wired no verifier: the stream then
         # authenticates once at subscribe only, with no mid-stream re-check.
         _session_verifier: Callable[[], Awaitable[bool]] | None = (
             (lambda: session_verifier(request)) if session_verifier is not None else None
         )
         if topic == "holds":
-            # THE HITL BROADCAST FACE (T26): the typed listener's events
+            # THE HITL BROADCAST FACE: the typed listener's events
             # — backfilled at subscribe, then the live NOTIFYs.
             gen = _holds_generator(
                 semaphore,

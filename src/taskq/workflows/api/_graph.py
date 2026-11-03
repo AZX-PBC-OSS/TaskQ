@@ -1,5 +1,5 @@
 """The flow API's wiring graph — :class:`Promise`, the fan-in/fan-out
-combinators, and the compile-time recorder (T09).
+combinators, and the compile-time recorder.
 
 THE TYPE CONTRACT (§5.4-4): plain types for data, ``Promise[T]`` for
 wiring. A wiring function decorated with ``@app.workflow`` runs once under
@@ -12,7 +12,7 @@ is SPELLED by the wiring, compiled fresh from the same module every time
 
 THE FLAT SHAPE: ``map`` returns a plain ``Promise[list[R]]`` over the
 map's JOIN — never ``Promise[list[Promise[R]]]`` (the checker rejected the
-nested shape at T01's v2:124).
+nested shape — the checker's own recorded rejection).
 
 The recorder is a ``ContextVar``, never a global: two apps compile
 concurrently without seeing each other's wiring.
@@ -99,7 +99,7 @@ BodyFn = Callable[..., Awaitable[object]]
 #: DISPATCH against the flow's state, never at
 #: create time.
 #:
-#: DEPRECATED FOR DISPATCH (T27 — the finding, named honestly): this
+#: DEPRECATED FOR DISPATCH (the stringly face's defect, named honestly): this
 #: face is STRINGLY — the state it reads is decoded JSON dicts, and a
 #: tag-keyed predicate ("skip unless mime == video") can drop an element
 #: from EVERY downstream arm and still let the run terminalize SUCCEEDED
@@ -489,7 +489,7 @@ class WorkflowBuildError(TypeError):
 
 
 class Exit[T]:
-    """THE TYPED EARLY-EXIT SENTINEL (T09's §17.1 — the None-end's
+    """THE TYPED EARLY-EXIT SENTINEL (§17.1 — the None-end's
     sanctioned escape): a body returns ``Exit(payload)`` to
     TERMINAL-SUCCEED the node with a typed result NOW — the workflow's
     answer is decided, the remaining downstream graph does not run.
@@ -523,7 +523,7 @@ class Exit[T]:
 
 @dataclass(frozen=True, slots=True)
 class RouteArm[R]:
-    """ONE typed route arm (T27): the arm's body + the PER-ARM placement
+    """ONE typed route arm: the arm's body + the PER-ARM placement
     override (R4 — ``processA`` on the gpu queue, ``processB`` on the io
     queue) + the PER-ARM admission terms (the consumer-face lane's FIX
     2 — ``rate_limits=[TokenBucket(...)]``; "5 concurrent" is not
@@ -604,7 +604,7 @@ class RouteArm[R]:
 
 @dataclass(frozen=True, slots=True)
 class GateDecl:
-    """A node's declared HOLD gate (T09 compiles it; T10's machinery runs
+    """A node's declared HOLD gate (the compile carries it; the hold machinery runs
     it): the signal type(s) the body waits on, the deadline policy. The
     declaration is what the Mermaid render's ``[(hold)]`` nodes and the
     validate warning ("a workflow that waits forever on a human") read —
@@ -612,7 +612,7 @@ class GateDecl:
 
     THE TIMER-POLICY DISPOSITION (recorded — the alignment audit's
     finding, the don't-pay law): ``on_timeout="fail"`` is the v1 arm
-    and its face is the CLOSED UNION's ``Expired`` MEMBER (T26's
+    and its face is the CLOSED UNION's ``Expired`` MEMBER (the
     amendment — the expiry is a VALUE, not an exception): the wait site
     RETURNS ``Expired`` and the body MATCHES the fail-close arm (the
     checker forces it); a body that WANTS the failure raises
@@ -659,7 +659,7 @@ class NodeDecl:
     #: This is the v1 wiring rule: ARGUMENT ORDER IS SIGNATURE ORDER.
     args: tuple[tuple[str, object], ...] = ()
     #: The declared failure policy on THIS node's incoming edges (the
-    #: JOIN-FAILURE-POLICY duality — T06/T07): required (fail_closed)
+    #: JOIN-FAILURE-POLICY duality): required (fail_closed)
     #: default; the timeout arm resolves per the same policy.
     on_failure: str = "fail_closed"
     max_attempts: int = 3
@@ -730,7 +730,7 @@ class NodeDecl:
     #: boot. The projection carries it into the cohort's ``ActorConfig``.
     capacity_owner: str = "operator"
     kind: str = "step"  # "step" | "map_source" | "gather" | "map_join"
-    # THE PROGRESS SCHEMA DECLARATION (T21 decision a — the TypedGate-door
+    # THE PROGRESS SCHEMA DECLARATION (the TypedGate-door
     # pattern): a pydantic model the node's ``ctx.progress`` data
     # emissions must satisfy. On a MAP SOURCE the declaration reaches the
     # children (the ``<src>.item`` keys resolve it through their source).
@@ -753,7 +753,7 @@ class NodeDecl:
     #: The map's CHILDREN's admission terms (the admission terms — the plain map's
     #: face; the typed route's arms carry their own on the RouteArm).
     map_rate_limits: tuple[RateLimitDecl, ...] = ()
-    # THE TYPED ROUTE ATTACHMENT (T27 — the type-tagged Route's machinery
+    # THE TYPED ROUTE ATTACHMENT (the type-tagged Route's machinery
     # extended to the graph level): the arms dict keyed by the source's
     # union members' TYPE TAGS (``module.qualname`` — the chain's
     # ``type_tag``), each arm the body + its per-arm placement override.
@@ -765,11 +765,11 @@ class NodeDecl:
     # join's union — the SUM rides the promise's static type, never the
     # decl's field).
     map_arms: dict[str, RouteArm[object]] | None = None
-    # THE MAP'S READ-SIDE AGGREGATE (T21 decision c): the declared pure
+    # THE MAP'S READ-SIDE AGGREGATE (the declared pure
     # fn over the children's result rows — evaluated AT READ TIME, never
     # a blocking fan-in (the dataflow-only fence).
     map_aggregate: Callable[[list[Any]], object] | None = None
-    # THE LOOP ATTACHMENT (T19): the loop node's spec + the iteration
+    # THE LOOP ATTACHMENT: the loop node's spec + the iteration
     # body + the awaited until-predicate. ``loop_spec is not None`` IS
     # the loop-node marker. TYPED (the lazy-Any correction): the spec is
     # the loop module's own declared dataclass — the validator and the
@@ -777,12 +777,12 @@ class NodeDecl:
     loop_spec: LoopSpec | None = None
     loop_body: BodyFn | None = None
     loop_until: Callable[[], Awaitable[bool]] | None = None
-    # THE CHAIN ATTACHMENT (T20): a chain SOURCE node owns its declared
+    # THE CHAIN ATTACHMENT: a chain SOURCE node owns its declared
     # Chain — the chain's step rows exist only from the emit onward
     # (no NodeDecl); the runner resolves their routes from the compiled
     # workflow's chains. ``chain is not None`` IS the source marker.
     chain: object | None = None
-    # THE CROSS-RUN CACHE OPT-IN (T25): the node's result may serve a
+    # THE CROSS-RUN CACHE OPT-IN: the node's result may serve a
     # LATER run over the same body + the same input (the TEMPORAL dedup
     # — the arbiter owns the CONCURRENT one). Default OFF: the cache is
     # a decision, never a surprise. ``cache_ttl`` is the in-DB expiry's
@@ -850,7 +850,7 @@ class BuildGraph:
         self.chains: list[object] = []
         self._auto_counter: dict[str, int] = {}
         #: The CROSS-GRAPH SMUGGLES recorded by the wiring verbs
-        #: (the attack-3 class): ``(consumer_key, parent_key)`` pairs
+        #: (the smuggle class): ``(consumer_key, parent_key)`` pairs
         #: wired from a promise whose home graph is NOT this recorder.
         #: The verbs RECORD (never raise mid-build — the report is
         #: one-pass); validate REJECTS (``E7-cross-graph-promise``,
@@ -989,7 +989,7 @@ def step[R](
     inside the join's finalize tx with the DECODED parent results); plain
     arguments ride the node payload. ``skip=`` is the dispatch-time
     predicate. ``progress_schema=`` is the node's DECLARED
-    progress payload schema (T21 — the TypedGate-door pattern): the
+    progress payload schema (the TypedGate-door pattern): the
     body's ``ctx.progress`` data emissions are validated against it, a
     wrong shape refused (the declaration is what makes a separate UI
     render the emission — the context-contract law).
@@ -1001,7 +1001,7 @@ def step[R](
     fence's own path); the fork stamps the names onto the child rows so
     the row carries its own terms.
 
-    THE CROSS-RUN CACHE OPT-IN (T25): ``cache=True`` lets this step's
+    THE CROSS-RUN CACHE OPT-IN: ``cache=True`` lets this step's
     result serve a LATER run over the same body + the same input — the
     TEMPORAL dedup (the run-key arbiter owns the CONCURRENT one; two
     concurrent misses both run their bodies). The cache stores on
@@ -1161,7 +1161,7 @@ def step[R](
             "by key): an unaddressable key 404s its own panel; rename the "
             "node without the edge whitespace"
         )
-    # THE CACHE OPT-IN'S OWN REFUSALS (T25): the mechanically-impossible
+    # THE CACHE OPT-IN'S OWN REFUSALS: the mechanically-impossible
     # at the wiring site (the dotted-key precedent). A TTL on a
     # NON-cache is a silent no-op parameter (the surprise family); a
     # non-positive TTL is an always-expired cache (the lie); a cache on
@@ -1254,7 +1254,7 @@ def step[R](
             "looks armed. Define the body as a module-level def its "
             "source can be read from, or drop cache=True"
         )
-    # THE SMUGGLE CHECK (the attack-3 class): a promise arg whose home
+    # THE SMUGGLE CHECK (the smuggle class): a promise arg whose home
     # recorder is NOT this graph is RECORDED — validate rejects it
     # (E7-cross-graph-promise, error) before any row is written. The
     # rejected shape: a foreign promise wired under a colliding key
@@ -1379,7 +1379,7 @@ def map_source[S, R](
     children — the engine's FORK ATOMICITY); a second map on the same
     source is refused (a node finalizes ONCE — one fork).
 
-    THE DICT FORM IS THE TYPED ROUTE (T27 — the
+    THE DICT FORM IS THE TYPED ROUTE (the
     per-element case): ``map_source(src, {A: fn_a, B: fn_b})`` keys the
     arms by the source's union members' TYPES — each element runs ITS
     type's arm as a fresh job (the fork stamps the child's placement
@@ -1404,8 +1404,8 @@ def map_source[S, R](
     is GONE. To name the node, name the SOURCE (``step(source_body,
     key=…)``) — the join's key follows.
 
-    ``aggregate=`` is the map's DECLARED READ-SIDE aggregate (T21
-    decision c): a PURE fn over the children's decoded result rows,
+    ``aggregate=`` is the map's DECLARED READ-SIDE aggregate (the
+    TypedGate-door pattern's own shape): a PURE fn over the children's decoded result rows,
     evaluated AT READ TIME by the aggregation surfaces
     (:func:`taskq.workflows._progress_read.read_map_aggregate`) — NEVER a
     blocking fan-in (the dataflow-only fence: the join node is for DATAFLOW; a
@@ -1496,7 +1496,7 @@ def map_source[S, R](
 
 
 def route_child_key(source_key: str, type_tag: str) -> str:
-    """The route child's DERIVED step key (T27 — one home; the register,
+    """The route child's DERIVED step key (one home; the register,
     the runner and the validator derive the same address): the map's own
     ``<source>.item`` namespace extended by the arm's TYPE TAG —
     ``<source>.item:<module.qualname>``. The row's step_key NAMES its arm
@@ -1517,7 +1517,7 @@ def _attach_route[S](
     aggregate: Callable[[list[Any]], object] | None,
     child_driven: bool = False,
 ) -> Promise[list[object]]:
-    """THE TYPED ROUTE'S LOWERING (T27 — the type-tagged Route's machinery
+    """THE TYPED ROUTE'S LOWERING (the type-tagged Route's machinery
     extended to the graph level): the arms are keyed by the source's
     union MEMBERS' types; the source node carries the attachment
     (``map_arms``, keyed by the members' type tags) and the derived
@@ -1845,7 +1845,7 @@ def route[S, R](
     aggregate: Callable[[list[Any]], object] | None = None,
     child_driven: bool = False,
 ) -> Promise[list[R]]:
-    """Wire a TYPED ROUTE over *source*'s items (T27 — the graph-DSL's
+    """Wire a TYPED ROUTE over *source*'s items (the graph-DSL's
     face of the type-tagged Route): the source's body returns the
     elements' list (``list[ImageItem | AudioItem]``), and *arms* keys the
     union MEMBERS' types to the arm bodies — each element runs ITS type's
@@ -1936,7 +1936,7 @@ def gather[R](
         )
     graph = promises[0].graph
     node_key = graph.auto_key("gather")
-    # THE SMUGGLE CHECK (the same finding step() runs — attack-3 M3):
+    # THE SMUGGLE CHECK (the same finding step() runs):
     # every joined promise must belong to the ACTIVE recorder, not merely
     # to the first promise's graph (a build running under one graph while
     # joining promises from two others is exactly the smuggle).
@@ -1971,7 +1971,7 @@ def chain_source(
     queue: str = "default",
     max_attempts: int = 3,
 ) -> Promise[Any]:
-    """Wire a CHAIN SOURCE node (T20): *source_body* is the paged
+    """Wire a CHAIN SOURCE node: *source_body* is the paged
     generator (each ``ctx.emit_batch`` yield = ONE page's emit tx — the
     children + edges + the cursor checkpoint while the source stays
     running); *chain* is the declared :class:`taskq.workflows.chain.Chain`
@@ -2055,8 +2055,8 @@ def build[R](result: Promise[R], *residuals: Promise[Never]) -> Promise[R]:
     graph = active_graph()
     graph.sunk = (*graph.sunk, *(p.key for p in residuals))
     graph.terminal = result.key
-    # THE SMUGGLE CHECK (the terminal + the residuals — attack-3 M3's
-    # same finding): a foreign promise named terminal or residual is
+    # THE SMUGGLE CHECK (the terminal + the residuals — the same finding
+    # step() runs): a foreign promise named terminal or residual is
     # recorded for validate's E7 report.
     for p in (result, *residuals):
         if p.graph is not graph:

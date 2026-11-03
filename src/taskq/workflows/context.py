@@ -1,4 +1,4 @@
-"""``ctx.substep`` — the workflow job context's memoized step runner (T05).
+"""``ctx.substep`` — the workflow job context's memoized step runner.
 
 ``ctx.substep("name", fn)`` in the workflow job context: the step-ledger
 claim's user-facing shape. Default idempotent (ON) — silent double-runs are
@@ -52,7 +52,7 @@ class WorkflowSteps:
     doors: a live DB connection POOL (``Pool`` — the acquisition seam;
     the claim and the terminal each take their own connection, never
     one held across the body) + the schema's statement bundle
-    (``WorkflowSql``) — arbitrary objects are checker errors (the T01
+    (``WorkflowSql``) — arbitrary objects are checker errors (the type
     negative probes pin it)."""
 
     def __init__(

@@ -1,4 +1,4 @@
-"""The body's DURABLE TIMER (T28) — the hold whose RESOLVER IS THE
+"""The body's DURABLE TIMER — the hold whose RESOLVER IS THE
 CLOCK: ``ctx.wait_until(when)`` mints a hold row whose deadline-pass is
 THE WAKE, never the fail-close. (The wake's replay/consume runs the
 wait machinery's PER-SITE cursor — the timer counts its own
@@ -131,7 +131,7 @@ class CtxTimerOps(WaitHost):
         *,
         key: str | None = None,
     ) -> TimerWake:
-        """THE DURABLE TIMER (T28): hold until the clock says *when* —
+        """THE DURABLE TIMER: hold until the clock says *when* —
         ``await ctx.wait_until(when, key="remind")``. The body's node
         takes the HELD REPRESENTATION (the slot is released — no lease,
         no claim, no attempt burned; a LOOP node's budget pauses), the

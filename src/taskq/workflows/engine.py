@@ -1,12 +1,12 @@
-"""The workflow engine's finalize mechanics (T04): the two-tx finalize,
+"""The workflow engine's finalize mechanics: the two-tx finalize,
 the dispatch exclusion, the deadlock retry.
 
-THE JOIN-WAIT REPRESENTATION — defined EXACTLY ONCE, here (T03/T08/T15
+THE JOIN-WAIT REPRESENTATION — defined EXACTLY ONCE, here
 reference this name and no other): a joined node waits as
 ``status='pending'`` + ``deps_pending > 0`` (+ ``metadata.blocking_reason
 ='join'``). NO new ENUM value: ``pending`` is legal in the vanilla machine
 (``VALID_TRANSITIONS`` unchanged), and the dispatch claim's
-``AND deps_pending = 0`` exclusion (T03, benched) keeps join-wait rows
+``AND deps_pending = 0`` exclusion (benched) keeps join-wait rows
 unclaimable. When the counter hits 0 the row becomes claimable by the
 claim predicate — no status write.
 
@@ -55,7 +55,7 @@ sequencing, hence a depth-N DAG, stay expressible.
 
 P3's rules this engine ships: rule 1's held-row inertness invariant (a
 held row — ``scheduled_at`` in the future, the signal deadline — is
-invisible to every arm; the budget arm itself is T19's); rule 2's ledger
+invisible to every arm; the budget arm itself is the loop's); rule 2's ledger
 discipline (the attempt increments at claim, the only grant of work);
 rule 4's THREE cancel legs (the fire guard's flow-status leg + the
 dispatch fence in the claim + the finalize fence); rule 5 (decrement +
@@ -114,13 +114,13 @@ __all__ = [
 ]
 
 #: The dispatch exclusion clause — the claim statement's WHERE gains this
-#: (T03 owns the clause and its bench). Named once, here; the dispatch SQL
+#: (the clause and its bench live with the join representation). Named once, here; the dispatch SQL
 #: in ``backend/_dispatch_sql.py`` spells it, and this constant documents
 #: the engine-side contract.
 DISPATCH_EXCLUSION_CLAUSE: Final[str] = "deps_pending = 0"
 
 #: Deadlock-retry budget: BOTH operators (this finalize side
-#: and T10's cancel side) retry — the aborted TX had no effect, so the
+#: and the cancel side) retry — the aborted TX had no effect, so the
 #: retry preserves linearization. Jittered backoff between attempts.
 _DEADLOCK_RETRIES: Final[int] = 4
 _DEADLOCK_BACKOFF_BASE_S: Final[float] = 0.05
@@ -431,7 +431,7 @@ async def _run_tx2(
     fire; the winner's reducer body runs INSIDE tx2; the outbox rows ride
     the same tx.
 
-    T06'S FAILED-PARENT PROPAGATION, keyed on the OUTCOME (the
+    THE FAILED-PARENT PROPAGATION, keyed on the OUTCOME (the
     composition invariant: ladder retries emit NO terminal, so tx2 sees a
     failed child exactly once — at exhaustion):
 
@@ -497,7 +497,7 @@ async def _resolve_failed_parent(
     error_message: str | None,
     error_traceback: str | None,
 ) -> None:
-    """T06's failed-parent resolution — BOTH arms, one tx, set-based:
+    """The failed-parent resolution — BOTH arms, one tx, set-based:
 
     * the fail_closed cascade (the flow-scoped transition set; the
       statement is a no-op when no fail_closed edge counts this parent);
@@ -533,7 +533,7 @@ async def _resolve_failed_parent(
     # history; the item is appended inside the same tx (a rolled-back tx
     # rolls the item back — the re-fire re-derives it). Each item NAMES
     # the policy that absorbed it (the edge's own declared policy — the
-    # envelope must not lie about which policy ran, T07's C).
+    # envelope must not lie about which policy ran).
     fanin_rows = await conn.fetch(
         wsql.collect_fan_in,
         parent_id,
@@ -590,12 +590,12 @@ async def fan_in_skip(
     step_key: str,
     map_index: int | None,
 ) -> int:
-    """T06's SKIP fan-in: a skipped child fans into its collect joins as a
+    """The SKIP fan-in: a skipped child fans into its collect joins as a
     FailureInfo item with an EMPTY attempt history — **a skip is not an
-    attempt** (P3 spike3's measured invariant): ZERO ledger rows are
+    attempt** (the measured invariant): ZERO ledger rows are
     written, zero terminal rows, zero attempts — the child's only trace is
     the item on the join row (the ledger stays the attempted-terminals'
-    record; T08's two-source rule reads never-granted terminals elsewhere).
+    record; the two-source rule reads never-granted terminals elsewhere).
 
     Returns the number of absorbing joins the skip fanned into."""
     fanin_rows = await conn.fetch(

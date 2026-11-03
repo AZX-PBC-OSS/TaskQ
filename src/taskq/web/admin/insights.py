@@ -264,9 +264,10 @@ def register(router: APIRouter) -> None:
 
         realtime_mode, mode_label = realtime_ctx
         # The queues page's partial-poll pattern, split by mode so both
-        # refresh transports never fire at once (that double-fetch was
-        # #337's complaint, and this page's six archive-UNION aggregates
-        # re-rendered by the meta refresh every tick was #567's): POLLING
+        # refresh transports never fire at once (the double-fetch defect: both
+        # transports firing re-fetched the page, and this page's six
+        # archive-UNION aggregates re-rendered by the meta refresh every tick
+        # starved the handler): POLLING
         # mode renders the meta refresh - the page stays live without JS
         # - and the htmx poll is off; REALTIME mode suppresses the meta
         # refresh and the htmx poll (hx-get of the same URL, so the

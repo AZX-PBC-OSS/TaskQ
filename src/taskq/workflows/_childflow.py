@@ -1,4 +1,4 @@
-"""THE CHILD FLOWS (T28) — ``ctx.spawn_flow`` + the join hold: a step
+"""THE CHILD FLOWS — ``ctx.spawn_flow`` + the join hold: a step
 spawns a SUB-FLOW (a REAL flow — its own run rows; the run explorer sees
 it, the admin operates it, the CLI lists it) and JOINS its terminal (the
 HITL machinery's own shape: the wait IS a hold; the child's terminal
@@ -36,7 +36,7 @@ receipt); the child's ROOT row carries the parent's
 the create's ONE transaction via ``create_flow(root_metadata_extra=…)``,
 never a post-create UPDATE that would re-open the orphan window).
 
-THE JOIN = the HOLD (T10's machinery, the ``Decision | Expired``
+THE JOIN = the HOLD (the hold machinery, the ``Decision | Expired``
 pattern's sibling): the join site registers a hold on the PARENT's node
 (signal ``__child__:{child_flow_id}``, the declared result model as the
 payload contract — the contract is mandatory at hold time), marks the
@@ -45,7 +45,7 @@ representation (pending + the deadline + the signal row as truth; NO
 terminal, NO ledger failure), the worker releases the slot. The child's
 terminal is the hold's RESOLVER: :func:`sweep_child_joins` (a sweep arm,
 wired after the root-maintain leg) CAS-delivers the held join, resumes
-the parent node, and broadcasts :data:`CHILD_TERMINAL_CHANNEL` (the T26
+the parent node, and broadcasts :data:`CHILD_TERMINAL_CHANNEL` (the
 transport — the pointer-only payload). The resumed body re-executes from
 the top; the join site reads THE CHILD ROW FIRST (the row is the truth)
 and returns the CLOSED UNION member:
@@ -60,7 +60,7 @@ and returns the CLOSED UNION member:
   ``cancel_workflow_run``'s extension);
 * ``Expired`` — the JOIN's own patience expired (the hold's deadline,
   armed by ``wait(timeout_s=…)``; the face fires ONCE per abandoned row
-  per attempt — the hold→expire→re-hold→∞ dragon's kill site, T26's
+  per attempt — the hold→expire→re-hold→∞ dragon's kill site, the
   amendment verbatim).
 
 THE CHECKER FORCES THE ARMS: the wait returns
@@ -418,7 +418,7 @@ class CtxSpawnOps(_SpawnHost):
         key: str | None = None,
         max_depth: int | None = None,
     ) -> ChildHandle[G]:
-        """THE SPAWN (T28): ``handle = await ctx.spawn_flow("child_name",
+        """THE SPAWN: ``handle = await ctx.spawn_flow("child_name",
         input=…, result=ChildResult)`` — the child is a REAL flow (its
         own run rows; the create-seam's ONE-transaction law) and the
         spawn's run key is the TWO-CLAIMS LAW at the flow level: the

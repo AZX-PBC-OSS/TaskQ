@@ -1189,8 +1189,8 @@ async def _revert_stale_auto_disable(
     takeover pass (``MaintenanceLeader``) runs the same predicate at every
     leadership assumption, which is what covers an old leader's unmarked
     auto-disable landing after every new pod has booted. The ownership
-    model (issue #342) and the mixed-version deploy's NULL marker
-    population (issue #460) are documented there.
+    model and the mixed-version deploy's NULL marker
+    population are documented there.
     """
     return await revert_stale_auto_disable(deps, settings, spec)
 

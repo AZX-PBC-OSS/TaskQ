@@ -1,4 +1,4 @@
-"""The workflow-run explorer's row reads (T11 + the run-explorer
+"""The workflow-run explorer's row reads (the run-explorer
 addendum): the run's graph, states, holds, and timeline assembled FROM
 THE ROWS ALONE — the rows-alone law; no surface owns state the engine
 doesn't. This module owns the ONE grouped read both surfaces (the

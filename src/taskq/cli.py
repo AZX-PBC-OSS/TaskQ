@@ -246,7 +246,7 @@ job_app = typer.Typer(
 )
 app.add_typer(job_app, name="job")
 
-# The workflow-run surface (T12): one question, one command — stuck →
+# The workflow-run surface: one question, one command — stuck →
 # status, deliver → signal, reply → resolve, stop → cancel, retry-a-
 # failed-node → retry, inventory → list. The analysis lives in
 # taskq.workflows._cli (the _doctor seam); the write verbs call the
@@ -4121,7 +4121,7 @@ def _format_event_detail(detail: Any) -> str:
     return text[: _EVENT_DETAIL_LINE_LIMIT - len(suffix)] + suffix
 
 
-# ── flows: the workflow-run surface (T12) ───────────────────────────────
+# ── flows: the workflow-run surface ───────────────────────────────
 #
 # One question, one command: stuck → status, deliver → signal, reply →
 # resolve, stop → cancel, retry-a-failed-node → retry, inventory → list.
@@ -4186,7 +4186,7 @@ async def _flows_pool(settings: TaskQSettings) -> AsyncGenerator[asyncpg.Pool, N
         await close_pool_bounded(pool, "flows", CLOSE_TIMEOUT_SECS)
 
 
-# The cross-run step cache's operator surface (T25 — the cache-fixes
+# The cross-run step cache's operator surface (the cache's
 # round's fix 5, THE POISON PILL DOOR): a well-shaped lie at a known
 # address serves every future run until TTL — with no verb, no endpoint,
 # and no hit log, the operator's only face was the lie itself. This is
@@ -4199,7 +4199,7 @@ wf_app = typer.Typer(
 )
 cache_app = typer.Typer(
     no_args_is_help=True,
-    help="Inspect and evict the cross-run step cache (the T25 surface).",
+    help="Inspect and evict the cross-run step cache.",
 )
 wf_app.add_typer(cache_app, name="cache")
 app.add_typer(wf_app, name="wf")
@@ -4672,7 +4672,7 @@ async def _flows_status(
             absorbed=row["absorbed"],
             error_class=row["error_class"],
             error_message=row["error_message"],
-            # THE ATTEMPT COUNTERS RIDE THE READ (attack-4
+            # THE ATTEMPT COUNTERS RIDE THE READ (the
             # F-P4-WHYSTUCK-LADDER-LIE's fix): the dataclass defaults
             # (0 / 3) made every failed row report "ladder headroom 3" —
             # the read must carry the row's own counters.
@@ -4750,7 +4750,7 @@ def _held_context(run_id: str, signal_row: Any) -> Any:
     if isinstance(payload, str):
         payload = json_loads(payload)
     # The row's jsonb decodes to a json dict; the reason/tool/args keys
-    # ride INSIDE it until the deliver overwrites the payload (T10's
+    # ride INSIDE it until the deliver overwrites the payload (the hold
     # deliver-no-drop shape).
     doc = cast(dict[str, object], payload) if isinstance(payload, dict) else {}
     raw_reason = doc.get("reason")
@@ -4826,7 +4826,7 @@ def _validate_through_gate(
     signal_name: str,
     payload: dict[str, object],
 ) -> dict[str, object]:
-    """THE TYPED DOOR (T09's bound gates; the hitl-proof's send
+    """THE TYPED DOOR (the bound gates; the send
     boundary): the shell's JSON payload re-validates against the gate's
     declared models BEFORE any row moves. A wrong payload answers the
     NAMED pydantic error and nothing is delivered — no untyped deliver
@@ -4839,7 +4839,7 @@ def _validate_through_gate(
     try:
         models = gate_models_for(app_obj, workflow, node_key)
     except KeyError as exc:
-        # THE NAMED REFUSAL (attack-4 F-P4-CLI-KEYERROR-TRACEBACK's fix):
+        # THE NAMED REFUSAL (the bare-traceback refusal's fix):
         # the stale-deploy world — the run's workflow is not declared on
         # THIS app (the --app module predates the run, or the node key
         # does not exist on the declared workflow). The admin's twin

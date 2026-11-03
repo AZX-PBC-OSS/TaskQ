@@ -1426,7 +1426,7 @@ class SignalTimeoutError(TaskQError):
     one-prefix rule). The named state's ledger record: the hold row's
     ``abandoned`` + the node's typed failure — never a silent orphan.
 
-    THE MACHINERY NEVER RAISES THIS (T26's amendment — the expiry is a
+    THE MACHINERY NEVER RAISES THIS (the amendment — the expiry is a
     VALUE): the wait site RETURNS the closed union's ``Expired`` member
     and the body MATCHES the fail-close arm; a body that WANTS the
     failure raises THIS exception ITSELF off the member (the escalation
@@ -1447,7 +1447,7 @@ class SignalAbandonedError(TaskQError):
 
 class SignalPayloadError(TaskQError):
     """A delivered payload validated against NONE of the wait's declared
-    models (the typed door's runtime boundary — attack-3 B2/the fix):
+    models (the typed door's runtime boundary — the unknown-field refusal):
     the refusal happens BEFORE the deliver CAS consumes the hold, so the
     hold SURVIVES and the operator sees WHY. Never a silent drop into the
     body's re-validation (the rejected shape: the payload consumed, then
@@ -1462,7 +1462,7 @@ class SignalPayloadAmbiguousError(SignalPayloadError):
     """A delivered payload fit MORE than one of the wait's declared
     models and the gate declared no discriminator: which member the body
     receives would be decided by DECLARATION ORDER (the rejected
-    first-fit mis-narrowing — attack-3 B2), so the delivery is refused
+    first-fit mis-narrowing — the union's own narrow rule), so the delivery is refused
     instead. The gate's escape is the explicit ``discriminator=`` on the
     wait site; the operator's escape is a payload whose shape names one
     model unambiguously."""

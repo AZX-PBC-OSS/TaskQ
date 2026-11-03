@@ -1347,8 +1347,8 @@ class RetryClassifier:
 
         An override delay (a hook's ``RetryOverride(delay=...)`` — e.g. a
         server's ``Retry-After`` hint) is an explicit direction: it is
-        honored EXACTLY, with no jitter draw — the pre-#656 contract,
-        restored. #656 spread the override through the same
+        honored EXACTLY, with no jitter draw — the original contract,
+        restored. A prior revision spread the override through the same
         multiplicative-symmetric band as a computed curve value, which
         mutated a value the user's classifier specified (a default
         ``jitter=0.2`` turned a 90s ``Retry-After`` into a draw from

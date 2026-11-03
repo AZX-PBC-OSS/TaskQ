@@ -6,7 +6,7 @@ through ``ctx.progress``, and stream pages through ``ctx.emit_batch``.
 
 The wait/deliver face (``wait_signal``/``signal`` — the HITL machinery)
 lives in ``_ctx_wait`` and composes in; the DURABLE TIMER
-(``wait_until`` — T28, the hold whose resolver is the clock) lives in
+(``wait_until`` — the hold whose resolver is the clock) lives in
 ``_ctx_timer`` beside it; the runner builds the context at the claim
 seam (``_runner``).
 """
@@ -91,12 +91,12 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     """The body's runtime context: the run's identity + the input (cut
     #7) + the memoized step runner. Bodies read ``ctx.input`` and run
     side effects through ``ctx.step`` (the ledger's replay contract);
-    spawn + join sub-flows through ``ctx.spawn_flow`` (T28 — the child
+    spawn + join sub-flows through ``ctx.spawn_flow`` (the child
     flows' face, the join the HITL hold's own shape).
 
     The two WAIT faces compose in: the HUMAN hold (``ctx.wait_signal``
     — the HITL machinery) and the DURABLE TIMER (``ctx.wait_until`` —
-    T28, the hold whose resolver is the clock).
+    the hold whose resolver is the clock).
 
     THE DOCUMENTED ANNOTATION: a workflow body declares its context as
     ``ctx: StepContext`` — the checker verifies the body's ``ctx.*``
@@ -120,14 +120,14 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     #: persist-time redact; the crash-window fix).
     _redact: Callable[[str], str] | None = None
     #: This node's claim view's worker (the emit's cursor checkpoint
-    #: fences on it — T20). ``None`` = the context was built without a
+    #: fences on it ). ``None`` = the context was built without a
     #: claim (a unit-test direct call) — the emit refuses loudly.
     _worker_id: JobId | None = None
-    #: THE MAX-IN-FLIGHT BOUND (T20): the workflow's DECLARED
+    #: THE MAX-IN-FLIGHT BOUND: the workflow's DECLARED
     #: admission control, handed to every ``ctx.emit_batch`` (``None`` =
     #: the explicit unbounded).
     _max_in_flight: int | None = None
-    # THE EMISSION OP's buffer (T21): the attempt's own ProgressEmitter —
+    # THE EMISSION OP's buffer: the attempt's own ProgressEmitter —
     # the runner wires it at the claim seam. None when unwired (direct
     # testing): ctx.progress then VALIDATES the shape (the typed door is
     # the authoring contract) and drops the emission (the deliberate
@@ -193,7 +193,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         return self._runtime.get("hold_epoch")
 
     async def cursor(self) -> dict[str, object]:
-        """THE STREAMING SOURCE'S CHECKPOINTED CURSOR (T20): read from
+        """THE STREAMING SOURCE'S CHECKPOINTED CURSOR: read from
         THIS source row's own metadata — the emit tx's checkpoint, under
         the ``emit_cursor`` key. ``{}`` before the first emit; the
         resume's body re-reads it to continue from the last COMMITTED
@@ -219,7 +219,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         cursor: dict[str, object],
         backpressure_timeout_s: float = 30.0,
     ) -> tuple[JobId, ...]:
-        """THE STREAMING SOURCE'S EMIT (T20): this page's chain starts +
+        """THE STREAMING SOURCE'S EMIT: this page's chain starts +
         the edges + THIS node's cursor checkpoint, ONE transaction, while
         the source stays ``running`` (see ``taskq.workflows._emit`` — the
         fork-atomicity law at page granularity; a kill at any statement
@@ -253,12 +253,12 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         message: str | None = None,
         data: dict[str, object] | None = None,
     ) -> None:
-        """THE EMISSION OP (T21 decision a): report the node's progress —
+        """THE EMISSION OP: report the node's progress —
         ``await ctx.progress(75, "page 3/4", {"page": 3})``.
 
         TYPED + BOUNDED: ``pct`` is an int 0..100 or None; ``message`` is
         chars-capped; ``data`` is jsonb, capped with the
-        ``__truncated__`` marker (T18's truncation shape) and — when the node
+        ``__truncated__`` marker (the truncation shape) and — when the node
         DECLARED a payload schema (``step(body, ..., progress_schema=
         Model)``, the TypedGate-door pattern) — validated against it, a
         wrong shape refused with :class:`taskq.workflows.ProgressRefusedError`.

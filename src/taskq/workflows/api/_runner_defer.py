@@ -271,7 +271,7 @@ async def route_defer_terminal(
       strongest keying — ``_run_tx1``'s own law), else the arbiter tuple
       (the ladder's exhaustion shape);
     * :func:`~taskq.workflows.engine.finalize_node` — the fenced
-      terminal mark, the T06 cascade and the propagation ride it;
+      terminal mark, the failed-parent cascade and the propagation ride it;
     * the auto projection (the node's terminal event, best-effort).
 
     The DOORS' SEMANTICS live at the call sites (which verdict routes
@@ -358,7 +358,7 @@ class DeferOps(_DeferHost):
         ledger's truth, one transaction) applied by the STEP's own routes —
         the two TERMINAL verdicts route through the wf terminal door
         (:meth:`~taskq.workflows.engine.finalize_node` — the ledger's
-        terminal, the T06 cascade and the propagation ride it), exactly
+        terminal, the failed-parent cascade and the propagation ride it), exactly
         like the ladder's own exhaustion arm. (The LOOP body's signals
         route through ``LoopOps._defer_loop_step`` — the same row law, the
         loop's own doors.)

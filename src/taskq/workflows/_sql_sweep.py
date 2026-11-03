@@ -1,4 +1,4 @@
-"""The sweep-arm statement constants (T04): the lock-first re-derive, the sweep's fire arm, the outbox drain, the phantom-ledger reaper.
+"""The sweep-arm statement constants: the lock-first re-derive, the sweep's fire arm, the outbox drain, the phantom-ledger reaper.
 
 The schema identifier is the ONLY interpolated value (validated at
 WorkflowSql.build); every caller-controlled value uses ``$N`` parameter
@@ -57,7 +57,7 @@ counts AS (
                  AND p.id IS NOT NULL
                  AND p.status NOT IN {terminal}
            ) AS unterminal,
-           -- T06's compose: a FAILED parent on a FAIL_CLOSED edge never
+           -- the propagation's compose: a FAILED parent on a FAIL_CLOSED edge never
            -- fires the join — the heal resolves it the way the direct
            -- path's cascade would have (the crash window ate the child's
            -- tx2): the blocked_required arm stamps it, the firable arm
@@ -96,7 +96,7 @@ blocked AS (
       AND NOT j.metadata @> '{{"blocking_reason": "orphan_parent"}}'::jsonb
     RETURNING j.id
 ),
--- T06's heal: the fail_closed join whose parent TERMINAL-FAILED while
+-- the heal: the fail_closed join whose parent TERMINAL-FAILED while
 -- this join's own tx2 never ran (the crash window) — the same
 -- blocked-with-reason resolution the direct path's cascade stamps, so
 -- the record never shows a hanging join whatever process healed.
@@ -188,7 +188,7 @@ firable AS (
     WHERE c.edge_count > 0
       AND c.missing_parents = 0
       AND c.unterminal = 0
-      -- A fail_closed join with a failed parent is never firable (T06):
+      -- A fail_closed join with a failed parent is never firable:
       -- the blocked_required arm owns its resolution.
       AND c.failed_required = 0
       -- Nor is a flow-fenced join (the flow-fenced arm owns its resolution — the
@@ -247,7 +247,7 @@ counts AS (
                  AND p.id IS NOT NULL
                  AND p.status NOT IN {terminal}
            ) AS unterminal,
-           -- T06: a failed parent on a fail_closed edge never fires (the
+           -- The propagation: a failed parent on a fail_closed edge never fires (the
            -- rederive's blocked_required arm owns that row's resolution;
            -- the fire arm excludes it from the firable set — the same
            -- guard, stated twice because both statements re-derive).
@@ -560,7 +560,7 @@ RETURNING o.id
 """
 
 
-# THE STEP CACHE'S RETENTION ARM (T25): the cross-run cache's expired
+# THE STEP CACHE'S RETENTION ARM: the cross-run cache's expired
 # corpses are dead weight — the lookup's freshness leg already refuses
 # them (a miss, the body re-runs), and without this arm the expired
 # population grows monotone-forever (the delivered-outbox arm's own

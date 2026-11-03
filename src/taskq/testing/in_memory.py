@@ -22,7 +22,7 @@ Parity map
 Every Backend protocol method models PostgresBackend's CURRENT observable
 behavior, verified by differential tests (the seeded-scenario shape of
 ``tests/test_batch_cap_refusals_parity.py``), not by this docstring. The
-archive tier's read semantics are the #314 class: ``get`` and
+archive tier's read semantics are the archive-fallback class: ``get`` and
 ``get_attempts`` fall back to the archive storage on a hot miss exactly
 as PG probes ``jobs_archive`` / ``job_attempts_archive``, the prune
 simulation drops the archived jobs' events the way PG's cascade does,

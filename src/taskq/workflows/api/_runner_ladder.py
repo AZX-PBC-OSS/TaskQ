@@ -1,6 +1,6 @@
 """The LADDER + the failure-class routing (the split of ``api/_runner`` —
 §7b's concerns-separate law): the retry ladder's count-and-repend shape
-and THE LADDER-ROUTES-BY-FAILURE-CLASS classifier (T19's semantics
+and THE LADDER-ROUTES-BY-FAILURE-CLASS classifier (the classifier's semantics
 decision, stated once).
 
 Module homes: the loop machinery's reclaim arm (the classifier's other
@@ -58,7 +58,7 @@ _FAILED_COUNT_SQL = (
 
 
 def is_infra_fault(exc: BaseException) -> bool:
-    """THE LADDER-ROUTES-BY-FAILURE-CLASS classifier (T19's semantics
+    """THE LADDER-ROUTES-BY-FAILURE-CLASS classifier (the classifier's semantics
     decision, stated once) — the escape-point contract sharpened it to the
     ESCAPE-POINT contract: the classifier reads WHERE the error escaped,
     never merely its type. It is consulted ONLY at the MACHINERY
@@ -209,7 +209,7 @@ class LadderOps(_LadderHost):
     ) -> Literal["retried", "failed"]:
         """The ladder: an attempt failure emits NO terminal (P3 rule 7) —
         the node re-pends with backoff until ``max_attempts``, THEN
-        terminal-fails (T06's propagation takes over). ``permanent`` retry
+        terminal-fails (the failed-parent propagation takes over). ``permanent`` retry
         kinds fail immediately (the classifier knob). Returns the
         route the ladder took — ``"retried"`` (the re-pend; the attempt's
         span echoes it on the ``wf.laddered`` event) or ``"failed"`` (the

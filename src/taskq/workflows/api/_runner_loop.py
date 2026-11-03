@@ -1,5 +1,5 @@
 """The LOOP machinery (the split of ``api/_runner`` — §7b's
-concerns-separate law): the T19 loop driver — fresh jobs per iteration,
+concerns-separate law): the loop driver — fresh jobs per iteration,
 the carry frozen at spawn and advanced exactly once atomically, the
 control union consumed, the exhaustion arms (the cap, the body failure),
 and the machinery reclaim (the escape-point contract).
@@ -262,7 +262,7 @@ class LoopOps(_LoopHost):
         claim_epoch: int = 0,
         ledger_claimed_at: Any = None,
     ) -> None:
-        """THE LOOP DRIVER (T19): fresh jobs per iteration
+        """THE LOOP DRIVER: fresh jobs per iteration
         (``<loop>.iter<i>`` — the ledger's per-iteration identity); the
         carry FROZEN AT SPAWN (read once per iteration from the row) and
         advanced EXACTLY ONCE per iteration IN THE ADVANCE STATEMENT
@@ -439,7 +439,7 @@ class LoopOps(_LoopHost):
 
             iter_key = f"{row['step_key']}.iter{iteration}"
             # FRESH JOBS: the iteration-scoped ledger claim (the
-            # idempotency ledger per-iteration — T05's contract
+            # idempotency ledger per-iteration — the ledger's contract
             # unchanged); the MEMO: a terminal iteration replays (the
             # crash recovery reads the row — never a re-run body).
             async with self.pool.acquire() as memo_conn:
@@ -541,7 +541,7 @@ class LoopOps(_LoopHost):
                     )
                     outcome = await node.loop_body(loop_ctx, carry, *deps_tail)
                 except NodeHeldError:
-                    # THE HOLD INSIDE THE ITERATION (T10 x T19's
+                    # THE HOLD INSIDE THE ITERATION (the hold machinery's
                     # composition): the loop node rests in the held
                     # representation (the budget PAUSED — register_hold's
                     # loop case); the resume re-runs the iteration (the
@@ -723,7 +723,7 @@ class LoopOps(_LoopHost):
     async def _reclaim_loop(
         self, flow_id: JobId, row: dict[str, Any], attempt: int, exc: Exception
     ) -> None:
-        """The MACHINERY reclaim (the attack-3 contract's other half): an infra
+        """The MACHINERY reclaim (the smuggle contract's other half): an infra
         fault raised by the DRIVER'S OWN statements — never by the body
         — records 'crashed' and re-pends WITHOUT burning the ladder
         (the vanilla lease machinery re-claims from the ledger). The

@@ -267,7 +267,7 @@ cancelled, never re-available.
 """
 
 CANCEL_ORIGIN_PEER_FAILURE: Final[str] = "CancelledByPeerFailure"
-"""``error_class`` the workflow fail-closed peer-cascade stamps (T06).
+"""``error_class`` the workflow fail-closed peer-cascade stamps.
 
 A running peer was cancelled because a SIBLING's terminal failure failed
 their shared join closed — the cancel nobody requested and no hook ran

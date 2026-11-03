@@ -1,4 +1,4 @@
-"""``wf.validate()`` — the checker-independent validator (T09).
+"""``wf.validate()`` — the checker-independent validator.
 
 Checker-INDEPENDENT: pyright/ty are not present at runtime — the validator
 re-proves the wiring's totality from the compiled graph itself, in pytest,
@@ -11,7 +11,7 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
 
 * E1 acyclicity — OWNED UNCONDITIONALLY here (the §5.5 checker claim is
   dead errata): a self-referential wiring reds HERE; the probe documenting
-  pyright's silence stays in T01's corpus.
+  pyright's silence stays in this corpus.
 * E2 produced-never-consumed — a promise nobody consumes, nobody sunk, and
   nobody named terminal is the unconsumed residual (the Never-residual
   red): work that will never be acknowledged.
@@ -24,13 +24,13 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   consumer's declared param type are both pydantic models and unrelated:
   the wiring promises data the consumer cannot accept. An UNANNOTATED or
   duck-typed consumer param (``Any`` / a plain dict) consumes a model
-  producer unseen — the totality claim's duck-shaped hole (attack-3 M4),
+  producer unseen — the totality claim's duck-shaped hole (the paired-guard defect),
   rejected by the same rule.
 * E6 fan-in bound — a join over more parents than
-  ``MAX_FAN_IN_PER_JOIN`` is refused (the T07 bound; the error names the
+  ``MAX_FAN_IN_PER_JOIN`` is refused (the fan-in bound; the error names the
   child-driven escape).
 * E7 cross-graph promise — a promise wired from ANOTHER app's recorder
-  (attack-3 M3's smuggle): under a colliding key it builds a silently
+  (the smuggle defect): under a colliding key it builds a silently
   WRONG edge to this app's own same-named node; the verbs record the
   smuggle, this rule rejects it.
 * E9 ctx-annotation — the body's ``ctx`` annotation must BE
@@ -58,7 +58,7 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   surfaces cannot see). The conditional-interior wait is NOT statically
   provable — that face is the documented W-rule (the loop-kind
   mis-index, W5).
-* E15 route-totality (T27 — THE TOTALITY FENCE AT THE GRAPH LEVEL) — a
+* E15 route-totality (THE TOTALITY FENCE AT THE GRAPH LEVEL) — a
   typed route (``route(promise, arms)`` / ``map_source``'s dict form)
   is walked against its source's declared union, BOTH provable
   directions: the arms' keys must cover the union's members EXACTLY
@@ -72,7 +72,7 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   mutable data — E3's precedent). The runtime door for the body that
   LIED about its union is :class:`taskq.workflows.RouterNotTotal`.
 * E8 carrier-type — the loop's declared ``carry_type=`` model vs the body's
-  ``Refine[...]`` feedback model (T19's pin 5, enforced): unrelated
+  ``Refine[...]`` feedback model (the carrier-type rule, enforced): unrelated
   carriers refuse at compile; undeclarable shapes are never rejected
   on a guess.
 * E17 cache-route-source (the cache hardening round) — ``cache=``
@@ -95,11 +95,11 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   stamper shares; re-proved here.
 * W1 the-eternal-wait — a node whose gate declares no timeout: a workflow
   that waits forever on a human is a support ticket (the explicitness
-  warning, T10's ``timeout=None`` rule).
+  warning, the hold's ``timeout=None`` rule).
 * W2 unknown-queue — a node projected onto a queue this app cannot see
   (no workflow actor declares it and ``TASKQ_QUEUES`` does not name it):
   probably a typo — the job dispatches onto a queue no worker listens on
-  (attack-3 M5's build-side face; the worker-boot fail-fast remains the
+  (the build-side face of the invisible-queue defect; the worker-boot fail-fast remains the
   runtime door). The warning class: the queue may be declared on ANOTHER
   app the same fleet serves (probably wrong, never a refusal).
 * W4 gate-timeout-split — the double-sourced timeout cross-checked
@@ -111,7 +111,7 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
 * W5 loop-wait-shape — THE LOOP'S SHAPE LAW, NAMED (never prose): a
   LOOP body whose ``wait_signal`` sits in a CONDITIONAL interior
   mis-indexes the answer cursor (the iteration counter IS the cursor —
-  an iteration that does not wait drifts the sequence; the T26 review's
+  an iteration that does not wait drifts the sequence; the
   the same question). The unconditional wait is the shape kept.
 """
 
@@ -258,7 +258,7 @@ def _rule_residuals(compiled: CompiledWorkflow) -> list[WorkflowValidationError]
 def _rule_edgeless_join(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E3: a join-shaped node (the fan-in) whose parents never exist —
     the stranded invisible join, rejected before any row is written.
-    (Attack-3 M2's fix: the diagnostic sat AFTER the loop's ``continue``
+    (the diagnostic-order fix: the diagnostic sat AFTER the loop's ``continue``
     — dead code whose only pin tested the gather([]) verb, not the rule;
     the compiled graph is public, mutable data and the rule owns the
     shape injected into it.)"""
@@ -436,7 +436,7 @@ def _rule_consumer_compat(compiled: CompiledWorkflow) -> list[WorkflowValidation
                     )
                 continue
             if not (isinstance(param, type) and issubclass(param, BaseModel)):
-                # THE DUCK-SHAPED HOLE (the attack-3 class): the PAIRED
+                # THE DUCK-SHAPED HOLE (the paired-guard defect): the PAIRED
                 # param carries NO model annotation (``Any``, a plain
                 # dict, a duck) — the payload crosses UNVALIDATED and
                 # UNCHECKED. The signature-ordered map's own caveat: a
@@ -761,7 +761,7 @@ def _rule_deps_contract(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
 
 
 def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E15 (T27 — THE TOTALITY FENCE AT THE GRAPH LEVEL): the typed
+    """E15 (THE TOTALITY FENCE AT THE GRAPH LEVEL): the typed
     route's arms walked against the source's declared union — the
     checker-independent re-proof of the fence the wiring verbs raise
     (the compiled graph is public, mutable data; the rule owns the shape
@@ -1187,7 +1187,7 @@ def _rule_union_discriminator(compiled: CompiledWorkflow) -> list[WorkflowValida
 def _rule_gate_door(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """E13 (THE GATE DOOR): a node's ``gates=``
     must carry DECLARATIONS (``GateDecl`` — the compile-visible shape the
-    Mermaid render, the W1 timeout warning and T10's machinery read), not
+    Mermaid render, the W1 timeout warning and the hold machinery read), not
     the channel's BOUND-DOOR object. ``app.channel().gate(Model)`` returns
     a ``TypedGate`` — the runtime delivery handle — and wiring it into
     ``step(gates=(…,))`` used to crash the validator's own gate walk (a
@@ -1400,7 +1400,7 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
                 )
             )
         elif any_wait:
-            # THE T26 RULING (the hostile-review merge's design call): the
+            # THE DESIGN RULING (the merged review's call): the
             # DANGEROUS face is declared-never-waited (the error above —
             # "we have an approval step" shipping with no approval in it).
             # A wait with NO declared gate is NOT a lie: the wait site is
@@ -1427,7 +1427,7 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
 
 
 def _rule_fan_in_bound(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E6: the T07 fan-in bound (the error names the child-driven escape
+    """E6: the fan-in bound (the error names the child-driven escape
     — the same vocabulary the engine's validators use).
 
     THE MESSAGE NAMES THE REMEDY (the refusal's own
@@ -1464,7 +1464,7 @@ def _rule_fan_in_bound(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
 
 def _rule_eternal_wait(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """W1: a gate with no declared timeout — probably wrong, never a
-    refusal (the warning class; the timer-policy matrix is T10's). The
+    refusal (the warning class; the timer-policy matrix is the hold machinery's). The
     walk reads only ``GateDecl`` declarations: a foreign object in
     ``gates=`` (the door-confusion E13 rejects) is SKIPPED here — the
     rule walk never crashes on a declaration lie (the raw
@@ -1614,7 +1614,7 @@ def _rule_eternal_loop(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
 
 
 def _rule_cross_graph(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E7: a promise wired from ANOTHER app's recorder (attack-3 M3's
+    """E7: a promise wired from ANOTHER app's recorder (the smuggle defect's
     smuggle — recorded by the verbs at wiring time, rejected here before
     any row is written)."""
     return [
@@ -1631,7 +1631,7 @@ def _rule_cross_graph(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
 
 
 def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """W2: a node projected onto a queue this app cannot see (attack-3
+    """W2: a node projected onto a queue this app cannot see (the
     M5's build-side face — the worker-boot fail-fast stays the runtime
     door). The warning class: the queue may be served by another app the
     same fleet hosts (probably wrong, never a refusal)."""
@@ -1727,7 +1727,7 @@ def _rule_actor_queue_cohort(compiled: CompiledWorkflow) -> list[WorkflowValidat
 
 
 def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E8: the loop's CARRIER-TYPE declaration, ENFORCED (T19's pin 5 —
+    """E8: the loop's CARRIER-TYPE declaration, ENFORCED (the carrier-type rule —
     the attack-audit's "recorded, never enforced" finding): the declared
     ``carry_type=`` (or the model instance passed as ``initial=``, whose
     own type IS the declaration) vs the body's ``Refine[...]`` feedback
@@ -1905,12 +1905,12 @@ def _nested_promise(value: object, depth: int = 0) -> object | None:
 
 
 def _rule_join_for_progress(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """W2 (T21/): a join whose only reader is the explorer's display —
+    """W2 (the display-only warning class): a join whose only reader is the explorer's display —
     the JOIN-FOR-PROGRESS anti-pattern — warns at validate. The
     detectable shape: a join node (a gather, or the map's auto-join)
     whose promise the wiring SUNK (``sink(...)`` — the declared
     no-dataflow-consumer marker). The blocking join's rows-only semantics
-    (T08's) make the DAG wait on a display question; the read-side
+    (the progress-read warning's) make the DAG wait on a display question; the read-side
     ``aggregate=`` fn (the map declaration) answers the same question
     mid-flight, unblocked. Advisory — the aggregate may be dataflow in
     spirit and sunk for wiring economy; the warning names the door."""

@@ -174,7 +174,7 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
 async def _get(self: "InMemoryBackend", job_id: JobId) -> JobRow | None:
     """One job row by id, hot table first, archive tier on a hot miss.
 
-    The twin of ``taskq.backend._reads._get`` (the #314 parity fix): a
+    The twin of ``taskq.backend._reads._get`` (the parity fix): a
     row the prune simulation moved to ``_archive`` answers from there
     with ``archived=True`` on the row, the same jobs-then-archive probe
     the PG backend and the CLI apply. The result-TTL view does NOT
@@ -272,7 +272,7 @@ async def _get_actor_queues(self: "InMemoryBackend") -> dict[str, str]:
 async def _get_attempts(self: "InMemoryBackend", job_id: JobId) -> list[AttemptRow]:
     """One job's attempt history, hot first, archive tier on an empty hot read.
 
-    The twin of ``taskq.backend._reads._get_attempts`` (the #314 parity
+    The twin of ``taskq.backend._reads._get_attempts`` (the parity
     fix): the prune simulation moves the job's attempts to
     ``_archive_attempts`` in the same call that moves the row to
     ``_archive``, so an archived job's history answers from there instead

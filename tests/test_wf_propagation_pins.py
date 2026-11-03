@@ -428,7 +428,7 @@ async def test_pin3_collect_exhaustion_fans_in_fires_partial(
     assert fire_row is not None
     fire_ts, last_attempt_ts = fire_row["fired_at"], fire_row["last_attempt"]
     assert fire_ts >= last_attempt_ts, (
-        "the fan-in fires strictly after the last ladder attempt (P3 spike3's verified ordering)"
+        "the fan-in fires strictly after the last ladder attempt (the verified ordering)"
     )
 
 
@@ -441,7 +441,7 @@ async def test_pin4_skip_fans_in_zero_ledger_rows(
     propagation_redlog: RedLog,
 ) -> None:
     """A skipped child fans in with ZERO ledger rows — a skip is not an
-    attempt (P3 spike3's measured invariant): the item lands on the join
+    attempt (the measured invariant): the item lands on the join
     row with an empty attempt history, no attempt/terminal row anywhere.
     The mutation scenario: the skip helper made to write a ledger row (the
     rejected variant — a skip recorded as an attempt)."""

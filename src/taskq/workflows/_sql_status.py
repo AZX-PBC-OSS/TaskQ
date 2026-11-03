@@ -1,4 +1,4 @@
-"""The status-rollup statement constants (T08): the grouped rollup (the
+"""The status-rollup statement constants: the grouped rollup (the
 ledger IS the status store — no status cache to corrupt), the per-node
 variant (the admin page's read, by run id — bounded), and the per-map
 done/total (the counter's complement, computed IN the query — not a
@@ -12,7 +12,7 @@ parameter binding (the JSONB-landmine rule, _sql.py's docstring).
 from __future__ import annotations
 
 
-# ── THE ABSORPTION RECORD (T06/T07 + the flow-fenced join fix) ──────
+# ── THE ABSORPTION RECORD (the flow-fenced join fix) ──────
 # The SQL predicate deciding whether a FAILED node's failure was
 # ABSORBED — shared VERBATIM by the per-node rollup (the derivation's
 # input) and the maintenance leg (the root finalize), so the two can
@@ -24,7 +24,7 @@ from __future__ import annotations
 # fire) can NEVER deliver the fan-in. The EXISTS-any-absorbing-edge
 # variant marked every mixed-policy failure absorbed, and the derivation
 # could NEVER say 'failed' for a failed-closed run — the envelope lied
-# (T07's C). ``{node}`` is the failed node's row alias.
+# ``{node}`` is the failed node's row alias.
 def absorbed_exists(node_alias: str) -> str:
     return (
         "EXISTS (\n"
@@ -75,14 +75,14 @@ GROUP BY status
 # THE 3AM COLUMNS AT THE SOURCE (the engine-faces lane's fix): the row
 # also carries started_at (the RUNNING face's age source), the
 # failed_parent stamp (metadata.failed_parent — the dead parent's id,
-# named on the record by the T06 cascade), and the LEASE face's columns
+# named on the record by the failed-parent cascade), and the LEASE face's columns
 # (lock_expires_at + last_heartbeat_at — the reclaim-requires-a-leader
 # marker's derivation input). Every status surface reads THIS query; the
 # columns at the source are ONE read — the CLI's own supplement read
 # (two reads where one suffices) is retired by them.
 # The absorption record is absorbed_exists's POLICY-vs-
 # FENCE predicate — the edge's declaration alone absorbs nothing (the
-# envelope never lies, T07's C).
+# envelope never lies).
 WORKFLOW_NODES_SQL = (
     """\
 SELECT j.id, j.step_key, j.map_index, j.status, j.deps_pending, j.parent_id,
@@ -137,7 +137,7 @@ ORDER BY j.id
 # retrying · 580 blocked" from ONE read, computed IN the query, never a
 # second instrument).
 #
-# T21 EXTENSION (the aggregation's map line, decision c): the same grouped
+# EXTENSION (the aggregation's map line): the same grouped
 # read LEFT JOINed to the STATE channel — the children's emitted progress
 # (avg pct, the freshest update) rides the SAME read, computed IN the
 # query, never a second instrument and never a per-child series (the
@@ -188,7 +188,7 @@ GROUP BY p.id, p.step_key
 """
 
 
-# THE DERIVATION'S MAINTENANCE LEG (T08: the reported status is the
+# THE DERIVATION'S MAINTENANCE LEG (the reported status is the
 # derivation's output, never a cache the engine hand-maintains): the
 # rederive arm maintains each flow ROOT's status from the rows, per the
 # table's terminal rows — a non-absorbed failed node → the root
@@ -301,7 +301,7 @@ maintained AS (
       AND (
           -- THE FAILED ROOT (precedence row 2): the non-absorbed failure
           -- finalizes the root only when NO live UNRESOLVED work rests
-          -- on the run (T20: pending/scheduled chain rows hold it;
+          -- on the run (pending/scheduled chain rows hold it;
           -- resolved-blocked stamps do not — the wedge's fix).
           -- Row 1 outranks it: live unresolved work keeps the run live.
           (pf.has_failed AND NOT COALESCE(pf.has_unresolved, false))

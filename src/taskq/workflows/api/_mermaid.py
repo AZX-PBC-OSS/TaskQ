@@ -1,4 +1,4 @@
-"""The compile-time Mermaid emission (T09, §10.1) — a PURE function of the
+"""The compile-time Mermaid emission (§10.1) — a PURE function of the
 wiring: same module → same Mermaid, byte-stable, golden-testable.
 
 * edge labels = the promise types (the data that flows, spelled on the
@@ -6,7 +6,7 @@ wiring: same module → same Mermaid, byte-stable, golden-testable.
 * node shapes by kind — stadium ``([])`` = map source, hexagon ``{{}}`` =
   collapsed map (the join), rectangle ``[]`` = plain actor, ``[[(...)]]
   ``-shaped ``[(...)]`` = the HITL interrupt points (the declared gates,
-  rendered with their signal types + timeout policy — T10's gate consumes
+  rendered with their signal types + timeout policy — the hold gate consumes
   the same declaration);
 * deterministic order: nodes and edges iterate in SORTED key order, so
   the emission never depends on dict insertion order (the byte-stability

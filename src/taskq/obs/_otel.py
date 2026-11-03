@@ -3682,7 +3682,7 @@ def record_sse_rejection(surface: SseSurface, topic: str) -> None:
     ).add(1, {"topic": _bounded_sse_topic(topic), "surface": surface})
 
 
-# ── The workflow progress rollup (T08) ────────────────────────────────
+# ── The workflow progress rollup ────────────────────────────────
 #
 # taskq.wf_progress_nodes_total{workflow, state}: per-workflow node-state
 # counts, dimensioned by the USER-DECLARED WORKFLOW REGISTRATION (the
