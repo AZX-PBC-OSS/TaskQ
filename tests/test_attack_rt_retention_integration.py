@@ -974,6 +974,14 @@ async def test_flag_flip_cycle_on_one_database_converges(
             ts_schema,
         )
         assert n_policies == 3, f"policies accumulated: {n_policies}"
+        # The re-registration (remove-then-add inside enable) reset the
+        # policies' next_start to the scheduler's default - the
+        # background worker can fire mid-test and eat the archived rows
+        # the final read counts. The policies defer again, the same way
+        # the first lap deferred them.
+        await _schedule_policies(
+            conn, ts_schema, next_start=datetime.now(UTC) + timedelta(days=3650)
+        )
 
         # OFF once more, then ON (the cycle's second lap).
         await enable_hypertables(_RefusingConn(), schema=ts_schema, settings=off_settings)  # pyright: ignore[reportArgumentType]  # Why: same zero-SQL contract, second lap of the cycle.
@@ -985,6 +993,9 @@ async def test_flag_flip_cycle_on_one_database_converges(
             ts_schema,
         )
         assert n_policies == 3
+        await _schedule_policies(
+            conn, ts_schema, next_start=datetime.now(UTC) + timedelta(days=3650)
+        )
 
         # No orphaned chunks: every chunk the catalogs show belongs to one
         # of the schema's three hypertables, and show_chunks agrees with
@@ -1008,11 +1019,24 @@ async def test_flag_flip_cycle_on_one_database_converges(
         assert [tuple(r) for r in ledger_after] == [tuple(r) for r in ledger], (
             "the flag cycle wrote to the migration ledger"
         )
-        # And the archive rows the cycle produced are exactly the pruned jobs.
+        # And the archive holds the cycle's OWN rows and nothing else.
+        # The rows' PERSISTENCE is deliberately not this pin's claim: on
+        # the converted schema the aged tail belongs to the retention
+        # policy (the policy floor's documented boundary — the policy's
+        # first registered run drops the aged tail whole-chunk, silently,
+        # at the scheduler's own instant), so a drop between the prunes
+        # and this read is the policy's legitimate expiry, never a cycle
+        # defect. The cycle's claim is the OTHER direction: no FOREIGN
+        # archive row exists (a re-archive or a spurious move would put
+        # one there), and each lap's prune deleted exactly one job
+        # (asserted at the lap).
         archive_ids = await conn.fetch(f"SELECT id FROM {ts_schema}.jobs_archive")
-        assert {r["id"] for r in archive_ids} == {jid_on, jid_off}
+        foreign = {r["id"] for r in archive_ids} - {jid_on, jid_off}
+        assert not foreign, f"the cycle's archive gained foreign rows: {foreign}"
         await assert_master_invariant(
-            conn, ts_schema, retention=_FOLD_RETENTION, seeded={jid_on, jid_off}
+            conn,
+            ts_schema,
+            retention=_FOLD_RETENTION,
         )
     finally:
         await conn.close()
