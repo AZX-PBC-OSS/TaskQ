@@ -572,6 +572,13 @@ def test_every_job_that_runs_the_admin_js_tests_installs_node() -> None:
             scripts = _run_scripts(job)
             if "pytest" not in scripts or "tests/e2e" in scripts or '-m "slow' in scripts:
                 continue
+            # A job whose pytest invocation binds EXPLICIT paths cannot
+            # collect tests/web_admin unless one of the paths is (or
+            # covers) web_admin — the docs-examples job's own shape (its
+            # two paths are the docs harness's).
+            paths = re.findall(r"tests/[A-Za-z0-9_./-]+", scripts)
+            if paths and not any("web_admin" in p for p in paths):
+                continue
             if not any("actions/setup-node" in str(step.get("uses", "")) for step in _steps(job)):
                 offenders.append(f"{path.name}:{job_name}")
     assert not offenders, (

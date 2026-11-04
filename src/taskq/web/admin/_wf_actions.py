@@ -1191,10 +1191,16 @@ def register_actions(router: APIRouter) -> None:
 
         # The id's shape is the door's own check: a malformed hold id is
         # an audited 400 (the caller's typo), never a 500 from the
-        # canonicalizer's parse escaping the action.
+        # canonicalizer's parse escaping the action. The audit pointer
+        # is bound SANITIZED — the never-pruned row's index key cannot
+        # carry a NUL byte or an unbounded string (the leaf's per-row
+        # and index-shape laws), so the pointer keeps a bounded,
+        # NUL-free form of what the caller sent.
         try:
             canonical_hold_id = str(_as_hold_id(hold_id))
         except ValueError:
+            sanitized = hold_id.replace("\x00", "")[:96]
+            audit_pointer = sanitized + ("…" if len(sanitized) < len(hold_id) else "")
             from taskq.web.admin._audit import record_admin_action
 
             async with pool.acquire() as conn:
@@ -1204,7 +1210,7 @@ def register_actions(router: APIRouter) -> None:
                     principal=principal,
                     action="hitl.resolve",
                     target_type="hold",
-                    target_id=hold_id,
+                    target_id=audit_pointer,
                     reason=reason if isinstance(reason, str) else None,
                     detail={
                         "refused": "the hold id is not a valid id",

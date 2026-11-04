@@ -170,6 +170,27 @@ async def test_the_web_half_lives_and_clears(
         tokenless = (await http.get(f"/runs/{flow_id}/events")).status_code
         assert scoped_elsewhere == 403 and tokenless == 403
 
+        # THE DOORS' ID SHAPE: a malformed run id is a 404 on every door
+        # (the canonicalize-at-entry rule) — never a 500, never a silent
+        # stream.
+        malformed_status = (
+            await http.get("/runs/not-a-uuid/events", params={"token": minted["token"]})
+        ).status_code
+        assert malformed_status == 404
+        assert (await http.get("/runs/not-a-uuid/board")).status_code == 404
+        malformed_resolve = await http.post(
+            f"/runs/{flow_id}/holds/not-a-uuid/resolve", json={"verdict": "approve"}
+        )
+        assert malformed_resolve.status_code == 404
+
+        # THE BRACED SPELLING: the same run named the list doors' other
+        # accepted way — the token door mints a token scoped to the
+        # CANONICAL run (the doors canonicalize at entry; the events
+        # door's stream behavior rides the canonical form the same way).
+        braced = "{" + str(flow_id).upper() + "}"
+        braced_login = (await http.get(f"/runs/{braced}/token")).json()
+        assert braced_login["run_id"] == flow_id, braced_login
+
         # THE SUBSCRIBE + THE ROW READ: the board's stream carries the
         # create AND the context fetched from the row.
         board = await _read_until(
