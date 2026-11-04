@@ -150,6 +150,7 @@ import asyncpg
 import structlog
 
 from taskq._humantime import split_seconds
+from taskq.backend._retention_floor import clear_timescaledb_availability_cache
 from taskq.constants import (
     _IDENT_RE,  # pyright: ignore[reportPrivateUsage]  # Why: reusing the canonical identifier regex rather than redefining it.
 )
@@ -615,6 +616,13 @@ async def enable_hypertables(
             "enabled; a restart applies it). To run this server as-is, unset "
             "TASKQ_TIMESCALEDB_HYPERTABLES."
         )
+
+    # The extension is confirmed present and usable on this server: any
+    # connection in this process that cached the floor probe's negative
+    # (a vanilla answer from before the install) must re-ask, or its
+    # sweeps would run full-range over rows the policies armed below
+    # own.
+    clear_timescaledb_availability_cache()
 
     await _refuse_null_archive_tail(conn, schema)
 

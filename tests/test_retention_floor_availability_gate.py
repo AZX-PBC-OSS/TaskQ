@@ -20,14 +20,24 @@ unchanged.
 
 These pins are hermetic (a recording stub conn counts the statements on
 the wire); the Timescale-present path's parse teeth and live-engine
-behavior stay in their own packs, unchanged.
+behavior stay in their own packs, unchanged. The conn-TYPE pins are the
+exception: the sweeps hand the floor asyncpg's ``PoolConnectionProxy``
+(a ``__slots__``-only wrapper, minted fresh per acquire), so the pack
+pins that wrapper's shape too — hermetically (a slots stub mirroring
+it) and end-to-end (a real pool acquire on the self-provisioned
+vanilla server) — because a gate that only works on weak-referenceable
+stubs is a gate that kills the production sweep loop.
 """
 
 from __future__ import annotations
 
+import gc
 from datetime import timedelta
 from typing import Any
 
+import asyncpg
+
+from taskq._ids import new_uuid
 from taskq.backend._retention_floor import retention_policy_floor
 from taskq.backend._sweeps import sweep_expired_events
 
@@ -73,6 +83,59 @@ class _RecordingConn:
 
     def availability_statements(self) -> list[str]:
         return [s for s in self.statements if "pg_extension" in s]
+
+
+class _SlotsProxyConn:
+    """asyncpg's production acquire shape, mirrored: the pool hands out
+    ``PoolConnectionProxy`` — ``__slots__``-only (no ``__weakref__``),
+    minted fresh per acquire, wrapping the long-lived underlying
+    connection."""
+
+    __slots__ = ("_con",)
+
+    def __init__(self, inner: _RecordingConn) -> None:
+        self._con = inner
+
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
+        return await self._con.fetch(sql, *args)
+
+    async def execute(self, sql: str, *args: object) -> str:
+        return await self._con.execute(sql, *args)
+
+    def tsdb_statements(self) -> list[str]:
+        return self._con.tsdb_statements()
+
+    def availability_statements(self) -> list[str]:
+        return self._con.availability_statements()
+
+
+class _UnkeyableConn:
+    """A wrapper that can neither be unwrapped (no ``_con``) nor weakly
+    referenced (``__slots__`` without ``__weakref__``): the shape the
+    cache must answer without memoizing."""
+
+    __slots__ = ("_statements",)
+
+    def __init__(self) -> None:
+        self._statements: list[str] = []
+
+    async def fetch(self, sql: str, *args: object) -> list[dict[str, int]]:
+        self._statements.append(sql)
+        if "pg_extension" in sql:
+            return []
+        if "timescaledb_information" in sql:
+            return []
+        raise AssertionError(f"unexpected statement reached the wire: {sql[:120]}")
+
+    async def execute(self, sql: str, *args: object) -> str:
+        self._statements.append(sql)
+        return "DELETE 0"
+
+    def tsdb_statements(self) -> list[str]:
+        return [s for s in self._statements if "timescaledb_information" in s]
+
+    def availability_statements(self) -> list[str]:
+        return [s for s in self._statements if "pg_extension" in s]
 
 
 async def test_vanilla_server_never_issues_the_catalog_probe_and_caches_the_negative() -> None:
@@ -171,3 +234,132 @@ async def test_the_present_path_reaches_the_probe_and_its_parse_teeth() -> None:
         "catalog question stays per-call on the present path"
     )
     assert len(conn.availability_statements()) == 1
+
+
+async def test_the_production_proxy_shape_is_answered_not_raised() -> None:
+    """The sweeps hand the floor the pool's proxy — a __slots__-only
+    wrapper with no __weakref__. The gate must ANSWER such a caller (the
+    fail-open contract knows no exception for the wrapper's type), and it
+    must key the cache on the UNDERLYING connection: two acquires mint
+    two proxies sharing one connection, and the second sweep must not
+    re-ask."""
+    inner = _RecordingConn()  # vanilla
+    first = _SlotsProxyConn(inner)
+    second = _SlotsProxyConn(inner)  # a fresh acquire over the SAME connection
+
+    assert await retention_policy_floor(first, "v_schema", "job_events", "occurred_at") is None, (
+        "the proxy's type must be answered, never a TypeError through the sweep"
+    )
+    assert await retention_policy_floor(second, "v_schema", "job_events", "occurred_at") is None
+    assert first.tsdb_statements() == [] and second.tsdb_statements() == []
+    assert len(inner.availability_statements()) == 1, (
+        "the cache keys the underlying connection: a fresh proxy per "
+        "acquire must not re-ask"
+    )
+
+
+async def test_an_unkeyable_conn_still_fails_open_and_gates_the_probe() -> None:
+    """A wrapper that can neither be unwrapped (no ``_con``) nor weakly
+    referenced must be ANSWERED — never a TypeError — and its answer is
+    simply not memoized: each call re-asks the cheap pre-check, and the
+    catalog probe stays equally off the wire. The guarantee that never
+    degrades is zero catalog-probe statements; only the memoization is
+    conditional on a key existing."""
+    conn = _UnkeyableConn()
+
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert conn.tsdb_statements() == []
+    assert len(conn.availability_statements()) == 2, (
+        "unkeyable: no memoization — each call re-asks, and the answer "
+        "is per-call correct"
+    )
+
+
+async def test_recycled_connections_re_ask() -> None:
+    """A pool's recycle mints a NEW underlying connection; the weakly
+    keyed entry dies with the recycled one, and the new connection's
+    first sweep re-asks (a recycled endpoint can be a different
+    server)."""
+    inner_one = _RecordingConn()
+    assert (
+        await retention_policy_floor(_SlotsProxyConn(inner_one), "v_schema", "job_events", "occurred_at")
+        is None
+    )
+    assert len(inner_one.availability_statements()) == 1
+
+    del inner_one
+    gc.collect()
+
+    inner_two = _RecordingConn()
+    assert (
+        await retention_policy_floor(_SlotsProxyConn(inner_two), "v_schema", "job_events", "occurred_at")
+        is None
+    )
+    assert len(inner_two.availability_statements()) == 1, (
+        "the recycled connection's first sweep re-asks: the cached "
+        "answer died with the recycled connection"
+    )
+
+
+async def test_two_servers_key_their_own_answers() -> None:
+    """A multi-server process (the test matrix, a multi-DSN deployment)
+    keys per underlying connection: one vanilla and one Timescale-present
+    server each hold their own answer — the vanilla side never issues
+    the catalog probe, the present side runs it."""
+    vanilla_inner = _RecordingConn()
+    present_inner = _RecordingConn(
+        availability_rows=[{"?column?": 1}],
+        probe_rows=[{"rows_examined": 3}],
+    )
+
+    assert (
+        await retention_policy_floor(_SlotsProxyConn(vanilla_inner), "s", "job_events", "occurred_at")
+        is None
+    )
+    assert (
+        await retention_policy_floor(_SlotsProxyConn(present_inner), "s", "job_events", "occurred_at")
+        is None
+    )
+
+    assert vanilla_inner.tsdb_statements() == [], "the vanilla server keeps the probe off the wire"
+    assert len(present_inner.tsdb_statements()) == 1, (
+        "the present server's probe runs under its own cached answer"
+    )
+
+
+async def test_the_enable_path_busts_cached_negatives() -> None:
+    """The supported way the extension appears under a live connection is
+    the deploy-step conversion; its enable path busts the cache the
+    moment the server is confirmed Timescale, so no cached negative
+    outlives the install on the supported path."""
+    from taskq.backend._retention_floor import (  # pyright: ignore[reportPrivateUsage]
+        clear_timescaledb_availability_cache,
+    )
+
+    conn = _RecordingConn()
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert len(conn.availability_statements()) == 1
+
+    clear_timescaledb_availability_cache()
+
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert len(conn.availability_statements()) == 2, (
+        "the bust forces the re-ask: a cached negative cannot outlive "
+        "the enable path"
+    )
+
+
+async def test_real_pool_acquire_shape_never_raises(pg_dsn: str) -> None:
+    """The production conn type end-to-end: ``pool.acquire()`` hands the
+    floor a real ``PoolConnectionProxy``; the floor must answer None on a
+    vanilla server — no raise, no catalog probe — and the second call
+    must ride the cached negative on the underlying connection."""
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=1)
+    try:
+        async with pool.acquire() as conn:
+            schema = "rfg_" + new_uuid().hex[:12]
+            assert await retention_policy_floor(conn, schema, "job_events", "occurred_at") is None
+            assert await retention_policy_floor(conn, schema, "job_events", "occurred_at") is None
+    finally:
+        await pool.close()

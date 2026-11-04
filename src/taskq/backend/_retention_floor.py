@@ -34,27 +34,64 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, ref
 
 if TYPE_CHECKING:
     from taskq.backend._protocol import ConnLike
 
-__all__ = ["retention_policy_floor"]
+__all__ = ["clear_timescaledb_availability_cache", "retention_policy_floor"]
 
 logger = logging.getLogger(__name__)
 
-# The availability gate's two pieces: the pre-check's statement (one
+# The availability gate's pieces: the pre-check's statement (one
 # unprivileged catalog read — "is the extension installed on THIS
-# server?") and the answer's cache. The cache is keyed per CONNECTION
-# and weakly: pooled connections are long-lived, so per-connection is
-# per-pool in effect; a multi-server process (the test matrix, a
-# multi-DSN deployment) keys per server naturally; and the entry dies
-# with the connection. Extensions cannot be removed mid-connection in
-# practice, so the negative never goes stale; an AMBIGUOUS answer (the
-# pre-check itself erroring) is never cached — the next sweep re-asks.
+# server?") and the answer's cache. The cache keys the caller's
+# UNDERLYING connection, weakly: the pool hands the sweeps a
+# ``PoolConnectionProxy`` — ``__slots__``-only, un-weak-referenceable,
+# and minted fresh per acquire — so the key is the proxy's wrapped
+# connection (stable across acquires, dead with the pool's recycle); a
+# multi-server process (the test matrix, a multi-DSN deployment) keys
+# per server naturally. A caller that can be neither unwrapped nor
+# weak-referenced is ANSWERED without memoizing (the pre-check re-asks
+# per call — cheap, and the catalog probe below stays equally gated);
+# an AMBIGUOUS answer (the pre-check erroring) is never cached. The
+# negative CAN go stale in the add direction — an extension installed
+# under a live connection — so the enable path busts the cache the
+# moment it confirms the install
+# (:func:`clear_timescaledb_availability_cache`); outside that path a
+# stale negative lasts until the pool recycles the connection (the
+# default inactive lifetime is 300s), and its sweeps run full-range —
+# the vanilla behavior: the sweep's own retention bound still governs
+# every deletion, the floor only decides who owns the aged end.
 _TIMESCALEDB_PRESENT_PROBE_SQL = "SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'"
 
 _TIMESCALEDB_PRESENT: WeakKeyDictionary[ConnLike, bool] = WeakKeyDictionary()
+
+
+def _availability_cache_key(conn: ConnLike) -> ConnLike | None:
+    """The availability cache's key: the proxy's underlying connection
+    when the caller hands a pool proxy, the connection itself
+    otherwise — or None when the candidate cannot be weakly referenced
+    (the answer is then correct but not memoized)."""
+    underlying = getattr(conn, "_con", None)
+    candidate = conn if underlying is None else underlying
+    try:
+        ref(candidate)
+    except TypeError:
+        return None
+    return candidate
+
+
+def clear_timescaledb_availability_cache() -> None:
+    """The deploy-step conversion's cache-bust, called the moment the
+    enable path confirms the extension installed: every connection that
+    cached a negative before the install must re-ask, or its sweeps
+    would keep running full-range over rows the newly armed policy
+    owns. (The disable direction needs no bust: a stale positive fails
+    open through the probe's own except — the views are gone, the
+    statement raises, the answer is None.)"""
+    _TIMESCALEDB_PRESENT.clear()
+
 
 # One round trip answering both probe questions: is *schema.table* a
 # hypertable with a registered retention policy (the information views'
@@ -135,6 +172,13 @@ async def retention_policy_floor(
       failing probe per sweep),
     * the availability pre-check itself errors (an ambiguous answer —
       returned as None and NOT cached; the next sweep re-asks),
+    * the connection's cached negative predates the extension's install
+      under it — the enable path busts the cache when it confirms the
+      install; outside that path the stale negative lasts until the
+      pool recycles the connection (the default inactive lifetime is
+      300s), and those sweeps run full-range in the meantime (the
+      vanilla behavior: the sweep's own retention bound still governs
+      every deletion),
     * the table is not a hypertable (no row in
       ``timescaledb_information.hypertables``),
     * the hypertable carries no ``policy_retention`` job (nothing owns
@@ -186,10 +230,11 @@ async def retention_policy_floor(
     # sweep bought one guaranteed-failing round trip and one
     # UndefinedTableError exception event per sweep, forever. The
     # pre-check is one unprivileged catalog read whose answer is cached
-    # per connection; the fail-open contract below is unchanged, and
-    # the Timescale-present path reaches the same probe bytes as
-    # before.
-    present = _TIMESCALEDB_PRESENT.get(conn)
+    # per underlying connection (the pool proxy's wrapped one); the
+    # fail-open contract below is unchanged, and the Timescale-present
+    # path reaches the same probe bytes as before.
+    cache_key = _availability_cache_key(conn)
+    present = _TIMESCALEDB_PRESENT.get(cache_key) if cache_key is not None else None
     if present is None:
         try:
             available = await conn.fetch(_TIMESCALEDB_PRESENT_PROBE_SQL)
@@ -202,7 +247,8 @@ async def retention_policy_floor(
             )
             return None
         present = bool(available)
-        _TIMESCALEDB_PRESENT[conn] = present
+        if cache_key is not None:
+            _TIMESCALEDB_PRESENT[cache_key] = present
         if not present:
             logger.debug(
                 "retention_policy_floor: timescaledb not present on this server "
