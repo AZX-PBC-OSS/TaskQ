@@ -785,3 +785,10 @@ async def test_resolve_delivers_through_a_non_canonical_id_spelling(
     )
     after = await client.get(holds[0].hold_id)
     assert after is not None and after.status == "delivered", after
+    # The AUDIT POINTER speaks the canonical form: the operator's strict
+    # target_id query finds the braced call's row.
+    pointer = await wf_conn.fetchrow(
+        f'SELECT target_id FROM "{wf_schema}".admin_audit '
+        "WHERE action = 'hitl.resolve' ORDER BY id DESC LIMIT 1"
+    )
+    assert pointer is not None and pointer["target_id"] == str(holds[0].hold_id), pointer

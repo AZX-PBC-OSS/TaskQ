@@ -1189,8 +1189,34 @@ def register_actions(router: APIRouter) -> None:
             _as_hold_id,  # pyright: ignore[reportPrivateUsage]  # Why: the id's canonical form is the hold module's own normalizer — the refusal's audit pointer carries the form the operator's queries match.
         )
 
+        # The id's shape is the door's own check: a malformed hold id is
+        # an audited 400 (the caller's typo), never a 500 from the
+        # canonicalizer's parse escaping the action.
+        try:
+            canonical_hold_id = str(_as_hold_id(hold_id))
+        except ValueError:
+            from taskq.web.admin._audit import record_admin_action
+
+            async with pool.acquire() as conn:
+                await record_admin_action(
+                    conn,
+                    schema=schema,
+                    principal=principal,
+                    action="hitl.resolve",
+                    target_type="hold",
+                    target_id=hold_id,
+                    reason=reason if isinstance(reason, str) else None,
+                    detail={
+                        "refused": "the hold id is not a valid id",
+                        "node": "unknown",
+                        "stage": "admin-payload-gate",
+                        "run_id": str(run_id),
+                    },
+                )
+            raise HTTPException(status_code=400, detail="the hold id is not a valid id") from None
+
         client = HitlClient(pool.pool, schema=schema)
-        hold = await client.get(hold_id)
+        hold = await client.get(canonical_hold_id)
         if hold is None or hold.run_id != str(run_id):
             raise HTTPException(status_code=404, detail="Hold not found on this run")
         # THE AUDITED REFUSAL: the gate's 422 writes its
@@ -1208,7 +1234,7 @@ def register_actions(router: APIRouter) -> None:
             reason=reason,
         )
         result = await client.resolve(
-            hold_id,
+            canonical_hold_id,
             validated,
             reason=reason,
             principal=principal,

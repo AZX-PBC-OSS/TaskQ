@@ -353,6 +353,34 @@ async def test_wrong_shaped_resolve_writes_the_refused_audit_row(
         page = await http.get(f"/workflows/{run_id}")
     assert "hitl.resolve" in page.text, "the refused probe is visible in the trail"
 
+    # THE POINTER'S ONE SPELLING: the SAME refusal posted through a
+    # braced spelling of the id writes its audit pointer CANONICAL —
+    # the strict target_id query finds every refused call's row under
+    # one spelling.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        await http.get("/queues")  # the CSRF cookie's set
+        braced = "{" + str(hold.hold_id).upper() + "}"
+        braced_bad = await http.post(
+            f"/api/runs/{run_id}/resolve",
+            data={
+                "hold_id": braced,
+                "decision": json.dumps({"verdict": 42, "smuggle": True}),
+                "csrf_token": _csrf_of(http),
+            },
+        )
+    assert braced_bad.status_code == 422
+    pointers = await clean_pg_conn.fetchrow(
+        f'SELECT count(*)::int AS rows FROM "{schema}".admin_audit '
+        "WHERE target_id = $1 AND detail->>'refused' IS NOT NULL",
+        hold.hold_id,
+    )
+    assert pointers is not None and pointers["rows"] >= 2, (
+        "the braced call's refusal is findable by the canonical id: the "
+        "audit pointer speaks one spelling"
+    )
+
 
 async def test_wrong_shaped_deliver_writes_the_refused_audit_row_too(
     module_pg_pool: asyncpg.Pool,

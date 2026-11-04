@@ -170,18 +170,29 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
         """THE RESOLVE POST: the same typed door the admin's Resolve
         form rides. THE BROADCAST CLEARS THE CARD: the winning CAS's
         ``HoldResolved`` fan-out reaches every subscribed stream; the
-        board drops the card on the frame (no polling, no refresh)."""
-        _gate(request, run_id)
+        board drops the card on the frame (no polling, no refresh). The
+        ids canonicalize at the door (a malformed id is a 404 — never a
+        500, never a silent stream)."""
+        try:
+            canonical_run = str(UUID(run_id))
+            canonical_hold = str(UUID(hold_id))
+        except ValueError:
+            raise HTTPException(status_code=404, detail="no such run or hold") from None
+        _gate(request, canonical_run)
         decision = await request.json()
-        result = await _client().resolve(hold_id, decision)
+        result = await _client().resolve(canonical_hold, decision)
         return {"status": result.status, "reason": result.reason or ""}
 
     @app.get("/runs/{run_id}/board")
     async def board(run_id: str, request: Request) -> HTMLResponse:
         """The board page (the demo's one page — the cards + the SSE)."""
+        try:
+            canonical_run = str(UUID(run_id))
+        except ValueError:
+            raise HTTPException(status_code=404, detail="no such run") from None
         token = request.query_params.get("token", "")
-        _gate(request, run_id)
-        return HTMLResponse(_BOARD_HTML.format(run_id=run_id, token=token))
+        _gate(request, canonical_run)
+        return HTMLResponse(_BOARD_HTML.format(run_id=canonical_run, token=token))
 
     return app
 
