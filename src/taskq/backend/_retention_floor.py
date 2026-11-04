@@ -288,6 +288,7 @@ async def retention_policy_floor(
         present = cached[0]
     if present is None:
         generation_at_miss = _cache_generation
+        observed_at = _MONOTONIC()
         try:
             available = await conn.fetch(_TIMESCALEDB_PRESENT_PROBE_SQL)
         except Exception as exc:  # Why: the pre-check is part of the fail-open surface — an erroring gate is ambiguity, never an answer; it is not cached, and the next sweep re-asks.
@@ -302,13 +303,18 @@ async def retention_policy_floor(
         if cache_key is not None and generation_at_miss == _cache_generation:
             # A write racing the entry's death (or any mapping refusal)
             # degrades to re-asking — the cache is best-effort, the
-            # sweep never sees the failure.
+            # sweep never sees the failure. The stamp is the OBSERVATION
+            # instant (before the fetch), so the TTL bounds the
+            # answer's age, not the write's.
             with contextlib.suppress(Exception):
-                _TIMESCALEDB_PRESENT[cache_key] = (present, _MONOTONIC())
+                _TIMESCALEDB_PRESENT[cache_key] = (present, observed_at)
         if not present:
             logger.debug(
                 "retention_policy_floor: timescaledb not present on this server "
-                "(cached for the connection, TTL-bounded) schema=%s table=%s",
+                "(answer %s) schema=%s table=%s",
+                "held for the TTL"
+                if cache_key is not None
+                else "not cached: the caller is unkeyable",
                 schema,
                 table,
             )

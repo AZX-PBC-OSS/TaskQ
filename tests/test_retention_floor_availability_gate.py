@@ -387,26 +387,41 @@ async def test_a_stale_answer_re_asks_when_its_ttl_passes(
     """The cached answer (negative AND positive) is bounded: past the
     TTL the connection re-asks — a staleness bound that holds regardless
     of process boundaries, pool recycling, or who installed the
-    extension. The clock is the module's own seam (monotonic)."""
+    extension. The clock is the module's own seam (monotonic), and the
+    boundary pins the stated value: fresh through 300s, re-asked past
+    it."""
     import taskq.backend._retention_floor as floor_mod
 
     clock = {"now": 1000.0}
     monkeypatch.setattr(floor_mod, "_MONOTONIC", lambda: clock["now"])
-    conn = _RecordingConn()  # vanilla
+    vanilla = _RecordingConn()  # vanilla: the negative path
+    present = _RecordingConn(
+        availability_rows=[{"?column?": 1}],
+        probe_rows=[{"rows_examined": 3}],
+    )  # the positive path
 
-    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
-    assert len(conn.availability_statements()) == 1
+    assert await retention_policy_floor(vanilla, "v_schema", "job_events", "occurred_at") is None
+    assert await retention_policy_floor(present, "v_schema", "job_events", "occurred_at") is None
+    assert len(vanilla.availability_statements()) == 1
+    assert len(present.availability_statements()) == 1
 
-    clock["now"] += 120.0  # fresh inside the TTL: no re-ask
-    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
-    assert len(conn.availability_statements()) == 1
+    clock["now"] += 299.0  # fresh inside the TTL: neither polarity re-asks
+    assert await retention_policy_floor(vanilla, "v_schema", "job_events", "occurred_at") is None
+    assert await retention_policy_floor(present, "v_schema", "job_events", "occurred_at") is None
+    assert len(vanilla.availability_statements()) == 1
+    assert len(present.availability_statements()) == 1
 
-    clock["now"] += 400.0  # past the TTL: the stale answer re-asks
-    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
-    assert len(conn.availability_statements()) == 2, (
-        "the cached answer is a bound, not a promise: past the TTL the "
+    clock["now"] += 2.0  # past the 300s bound: BOTH polarities re-ask
+    assert await retention_policy_floor(vanilla, "v_schema", "job_events", "occurred_at") is None
+    assert await retention_policy_floor(present, "v_schema", "job_events", "occurred_at") is None
+    assert len(vanilla.availability_statements()) == 2, (
+        "the negative is a bound, not a promise: past the TTL the "
         "connection re-asks — the staleness cure that holds across "
         "processes"
+    )
+    assert len(present.availability_statements()) == 2, (
+        "the positive is bounded by the same TTL: a server that lost the "
+        "extension cannot be trusted from a stale answer past the bound"
     )
 
 
