@@ -749,3 +749,39 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
     assert str(flow_id) in malformed_message and "not-this-run" in malformed_message, (
         malformed_message
     )
+
+
+async def test_resolve_delivers_through_a_non_canonical_id_spelling(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """The resolve door's EVERY leg speaks the id's canonical form: a
+    hold resolved through a braced UPPER spelling (the same hold the
+    JobId names) is DELIVERED — the node resumes, the hold is not
+    consumed-then-refused — and the audit row and the broadcast carry
+    the canonical id the operator's queries match."""
+
+    async def _hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(Approval, timeout_s=120.0)
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn,
+        wf_schema,
+        wf_pool,
+        wait_body=_hold_body,
+        name="resolve_spelling_flow",
+        gates=(GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0),),
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    holds = await client.list(run=flow_id)
+    assert len(holds) == 1, holds
+
+    braced = "{" + str(holds[0].hold_id).upper() + "}"
+    result = await client.resolve(braced, {"verdict": "approve"}, principal="op-1")
+    assert result.status == "delivered", (
+        f"a legal spelling of the hold's id must resolve the hold, not "
+        f"consume-then-refuse it: {result}"
+    )
+    after = await client.get(holds[0].hold_id)
+    assert after is not None and after.status == "delivered", after

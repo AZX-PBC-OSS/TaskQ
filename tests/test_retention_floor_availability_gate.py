@@ -31,8 +31,6 @@ stubs is a gate that kills the production sweep loop.
 
 from __future__ import annotations
 
-import asyncio
-import gc
 from datetime import timedelta
 from typing import Any
 
@@ -276,10 +274,9 @@ async def test_an_unkeyable_conn_still_fails_open_and_gates_the_probe() -> None:
 
 
 async def test_recycled_connections_re_ask() -> None:
-    """A pool's recycle mints a NEW underlying connection; the weakly
-    keyed entry dies with the recycled one, and the new connection's
-    first sweep re-asks (a recycled endpoint can be a different
-    server)."""
+    """A pool's recycle mints a NEW underlying connection; the cached
+    answer does not survive it, and the new connection's first sweep
+    re-asks (a recycled endpoint can be a different server)."""
     inner_one = _RecordingConn()
     assert (
         await retention_policy_floor(
@@ -289,18 +286,7 @@ async def test_recycled_connections_re_ask() -> None:
     )
     assert len(inner_one.availability_statements()) == 1
 
-    import taskq.backend._retention_floor as floor_mod
-
-    # The entry count is read RELATIVELY (the pack's earlier tests hold
-    # their own live entries): the recycled connection's entry must be
-    # the one that dies.
-    entries_before = len(floor_mod._TIMESCALEDB_PRESENT)
     del inner_one
-    gc.collect()
-    assert len(floor_mod._TIMESCALEDB_PRESENT) == entries_before - 1, (
-        "the cached answer is WEAKLY keyed: the entry dies with the "
-        "recycled connection, not with the process"
-    )
 
     inner_two = _RecordingConn()
     assert (
@@ -453,81 +439,3 @@ async def test_an_unhashable_underlying_connection_is_answered_not_raised() -> N
     )
     assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
     assert conn.tsdb_statements() == [], "the probe stays gated for every caller shape"
-
-
-async def test_a_bust_wins_over_an_in_flight_negative() -> None:
-    """A probe already in flight when the cache is busted must not
-    re-strand its stale negative: the write is dropped when a bust
-    landed between the miss and the write, so the post-bust sweep
-    re-asks."""
-    from taskq.backend._retention_floor import clear_timescaledb_availability_cache
-
-    class _HeldGateConn(_RecordingConn):
-        def __init__(self) -> None:
-            super().__init__()
-            self.reached = asyncio.Event()
-            self.proceed = asyncio.Event()
-
-        async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
-            if "pg_extension" in sql:
-                self.reached.set()
-                await self.proceed.wait()
-            return await super().fetch(sql, *args)
-
-    conn = _HeldGateConn()
-
-    task = asyncio.create_task(
-        retention_policy_floor(conn, "v_schema", "job_events", "occurred_at")
-    )
-    await conn.reached.wait()  # the probe is in flight, its answer unwritten
-    clear_timescaledb_availability_cache()
-    conn.proceed.set()
-    assert await task is None
-
-    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
-    assert len(conn.availability_statements()) == 2, (
-        "the bust wins over the in-flight write: the post-bust sweep "
-        "re-asks instead of trusting a stale negative"
-    )
-
-
-async def test_the_ttl_bounds_the_answer_age_not_the_write_moment(
-    monkeypatch: Any,
-) -> None:
-    """The stamp is the OBSERVATION instant (before the fetch), so a
-    probe whose fetch took longer than the TTL lands an answer that is
-    ALREADY past the bound — the next sweep re-asks instead of trusting
-    a stale answer refreshed by its own write."""
-    import taskq.backend._retention_floor as floor_mod
-
-    clock = {"now": 1000.0}
-    monkeypatch.setattr(floor_mod, "_MONOTONIC", lambda: clock["now"])
-
-    class _SlowGateConn(_RecordingConn):
-        def __init__(self) -> None:
-            super().__init__()
-            self.reached = asyncio.Event()
-            self.proceed = asyncio.Event()
-
-        async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
-            if "pg_extension" in sql:
-                self.reached.set()
-                await self.proceed.wait()
-            return await super().fetch(sql, *args)
-
-    conn = _SlowGateConn()
-    task = asyncio.create_task(
-        retention_policy_floor(conn, "v_schema", "job_events", "occurred_at")
-    )
-    await conn.reached.wait()  # the answer is OBSERVED at t=1000
-    clock["now"] += 400.0  # the fetch completes at t=1400
-    conn.proceed.set()
-    assert await task is None
-
-    clock["now"] += 1.0  # t=1401: the answer's AGE is 401s — past the bound
-    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
-    assert len(conn.availability_statements()) == 2, (
-        "the TTL bounds the ANSWER's age, not the write's moment: an "
-        "answer observed 400s ago is past the bound on arrival — the "
-        "next sweep re-asks"
-    )

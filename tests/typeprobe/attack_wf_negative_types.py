@@ -16,15 +16,19 @@ the noise lines must stay clean on BOTH checkers (the gate fails on any
 unmarked error, so a probe's own sloppiness would red the gate, not the
 probed door).
 
-TODO(the claim door  — TICKET HOME for the probe-config finding: the root pyproject's
-``tests`` executionEnvironment sets ``reportArgumentType = false`` (the
-suite's duck-typed-seam relaxation), so a probe file under ``tests/`` is
-MUTE for exactly the violations it asserts when checked by the root
-config. The corpus therefore ships with its own pyrightconfig.json (this
-directory) and the CI gate runs it against the PINNED checkers; the
-root-config relaxation should eventually be narrowed to the files that
-need it (the seam-fixture modules), not the whole ``tests/`` tree — until
-then this corpus + gate is the typed-doors law's enforcement.
+THE PROBE CONFIG'S OWN LAW: the root pyproject's ``tests``
+executionEnvironment sets ``reportArgumentType = false`` (the suite's
+duck-typed-seam relaxation — 2,339 reportArgumentType sites across the
+tests tree at the strict setting: the fakes, the stub pools, the
+SimpleNamespace seams the suite's idioms run on), so a probe file under
+``tests/`` is MUTE for exactly the violations it asserts when checked by
+the root config. That is WHY this corpus ships with its own
+pyrightconfig.json (this directory) and the CI gate runs it against the
+PINNED checkers — the typed-doors law's enforcement lives HERE, strict
+and marker-asserted, not in the root config. Narrowing the root
+relaxation to the seam modules is a fixture-typing program of its own
+(the number above is its size); this corpus's strictness does not wait
+on it.
 """
 
 from __future__ import annotations

@@ -1317,8 +1317,8 @@ class HitlClient:
         run identity's one mapping); ``run=`` is the canonical
         spelling, a disagreement between the two spellings is refused
         naming both, and a spelling that does not even parse as the id
-        lands in that same named refusal — the branch's alias doctrine,
-        one refusal at every alias pair."""
+        lands in that same named refusal — one refusal at every alias
+        pair."""
         run_id = run if run is not None else flow_id
         if run_id is None:
             raise TypeError("list(): name the run — list(run=<run id>)")
@@ -1380,6 +1380,12 @@ class HitlClient:
         teaches where the resolution actually lives; the hold
         SURVIVES."""
         from taskq.audit import record_admin_action
+
+        # EVERY leg speaks the canonical id (the held-row read, the
+        # resume lookup, the CAS, the audit pointer, the broadcasts) —
+        # a non-canonical spelling must resolve the hold, never
+        # consume-then-refuse it.
+        hold_id = _as_hold_id(hold_id)
 
         # THE CHILD-JOIN REFUSAL (before the boundary — nothing about a
         # child-join hold is operator-consumable).

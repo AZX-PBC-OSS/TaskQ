@@ -47,51 +47,31 @@ __all__ = ["clear_timescaledb_availability_cache", "retention_policy_floor"]
 
 logger = logging.getLogger(__name__)
 
-# The availability gate's pieces: the pre-check's statement (one
-# unprivileged catalog read — "is the extension installed on THIS
-# server?") and the answer's cache. The cache keys the caller's
-# UNDERLYING connection, weakly: the pool hands the sweeps a
-# ``PoolConnectionProxy`` — ``__slots__``-only, un-weak-referenceable,
-# and minted fresh per acquire — so the key is the proxy's wrapped
-# connection (stable across acquires, dead with the pool's recycle); a
-# multi-server process (the test matrix, a multi-DSN deployment) keys
-# per server naturally.
-#
-# THREE boundaries keep the cache from ever lying to a sweep:
-#
-# * THE TTL — every cached answer (negative and positive) expires, so
-#   no staleness outlives the bound no matter WHO changed the server
-#   or from which process: the deploy-step conversion runs in the
-#   ``taskq migrate up`` process while the floor runs in the workers',
-#   so a cross-process install could otherwise leave a cached negative
-#   standing for the worker's whole life (the leader's dispatcher
-#   connection is re-acquired every sweep interval, so a recycle would
-#   never retire it). The TTL re-asks one cheap indexed read per
-#   connection per interval — never the failing catalog probe per
-#   sweep the gate exists to remove.
-# * THE BUST — the enable path clears the cache the moment it confirms
-#   the install (:func:`clear_timescaledb_availability_cache`),
-#   instant where the TTL is merely bounded; the bust's generation
-#   counter makes a clear win over a probe already in flight (the
-#   in-flight write is dropped, the post-bust sweep re-asks).
-# * THE FAIL-OPEN — every cache interaction (the key derivation, the
-#   lookup, the write) is best-effort and guarded: a caller that can
-#   be neither unwrapped nor weak-referenced nor hashed is ANSWERED
-#   without memoizing, and a failing write degrades to re-asking. The
-#   cache can never raise a TypeError through the sweep, and the
-#   catalog probe below stays equally gated for every caller shape.
+# The availability gate: the pre-check's statement (one unprivileged
+# catalog read — is the extension installed on this server?) and the
+# answer's cache. The cache keys the caller's underlying connection,
+# weakly — the pool hands the sweeps a PoolConnectionProxy that is
+# __slots__-only (un-weak-referenceable) and minted fresh per acquire,
+# so the wrapped connection is the stable identity; a multi-server
+# process keys per server naturally. A caller that can be neither
+# unwrapped nor weak-referenced nor hashed is answered without
+# memoizing; every cache interaction is best-effort — the cache can
+# never raise through the sweep. Cached answers expire after
+# _TIMESCALEDB_ANSWER_TTL_SECONDS (the deploy conversion runs in the
+# migrate process while the floor runs in the workers', so no other
+# bound retires a worker's cached answer); the enable path's
+# clear_timescaledb_availability_cache() is the instant face of the
+# same bound.
 _TIMESCALEDB_PRESENT_PROBE_SQL = "SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'"
 
-# The cached answer's freshness bound (the answers are re-asked past
-# it); the enable path's bust is the instant face of the same cure.
 _TIMESCALEDB_ANSWER_TTL_SECONDS = 300.0
 
 # The answer cache: key = the caller's underlying connection (weakly
 # held), value = (the answer, the answer's monotonic stamp).
 _TIMESCALEDB_PRESENT: WeakKeyDictionary[ConnLike, tuple[bool, float]] = WeakKeyDictionary()
 
-# The bust's generation: a probe that started before a bust must not
-# land its (now stale) answer after it.
+# Busts bump this so a probe already in flight cannot land its stale
+# answer behind the bust.
 _cache_generation = 0
 
 # The TTL's clock, on the module seam for the tests' injected clock.
@@ -99,12 +79,11 @@ _MONOTONIC = time.monotonic
 
 
 def _availability_cache_key(conn: ConnLike) -> ConnLike | None:
-    """The availability cache's key: the proxy's underlying connection
-    when the caller hands a pool proxy, the connection itself
-    otherwise — or None when the candidate cannot be weakly referenced
-    OR hashed (the answer is then correct but not memoized). The whole
-    derivation is guarded: the cache may never raise through the
-    sweep."""
+    """The cache key: the proxy's underlying connection when the caller
+    hands a pool proxy, the connection itself otherwise — None when the
+    candidate cannot be weakly referenced or hashed (the answer is then
+    correct but not memoized). Guarded: the cache may never raise
+    through the sweep."""
     try:
         underlying = getattr(conn, "_con", None)
     except Exception:  # Why: a wrapper whose attribute access itself raises is an unkeyable caller, not a sweep failure — answered uncached below.
@@ -264,17 +243,14 @@ async def retention_policy_floor(
     chunk interval after the row crosses the floor — chunk granularity,
     not row precision, is the trade.
     """
-    # THE AVAILABILITY GATE: ask whether the extension is installed on
-    # this server BEFORE building the catalog statement the views'
-    # absence would fail. On a vanilla server (managed offerings
-    # included) the probe below can never succeed, and issuing it every
-    # sweep bought one guaranteed-failing round trip and one
-    # UndefinedTableError exception event per sweep, forever. The
-    # pre-check is one unprivileged catalog read whose answer is cached
-    # per underlying connection (the pool proxy's wrapped one), TTL-
-    # bounded, bust on the enable path's install confirmation; the
-    # fail-open contract below is unchanged, and the Timescale-present
-    # path reaches the same probe bytes as before.
+    # THE AVAILABILITY GATE: ask whether the extension is installed
+    # before building the catalog statement its absence would fail (on
+    # vanilla Postgres that statement can never succeed — one
+    # guaranteed-failing round trip and one UndefinedTableError
+    # exception event per sweep). The answer is cached per underlying
+    # connection and expires; the fail-open contract below is
+    # unchanged, and the Timescale-present path reaches the same probe
+    # bytes as before.
     cache_key = _availability_cache_key(conn)
     cached: tuple[bool, float] | None = None
     if cache_key is not None:
