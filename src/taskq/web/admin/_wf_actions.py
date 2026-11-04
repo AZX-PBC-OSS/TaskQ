@@ -660,6 +660,7 @@ async def _audit_rerun_refusal(
     action: str,
     target_type: str,
     target_id: str,
+    run_id: str,
     reason: str | None,
     refusal: str,
     applied: int,
@@ -676,7 +677,9 @@ async def _audit_rerun_refusal(
     redirect's refusal state must not fake-fail on a bookkeeping blip.
     ``applied``/``total`` are the composition's KEY counts and ``rows``
     the ROWS the granted keys re-opened (the map-key retry's honest
-    census — the half-rerun's state, on the record)."""
+    census — the half-rerun's state, on the record). The detail carries
+    the ``run_id`` the run page's trail keys on — the refusal renders
+    on THE RUN's trail, not just the target lookup."""
     from taskq.audit import record_admin_action_safe
 
     await record_admin_action_safe(
@@ -687,7 +690,13 @@ async def _audit_rerun_refusal(
         target_type=target_type,
         target_id=target_id,
         reason=reason,
-        detail={"refused": refusal, "applied": applied, "total": total, "rows": rows},
+        detail={
+            "refused": refusal,
+            "applied": applied,
+            "total": total,
+            "rows": rows,
+            "run_id": run_id,
+        },
     )
 
 
@@ -1191,16 +1200,13 @@ def register_actions(router: APIRouter) -> None:
 
         # The id's shape is the door's own check: a malformed hold id is
         # an audited 400 (the caller's typo), never a 500 from the
-        # canonicalizer's parse escaping the action. The audit pointer
-        # is bound SANITIZED — the never-pruned row's index key cannot
-        # carry a NUL byte or an unbounded string (the leaf's per-row
-        # and index-shape laws), so the pointer keeps a bounded,
-        # NUL-free form of what the caller sent.
+        # canonicalizer's parse escaping the action. The pointer's
+        # sanitation is the audit leaf's own law (the NUL rendered as
+        # its visible escape, bounded to the index's shape) — the door
+        # binds what the caller sent.
         try:
             canonical_hold_id = str(_as_hold_id(hold_id))
         except ValueError:
-            sanitized = hold_id.replace("\x00", "")[:96]
-            audit_pointer = sanitized + ("…" if len(sanitized) < len(hold_id) else "")
             from taskq.web.admin._audit import record_admin_action
 
             async with pool.acquire() as conn:
@@ -1210,7 +1216,7 @@ def register_actions(router: APIRouter) -> None:
                     principal=principal,
                     action="hitl.resolve",
                     target_type="hold",
-                    target_id=audit_pointer,
+                    target_id=hold_id,
                     reason=reason if isinstance(reason, str) else None,
                     detail={
                         "refused": "the hold id is not a valid id",
@@ -1378,10 +1384,9 @@ def register_actions(router: APIRouter) -> None:
         from taskq.workflows import WorkflowRunError, retry_workflow_node
 
         # THE NODE KEY'S SHAPE IS THE DOOR'S OWN CHECK: a NUL-bearing or
-        # oversized key is the caller's typo — an audited refusal (the
-        # pointer sanitized: the never-pruned row's index key carries no
-        # NUL and no unbounded string), never a 500 from the CAS bind or
-        # the pointer index.
+        # oversized key is the caller's typo — an audited refusal, never
+        # a 500 from the CAS bind. The pointer's sanitation is the audit
+        # leaf's own law.
         if "\x00" in node_key or len(node_key) > 200:
             await _audit_rerun_refusal(
                 pool,
@@ -1389,7 +1394,8 @@ def register_actions(router: APIRouter) -> None:
                 principal=principal,
                 action="workflow.retry_node",
                 target_type="workflow_node",
-                target_id=f"{run_id}:{node_key}".replace("\x00", "")[:240],
+                target_id=f"{run_id}:{node_key}",
+                run_id=str(run_id),
                 reason=None,
                 refusal="the node key is not a valid key",
                 applied=0,
@@ -1422,6 +1428,7 @@ def register_actions(router: APIRouter) -> None:
                 action="workflow.retry_node",
                 target_type="workflow_node",
                 target_id=f"{run_id}:{node_key}",
+                run_id=str(run_id),
                 reason=reason,
                 refusal=str(exc),
                 applied=0,
@@ -1439,6 +1446,7 @@ def register_actions(router: APIRouter) -> None:
                 action="workflow.retry_node",
                 target_type="workflow_node",
                 target_id=f"{run_id}:{node_key}",
+                run_id=str(run_id),
                 reason=reason,
                 refusal=DEADLOCK_REFUSAL,
                 applied=0,
@@ -1453,6 +1461,7 @@ def register_actions(router: APIRouter) -> None:
                 action="workflow.retry_node",
                 target_type="workflow_node",
                 target_id=f"{run_id}:{node_key}",
+                run_id=str(run_id),
                 reason=reason,
                 refusal="not-applied: the node is live, unknown, not terminal-failed, "
                 "or the run's own root key",
@@ -1563,6 +1572,7 @@ def register_actions(router: APIRouter) -> None:
                 action="workflow.rerun",
                 target_type="workflow_run",
                 target_id=str(run_id),
+                run_id=str(run_id),
                 reason=reason,
                 refusal=refusal
                 or "not-applied: no run row was resumable (no failed node, no "

@@ -790,8 +790,15 @@ async def test_malformed_hold_id_is_an_audited_400_never_a_500(
             "ORDER BY id DESC LIMIT 1"
         )
         assert pointer is not None
+        # THE LEAF'S LAW: the NUL rendered as its visible escape (a
+        # deleted NUL could alias a different real key), the value
+        # bounded to the pointer index's shape, the cut marked.
         assert "\x00" not in pointer["target_id"], "the pointer carries no NUL byte"
-        assert len(pointer["target_id"]) <= 97, "the pointer is bounded"
+        assert len(pointer["target_id"]) <= 201, "the pointer is bounded"
+        if hostile.startswith("abc"):
+            assert "\\x00" in pointer["target_id"], (
+                f"the NUL is ESCAPED, not deleted: {pointer['target_id']!r}"
+            )
 
 
 async def test_resolve_refuses_a_hold_from_another_run(
@@ -829,3 +836,78 @@ async def test_resolve_refuses_a_hold_from_another_run(
         f'SELECT status FROM "{schema}".wf_signals WHERE id = $1', hold_b.hold_id
     )
     assert still == "held", f"B's hold moved under A's door: {still}"
+
+
+async def test_hostile_node_key_is_an_audited_refusal_that_renders(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """The node door's own shape check: a NUL-bearing node key is the
+    AUDITED refusal (the redirect + the row), never a 500 from the CAS
+    bind — and the row RENDERS on the run's trail (the detail carries
+    the run_id the page's query keys on)."""
+    schema = module_pg_schema.schema_name
+    run_id = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        await http.get("/queues")  # the CSRF cookie's set
+        bad = await http.post(
+            f"/api/runs/{run_id}/nodes/abc%00def/retry",
+            data={"csrf_token": _csrf_of(http)},
+        )
+    assert bad.status_code == 303, bad.status_code
+    row = await clean_pg_conn.fetchrow(
+        f'SELECT detail FROM "{schema}".admin_audit '
+        "WHERE action = 'workflow.retry_node' ORDER BY id DESC LIMIT 1"
+    )
+    assert row is not None, "the hostile key's refusal is AUDITED"
+    detail = json.loads(row["detail"]) if isinstance(row["detail"], str) else row["detail"]
+    assert detail["refused"] == "the node key is not a valid key"
+    assert detail["run_id"] == str(run_id), detail
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        page = await http.get(f"/workflows/{run_id}")
+    assert "workflow.retry_node" in page.text, (
+        "the refusal renders on THE RUN's trail (the detail's run_id is "
+        "what the page's query keys on)"
+    )
+
+
+async def test_the_audit_leaf_bounds_the_pointer_for_every_writer(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
+    """The pointer column's law at THE LEAF (the single insert path —
+    every writer door inherits it): a NUL-bearing target_id lands with
+    the NUL as its visible escape (a deleted NUL could alias a
+    different real key), an oversized one lands bounded with the cut
+    marked; reverting the leaf's bound reds here (the raw bind
+    raises)."""
+    from taskq.audit import TARGET_ID_MAX_LENGTH, record_admin_action
+
+    schema = module_pg_schema.schema_name
+    for hostile in ("abc\x00def", "x" * 2700):
+        await record_admin_action(
+            clean_pg_conn,
+            schema=schema,
+            principal="ops",
+            action="hitl.resolve",
+            target_type="hold",
+            target_id=hostile,
+        )
+    rows = await clean_pg_conn.fetch(
+        f'SELECT target_id FROM "{schema}".admin_audit '
+        "WHERE action = 'hitl.resolve' AND target_type = 'hold' AND principal_subject = 'ops' "
+        "ORDER BY id"
+    )
+    assert len(rows) == 2
+    assert rows[0]["target_id"] == "abc\\x00def", rows[0]["target_id"]
+    assert len(rows[1]["target_id"]) <= TARGET_ID_MAX_LENGTH + 1
+    assert rows[1]["target_id"].endswith("…"), rows[1]["target_id"]
+    for r in rows:
+        assert "\x00" not in r["target_id"]

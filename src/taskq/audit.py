@@ -235,9 +235,11 @@ TARGET_ID_MAX_LENGTH: int = 200
 
 def _bound_target_id(target_id: str) -> str:
     """The pointer column's law (the leaf's own discipline, the same one
-    the reason/detail bounds follow): NUL-free, bounded, the cut marked
-    on the row."""
-    cleaned = target_id.replace("\x00", "")
+    the reason/detail bounds follow): the NUL byte rendered as its
+    VISIBLE escape (a deleted NUL can alias a different real key), the
+    value bounded to the pointer index's shape, the cut marked on the
+    row."""
+    cleaned = target_id.replace("\x00", "\\x00")
     if len(cleaned) <= TARGET_ID_MAX_LENGTH:
         return cleaned
     return cleaned[:TARGET_ID_MAX_LENGTH] + "…"
