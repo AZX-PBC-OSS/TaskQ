@@ -10,12 +10,12 @@ GREEN door the docs promise).
 The reads the docs teach (every one must resolve against the real
 frozen dataclass, no ``Any`` laundering):
 
-* ``ctx.input`` — the run's carried input (cut #7);
+* ``ctx.input`` — the run's carried input;
 * ``await ctx.substep(name, fn, *args)`` — the ledger's replay contract;
-* ``await ctx.progress(pct, message, data)`` — the emission op (the progress reporting ;
-* ``await ctx.wait_signal((Model,), timeout_s=...)`` — the typed wait (the hold machinery ;
+* ``await ctx.progress(pct, message, data)`` — the emission op (the progress reporting op);
+* ``await ctx.wait_signal((Model,), timeout_s=...)`` — the typed wait (the hold machinery);
 * ``await ctx.cursor()`` + ``await ctx.emit_batch(children, cursor=...)``
-  — the streaming source's pair (the streaming router .
+  — the streaming source's pair (the streaming router).
 """
 
 from __future__ import annotations

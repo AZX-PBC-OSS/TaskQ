@@ -634,7 +634,10 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
         )
     _projection_cache = (configured, failures)
     _projection_cache_key = signature
-    return _projection_cache
+    # the callers own their lists: the compute path returns a fresh
+    # copy too — the cache's own lists never leave the module on
+    # either path
+    return list(configured), list(failures)
 
 
 def project_workflow_actor_configs() -> list[ActorConfig]:

@@ -4672,10 +4672,9 @@ async def _flows_status(
             absorbed=row["absorbed"],
             error_class=row["error_class"],
             error_message=row["error_message"],
-            # THE ATTEMPT COUNTERS RIDE THE READ (the
-            # F-P4-WHYSTUCK-LADDER-LIE's fix): the dataclass defaults
-            # (0 / 3) made every failed row report "ladder headroom 3" —
-            # the read must carry the row's own counters.
+            # THE ATTEMPT COUNTERS RIDE THE READ: the dataclass
+            # defaults (0 / 3) made every failed row report "ladder
+            # headroom 3" — the read must carry the row's own counters.
             max_attempts=row["max_attempts"],
             attempt=row["attempt"],
             # THE 3AM FIELDS (the ENGINE query's own columns — the one

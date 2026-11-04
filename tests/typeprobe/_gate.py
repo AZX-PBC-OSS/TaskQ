@@ -27,7 +27,7 @@ clean-site regression's escape hatch, removed.)
 pyright runs under this directory's own ``pyrightconfig.json`` — the root
 pyproject's ``tests`` executionEnvironment sets ``reportArgumentType =
 false``, which would mute exactly the violations the probes assert (the
-the claim door finding this config exists to fix).
+claim-door hole this config exists to fix).
 
 Run: ``uv run --no-sync python tests/typeprobe/_gate.py`` (the CI
 ``type-probes`` job's single step).

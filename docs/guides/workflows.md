@@ -2047,7 +2047,7 @@ reads the iteration's LEDGER row (the memo) — the body is not
 re-consulted mid-iteration without the at-least-once boundary being
 stated.
 
-**THE TWO WALLS ARE DIFFERENT** (the spike's cut 4):
+**THE TWO WALLS ARE DIFFERENT**:
 
 - the **iteration cap** (`max_iterations`) bounds TOTAL SPAWNS
   regardless of time — the only wall left when the budget is paused;
@@ -2066,9 +2066,9 @@ stated.
 **EXHAUSTION IS NAMED, NEVER SILENT**: the cap or the budget wall
 terminates the loop into the `iteration_cap_exhausted` /
 `budget_exhausted` state — and THE FLOW TERMINALIZES IN THE SAME
-TRANSACTION (STRANDED-FLOW: the spike's `_loop_advance` left the flow
-`running` forever — the worker ticks forever, the admin shows a live
-run; the pin exercises it).
+TRANSACTION (STRANDED-FLOW: an exhausted loop that never
+terminalized left the flow `running` forever — the worker ticks
+forever, the admin shows a live run; the pin exercises it).
 
 **THE EXHAUSTION POLICY IS READ — BY THE DRIVER AND THE SWEEP**:
 `on_exhausted="escalate"` enqueues the escalation
@@ -2104,11 +2104,11 @@ says `crashed`, the ladder does NOT burn, the lease machinery re-claims
 from the ledger, the loop completes on the re-claim.
 
 **`until=` is AWAITED** (`Callable[[], Awaitable[bool]]`): a bare sync
-closure returning a coroutine object is TRUTHY — the spike's cancel
-test cancelled an IDLE flow, proving nothing. The predicate is awaited
-by the driver, per iteration.
+closure returning a coroutine object is TRUTHY — a verification that
+never awaits it proves nothing. The predicate is awaited by the
+driver, per iteration.
 
-**NAIVE-MEMO IS AUTHOR GUIDANCE, PINNED** (the spike's cut 7): the
+**NAIVE-MEMO IS AUTHOR GUIDANCE, PINNED**: the
 durable memo — one model invocation per iteration, never one per
 resume — is the ONE-TX shape (read + write inside one transaction; the
 ledger's claim statements ARE that shape). The engine gives you the
@@ -2127,7 +2127,7 @@ A "source sync" — a paged upstream whose run executes a body that is a
 **paged generator**: fetch page → `ctx.emit_batch(children, cursor=…)`
 → checkpoint the page cursor → fetch the next page. Pages stream: each
 page's records are **chain-start rows** that claim and terminalize WHILE
-the source is still mid-stream (the spike measured 236 chain claims +
+the source is still mid-stream (the measured shape: 236 chain claims +
 165 chain terminals before the last page's emit) — nothing waits for
 the pager to exhaust.
 
@@ -2184,7 +2184,7 @@ The per-record identity rides **`map_index`, stamped at emit** (with the
 record's `trace_id`). The certified fork's idempotency key
 (`wf:{flow}:emit:{map_index}:{step}`) and the step-ledger's claim
 arbiter (`(flow, step_key, COALESCE(map_index,-1), attempt)`) BOTH
-discriminate siblings by it — the spike's first run emitted 200
+discriminate siblings by it — the pre-stamp shape emitted 200
 applications without it and observed **198 UniqueViolations**: every
 record's `enrich` child collided onto one row. `EmitChild` therefore
 REQUIRES both stamps (a child without them is refused before any row
@@ -2327,7 +2327,7 @@ ad-hoc children that must remain in the NATIVE queue (no flow) keep
 their no-lineage semantics — the migration is opt-in per workload, not
 a fleet conversion.
 
-The bands (measured on the built code, the spike's §7 protocol): the
+The bands (measured on the built code): the
 emit tx's p50 stays single-digit ms per page (3.2–8.1 ms across the
 five captured runs; the max TAIL reaches 20.6 ms on the loaded-box
 capture — the artifacts' own range, the figures' truth), and the

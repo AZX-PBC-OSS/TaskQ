@@ -217,15 +217,15 @@ class CtxWaitOps(WaitHost):
             signals if isinstance(signals, tuple) else (signals,),
         )
         if not models:
-            # THE CONTRACT IS MANDATORY AT HOLD TIME (the
-            # F-P4-UNTYPED-COLD-DOOR's fix, the authoring half): a hold
-            # minted without a declared payload schema is the audit hole —
-            # ANY payload delivers to it from a fresh process (the row's
-            # payload_schema is the cold process's only witness). The
-            # declaration is one tuple at the wait site; the hold never
-            # ships contract-less. (Static face: the new signature refuses
-            # an empty tuple at the checker — the guard keeps the runtime
-            # seam's teeth: a cast-seam caller passes an empty tuple.)
+            # THE CONTRACT IS MANDATORY AT HOLD TIME (the authoring
+            # half): a hold minted without a declared payload schema is
+            # the audit hole — ANY payload delivers to it from a fresh
+            # process (the row's payload_schema is the cold process's
+            # only witness). The declaration is one tuple at the wait
+            # site; the hold never ships contract-less. (Static face:
+            # the new signature refuses an empty tuple at the checker —
+            # the guard keeps the runtime seam's teeth: a cast-seam
+            # caller passes an empty tuple.)
             raise TypeError(
                 "ctx.wait_signal requires at least one declared payload "
                 "model — a hold without a declared contract is the audit "

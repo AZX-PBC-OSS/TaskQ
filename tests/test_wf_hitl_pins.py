@@ -678,3 +678,34 @@ async def test_hold_to_resume_latency_band(
     with (MEASUREMENTS / "t10-hold-resume-band.json").open("a") as sink:
         sink.write(record + "\n")
     assert elapsed_ms < 500, f"the hold→resume band blew out: {elapsed_ms:.1f} ms"
+
+
+async def test_list_refuses_disagreeing_run_and_flow_id(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """The alias doctrine — every alias pair REFUSES a disagreement,
+    naming both spellings and values — covers the last alias pair too:
+    ``list(run=X, flow_id=Y)`` with disagreeing ids raises instead of
+    silently preferring one spelling; agreeing ids (the same run's two
+    spellings) resolve."""
+
+    async def _hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(Approval, timeout_s=120.0)
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn,
+        wf_schema,
+        wf_pool,
+        wait_body=_hold_body,
+        name="list_alias_disagreement_flow",
+        gates=(GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0),),
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+
+    holds = await client.list(run=flow_id, flow_id=flow_id)
+    assert len(holds) == 1, holds
+
+    with pytest.raises(ValueError, match="run="):
+        await client.list(run=flow_id, flow_id="not-this-run")

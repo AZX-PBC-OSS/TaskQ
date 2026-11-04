@@ -1314,7 +1314,15 @@ class HitlClient:
         identity carries the map index, each sibling's hold is
         addressable (its own ``hold_id``) and resolvable
         INDIVIDUALLY. ``run=`` and ``flow_id=`` name the same id (the
-        run identity's one mapping); ``run=`` is the canonical spelling."""
+        run identity's one mapping); ``run=`` is the canonical
+        spelling, and a disagreement between the two spellings is
+        refused naming both — the branch's alias doctrine, one refusal
+        at every alias pair."""
+        if run is not None and flow_id is not None and flow_id != run:
+            raise ValueError(
+                f"list(): run= and flow_id= are both given and disagree "
+                f"({run!r} vs {flow_id!r}) — pass run= only"
+            )
         run_id = run if run is not None else flow_id
         if run_id is None:
             raise TypeError("list(): name the run — list(run=<run id>)")

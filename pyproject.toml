@@ -202,7 +202,7 @@ exclude-newer = "24 hours"
 # via the dev group's docs toolchain) pinned exactly by the lockfile and
 # audited on every bump, so the cooldown adds no protection while delaying
 # same-day security releases.
-# ty is T01's probe checker, pinned EXACTLY (0.0.85) by the typeprobe group —
+# ty is the second probe checker, pinned EXACTLY (0.0.85) by the typeprobe group —
 # the probe gate's reds are asserted against that release, so the quarantine
 # cutoff is waived for it the same way: the pin IS the review.
 exclude-newer-package = { dotenvmodel = "0d", tors = "0d", markupsafe = false, ty = "0d" }

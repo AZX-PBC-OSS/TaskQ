@@ -1241,13 +1241,13 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
     # G7's ALWAYS-ON registration (the typed node view : every ASYNC test in the WORKFLOW
     # pin files ends with the reported==reconstructed check (the fixture
-    # in tests/_wf_fixtures.py). THE WIRING (the phase-2 attack's H4
-    # fix): a ``usefixtures`` MARKER added here is INERT — the items'
-    # fixture closures are computed before this hook runs, so the marker
-    # never reached the fixture set (the attack's proof: two pins ended
-    # root-contradicts-rows and passed their teardowns). Appending to
-    # ``fixturenames`` IS the effective registration: the closure list is
-    # read at setup time. The scope is the wf pin files' own prefix, and
+    # in tests/_wf_fixtures.py). THE WIRING: a ``usefixtures`` MARKER
+    # added here is INERT — the items' fixture closures are computed
+    # before this hook runs, so the marker never reached the fixture set
+    # (the demonstration: two pins ended root-contradicts-rows and
+    # passed their teardowns). Appending to ``fixturenames`` IS the
+    # effective registration: the closure list is read at setup time.
+    # The scope is the wf pin files' own prefix, and
     # only the ASYNC items: the check's fixtures need the PG connection,
     # and a sync item would drag PG into a unit lane (the sync pins
     # assert the derivation table directly, in memory).

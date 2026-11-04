@@ -79,3 +79,25 @@ def test_the_reset_seam_clears_the_memo_with_the_registry() -> None:
     assert seam.iter_imported_apps() == []
     assert seam.project_with_failures() == ([], [])
     assert app is not None
+
+
+def test_the_compute_paths_lists_are_the_callers_to_mutate() -> None:
+    """The projection's callers own their lists on BOTH paths: the
+    compute path returns fresh copies too — mutating the first call's
+    return never reaches the cache, and the next read (the memo's hit)
+    answers from unmutated rows."""
+    seam.reset_app_registry_for_tests()
+    try:
+        app = _app_with("memo-aliasing-app", actor="memo-alias")  # held: the registry is a WeakSet
+        cohorts, failures = seam.project_with_failures()  # the compute path
+        cohorts.clear()
+        failures.append("the caller's mutation must not reach the cache")
+        hit_cohorts, hit_failures = seam.project_with_failures()  # the memo's hit
+        assert [c.actor for c in hit_cohorts] == ["memo-alias"], (
+            "the compute path's return is the caller's to mutate: the "
+            "cache's own lists never leave the module on either path"
+        )
+        assert hit_failures == []
+        assert app is not None
+    finally:
+        seam.reset_app_registry_for_tests()

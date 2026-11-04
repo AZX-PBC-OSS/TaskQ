@@ -20,7 +20,7 @@ and where we lack.
 The one-sentence orientation: **an agent loop is a workflow whose steps are
 LLM calls and tool calls, whose waits are rows, and whose progress is a
 stream an operator can replay** — TaskQflow has four and a half of the five;
-the tickets at the end name the missing half.
+the roadmap rows at the end name the missing half.
 
 ---
 
