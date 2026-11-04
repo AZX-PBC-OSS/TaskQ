@@ -7,7 +7,7 @@ DSL's ``skip=``-predicates are STRINGLY — the live recorded finding: a "video"
 tag skipped BOTH arms and the run terminalized SUCCEEDED having routed
 NOTHING (the exact silent drop ``RouterNotTotal`` exists to prevent).
 
-THE FIX (the typed route  the ticket is ``dag-research/tickets/the typed route-typed-route.md``):
+THE FIX (the ticket: ``dag-research/tickets/typed-route.md``):
 the union MEMBERS key a route dict at the graph level —
 
     route(source_promise, {ImageItem: RouteArm(body=process_image, queue="gpu"),

@@ -1,4 +1,4 @@
-# T27 — THE TYPED ROUTE AT THE GRAPH LEVEL: `route(promise, arms)` — the union's members as wiring keys, total or refused
+# THE TYPED ROUTE AT THE GRAPH LEVEL: `route(promise, arms)` — the union's members as wiring keys, total or refused
 
 Design-first: THIS ticket is the 30-minute read's output; every claim below
 was verified against the tree at the base head before a line of code.
@@ -7,7 +7,7 @@ was verified against the tree at the base head before a line of code.
 
 1. **The chain's route works but the chain is graph-INVISIBLE.** A chain's
    step rows exist only from the emit onward — no `NodeDecl`, no fan-in, no
-   join-back (T20's law: "the run completes from the rows — never a join").
+   join-back (the chain's law: "the run completes from the rows — never a join").
    The chain items ride untyped (`item: dict`), one placement per chain
    (`Chain.actor`/`Chain.queue` stamp EVERY row), and the dispatch vocabulary
    is the enum middleman. A per-element fan-out that CONVERGES (the map's

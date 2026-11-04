@@ -1,4 +1,4 @@
-"""T20's STREAMING BANDS — the perf evidence, re-measured ON THE BUILT
+"""THE STREAMING SOURCE'S BANDS — the perf evidence, re-measured ON THE BUILT
 CODE (the spike's §7 protocol, the shipped surfaces):
 
 1. THE EMIT TX per page (40 chain starts + edges + the cursor
@@ -15,7 +15,7 @@ Raw output: ``.measurements/t20-streaming-bands.json`` (the capture law:
 every run lands a timestamped file beside it). The script is self-contained:
 apply-migrate a scratch schema, measure, drop.
 
-    uv run python scripts/measure_t20_streaming_bands.py [--dsn DSN] [--schema S]
+    uv run python scripts/measure_streaming_bands.py [--dsn DSN] [--schema S]
 """
 
 # ruff: noqa: S608  # Why: one-off measurement script; the schema name is the operator's own --schema argument (a scratch schema the script drops at exit), never untrusted input.

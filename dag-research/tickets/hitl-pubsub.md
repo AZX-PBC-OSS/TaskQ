@@ -1,4 +1,4 @@
-# T26 — THE HITL BROADCAST: PG LISTEN/NOTIFY of the approvals + the worked deep-research example
+# THE HITL BROADCAST: PG LISTEN/NOTIFY of the approvals + the worked deep-research example
 
 Design-first: THIS ticket is the 30-minute read's output; every claim below
 was verified against the tree at the base head before a line of code.

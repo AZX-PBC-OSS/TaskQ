@@ -47,7 +47,7 @@ async def test_fan_out_tx_band_1000_children(
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
 ) -> None:
-    """THE 1000-CHILD FAN-OUT TRANSACTION (G12: the deep-research scale is
+    """THE 1000-CHILD FAN-OUT TRANSACTION (the deep-research scale is
     exactly this): 1000 child INSERTs + edges + the join row ride the
     parent's finalize tx1, chunked parallel-array statements, ONE tx — the
     band recorded from the measurement, never assumed."""

@@ -12,7 +12,7 @@ CLI never re-derives, it converts the fetched rows into the derivation's
 ``NodeView`` inputs and reads the shared output. One engine, many
 surfaces (backend, SSE, CLI — no mapping drift, PROPOSAL §13.4).
 
-THE WHY-STUCK SEAM (G10): :func:`stuck_lines` is the shared analysis a
+THE WHY-STUCK SEAM: :func:`stuck_lines` is the shared analysis a
 future ``taskq explain <job_id>`` calls for the per-node why-stuck arm —
 ``flows status`` CALLS it; it is never re-implemented per surface.
 

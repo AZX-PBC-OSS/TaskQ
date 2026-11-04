@@ -698,8 +698,8 @@ async def test_rollup_cost_gate_index_driven(
     # THE BAND: the fleet-shape read is O(the run's own node count) — the
     # measured p50 sits in the sub-millisecond class at the 500-node run
     # shape (measured 0.12-0.24 ms; the band is set from the measurement
-    # with CI-noise margin, G11/G12: bands are SET from measurements,
-    # then pinned — the band moves only by argument in review).
+    # with CI-noise margin — bands are SET from measurements, then
+    # pinned — the band moves only by argument in review).
     samples: list[float] = []
     for _ in range(5):
         start_ns = time.perf_counter_ns()

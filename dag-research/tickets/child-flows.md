@@ -1,4 +1,4 @@
-# T28 — THE CHILD FLOWS: `ctx.spawn_flow` + the join hold — the sub-investigations ticket
+# THE CHILD FLOWS: `ctx.spawn_flow` + the join hold — the sub-investigations ticket
 
 Design-first: THIS ticket is the 30-minute read's output; every claim below
 was verified against the tree at the base head before a line of code.
@@ -81,7 +81,7 @@ match outcome:
 The wait is the HITL machinery's OWN shape (the certified hold): the join
 site registers a hold on the PARENT's node (`register_hold` — signal name
 `__child__:{child_flow_id}`, `payload_schema` = the declared result
-model — the contract is mandatory at hold time, attack-4 F-P4's law;
+model — the contract is mandatory at hold time, attack-4's law;
 `context.kind='child_join'` names the arm's query), marks the ledger
 `awaited` (resume-not-retry — `mark_awaited`), and raises
 `NodeHeldError` — the runner's EXISTING catch leaves the held
@@ -116,12 +116,12 @@ The wake — the child's terminal event is the hold's RESOLVER:
   `ChildOk[M] | ChildFailed | ChildCancelled | Expired` — and the CHECKER
   forces the arms (a body matching only `ChildOk` falls through and reds
   against its declared return; the `Decision | Expired` pattern's
-  sibling, exactly T26's amendment's law).
+  sibling, exactly the HITL broadcast's amendment's law).
 * **THE JOIN'S OWN TIMEOUT**: `timeout_s=` arms the hold's deadline (the
   DB clock, C8's precedence law — the WAIT's value wins, on the rows).
   The expiry sweep abandons the hold; the resumed site returns `Expired`
   ONCE per attempt (the face-marker pattern, `child_join_face_{attempt}`
-  — the hold→expire→re-hold→∞ dragon's kill site, T26's amendment
+  — the hold→expire→re-hold→∞ dragon's kill site, the HITL broadcast's amendment
   verbatim). `timeout_s=None` waits as long as the child lives — SAFE by
   the cascade (Q4): a cancelled parent cancels its children, so no join
   outlives its flow.

@@ -1,4 +1,4 @@
-# Workflows schema — the §16.4 forever-pins' measurements (T03)
+# Workflows schema — the §16.4 forever-pins' measurements
 
 The measured-tax migration's residuals, re-measured on the landed branch.
 The pins live in `tests/test_wf_schema_migration.py` (structural + row-width

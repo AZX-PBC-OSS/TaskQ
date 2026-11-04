@@ -709,8 +709,8 @@ async def test_panel_latency_band(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE LATENCY BAND (set from the measurement, pinned — the G11
-    method): the panel route's full read ≤ 50 ms p95 on this stack (the
+    """THE LATENCY BAND (set from the measurement, pinned): the panel
+    route's full read ≤ 50 ms p95 on this stack (the
     measured p95 is 3.2 ms — 15x headroom; the file:
     .measurements/t11-latency-band.json)."""
     import time as time_mod

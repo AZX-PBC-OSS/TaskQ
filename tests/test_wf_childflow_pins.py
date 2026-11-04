@@ -377,7 +377,7 @@ class TestFanOut:
                 await ctx.spawn_flow("t28_child_fan1", input=p, result=SubReport) for p in probes
             ]
             outcomes = [await h.wait() for h in handles]
-            print("T28DEBUG", [repr(o)[:160] for o in outcomes])
+            print("fan-out outcomes:", [repr(o)[:160] for o in outcomes])
             verdicts: list[str] = []
             for outcome in outcomes:
                 match outcome:

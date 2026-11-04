@@ -1,6 +1,6 @@
-# T33 — The cross-run agent memory: a namespaced store the runs read and write
+# The cross-run agent memory: a namespaced store the runs read and write
 
-**Status:** DRAFT (the agent-loop parity lane's research) · **Lane:** agentloop-parity · **Ranked:** 4th of the five gaps (T30–T34)
+**Status:** DRAFT (the agent-loop parity lane's research) · **Lane:** agentloop-parity · **Ranked:** 4th of the five gaps
 
 ## The named pattern
 
@@ -24,7 +24,7 @@ frameworks' faces:
 
 ## The gap in TaskQflow's landed surface
 
-The landed cross-run face is the STEP CACHE (T25): a content-addressed
+The landed cross-run face is the STEP CACHE: a content-addressed
 dedup — "same body, same input → the same stored answer" — with the receipt
 stamped on the node row. It is a cache, not a memory: the address is the
 body+input hash, the writer is the engine (terminal-SUCCEEDED only), and
@@ -66,8 +66,8 @@ sending the agent-builder to invent their own.
 - The pin: a memory put is visible to a DIFFERENT process's run (the
   cross-process truth), and the redact hook runs before persist (the canary
   never lands).
-- The pin: the store's rows are swept by the retention coupling (T18's arm
-  extended — the memory that outlives every run forever is the operator's
+- The pin: the store's rows are swept by the retention coupling (the
+  retention sweep's arm extended — the memory that outlives every run forever is the operator's
   configured choice, never the default).
 - The fence in `docs/guides/agent-loops.md` grows the memory variant (the
   agent that remembers the customer across runs).

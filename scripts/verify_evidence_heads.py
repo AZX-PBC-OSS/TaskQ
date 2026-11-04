@@ -85,8 +85,8 @@ MISMATCH.** The hole this closes: the head-stamp law checked
 the stamp's SHA and never the stamp's VERDICT — the live estate carried
 captures whose OWN HEADERS say ``rc=1`` (the run failed, in the
 capture's first line) standing as the green proof of their stems
-(the real instances: ``wf-battery-rv4-20261011T043000Z.txt`` and
-``deslop-pin-packs-20261011T042947Z.txt``). The claim's verdict is the
+(the real instances: a wf-battery capture and a deslop pin-packs
+capture, both stamped 2026-10-11). The claim's verdict is the
 registry's own: a fresh live claim (or a fresh chain terminal) IS the
 stem's green — so the door's mismatch test is one-sided by
 construction: the content records failure ⇒ the claim lies. The check

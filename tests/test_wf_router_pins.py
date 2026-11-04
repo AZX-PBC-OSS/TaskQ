@@ -109,7 +109,7 @@ def test_route_not_total_is_refused_at_declaration() -> None:
     """A route missing an outcome is REFUSED when the chain is declared —
     the outcome it drops would silently strand a record's chain. The
     refusal NAMES the missing member (the spike's message shape)."""
-    t20_redlog_entry: dict[str, object] = {}
+    refusal_record: dict[str, object] = {}
     try:
         Chain(
             name="broken",
@@ -124,7 +124,7 @@ def test_route_not_total_is_refused_at_declaration() -> None:
             },
         )
     except ValueError as exc:
-        t20_redlog_entry = {"refused": str(exc)}
+        refusal_record = {"refused": str(exc)}
         assert "missing" in str(exc) and "'flagged'" in str(exc), (
             f"the refusal must NAME the dropped outcome, got: {exc}"
         )
@@ -178,7 +178,7 @@ def test_route_not_total_is_refused_at_declaration() -> None:
     chain = the_chain()
     assert chain.start == "screen"
     assert set(chain.steps) == {"screen", "enrich", "manual_review"}
-    del t20_redlog_entry
+    del refusal_record
 
 
 # ── DOOR 2: the runtime loud refusal ────────────────────────────────────
@@ -319,7 +319,7 @@ async def test_chain_routes_through_the_certified_fork(
         [r["id"] for r in rows],
     )
     t20_redlog.red(
-        "t20-router-fork",
+        "router-fork",
         "the route NOT riding the certified fork (a hand-wired child row "
         "outside the parent's terminal-mark tx — the fork-debt dragon) or "
         "the record's map_index/trace NOT riding the child (the siblings "
@@ -447,7 +447,7 @@ async def test_router_not_total_fails_the_row_loudly(
     )
     assert row is not None
     t20_redlog.red(
-        "t20-router-not-total-row",
+        "router-not-total-row",
         "the foreign outcome SILENTLY DROPPED (no arm matched, nothing "
         "refused) — the run 'succeeds' minus a record; the row's "
         "error_class must NAME the defect",
@@ -463,38 +463,28 @@ async def test_router_not_total_fails_the_row_loudly(
 # ── THE AUTHOR SURFACE, END TO END (PROOF §4's shape, on the runner) ────
 
 
-class T20ScreenOutcome(enum.Enum):
-    CLEAN = "clean"
-    FLAGGED = "flagged"
-
-
-class T20ReviewOutcome(enum.Enum):
-    APPROVE = "approve"
-    REJECT = "reject"
-
-
-async def t20_screen(ctx: object, item: dict[str, object]) -> T20ScreenOutcome:
+async def screen_step(ctx: object, item: dict[str, object]) -> ScreenOutcome:
     risk = float(item["risk"])  # pyright: ignore[reportArgumentType]  # Why: the pin's own item shape (the emit wrote it).
-    return T20ScreenOutcome.FLAGGED if risk > 0.8 else T20ScreenOutcome.CLEAN
+    return ScreenOutcome.FLAGGED if risk > 0.8 else ScreenOutcome.CLEAN
 
 
-async def t20_review(ctx: object, item: dict[str, object]) -> T20ReviewOutcome:
-    return T20ReviewOutcome.APPROVE
+async def review_step(ctx: object, item: dict[str, object]) -> ReviewOutcome:
+    return ReviewOutcome.APPROVE
 
 
 ROUTER_CHAIN = Chain(
-    name="t20-application-enrichment",
+    name="application-enrichment-e2e",
     start="screen",
     steps={
         "screen": Step(
-            body=t20_screen,
-            outcomes=T20ScreenOutcome,
-            route=Route({T20ScreenOutcome.CLEAN: DONE, T20ScreenOutcome.FLAGGED: "manual_review"}),
+            body=screen_step,
+            outcomes=ScreenOutcome,
+            route=Route({ScreenOutcome.CLEAN: DONE, ScreenOutcome.FLAGGED: "manual_review"}),
         ),
         "manual_review": Step(
-            body=t20_review,
-            outcomes=T20ReviewOutcome,
-            route=Route({T20ReviewOutcome.APPROVE: DONE, T20ReviewOutcome.REJECT: DONE}),
+            body=review_step,
+            outcomes=ReviewOutcome,
+            route=Route({ReviewOutcome.APPROVE: DONE, ReviewOutcome.REJECT: DONE}),
         ),
     },
 )
@@ -505,7 +495,7 @@ _ROUTER_PAGE = [
 ]
 
 
-async def t20_source(ctx: StepContext) -> None:
+async def paged_source(ctx: StepContext) -> None:
     """The paged source: ONE page, emitted while the source is running
     (each yield = ONE emit tx — the children + edges + the cursor)."""
     await ctx.emit_batch(
@@ -536,12 +526,12 @@ async def test_chain_end_to_end_through_the_runner(
 
     app = WorkflowApp()
 
-    @app.workflow("t20_chain_e2e")
-    def t20_chain_e2e() -> Promise[object]:
-        src = chain_source(ROUTER_CHAIN, t20_source, key="t20_source")
+    @app.workflow("chain_e2e")
+    def chain_e2e() -> Promise[object]:
+        src = chain_source(ROUTER_CHAIN, paged_source, key="paged_source")
         return build(src)
 
-    runner = FlowRunner(app.get("t20_chain_e2e"), module_pg_pool, wf_schema)
+    runner = FlowRunner(app.get("chain_e2e"), module_pg_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
 
@@ -555,7 +545,7 @@ async def test_chain_end_to_end_through_the_runner(
     for r in rows:
         by_trace.setdefault(str(r["trace_id"]), []).append((str(r["step_key"]), str(r["status"])))
     t20_redlog.red(
-        "t20-chain-e2e",
+        "chain-e2e",
         "the chain's rows NOT sharing one trace per record (the lineage "
         "crosses two systems) or a record's chain stranded non-terminal",
         dict(sorted(by_trace.items())),
@@ -576,25 +566,25 @@ async def test_chain_end_to_end_through_the_runner(
     assert root is not None and root["status"] == "succeeded" and root["finished_at"] is not None
 
 
-async def t20_lying_screen(ctx: object, item: dict[str, object]) -> T20ScreenOutcome:
+async def lying_screen(ctx: object, item: dict[str, object]) -> ScreenOutcome:
     """THE BODY THAT LIED: returns a raw string — not the declared enum."""
     return "corrupted"  # type: ignore[return-value]  # Why: the scenario — the foreign outcome IS the runtime door's subject.
 
 
 LYING_ROUTER_CHAIN = Chain(
-    name="t20-lying-chain",
+    name="lying-chain",
     start="screen",
     steps={
         "screen": Step(
-            body=t20_lying_screen,
-            outcomes=T20ScreenOutcome,
-            route=Route({T20ScreenOutcome.CLEAN: DONE, T20ScreenOutcome.FLAGGED: DONE}),
+            body=lying_screen,
+            outcomes=ScreenOutcome,
+            route=Route({ScreenOutcome.CLEAN: DONE, ScreenOutcome.FLAGGED: DONE}),
         ),
     },
 )
 
 
-async def t20_lying_source(ctx: StepContext) -> None:
+async def lying_source(ctx: StepContext) -> None:
     await ctx.emit_batch(
         [chain_start(LYING_ROUTER_CHAIN, {"app_id": 1}, map_index=1, trace_id="app-1")],
         cursor={"page": 0},
@@ -618,12 +608,12 @@ async def test_router_not_total_through_the_runner(
 
     app = WorkflowApp()
 
-    @app.workflow("t20_router_not_total_e2e")
-    def t20_router_not_total_e2e() -> Promise[object]:
-        src = chain_source(LYING_ROUTER_CHAIN, t20_lying_source, key="t20_lying_source")
+    @app.workflow("router_not_total_e2e")
+    def router_not_total_e2e() -> Promise[object]:
+        src = chain_source(LYING_ROUTER_CHAIN, lying_source, key="lying_source")
         return build(src)
 
-    runner = FlowRunner(app.get("t20_router_not_total_e2e"), module_pg_pool, wf_schema)
+    runner = FlowRunner(app.get("router_not_total_e2e"), module_pg_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
@@ -634,7 +624,7 @@ async def test_router_not_total_through_the_runner(
     )
     assert row is not None
     t20_redlog.red(
-        "t20-router-not-total-runner",
+        "router-not-total-runner",
         "the foreign outcome silently dropped by the runner's chain path "
         "— the run 'succeeds' minus a record; the row must terminal-FAIL "
         "with error_class='RouterNotTotal'",

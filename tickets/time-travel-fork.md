@@ -1,6 +1,6 @@
-# T34 — The time travel / fork-from-history: replay from an arbitrary node with new input
+# The time travel / fork-from-history: replay from an arbitrary node with new input
 
-**Status:** DRAFT (the agent-loop parity lane's research) · **Lane:** agentloop-parity · **Ranked:** 5th of the five gaps (T30–T34)
+**Status:** DRAFT (the agent-loop parity lane's research) · **Lane:** agentloop-parity · **Ranked:** 5th of the five gaps
 
 ## The named pattern
 
@@ -51,7 +51,7 @@ the difference between adopting and admiring.
 - FORK second (the design's real seam): `fork_flow(flow_id, from_node,
   input_override=None) -> RunClaim` — a NEW run whose completed prefix
   COPIES the recorded results (the ledger rows re-parented or the cache
-  pre-seeded — the cross-run cache T25 is the likely mechanism: the fork
+  pre-seeded — the cross-run cache is the likely mechanism: the fork
   pre-seeds each prefix node's cache address), and whose suffix re-runs.
   The run-key arbiter's verdict types the fork (a fork is a NEW run — never
   a silent mutation of the old one).

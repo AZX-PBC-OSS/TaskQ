@@ -1,4 +1,4 @@
-# T25 — THE CROSS-RUN STEP CACHE: the Nix-style recursive address, the SUCCESS-ONLY store, the receipt-carrying hits
+# THE CROSS-RUN STEP CACHE: the Nix-style recursive address, the SUCCESS-ONLY store, the receipt-carrying hits
 
 Design-first: THIS ticket is the read's output; every claim below was
 verified against the tree at the base head before a line of code.

@@ -1,6 +1,6 @@
-# T32 — The token-stream progress class: rendering the answer as it thinks
+# The token-stream progress class: rendering the answer as it thinks
 
-**Status:** DRAFT (the agent-loop parity lane's research) · **Lane:** agentloop-parity · **Ranked:** 3rd of the five gaps (T30–T34)
+**Status:** DRAFT (the agent-loop parity lane's research) · **Lane:** agentloop-parity · **Ranked:** 3rd of the five gaps
 
 ## The named pattern
 
