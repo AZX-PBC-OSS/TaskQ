@@ -16,9 +16,12 @@ query against a connection the CALLER owns and hands in, so it lives
 here with NO module-level asyncpg import — the connection parameter is
 typed through ``TYPE_CHECKING`` plus the future-annotations string
 forms, and the runtime imports are stdlib-only.  Deploy-step code that
-wants the probe imports it from here; :mod:`taskq.timescale` stays
-clean of this module (its enable/disable paths never call the floor —
-the sweeps do).
+wants the probe imports it from here; :mod:`taskq.timescale` imports
+only this module's cache-bust (the enable path's install-confirmation
+duty), never the floor itself — the sweeps call the floor, and the
+import chain ``taskq.testing → backend/_sweeps → this module`` stays
+stdlib-only (the no-transitive-heavy-deps contract,
+``tests/test_memory_jobs_fixture.py::test_testing_no_transitive_asyncpg``).
 
 The floor itself: is *schema.table* a hypertable whose aged end is
 owned by a registered, SCHEDULED TimescaleDB retention policy, and where
@@ -31,7 +34,9 @@ registered but never runs, so it owns nothing: see the None cases on
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from weakref import WeakKeyDictionary, ref
@@ -51,33 +56,65 @@ logger = logging.getLogger(__name__)
 # and minted fresh per acquire — so the key is the proxy's wrapped
 # connection (stable across acquires, dead with the pool's recycle); a
 # multi-server process (the test matrix, a multi-DSN deployment) keys
-# per server naturally. A caller that can be neither unwrapped nor
-# weak-referenced is ANSWERED without memoizing (the pre-check re-asks
-# per call — cheap, and the catalog probe below stays equally gated);
-# an AMBIGUOUS answer (the pre-check erroring) is never cached. The
-# negative CAN go stale in the add direction — an extension installed
-# under a live connection — so the enable path busts the cache the
-# moment it confirms the install
-# (:func:`clear_timescaledb_availability_cache`); outside that path a
-# stale negative lasts until the pool recycles the connection (the
-# default inactive lifetime is 300s), and its sweeps run full-range —
-# the vanilla behavior: the sweep's own retention bound still governs
-# every deletion, the floor only decides who owns the aged end.
+# per server naturally.
+#
+# THREE boundaries keep the cache from ever lying to a sweep:
+#
+# * THE TTL — every cached answer (negative and positive) expires, so
+#   no staleness outlives the bound no matter WHO changed the server
+#   or from which process: the deploy-step conversion runs in the
+#   ``taskq migrate up`` process while the floor runs in the workers',
+#   so a cross-process install could otherwise leave a cached negative
+#   standing for the worker's whole life (the leader's dispatcher
+#   connection is re-acquired every sweep interval, so a recycle would
+#   never retire it). The TTL re-asks one cheap indexed read per
+#   connection per interval — never the failing catalog probe per
+#   sweep the gate exists to remove.
+# * THE BUST — the enable path clears the cache the moment it confirms
+#   the install (:func:`clear_timescaledb_availability_cache`),
+#   instant where the TTL is merely bounded; the bust's generation
+#   counter makes a clear win over a probe already in flight (the
+#   in-flight write is dropped, the post-bust sweep re-asks).
+# * THE FAIL-OPEN — every cache interaction (the key derivation, the
+#   lookup, the write) is best-effort and guarded: a caller that can
+#   be neither unwrapped nor weak-referenced nor hashed is ANSWERED
+#   without memoizing, and a failing write degrades to re-asking. The
+#   cache can never raise a TypeError through the sweep, and the
+#   catalog probe below stays equally gated for every caller shape.
 _TIMESCALEDB_PRESENT_PROBE_SQL = "SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'"
 
-_TIMESCALEDB_PRESENT: WeakKeyDictionary[ConnLike, bool] = WeakKeyDictionary()
+# The cached answer's freshness bound (the answers are re-asked past
+# it); the enable path's bust is the instant face of the same cure.
+_TIMESCALEDB_ANSWER_TTL_SECONDS = 300.0
+
+# The answer cache: key = the caller's underlying connection (weakly
+# held), value = (the answer, the answer's monotonic stamp).
+_TIMESCALEDB_PRESENT: WeakKeyDictionary[ConnLike, tuple[bool, float]] = WeakKeyDictionary()
+
+# The bust's generation: a probe that started before a bust must not
+# land its (now stale) answer after it.
+_cache_generation = 0
+
+# The TTL's clock, on the module seam for the tests' injected clock.
+_MONOTONIC = time.monotonic
 
 
 def _availability_cache_key(conn: ConnLike) -> ConnLike | None:
     """The availability cache's key: the proxy's underlying connection
     when the caller hands a pool proxy, the connection itself
     otherwise — or None when the candidate cannot be weakly referenced
-    (the answer is then correct but not memoized)."""
-    underlying = getattr(conn, "_con", None)
+    OR hashed (the answer is then correct but not memoized). The whole
+    derivation is guarded: the cache may never raise through the
+    sweep."""
+    try:
+        underlying = getattr(conn, "_con", None)
+    except Exception:  # Why: a wrapper whose attribute access itself raises is an unkeyable caller, not a sweep failure — answered uncached below.
+        return None
     candidate = conn if underlying is None else underlying
     try:
         ref(candidate)
-    except TypeError:
+        hash(candidate)
+    except Exception:  # Why: weak-referenceability and hashability are both cache mechanics, not probe semantics — an unkeyable caller is answered uncached, never a TypeError through the sweep.
         return None
     return candidate
 
@@ -85,11 +122,16 @@ def _availability_cache_key(conn: ConnLike) -> ConnLike | None:
 def clear_timescaledb_availability_cache() -> None:
     """The deploy-step conversion's cache-bust, called the moment the
     enable path confirms the extension installed: every connection that
-    cached a negative before the install must re-ask, or its sweeps
-    would keep running full-range over rows the newly armed policy
-    owns. (The disable direction needs no bust: a stale positive fails
-    open through the probe's own except — the views are gone, the
-    statement raises, the answer is None.)"""
+    cached a negative before the install re-asks on its next sweep
+    instead of trusting the vanilla answer past the install. The bust's
+    generation advances with it, so a probe already in flight cannot
+    re-strand a stale negative behind it. (The disable direction needs
+    no bust: the extension stays installed — nothing here drops it —
+    so the views keep answering, the disarmed policies read as no
+    owner, and the answers stay right; the TTL retires the entry in
+    time.)"""
+    global _cache_generation
+    _cache_generation += 1
     _TIMESCALEDB_PRESENT.clear()
 
 
@@ -167,18 +209,18 @@ async def retention_policy_floor(
 
     * the server has no ``timescaledb`` extension installed (the
       availability pre-check answers before any catalog statement is
-      built; the negative is cached per connection, so a vanilla
-      deployment pays one ``pg_extension`` read, not one guaranteed-
-      failing probe per sweep),
+      built; the negative is cached per connection with a TTL, so a
+      vanilla deployment pays one ``pg_extension`` read per TTL per
+      connection, never one guaranteed-failing probe per sweep),
     * the availability pre-check itself errors (an ambiguous answer —
       returned as None and NOT cached; the next sweep re-asks),
-    * the connection's cached negative predates the extension's install
-      under it — the enable path busts the cache when it confirms the
-      install; outside that path the stale negative lasts until the
-      pool recycles the connection (the default inactive lifetime is
-      300s), and those sweeps run full-range in the meantime (the
-      vanilla behavior: the sweep's own retention bound still governs
-      every deletion),
+    * the connection's cached answer predates the extension's install
+      under it and the TTL has not expired yet — the enable path busts
+      the cache when it confirms the install (instant), and the TTL
+      bounds the same staleness from any other path (cross-process
+      installs included); those sweeps run full-range in the meantime
+      (the vanilla behavior: the sweep's own retention bound still
+      governs every deletion),
     * the table is not a hypertable (no row in
       ``timescaledb_information.hypertables``),
     * the hypertable carries no ``policy_retention`` job (nothing owns
@@ -230,12 +272,22 @@ async def retention_policy_floor(
     # sweep bought one guaranteed-failing round trip and one
     # UndefinedTableError exception event per sweep, forever. The
     # pre-check is one unprivileged catalog read whose answer is cached
-    # per underlying connection (the pool proxy's wrapped one); the
+    # per underlying connection (the pool proxy's wrapped one), TTL-
+    # bounded, bust on the enable path's install confirmation; the
     # fail-open contract below is unchanged, and the Timescale-present
     # path reaches the same probe bytes as before.
     cache_key = _availability_cache_key(conn)
-    present = _TIMESCALEDB_PRESENT.get(cache_key) if cache_key is not None else None
+    cached: tuple[bool, float] | None = None
+    if cache_key is not None:
+        try:
+            cached = _TIMESCALEDB_PRESENT.get(cache_key)
+        except Exception:  # Why: the cache lookup is best-effort — a mapping failure is an unmemorized caller, never a sweep failure.
+            cached = None
+    present: bool | None = None
+    if cached is not None and _MONOTONIC() - cached[1] <= _TIMESCALEDB_ANSWER_TTL_SECONDS:
+        present = cached[0]
     if present is None:
+        generation_at_miss = _cache_generation
         try:
             available = await conn.fetch(_TIMESCALEDB_PRESENT_PROBE_SQL)
         except Exception as exc:  # Why: the pre-check is part of the fail-open surface — an erroring gate is ambiguity, never an answer; it is not cached, and the next sweep re-asks.
@@ -247,12 +299,16 @@ async def retention_policy_floor(
             )
             return None
         present = bool(available)
-        if cache_key is not None:
-            _TIMESCALEDB_PRESENT[cache_key] = present
+        if cache_key is not None and generation_at_miss == _cache_generation:
+            # A write racing the entry's death (or any mapping refusal)
+            # degrades to re-asking — the cache is best-effort, the
+            # sweep never sees the failure.
+            with contextlib.suppress(Exception):
+                _TIMESCALEDB_PRESENT[cache_key] = (present, _MONOTONIC())
         if not present:
             logger.debug(
                 "retention_policy_floor: timescaledb not present on this server "
-                "(cached for the connection) schema=%s table=%s",
+                "(cached for the connection, TTL-bounded) schema=%s table=%s",
                 schema,
                 table,
             )

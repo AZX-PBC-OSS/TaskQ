@@ -424,3 +424,42 @@ async def test_hypertable_conversion_carries_the_page_index(timescale_dsn: str) 
     finally:
         await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await conn.close()
+
+
+async def test_enable_hypertables_busts_the_floor_availability_cache(
+    timescale_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The availability gate's bust is wired into the enable flow: the
+    run that confirms the extension and converts the tables calls the
+    floor's cache-bust exactly once, so a process that cached a vanilla
+    negative before the install re-asks on its next sweep. (The
+    refusal paths must not bust: above, the extension's absence is the
+    refusal — the cached negatives are correct there.)"""
+    import taskq.timescale as timescale_mod
+
+    schema = f"ts_bust_{new_base62()}".lower()
+    assert _IDENT_RE.match(schema)
+    conn = await asyncpg.connect(timescale_dsn)
+    try:
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await migrate_mod.apply_pending(conn, schema=schema)
+        base = datetime.now(UTC) - timedelta(days=10)
+        await _seed_archive_rows(conn, schema, [base - timedelta(days=i) for i in range(4)])
+
+        busts: list[int] = []
+        monkeypatch.setattr(
+            timescale_mod, "clear_timescaledb_availability_cache", lambda: busts.append(1)
+        )
+
+        report = await enable_hypertables(
+            conn, schema=schema, settings=_ts_settings(timescale_dsn, schema)
+        )
+        assert "jobs_archive" in report.converted, report.converted
+        assert busts == [1], (
+            "the enable run must bust the floor's availability cache "
+            "exactly once — the wiring the staleness cure rests on"
+        )
+    finally:
+        monkeypatch.undo()
+        await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await conn.close()

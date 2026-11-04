@@ -31,6 +31,7 @@ stubs is a gate that kills the production sweep loop.
 
 from __future__ import annotations
 
+import asyncio
 import gc
 from datetime import timedelta
 from typing import Any
@@ -253,8 +254,7 @@ async def test_the_production_proxy_shape_is_answered_not_raised() -> None:
     assert await retention_policy_floor(second, "v_schema", "job_events", "occurred_at") is None
     assert first.tsdb_statements() == [] and second.tsdb_statements() == []
     assert len(inner.availability_statements()) == 1, (
-        "the cache keys the underlying connection: a fresh proxy per "
-        "acquire must not re-ask"
+        "the cache keys the underlying connection: a fresh proxy per acquire must not re-ask"
     )
 
 
@@ -271,8 +271,7 @@ async def test_an_unkeyable_conn_still_fails_open_and_gates_the_probe() -> None:
     assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
     assert conn.tsdb_statements() == []
     assert len(conn.availability_statements()) == 2, (
-        "unkeyable: no memoization — each call re-asks, and the answer "
-        "is per-call correct"
+        "unkeyable: no memoization — each call re-asks, and the answer is per-call correct"
     )
 
 
@@ -283,17 +282,31 @@ async def test_recycled_connections_re_ask() -> None:
     server)."""
     inner_one = _RecordingConn()
     assert (
-        await retention_policy_floor(_SlotsProxyConn(inner_one), "v_schema", "job_events", "occurred_at")
+        await retention_policy_floor(
+            _SlotsProxyConn(inner_one), "v_schema", "job_events", "occurred_at"
+        )
         is None
     )
     assert len(inner_one.availability_statements()) == 1
 
+    import taskq.backend._retention_floor as floor_mod
+
+    # The entry count is read RELATIVELY (the pack's earlier tests hold
+    # their own live entries): the recycled connection's entry must be
+    # the one that dies.
+    entries_before = len(floor_mod._TIMESCALEDB_PRESENT)
     del inner_one
     gc.collect()
+    assert len(floor_mod._TIMESCALEDB_PRESENT) == entries_before - 1, (
+        "the cached answer is WEAKLY keyed: the entry dies with the "
+        "recycled connection, not with the process"
+    )
 
     inner_two = _RecordingConn()
     assert (
-        await retention_policy_floor(_SlotsProxyConn(inner_two), "v_schema", "job_events", "occurred_at")
+        await retention_policy_floor(
+            _SlotsProxyConn(inner_two), "v_schema", "job_events", "occurred_at"
+        )
         is None
     )
     assert len(inner_two.availability_statements()) == 1, (
@@ -314,11 +327,15 @@ async def test_two_servers_key_their_own_answers() -> None:
     )
 
     assert (
-        await retention_policy_floor(_SlotsProxyConn(vanilla_inner), "s", "job_events", "occurred_at")
+        await retention_policy_floor(
+            _SlotsProxyConn(vanilla_inner), "s", "job_events", "occurred_at"
+        )
         is None
     )
     assert (
-        await retention_policy_floor(_SlotsProxyConn(present_inner), "s", "job_events", "occurred_at")
+        await retention_policy_floor(
+            _SlotsProxyConn(present_inner), "s", "job_events", "occurred_at"
+        )
         is None
     )
 
@@ -345,8 +362,7 @@ async def test_the_enable_path_busts_cached_negatives() -> None:
 
     assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
     assert len(conn.availability_statements()) == 2, (
-        "the bust forces the re-ask: a cached negative cannot outlive "
-        "the enable path"
+        "the bust forces the re-ask: a cached negative cannot outlive the enable path"
     )
 
 
@@ -363,3 +379,87 @@ async def test_real_pool_acquire_shape_never_raises(pg_dsn: str) -> None:
             assert await retention_policy_floor(conn, schema, "job_events", "occurred_at") is None
     finally:
         await pool.close()
+
+
+async def test_a_stale_answer_re_asks_when_its_ttl_passes(
+    monkeypatch: Any,
+) -> None:
+    """The cached answer (negative AND positive) is bounded: past the
+    TTL the connection re-asks — a staleness bound that holds regardless
+    of process boundaries, pool recycling, or who installed the
+    extension. The clock is the module's own seam (monotonic)."""
+    import taskq.backend._retention_floor as floor_mod
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(floor_mod, "_MONOTONIC", lambda: clock["now"])
+    conn = _RecordingConn()  # vanilla
+
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert len(conn.availability_statements()) == 1
+
+    clock["now"] += 120.0  # fresh inside the TTL: no re-ask
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert len(conn.availability_statements()) == 1
+
+    clock["now"] += 400.0  # past the TTL: the stale answer re-asks
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert len(conn.availability_statements()) == 2, (
+        "the cached answer is a bound, not a promise: past the TTL the "
+        "connection re-asks — the staleness cure that holds across "
+        "processes"
+    )
+
+
+async def test_an_unhashable_underlying_connection_is_answered_not_raised() -> None:
+    """The fail-open covers the WHOLE cache interaction: an underlying
+    connection that is weak-referenceable but unhashable (or any cache
+    operation that raises) is answered None, uncached — the cache can
+    never raise a TypeError through the sweep, the exact shape the
+    first cut shipped."""
+
+    class _UnhashableInner(_RecordingConn):
+        __hash__ = None  # type: ignore[assignment]
+
+    conn = _SlotsProxyConn(_UnhashableInner())
+
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None, (
+        "an unhashable underlying connection is answered, never a TypeError through the sweep"
+    )
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert conn.tsdb_statements() == [], "the probe stays gated for every caller shape"
+
+
+async def test_a_bust_wins_over_an_in_flight_negative() -> None:
+    """A probe already in flight when the cache is busted must not
+    re-strand its stale negative: the write is dropped when a bust
+    landed between the miss and the write, so the post-bust sweep
+    re-asks."""
+    from taskq.backend._retention_floor import clear_timescaledb_availability_cache
+
+    class _HeldGateConn(_RecordingConn):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reached = asyncio.Event()
+            self.proceed = asyncio.Event()
+
+        async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
+            if "pg_extension" in sql:
+                self.reached.set()
+                await self.proceed.wait()
+            return await super().fetch(sql, *args)
+
+    conn = _HeldGateConn()
+
+    task = asyncio.create_task(
+        retention_policy_floor(conn, "v_schema", "job_events", "occurred_at")
+    )
+    await conn.reached.wait()  # the probe is in flight, its answer unwritten
+    clear_timescaledb_availability_cache()
+    conn.proceed.set()
+    assert await task is None
+
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert len(conn.availability_statements()) == 2, (
+        "the bust wins over the in-flight write: the post-bust sweep "
+        "re-asks instead of trusting a stale negative"
+    )
