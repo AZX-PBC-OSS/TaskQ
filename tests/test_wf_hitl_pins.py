@@ -687,9 +687,10 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
 ) -> None:
     """The alias doctrine — every alias pair REFUSES a disagreement,
     naming both spellings and values — covers the last alias pair too:
-    ``list(run=X, flow_id=Y)`` with disagreeing ids raises instead of
-    silently preferring one spelling; agreeing ids (the same run's two
-    spellings) resolve."""
+    ``list(run=X, flow_id=Y)`` with disagreeing ids raises naming BOTH
+    values instead of silently preferring one spelling; the same id in
+    the two accepted TYPES (the claim's JobId and its string form) is
+    AGREEMENT, never a refusal."""
 
     async def _hold_body(ctx: StepContext, params: Ingest) -> Any:
         return await ctx.wait_signal(Approval, timeout_s=120.0)
@@ -704,8 +705,15 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
     )
     client = HitlClient(wf_pool, schema=wf_schema)
 
-    holds = await client.list(run=flow_id, flow_id=flow_id)
+    # The same run named the two accepted ways: the claim's JobId and
+    # its string form — agreement, resolved.
+    holds = await client.list(run=flow_id, flow_id=str(flow_id))
     assert len(holds) == 1, holds
 
-    with pytest.raises(ValueError, match="run="):
+    # The DISAGREEMENT: the refusal names both spellings AND both
+    # values (the operator reads what collided, not just which kwargs).
+    with pytest.raises(ValueError) as refused:
         await client.list(run=flow_id, flow_id="not-this-run")
+    message = str(refused.value)
+    assert "run=" in message and "flow_id=" in message, message
+    assert str(flow_id) in message and "not-this-run" in message, message

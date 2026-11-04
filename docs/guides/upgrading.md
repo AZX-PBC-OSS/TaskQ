@@ -574,10 +574,10 @@ The finder's query states the COMMON violator shapes (the linked
 workflow row whose cohort stamp disagrees with its run); it is a
 finding aid, not the contract's teeth — the CHECK's own predicate also
 covers the pathological rows this query cannot name (a JSON-null
-`flow_id` link, a NULL `step_key` on a linked row), and the
-`VALIDATE CONSTRAINT` itself fails loudly on ANY surviving violator.
-Run the VALIDATE even if the finder reads empty; an empty finder is
-not a clean bill.
+`flow_id` link with a NULL stamp, a NULL `step_key` on a linked row),
+and the `VALIDATE CONSTRAINT` itself fails loudly on ANY surviving
+violator. Run the VALIDATE even if the finder reads empty; an empty
+finder is not a clean bill.
 
  THE BREAKAGE, PLAINLY: once the post phase is applied, an
 old worker cannot write workflow WORK — the flow ROOT row is exempt
