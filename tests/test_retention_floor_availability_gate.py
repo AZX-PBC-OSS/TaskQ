@@ -411,7 +411,18 @@ async def test_a_stale_answer_re_asks_when_its_ttl_passes(
     assert len(vanilla.availability_statements()) == 1
     assert len(present.availability_statements()) == 1
 
-    clock["now"] += 2.0  # past the 300s bound: BOTH polarities re-ask
+    clock["now"] += (
+        1.0  # EXACTLY at the stated bound: still fresh (the answer's age is 300, the bound is inclusive)
+    )
+    assert await retention_policy_floor(vanilla, "v_schema", "job_events", "occurred_at") is None
+    assert await retention_policy_floor(present, "v_schema", "job_events", "occurred_at") is None
+    assert len(vanilla.availability_statements()) == 1, (
+        "the stated value is pinned: fresh THROUGH 300s (the bound is "
+        "inclusive), not through 299.5 and not exclusive"
+    )
+    assert len(present.availability_statements()) == 1
+
+    clock["now"] += 0.5  # past the stated bound: both polarities re-ask
     assert await retention_policy_floor(vanilla, "v_schema", "job_events", "occurred_at") is None
     assert await retention_policy_floor(present, "v_schema", "job_events", "occurred_at") is None
     assert len(vanilla.availability_statements()) == 2, (
@@ -477,4 +488,46 @@ async def test_a_bust_wins_over_an_in_flight_negative() -> None:
     assert len(conn.availability_statements()) == 2, (
         "the bust wins over the in-flight write: the post-bust sweep "
         "re-asks instead of trusting a stale negative"
+    )
+
+
+async def test_the_ttl_bounds_the_answer_age_not_the_write_moment(
+    monkeypatch: Any,
+) -> None:
+    """The stamp is the OBSERVATION instant (before the fetch), so a
+    probe whose fetch took longer than the TTL lands an answer that is
+    ALREADY past the bound — the next sweep re-asks instead of trusting
+    a stale answer refreshed by its own write."""
+    import taskq.backend._retention_floor as floor_mod
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(floor_mod, "_MONOTONIC", lambda: clock["now"])
+
+    class _SlowGateConn(_RecordingConn):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reached = asyncio.Event()
+            self.proceed = asyncio.Event()
+
+        async def fetch(self, sql: str, *args: object) -> list[dict[str, Any]]:
+            if "pg_extension" in sql:
+                self.reached.set()
+                await self.proceed.wait()
+            return await super().fetch(sql, *args)
+
+    conn = _SlowGateConn()
+    task = asyncio.create_task(
+        retention_policy_floor(conn, "v_schema", "job_events", "occurred_at")
+    )
+    await conn.reached.wait()  # the answer is OBSERVED at t=1000
+    clock["now"] += 400.0  # the fetch completes at t=1400
+    conn.proceed.set()
+    assert await task is None
+
+    clock["now"] += 1.0  # t=1401: the answer's AGE is 401s — past the bound
+    assert await retention_policy_floor(conn, "v_schema", "job_events", "occurred_at") is None
+    assert len(conn.availability_statements()) == 2, (
+        "the TTL bounds the ANSWER's age, not the write's moment: an "
+        "answer observed 400s ago is past the bound on arrival — the "
+        "next sweep re-asks"
     )

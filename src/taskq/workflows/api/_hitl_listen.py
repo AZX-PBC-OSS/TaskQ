@@ -95,6 +95,7 @@ from taskq.workflows.api._hitl import (
     HOLD_CREATED_CHANNEL,
     HOLD_EXPIRED_CHANNEL,
     HOLD_RESOLVED_CHANNEL,
+    _as_hold_id,  # pyright: ignore[reportPrivateUsage]  # Why: the id's canonical form is the hitl module's own normalizer — the listener door binds through it (the same surface, the same parse).
 )
 
 if TYPE_CHECKING:
@@ -317,7 +318,7 @@ class HitlListener:
         :class:`Backfilled` reconcile passes EVERY run's filter (it
         carries no ``run_id`` — the snapshot is the SCHEMA's open-hold
         set, and every consumer reconciles its own cards against it)."""
-        run_id = str(run)
+        run_id = str(_as_hold_id(run))
         async for event in self._iterate(None):
             if event is None:
                 continue

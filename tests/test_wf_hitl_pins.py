@@ -721,6 +721,12 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
     assert len(await client.list(run=braced)) == 1
     assert len(await client.list(flow_id=braced)) == 1
 
+    # The GET door binds the canonical form too: the braced UPPER
+    # spelling of the hold's id resolves to the same hold, and a
+    # well-formed id with no hold answers the honest None.
+    got = await client.get("{" + str(holds[0].hold_id).upper() + "}")
+    assert got is not None and got.hold_id == holds[0].hold_id
+
     # The DISAGREEMENT: the refusal names both spellings AND both
     # values (the operator reads what collided, not just which kwargs).
     other_run = new_uuid()

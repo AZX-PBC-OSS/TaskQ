@@ -34,7 +34,6 @@ registered but never runs, so it owns nothing: see the None cases on
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import time
 from datetime import datetime, timedelta
@@ -300,19 +299,27 @@ async def retention_policy_floor(
             )
             return None
         present = bool(available)
+        cached_answer = False
         if cache_key is not None and generation_at_miss == _cache_generation:
             # A write racing the entry's death (or any mapping refusal)
             # degrades to re-asking — the cache is best-effort, the
             # sweep never sees the failure. The stamp is the OBSERVATION
             # instant (before the fetch), so the TTL bounds the
             # answer's age, not the write's.
-            with contextlib.suppress(Exception):
+            try:
                 _TIMESCALEDB_PRESENT[cache_key] = (present, observed_at)
+                cached_answer = True
+            except Exception:
+                cached_answer = False
         if not present:
             logger.debug(
                 "retention_policy_floor: timescaledb not present on this server "
                 "(answer %s) schema=%s table=%s",
-                "held for the TTL"
+                (
+                    "held for the TTL"
+                    if cached_answer
+                    else "not cached: the bust raced the probe, or the mapping refused"
+                )
                 if cache_key is not None
                 else "not cached: the caller is unkeyable",
                 schema,
