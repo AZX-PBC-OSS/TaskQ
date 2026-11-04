@@ -251,8 +251,13 @@ def _bound_detail(detail: dict[str, Any] | None) -> str:
     row. The preview's escaping can expand under the serializer's
     control-escape pass, so the kept width halves until the marked
     record itself is under the bound — the bound is the promise, the
-    preview is the courtesy."""
-    text = dumps_jsonb_str(detail if detail is not None else {})
+    preview is the courtesy. The NUL law is the leaf's too: a caller-
+    supplied string inside the detail (a node key, an id fragment)
+    cannot ride the jsonb bind with a NUL byte — the string values are
+    NUL-escaped (visible, never deleted — a deleted NUL could alias a
+    different real key) before the serialize, so the refusal's own
+    audit write cannot be the 500 it exists to prevent."""
+    text = dumps_jsonb_str(_escape_nul_values(detail if detail is not None else {}))
     if len(text) <= DETAIL_MAX_LENGTH:
         return text
     kept = DETAIL_MAX_LENGTH - 256
@@ -269,6 +274,19 @@ def _bound_detail(detail: dict[str, Any] | None) -> str:
         if len(rendered) <= DETAIL_MAX_LENGTH or kept <= 64:
             return rendered
         kept //= 2
+
+
+def _escape_nul_values(value: Any) -> Any:
+    """Every string in the detail's shape (dicts, lists, nested) with
+    its NUL bytes rendered as the visible escape; non-strings ride
+    unchanged."""
+    if isinstance(value, str):
+        return value.replace("\x00", "\\x00")
+    if isinstance(value, dict):
+        return {k: _escape_nul_values(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_escape_nul_values(v) for v in value]
+    return value
 
 
 def _bound_untyped_subject(raw: str) -> str:

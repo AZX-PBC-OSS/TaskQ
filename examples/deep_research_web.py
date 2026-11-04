@@ -191,12 +191,22 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
             decision = await request.json()
         except ValueError:
             raise HTTPException(status_code=400, detail="the body is not JSON") from None
+        if not isinstance(decision, dict):
+            # THE TYPED DOOR'S OWN REQUIREMENT: the decision is the
+            # declared model's SHAPE — a non-object body cannot fit it
+            # (the cold-catalog fallback cannot judge a non-object), so
+            # the door refuses it instead of delivering a payload the
+            # resumed body never declared.
+            raise HTTPException(
+                status_code=422, detail="the decision must be a JSON object"
+            )
         try:
             dumps_jsonb_str(decision)
-        except ValueError as exc:
-            # THE PAYLOAD'S WIRE SHAPE: a control character (a NUL above
-            # all) cannot ride the jsonb bind — the door refuses it loud
-            # (the product's own typed refusal class), never a 500.
+        except (ValueError, TypeError) as exc:
+            # THE PAYLOAD'S WIRE SHAPE: a control character (a NUL) is
+            # the serializer's ValueError; an unencodable value (a lone
+            # surrogate) its TypeError — both refuse loud, the hold
+            # survives.
             raise HTTPException(status_code=422, detail=str(exc)) from None
         result = await _client().resolve(canonical_hold, decision)
         return {"status": result.status, "reason": result.reason or ""}

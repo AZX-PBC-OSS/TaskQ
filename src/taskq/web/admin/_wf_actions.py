@@ -992,8 +992,11 @@ def register_actions(router: APIRouter) -> None:
         ``children`` census, so the operator can click through to the
         child whose story they are watching (the demo README's
         observation: ``watch doc-doomed's attempt go 1 → 2``)."""
-        if map_index is not None and map_index < 0:
-            raise HTTPException(status_code=400, detail="map_index must be >= 0")
+        if map_index is not None and (map_index < 0 or map_index > 32767):
+            # The column is a smallint: a value beyond its range can
+            # never name a real map sibling — the typed 400, not the
+            # int2 codec's overflow 500.
+            raise HTTPException(status_code=400, detail="map_index must be 0..32767")
         if "\x00" in node_key:
             # A NUL byte can never name a declared node (the keys are
             # identifiers); the read binds it raw — refuse before the
@@ -1089,7 +1092,19 @@ def register_actions(router: APIRouter) -> None:
             # bare -> operator — decoded HERE so the panel's JSON is the
             # object the JS renders.
             "cache_hit": _cache_hit_of(node["cache_hit"]),
-            "timeline": [dict(r) | {"created_at": _iso(r["created_at"])} for r in ledger],
+            "timeline": [
+                dict(r)
+                | {
+                    "created_at": _iso(r["created_at"]),
+                    # THE PANEL'S DISPLAY CAP COVERS THE LEDGER'S OWN
+                    # ERROR FIELD (the attempt rows' error_message
+                    # rides the same read-side bound as the job
+                    # columns' — a 500k-char ledger message renders
+                    # capped with the dropped count named, never raw).
+                    "error_message": _bound_for_panel(r["error_message"]),
+                }
+                for r in ledger
+            ],
             "children": children if len(children) > 1 else [],
             # THE CHILDREN'S TOTAL (the "N more" arm): the
             # count beyond the render cap — the JS names the rest.

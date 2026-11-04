@@ -942,3 +942,54 @@ async def test_a_long_declared_node_key_retries_through_the_door(
     )
     assert applied >= 0  # the verb answers; the length arm never refuses it
     _ = clean_pg_conn, run_id
+
+
+async def test_hostile_inputs_on_every_door_are_typed_refusals(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """The doors' last hostile shapes, walked: a map_index beyond the
+    smallint is the typed 400 (never the int2 codec's overflow 500); a
+    NUL node key on the READ door is a 404; the deliver door's audited
+    refusal with a NUL node key in its detail lands ITS OWN ROW (the
+    leaf's NUL law covers the detail's strings — the audited refusal
+    cannot be the 500 it exists to prevent)."""
+    schema = module_pg_schema.schema_name
+    run_id = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        await http.get("/queues")  # the CSRF cookie's set
+        csrf = _csrf_of(http)
+        overflow = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 40000})
+        assert overflow.status_code == 400, f"the smallint overflow is a typed 400: {overflow.status_code}"
+        huge = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 10**20})
+        assert huge.status_code == 400
+        read_nul = await http.get(f"/api/runs/{run_id}/nodes/abc%00def")
+        assert read_nul.status_code == 404, read_nul.status_code
+        rows_before = await clean_pg_conn.fetchval(
+            f"SELECT count(*)::int FROM \"{schema}\".admin_audit "
+            "WHERE detail->>'refused' IS NOT NULL"
+        )
+        deliver_nul = await http.post(
+            f"/api/runs/{run_id}/deliver",
+            data={
+                "node": "a\x00b",
+                "payload": json.dumps({"verdict": "a\u0000b"}),
+                "csrf_token": csrf,
+            },
+        )
+        assert deliver_nul.status_code == 422, (
+            f"the deliver door's NUL payload is the audited 422: {deliver_nul.status_code} {deliver_nul.text}"
+        )
+        rows_after = await clean_pg_conn.fetchval(
+            f"SELECT count(*)::int FROM \"{schema}\".admin_audit "
+            "WHERE detail->>'refused' IS NOT NULL"
+        )
+        assert rows_after == rows_before + 1, (
+            "the deliver door's own refusal lands ITS audit row (the "
+            "leaf's NUL law covers the detail's strings)"
+        )
