@@ -226,6 +226,22 @@ def _bound_reason(reason: str | None) -> str | None:
 #: original. The row never lies about being whole.
 DETAIL_MAX_LENGTH: int = 10_000
 
+#: The pointer column's bound: ``target_id`` is an INDEX key on the
+#: never-pruned table — a NUL byte fails the text bind and an oversized
+#: value exceeds the pointer index's btree shape (the same two failure
+#: modes the reason/detail bounds exist for).
+TARGET_ID_MAX_LENGTH: int = 200
+
+
+def _bound_target_id(target_id: str) -> str:
+    """The pointer column's law (the leaf's own discipline, the same one
+    the reason/detail bounds follow): NUL-free, bounded, the cut marked
+    on the row."""
+    cleaned = target_id.replace("\x00", "")
+    if len(cleaned) <= TARGET_ID_MAX_LENGTH:
+        return cleaned
+    return cleaned[:TARGET_ID_MAX_LENGTH] + "…"
+
 
 def _bound_detail(detail: dict[str, Any] | None) -> str:
     """Pin the audit detail to the column's shape (:func:`bound_reason`'s
@@ -456,7 +472,7 @@ async def _record_admin_action(
         principal_subject(principal),
         action,
         target_type,
-        target_id,
+        _bound_target_id(target_id),
         _bound_reason(reason),
         _bound_detail(detail),
     )

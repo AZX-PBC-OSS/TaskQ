@@ -107,6 +107,7 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         live_pool = await asyncpg.create_pool(pool) if owned else pool
+        _app.state.pool = live_pool
         listener = HitlListener(live_pool, schema)
         await listener.start()
         _app.state.listener = listener

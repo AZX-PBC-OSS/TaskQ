@@ -282,3 +282,40 @@ async def test_resolve_is_scoped_to_the_url_runs_own_hold(
             json={"verdict": "approve"},
         )
         assert own.status_code == 200 and own.json()["status"] == "delivered", own.text
+
+
+async def test_the_dsn_form_opens_its_own_pool_and_the_doors_live(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, pg_dsn: str
+) -> None:
+    """THE ADVERTISED RUNNABLE FORM: ``build_app(dsn, schema)`` — the
+    lifespan opens the app's own pool and the doors live on it: the
+    token mints, the events stream starts (200), the resolve delivers
+    through the app's own pool. A well-formed id with NO hold is a 404
+    (the resolve door's contract), never a silent refusal."""
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_dsn_form_flow")
+    app = build_app(pg_dsn, wf_schema)
+    async with app.router.lifespan_context(app):
+        demo_client = HitlClient(app.state.pool, schema=wf_schema)
+        holds = await demo_client.list(run=flow_id)
+        assert len(holds) == 1, holds
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://demo"
+        ) as http:
+            minted = (await http.get(f"/runs/{flow_id}/token")).json()
+            assert minted["run_id"] == flow_id
+            # THE DB-FACING DOORS LIVE ON THE APP'S OWN POOL (the DSN
+            # form's whole point — the pool-form tests own the stream
+            # logic): the resolve delivers through it.
+            result = await http.post(
+                f"/runs/{flow_id}/holds/{holds[0].hold_id}/resolve",
+                params={"token": minted["token"]},
+                json={"verdict": "approve"},
+            )
+            assert result.status_code == 200, f"{result.status_code} {result.text}"
+            assert result.json()["status"] == "delivered", result.text
+            gone = await http.post(
+                f"/runs/{flow_id}/holds/{new_uuid()}/resolve",
+                params={"token": minted["token"]},
+                json={"verdict": "approve"},
+            )
+            assert gone.status_code == 404, gone.text

@@ -792,3 +792,40 @@ async def test_malformed_hold_id_is_an_audited_400_never_a_500(
         assert pointer is not None
         assert "\x00" not in pointer["target_id"], "the pointer carries no NUL byte"
         assert len(pointer["target_id"]) <= 97, "the pointer is bounded"
+
+
+async def test_resolve_refuses_a_hold_from_another_run(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """The resolve door's scope is the HOLD'S OWN RUN: the admin door
+    404s a hold whose run_id is not the path's run — the cross-run
+    resolve (the operator's typo, or a probe walking ids) moves
+    nothing."""
+    schema = module_pg_schema.schema_name
+    run_a = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    run_b = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    from taskq.workflows import HitlClient
+
+    client = HitlClient(module_pg_pool, schema=schema)
+    (hold_b,) = await client.list(run_b)
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        await http.get("/queues")  # the CSRF cookie's set
+        cross = await http.post(
+            f"/api/runs/{run_a}/resolve",
+            data={
+                "hold_id": hold_b.hold_id,
+                "decision": json.dumps({"verdict": "approve"}),
+                "csrf_token": _csrf_of(http),
+            },
+        )
+    assert cross.status_code == 404, cross.text
+    still = await clean_pg_conn.fetchval(
+        f'SELECT status FROM "{schema}".wf_signals WHERE id = $1', hold_b.hold_id
+    )
+    assert still == "held", f"B's hold moved under A's door: {still}"

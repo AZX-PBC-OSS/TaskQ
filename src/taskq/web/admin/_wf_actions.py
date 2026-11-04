@@ -1377,6 +1377,26 @@ def register_actions(router: APIRouter) -> None:
         named banner — the refused-op contract, never a 400 wall."""
         from taskq.workflows import WorkflowRunError, retry_workflow_node
 
+        # THE NODE KEY'S SHAPE IS THE DOOR'S OWN CHECK: a NUL-bearing or
+        # oversized key is the caller's typo — an audited refusal (the
+        # pointer sanitized: the never-pruned row's index key carries no
+        # NUL and no unbounded string), never a 500 from the CAS bind or
+        # the pointer index.
+        if "\x00" in node_key or len(node_key) > 200:
+            await _audit_rerun_refusal(
+                pool,
+                schema=schema,
+                principal=principal,
+                action="workflow.retry_node",
+                target_type="workflow_node",
+                target_id=f"{run_id}:{node_key}".replace("\x00", "")[:240],
+                reason=None,
+                refusal="the node key is not a valid key",
+                applied=0,
+                total=1,
+            )
+            return _run_redirect(base_path, run_id, banner=RERUN_REFUSED_BANNER)
+
         async with pool.acquire() as conn:
             try:
                 exists = await conn.fetchval(_RUN_EXISTS_SQL.format(schema=schema), run_id)
