@@ -105,7 +105,7 @@ The wake — the child's terminal event is the hold's RESOLVER:
   root's status; a terminal child → the hold is CAS'd `delivered` (the
   payload is THE POINTER — the child flow id — never the sole copy), the
   parent node's held marker clears and `scheduled_at=now()` (the
-  `_DELIVER_RESUME_SQL` shape), and the arm broadcasts the T26
+  `_DELIVER_RESUME_SQL` shape), and the arm broadcasts the hitl-pubsub
   transport's knock on `CHILD_TERMINAL_CHANNEL` (`pg_notify`, the
   pointer-only payload, the 8000-byte cap — `_broadcast` reused verbatim).
 * **THE REAPER HALF** (the orphaned waiter): the child DIED — terminal
@@ -118,7 +118,7 @@ The wake — the child's terminal event is the hold's RESOLVER:
   against its declared return; the `Decision | Expired` pattern's
   sibling, exactly the HITL broadcast's amendment's law).
 * **THE JOIN'S OWN TIMEOUT**: `timeout_s=` arms the hold's deadline (the
-  DB clock, C8's precedence law — the WAIT's value wins, on the rows).
+  DB clock, the clock-precedence law — the WAIT's value wins, on the rows).
   The expiry sweep abandons the hold; the resumed site returns `Expired`
   ONCE per attempt (the face-marker pattern, `child_join_face_{attempt}`
   — the hold→expire→re-hold→∞ dragon's kill site, the HITL broadcast's amendment

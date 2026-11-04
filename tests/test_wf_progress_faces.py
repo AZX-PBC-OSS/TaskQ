@@ -110,7 +110,7 @@ async def test_reconnect_reconstructs_the_display_full_and_partial(
     from the re-sync."""
     n = 12
     flow_id, runner, source = await _map_flow(
-        wf_schema, wf_pool, children=n, name="t21_reconnect_flow"
+        wf_schema, wf_pool, children=n, name="progress_reconnect_flow"
     )
     _ = source
     await runner.drive(flow_id)
@@ -242,11 +242,11 @@ async def test_display_shows_failure_with_pct_inside_the_liar_reds(
         await ctx.progress(99, "almost done", None)
         raise ValueError("the body failed at 99%")
 
-    @app.workflow("t21_liar_display")
-    def t21_liar_display() -> Promise[object]:
+    @app.workflow("progress_liar_display")
+    def progress_liar_display() -> Promise[object]:
         return build(step(liar, Ingest(doc_id="d1"), key="liar", max_attempts=1))
 
-    runner = FlowRunner(app.get("t21_liar_display"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_liar_display"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
@@ -377,7 +377,7 @@ async def test_midflight_read_side_aggregate_writes_nothing(
 
     n = 12
     flow_id, runner, source = await _map_flow(
-        wf_schema, wf_pool, children=n, aggregate=risk_mean, name="t21_agg_flow"
+        wf_schema, wf_pool, children=n, aggregate=risk_mean, name="progress_agg_flow"
     )
     # run HALF the children (the mid-flight world: the PoC's 125/200)
     rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]
@@ -435,12 +435,14 @@ async def test_gauge_cardinality_stays_workflow_dimensioned(
 
     n = 12
     flow_id, runner, _source = await _map_flow(
-        wf_schema, wf_pool, children=n, name="t21_gauge_flow"
+        wf_schema, wf_pool, children=n, name="progress_gauge_flow"
     )
     _ = flow_id
     await runner.drive(flow_id)
     rows = await wf_conn.fetch(_QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=wf_schema))
-    this_flow = {(r["workflow"], r["state"]) for r in rows if r["workflow"] == "t21_gauge_flow"}
+    this_flow = {
+        (r["workflow"], r["state"]) for r in rows if r["workflow"] == "progress_gauge_flow"
+    }
     counterfactual = n  # the per-child-label variant's series count
     progress_redlog.red(
         "gauge_cardinality_stays_workflow_dimensioned",
@@ -481,14 +483,14 @@ async def test_sunk_join_for_progress_warns_at_validate(
     async def item(ctx: StepContext, value: int) -> int:
         return value
 
-    @app.workflow("t21_w2_flow")
+    @app.workflow("progress_w2_flow")
     def w2_flow() -> Promise[object]:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
         items = map_source(source, item)
         sink(items)  # the display-only reader, declared
         return build(source)
 
-    compiled = app.get("t21_w2_flow")
+    compiled = app.get("progress_w2_flow")
     diagnostics = validate_compiled(compiled)
     w2 = [d for d in diagnostics if d.rule == "W2-join-for-progress"]
     assert w2, "the sunk join did not warn"
@@ -515,11 +517,11 @@ async def test_http_face_streams_display_then_progress(
         await ctx.progress(100, "part two", None)
         return {"ok": True}
 
-    @app.workflow("t21_http_flow")
-    def t21_http_flow() -> Promise[object]:
+    @app.workflow("progress_http_flow")
+    def progress_http_flow() -> Promise[object]:
         return build(step(work, Ingest(doc_id="d1"), key="work"))
 
-    runner = FlowRunner(app.get("t21_http_flow"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_http_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 

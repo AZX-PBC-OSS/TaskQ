@@ -228,7 +228,7 @@ async def test_emit_tx_atomic_at_every_statement_window(
     module_pg_schema: Any,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE KILL-STORM SCENARIO (the spike's table, windows #0-#2): a REAL
     server-side kill inside the emit tx — after the children (#1), after
@@ -305,7 +305,7 @@ async def test_emit_tx_atomic_at_every_statement_window(
         "AND step_key = 'screen' ORDER BY idempotency_key",
         source_id,
     )
-    t20_redlog.red(
+    redlog.red(
         f"t20-emit-window-{window}",
         "the emit tx NOT atomic at this statement window — a kill lands a "
         "partial page or advances the cursor alone: the resume re-emits "
@@ -325,7 +325,7 @@ async def test_emit_tx_zero_reemitted_zero_lost_across_pages(
     module_pg_schema: Any,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE STORM'S MID-PAGE + BETWEEN-PAGES WINDOWS (the spike's #3-#7): a
     kill AFTER a committed page (the backend dies between emit calls)
@@ -393,7 +393,7 @@ async def test_emit_tx_zero_reemitted_zero_lost_across_pages(
         "AND step_key = 'screen'",
         source_id,
     )
-    t20_redlog.red(
+    redlog.red(
         "t20-emit-between-pages-kill",
         "the resume NOT resuming from the cursor — a re-emitted page (the "
         "duplicates) or a skipped one (the lost children)",
@@ -420,7 +420,7 @@ async def test_emit_fenced_on_superseded_claim(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE CLAIM FENCE IS THE EMIT'S FENCE: the cursor checkpoint runs
     under the FULL dispatch fence (status='running' AND locked_by_worker
@@ -453,7 +453,7 @@ async def test_emit_fenced_on_superseded_claim(
             cursor={"page": 0},
         )
     # ZERO children, the cursor unmoved: the fenced emit wrote nothing.
-    t20_redlog.red(
+    redlog.red(
         "t20-emit-zombie",
         "the cursor checkpoint NOT fenced on the claim (a zombie emit "
         "lands children from a superseded attempt — the double-emit "
@@ -473,7 +473,7 @@ async def test_emit_map_index_discriminates_siblings(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE SPIKE'S REFUTED-CLAIM DISCIPLINE, PINNED (198 collisions
     without it): two records' chain starts through ONE emit — same step
@@ -513,7 +513,7 @@ async def test_emit_map_index_discriminates_siblings(
         "WHERE parent_id = $1 AND step_key = 'screen' ORDER BY map_index",
         source_id,
     )
-    t20_redlog.red(
+    redlog.red(
         "t20-emit-map-index",
         "the emit NOT stamping map_index per child — all records' "
         "children of one step collide onto one row / one idempotency key "

@@ -88,11 +88,11 @@ async def test_the_validated_dump_lands_not_the_pre_validation_dict(
         await ctx.progress(50, "the lax page", {"page": "42"})
         return {"ok": True}
 
-    @app.workflow("t21_validated_dump")
-    def t21_validated_dump() -> Promise[object]:
+    @app.workflow("progress_validated_dump")
+    def progress_validated_dump() -> Promise[object]:
         return build(step(lax_body, Ingest(doc_id="d1"), key="lax", progress_schema=Page))
 
-    runner = FlowRunner(app.get("t21_validated_dump"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_validated_dump"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
@@ -440,7 +440,7 @@ async def test_map_index_poison_record_its_mates_commit(
     wf_schema: str,
     wf_pool: Any,
     wf_sql: Any,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """RECORD #32768'S FIX (the batch semantics): a page carrying a
     poison record (map_index past the smallint ceiling) emits the VALID
@@ -485,7 +485,7 @@ async def test_map_index_poison_record_its_mates_commit(
             WHERE parent_id = $1 AND step_key = 'screen' ORDER BY map_index""",
         source,
     )
-    t20_redlog.red(
+    redlog.red(
         "t20-poison-record-mates",
         "the smallint ceiling as the raw DataError MID-TX: the whole page "
         "rolled back — the valid page-mates died with the poison record",

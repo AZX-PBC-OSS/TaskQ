@@ -104,7 +104,7 @@ async def test_failed_arm_waits_for_live_siblings(
     wf_conn: asyncpg.Connection,
     wf_schema: str,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """ONE failed chain + 149 pending siblings: the failed arm must NOT
     finalize the root while live UNRESOLVED work is on the floor.
@@ -133,7 +133,7 @@ async def test_failed_arm_waits_for_live_siblings(
     # ONE maintenance pass with the siblings live: the root must WAIT.
     await run_maintenance(wf_conn, wf_sql)
     root = await root_row(wf_conn, wf_schema, flow_id)
-    t20_redlog.red(
+    redlog.red(
         "t20-failed-arm-live-siblings",
         "the failed arm gating on has_active (running/crashed/abandoned) "
         "ONLY — pending/scheduled siblings do not hold a failing run: the "
@@ -183,7 +183,7 @@ async def test_failed_arm_wedge_cure_stands(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE BLOCKED-STAMP EXCLUSION IS LOAD-BEARING: the wedge's
     fix must survive the fix — a resolved-blocked join row
@@ -216,7 +216,7 @@ async def test_failed_arm_wedge_cure_stands(
 
     await run_maintenance(wf_conn, wf_sql)
     root = await root_row(wf_conn, wf_schema, flow_id)
-    t20_redlog.red(
+    redlog.red(
         "t20-failed-arm-blocked-stamp",
         "a has_unresolved predicate WITHOUT the blocked-stamp exclusion — "
         "every pending row (a resolved-blocked join row included) would "

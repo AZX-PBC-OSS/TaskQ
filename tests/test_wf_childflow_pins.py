@@ -63,7 +63,7 @@ class ParentOut(BaseModel):
     verdict: str
 
 
-def _child_app(name: str = "t28_child", *, fail: bool = False) -> WorkflowApp:
+def _child_app(name: str = "childflow_child", *, fail: bool = False) -> WorkflowApp:
     """The CHILD workflow's app: one step reading ``ctx.input`` (the
     flow's own input — the spawn's), returning the typed report. The
     name is UNIQUE PER TEST (the D1 registry is global)."""
@@ -81,14 +81,14 @@ def _child_app(name: str = "t28_child", *, fail: bool = False) -> WorkflowApp:
         return SubReport(findings=[f"found:{probe_input.doc_id}"])
 
     @app.workflow(name)
-    def t28_child() -> Promise[object]:
+    def childflow_child() -> Promise[object]:
         return build(step(probe, key="probe"))
 
     return app
 
 
 def _parent_app(
-    child_name: str = "t28_child", *, body: Any = None, name: str = "t28_parent"
+    child_name: str = "childflow_child", *, body: Any = None, name: str = "childflow_parent"
 ) -> WorkflowApp:
     """The PARENT workflow's app: one step spawning + joining the child.
     The body is the DEFAULT happy-path join (the full four-arm match —
@@ -124,7 +124,7 @@ def _parent_app(
         return await join_body(ctx, params)  # type: ignore[operator]
 
     @app.workflow(name)
-    def t28_parent() -> Promise[object]:
+    def childflow_parent() -> Promise[object]:
         return build(step(parent_actor, ParentIn(doc_id="d1"), key="spawn_join"))
 
     return app
@@ -134,7 +134,7 @@ async def _run_parent_to_terminal(
     parent_app: WorkflowApp,
     wf_pool: asyncpg.Pool,
     wf_schema: str,
-    name: str = "t28_parent",
+    name: str = "childflow_parent",
 ) -> tuple[JobId, Any, FlowRunner]:
     """The FULL dev-loop drive: the child is a real flow — the driver's
     tick walks the receipts and executes the descendant flows."""
@@ -182,12 +182,12 @@ class TestSpawnJoinHappyPath:
     async def test_the_parent_body_gets_the_childs_typed_result(
         self, wf_pool: asyncpg.Pool, wf_schema: str
     ) -> None:
-        _child_app("t28_child_hp1").get(
-            "t28_child_hp1"
+        _child_app("childflow_child_hp1").get(
+            "childflow_child_hp1"
         )  # the registration door — the spawn's registry read
-        parent_app = _parent_app("t28_child_hp1", name="t28_parent_hp1")
+        parent_app = _parent_app("childflow_child_hp1", name="childflow_parent_hp1")
         flow_id, outcome, runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "t28_parent_hp1"
+            parent_app, wf_pool, wf_schema, "childflow_parent_hp1"
         )
         assert outcome == "terminal"
         # The flow result is the jsonb-decoded value — re-hydrated
@@ -199,10 +199,10 @@ class TestSpawnJoinHappyPath:
     async def test_the_links_carry_both_directions(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        _child_app("t28_child_hp2").get("t28_child_hp2")
-        parent_app = _parent_app("t28_child_hp2", name="t28_parent_hp2")
+        _child_app("childflow_child_hp2").get("childflow_child_hp2")
+        parent_app = _parent_app("childflow_child_hp2", name="childflow_parent_hp2")
         flow_id, _outcome, _runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "t28_parent_hp2"
+            parent_app, wf_pool, wf_schema, "childflow_parent_hp2"
         )
 
         # THE PARENT'S RECEIPT: the spawning node's row carries the
@@ -224,10 +224,10 @@ class TestSpawnJoinHappyPath:
     async def test_the_child_is_a_real_flow_its_own_rows_and_terminal(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        _child_app("t28_child_hp3").get("t28_child_hp3")
-        parent_app = _parent_app("t28_child_hp3", name="t28_parent_hp3")
+        _child_app("childflow_child_hp3").get("childflow_child_hp3")
+        parent_app = _parent_app("childflow_child_hp3", name="childflow_parent_hp3")
         flow_id, _outcome, _runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "t28_parent_hp3"
+            parent_app, wf_pool, wf_schema, "childflow_parent_hp3"
         )
 
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
@@ -248,10 +248,10 @@ class TestChildFailFace:
     async def test_the_failed_child_arrives_as_the_typed_member(
         self, wf_pool: asyncpg.Pool, wf_schema: str
     ) -> None:
-        _child_app("t28_child_fail1", fail=True).get("t28_child_fail1")
-        parent_app = _parent_app("t28_child_fail1", name="t28_parent_fail1")
+        _child_app("childflow_child_fail1", fail=True).get("childflow_child_fail1")
+        parent_app = _parent_app("childflow_child_fail1", name="childflow_parent_fail1")
         flow_id, outcome, runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "t28_parent_fail1"
+            parent_app, wf_pool, wf_schema, "childflow_parent_fail1"
         )
         assert outcome == "terminal"
         result = ParentOut.model_validate(await runner.result(flow_id))
@@ -267,9 +267,9 @@ class TestCancelCascade:
     ) -> None:
         from taskq.workflows import cancel_workflow_run
 
-        _child_app("t28_child_casc1").get("t28_child_casc1")
-        parent_app = _parent_app("t28_child_casc1", name="t28_parent_casc1")
-        runner = FlowRunner(parent_app.get("t28_parent_casc1"), wf_pool, wf_schema)
+        _child_app("childflow_child_casc1").get("childflow_child_casc1")
+        parent_app = _parent_app("childflow_child_casc1", name="childflow_parent_casc1")
+        runner = FlowRunner(parent_app.get("childflow_parent_casc1"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
 
         # The spawn + the join hold — the child EXISTS, its work still
@@ -298,10 +298,10 @@ class TestRetryIdempotency:
     async def test_the_resume_adopts_the_same_child_never_duplicates(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        _child_app("t28_child_adopt1").get("t28_child_adopt1")
-        parent_app = _parent_app("t28_child_adopt1", name="t28_parent_adopt1")
+        _child_app("childflow_child_adopt1").get("childflow_child_adopt1")
+        parent_app = _parent_app("childflow_child_adopt1", name="childflow_parent_adopt1")
         flow_id, _outcome, _runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "t28_parent_adopt1"
+            parent_app, wf_pool, wf_schema, "childflow_parent_adopt1"
         )
 
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
@@ -325,13 +325,13 @@ class TestRetryIdempotency:
     ) -> None:
         """The explicit ``key=`` face: the SAME key ADOPTS the same
         child (the caller's identity is the arbiter's rememberer)."""
-        _child_app("t28_child_adopt2").get("t28_child_adopt2")
+        _child_app("childflow_child_adopt2").get("childflow_child_adopt2")
 
         spawns: list[JobId] = []
 
         async def twice_body(ctx: StepContext, params: ParentIn) -> ParentOut:
             first = await ctx.spawn_flow(
-                "t28_child_adopt2",
+                "childflow_child_adopt2",
                 input=SubProbe(doc_id=params.doc_id),
                 result=SubReport,
                 key="the-probe",
@@ -345,9 +345,11 @@ class TestRetryIdempotency:
                     return ParentOut(findings=[], verdict="not-ok")
             raise AssertionError("unreachable")  # pragma: no cover
 
-        parent_app = _parent_app("t28_child_adopt2", body=twice_body, name="t28_parent_adopt2")
+        parent_app = _parent_app(
+            "childflow_child_adopt2", body=twice_body, name="childflow_parent_adopt2"
+        )
         flow_id, _outcome, _runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "t28_parent_adopt2"
+            parent_app, wf_pool, wf_schema, "childflow_parent_adopt2"
         )
         # The body ran TWICE (the hold's resume re-executes from the
         # top) — both executions recorded the SAME child id.
@@ -365,7 +367,7 @@ class TestFanOut:
     async def test_k_children_fan_in_to_the_typed_results_list(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        _child_app("t28_child_fan1").get("t28_child_fan1")
+        _child_app("childflow_child_fan1").get("childflow_child_fan1")
 
         class Bundle(BaseModel):
             verdicts: list[str]
@@ -374,7 +376,8 @@ class TestFanOut:
         async def fanout_body(ctx: StepContext, params: ParentIn) -> Bundle:
             probes = [SubProbe(doc_id=f"{params.doc_id}-{i}") for i in range(3)]
             handles: list[ChildHandle[SubReport]] = [
-                await ctx.spawn_flow("t28_child_fan1", input=p, result=SubReport) for p in probes
+                await ctx.spawn_flow("childflow_child_fan1", input=p, result=SubReport)
+                for p in probes
             ]
             outcomes = [await h.wait() for h in handles]
             print("fan-out outcomes:", [repr(o)[:160] for o in outcomes])
@@ -391,9 +394,11 @@ class TestFanOut:
                         verdicts.append("expired")
             return Bundle(verdicts=verdicts, n=len(handles))
 
-        parent_app = _parent_app("t28_child_fan1", body=fanout_body, name="t28_parent_fan1")
+        parent_app = _parent_app(
+            "childflow_child_fan1", body=fanout_body, name="childflow_parent_fan1"
+        )
         flow_id, outcome, runner = await _run_parent_to_terminal(
-            parent_app, wf_pool, wf_schema, "t28_parent_fan1"
+            parent_app, wf_pool, wf_schema, "childflow_parent_fan1"
         )
         assert outcome == "terminal"
         result = Bundle.model_validate(await runner.result(flow_id))
@@ -413,9 +418,9 @@ class TestSlotLaw:
     ) -> None:
         from taskq.workflows.api._hitl import sweep_child_joins
 
-        _child_app("t28_child_slot1").get("t28_child_slot1")
-        parent_app = _parent_app("t28_child_slot1", name="t28_parent_slot1")
-        runner = FlowRunner(parent_app.get("t28_parent_slot1"), wf_pool, wf_schema)
+        _child_app("childflow_child_slot1").get("childflow_child_slot1")
+        parent_app = _parent_app("childflow_child_slot1", name="childflow_parent_slot1")
+        runner = FlowRunner(parent_app.get("childflow_parent_slot1"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
 
         await _spawn_and_hold(runner, flow_id)
@@ -462,9 +467,9 @@ class TestCrashMidWait:
         from taskq.workflows._sweep import sweep_hold_stamps
         from taskq.workflows.api._hitl import sweep_child_joins
 
-        child_app = _child_app("t28_child_crash1").get("t28_child_crash1")
-        parent_app = _parent_app("t28_child_crash1", name="t28_parent_crash1")
-        runner = FlowRunner(parent_app.get("t28_parent_crash1"), wf_pool, wf_schema)
+        child_app = _child_app("childflow_child_crash1").get("childflow_child_crash1")
+        parent_app = _parent_app("childflow_child_crash1", name="childflow_parent_crash1")
+        runner = FlowRunner(parent_app.get("childflow_parent_crash1"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
 
         await _spawn_and_hold(runner, flow_id)

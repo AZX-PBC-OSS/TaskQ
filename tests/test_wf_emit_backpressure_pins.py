@@ -140,7 +140,7 @@ async def test_emit_blocks_at_the_declared_bound(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """A fast source, NO worker: page 0 emits (it fits); page 1 does NOT
     fit under the bound (4 outstanding + 4 wide > 6) — the pager BLOCKS
@@ -191,7 +191,7 @@ async def test_emit_blocks_at_the_declared_bound(
     # stayed at page 0's — NEVER over the bound.
     after = await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id)
     after_children = await committed_children(wf_conn, wf_schema, source_id)
-    t20_redlog.red(
+    redlog.red(
         "t20-backpressure-block",
         "the bound REMOVED (the unbounded variant — the rejected red, "
         "test_unbounded_emit_is_the_convicted_red): the same fast "
@@ -210,7 +210,7 @@ async def test_backpressure_releases_when_workers_drain(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """The bound is a THROTTLE, not a wall: a slow worker draining beside
     the fast source — every emit waits for its admission, then proceeds;
@@ -252,7 +252,7 @@ async def test_backpressure_releases_when_workers_drain(
     finally:
         await worker_task
 
-    t20_redlog.red(
+    redlog.red(
         "t20-backpressure-throttle",
         "the throttle NOT admitting whole pages (a per-record check): "
         "the emit would land a page OVER the bound (outstanding + width > "
@@ -275,7 +275,7 @@ async def test_unbounded_emit_is_the_convicted_red(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE CAPTURED RED (DH9's obligation): the SAME fast source with the
     bound REMOVED (``max_in_flight=None`` — the explicit unbounded) blows
@@ -300,7 +300,7 @@ async def test_unbounded_emit_is_the_convicted_red(
             max_in_flight=None,  # the author takes the dragon
         )
         count = await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id)
-        t20_redlog.red(
+        redlog.red(
             f"t20-backpressure-unbounded-page{p}",
             "the unbounded emit — the count grows with every page, no "
             "admission, no pause (the memory/row blow-up the fence "
@@ -403,7 +403,7 @@ async def test_max_in_flight_is_declared_at_the_workflow(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE DECLARED HOME, end to end: the workflow declares the bound ONCE
     (``@app.workflow(..., max_in_flight=…)``); the compile carries it; the
@@ -439,7 +439,7 @@ async def test_max_in_flight_is_declared_at_the_workflow(
     assert len(screens) == 8, f"8 chain starts exactly once, got {len(screens)}"
     assert len({r["map_index"] for r in screens}) == 8, "zero duplicate records"
     assert all(r["status"] == "succeeded" for r in rows), "every row terminal under the throttle"
-    t20_redlog.red(
+    redlog.red(
         "t20-backpressure-declared",
         "the bound declared NOWHERE (the unpinned decision — the broken "
         "window): every emit materializes unbounded; the dragon's door "

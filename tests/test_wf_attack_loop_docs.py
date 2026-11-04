@@ -318,7 +318,7 @@ def test_docs_the_streaming_ratio_is_the_newest_capture_or_an_honest_range() -> 
 # ── DOCS-4: the API reference disposition counts drift three ways ────────────────
 
 
-def _t17_table_counts(ledger: str) -> dict[str, int]:
+def _ledger_table_counts(ledger: str) -> dict[str, int]:
     """The ledger TABLE's own disposition counts (the truth source): one
     row per cut, the disposition column read per row."""
     counts: dict[str, int] = {}
@@ -348,7 +348,7 @@ def test_docs_the_disposition_counts_agree_across_their_three_homes() -> None:
         if (base / "t17-dispositions.md").is_file()
     ).read_text()
     guide = GUIDE.read_text()
-    table = _t17_table_counts(ledger)
+    table = _ledger_table_counts(ledger)
 
     header_match = re.search(
         r"applied (\d+).*?declined-with-reason (\d+).*?recorded-no-action\s*(\d+).*?"

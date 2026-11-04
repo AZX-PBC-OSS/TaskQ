@@ -77,11 +77,11 @@ async def test_the_chain_body_emission_lands_in_both_channels(
         seen["emitted"] = 6
         return {"ok": True}
 
-    @app.workflow("t21_chain")
-    def t21_chain() -> Promise[object]:
+    @app.workflow("progress_chain")
+    def progress_chain() -> Promise[object]:
         return build(step(work, Ingest(doc_id="d1"), key="work", progress_schema=Page))
 
-    runner = FlowRunner(app.get("t21_chain"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_chain"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 
@@ -138,11 +138,11 @@ async def test_declared_schema_door_refuses_wrong_shape(
         await ctx.progress(50, "m", {"not_a_page": True})
         return {"ok": True}
 
-    @app.workflow("t21_lying")
-    def t21_lying() -> Promise[object]:
+    @app.workflow("progress_lying")
+    def progress_lying() -> Promise[object]:
         return build(step(lying_body, Ingest(doc_id="d1"), key="lying", progress_schema=Page))
 
-    runner = FlowRunner(app.get("t21_lying"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_lying"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
     status = await wf_conn.fetchval(
@@ -219,11 +219,11 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
             await ctx.progress(i % 101, f"e{i}", None)
         return {"ok": True}
 
-    @app.workflow("t21_chatty")
-    def t21_chatty() -> Promise[object]:
+    @app.workflow("progress_chatty")
+    def progress_chatty() -> Promise[object]:
         return build(step(chatty, Ingest(doc_id="d1"), key="chatty"))
 
-    runner = FlowRunner(app.get("t21_chatty"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_chatty"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     status = await runner.drive(flow_id)
     assert status == "terminal"
@@ -365,11 +365,11 @@ async def test_terminal_projection_lands_after_the_finalize(
         await ctx.progress(99, "almost done", None)
         raise ValueError("the body failed at 99%")
 
-    @app.workflow("t21_boom")
-    def t21_boom() -> Promise[object]:
+    @app.workflow("progress_boom")
+    def progress_boom() -> Promise[object]:
         return build(step(boom, Ingest(doc_id="d1"), key="boom", max_attempts=1))
 
-    runner = FlowRunner(app.get("t21_boom"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("progress_boom"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id)
 

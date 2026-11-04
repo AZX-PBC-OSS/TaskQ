@@ -325,9 +325,9 @@ async def width_schemas(pg_dsn: str) -> AsyncIterator[dict[str, str]]:
     seeded identically; plus the MUTATION-PIN shape (the five columns PLUS
     deliberately-misaligned padding columns)."""
     suffix = new_base62(8, precision="random").lower()
-    extended = f"t03x_{suffix}"
-    control = f"t03c_{suffix}"
-    padded = f"t03p_{suffix}"
+    extended = f"mig_full_{suffix}"
+    control = f"mig_preround_{suffix}"
+    padded = f"mig_padded_{suffix}"
     conn = await asyncpg.connect(pg_dsn)
     try:
         for target in (extended, control, padded):
@@ -459,7 +459,7 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
     pin 1's row-width population (test order shuffles); the clone carries
     the SAME partial/full shapes the migration ships."""
     conn = await asyncpg.connect(width_schemas["dsn"])
-    clone = f"t03bulk_{width_schemas['extended']}"
+    clone = f"bulkclone_{width_schemas['extended']}"
     try:
         schema = width_schemas["extended"]
         await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{clone}"')
@@ -477,7 +477,7 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
         # The full control index: same COLUMN as the join-wait partial, no
         # WHERE -- the 1% comparison's honest control.
         await conn.execute(
-            f'CREATE INDEX IF NOT EXISTS t03_full_control_idx ON "{schema}"."{clone}" (id)'
+            f'CREATE INDEX IF NOT EXISTS clone_full_control_idx ON "{schema}"."{clone}" (id)'
         )
         await conn.execute(f'ANALYZE "{schema}"."{clone}"')
         # The clone's partial indexes auto-named (LIKE INCLUDING ALL) --
@@ -504,7 +504,7 @@ async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> N
                 f"""
                 SELECT
                     pg_relation_size('{schema}.{idx}') AS partial,
-                    pg_relation_size('"{schema}".t03_full_control_idx') AS full
+                    pg_relation_size('"{schema}".clone_full_control_idx') AS full
                 """
             )
             assert row is not None

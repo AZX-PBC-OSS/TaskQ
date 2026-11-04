@@ -81,7 +81,6 @@ _SINKS: tuple[str, ...] = (
     "t10-pin-reds.json",
     "t19-pin-reds.json",
     "t06-propagation-reds.json",
-    "t20-pin-reds.json",
     "t21-pin-reds.json",
 )
 

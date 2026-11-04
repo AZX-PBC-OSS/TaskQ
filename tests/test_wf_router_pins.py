@@ -208,7 +208,7 @@ async def test_chain_routes_through_the_certified_fork(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """The full conditional-edge walk on the REAL engine: the source emits
     two records' chain starts (clean + flagged); the chain steps' bodies
@@ -318,7 +318,7 @@ async def test_chain_routes_through_the_certified_fork(
         "WHERE parent_id = ANY($1) ORDER BY map_index, step_key",
         [r["id"] for r in rows],
     )
-    t20_redlog.red(
+    redlog.red(
         "router-fork",
         "the route NOT riding the certified fork (a hand-wired child row "
         "outside the parent's terminal-mark tx — the fork-debt dragon) or "
@@ -356,7 +356,7 @@ async def test_router_not_total_fails_the_row_loudly(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE RUNTIME REFUSAL'S ROW: a chain step whose body returns a
     FOREIGN outcome (not the declared enum) terminal-FAILS with
@@ -446,7 +446,7 @@ async def test_router_not_total_fails_the_row_loudly(
         row_id,
     )
     assert row is not None
-    t20_redlog.red(
+    redlog.red(
         "router-not-total-row",
         "the foreign outcome SILENTLY DROPPED (no arm matched, nothing "
         "refused) — the run 'succeeds' minus a record; the row's "
@@ -515,7 +515,7 @@ async def test_chain_end_to_end_through_the_runner(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE WHOLE AUTHOR SURFACE (PROOF §4's ergonomics bar), lived: a
     ``chain_source`` node whose paged body emits the chain starts; the
@@ -544,7 +544,7 @@ async def test_chain_end_to_end_through_the_runner(
     by_trace: dict[str, list[tuple[str, str]]] = {}
     for r in rows:
         by_trace.setdefault(str(r["trace_id"]), []).append((str(r["step_key"]), str(r["status"])))
-    t20_redlog.red(
+    redlog.red(
         "chain-e2e",
         "the chain's rows NOT sharing one trace per record (the lineage "
         "crosses two systems) or a record's chain stranded non-terminal",
@@ -597,7 +597,7 @@ async def test_router_not_total_through_the_runner(
     wf_schema: str,
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE RUNTIME LOUD REFUSAL, END TO END: a chain step whose body
     returns a foreign outcome fails the row LOUDLY —
@@ -623,7 +623,7 @@ async def test_router_not_total_through_the_runner(
         flow_id,
     )
     assert row is not None
-    t20_redlog.red(
+    redlog.red(
         "router-not-total-runner",
         "the foreign outcome silently dropped by the runner's chain path "
         "— the run 'succeeds' minus a record; the row must terminal-FAIL "

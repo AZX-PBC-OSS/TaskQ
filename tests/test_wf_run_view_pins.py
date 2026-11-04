@@ -833,9 +833,9 @@ def test_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
 # tuple(parent_results.values())`` — empty for a source), so a source
 # body taking ``(ctx, params)`` would TypeError mid-flow — exactly the
 # ladder discovery E10 exists to refuse. Every other chain source in
-# the estate (t20's ``t20_source``, the march app's ``triage_source``)
-# is ctx-only. The pin asserts the RESOLVED behavior both ways, GREEN:
-# the corrected declaration projects both cohorts, and the bad
+# the estate (the router pack's ``screen_app``, the march app's
+# ``triage_source``) is ctx-only. The pin asserts the RESOLVED behavior
+# both ways, GREEN: the corrected declaration projects both cohorts, and the bad
 # declaration keeps refusing LOUDLY (the projection skip names E10; the
 # healthy fleets' projection is untouched). The battery's red is fixed
 # by fixing the DECLARATION in the battery's test — this pin guards the

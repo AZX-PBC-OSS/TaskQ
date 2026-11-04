@@ -77,16 +77,16 @@ async def main() -> dict[str, Any]:
     async def quiet(ctx: StepContext, params: Ingest) -> dict[str, object]:
         return {"ok": True}
 
-    @app.workflow("t21_chatty_numbers")
-    def t21_chatty_numbers() -> Promise[object]:
+    @app.workflow("progress_chatty_numbers")
+    def progress_chatty_numbers() -> Promise[object]:
         return build(step(chatty, Ingest(doc_id="d1"), key="chatty"))
 
-    @app.workflow("t21_quiet_numbers")
-    def t21_quiet_numbers() -> Promise[object]:
+    @app.workflow("progress_quiet_numbers")
+    def progress_quiet_numbers() -> Promise[object]:
         return build(step(quiet, Ingest(doc_id="d1"), key="quiet"))
 
     t0 = time.perf_counter()
-    runner = FlowRunner(app.get("t21_chatty_numbers"), pool, schema)
+    runner = FlowRunner(app.get("progress_chatty_numbers"), pool, schema)
     flow = (await runner.create_flow()).flow_id
     assert await runner.drive(flow) == "terminal"
     wall_s = time.perf_counter() - t0
@@ -133,7 +133,7 @@ async def main() -> dict[str, Any]:
 
     # the quiet node's finalize (the comparison point)
     t0 = time.perf_counter()
-    runner_q = FlowRunner(app.get("t21_quiet_numbers"), pool, schema)
+    runner_q = FlowRunner(app.get("progress_quiet_numbers"), pool, schema)
     flow_q = (await runner_q.create_flow()).flow_id
     await runner_q.drive(flow_q)
     quiet_s = time.perf_counter() - t0
@@ -153,12 +153,12 @@ async def main() -> dict[str, Any]:
     def risk_mean(rows: list[dict[str, object]]) -> float:
         return sum(int(r["risk"]) for r in rows) / len(rows)
 
-    @app2.workflow("t21_map_numbers")
-    def t21_map_numbers() -> Promise[object]:
+    @app2.workflow("progress_map_numbers")
+    def progress_map_numbers() -> Promise[object]:
         source = step(fetch, Ingest(doc_id="d1"), key="fetch")
         return build(map_source(source, item, aggregate=risk_mean))
 
-    runner_m = FlowRunner(app2.get("t21_map_numbers"), pool, schema)
+    runner_m = FlowRunner(app2.get("progress_map_numbers"), pool, schema)
     flow_m = (await runner_m.create_flow()).flow_id
     t0 = time.perf_counter()
     await runner_m.drive(flow_m)

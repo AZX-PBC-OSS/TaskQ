@@ -573,9 +573,9 @@ def propagation_redlog() -> Iterator[RedLog]:
 
 
 @pytest.fixture
-def t20_redlog() -> Iterator[RedLog]:
-    """The red sink for the streaming router streaming pins (the rejected variants)."""
-    log = RedLog("t20-pin-reds.json")
+def redlog() -> Iterator[RedLog]:
+    """The red sink for the streaming source's pins (the rejected variants)."""
+    log = RedLog("pin-reds.json")
     yield log
     log.flush()
 

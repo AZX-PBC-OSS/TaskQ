@@ -185,7 +185,7 @@ async def test_premature_terminal_fence_30_sweeps(
     module_pg_schema: Any,
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
-    t20_redlog: RedLog,
+    redlog: RedLog,
 ) -> None:
     """THE 30-SWEEP PROBE (the spike's shape): a mid-stream death, then 30
     hard sweep passes with NO worker — the root NEVER finalizes (the
@@ -254,7 +254,7 @@ async def test_premature_terminal_fence_30_sweeps(
         )
         await asyncio.sleep(0.02)
 
-    t20_redlog.red(
+    redlog.red(
         "t20-premature-terminal",
         "the maintenance leg WITHOUT its liveness gate (the WHERE's arms "
         "mutated to true — every pass finalizes the root): the root "
