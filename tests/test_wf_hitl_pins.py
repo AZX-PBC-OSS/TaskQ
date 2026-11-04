@@ -713,9 +713,13 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
 
     # A non-documented spelling of the SAME id (braced) also agrees and
     # resolves — the bound id is the canonical form, so the query never
-    # sees the wrapper.
+    # sees the wrapper. Pinned on BOTH the both-given path and each
+    # sole-spelling path (a canonicalizer that only ran when both
+    # spellings were given would leave the sole call binding raw).
     braced = "{" + str(flow_id).upper() + "}"
     assert len(await client.list(run=braced, flow_id=str(flow_id))) == 1
+    assert len(await client.list(run=braced)) == 1
+    assert len(await client.list(flow_id=braced)) == 1
 
     # The DISAGREEMENT: the refusal names both spellings AND both
     # values (the operator reads what collided, not just which kwargs).
@@ -727,7 +731,12 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
     assert str(flow_id) in message and str(other_run) in message, message
 
     # And a spelling that does not even parse as the id lands in the
-    # same named refusal — never a naked UUID error.
+    # SAME named refusal — the spelling names and both values, never a
+    # naked UUID error.
     with pytest.raises(ValueError) as malformed:
         await client.list(run=flow_id, flow_id="not-this-run")
-    assert "not-this-run" in str(malformed.value) and str(flow_id) in str(malformed.value)
+    malformed_message = str(malformed.value)
+    assert "run=" in malformed_message and "flow_id=" in malformed_message, malformed_message
+    assert str(flow_id) in malformed_message and "not-this-run" in malformed_message, (
+        malformed_message
+    )

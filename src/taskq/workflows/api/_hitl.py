@@ -1315,9 +1315,10 @@ class HitlClient:
         addressable (its own ``hold_id``) and resolvable
         INDIVIDUALLY. ``run=`` and ``flow_id=`` name the same id (the
         run identity's one mapping); ``run=`` is the canonical
-        spelling, and a disagreement between the two spellings is
-        refused naming both — the branch's alias doctrine, one refusal
-        at every alias pair."""
+        spelling, a disagreement between the two spellings is refused
+        naming both, and a spelling that does not even parse as the id
+        lands in that same named refusal — the branch's alias doctrine,
+        one refusal at every alias pair."""
         run_id = run if run is not None else flow_id
         if run_id is None:
             raise TypeError("list(): name the run — list(run=<run id>)")
@@ -1341,9 +1342,12 @@ class HitlClient:
         return [self._context(r) for r in rows]
 
     async def get(self, hold_id: JobId | str) -> HoldContext | None:
-        """One hold's full context; the id is the reply handle."""
+        """One hold's full context; the id is the reply handle (its
+        accepted spellings bind through the id's canonical form — the
+        list door's own rule)."""
+        bound_id = _as_hold_id(hold_id)
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(_render(_GET_SQL, self._schema), hold_id)
+            row = await conn.fetchrow(_render(_GET_SQL, self._schema), bound_id)
         return self._context(row) if row is not None else None
 
     async def resolve(
