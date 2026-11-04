@@ -1318,6 +1318,9 @@ class HitlClient:
         spelling, and a disagreement between the two spellings is
         refused naming both — the branch's alias doctrine, one refusal
         at every alias pair."""
+        run_id = run if run is not None else flow_id
+        if run_id is None:
+            raise TypeError("list(): name the run — list(run=<run id>)")
         if run is not None and flow_id is not None:
             refusal = (
                 f"list(): run= and flow_id= are both given and disagree "
@@ -1332,11 +1335,9 @@ class HitlClient:
                 raise ValueError(refusal) from exc
             if not agrees:
                 raise ValueError(refusal)
-        run_id = run if run is not None else flow_id
-        if run_id is None:
-            raise TypeError("list(): name the run — list(run=<run id>)")
+        bound_id = _as_hold_id(run_id)
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(_render(_LIST_SQL, self._schema), run_id)
+            rows = await conn.fetch(_render(_LIST_SQL, self._schema), bound_id)
         return [self._context(r) for r in rows]
 
     async def get(self, hold_id: JobId | str) -> HoldContext | None:

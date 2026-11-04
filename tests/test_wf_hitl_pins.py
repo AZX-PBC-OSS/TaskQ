@@ -24,6 +24,7 @@ import asyncpg
 import pytest
 from pydantic import BaseModel
 
+from taskq._ids import new_uuid
 from taskq.backend._protocol import JobId
 from taskq.workflows import (
     FlowRunner,
@@ -710,10 +711,23 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
     holds = await client.list(run=flow_id, flow_id=str(flow_id))
     assert len(holds) == 1, holds
 
+    # A non-documented spelling of the SAME id (braced) also agrees and
+    # resolves — the bound id is the canonical form, so the query never
+    # sees the wrapper.
+    braced = "{" + str(flow_id).upper() + "}"
+    assert len(await client.list(run=braced, flow_id=str(flow_id))) == 1
+
     # The DISAGREEMENT: the refusal names both spellings AND both
     # values (the operator reads what collided, not just which kwargs).
+    other_run = new_uuid()
     with pytest.raises(ValueError) as refused:
-        await client.list(run=flow_id, flow_id="not-this-run")
+        await client.list(run=flow_id, flow_id=str(other_run))
     message = str(refused.value)
     assert "run=" in message and "flow_id=" in message, message
-    assert str(flow_id) in message and "not-this-run" in message, message
+    assert str(flow_id) in message and str(other_run) in message, message
+
+    # And a spelling that does not even parse as the id lands in the
+    # same named refusal — never a naked UUID error.
+    with pytest.raises(ValueError) as malformed:
+        await client.list(run=flow_id, flow_id="not-this-run")
+    assert "not-this-run" in str(malformed.value) and str(flow_id) in str(malformed.value)
