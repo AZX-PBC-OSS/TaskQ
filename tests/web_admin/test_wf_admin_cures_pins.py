@@ -49,6 +49,7 @@ pytest.importorskip("fastapi", reason="requires taskq[fastapi]")
 pytest.importorskip("jinja2")
 from fastapi import FastAPI, HTTPException, Request
 
+from taskq._ids import new_uuid
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin.auth._session import IdentityClaims
@@ -744,3 +745,50 @@ async def test_unknown_run_stream_is_a_404_at_subscribe(
     assert resp.status_code == 404, (
         f"CONTRACT: an unknown run is a 404 AT SUBSCRIBE, got {resp.status_code}"
     )
+
+
+async def test_malformed_hold_id_is_an_audited_400_never_a_500(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """A malformed hold id (unparseable, NUL-bearing, oversized) is the
+    door's own 400 — AUDITED (the refusal lands in the trail with a
+    SANITIZED pointer: the never-pruned row's index key carries no NUL
+    and no unbounded string) — never a 500, never an unwritten row."""
+    schema = module_pg_schema.schema_name
+    app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
+    for hostile in ("not-a-hold-id", "abc\x00def", "x" * 2700):
+        rows_before = await clean_pg_conn.fetchval(
+            f'SELECT count(*)::int FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' = 'the hold id is not a valid id'"
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            await http.get("/queues")  # the CSRF cookie's set
+            bad = await http.post(
+                f"/api/runs/{new_uuid()}/resolve",
+                data={
+                    "hold_id": hostile,
+                    "decision": json.dumps({"verdict": "approve"}),
+                    "csrf_token": _csrf_of(http),
+                },
+            )
+        assert bad.status_code == 400, f"the hostile id {hostile[:24]!r} must be a 400"
+        rows_after = await clean_pg_conn.fetchval(
+            f'SELECT count(*)::int FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' = 'the hold id is not a valid id'"
+        )
+        assert rows_after == rows_before + 1, (
+            f"the hostile id's refusal is AUDITED (the row exists for {hostile[:24]!r})"
+        )
+        pointer = await clean_pg_conn.fetchrow(
+            f'SELECT target_id FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' = 'the hold id is not a valid id' "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        assert pointer is not None
+        assert "\x00" not in pointer["target_id"], "the pointer carries no NUL byte"
+        assert len(pointer["target_id"]) <= 97, "the pointer is bounded"
