@@ -35,6 +35,7 @@ fastapi = pytest.importorskip("fastapi")
 from examples.deep_research_web import build_app, stream_run_cards  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+from taskq._ids import new_uuid  # noqa: E402
 from taskq.workflows import (  # noqa: E402
     FlowRunner,
     Promise,
@@ -159,9 +160,10 @@ async def test_the_web_half_lives_and_clears(
         minted = (await http.get(f"/runs/{flow_id}/token")).json()
         assert set(minted) == {"token", "run_id"} and minted["run_id"] == flow_id
         # THE AUTHZ IS THE RUN SCOPE: a token for ANOTHER run (minted
-        # through the app's OWN identity store) cannot subscribe here;
+        # through the app's OWN identity store — a well-formed run id
+        # this run's token is not scoped to) cannot subscribe here;
         # neither can the tokenless.
-        other = (await http.get("/runs/another-run/token")).json()
+        other = (await http.get(f"/runs/{new_uuid()}/token")).json()
         scoped_elsewhere = (
             await http.get(f"/runs/{flow_id}/events", params={"token": other["token"]})
         ).status_code

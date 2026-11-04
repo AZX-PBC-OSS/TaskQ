@@ -1184,7 +1184,10 @@ def register_actions(router: APIRouter) -> None:
                 detail="the resolve needs {'hold_id': str, 'decision': object, 'reason'?: str}",
             )
         decision_doc = cast(dict[str, object], decision)
-        from taskq.workflows.api._hitl import HitlClient
+        from taskq.workflows.api._hitl import (
+            HitlClient,
+            _as_hold_id,  # pyright: ignore[reportPrivateUsage]  # Why: the id's canonical form is the hold module's own normalizer — the refusal's audit pointer carries the form the operator's queries match.
+        )
 
         client = HitlClient(pool.pool, schema=schema)
         hold = await client.get(hold_id)
@@ -1201,7 +1204,7 @@ def register_actions(router: APIRouter) -> None:
             hold=hold,
             decision=decision_doc,
             action="hitl.resolve",
-            target_id=hold_id,
+            target_id=str(_as_hold_id(hold_id)),
             reason=reason,
         )
         result = await client.resolve(
