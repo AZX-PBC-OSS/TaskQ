@@ -188,7 +188,7 @@ class TestHandoverDoubleFire:
 
 
 class TestTickStatementShape:
-    """C1 ordering + C10: what a tick is allowed to cost when nothing is due."""
+    """The tick's statement ORDER + cost law: what a tick is allowed to cost when nothing is due."""
 
     async def test_lock_probe_is_the_first_statement_of_a_fired_tick(
         self,
@@ -287,7 +287,7 @@ class TestTickStatementShape:
 
 
 class TestManualScheduleManagementMidTick:
-    """C11: tick vs schedule CRUD on a second connection."""
+    """Tick vs schedule CRUD on a second connection."""
 
     async def test_schedule_created_mid_tick_is_not_fired_by_the_inflight_tick(
         self,

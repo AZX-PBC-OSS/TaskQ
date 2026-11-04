@@ -190,7 +190,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         )
         application.state.tq = tq
 
-        # THE WORKFLOW DEMO (T16): the drive loop's task + the mounted
+        # THE WORKFLOW DEMO: the drive loop's task + the mounted
         # WorkflowApp — the admin's typed resolve/deliver doors validate
         # through IT (no untyped deliver surface ships).
         from examples.workflows import drive_loop, wf_app
@@ -336,7 +336,7 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
     )
 
 
-# ── the workflow demo (T16) ─────────────────────────────────────────────
+# ── the workflow demo ─────────────────────────────────────────────
 #
 # The SAME envelope contract (the repo's F3 finding) — HONEST (the
 # create-seam's cure): the workflow trigger answers 202 with the RUN id +

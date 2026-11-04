@@ -314,7 +314,7 @@ ignore = [
 # user input reaches a command line; the partial executable path and the
 # subprocess calls are the gate's whole job.
 "tests/typeprobe/_gate.py" = ["S603", "S607"]
-# T17's abstraction check: the same shape — a fixed-argv grep over the
+# The ergonomics abstraction check: the same shape — a fixed-argv grep over the
 # repo's own surface paths (no user input; the check IS the grep).
 "tests/test_wf_ergonomics_contract.py" = ["S603", "S607"]
 # The one sanctioned `uuid_utils.uuid7()` call site: `new_uuid()` is the seam
@@ -342,7 +342,7 @@ ignore = [
 # $N-bound.
 "tests/test_wf_runner_pins.py" = ["S608"]
 "tests/test_wf_loop_pins.py" = ["S608"]
-# The T10 hitl pins + the phase-3 cure pins + the attack-3 probes: the
+# The hitl pins + the phase-3 cure pins + the attack-3 probes: the
 # SAME shape — the f-strings' ONLY interpolation is the module fixture's
 # schema identifier (wf_schema / module_pg_schema), values all $N-bound.
 # The adversarial probes' modules are the run-directly probes (pytest
@@ -355,11 +355,11 @@ ignore = [
 # schema identifier (wf_schema / module_pg_schema), values all $N-bound.
 "tests/test_wf_holdmap_cures_pins.py" = ["S608"]
 "tests/test_wf_timer_cures_pins.py" = ["S608"]
-# The T26 broadcast pins: the same shape — the f-strings' ONLY
+# The hitl broadcast pins: the same shape — the f-strings' ONLY
 # interpolation is the module fixture's schema identifier (wf_schema),
 # every caller-controlled value $N-bound.
 "tests/test_wf_hitl_pubsub_pins.py" = ["S608"]
-# The T28 child-flow pins: the same shape — the f-strings' ONLY
+# The child-flow pins: the same shape — the f-strings' ONLY
 # interpolation is the module fixture's schema identifier (wf_schema),
 # every caller-controlled value $N-bound.
 "tests/test_wf_childflow_pins.py" = ["S608"]
@@ -474,7 +474,7 @@ ignore = [
 "tests/test_wf_propagation_pins.py" = ["S608"]
 "tests/test_wf_scenario_pins.py" = ["S608"]
 "tests/test_wf_status_pins.py" = ["S608"]
-# T20's streaming pins: only the schema identifier is interpolated
+# The streaming pins: only the schema identifier is interpolated
 # (validated by the test fixtures upstream); every caller-controlled
 # value uses $N parameter binding — the same rationale as the wf family
 # above.

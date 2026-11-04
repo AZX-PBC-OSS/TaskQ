@@ -1,4 +1,4 @@
-"""THE MAX_PENDING IMPOSSIBILITY PINS (C16 — the H-A6 verdict, proven).
+"""THE MAX_PENDING IMPOSSIBILITY PINS (the H-A6 verdict, proven).
 
 THE QUESTION (the repo's law: a documented omission ships only with a
 red-proven impossibility pin behind it — an assertion is not a proof):

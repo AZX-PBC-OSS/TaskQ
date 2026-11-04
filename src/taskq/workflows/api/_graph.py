@@ -1060,7 +1060,7 @@ def step[R](
         WorkflowActor,
     )
 
-    # THE CAPACITY OWNER (C15): "operator" unless the wired body is a
+    # THE CAPACITY OWNER: "operator" unless the wired body is a
     # code-owned handle (below) — the per-actor declaration, defaulted.
     capacity_owner = "operator"
     handle = body if isinstance(body, WorkflowActor) else None

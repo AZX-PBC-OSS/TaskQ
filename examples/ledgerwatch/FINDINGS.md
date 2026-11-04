@@ -206,7 +206,7 @@ files friction; it never patches the framework).
 - The RUN-KEY ARBITER: the duplicate-feed drill's re-deliveries (mid-flight
   and post-terminal) land on the FIRST run's typed claim — zero double-effects,
   proven per drill.
-- The TYPED EXPIRY (T26's amendment): the `Expired` member forces the
+- The TYPED EXPIRY: the `Expired` member forces the
   fail-close arm at the checker; the escalation face is a VALUE the body matches.
 - The two-transaction finalize + the sweep arms: the SIGKILL drills' resume
   proofs — children carried past attempt 1 by the reclaim, the join fired

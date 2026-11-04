@@ -74,7 +74,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
             auth_dependency=None,
             base_path="/admin",
             backend=tq.backend,
-            # THE TYPED DOOR'S WITNESS (attack-4 F-P4-DEMO-DEAD-RESOLVE's
+            # THE TYPED DOOR'S WITNESS (the demo dead-resolve attack's
             # cure): the demo's workflow definitions mount so the run
             # page's Resolve form DELIVERS the typed ReviewDecision.
             # Without it the resolve endpoints answer 501 — a sidecar

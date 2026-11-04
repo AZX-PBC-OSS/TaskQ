@@ -1,9 +1,9 @@
-"""THE CAPACITY OWNER'S SYNC PINS (C15 — the code-deploy opt-in).
+"""THE CAPACITY OWNER'S SYNC PINS (the code-deploy opt-in).
 
 ``sync_actor_config``'s UPSERT deliberately omits the capacity columns
 from the ``DO UPDATE SET`` clause: an existing row's
 ``max_concurrent``/``max_pending``/``result_ttl`` survive every
-subsequent boot (the operator-owns law). Consequence (C15's recorded finding):
+subsequent boot (the operator-owns law). Consequence (the recorded finding):
 for an actor whose capacity terms ride the CODE — best-effort dampers
 riding ``max_concurrent`` — a changed literal deploys NOTHING after first
 boot; editing code silently does nothing.
@@ -165,7 +165,7 @@ def _make_config(
 
 @pytest.mark.asyncio
 async def test_the_default_sync_keeps_its_single_operator_statement() -> None:
-    """C15's write-shape law, count-shaped: a sync with NO code-owned
+    """THE WRITE-SHAPE LAW, count-shaped: a sync with NO code-owned
     rows runs EXACTLY ONE upsert (one statement per sync — the boot's
     write amplification stays at one). The statement's OUTCOME (the
     stored capacity and queue surviving a changed literal) is the
@@ -356,7 +356,7 @@ def test_the_wf_surface_rejects_the_wrong_shapes(bad: object) -> None:
 
 
 def test_the_projection_carries_the_code_owner() -> None:
-    """C15's wf face: the handle's declaration rides the wiring into the
+    """THE WF FACE: the handle's declaration rides the wiring into the
     decl and the projection's ``ActorConfig`` — the cohort the sync
     consumes is marked code-owned; a bare cohort stays "operator"."""
     from pydantic import BaseModel
@@ -471,7 +471,7 @@ async def _read_row(conn: asyncpg.Connection, schema: str, actor: str) -> dict[s
 async def test_code_owned_capacity_change_deploys_after_first_boot(
     pg_conn: asyncpg.Connection,
 ) -> None:
-    """C15's CORE PIN (): a code-owned actor's capacity change
+    """THE CORE PIN: a code-owned actor's capacity change
     deploys by code AFTER first boot. Boot 1 seeds the row from the
     literal; boot 2 carries a CHANGED literal — the stored row READS the
     new values. The pre-fix shape left the row at boot 1's values

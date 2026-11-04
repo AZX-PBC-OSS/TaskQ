@@ -241,7 +241,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     "_UPSERT_CODE_OWNED_CAPACITY_SQL": (
         "ON CONFLICT",
-        "INSERT ... ON CONFLICT over the registered-actor set — C15's "
+        "INSERT ... ON CONFLICT over the registered-actor set — the "
         "code-owned capacity partition, the same statement shape in the "
         "same single boot transaction as _UPSERT_ACTOR_CONFIG_SQL; each "
         "row's DO UPDATE is bounded by the conflict key, so the write is "

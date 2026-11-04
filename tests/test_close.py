@@ -8,7 +8,7 @@ a hung conn close is terminated after the bound; and ``family`` selects the
 structlog event family (``conn-close-*`` vs ``conn-teardown-close-*`` vs the
 reload path's ``conn-drain-*``/``pool-drain-*``) so a
 mid-run close failure stays distinguishable from final-teardown noise in log
-alerts (review C10). Docker-free, hand-rolled fakes; no ``pytestmark`` so
+alerts. Docker-free, hand-rolled fakes; no ``pytestmark`` so
 the file runs under ``pytest -m "not integration"``.
 """
 

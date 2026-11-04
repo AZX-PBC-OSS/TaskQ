@@ -124,14 +124,14 @@ graph the docs example teaches — see `docs/examples/doc-ingest.md`) LIVE
 behind HTTP, with the admin's run explorer attached.
 
 The HITL broadcast's worked example lives beside it:
-`examples/deep_research.py` — the **deep-research loop** (T26): three free
+`examples/deep_research.py` — the **deep-research loop**: three free
 research passes, then the typed `ContinueApproval` gate broadcast over PG
 LISTEN/NOTIFY (watch it live on the admin's `/sse/holds` topic); the typed
 expiry is the FAIL-CLOSE — nobody watching and the run still succeeds,
 carrying the `finished_with_what_you_have` result.
 
 The typed route's worked example lives beside that:
-`examples/doc_mime_route.py` (T27) — the **document sync pipeline**: the
+`examples/doc_mime_route.py` — the **document sync pipeline**: the
 mime-type router (the text formats to the chunker's arm on the cpu queue,
 the image formats to the OCR's arm on the gpu queue, the unsupported mime
 to the dead-letter's arm — the envelope recorded, the flow lives), and
@@ -140,7 +140,7 @@ once, after the last element's text lands). Run with
 `TASKQ_PG_DSN=… uv run python examples/doc_mime_route.py`.
 
 The **embedding demo's web half** lives beside that:
-`examples/deep_research_web.py` (C10) — the hosting app's OWN approval
+`examples/deep_research_web.py` — the hosting app's OWN approval
 board: the FastAPI app-lifespan listener (ONE backend `HitlListener`),
 the per-user SSE endpoint authz-scoped by the run, the `HoldCreated`
 handler reading the ROW for the reason/deadline display, the resolve
@@ -220,4 +220,4 @@ run's graph and patches it LIVE over SSE.
 | **Cancellation** | a run cancelled mid-flight: the named states + the audit row in the explorer | `taskq flows cancel <run_id> --reason ...` while the run is mid-flight; watch the run page |
 | **Resumability** | a worker SIGKILLed mid-node; a fresh worker re-claims; the run COMPLETES | start `taskq worker --actors examples.workflows:ACTORS --queues demo-screen,demo-cpu,demo-io,demo-classify,demo-publish,demo-enrich,default`, trigger, `kill -9` the worker mid-run, start a fresh one |
 | **Observability** | the wf gauge's LIVE scrape off the real `/metrics` endpoint (`taskq.wf_progress_nodes_total{workflow,state}` — rendered by the Prometheus bridge as `taskq_wf_progress_nodes_total`; the maintenance leader's sampler feeds it) | the capture: `.measurements/demo-legs/leg3-wf-gauge-scrape.prom` (the endpoint's byte-verbatim response, never a hand-rendered transcript) |
-| **The conditional router** | the T20 chain's conditional edges LIVE: READABLE → index, UNREADABLE → dead-letter; the totals are the fence | trigger `POST /workflows/doc_screen_router/run` (the router's own workflow — the route serves it; 202 + the run url) |
+| **The conditional router** | the router chain's conditional edges LIVE: READABLE → index, UNREADABLE → dead-letter; the totals are the fence | trigger `POST /workflows/doc_screen_router/run` (the router's own workflow — the route serves it; 202 + the run url) |

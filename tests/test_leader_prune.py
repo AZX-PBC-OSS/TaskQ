@@ -1159,7 +1159,7 @@ async def test_concurrent_archive_expiry_lock(
         await conn2.close()
 
 
-# ── C10: prune cutoff anchored to the server clock ─────────────────
+# ── Prune cutoff anchored to the server clock ─────────────────
 
 
 async def test_prune_cutoff_anchored_to_server_clock(

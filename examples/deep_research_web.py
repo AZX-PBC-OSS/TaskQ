@@ -1,4 +1,4 @@
-"""THE EMBEDDING DEMO'S WEB HALF (T26's cure lane — C10): the
+"""THE EMBEDDING DEMO'S WEB HALF: the
 maintainer's cowork-agent scenario, the part the admin UI is NOT — the
 hosting application's OWN approval board, one user at a time.
 

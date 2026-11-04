@@ -1,5 +1,5 @@
-"""THE DOCUMENT SYNC PIPELINE — the mime-type router LIVE (T27's worked
-example).
+"""THE DOCUMENT SYNC PIPELINE — the mime-type router LIVE (the
+worked example).
 
 The maintainer's use case, end to end with the generic names (the OSS
 naming law — no consumer/product names):

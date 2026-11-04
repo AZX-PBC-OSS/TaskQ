@@ -201,7 +201,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_create_broadcast_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="create_broadcast_flow"
     )
     hold_row = await wf_conn.fetchrow(
         f'SELECT id, created_at FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
@@ -265,7 +265,7 @@ async def test_listener_backfills_open_holds_and_dedups(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_backfill_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="backfill_flow"
     )
     hold_row = await wf_conn.fetchrow(
         f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
@@ -328,7 +328,7 @@ async def test_resolve_wake_reaches_the_listener(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_resolve_wake_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="resolve_wake_flow"
     )
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
@@ -541,7 +541,7 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
 
     escalation_gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=1.0)
 
-    @app.workflow("T26_escalation_expiry_flow")
+    @app.workflow("escalation_expiry_flow")
     def escalation_flow() -> Promise[object]:
         return build(
             loop(
@@ -556,7 +556,7 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
 
     listener = HitlListener(wf_pool, schema=wf_schema)
     async with listener:
-        runner = FlowRunner(app.get("T26_escalation_expiry_flow"), wf_pool, wf_schema)
+        runner = FlowRunner(app.get("escalation_expiry_flow"), wf_pool, wf_schema)
         flow_id = (await runner.create_flow()).flow_id
         await runner.drive(flow_id, until="held")
         # THE DEADLINE + THE SWEEP: the loop-kind hold (budget-paused)
@@ -597,9 +597,7 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
     # THE REAL FLEET CLAIM — the dispatch fence's terminal-flow leg with
     # the ESCALATION-KIND exemption is the ONLY door this row has.
     worker_id = JobId(new_uuid())
-    runner = FlowRunner(
-        app.get("T26_escalation_expiry_flow"), wf_pool, wf_schema, worker_id=worker_id
-    )
+    runner = FlowRunner(app.get("escalation_expiry_flow"), wf_pool, wf_schema, worker_id=worker_id)
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '
         "VALUES ($1, $2) ON CONFLICT (actor) DO NOTHING",
@@ -700,7 +698,7 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_reconnect_reconcile_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="reconnect_reconcile_flow"
     )
     hold_id = str(
         await wf_conn.fetchval(
@@ -834,7 +832,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_fanout_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="fanout_flow"
     )
     listener = HitlListener(wf_pool, wf_schema)
     await listener.start()
@@ -965,7 +963,7 @@ async def test_two_schemas_one_database_the_payload_filter_is_the_isolation(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_isolation_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="isolation_flow"
     )
     listener = HitlListener(wf_pool, wf_schema)
     async with listener:
@@ -1059,11 +1057,11 @@ async def test_notify_payloads_stay_under_the_named_cap(
     long_key = "review" * 60  # 360 chars of node key — legal, ugly
     app = WorkflowApp()
 
-    @app.workflow("T26_cap_flow")
+    @app.workflow("cap_flow")
     def cap_flow() -> Promise[object]:
         return build(step(hold_body, Ingest(doc_id="d1"), key=long_key))
 
-    runner = FlowRunner(app.get("T26_cap_flow"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("cap_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
@@ -1153,7 +1151,7 @@ async def test_rolled_back_resolve_emits_no_notification(
         return await ctx.wait_signal(Approval, timeout_s=120.0)
 
     flow_id, _runner, _node = await _held_flow(
-        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="T26_resolve_rollback_flow"
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="resolve_rollback_flow"
     )
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
@@ -1205,11 +1203,11 @@ async def test_wait_signals_timeout_arms_the_sweep_not_the_gate_declaration(
     app = WorkflowApp()
     dissenting_gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=5.0)
 
-    @app.workflow("T26_timeout_precedence_flow")
+    @app.workflow("timeout_precedence_flow")
     def precedence_flow() -> Promise[object]:
         return build(step(hold_body, Ingest(doc_id="d1"), key="review", gates=(dissenting_gate,)))
 
-    runner = FlowRunner(app.get("T26_timeout_precedence_flow"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("timeout_precedence_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     row = await wf_conn.fetchrow(
@@ -1265,7 +1263,7 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
 
     gate = GateDecl(name="Approval", payload_models=(Approval,), timeout_s=120.0)
 
-    @app.workflow("T26_conditional_wait_flow")
+    @app.workflow("conditional_wait_flow")
     def conditional_flow() -> Promise[object]:
         return build(
             loop(
@@ -1278,7 +1276,7 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
             )
         )
 
-    runner = FlowRunner(app.get("T26_conditional_wait_flow"), wf_pool, wf_schema)
+    runner = FlowRunner(app.get("conditional_wait_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
     client = HitlClient(wf_pool, schema=wf_schema)

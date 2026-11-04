@@ -482,7 +482,7 @@ async def t20_review(ctx: object, item: dict[str, object]) -> T20ReviewOutcome:
     return T20ReviewOutcome.APPROVE
 
 
-T20_CHAIN = Chain(
+ROUTER_CHAIN = Chain(
     name="t20-application-enrichment",
     start="screen",
     steps={
@@ -499,7 +499,7 @@ T20_CHAIN = Chain(
     },
 )
 
-_T20_PAGE = [
+_ROUTER_PAGE = [
     {"app_id": 1, "risk": 0.1},
     {"app_id": 2, "risk": 0.95},
 ]
@@ -510,8 +510,10 @@ async def t20_source(ctx: StepContext) -> None:
     (each yield = ONE emit tx — the children + edges + the cursor)."""
     await ctx.emit_batch(
         [
-            chain_start(T20_CHAIN, item, map_index=item["app_id"], trace_id=f"app-{item['app_id']}")
-            for item in _T20_PAGE
+            chain_start(
+                ROUTER_CHAIN, item, map_index=item["app_id"], trace_id=f"app-{item['app_id']}"
+            )
+            for item in _ROUTER_PAGE
         ],
         cursor={"page": 0},
     )
@@ -536,7 +538,7 @@ async def test_chain_end_to_end_through_the_runner(
 
     @app.workflow("t20_chain_e2e")
     def t20_chain_e2e() -> Promise[object]:
-        src = chain_source(T20_CHAIN, t20_source, key="t20_source")
+        src = chain_source(ROUTER_CHAIN, t20_source, key="t20_source")
         return build(src)
 
     runner = FlowRunner(app.get("t20_chain_e2e"), module_pg_pool, wf_schema)
@@ -579,7 +581,7 @@ async def t20_lying_screen(ctx: object, item: dict[str, object]) -> T20ScreenOut
     return "corrupted"  # type: ignore[return-value]  # Why: the scenario — the foreign outcome IS the runtime door's subject.
 
 
-T20_LYING_CHAIN = Chain(
+LYING_ROUTER_CHAIN = Chain(
     name="t20-lying-chain",
     start="screen",
     steps={
@@ -594,7 +596,7 @@ T20_LYING_CHAIN = Chain(
 
 async def t20_lying_source(ctx: StepContext) -> None:
     await ctx.emit_batch(
-        [chain_start(T20_LYING_CHAIN, {"app_id": 1}, map_index=1, trace_id="app-1")],
+        [chain_start(LYING_ROUTER_CHAIN, {"app_id": 1}, map_index=1, trace_id="app-1")],
         cursor={"page": 0},
     )
 
@@ -618,7 +620,7 @@ async def test_router_not_total_through_the_runner(
 
     @app.workflow("t20_router_not_total_e2e")
     def t20_router_not_total_e2e() -> Promise[object]:
-        src = chain_source(T20_LYING_CHAIN, t20_lying_source, key="t20_lying_source")
+        src = chain_source(LYING_ROUTER_CHAIN, t20_lying_source, key="t20_lying_source")
         return build(src)
 
     runner = FlowRunner(app.get("t20_router_not_total_e2e"), module_pg_pool, wf_schema)

@@ -144,7 +144,7 @@ async def test_the_web_half_lives_and_clears(
     the read) and the reconcile snapshot; the resolve POST lands
     through the demo's typed door; and the broadcast CLEARS the card —
     the HoldResolved frame on the same stream, no polling."""
-    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_web_demo_flow")
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="web_demo_flow")
     app = build_app(wf_pool, wf_schema)
     demo_client = HitlClient(wf_pool, schema=wf_schema)
     # httpx's ASGITransport runs NO lifespan — the test wires the app's
@@ -226,7 +226,7 @@ async def test_the_board_reconciles_after_an_outage(
     next subscribe. The board's law, exercised through the demo's
     stream: the stale events replayed from the history cannot keep a
     dead card open (the ghost dies the same death)."""
-    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_web_reconcile_flow")
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="web_reconcile_flow")
     demo_client = HitlClient(wf_pool, schema=wf_schema)
     listener = HitlListener(wf_pool, wf_schema)
 
@@ -256,8 +256,8 @@ async def test_resolve_is_scoped_to_the_url_runs_own_hold(
     for run A does not resolve run B's hold through A's door — the
     hold's run is checked (the admin door's rule), the cross-run call
     is a 404, and B's hold stays held."""
-    flow_a, _runner_a = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_scope_flow_a")
-    flow_b, _runner_b = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_scope_flow_b")
+    flow_a, _runner_a = await _held_flow(wf_conn, wf_schema, wf_pool, name="scope_flow_a")
+    flow_b, _runner_b = await _held_flow(wf_conn, wf_schema, wf_pool, name="scope_flow_b")
     app = build_app(wf_pool, wf_schema)
     demo_client = HitlClient(wf_pool, schema=wf_schema)
     holds_b = await demo_client.list(run=flow_b)
@@ -292,7 +292,7 @@ async def test_the_dsn_form_opens_its_own_pool_and_the_doors_live(
     token mints, the events stream starts (200), the resolve delivers
     through the app's own pool. A well-formed id with NO hold is a 404
     (the resolve door's contract), never a silent refusal."""
-    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_dsn_form_flow")
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="dsn_form_flow")
     app = build_app(pg_dsn, wf_schema)
     async with app.router.lifespan_context(app):
         demo_client = HitlClient(app.state.pool, schema=wf_schema)
@@ -327,7 +327,7 @@ async def test_the_demo_doors_refuse_hostile_and_malformed_input_loud(
     """The demo's doors refuse loud: a malformed JSON body is a 400 (a
     NUL-bearing decision value is the product's own typed refusal
     class), never a 500, never silence."""
-    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_loud_refusal_flow")
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="loud_refusal_flow")
     app = build_app(wf_pool, wf_schema)
     demo_client = HitlClient(wf_pool, schema=wf_schema)
     holds = await demo_client.list(run=flow_id)
@@ -360,7 +360,7 @@ async def test_the_demo_parses_the_body_with_the_bounded_parser(
     doors' own rule): a nesting bomb is the named 400 — the stdlib
     decoder's RecursionError never escapes the door as a 500 — and the
     hold survives it."""
-    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_bounded_parser_flow")
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="bounded_parser_flow")
     app = build_app(wf_pool, wf_schema)
     demo_client = HitlClient(wf_pool, schema=wf_schema)
     holds = await demo_client.list(run=flow_id)

@@ -1,4 +1,5 @@
-"""Clock-domain isolation tests - the skew series (C3/C4/C5/C6/C11 — this file's own ledger).
+"""Clock-domain isolation tests - the skew series (each scenario numbered in
+this file's own ledger).
 
 TaskQ runs two independent clocks: the injectable Python ``Clock`` and
 the PG server clock (``clock_timestamp()``).  Every predicate below is
@@ -749,7 +750,7 @@ async def test_batch_stc_anchored_to_enqueue_time_future_item_fails_pre_dispatch
         await stack.aclose()
 
 
-# ── C11: enqueue-time result TTL stamped by the server clock ─────────────
+# ── Enqueue-time result TTL stamped by the server clock ─────────────
 
 
 @_integration

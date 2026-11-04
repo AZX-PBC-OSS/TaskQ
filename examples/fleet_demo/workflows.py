@@ -78,7 +78,7 @@ async def screen_body(ctx: StepContext, doc_id: str) -> ScreenOutcome:
 async def enrich_body(ctx: StepContext, doc_id: str) -> EnrichOutcome:
     """THE HOLD (the smallest leg's point): the typed review — the
     workflow pauses here until the operator resolves. THE EXPIRY IS A
-    VALUE (T26): the expiry member is the typed stop."""
+    VALUE: the expiry member is the typed stop."""
     outcome = await ctx.wait_signal(
         (ReviewDecision,), timeout_s=600.0, reason="the fleet demo's review hold"
     )

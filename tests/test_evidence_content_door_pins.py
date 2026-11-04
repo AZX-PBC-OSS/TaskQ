@@ -2,9 +2,9 @@
 
 The head-stamp verifier's law checked the claims registry against HEAD
 (freshness + the supersession chain) but NEVER READ THE CAPTURE'S
-CONTENT. The rejected shape (the estate's REAL instances,
-``wf-battery-rv4-20261011T043000Z.txt`` and
-``deslop-pin-packs-20261011T042947Z.txt``): a live capture whose own
+CONTENT. The rejected shape (the estate's REAL instances — a
+wf-battery capture and a deslop pin-packs capture, both stamped
+2026-10-11): a live capture whose own
 header records ``rc=1`` — the run FAILED, in the capture's own words —
 while the claim greens the stem. The verifier read the stamp's SHA, not
 the stamp's VERDICT: the fresher the lie, the greener the law.
@@ -66,7 +66,7 @@ HEAD = _head()
 #: words): the run-scoped stamp with the rc, then the pytest tail. The
 #: stamp says rc=1 — the battery FAILED in its own header.
 _RC1_CAPTURE = """\
-# wf-battery-rv4 at head {head} — rc=1 — captured 2026-10-11T04:30:01Z
+# wf-battery at head {head} — rc=1 — captured 2026-10-11T04:30:01Z
 bringing up nodes...
 ........................................................................ [ 95%]
 ............................                                             [100%]
@@ -103,7 +103,7 @@ FAILED tests/test_some_pin.py::test_the_contract
 
 #: The honest family control: rc=0 + the green pytest tail.
 _GREEN_CAPTURE = """\
-# wf-battery-rv4 at head {head} — rc=0 — captured 2026-10-11T05:30:01Z
+# wf-battery at head {head} — rc=0 — captured 2026-10-11T05:30:01Z
 bringing up nodes...
 ........................................................................ [100%]
 604 passed, 1 warning in 80.24s (0:01:20)
@@ -151,15 +151,15 @@ def test_the_rc1_stamp_convicts(tmp_path: Path) -> None:
     the mismatch — named, with the file and the line."""
     runs = _estate(
         tmp_path,
-        [_e("wf-battery-rv4", "wf-battery-rv4-cap.txt", "t0")],
-        {"wf-battery-rv4-cap.txt": _RC1_CAPTURE.format(head=HEAD)},
+        [_e("wf-battery", "wf-battery-cap.txt", "t0")],
+        {"wf-battery-cap.txt": _RC1_CAPTURE.format(head=HEAD)},
     )
     proc = _verify(runs)
     assert proc.returncode == 1, (
         "the rc=1 stamp under a green claim must red the verifier:\n" + proc.stdout + proc.stderr
     )
     assert "CONTENT-VERDICT MISMATCH" in proc.stdout
-    assert "wf-battery-rv4-cap.txt" in proc.stdout  # the file, named
+    assert "wf-battery-cap.txt" in proc.stdout  # the file, named
     assert "rc=1" in proc.stdout  # the capture's own failing word, quoted
 
 
@@ -199,7 +199,7 @@ def test_the_honest_green_family_stays_green(tmp_path: Path) -> None:
     recorded finding (the over-recorded finding would red every honest re-stamp)."""
     runs = _estate(
         tmp_path,
-        [_e("wf-battery-rv4", "green-cap.txt", "t0")],
+        [_e("wf-battery", "green-cap.txt", "t0")],
         {"green-cap.txt": _GREEN_CAPTURE.format(head=HEAD)},
     )
     proc = _verify(runs)
@@ -239,7 +239,7 @@ def test_the_unparsable_capture_is_the_typed_warning(tmp_path: Path) -> None:
     class this fix kills."""
     runs = _estate(
         tmp_path,
-        [_e("wf-battery-rv4", "slot-cap.txt", "t0")],
+        [_e("wf-battery", "slot-cap.txt", "t0")],
         {"slot-cap.txt": _SLOT_CAPTURE.format(head=HEAD)},
     )
     proc = _verify(runs)

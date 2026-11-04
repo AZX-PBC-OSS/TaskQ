@@ -1,4 +1,4 @@
-"""The demo app's workflow example (T16): the doc-ingest pipeline LIVE —
+"""The demo app's workflow example: the doc-ingest pipeline LIVE —
 the same abstract graph the docs example teaches (docs/examples/doc-ingest.md),
 wired behind HTTP with the admin's run explorer attached.
 
@@ -208,7 +208,7 @@ class EnrichClient:
 
 wf_app = WorkflowApp(deps=EnrichClient(_DOC_SOURCE))
 
-# ── DEMO LEG 4 — THE CONDITIONAL ROUTER (T20's chain, live) ─────────────
+# ── DEMO LEG 4 — THE CONDITIONAL ROUTER (the chain, live) ─────────────
 #
 # The chain declared ONCE; each step's body returns its typed OUTCOME and
 # the Route sends the record to the next step (or DONE). The
@@ -281,7 +281,7 @@ async def classify_body(ctx: Any, enriched: list[Summary | Unreadable]) -> list[
 async def review_iteration(ctx: StepContext, carry: int) -> Done[str] | Refine[int]:
     # THE HOLD INSIDE THE LOOP (property 2): the typed review pauses the
     # budget; a reject refines with the note; the walls are named. THE
-    # EXPIRY IS A VALUE (T26): the demo's timeout is a WEEK — a body
+    # EXPIRY IS A VALUE: the demo's timeout is a WEEK — a body
     # that wants the failure raises SignalTimeoutError off the Expired
     # member itself; this one treats the expiry as a stop.
     outcome = await ctx.wait_signal(
@@ -399,7 +399,7 @@ def doc_ingest() -> Promise[object]:
         max_iterations=3,
         budget_s=3600.0,
         on_exhausted="escalate",
-        # THE TYPED DOOR'S COMPILE VISIBILITY (T16's gates= addition):
+        # THE TYPED DOOR'S COMPILE VISIBILITY (the gates= addition):
         # the mid-loop hold is resolvable by the admin's resolve door.
         gates=(REVIEW_GATE,),
     )
@@ -431,7 +431,7 @@ async def trigger_run(pool: asyncpg.Pool, schema: str, run_key: str | None = Non
 
 
 async def trigger_router_run(pool: asyncpg.Pool, schema: str, run_key: str | None = None) -> str:
-    """LEG 4's trigger: one doc_screen_router run (the T20 chain's
+    """LEG 4's trigger: one doc_screen_router run (the router chain's
     conditional routing LIVE; the run key makes the trigger idempotent
     when given). The route the README points at: `POST
     /workflows/doc_screen_router/run`."""

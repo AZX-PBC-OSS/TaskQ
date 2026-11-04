@@ -1,4 +1,4 @@
-"""The worked HITL example (T26): the deep-research loop LIVE — the
+"""The worked HITL example: the deep-research loop LIVE — the
 maintainer's exact scenario, wired behind the broadcast.
 
 The scenario: an agent researches a topic pass by pass. THE FIRST THREE
@@ -14,7 +14,7 @@ approved, the loop continues to the full report.
 
 **THE FAIL-CLOSE (the named result)**: nobody watching is not a hang
 and not a crash — the wait's outcome is the CLOSED UNION
-``ContinueApproval | Expired`` (T26's amendment: the expiry is a VALUE,
+``ContinueApproval | Expired`` (the expiry is a VALUE,
 never an exception), and the body MATCHES the ``Expired`` member and
 returns ``Done(carry.finish_with_what_you_have())``: the run SUCCEEDS
 carrying the finish-with-what-you-have state. The user not watching is
@@ -120,7 +120,7 @@ async def research_iteration(
 ) -> Done[ResearchState] | Refine[ResearchState]:
     """The deep-research iteration: the free march (three passes), the
     approval gate, then one more pass per approved iteration until the
-    report's bar. THE EXPIRY IS A VALUE (T26's amendment): the wait's
+    report's bar. THE EXPIRY IS A VALUE: the wait's
     outcome is the closed union ``ContinueApproval | Expired`` — the
     checker forces the fail-close arm (and it can ONLY because the
     body's ctx carries the REAL type: an ``Any`` ctx matches on Any and
@@ -193,5 +193,5 @@ async def trigger_deep_research(
 
 async def approve_continue(client: Any, hold_id: str, *, note: str = "go on") -> Any:
     """The human's yes, through the SAME typed door the admin's Resolve
-    form rides (unchanged by T26 — the broadcast is the read face)."""
+    form rides (the broadcast is the read face)."""
     return await client.resolve(hold_id, ContinueApproval(approved=True, note=note).model_dump())
