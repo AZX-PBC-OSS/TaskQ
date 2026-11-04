@@ -633,10 +633,20 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
         # Bootstrap is a row fact, not a wait: the producer-side enqueue
         # admission reads the stored actor_config row, so the storm's
         # premise (the cap enforced at max_pending=2) exists only once the
-        # row does.
+        # row does. The wait observes the worker task: a bootstrap that
+        # died is a NAMED failure (the exception it raised), never a
+        # silent poll timeout — the row fact can only come from this
+        # worker's own bootstrap.
         bootstrap_deadline = time.monotonic() + 30.0
         stored: int | None = None
         while time.monotonic() < bootstrap_deadline:
+            if worker_task.done():
+                exc = None if worker_task.cancelled() else worker_task.exception()
+                pytest.fail(
+                    f"the s2 worker died during bootstrap (exc={exc!r}): "
+                    "the cap premise's row fact can only come from its "
+                    "own bootstrap"
+                )
             stored = await conn.fetchval(
                 f"SELECT max_pending FROM \"{schema}\".actor_config WHERE actor = 'consv_slow'"
             )
@@ -644,8 +654,9 @@ async def test_forced_cancel_slot_death_during_cap_refusal_storm(
                 break
             await asyncio.sleep(0.05)
         assert stored == 2, (
-            "the worker's bootstrap never persisted max_pending=2: the "
-            "storm's cap premise is not in force"
+            f"the worker's bootstrap never persisted max_pending=2 (the "
+            f"last poll read {stored!r}): the storm's cap premise is not "
+            "in force"
         )
 
         stack, _deps, backend = await _open_pg_backend_on_schema(pg_dsn, schema)

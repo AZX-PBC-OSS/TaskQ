@@ -80,7 +80,20 @@ async def consv_progress(
     return {"marker": "landed", "calls": payload.calls}
 
 
-@actor(name="consv_slow", queue=_QUEUE)
+# max_pending mirrors the test module's consv_slow literal. The two
+# registries boot the SAME actor name into the module's one PG schema —
+# this harness as a subprocess (the handover and sigkill tests) and the
+# test module's in-process workers (the storm and pause tests) — and
+# sync_actor_config seeds the stored cap from the literal on the FIRST
+# boot only: the upsert's DO UPDATE deliberately never rewrites a stored
+# max_pending (the rolling-deploy durability law). A harness boot winning
+# that race (the order pytest-randomly rotates) seeded max_pending=NULL
+# and the cap-refusal storm's premise — the producer-side enqueue
+# admission reads the STORED row — never came into force: the storm test
+# polled the stored NULL from its first poll (+0.003s, before its own
+# worker had taken a step) through +119s while its worker stayed healthy,
+# the cap premise unforceable at any deadline.
+@actor(name="consv_slow", queue=_QUEUE, max_pending=2)
 async def consv_slow(payload: ConsvPayload, ctx: JobContext[ConsvPayload]) -> None:
     _ = payload
     await asyncio.sleep(30.0)
