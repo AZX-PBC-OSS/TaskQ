@@ -1330,3 +1330,31 @@ async def test_loop_wait_shape_error_is_the_typed_seam() -> None:
     assert issubclass(LoopWaitShapeError, RuntimeError)
     doc = inspect.getdoc(LoopWaitShapeError) or ""
     assert "E13" in doc, doc
+
+
+async def test_holds_accepts_the_id_spelling_the_list_doors_accept(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+) -> None:
+    """The listener door binds the id's canonical form like list/get/
+    resolve: a braced UPPER spelling of one run yields THAT RUN's holds
+    (a canonicalizer that only ran on the other doors would leave this
+    stream silently EMPTY for a spelling the id doors accept); a
+    spelling that does not even parse as the id fails loud at the
+    stream's setup — the named-refusal class, never silence."""
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(Approval, timeout_s=120.0)
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="listener_spelling_flow"
+    )
+    listener = HitlListener(wf_pool, wf_schema)
+    async with listener:
+        braced = "{" + str(flow_id).upper() + "}"
+        first = await asyncio.wait_for(_first_of(listener.holds(run=braced)), timeout=5.0)
+        assert first is not None and isinstance(first, HoldCreated), first
+        assert first.hold_id is not None
+        with pytest.raises(ValueError):
+            await _first_of(listener.holds(run="not-a-uuid"))

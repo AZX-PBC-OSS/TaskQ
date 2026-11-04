@@ -726,6 +726,9 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
     # well-formed id with no hold answers the honest None.
     got = await client.get("{" + str(holds[0].hold_id).upper() + "}")
     assert got is not None and got.hold_id == holds[0].hold_id
+    # And a well-formed id with NO hold answers the honest None (the
+    # get door's contract for every accepted spelling).
+    assert await client.get(str(new_uuid())) is None
 
     # The DISAGREEMENT: the refusal names both spellings AND both
     # values (the operator reads what collided, not just which kwargs).

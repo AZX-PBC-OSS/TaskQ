@@ -313,7 +313,12 @@ class HitlListener:
     async def holds(self, run: JobId | str) -> AsyncGenerator[HoldEvent, None]:
         """THE TYPED FILTER (the amendment): one run's events —
         ``listener.holds(run=flow_id)`` — the approval stream for ONE
-        flow, typed. The unfiltered stream still flows (the raw tail's
+        flow, typed. The id binds through its canonical form (the same
+        spelling the list/get doors accept — a braced or uppercase
+        spelling yields this run's holds); a spelling that does not
+        even parse as the id fails loud at the stream's setup — the
+        list doors' named-refusal class, never a silent empty stream.
+        The unfiltered stream still flows (the raw tail's
         surface: every schema-routed event reaches it). The
         :class:`Backfilled` reconcile passes EVERY run's filter (it
         carries no ``run_id`` — the snapshot is the SCHEMA's open-hold

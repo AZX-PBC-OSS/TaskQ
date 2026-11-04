@@ -50,6 +50,7 @@ import json
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 import asyncpg
 from fastapi import FastAPI, HTTPException, Request
@@ -135,18 +136,31 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
 
     @app.get("/runs/{run_id}/token")
     async def issue_token(run_id: str) -> dict[str, str]:
-        """The demo's login (a real app maps its session to the run)."""
-        return {"token": authz.issue(run_id), "run_id": run_id}
+        """The demo's login (a real app maps its session to the run).
+        The id is canonicalized at the door: both issued scopes and the
+        event stream compare one spelling, and a malformed id is a 404,
+        never a stream that silently yields nothing."""
+        try:
+            canonical = str(UUID(run_id))
+        except ValueError:
+            raise HTTPException(status_code=404, detail="no such run") from None
+        return {"token": authz.issue(canonical), "run_id": canonical}
 
     @app.get("/runs/{run_id}/events")
     async def run_events(run_id: str, request: Request) -> StreamingResponse:
         """THE PER-USER SSE STREAM: the fan-out scoped by authz. The
         ``hold`` frame carries the typed union's JSON; ``hold_context``
         carries the ROW-read display facts; ``backfilled`` carries the
-        reconcile snapshot the board drops its dead cards on."""
-        _gate(request, run_id)
+        reconcile snapshot the board drops its dead cards on. The id is
+        canonicalized at the door (a malformed id is a 404 before any
+        stream starts — the listener's own refusal class, surfaced)."""
+        try:
+            canonical = str(UUID(run_id))
+        except ValueError:
+            raise HTTPException(status_code=404, detail="no such run") from None
+        _gate(request, canonical)
         return StreamingResponse(
-            stream_run_cards(_listener(), _client(), run_id),
+            stream_run_cards(_listener(), _client(), canonical),
             media_type="text/event-stream; charset=utf-8",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
