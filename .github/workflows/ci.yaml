@@ -127,7 +127,7 @@ jobs:
         run: uv run --no-sync pyright src/taskq tests
 
   type-probes:
-    # T01's negative type-probe corpus: the workflows API's wrong-shape
+    # The negative type-probe corpus: the workflows API's wrong-shape
     # calls MUST red on BOTH pinned checkers (pyright 1.1.414 + ty 0.0.85
     # — the `typeprobe` group, pinned exactly; the exclude-newer
     # quarantine is waived for ty because the pin IS the review). The
@@ -152,6 +152,25 @@ jobs:
 
       - name: The MUST_ERROR corpus reds on both pinned checkers
         run: uv run --no-sync python tests/typeprobe/_gate.py
+
+  docs-examples:
+    # Every python fence in docs/** and README.md is EXECUTED — the
+    # harness runs each example standalone and quick, or the fence
+    # carries an explicit no-exec reason; any unrecognized tag is a
+    # collection error. This is the documented first-hour path's own
+    # gate: a doc snippet cannot rot outside CI. Needs Docker — the
+    # examples self-provision their PG/Redis containers.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-uv-env
+
+      - name: Execute the docs' python fences
+        env:
+          TASKQ_DOCS_EXAMPLES: "1"
+        run: uv run --no-sync pytest tests/test_docs_examples.py tests/test_docs_no_exec_apis.py -q --timeout=300
 
   test:
     # The per-interpreter suite: ALL extras installed, the whole test suite
