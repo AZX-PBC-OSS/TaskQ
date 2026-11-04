@@ -179,6 +179,12 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
         except ValueError:
             raise HTTPException(status_code=404, detail="no such run or hold") from None
         _gate(request, canonical_run)
+        # THE RUN SCOPE IS THE HOLD'S OWN RUN: a token scoped to run A
+        # does not resolve run B's hold — the door checks the HOLD's run
+        # (the admin door's rule), not just the token's.
+        hold_row = await _client().get(canonical_hold)
+        if hold_row is None or hold_row.run_id != canonical_run:
+            raise HTTPException(status_code=404, detail="no such hold on this run")
         decision = await request.json()
         result = await _client().resolve(canonical_hold, decision)
         return {"status": result.status, "reason": result.reason or ""}

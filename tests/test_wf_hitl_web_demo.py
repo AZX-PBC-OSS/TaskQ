@@ -247,3 +247,38 @@ async def test_the_board_reconciles_after_an_outage(
         assert board2.cards == {}, f"the dead hold's card survived the reconcile: {board2.cards}"
     finally:
         await listener.stop()
+
+
+async def test_resolve_is_scoped_to_the_url_runs_own_hold(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The resolve door's scope is the HOLD'S OWN RUN: a token minted
+    for run A does not resolve run B's hold through A's door — the
+    hold's run is checked (the admin door's rule), the cross-run call
+    is a 404, and B's hold stays held."""
+    flow_a, _runner_a = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_scope_flow_a")
+    flow_b, _runner_b = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_scope_flow_b")
+    app = build_app(wf_pool, wf_schema)
+    demo_client = HitlClient(wf_pool, schema=wf_schema)
+    holds_b = await demo_client.list(run=flow_b)
+    assert len(holds_b) == 1, holds_b
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://demo"
+    ) as http:
+        token_a = (await http.get(f"/runs/{flow_a}/token")).json()["token"]
+        cross = await http.post(
+            f"/runs/{flow_a}/holds/{holds_b[0].hold_id}/resolve",
+            params={"token": token_a},
+            json={"verdict": "approve"},
+        )
+        assert cross.status_code == 404, cross.text
+        still = await demo_client.get(holds_b[0].hold_id)
+        assert still is not None and still.status == "held", still
+        own_holds = await demo_client.list(run=flow_a)
+        own = await http.post(
+            f"/runs/{flow_a}/holds/{own_holds[0].hold_id}/resolve",
+            params={"token": token_a},
+            json={"verdict": "approve"},
+        )
+        assert own.status_code == 200 and own.json()["status"] == "delivered", own.text
