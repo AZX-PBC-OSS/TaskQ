@@ -56,6 +56,7 @@ import asyncpg
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
+from taskq._json import dumps_jsonb_str
 from taskq.workflows.api._hitl import HitlClient
 from taskq.workflows.api._hitl_listen import (
     Backfilled,
@@ -186,7 +187,17 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
         hold_row = await _client().get(canonical_hold)
         if hold_row is None or hold_row.run_id != canonical_run:
             raise HTTPException(status_code=404, detail="no such hold on this run")
-        decision = await request.json()
+        try:
+            decision = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="the body is not JSON") from None
+        try:
+            dumps_jsonb_str(decision)
+        except ValueError as exc:
+            # THE PAYLOAD'S WIRE SHAPE: a control character (a NUL above
+            # all) cannot ride the jsonb bind — the door refuses it loud
+            # (the product's own typed refusal class), never a 500.
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         result = await _client().resolve(canonical_hold, decision)
         return {"status": result.status, "reason": result.reason or ""}
 

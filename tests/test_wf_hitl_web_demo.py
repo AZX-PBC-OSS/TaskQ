@@ -319,3 +319,35 @@ async def test_the_dsn_form_opens_its_own_pool_and_the_doors_live(
                 json={"verdict": "approve"},
             )
             assert gone.status_code == 404, gone.text
+
+
+async def test_the_demo_doors_refuse_hostile_and_malformed_input_loud(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The demo's doors refuse loud: a malformed JSON body is a 400 (a
+    NUL-bearing decision value is the product's own typed refusal
+    class), never a 500, never silence."""
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_loud_refusal_flow")
+    app = build_app(wf_pool, wf_schema)
+    demo_client = HitlClient(wf_pool, schema=wf_schema)
+    holds = await demo_client.list(run=flow_id)
+    assert len(holds) == 1, holds
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://demo"
+    ) as http:
+        minted = (await http.get(f"/runs/{flow_id}/token")).json()
+        not_json = await http.post(
+            f"/runs/{flow_id}/holds/{holds[0].hold_id}/resolve",
+            params={"token": minted["token"]},
+            content="{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert not_json.status_code == 400, not_json.text
+        nul_decision = await http.post(
+            f"/runs/{flow_id}/holds/{holds[0].hold_id}/resolve",
+            params={"token": minted["token"]},
+            json={"verdict": "approve", "note": "a\u0000b"},
+        )
+        assert nul_decision.status_code in (400, 422), nul_decision.text
+        after = await demo_client.get(holds[0].hold_id)
+        assert after is not None and after.status == "held", after

@@ -431,7 +431,20 @@ def register(router: APIRouter) -> None:
             # cancel route's redirect lands HERE, on the named refusal —
             # never on a 400 wall.
             refusal_banner=_refusal_banner(request),
-            events=[dict(e) | {"occurred_at": _iso(e["occurred_at"])} for e in events],
+            events=[
+                dict(e)
+                | {
+                    "occurred_at": _iso(e["occurred_at"]),
+                    # The refusal's fact is the row's own content: the
+                    # detail's jsonb (asyncpg hands it as str without a
+                    # codec) parses here so the template can render WHAT
+                    # was refused, not just that a row exists.
+                    "detail": (
+                        _json_loads(e["detail"]) if isinstance(e["detail"], str) else e["detail"]
+                    ),
+                }
+                for e in events
+            ],
             boot=boot,
             csrf_token=csrf_token,
             actions_enabled=settings.admin_actions_enabled,

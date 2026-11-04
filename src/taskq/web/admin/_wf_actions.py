@@ -53,6 +53,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from tors import truncate_to_bounds
 
 from taskq._json import dumps as _json_dumps
+from taskq._json import dumps_jsonb_str as _dumps_jsonb_str
 from taskq._json import dumps_str as _json_dumps_str
 from taskq._json import loads as _json_loads
 from taskq.backend._protocol import JobId
@@ -993,6 +994,11 @@ def register_actions(router: APIRouter) -> None:
         observation: ``watch doc-doomed's attempt go 1 → 2``)."""
         if map_index is not None and map_index < 0:
             raise HTTPException(status_code=400, detail="map_index must be >= 0")
+        if "\x00" in node_key:
+            # A NUL byte can never name a declared node (the keys are
+            # identifiers); the read binds it raw — refuse before the
+            # bind, never a 500 from the encoding.
+            raise HTTPException(status_code=404, detail="no such node")
         async with pool.acquire() as conn:
             if map_index is None:
                 node = await conn.fetchrow(_NODE_PANEL_SQL.format(schema=schema), node_key, run_id)
@@ -1245,6 +1251,25 @@ def register_actions(router: APIRouter) -> None:
             target_id=str(_as_hold_id(hold_id)),
             reason=reason,
         )
+        # THE PAYLOAD'S WIRE SHAPE: a control character (a NUL above
+        # all) cannot ride the jsonb bind — the door refuses it as the
+        # typed gate's own refusal (audited, the hold survives), never
+        # a 500 from the serializer.
+        try:
+            _dumps_jsonb_str(validated)
+        except ValueError as exc:
+            await _audit_gate_refusal(
+                pool,
+                schema=schema,
+                principal=principal,
+                action="hitl.resolve",
+                target_id=canonical_hold_id,
+                run_id=str(run_id),
+                node_key=hold.node_key,
+                reason=reason,
+                refusal=str(exc),
+            )
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         result = await client.resolve(
             canonical_hold_id,
             validated,
@@ -1285,6 +1310,26 @@ def register_actions(router: APIRouter) -> None:
             )
         payload_doc = cast(dict[str, object], payload)
         from taskq.workflows.api._hitl import HitlClient
+
+        # THE PAYLOAD'S WIRE SHAPE: a control character (a NUL above
+        # all) cannot ride the jsonb bind — the door refuses it as the
+        # typed gate's own refusal (audited, the hold survives), never
+        # a 500 from the serializer.
+        try:
+            _dumps_jsonb_str(payload_doc)
+        except ValueError as exc:
+            await _audit_gate_refusal(
+                pool,
+                schema=schema,
+                principal=principal,
+                action="hitl.deliver",
+                target_id=run_id.hex,
+                run_id=str(run_id),
+                node_key=node_key,
+                reason=reason,
+                refusal=str(exc),
+            )
+            raise HTTPException(status_code=422, detail=str(exc)) from None
 
         client = HitlClient(pool.pool, schema=schema)
         held = [h for h in await client.list(str(run_id)) if h.node_key == node_key]
@@ -1383,11 +1428,12 @@ def register_actions(router: APIRouter) -> None:
         named banner — the refused-op contract, never a 400 wall."""
         from taskq.workflows import WorkflowRunError, retry_workflow_node
 
-        # THE NODE KEY'S SHAPE IS THE DOOR'S OWN CHECK: a NUL-bearing or
-        # oversized key is the caller's typo — an audited refusal, never
-        # a 500 from the CAS bind. The pointer's sanitation is the audit
-        # leaf's own law.
-        if "\x00" in node_key or len(node_key) > 200:
+        # THE NODE KEY'S SHAPE IS THE DOOR'S OWN CHECK: a NUL byte can
+        # never ride the CAS's text bind (the encoding refusal) — an
+        # audited refusal, never a 500. (Length is not the door's
+        # business: a long DECLARED key binds fine; the pointer's bound
+        # is the audit leaf's own law.)
+        if "\x00" in node_key:
             await _audit_rerun_refusal(
                 pool,
                 schema=schema,

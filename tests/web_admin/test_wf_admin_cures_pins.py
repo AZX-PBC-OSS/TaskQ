@@ -876,6 +876,11 @@ async def test_hostile_node_key_is_an_audited_refusal_that_renders(
         "the refusal renders on THE RUN's trail (the detail's run_id is "
         "what the page's query keys on)"
     )
+    # THE REFUSAL'S FACT IS VISIBLE: the page renders WHAT was refused
+    # (the amber badge), not just that a row exists.
+    assert "refused:" in page.text and "the node key is not a valid key" in page.text, (
+        "the trail's refused badge names the refusal"
+    )
 
 
 async def test_the_audit_leaf_bounds_the_pointer_for_every_writer(
@@ -911,3 +916,29 @@ async def test_the_audit_leaf_bounds_the_pointer_for_every_writer(
     assert rows[1]["target_id"].endswith("…"), rows[1]["target_id"]
     for r in rows:
         assert "\x00" not in r["target_id"]
+
+
+async def test_a_long_declared_node_key_retries_through_the_door(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    cure_app_module: Any,
+) -> None:
+    """Length is not the door's business: a LEGAL node key (whatever the
+    workflow declared — 250 chars included) retries through the engine's
+    own verb; the pointer's bound is the audit leaf's law, never a
+    refusal of the call."""
+    from taskq.workflows import retry_workflow_node
+
+    schema = module_pg_schema.schema_name
+    long_key = "node_" + "n" * 245
+    run_id = await _seed_run(module_pg_pool, schema, name="cure_hold_flow")
+    applied = await retry_workflow_node(
+        module_pg_pool,
+        schema=schema,
+        flow_id=__import__("uuid").UUID(run_id),
+        node_key=long_key,
+        reason=None,
+    )
+    assert applied >= 0  # the verb answers; the length arm never refuses it
+    _ = clean_pg_conn, run_id

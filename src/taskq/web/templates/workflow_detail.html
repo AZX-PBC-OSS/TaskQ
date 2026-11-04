@@ -277,7 +277,11 @@
             <tr class="border-t border-slate-100 dark:border-slate-800">
                 <td class="py-1.5 pr-4 text-xs">{{ e.occurred_at }}</td>
                 <td class="py-1.5 pr-4 font-mono text-xs">{{ e.principal_subject }}</td>
-                <td class="py-1.5 pr-4">{{ e.action }}</td>
+                <td class="py-1.5 pr-4">{{ e.action }}
+                    {%- if e.detail and e.detail.get('refused') %}
+                    <span class="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">refused: {{ e.detail['refused'] }}</span>
+                    {%- endif %}
+                </td>
                 <td class="py-1.5 pr-4 text-xs">{{ e.reason or '—' }}</td>
             </tr>
             {% endfor %}
