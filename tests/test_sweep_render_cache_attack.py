@@ -185,6 +185,11 @@ class _RecordingConn:
         return _NullTransaction()
 
     async def fetch(self, sql: str, *args: object) -> list[dict[str, str]]:
+        if "pg_extension" in sql:
+            # The availability gate's pre-check: not the sweep's rendered
+            # SQL — answered (no extension) and left out of the recording
+            # this fake's subject owns.
+            return []
         if "current_setting" not in sql:
             self.sqls.append(sql)
         if "current_setting" in sql:
