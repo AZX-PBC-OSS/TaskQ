@@ -707,6 +707,7 @@ async def _audit_gate_refusal(
     schema: str,
     principal: Any,
     action: str,
+    target_type: str = "hold",
     target_id: str,
     run_id: str,
     node_key: str,
@@ -721,7 +722,10 @@ async def _audit_gate_refusal(
     UNsafe recorder so a failure SURFACES (a refusal the trail missed is
     the exact invisible-probe failure mode). The detail carries the run_id
     the trail's page query keys on — the refusal renders on THE RUN's
-    trail, not just the hold's target lookup."""
+    trail, not just the hold's target lookup. ``target_type``/``target_id``
+    name what the refusal was ABOUT: a hold (the default) by its canonical
+    id, a run-scoped refusal (the deliver door's wire-shape pre-check,
+    before any hold is looked up) by the run's canonical spelling."""
     from taskq.web.admin._audit import record_admin_action
 
     async with pool.acquire() as conn:
@@ -730,7 +734,7 @@ async def _audit_gate_refusal(
             schema=schema,
             principal=principal,
             action=action,
-            target_type="hold",
+            target_type=target_type,
             target_id=target_id,
             reason=reason if isinstance(reason, str) else None,
             detail={
@@ -1338,7 +1342,12 @@ def register_actions(router: APIRouter) -> None:
                 schema=schema,
                 principal=principal,
                 action="hitl.deliver",
-                target_id=run_id.hex,
+                # THE REFUSAL IS ABOUT THE RUN: no hold was looked up
+                # (the wire shape preceded the lookup) — the row targets
+                # the run by its canonical spelling, the form every
+                # run-targeted row speaks.
+                target_type="workflow_run",
+                target_id=str(run_id),
                 run_id=str(run_id),
                 node_key=node_key,
                 reason=reason,

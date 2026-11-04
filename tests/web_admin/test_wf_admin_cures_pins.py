@@ -965,13 +965,15 @@ async def test_hostile_inputs_on_every_door_are_typed_refusals(
         await http.get("/queues")  # the CSRF cookie's set
         csrf = _csrf_of(http)
         overflow = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 40000})
-        assert overflow.status_code == 400, f"the smallint overflow is a typed 400: {overflow.status_code}"
+        assert overflow.status_code == 400, (
+            f"the smallint overflow is a typed 400: {overflow.status_code}"
+        )
         huge = await http.get(f"/api/runs/{run_id}/nodes/review", params={"map_index": 10**20})
         assert huge.status_code == 400
         read_nul = await http.get(f"/api/runs/{run_id}/nodes/abc%00def")
         assert read_nul.status_code == 404, read_nul.status_code
         rows_before = await clean_pg_conn.fetchval(
-            f"SELECT count(*)::int FROM \"{schema}\".admin_audit "
+            f'SELECT count(*)::int FROM "{schema}".admin_audit '
             "WHERE detail->>'refused' IS NOT NULL"
         )
         deliver_nul = await http.post(
@@ -986,10 +988,19 @@ async def test_hostile_inputs_on_every_door_are_typed_refusals(
             f"the deliver door's NUL payload is the audited 422: {deliver_nul.status_code} {deliver_nul.text}"
         )
         rows_after = await clean_pg_conn.fetchval(
-            f"SELECT count(*)::int FROM \"{schema}\".admin_audit "
+            f'SELECT count(*)::int FROM "{schema}".admin_audit '
             "WHERE detail->>'refused' IS NOT NULL"
         )
         assert rows_after == rows_before + 1, (
             "the deliver door's own refusal lands ITS audit row (the "
             "leaf's NUL law covers the detail's strings)"
         )
+        row = await clean_pg_conn.fetchrow(
+            f'SELECT target_type, target_id FROM "{schema}".admin_audit '
+            "WHERE detail->>'refused' IS NOT NULL ORDER BY id DESC LIMIT 1"
+        )
+        assert row is not None
+        assert row["target_type"] == "workflow_run", (
+            f"the deliver refusal targets THE RUN, not a phantom hold: {row}"
+        )
+        assert row["target_id"] == str(run_id), f"the pointer is the canonical run spelling: {row}"

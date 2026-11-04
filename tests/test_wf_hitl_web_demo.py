@@ -351,3 +351,30 @@ async def test_the_demo_doors_refuse_hostile_and_malformed_input_loud(
         assert nul_decision.status_code in (400, 422), nul_decision.text
         after = await demo_client.get(holds[0].hold_id)
         assert after is not None and after.status == "held", after
+
+
+async def test_the_demo_parses_the_body_with_the_bounded_parser(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The demo's body parser is the HOUSE's bounded parser (the admin
+    doors' own rule): a nesting bomb is the named 400 — the stdlib
+    decoder's RecursionError never escapes the door as a 500 — and the
+    hold survives it."""
+    flow_id, _runner = await _held_flow(wf_conn, wf_schema, wf_pool, name="T26_bounded_parser_flow")
+    app = build_app(wf_pool, wf_schema)
+    demo_client = HitlClient(wf_pool, schema=wf_schema)
+    holds = await demo_client.list(run=flow_id)
+    assert len(holds) == 1, holds
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://demo"
+    ) as http:
+        minted = (await http.get(f"/runs/{flow_id}/token")).json()
+        bomb = await http.post(
+            f"/runs/{flow_id}/holds/{holds[0].hold_id}/resolve",
+            params={"token": minted["token"]},
+            content="[" * 20_000 + "]" * 20_000,
+            headers={"Content-Type": "application/json"},
+        )
+        assert bomb.status_code == 400, f"{bomb.status_code} {bomb.text}"
+        after = await demo_client.get(holds[0].hold_id)
+        assert after is not None and after.status == "held", after

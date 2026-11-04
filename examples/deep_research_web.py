@@ -57,6 +57,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from taskq._json import dumps_jsonb_str
+from taskq._json import loads as _json_loads
 from taskq.workflows.api._hitl import HitlClient
 from taskq.workflows.api._hitl_listen import (
     Backfilled,
@@ -187,9 +188,14 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
         hold_row = await _client().get(canonical_hold)
         if hold_row is None or hold_row.run_id != canonical_run:
             raise HTTPException(status_code=404, detail="no such hold on this run")
+        body = await request.body()
         try:
-            decision = await request.json()
+            decision = _json_loads(body)
         except ValueError:
+            # THE HOUSE'S BOUNDED PARSER (the admin doors' own rule): a
+            # malformed body — the shallow junk AND the nesting bomb the
+            # stdlib decoder answers with RecursionError — is the named
+            # 400, never a 500 out of the door.
             raise HTTPException(status_code=400, detail="the body is not JSON") from None
         if not isinstance(decision, dict):
             # THE TYPED DOOR'S OWN REQUIREMENT: the decision is the
@@ -197,9 +203,7 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
             # (the cold-catalog fallback cannot judge a non-object), so
             # the door refuses it instead of delivering a payload the
             # resumed body never declared.
-            raise HTTPException(
-                status_code=422, detail="the decision must be a JSON object"
-            )
+            raise HTTPException(status_code=422, detail="the decision must be a JSON object")
         try:
             dumps_jsonb_str(decision)
         except (ValueError, TypeError) as exc:

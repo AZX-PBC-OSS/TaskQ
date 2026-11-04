@@ -69,7 +69,7 @@ from __future__ import annotations
 
 import contextvars
 import sys
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from opentelemetry.metrics import Counter
@@ -283,9 +283,11 @@ def _escape_nul_values(value: Any) -> Any:
     if isinstance(value, str):
         return value.replace("\x00", "\\x00")
     if isinstance(value, dict):
-        return {k: _escape_nul_values(v) for k, v in value.items()}
+        typed = cast(dict[str, Any], value)
+        return {k: _escape_nul_values(v) for k, v in typed.items()}
     if isinstance(value, (list, tuple)):
-        return [_escape_nul_values(v) for v in value]
+        typed_list = cast(list[Any], value)
+        return [_escape_nul_values(v) for v in typed_list]
     return value
 
 
