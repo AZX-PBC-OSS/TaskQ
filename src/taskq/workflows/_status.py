@@ -127,7 +127,7 @@ class NodeView:
         join-wait (deps > 0), or a blocked-with-reason stamp. Two markers
         never read as blocks: the bare 'join' marker on a deps == 0 row is
         a FIRED join (claimable like any other row), and 'body_unavailable'
-        is the R2-2 loudness record on a fired join whose body never
+        is the loudness record on a fired join whose body never
         resolved — the delivery CONTINUED (the run proceeds; the operator
         sees the warning), the row is not blocked."""
         if self.status != "pending":

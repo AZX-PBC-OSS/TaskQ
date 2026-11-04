@@ -785,7 +785,7 @@ class SubJobEnqueuer:
             span_id=args.span_id,
             metadata=args.metadata,
             tags=args.tags,
-            # The fan-out ledger rides the display guess too (the F2 fix):
+            # The fan-out ledger rides the display guess too:
             # the synthetic row is what the caller sees before the
             # transaction commits, a parent_id it omits would make the
             # ledger lie on the transactional sub-enqueue path.

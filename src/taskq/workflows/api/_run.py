@@ -151,12 +151,11 @@ async def run(
         try:
             claim = await runner.create_flow(input=input, run_key=key, priority=priority)
         except asyncpg.exceptions.UndefinedTableError as exc:
-            # THE FIRST CONTACT'S TRANSLATION (the teardown fix):
-            # the packaged run on an unmigrated schema was the RAW driver
-            # traceback; the client arm's typed SchemaNotMigratedError names
+            # The first contact's translation: an unmigrated schema
+            # raises the client arm's typed SchemaNotMigratedError, which
+            # names
             # the remedy (the setup defect is actionable, not a raw
-            # asyncpg face) — the packaged door now uses it too, the
-            # original chained via __cause__.
+            # asyncpg face) — the original chained via __cause__.
             raise SchemaNotMigratedError(schema) from exc
         record_run_started(run_span, str(claim.flow_id))
         try:

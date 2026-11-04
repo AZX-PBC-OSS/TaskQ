@@ -40,29 +40,26 @@ Two transactional shapes, per mutation kind:
   principal into the new ``cancel_request`` job_events row's detail, so
   the per-job event log carries the operator identity too.
 
-THE CAPABILITY SEAM (the one indirection, and why it exists): the
-engine's audit row and the admin surface's audit row are THE SAME row —
-one writer, one attribute surface. When the admin shim is ALREADY LOADED
-(a ``taskq[fastapi]`` install — its presence in ``sys.modules`` is the
-load-state registry's marker; this module NEVER imports it), the row
-resolves through the shim's CURRENT module attribute, so the admin
-surface's attribute seam stays the one seam — the test doubles (and any
-host's instrumentation) that rebind the shim's
-``record_admin_action`` bite every writer in the process, including the
-engine's. When the shim is not loaded (the base install) this module's
-own body is the writer. The resolution is a dictionary read, never an
-import: a base install never touches the fastapi extra.
+Both the engine's audit row and the admin surface's audit row are the same
+row: one writer, one attribute surface. When the admin shim is already
+loaded (a ``taskq[fastapi]`` install — its presence in ``sys.modules`` is
+the load-state marker; this module never imports it), the row resolves
+through the shim's current module attribute, so test doubles and host
+instrumentation that rebind the shim's ``record_admin_action`` bite every
+writer in the process, including the engine's. When the shim is not
+loaded (the base install) this module's own body is the writer. The
+resolution is a dictionary read, never an import: a base install never
+touches the fastapi extra.
 
-THE SEAM'S TWO DEFENSES (both born failing — the adversarial review's CHANGES-
-REQUIRED; the teeth pins in ``tests/test_wf_attack_cancel.py`` exercise
-each live): the FROZEN canonical identity (``_CANONICAL_RECORD`` — a
-module-attr rebind of this module's own ``record_admin_action`` cannot
-make the body route back to itself) and the RE-ENTRANCY guard (the
-``_routing`` contextvar — a delegating chain through the shim's attr
-terminates with EXACTLY ONE row per call chain). The MID-CALL WRITER-
-SWITCH boundary: the writer is resolved once at the seam's entry; a
-rebinding between the resolution and the write is observed by the NEXT
-call chain, never this one's row.
+Two defenses, both exercised live by the teeth pins in
+``tests/test_wf_attack_cancel.py``: the frozen canonical identity
+(``_CANONICAL_RECORD`` — a module-attr rebind of this module's own
+``record_admin_action`` cannot make the body route back to itself) and
+the re-entrancy guard (the ``_routing`` contextvar — a delegating chain
+through the shim's attr terminates with exactly one row per call chain).
+The writer is resolved once at the seam's entry; a rebinding between the
+resolution and the write is observed by the next call chain, never this
+one's row.
 """
 
 from __future__ import annotations
@@ -392,20 +389,20 @@ _FOLD_CANCEL_PRINCIPAL_SQL = (
     "ORDER BY id DESC LIMIT 1)"
 )
 
-#: The loaded admin surface's audit module — the CAPABILITY SEAM's read
-#: (the load-state registry: the shim's PRESENCE is the fastapi install's
-#: capability marker). NEVER an import: on a base install this answers
-#: None and this module's own body is the writer.
+#: The loaded admin surface's audit module — the capability seam's read
+#: (the shim's presence is the fastapi install's capability marker).
+#: Never an import: on a base install this answers None and this
+#: module's own body is the writer.
 _ADMIN_AUDIT_SHIM = "taskq.web.admin._audit"
 
-#: THE RE-ENTRANCY GUARD (the adversarial review's 1c fix): True while THIS call
-#: chain is routing through the loaded shim's writer. A CONTEXTVAR —
-#: the re-entrancy domain is the async call chain: asyncio copies the
-#: context per Task (and per thread), so two concurrent cancels never
-#: cross-see the flag (a threading.local would leak it across tasks
-#: interleaving on one loop; a sentinel attr on the wrapper fails on
-#: attribute-less callables and leaks the same way). The flag dies with
-#: the chain (the token reset) — no cleanup, no cross-talk.
+#: True while this call chain is routing through the loaded shim's
+#: writer. A contextvar — the re-entrancy domain is the async call
+#: chain: asyncio copies the context per Task (and per thread), so two
+#: concurrent cancels never cross-see the flag (a threading.local would
+#: leak it across tasks interleaving on one loop; a sentinel attr on the
+#: wrapper fails on attribute-less callables and leaks the same way).
+#: The flag dies with the chain (the token reset) — no cleanup, no
+#: cross-talk.
 _routing: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "taskq.audit.seam-routing", default=False
 )
@@ -520,49 +517,46 @@ async def record_admin_action(
     *detail* is bound as jsonb (:func:`taskq._json.dumps_jsonb_str`, the
     NUL-refusing serializer every other jsonb bind uses).
 
-    THE CAPABILITY SEAM (see the module docstring): when the admin shim
-    is already loaded, the row resolves through ITS current module
-    attribute — the shim's attribute surface is the ONE seam (a rebinding
-    there — a test double, a host's instrumentation — bites every writer
-    in the process).
+    When the admin shim is already loaded, the row resolves through its
+    current module attribute — a rebinding there (a test double, a
+    host's instrumentation) bites every writer in the process.
 
-    TWO DEFENSES, both born failing (the adversarial review's CHANGES-REQUIRED; the
-    teeth pins ``test_wf_attack_cancel.py`` reject each, live):
+    Two defenses, both rejected live by the teeth pins in
+    ``test_wf_attack_cancel.py``:
 
-    * THE FROZEN IDENTITY (``_CANONICAL_RECORD``, bound once AFTER this
+    * The frozen identity (``_CANONICAL_RECORD``, bound once after this
       def): the fall-through guard compares the shim's attr against the
-      FROZEN function object, never the module global. The global IS
-      rebindable (the adversarial review's finding — the newcomer's natural patch
-      target: a delegating spy on ``taskq.audit.record_admin_action``);
-      a global comparison made the body route back to itself — unbounded
-      RecursionError poisoning the whole cancel.
-    * THE RE-ENTRANCY GUARD (``_routing``, a :class:`contextvars.ContextVar`):
-      while THIS call chain is routing through the loaded shim's writer,
-      a RE-ENTRY (the adversarial review's finding — a delegating wrapper on the shim's
-      attr calling the canonical body) lands its row DIRECTLY — no
+      frozen function object, never the module global. The global is
+      rebindable (a delegating spy on
+      ``taskq.audit.record_admin_action`` is the natural patch target);
+      a global comparison would let the body route back to itself — an
+      unbounded RecursionError poisoning the whole cancel.
+    * The re-entrancy guard (``_routing``, a :class:`contextvars.ContextVar`):
+      while this call chain is routing through the loaded shim's writer,
+      a re-entry (a delegating wrapper on the shim's
+      attr calling the canonical body) lands its row directly — no
       re-routing, no loop; the wrapper's call chain terminates with
-      EXACTLY ONE row. THE CONTEXTVAR IS THE CHOICE, deliberately: the
-      re-entrancy domain is the ASYNC CALL CHAIN — asyncio copies the
-      context per Task (and per thread), so two concurrent cancels never
-      see each other's routing state (a ``threading.local`` would leak
-      the flag ACROSS tasks interleaving on one loop — a mid-await
-      handoff would make the second cancel silently BYPASS the shim's
-      seam); a sentinel attribute on the wrapper fails on callables that
-      accept no attributes (``functools.partial``, builtins) and leaks
-      the same way across tasks sharing one wrapper.
+      exactly one row. The re-entrancy domain is the async call chain:
+      asyncio copies the context per Task (and per thread), so two
+      concurrent cancels never see each other's routing state (a
+      ``threading.local`` would leak the flag across tasks interleaving
+      on one loop — a mid-await handoff would make the second cancel
+      silently bypass the shim's seam); a sentinel attribute on the
+      wrapper fails on callables that accept no attributes
+      (``functools.partial``, builtins) and leaks the same way across
+      tasks sharing one wrapper.
 
-    THE MID-CALL WRITER-SWITCH BOUNDARY (the honesty note): the writer
-    is resolved ONCE, at this seam's entry. A rebinding of the shim's
-    attribute (or the canonical global) BETWEEN the resolution and the
-    row's write is NOT observed by this call — the row routes to the
-    writer that was current AT RESOLUTION TIME. A mid-call switch takes
-    effect on the NEXT call chain; no call lands a row through a writer
-    that changed underneath it mid-flight.
+    The writer is resolved once, at this seam's entry. A rebinding of
+    the shim's attribute (or the canonical global) between the
+    resolution and the row's write is not observed by this call — the
+    row routes to the writer that was current at resolution time. A
+    mid-call switch takes effect on the next call chain; no call lands
+    a row through a writer that changed underneath it mid-flight.
     """
     if _routing.get():
-        # THE RE-ENTRY: this call chain is already routing through the
-        # shim's writer — land the row HERE (the leaf). The delegation
-        # chain terminates: exactly one row per call chain.
+        # This call chain is already routing through the shim's writer —
+        # land the row here (the leaf). The delegation chain terminates:
+        # exactly one row per call chain.
         await _record_admin_action(
             conn,
             schema=schema,
@@ -605,12 +599,11 @@ async def record_admin_action(
     )
 
 
-#: THE FROZEN CANONICAL IDENTITY — bound ONCE, after the def (the
-#: the adversarial review's fix): the routing guard compares the shim's attr
-#: against THIS object, never the module global (which any rebinding
-#: flips). A delegating spy patched over the module global terminates:
-#: the body sees the shim's attr still carrying THIS object and falls
-#: through to the leaf.
+#: Bound once, after the def: the routing guard compares the shim's
+#: attr against this object, never the module global (which any
+#: rebinding flips). A delegating spy patched over the module global
+#: terminates: the body sees the shim's attr still carrying this object
+#: and falls through to the leaf.
 _CANONICAL_RECORD = record_admin_action
 
 

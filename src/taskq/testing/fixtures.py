@@ -264,8 +264,8 @@ def _handler_call_shape(fn: Callable[..., object]) -> tuple[bool, frozenset[str]
       context, any other named parameter is a DI dependency the fixture
       may fill from ``**deps``.
     - ``declared_deps`` is ``None`` when the callable cannot be
-      inspected; the fixture then injects no DI kwargs (the historic
-      shape) instead of guessing a signature it cannot see.
+      inspected; the fixture then injects no DI kwargs instead of
+      guessing a signature it cannot see.
     """
     wants_attr = getattr(fn, "wants_ctx", None)
     if isinstance(wants_attr, bool):

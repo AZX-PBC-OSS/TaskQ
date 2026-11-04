@@ -1,35 +1,29 @@
-"""THE ARTIFACTS' HEAD-STAMP LAW — the artifact estate's own provenance
-law.
+"""The artifact estate's head-stamp verifier.
 
-THE LAW: **every evidence artifact RECORDS ITS HEAD SHA, and the
-verification re-runs the artifact ON ITS CLAIMED HEAD.** The recorded
-failure it guards against: the "e2e 9/9x3" claim pointed at captures that were (a)
-failing where the claim said green (leg3 failed in the recorded run) and (b)
-taken on an ANCESTOR of the final head (the fix commit landed after
-them) — green-in-fact, unproven-as-recorded. A capture without its head
-is a rumor; a capture against a stale head is history, never the live
-claim.
+The rule: **every evidence artifact records its head sha, and the
+verification re-runs the artifact on its claimed head.** A capture
+without its head is a rumor; a capture against a stale head is history,
+never the live claim — a green claim whose captures are stale or
+failing where they claim green is unproven.
 
-THE MECHANICS (what this verifier enforces over the estate's registry,
+The mechanics (enforced over the estate's registry,
 ``.measurements/runs/CLAIMS.json``):
 
 * The claims registry is ONE JSON manifest — an append-ordered array of
   ``{stem, file, head_sha, captured_at}`` entries (the writers append:
   ``scripts/check_wf_coverage.py``, ``tests/_wf_fixtures.py``'s band
-  writer; the migration pass built the initial index). The verdict is
-  THE MANIFEST'S ENTRIES vs HEAD — no filename is ever parsed. (The
-  finding that retired the filename parsing: the verifier's
-  ``_stem``/``_run_order`` heuristics parsed each filename's run-scoped
-  tail — a NAME-FORMAT law the machines enforced, drift-prone by
-  construction: the sha-in-the-name one-off stems split wrong. The
-  name is for humans; the manifest is for the machinery.)
+  writer). The verdict is THE MANIFEST'S ENTRIES vs HEAD — no filename
+  is ever parsed. The name is for humans; the manifest is for the
+  machinery (parsing each filename's run-scoped tail would enforce a
+  name-format rule on the humans' own files, and the sha-in-the-name
+  one-off stems split wrong under it).
 * Artifacts group by STEM (the evidence kind). The NEWEST entry of a
   stem — the registry's append order — is that evidence kind's LIVE
   CLAIM; every older entry is history, implicitly superseded.
 * The live claim must carry ``head_sha`` EQUAL to the current HEAD —
   the verification re-runs the artifact on its claimed head, so the
   claim and the tree can never diverge silently.
-* THE OFF-BY-ONE RULE: the artifacts of a battery are committed AFTER
+* The off-by-one rule: the artifacts of a battery are committed AFTER
   the battery ran, so a claim recorded on H is still FRESH at H2 when
   H2 is H plus changes to paths that CANNOT change what the claims
   verify — the measurements estate itself plus the NON-BEHAVIORAL paths
@@ -37,66 +31,50 @@ THE MECHANICS (what this verifier enforces over the estate's registry,
   class, ``.github``) — the source + test tree the claim verifies is
   content-identical. A change to a BEHAVIORAL path (``src/``,
   ``tests/``, the lockfiles, the migrations, the examples, the gates,
-  the benchmarks) since the claimed head makes the claim stale. THE
-  EXEMPTION'S OWN EDGE: the DOCS-DERIVED
-  stems (``_DOCS_SENSITIVE_STEM_PREFIXES``: mkdocs-strict,
-  docs-examples, docs-lane) are the exception — their batteries READ
-  the docs estate (mkdocs builds ``docs/`` strict; the docs-example
-  tests' ``DOC_ROOTS = ("docs", "README.md")`` execute the fences) —
-  so for them the exemption set is the NARROW one (the measurements
-  estate + ``.github``) and a docs-only merge stalifies. THE
-  the first cut exempted only
-  ``.measurements/``, so #696's DOCS-ONLY merge (``LEDGER.md`` alone)
-  re-staled every live claim and reded main's head-stamp lint job on a
-  documentation edit (the recorded CI runs) — a docs edit
-  is not a source change, and the law does not read it as one.
+  the benchmarks) since the claimed head makes the claim stale.
+  The docs-derived stems (``_DOCS_SENSITIVE_STEM_PREFIXES``:
+  mkdocs-strict, docs-examples, docs-lane) are the exception — their
+  batteries READ the docs estate (mkdocs builds ``docs/`` strict; the
+  docs-example tests' ``DOC_ROOTS = ("docs", "README.md")`` execute the
+  fences) — so for them the exemption set is the NARROW one (the
+  measurements estate + ``.github``) and a docs-only merge stalifies.
+  A docs-only merge does not stale a source claim, and the docs-derived
+  stems are exempt from that exemption.
 * A live claim may be marked ``superseded_by`` (the manifest entry's
-  field — the migration bakes in the text files' ``SUPERSEDED-BY:``
-  lines): history by its own declaration. THE CHAIN IS THE CLAIM: the verifier resolves the supersession
-  CHAIN to its TERMINAL entry — the first entry in the chain with no
-  ``superseded_by`` — and applies the head-sha rule THERE: freshness +
-  the capture's presence are judged at the END of the chain, not the
-  head link (the effective claim is what proves the stem). A dead link
-  at ANY hop, a target no registry entry claims (the dangling chain), a
-  chain that cycles (it never terminates), and a terminal that is a
-  ghost or stale ALL FAIL. The hole this replaces: the old
-  law read only "the link must resolve" — the HEAD link's existence was
-  the whole check, so a stem GREENED while its effective (terminal)
-  claim was stale or missing, the rot hidden one hop behind a resolving
-  link (the one-hop-hidden rot).
-* A live claim declared ``kind: CITED-IMPORT…`` (the imported
-  provenance record — the import IS the provenance) is history by its own declaration: never a
-  live claim of the current tree, never re-recordable.
+  field): history by its own declaration. The chain IS the claim: the
+  verifier resolves the supersession chain to its TERMINAL entry — the
+  first entry with no ``superseded_by`` — and applies the head-sha rule
+  THERE (the effective claim is what proves the stem). A dead link at
+  ANY hop, a target no registry entry claims, a chain that cycles, and
+  a terminal that is a ghost or stale ALL FAIL — checking only the
+  head link's existence would let a stem green while its effective
+  claim was stale or missing.
+* A live claim declared ``kind: CITED-IMPORT…`` is history by its own
+  declaration: never a live claim of the current tree, never
+  re-recordable.
 * A registry entry whose capture FILE is missing, and a registry that
   is missing entirely, FAIL — an index naming ghosts is the estate's
   own rot, and an estate without an index is unverifiable.
 * A registry that parses and carries ZERO claims is the LOUD REFUSAL,
-  never the green: zero claims is zero
-  verdicts — an empty estate CANNOT verify anything, so the empty
-  registry exits nonzero with the typed refusal. The WARNING-class
-  content (the bootstrapping case is real and honest — a new estate
-  has no captures yet) is carried INSIDE the refusal's text; the
-  verdict is still never the green.
+  never the green: zero claims is zero verdicts — an empty estate
+  CANNOT verify anything, so the empty registry exits nonzero with the
+  typed refusal. The bootstrapping case (a new estate has no captures
+  yet) is carried INSIDE the refusal's text; the verdict is still
+  never the green.
 
-THE CONTENT DOOR: **the verifier reads
+The content door: **the verifier reads
 each EFFECTIVE capture's own verdict — a capture whose content records
 failure while the claim greens the stem is THE CONTENT-VERDICT
-MISMATCH.** The hole this closes: the head-stamp law checked
-the stamp's SHA and never the stamp's VERDICT — the live estate carried
-captures whose OWN HEADERS say ``rc=1`` (the run failed, in the
-capture's first line) standing as the green proof of their stems
-(the real instances: a wf-battery capture and a deslop pin-packs
-capture, both stamped 2026-10-11). The claim's verdict is the
-registry's own: a fresh live claim (or a fresh chain terminal) IS the
-stem's green — so the door's mismatch test is one-sided by
-construction: the content records failure ⇒ the claim lies. The check
-is CHEAP — a LINEAR SCAN of the capture's text for VERDICT-SHAPED
-lines, never a line-count window, never a structured parse; the
-runtime is measured on the real estate (the door-edges round's
-record — the full-file scan holds the content-door budget). And the
-door is HONEST about formats: the families' summary shapes differ (the
+MISMATCH.** A stamp checked for SHA alone says nothing about verdict;
+the claim's verdict is the registry's own: a fresh live claim (or a
+fresh chain terminal) IS the stem's green, so the mismatch test is
+one-sided by construction: the content records failure ⇒ the claim
+lies. The check is CHEAP — a LINEAR SCAN of the capture's text for
+VERDICT-SHAPED lines, never a line-count window, never a structured
+parse; the full-file scan is measured cheap on the real estate (within
+the content-door budget). The families' summary shapes differ (the
 pytest tail's ``N failed``, the run-scoped stamp's ``rc=``, the JSON
-band payload's measurements), the parser handles the estate's ACTUAL
+band payload's measurements); the parser handles the estate's ACTUAL
 families — and a capture with NO parsable verdict shape is the TYPED
 WARNING, not a silent pass: silence is the defect class the door
 kills. The door judges the claims that GREEN the estate at this head
@@ -104,86 +82,67 @@ kills. The door judges the claims that GREEN the estate at this head
 CITED-IMPORT claim is already judged by its own law, and history's
 content is history's.
 
-THE FIVE EDGES (the content door's own
-face, each observed live and pinned
+The content door's five edges (each pinned
 ``tests/test_evidence_door_contract_pins.py``):
 
-* **THE SCAN WINDOW IS VERDICT-SHAPED, NEVER LINE-COUNTED** (D1). The
-  content door's first cut read only the first 3 + last 12 lines — a
-  red verdict pushed MID-FILE by post-run chatter (the NATURAL case:
-  pytest piped through ``tee``, which exits 0 honestly) greened with
-  failing content on disk. The fix: the capture's FULL text is scanned
-  for verdict-shaped lines (``rc=``, ``N failed``, ``FAILED …``) WHEREVER
-  they sit; the cheap-law balance holds because a linear scan of a
-  text file is measured cheap (the content-door round's +0.1s budget
-  is the neighborhood — re-measured at this fix).
-* **THE JSON BODY'S VERDICT FIELDS ARE READ** (D2). A ``*.json``
-  capture carrying ``{"rc": 1, "failed": 3}`` parses as valid JSON —
-  the suffix alone greened it by construction. The fix: the JSON
-  payloads' verdict fields (``rc`` / ``failed`` / ``errors`` — the
-  estate's actual band-payload shapes carry none) are read like any
+* **THE SCAN WINDOW IS VERDICT-SHAPED, NEVER LINE-COUNTED.** Reading
+  only the first 3 + last 12 lines greens a red verdict pushed MID-FILE
+  by post-run chatter (the NATURAL case: pytest piped through ``tee``,
+  which exits 0 honestly). The capture's FULL text is scanned for
+  verdict-shaped lines (``rc=``, ``N failed``, ``FAILED …``) WHEREVER
+  they sit; the linear scan of a text file is measured cheap (the
+  content-door budget's neighborhood: +0.1s).
+* **THE JSON BODY'S VERDICT FIELDS ARE READ.** A ``*.json`` capture
+  carrying ``{"rc": 1, "failed": 3}`` parses as valid JSON — a suffix
+  check alone would green it by construction. The JSON payloads'
+  verdict fields (``rc`` / ``failed`` / ``errors``) are read like any
   stamp; a JSON with a failure-shaped verdict is THE FAILURE VERDICT; a
   JSON with only measurements greens as before; a torn body stays the
   typed warning.
-* **THE EMPTY REGISTRY IS THE LOUD REFUSAL** (D3). A registry with
-  ``claims: []`` greened "the law holds" vacuously — zero claims is
-  zero verdicts. The fix: the typed refusal above (the bootstrapping
-  case named in the refusal's own text, the exit nonzero, NEVER the
-  green). A future-only registry (every capture rejected by the
-  capture-time door below) reds for the same reason: nothing honest
-  was verified.
-* **THE CAPTURE-TIME DOOR — ``captured_at`` IS PARSED** (D4). The
-  registry's timestamp was never read: a 2030-dated capture with a
-  fresh stamp greened. The fix: ``captured_at`` (and the run-scoped
-  filename's embedded stamp, where present) is parsed and judged
-  against the reader's clock — a capture dated in the FUTURE beyond
-  the tolerance is THE REFUSAL, the fresh ``head_sha`` cannot
+* **THE EMPTY REGISTRY IS THE LOUD REFUSAL.** ``claims: []`` greens
+  nothing: zero claims is zero verdicts (the typed refusal above, the
+  bootstrapping case named in the refusal's own text, the exit
+  nonzero, NEVER the green). A future-only registry (every capture
+  rejected by the capture-time door below) reds for the same reason:
+  nothing honest was verified.
+* **THE CAPTURE-TIME DOOR — ``captured_at`` IS PARSED.** A 2030-dated
+  capture with a fresh stamp does not green. ``captured_at`` (and the
+  run-scoped filename's embedded stamp, where present) is parsed and
+  judged against the reader's clock — a capture dated in the FUTURE
+  beyond the tolerance is THE REFUSAL; the fresh ``head_sha`` cannot
   rescue the clock it rides on. THE TOLERANCE, stated: one day
   (``_FUTURE_TOLERANCE``) — the writer's wall clock is recorded
   zoned-less (``record_claim`` writes naive local time), so the
-  tolerance must absorb a zone-class skew between the writing and
+  tolerance absorbs a zone-class skew between the writing and
   reading machines; the future-dating class (years) is far past any
   honest skew a day cannot cover.
-* **THE VERIFIED HEAD IS THE REPO'S OWN HEAD** (D5, the severe one).
-  ``_head`` trusted ``GITHUB_EVENT_PATH``'s pull-request sha as the
-  verified head — an attacker-influenced env made the verifier judge
-  against a sha that isn't HEAD (observed: rc=0 with the verifier
-  printing "recorded at THIS head (ffffffffffff)" for a sha that
-  exists nowhere in the repo). The fix: the verified head is
-  ``git rev-parse HEAD`` — ALWAYS; the env face is CROSS-CHECKED,
-  never trusted: when the event carries a pull-request head sha, that
-  sha must exist in THIS checkout's history (an ancestor of the
-  checkout) AND differ from it by nothing behavioral — the off-by-one
-  rule's own exclusion set (the measurements estate plus the
-  non-behavioral paths) — the freshness law's own teeth (the
-  off-by-one rule) applied to the env's claim. A forged or impossible
-  sha — or one
-  whose source differs from the checked-out tree — is THE REFUSAL,
-  never rc=0. When the env sha passes the teeth it verifies nothing
-  on its own: the repo's head stands, and the off-by-one rule already
-  judges claims recorded at the env's sha against it. THE CARVE-OUT
-  IS RETIRED, named: the old merge-ref escape (verify the PR's own
-  head because the merge checkout carries main's side) was the
-  forged-head hole itself — the env's say-so installing a head — and
-  no workflow in this repo consumes it; under the current law a CI PR
-  checkout greens exactly when its checked-out tree is
-  source-identical to the claims' heads, which is the law's own
-  honest bar everywhere else.
+* **THE VERIFIED HEAD IS THE REPO'S OWN HEAD.** ``git rev-parse HEAD``
+  is the verified head — ALWAYS; the ``GITHUB_EVENT_PATH`` face is
+  CROSS-CHECKED, never trusted: when the event carries a pull-request
+  head sha, that sha must exist in THIS checkout's history (an
+  ancestor of the checkout) AND differ from it by nothing behavioral —
+  the off-by-one rule's own exclusion set applied to the env's claim.
+  A forged or impossible sha — or one whose source differs from the
+  checked-out tree — is THE REFUSAL, never rc=0. When the env sha
+  passes the teeth it verifies nothing on its own: the repo's head
+  stands, and the off-by-one rule already judges claims recorded at
+  the env's sha against it. There is no merge-ref escape: verifying
+  the PR's own head because the merge checkout carries main's side
+  would BE the forged-head hole (the env's say-so installing a head),
+  and no workflow in this repo consumes it; a CI PR checkout greens
+  exactly when its checked-out tree is source-identical to the claims'
+  heads.
 
-THE UNPARSABLE-CAPTURE RULING: the
-proposal treated an unparsable live claim as a refusal (red, not
-warn); the reads rejected that — the landed chain fix's own control
-pin (``test_the_honest_chain_stays_green``) builds an honest, fresh
-chain terminal whose synthetic capture carries no verdict shape, so
-the refusal would red the landed law's own control, and the estate's
-honest shapes (the staged slot's declaration is a convention of
-CONTENT, not of registry structure) are not separable from it by
-anything the verifier can read. Unparsable stays the typed WARNING —
-the ruling's defensible core (silence is the defect) is kept either
-way: an unparsable capture is never a silent pass. This paragraph IS
-the recorded decision; a future round that can distinguish the staged
-declaration structurally (a registry ``kind:`` field for slots) may
-revisit.
+The unparsable-capture ruling: an unparsable live claim stays the
+typed WARNING (never a refusal) — an honest, fresh chain terminal
+whose synthetic capture carries no verdict shape is a green estate's
+own control, so refusing would red the landed law's own control, and
+the staged slot's declaration is a convention of CONTENT, not of
+registry structure, not separable from it by anything the verifier can
+read. The ruling's defensible core holds either way: an unparsable
+capture is never a silent pass. A future round that can distinguish
+the staged declaration structurally (a registry ``kind:`` field for
+slots) may revisit.
 
 Usage:  python scripts/verify_evidence_heads.py [--runs-dir .measurements/runs]
 
@@ -347,10 +306,9 @@ def _stage_evidence_ref(ref: str) -> tuple[Path, Path, IO[str]]:
 REPO = Path(__file__).resolve().parent.parent
 
 #: THE VERDICT SHAPES the capture families actually write, scanned
-#: across the capture's FULL text (the door-edges round's fix — the
-#: first cut's first-3/last-12 window let a red verdict pushed mid-file
-#: green silently; a linear scan of a text file is measured cheap, the
-#: content-door round's +0.1s budget is the neighborhood). The
+#: across the capture's FULL text (a first-3/last-12 window greens a red
+#: verdict pushed mid-file; a linear scan of a text file is measured
+#: cheap — the content-door budget's neighborhood, +0.1s). The
 #: run-scoped stamp records ``rc=N`` (the writer's own header); pytest's
 #: tail records ``N failed``; the short-summary names ``FAILED tests/…``
 #: lines even when the count is suppressed. ``0 failed``/``rc=0`` are
@@ -368,8 +326,8 @@ _GREEN_SHAPES = (
     re.compile(r"\b0 errors\b"),
 )
 
-#: THE JSON VERDICT KEYS (the door-edges round's fix — the suffix alone
-#: used to green a JSON capture by construction). The estate's actual
+#: THE JSON VERDICT KEYS (the suffix alone would green a JSON capture by
+#: construction). The estate's actual
 #: band payloads carry none of these (they record MEASUREMENTS); a
 #: payload that DOES carry them gets its verdict read like any stamp.
 _JSON_RC_KEYS = ("rc", "returncode")
@@ -380,7 +338,7 @@ _JSON_COUNT_KEYS = ("failed", "errors")
 #: the capture instant: ``…-20261011T200831Z.txt``).
 _FILE_STAMP = re.compile(r"\d{8}T\d{6}Z?")
 
-#: THE CAPTURE-TIME DOOR'S TOLERANCE (D4's stated tolerance): one day.
+#: THE CAPTURE-TIME DOOR'S TOLERANCE: one day.
 #: The writer's wall clock is recorded ZONED-LESS (``record_claim``
 #: writes naive local time), so the tolerance must absorb a zone-class
 #: skew between the writing and reading machines — a day covers every
@@ -399,7 +357,7 @@ _NARROW_EXCLUSIONS = (
     ":(exclude).github",
 )
 
-#: THE DOCS-DERIVED STEMS (the review round's fix): the evidence kinds
+#: THE DOCS-DERIVED STEMS: the evidence kinds
 #: whose batteries READ the docs estate — mkdocs builds ``docs/``
 #: strict; the docs-example tests
 #: (``tests/_docs_examples.py::DOC_ROOTS = ("docs", "README.md")``)
@@ -411,14 +369,10 @@ _NARROW_EXCLUSIONS = (
 #: as a src/ merge would.
 _DOCS_SENSITIVE_STEM_PREFIXES = ("mkdocs-strict", "docs-examples", "docs-lane")
 
-#: THE NON-BEHAVIORAL ESTATE (the docs-exemption round's fix): the
+#: THE NON-BEHAVIORAL ESTATE: the
 #: pathspecs the off-by-one rule's diff half IGNORES for every OTHER
-#: stem — the narrow set above plus the non-behavioral paths. THE
-#: FAILURE MODE: main's head-stamp lint job fails on EVERY merge —
-#: including #696's DOCS-ONLY merge (``LEDGER.md`` alone) — because the
-#: first cut exempted only ``.measurements/``: a documentation edit
-#: re-staled every live claim (the recorded CI runs). THE
-#: LAW'S EDGE (qualified by the review round): a plain stem's claim
+#: stem — the narrow set above plus the non-behavioral paths. A plain
+#: stem's claim
 #: verifies the SOURCE + TEST tree, so the exemption set is exactly the
 #: paths that cannot alter that tree — docs and the readme/license/
 #: metadata class — and NEVER the behavioral paths (``src/``,
@@ -457,7 +411,7 @@ def _verified_head() -> tuple[str, str | None]:
     """The verified head — THE REPO'S OWN HEAD — and the env face's
     refusal, if the env's claim fails the law's cross-check.
 
-    THE LAW (the door-edges round's D5 fix): the head the claims are
+    THE LAW: the head the claims are
     verified against is ``git rev-parse HEAD``, env-influenceable
     never. The ``GITHUB_EVENT_PATH`` face (the CI PR checkout) is
     CROSS-CHECKED, never trusted: when the event payload carries a
@@ -472,9 +426,9 @@ def _verified_head() -> tuple[str, str | None]:
     REFUSAL (returned as the second element), never rc=0. When the
     env sha passes the teeth it verifies nothing on its own: the
     repo's head stands, and the off-by-one rule already judges claims
-    recorded at the env's sha against it (the old merge-ref carve-out —
-    verify the PR's own head — was the forged-head hole itself: the
-    env's say-so installing a head; retired, see the module docstring).
+    recorded at the env's sha against it (a merge-ref carve-out —
+    verifying the PR's own head — would be the forged-head hole itself:
+    the env's say-so installing a head; see the module docstring).
     """
     head = _git("rev-parse", "HEAD")
     event = os.environ.get("GITHUB_EVENT_PATH")
@@ -514,7 +468,7 @@ def _source_changes_since(head_sha: str, stem: str | None = None) -> bool:
     recorded on H is fresh at H2 when H2 is H plus
     measurement-and-docs-only changes — the source + test tree the
     claim verifies is content-identical. THE DOCS-DERIVED STEMS'
-    FALLBACK (the review round's fix): *stem* carrying a
+    FALLBACK: *stem* carrying a
     ``_DOCS_SENSITIVE_STEM_PREFIXES`` prefix names an evidence kind
     whose battery READS the docs estate — for those the exemption set
     is the NARROW one (``_NARROW_EXCLUSIONS``) and a docs-only merge
@@ -545,8 +499,7 @@ def _source_changes_since(head_sha: str, stem: str | None = None) -> bool:
 
 
 def _off_by_one_fresh(recorded: str, stem: str | None = None) -> bool:
-    """THE OFF-BY-ONE RULE with its own teeth (the door-edges round's
-    non-ancestor-stamp fix, taken — the fix is one cheap subprocess):
+    """THE OFF-BY-ONE RULE with its own teeth:
     *recorded* must be an ANCESTOR of HEAD — a sha that resolves
     nowhere, or a discarded/orphan commit that exists in the object
     store but is no part of this checkout's history, can never verify
@@ -554,7 +507,8 @@ def _off_by_one_fresh(recorded: str, stem: str | None = None) -> bool:
     BEHAVIORAL path (the diff half's exclusion set — the measurements
     estate plus the non-behavioral paths, NARROWED to the measurements
     estate + .github for the DOCS-DERIVED stems, see
-    ``_DOCS_SENSITIVE_STEM_PREFIXES``). ``git merge-base --is-ancestor``
+    ``_DOCS_SENSITIVE_STEM_PREFIXES``). One cheap subprocess:
+    ``git merge-base --is-ancestor``
     exits nonzero for both the unresolvable and the non-ancestor sha
     (one subprocess, the walk's cost — measured with the rest)."""
     ancestor = subprocess.run(
@@ -609,15 +563,14 @@ def _supersession_target(marked: str, runs_dir: Path) -> Path:
 
 def _json_verdict(payload: object) -> tuple[str, str] | None:
     """The JSON body's OWN verdict, read from its verdict fields (the
-    door-edges round's D2 fix — the suffix alone used to green a JSON
-    capture by construction).
+    suffix alone would green a JSON capture by construction).
 
     Returns ``(status, evidence)`` where status is ``"failure"`` (a
     verdict field carries a failing value: a nonzero ``rc``/
     ``returncode``, a positive ``failed``/``errors`` count), ``"green"``
     (verdict fields present, none failing), or ``None`` — NO verdict
     fields at all (the estate's actual band payloads: the body records
-    MEASUREMENTS, and the JSON family's old green stands).
+    MEASUREMENTS, and the JSON family's green stands).
     """
     if not isinstance(payload, dict):
         return None
@@ -643,11 +596,11 @@ def _json_verdict(payload: object) -> tuple[str, str] | None:
 def _content_verdict(path: Path) -> tuple[str, str, int | None]:
     """The capture's OWN verdict, parsed from its content — cheaply.
 
-    THE SCAN IS THE FULL FILE (the door-edges round's D1 fix): every
-    line is scanned for the verdict shapes, WHEREVER they sit — the
-    first cut's first-3/last-12 window let a red verdict pushed mid-file
+    THE SCAN IS THE FULL FILE: every
+    line is scanned for the verdict shapes, WHEREVER they sit — a
+    first-3/last-12 window would green a red verdict pushed mid-file
     by post-run chatter (pytest piped through ``tee``, which exits 0
-    honestly) green with red content on disk. A linear scan of a text
+    honestly). A linear scan of a text
     file is measured cheap (measured).
 
     Returns ``(status, evidence, line)`` where status is:
@@ -666,7 +619,7 @@ def _content_verdict(path: Path) -> tuple[str, str, int | None]:
     if path.suffix == ".json":
         # The JSON families: the body is loaded (a torn/unparsable body
         # is the warning) and its VERDICT FIELDS are read — the suffix
-        # alone never greens a failure-shaped body (D2).
+        # alone never greens a failure-shaped body.
         try:
             payload: object = json.loads(path.read_text())
         except (ValueError, OSError):
@@ -719,7 +672,7 @@ def _parse_stamp(raw: str) -> datetime | None:
 
 
 def _capture_time_door(stem: str, entry: dict[str, str], failures: list[str]) -> None:
-    """THE CAPTURE-TIME DOOR (the door-edges round's D4 fix): the
+    """THE CAPTURE-TIME DOOR: the
     effective claim's capture clocks — the registry's ``captured_at``
     and the run-scoped filename's embedded stamp, where present — are
     PARSED and judged against the reader's clock. A capture dated in
@@ -807,11 +760,11 @@ def verify(runs_dir: Path, head: str) -> tuple[list[str], list[str]]:
         )
     entries = load_claims(runs_dir)
     if not entries:
-        # THE EMPTY REGISTRY IS THE LOUD REFUSAL (the door-edges round's
-        # D3 fix): zero claims is zero verdicts — the loop over zero
-        # stems proves nothing, and the vacuous "the law holds" was the
-        # refusal. The refusal carries the warning-class content (the
-        # bootstrapping case is real and honest) INSIDE the nonzero
+        # THE EMPTY REGISTRY IS THE LOUD REFUSAL: zero claims is zero
+        # verdicts — the loop over zero
+        # stems proves nothing. The refusal carries the warning-class
+        # content (the
+        # bootstrapping case is real) INSIDE the nonzero
         # verdict: the state is honest, the verdict is never the green.
         return (
             [
@@ -1055,7 +1008,7 @@ def main() -> int:
             runs_dir = RUNS
         head, refusal = _verified_head()
         if refusal is not None:
-            # THE ENV-FORGED HEAD (D5): the env's claim failed the
+            # THE ENV-FORGED HEAD: the env's claim failed the
             # cross-check — the refusal, never rc=0.
             print(f"THE HEAD-STAMP LAW REDS (head {head[:12]}):")
             print(f"  {refusal}")

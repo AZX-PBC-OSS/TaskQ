@@ -47,7 +47,7 @@ Three tables, each partitioned on its own time column:
 * ``job_attempts_archive`` on ``started_at``, primary key widened to
   ``UNIQUE (job_id, attempt, started_at)`` for the same reason.
 
-The one structural loss is deliberate and loud: ``job_attempts_archive``'s
+The one structural loss, stated loudly: ``job_attempts_archive``'s
 foreign key to ``jobs_archive(id) ON DELETE CASCADE`` must drop, because
 no table (regular or hypertable) may reference a hypertable. Chunk drops
 replace the cascade: both tables convert with retention policies derived

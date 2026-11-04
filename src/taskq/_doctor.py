@@ -173,27 +173,32 @@ _IMBALANCE_STRAND_FACTOR: Final[float] = 4.0
 #: it elapsed.)
 _IMBALANCE_STRAND_FLOOR_S: Final[float] = 60.0
 
+#: Time units for the doctor's duration labels.
+_SECS_PER_DAY: Final[int] = 86400
+_SECS_PER_HOUR: Final[int] = 3600
+_SECS_PER_MINUTE: Final[int] = 60
+
 
 def _insights_window_label(window: timedelta) -> str:
     """The window as the findings quote it ("24h"), derived from the
     timedelta so the label cannot drift from the constant it names.
     Hours win below two days — the window's own docs quote 24h, not 1d."""
     seconds = window.total_seconds()
-    if seconds >= 172800 and seconds % 86400 == 0:
-        return f"{int(seconds // 86400)}d"
-    if seconds % 3600 == 0:
-        return f"{int(seconds // 3600)}h"
+    if seconds >= 2 * _SECS_PER_DAY and seconds % _SECS_PER_DAY == 0:
+        return f"{int(seconds // _SECS_PER_DAY)}d"
+    if seconds % _SECS_PER_HOUR == 0:
+        return f"{int(seconds // _SECS_PER_HOUR)}h"
     return f"{int(seconds)}s"
 
 
 def _format_eta(seconds: float) -> str:
     """An eta in the unit the operator would say it out loud in."""
-    if seconds >= 86400:
-        return f"{seconds / 86400:.1f} days"
-    if seconds >= 3600:
-        return f"{seconds / 3600:.1f} hours"
-    if seconds >= 60:
-        return f"{seconds / 60:.0f} minutes"
+    if seconds >= _SECS_PER_DAY:
+        return f"{seconds / _SECS_PER_DAY:.1f} days"
+    if seconds >= _SECS_PER_HOUR:
+        return f"{seconds / _SECS_PER_HOUR:.1f} hours"
+    if seconds >= _SECS_PER_MINUTE:
+        return f"{seconds / _SECS_PER_MINUTE:.0f} minutes"
     return f"{seconds:.0f}s"
 
 

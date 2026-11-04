@@ -467,14 +467,14 @@ class LoopOps(_LoopHost):
                     return
                 carry = cast(object, memo_doc.get("feedback"))  # the walk's boundary
             elif memo is not None and memo.status == "failed":
-                # THE REPLAY HONORS THE RECORDED TRUTH (the shape error's
-                # ledger law): a FAILED iteration's terminal is the named
+                # The replay honors the recorded truth (the shape error's
+                # ledger rule): a FAILED iteration's terminal is the named
                 # typed error the recording made — the loop exhausts with
                 # THAT class and message (the diagnosis names it), the
                 # body is never re-run (one invocation per iteration),
-                # and the raw return is never re-threaded AS A REFINE
-                # (the fabrication the pre-fix ledger committed: a
-                # SUCCEEDED row laundering a wrong-shape return).
+                # and the raw return is never re-threaded AS A REFINE —
+                # that would launder a wrong-shape return into a
+                # SUCCEEDED row.
                 await self._exhaust_loop(
                     flow_id,
                     row,
@@ -615,13 +615,13 @@ class LoopOps(_LoopHost):
                     )
                     return
                 if not isinstance(outcome, Refine):
-                    # THE SHAPE ERROR NAMED (the ledger's truth law): a
+                    # The shape error, named (the ledger's truth rule): a
                     # body returning neither Done nor Refine is the TYPED
                     # shape error — the iteration's terminal ALREADY
                     # recorded it (above), and the loop exhausts with the
-                    # named class so the diagnosis names it. The pre-fix
-                    # bare assert laundered the wrong-shape return into a
-                    # SUCCEEDED iteration whose memo replayed AS A REFINE.
+                    # named class so the diagnosis names it; a bare assert
+                    # would launder the wrong-shape return into a
+                    # SUCCEEDED iteration whose memo replays AS A REFINE.
                     await self._exhaust_loop(
                         flow_id,
                         row,
@@ -679,13 +679,13 @@ class LoopOps(_LoopHost):
         """The iteration's ledger terminal (the §13.3 trace shape: the
         iteration index + the Done/Refine kind per iteration).
 
-        THE LEDGER RECORDS THE TRUTH (the shape error's law): a body
+        The ledger records the truth (the shape error's rule): a body
         returning neither Done nor Refine records a FAILED terminal with
         the TYPED ``LoopBodyShapeError`` class — never a SUCCEEDED row
         whose feedback-shaped payload the memo replay would re-thread as
-        a Refine (the fabrication the pre-fix recorder committed: the
-        'other' kind was laundered into ``{"done": false, "feedback":
-        …}`` and its computed kind deleted)."""
+        a Refine (the 'other' kind must not be laundered into
+        ``{"done": false, "feedback":
+        …}`` with its computed kind deleted)."""
         from taskq.workflows.api._loop import Done, Refine
         from taskq.workflows.api._sql_loop import LOOP_ERROR_SHAPE
 

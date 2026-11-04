@@ -558,18 +558,19 @@ class WorkflowApp:
         shipped fence-ON (``EMIT_MAX_IN_FLIGHT_DEFAULT``); ``None`` is
         the EXPLICIT unbounded (the author takes the dragon).
 
-        THE SIGNAL CHANNEL is NOT a declaration param (the ergonomic
-        tail's fix): the old ``channel=`` was accepted and silently
+        The signal channel is NOT a declaration param: a ``channel=``
+        declaration would be accepted and silently
         DROPPED — a declaration that does nothing is a lie wearing the
         signature. The signal channel is the app's own method:
         :meth:`channel` (the declared gates' registry) — ONE name, one
-        surface (the glossary law)."""
-        # THE PLACEMENT'S DECLARATION-SITE GUARD: the placement
+        surface.
+        """
+        # The placement's declaration-site guard: the placement
         # names a real actor and a real queue — a non-str (or empty)
         # value is the refused declaration, never a silent anything.
         for field_name, value in (("actor", actor), ("queue", queue)):
             if value is not None and (
-                not isinstance(value, str) or not value.strip()  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: runtime guard against callers that bypass the type checker (the app.actor decorator's own law).
+                not isinstance(value, str) or not value.strip()  # pyright: ignore[reportUnnecessaryIsInstance] — runtime guard against callers that bypass the type checker.
             ):
                 raise ValueError(
                     f"the workflow {name!r}'s {field_name}= must be a "
@@ -640,12 +641,10 @@ class WorkflowApp:
         through: an invalid graph raises here (the door), never at
         first claim."""
         compiled = self._compile(name)
-        # THE REGISTRATION DOOR VALIDATES (the E8-late seam's fix —
-        # F-LOOP-7's finding): compile + register is the LAST compile-time
+        # The registration door validates: compile + register is the LAST compile-time
         # seam a fleet passes through before rows exist; an invalid graph
         # registered here is a fleet that refuses at first claim, never at
-        # compile — E8's own docstring's claim ("refuse at compile") made
-        # true. Errors raise; warnings report (the zero-warning-budget
+        # compile. Errors raise; warnings report (the zero-warning-budget
         # pins' teeth read them, the door never refuses on a warning).
         from taskq.workflows.api._validate import validate_compiled
 
@@ -732,13 +731,12 @@ def _register_bodies(
     (``<map>.item`` — the fork's per-item identity): the alias is the
     same body, registered under the key the child rows carry.
 
-    THE ESCALATION STEP (the escalation fix): a loop declaring
+    The escalation step: a loop declaring
     ``on_exhausted="escalate"`` registers ITS escalation body under the
     ``loop.escalation`` step key — the author's ``escalates_to=`` body,
     or the framework default. The outbox's consumer job resolves its
-    body from HERE (D1) at claim: the escalation is never the
-    ``loop_escalation``-actor ghost (a hardcoded binding whose body
-    never resolves). ONE escalation step per workflow: two loops
+    body from HERE (D1) at claim, so the escalation is never a
+    dead letter. ONE escalation step per workflow: two loops
     declaring DIFFERENT escalation bodies is the refused shadow."""
     from taskq.workflows.api._loop import (
         ESCALATION_STEP_KEY,

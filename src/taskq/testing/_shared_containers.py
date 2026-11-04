@@ -1,11 +1,11 @@
 """Shared test-container machinery: ONE Postgres + ONE Dragonfly per pytest invocation.
 
-Under pytest-xdist every worker process gets its own fixture ``session``, a
-``-n 4`` run with the old per-worker session containers booted **four Postgres
+Under pytest-xdist every worker process gets its own fixture ``session``; a
+``-n 4`` run with per-worker session containers boots **four Postgres
 plus four Dragonfly containers**, all hammering the same Docker daemon. That
 contention is the measured cause of heavy PG tests (property-sweep equivalence,
 state-transition equivalence, Postgres sweeps, sliding-window rate limits)
-tripping internal timeouts intermittently: they passed in isolation and failed
+tripping internal timeouts intermittently: they pass in isolation and fail
 under ``-n 4``. The tuning is inherited from the implementation this design was
 ported from, measured there: one tuned container instead of four contending ones,
 and per-worker forced ``DROP DATABASE`` checkpoints that went from 2-14s each
@@ -15,7 +15,7 @@ Blast-radius trade-off, stated next to that tuning rationale: ONE shared
 container concentrates the failure signature of an out-of-band ``docker rm``
 or daemon crash onto every worker at once, an instrumented kill of the shared
 pair errored ~84 tests across every PG module, vs ~1/4 of the run per worker
-under the old per-worker topology. That concentration is inherent to sharing
+when each worker boots its own pair. That concentration is inherent to sharing
 and accepted for the contention win above; the ``[TaskQ]`` decision logs below
 (``pair-started`` / ``pair-reused`` / ``pair-fresh-started`` / ``pair-stopped``
 / ``swept``) exist so such an event is diagnosable from the run's output.

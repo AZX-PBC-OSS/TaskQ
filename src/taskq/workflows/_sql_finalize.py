@@ -197,8 +197,8 @@ VALUES ($1, $2, $3, $4, $5, $6::jsonb)
 # declaration > the column default 0) — the priority surface's enqueue
 # face; the unset case binds the column default's own value, so the
 # pre-fix rows are byte-identical.
-# start_to_close is the row's DECLARED DEADLINE (the wf start_to_close
-# fix): the RESOLVED value the caller computed, stamped into the
+# start_to_close is the row's declared deadline: the RESOLVED value the
+# caller computed, stamped into the
 # column the vanilla rows always had (01.00.00_01:85 — nullable, no
 # default); the unset case binds NULL — the pre-fix row byte-identical
 # (the enforcement falls to the worker's default_start_to_close at claim
@@ -224,8 +224,8 @@ VALUES ($1, $2, $3, $4::jsonb, 0, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13,
 # retry_kind rides the vanilla vocabulary. priority is the child's RESOLVED
 # value (the builder's precedence arithmetic — the priority surface); the
 # unset case binds 0, the column default's own value (pre-fix identical).
-# start_to_close is the child's DECLARED DEADLINE (the wf start_to_close
-# fix — the column the vanilla rows always had); the unset case binds
+# start_to_close is the child's declared deadline (the column the
+# vanilla rows always had); the unset case binds
 # NULL (pre-fix identical).
 # fairness_key is the child's DISPATCH COHORT (the wf fairness stamp):
 # one cohort per run (the flow_id), so the round-robin dispatch

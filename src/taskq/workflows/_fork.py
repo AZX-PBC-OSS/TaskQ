@@ -86,17 +86,17 @@ async def insert_fork(
                 + (f":{c.map_index}" if c.map_index is not None else "")
                 for c in chunk
             ],
-            # THE CHILDREN'S RESOLVED PRIORITY (the priority surface):
+            # The children's resolved priority (the priority surface):
             # each child's own resolution rides its row; the unset case
             # coalesces to the column default's own value (the pre-fix
             # byte-identical row).
             [c.priority if c.priority is not None else 0 for c in chunk],
-            # THE CHILDREN'S DECLARED DEADLINE (the wf start_to_close
-            # fix): each child's own resolution rides its row; the
+            # The children's declared deadline: each child's own
+            # resolution rides its row; the
             # unset case binds NULL (the column's own default — the
             # pre-fix byte-identical row).
             [c.start_to_close for c in chunk],
-            # THE CHILDREN'S DISPATCH COHORT (the wf fairness stamp): one
+            # The children's dispatch cohort (the fairness stamp): one
             # cohort per run (the flow_id) — the round-robin dispatch
             # interleaves runs instead of draining them as one FIFO
             # stream.
@@ -186,18 +186,18 @@ async def insert_fork(
                 ),
                 f"workflow:{flow_id}",
                 f"wf:{flow_id}:{parent_step_key}:{fork.join.step_key}",
-                # THE JOIN'S RESOLVED PRIORITY (the priority surface): the
+                # The join's resolved priority (the priority surface): the
                 # SOURCE's resolution — the join is the source's own
                 # cohort (the placement fields say so); the arms'
                 # overrides apply to the arm children, never the join.
                 # The unset case coalesces to the column default's own
                 # value (the pre-fix byte-identical row).
                 fork.priority if fork.priority is not None else 0,
-                # THE JOIN'S DECLARED DEADLINE (the wf start_to_close
-                # fix): the SOURCE's resolution (the join is the
+                # The join's declared deadline: the SOURCE's resolution
+                # (the join is the
                 # source's own cohort); the unset case binds NULL.
                 fork.start_to_close,
-                # THE JOIN'S DISPATCH COHORT (the wf fairness stamp):
+                # The join's dispatch cohort (the fairness stamp):
                 # the run's flow_id — the join is claimable work like
                 # any node of the run.
                 str(flow_id),

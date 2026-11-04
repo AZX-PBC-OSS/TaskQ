@@ -125,10 +125,11 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
     ladder untouched); ``transient = the ladder`` (the body's ordinary
     failures — the backoff curve, then the terminal).
 
-    THE BODY BOUNDARY consults this BEFORE the ladder
+    The body boundary consults this BEFORE the ladder
     (:meth:`LadderOps._ladder_or_fail`): a body-raised wrong-shape
-    emission used to burn the whole ladder and terminalize as a raw
-    laddered failure — the deterministic death, mislabeled transient.
+    emission is deterministic here, never a raw
+    laddered failure — the deterministic death must not be
+    mislabeled transient and burn the ladder.
     """
     from taskq.exceptions import ReservedTimerNamespaceError
     from taskq.workflows._childflow import ChildFlowLostError, SpawnDepthExceededError
@@ -142,8 +143,8 @@ def is_deterministic_authoring_failure(exc: BaseException) -> bool:
         PageDivergedError,
         MapIndexExhaustedError,
         FanInBoundExceededError,
-        # E17 — the reserved-timer-prefix mint refusal (the timer-fixes
-        # lane's fix 1): the payload model's NAME is the code's own —
+        # E17 — the reserved-timer-prefix mint refusal: the payload
+        # model's NAME is the code's own —
         # re-running the body re-raises the same refusal on every
         # attempt (a retry budget spent on it is the record's lie).
         ReservedTimerNamespaceError,
@@ -180,14 +181,14 @@ class LadderOps(_LadderHost):
     __slots__ = ()
 
     def _map_child_ladder_terms(self, node_key: str) -> tuple[int, str]:
-        """The fork-spawned map child's LADDER TERMS (the F3 fix): the
+        """The fork-spawned map child's ladder terms: the
         SOURCE's ``map_max_attempts`` + ``retry_kind`` — the same
         inheritance the progress schema's read carries
         (:meth:`_progress_schema`: the ``.item`` / ``.item:`` derived
         namespaces have no decl of their own). A step key that is no
         map child (an outbox consumer, the escalation step) keeps the
-        engine's defaults (3 / transient) — the pre-fix fallback,
-        correct for every key the fork never spawned."""
+        engine's defaults (3 / transient) — correct for every key the
+        fork never spawned."""
         source: Any = None
         if node_key.endswith(".item"):
             source = self.compiled.nodes.get(node_key[: -len(".item")])

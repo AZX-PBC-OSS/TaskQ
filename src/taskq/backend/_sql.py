@@ -238,7 +238,7 @@ UPDATE_JOBS_LOCK_SQL_TEMPLATE = (
 # The arms are UNIONed (deduplicated): a row matching two arms (a
 # heartbeat_timeout row whose lease is also due) must appear once, and
 # the outer statement re-checks the full core either way, so arm
-# membership is a pure over-approximation of the old OR - the renewed
+# membership is a pure over-approximation of the OR spelling - the renewed
 # row set is provably identical. The join is ``UPDATE ... FROM`` with
 # ``jobs.id = due.id`` so the planner drives it from ``due`` (the
 # shortlist) into PK lookups; an ``id IN (SELECT ...)`` semi-join could

@@ -174,7 +174,7 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
 async def _get(self: "InMemoryBackend", job_id: JobId) -> JobRow | None:
     """One job row by id, hot table first, archive tier on a hot miss.
 
-    The twin of ``taskq.backend._reads._get`` (the parity fix): a
+    The twin of ``taskq.backend._reads._get``: a
     row the prune simulation moved to ``_archive`` answers from there
     with ``archived=True`` on the row, the same jobs-then-archive probe
     the PG backend and the CLI apply. The result-TTL view does NOT

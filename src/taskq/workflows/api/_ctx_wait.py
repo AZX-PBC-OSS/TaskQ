@@ -240,8 +240,8 @@ class CtxWaitOps(WaitHost):
             register_signal_models,
         )
 
-        # E17 — THE RESERVED NAMESPACE AT THE MINT (the timer-fixes
-        # lane's fix 1): a payload model NAMED inside the durable
+        # E17 — the reserved namespace at the mint: a payload model NAMED
+        # inside the durable
         # timer's reserved ``__timer__`` prefix would mint a hold every
         # reader mis-identifies as the CLOCK's (invisible to
         # HitlClient.list(), unanswerable, never fail-closing, fired at
@@ -251,7 +251,7 @@ class CtxWaitOps(WaitHost):
         for model_name in names:
             refuse_reserved_timer_name(model_name, mint="ctx.wait_signal")
 
-        # THE CATALOG (the typed door's runtime registry): this process
+        # The catalog (the typed door's runtime registry): this process
         # ran the wait site — the deliver boundary validates against
         # THESE models (D1's discipline, the deliver path's face).
         register_signal_models(
@@ -329,10 +329,10 @@ class CtxWaitOps(WaitHost):
                 else 0
             )  # pyright: ignore[reportIndexType,reportArgumentType]
             cursor = row_iteration if is_loop_kind else row_cursor
-            # EVERY WAIT-SITE READ CARRIES THE MAP INDEX (the F2 fix):
+            # Every wait-site read carries the map index:
             # a MAP SIBLING's answer queue / held representation /
-            # timeout face are the SIBLING'S OWN rows — the pre-fix
-            # node_key-only reads let sibling A's hold contaminate
+            # timeout face are the SIBLING'S OWN rows — a
+            # node_key-only read would let sibling A's hold contaminate
             # sibling B's wait (the held-representation wedge) and
             # sibling B's resume steal sibling A's delivered answer (the
             # answer theft). `IS NOT DISTINCT FROM` keeps the plain
@@ -535,14 +535,14 @@ class CtxWaitOps(WaitHost):
 
         if not isinstance(payload, dict):
             return payload
-        payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType]  # Why: the answer-queue's jsonb decode — the Any-contract walk's boundary (the isinstance guard above is the runtime shape check).
+        payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType] — the answer-queue's jsonb decode, the Any-contract walk's boundary (the isinstance guard above is the runtime shape check).
         fitted = resolve_payload_fit(models, payload_doc, discriminator)
         return cast(Any, fitted.model_validate(payload_doc))
 
     async def signal(self, name: str) -> Any:
         """Read a DELIVERED signal's payload on resume (the
         the payload rides the ROW; the author never hand-rolls a side
-        table). THE READ IS THE SIBLING'S OWN (the F2 fix): the
+        table). The read is the sibling's own: the
         map_index filter keeps a map sibling off a sibling's answers."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(

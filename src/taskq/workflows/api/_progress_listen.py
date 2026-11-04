@@ -22,12 +22,12 @@ THE FAN-OUT, NOT A PARTITION (P7's law, carried): every subscriber —
 OWN queue and its OWN end-of-stream sentinel; two concurrent consumers
 each see EVERY event.
 
-THE COALESCE ORDER (the backpressure's law — the asymmetry's law on the
+The coalesce order (the backpressure rule on the
 push face): every queue is drop-oldest on overflow. The writer NEVER
 blocks; the NEWEST events survive; a slow consumer loses OBSERVABILITY
 FIRST, correctness never — the row is the truth, the poll converges.
 
-THE OPERATIONAL LANDMINES (the listener's own four, verbatim): the
+The operational landmines (the listener's own four): the
 PgBouncer transaction-pooling mode silently breaks LISTEN (the
 dedicated connection IS the fix); the dedicated connection is ONE POOL
 SLOT for the stream's life (size the pool for the streams you run);
@@ -36,7 +36,7 @@ fork); and the run-scoped backfill is bounded by THIS run's node count
 — one listener per RUN is the shape (the SSE face's own scope), never
 one per browser tab beyond that.
 
-THE CHANNEL IS GLOBAL; THE SCHEMA RIDES THE PAYLOAD (P8): the listener
+The channel is global; the schema rides the payload (P8): the listener
 filters by the payload's ``schema`` field — the isolation between the
 estate's schemas IS this filter. AND the run filter is the listener's
 own scope: a knock whose ``flow_id`` is another run's is dropped here.
@@ -196,10 +196,8 @@ class ProgressListener:
 
     async def stop(self) -> None:
         """Stop the pump and release the dedicated connection, then end
-        EVERY subscriber with its OWN sentinel (the pre-fix single
-        ``None`` on one shared queue stranded all but one waiter — P7's
-        rejected shape; the teardown is SHIELDED: a cancellation
-        delivered while the pump's own finally releases the LISTEN
+        EVERY subscriber with its OWN sentinel (the teardown is SHIELDED: a
+        cancellation delivered while the pump's own finally releases the LISTEN
         connection must not strand it against the pool cap)."""
         self._closing = True
         pump, self._pump = self._pump, None

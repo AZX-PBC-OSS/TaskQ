@@ -525,8 +525,8 @@ class Exit[T]:
 class RouteArm[R]:
     """ONE typed route arm: the arm's body + the PER-ARM placement
     override (R4 — ``processA`` on the gpu queue, ``processB`` on the io
-    queue) + the PER-ARM admission terms (the consumer-face lane's FIX
-    2 — ``rate_limits=[TokenBucket(...)]``; "5 concurrent" is not
+    queue) + the PER-ARM admission terms
+    (``rate_limits=[TokenBucket(...)]``; "5 concurrent" is not
     "50/min" under varying latency). The generic ``R`` is the arm body's
     declared return — the route's join promise solves its
     ``Promise[list[R]]`` to the UNION of the arms' returns (the typed
@@ -854,11 +854,11 @@ class BuildGraph:
         #: wired from a promise whose home graph is NOT this recorder.
         #: The verbs RECORD (never raise mid-build — the report is
         #: one-pass); validate REJECTS (``E7-cross-graph-promise``,
-        #: error — the graph cannot run). The rejected shape: a foreign
+        #: error — the graph cannot run). The refused shape: a foreign
         #: promise wired under a colliding key builds a silently WRONG
         #: edge to this app's own same-named node.
         self.smuggles: tuple[tuple[str, str], ...] = ()
-        #: THE WORKFLOWDEF'S OWN PLACEMENT: the ``@app.workflow``
+        #: The WorkflowDef's own placement: the ``@app.workflow``
         #: decorator's declared (actor, queue) — set at compile BEFORE
         #: the build fn runs, so the LOOP's fallback placement (the
         #: wiring verbs read it mid-build) resolves the same cohort the
@@ -994,8 +994,8 @@ def step[R](
     wrong shape refused (the declaration is what makes a separate UI
     render the emission — the context-contract law).
 
-    ``rate_limits=`` is the node's ADMISSION TERMS (the consumer-face
-    lane's the admission terms — the vanilla ``@actor``'s own face): the claim path
+    ``rate_limits=`` is the node's ADMISSION TERMS (the vanilla
+    ``@actor``'s own face): the claim path
     acquires the buckets through the SAME registry the vanilla pre-flight
     reads (a denial snoozes the row budget-free — the queue-concurrency
     fence's own path); the fork stamps the names onto the child rows so
@@ -1191,17 +1191,16 @@ def step[R](
     # THE ADDRESS-SCOPE REFUSALS (the cache hardening round): two more
     # mechanically-impossible shapes, both LIES the address cannot see —
     #
-    # * the body reads ``ctx.input`` (the ctx-input fix — THE CROSS-TENANT LEAK):
-    #   the address covers the WIRED args only; the FLOW input never
+    # * the body reads ``ctx.input`` — the cross-tenant leak: the address
+    #   covers the WIRED args only; the FLOW input never
     #   enters it. A cached answer produced under one flow input serves
     #   a LATER run whose flow input differs — tenant A's answer
-    #   delivered to tenant B, terminal-success, audits clean (the live
-    #   repro recorded live). The
+    #   delivered to tenant B, terminal-success, audits clean. The
     #   typed refusal names the fix: lift the flow input into the
     #   dataflow with an UNcached upstream step and wire its result as a
     #   PARAM — the param enters the address, the value differs per
     #   input, the cache caches per value.
-    # * the body returns the Exit sentinel (the exit-store fix): an Exit
+    # * the body returns the Exit sentinel: an Exit
     #   terminalizes through the exit finalize, which the success-only
     #   store never sees — cache=True would silently no-op (every run
     #   re-executes the body while the operator believes it caches).
@@ -1254,10 +1253,10 @@ def step[R](
             "looks armed. Define the body as a module-level def its "
             "source can be read from, or drop cache=True"
         )
-    # THE SMUGGLE CHECK (the smuggle class): a promise arg whose home
+    # The smuggle check (the smuggle class): a promise arg whose home
     # recorder is NOT this graph is RECORDED — validate rejects it
     # (E7-cross-graph-promise, error) before any row is written. The
-    # rejected shape: a foreign promise wired under a colliding key
+    # refused shape: a foreign promise wired under a colliding key
     # resolves its edge against THIS app's own same-named node — a
     # silently WRONG edge, clean at build, invisible to every rule that
     # reads only keys.
@@ -1440,13 +1439,12 @@ def map_source[S, R](
             "graph — maps attach to a wired source"
         )
     if source_node.map_item is not None or source_node.map_arms is not None:
-        # THE DOUBLE-ATTACH REFUSAL, BOTH SPELLINGS (the fix — the
-        # message-level lie fixed): the pre-fix check read map_item
-        # only — a map over a ROUTED source attached ON TOP silently
-        # (the map_item clobbered the route's placement fields, the
+        # The double-attach refusal, both spellings: a map over a ROUTED
+        # source attached ON TOP would
+        # clobber the route's placement fields (the
         # route's arms dead, the runner's map branch winning the elif),
-        # and the error's own text ("already carries a map") lied about
-        # the attachment it refused. Both attachments refused, the text
+        # and an error that said only "already carries a map" would
+        # misname the attachment it refused. Both attachments refused, the text
         # names WHICH.
         carried = "a map" if source_node.map_item is not None else "a typed route"
         raise WorkflowBuildError(
@@ -1466,7 +1464,7 @@ def map_source[S, R](
     # body carries capacity terms and the placement keeps the node's
     # actor (the map has no actor override — ``map_queue`` only): the
     # terms FLOW into the node's unset slots (the children share the
-    # node's cohort), never silently dropped. THE GATE IS IS-HANDLE, not
+    # node's cohort), never silently dropped. The gate is is-handle, not
     # is-capped: the OWNER is a carried value on every handle (the
     # default "operator" is a value, not an absence), so a default
     # handle meeting a node that already carries a DIFFERENT owner is
@@ -1492,7 +1490,7 @@ def map_source[S, R](
     return cast(
         "Promise[list[R]]",
         Promise(join_key, list[item_type] if isinstance(item_type, type) else object, graph),
-    )  # Why: the join promise's STATIC type is the flat Promise[list[R]] (R from the per-item body); the runtime data_type stays the wiring's DECLARATION read back by validate(). The constructor does not bind R — the cast is the seam.
+    )  # the join promise's STATIC type is the flat Promise[list[R]] (R from the per-item body); the runtime data_type stays the wiring's declaration read back by validate(), and the constructor does not bind R — the cast is the seam.
 
 
 def route_child_key(source_key: str, type_tag: str) -> str:
@@ -1547,20 +1545,20 @@ def _attach_route[S](
     normalized: dict[str, RouteArm[object]] = {}
     tag_owners: dict[str, type] = {}  # the tag injectivity's ledger (the twin refusal reads it)
     for key, value in arms.items():
-        if not isinstance(key, type):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the keys are statically `type` — but the STRING KEY is the lie this door rejects (the corpus's probe rides it; E13's own pattern: the runtime check IS the subject).
+        if not isinstance(key, type):  # pyright: ignore[reportUnnecessaryIsInstance] — the keys are statically `type`, but the string key is the lie this door rejects (E13's pattern: the runtime check IS the subject).
             raise WorkflowBuildError(
                 f"route() arm key {key!r} is not a TYPE — the route's keys "
                 "are the source's union MEMBERS (the type IS the tag; a "
                 "string key is the enum face's habit, refused here)"
             )
-        # THE TAG-INJECTIVITY REFUSAL (the fix — the same-qualname
-        # twin): the tag (module.qualname) is the arms' IDENTITY — two
+        # The tag-injectivity refusal: the tag (module.qualname) is the
+        # arms' IDENTITY — two
         # distinct classes sharing one tag (the same-qualname twin:
         # same module, same qualname — a class defined twice, a helper
-        # factory's products) collapsed SILENTLY, the second arm
-        # overwriting the first in the normalized map (the route routed
-        # the twin's elements to the WRONG body, clean at build). The
-        # refusal names both owners and the fix.
+        # factory's products) would collapse SILENTLY, the second arm
+        # overwriting the first in the normalized map (the route would
+        # route the twin's elements to the WRONG body, clean at build).
+        # The refusal names both owners and the remedy.
         tag = type_tag(key)
         owner = tag_owners.get(tag)
         if owner is not None and owner is not key:
@@ -1579,22 +1577,22 @@ def _attach_route[S](
             "RouteArm[object]",
             value if isinstance(value, RouteArm) else RouteArm(body=value),
         )
-        # THE PRIORITY DOMAIN (the step()'s own law — the wiring site
+        # The priority domain (step()'s own law — the wiring site
         # refuses before any row exists): the arm's override checked at
         # the same door the arms normalize through (both map_source's
         # dict form and route() lower HERE).
         if arm.priority is not None:
             check_priority_domain(arm.priority, what=f"route arm {tag!r}'s priority")
-        # THE DEADLINE'S DOMAIN (the same door, the wf start_to_close
-        # fix): the arm's own bound checked at the wiring — the same
+        # The deadline's domain (the same door): the arm's own bound
+        # checked at the wiring — the same
         # refusal the step's and the actor's declarations raise.
         check_start_to_close_decl(arm.start_to_close, what=f"route arm {tag!r}'s")
-        # THE ARM'S OWN OWNER SHAPE DOOR (the owner axis — the
+        # The arm's own owner-shape door (the owner axis — the
         # priority surface's door shape): the arm's declared owner is
         # exactly one of the two names, validated at the wiring both
         # this lower and the map_source dict form share.
         validate_capacity_owner(arm.capacity_owner, what=f"route arm {tag!r}'s")
-        # THE ARM'S RESERVATION-COHORT DOOR: an arm declares no payload
+        # The arm's reservation-cohort door: an arm declares no payload
         # of its own — a keyed reservation in an arm's ``reservations=``
         # could only re-derive per element (the per-item bucket the
         # cohort law never stamps). Refused at the wiring, the rule
@@ -1608,7 +1606,7 @@ def _attach_route[S](
                     "refused declaration — an arm declares no payload of its "
                     "own, so the ref could only re-derive per element (a "
                     "per-item bucket the run's cohort law never stamps). "
-                    "THE RULE: a fan-out source's children RIDE the source "
+                    "The rule: a fan-out source's children RIDE the source "
                     "row's already-resolved reservation names — one concrete "
                     "bucket per RUN. Declare the keyed reservation on the "
                     "source step (its declared payload face resolves it), "
@@ -1698,7 +1696,7 @@ def _attach_route[S](
             "downstream cacheable step (its deterministic, "
             "addressable subwork) carry the cache=True"
         )
-    # THE UNION MEMBERS, RESOLVED (the same resolution E5 and the codec
+    # The union members, resolved (the same resolution E5 and the codec
     # read — the resolved-hints seam; the actor handle unwrapped first).
     source_body = source_node.body
     if source_body is not None:
@@ -1707,18 +1705,16 @@ def _attach_route[S](
         returned = hints.get("return")
         members: set[type[BaseModel]] = set()
         if returned is None:
-            # THE MESSAGE'S TRUTH (the fix — the "does not declare"
-            # lie fixed): an UNRESOLVABLE return annotation (a
+            # The message's truth: an UNRESOLVABLE return annotation (a
             # function-scope model, a string the compile cannot chase —
             # body_hints resolved {}) is not a body that "does not
             # declare" — it declared and the compile CANNOT RESOLVE it.
-            # The refusal names the resolution failure (the fix: name
+            # The refusal names the resolution failure (the remedy: name
             # the model at module scope so the annotation resolves).
             #
-            # THE TWO FACES, DISTINGUISHED (the earlier fix collapsed
-            # them: a body with NO return
-            # annotation also resolves to hints {} and got the
-            # CANNOT-RESOLVE refusal — a lie in the OTHER direction). The
+            # The two faces, distinguished — a body with NO return
+            # annotation also resolves to hints {} and would get the
+            # CANNOT-RESOLVE refusal, a lie in the other direction. The
             # discriminator is the RAW annotation dict's own "return" key
             # (presence survives every resolution failure; the strings'
             # VALUES never resolve here):
@@ -1928,7 +1924,7 @@ def gather[R](
     elements and the join degrades to ``Promise[list[object]]``
     honestly). The join's default body packs the decoded parents; a
     consumer of the gather's promise is the join's downstream (a NORMAL
-    step — the cascade fix)."""
+    step)."""
     if not promises:
         raise WorkflowBuildError(
             "gather([]) is the stranded invisible join — a join over zero "
@@ -1936,7 +1932,7 @@ def gather[R](
         )
     graph = promises[0].graph
     node_key = graph.auto_key("gather")
-    # THE SMUGGLE CHECK (the same finding step() runs):
+    # The smuggle check (the same check step() runs):
     # every joined promise must belong to the ACTIVE recorder, not merely
     # to the first promise's graph (a build running under one graph while
     # joining promises from two others is exactly the smuggle).

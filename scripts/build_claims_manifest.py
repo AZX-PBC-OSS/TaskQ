@@ -1,4 +1,4 @@
-"""THE CLAIMS REGISTRY'S MIGRATION PASS (run
+"""The claims registry's migration pass (run
 once; kept for the record and for dry/other estates).
 
 Indexes every existing capture under ``.measurements/runs/`` into the

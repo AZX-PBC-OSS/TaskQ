@@ -14,13 +14,13 @@ the resume. Send twice = no-op: two concurrent delivers → exactly ONE
 ``delivered`` result, exactly one resume. A deliver that validates but
 cannot resume (a cancelled flow, a stale epoch) = the TYPED
 ``DeliveryResult(status="refused", ...)`` the deliverer SEES — never a
-silent drop (the proven adversarial shape: the smuggled
+silent drop (the smuggled
 ``Approval.model_construct(verdict=42)`` is refused at the boundary with
 the named error, the hold SURVIVES, the worker never crashes).
 
 RESUME-NOT-RETRY: a hold's resume consumes NO
 ladder attempts — the ledger distinguishes ``awaited`` from ``failed``;
-the ladder counts ``failed`` only (the proven matrix:
+the ladder counts ``failed`` only (the pinned matrix:
 ``awaited → failed → failed`` ENTERS the ladder; ``awaited →
 succeeded`` never touches it). The shared-counter variant — the claim
 incrementing the ladder on every claim, so 2 holds + max_attempts=3 =
@@ -478,7 +478,7 @@ def refuse_reserved_timer_name(name: str, *, mint: str) -> None:
     fail-closing (the expiry arm never abandons the prefix), and fired
     at the deadline into a ``SignalPayloadError`` death (the wake cannot
     fit a human payload model). The refusal is at the MINT — no row is
-    written — and NAMES the fix. The TIMER's own mint
+    written — and NAMES the fix. The timer's own mint
     (:func:`register_timer_hold`) composes this prefix by construction
     and never passes through here."""
     if starts_with_timer(name):
@@ -1309,7 +1309,7 @@ class HitlClient:
         """The pending holds for ONE run — a run with MULTIPLE
         concurrent holds lists ALL of them distinctly; the multi-
         workflow property: the filter is BY RUN, resolves never cross.
-        THE MAP SIBLINGS INCLUDED (the F2 fix): two map items of one
+        Map siblings included: two map items of one
         source holding on one signal name are TWO rows — the hold
         identity carries the map index, each sibling's hold is
         addressable (its own ``hold_id``) and resolvable
@@ -1358,16 +1358,16 @@ class HitlClient:
         reason: str | None = None,
         principal: Any = None,
     ) -> DeliveryResult:
-        """THE REPLY (by id — one hold addressed): the decision payload
+        """The reply (by id — one hold addressed): the decision payload
         validates through the hold's DECLARED models at the RUNTIME
-        boundary — BY SHAPE, before the CAS (the shape fix): a bad
+        boundary — BY SHAPE, before the CAS: a bad
         payload is the TYPED ``refused``, the hold SURVIVES, nothing is
         consumed, and the refusal is AUDITED (the operator sees WHY).
         The transition + THE AUDIT + THE KNOCK share ONE transaction
-        whose linearization point is the DELIVER CAS ITSELF (the rejected
-        guard-tx order's fix): the loser matches no rows and writes NOTHING — 0
-        audit rows, 0 knocks for a lost race (the guard-tx shape wrote
-        both BEFORE the CAS and doubled under concurrency). An
+        whose linearization point is the DELIVER CAS ITSELF (a
+        guard-tx ordered before the CAS would write
+        both under concurrency): the loser matches no rows and writes NOTHING — 0
+        audit rows, 0 knocks for a lost race. An
         already-resolved hold is the DEFINED no-op (the idempotence
         pin).
 
@@ -1517,10 +1517,10 @@ class HitlClient:
             )
             resumed = None
             if cas["node_key"] and node_id is not None:
-                # THE HELD NODE'S ADDRESS (the F2 fix): by the hold id —
+                # The held node's address (by the hold id —
                 # one hold, one node, one resume — already locked above
-                # (the deadlock fix's pre-lock); the resume's UPDATE
-                # rides the lock this tx holds.
+                # so the resume's UPDATE
+                # rides the lock this tx holds).
                 resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, self._schema), node_id)
             if resumed is None:
                 # The CAS won but the node is gone (a cancelled flow

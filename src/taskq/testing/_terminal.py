@@ -6,16 +6,15 @@ following the :mod:`taskq.testing._runner` pattern.
 """
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import structlog
 
-# Why: private import, the pre-serialized result path holds bytes, not a
+# Private import: the pre-serialized result path holds bytes, not a
 # dict, so the byte-level scan is the only way to run dumps_jsonb_str's NUL
-# guard without a second serialization (same justification as
-# backend/_terminal.py, mirrored here so both backends fail identically).
+# guard without a second serialization (mirrors backend/_terminal.py).
 from taskq._json import (
     NUL_JSONB_ERROR,
     _encoded_has_nul,  # pyright: ignore[reportPrivateUsage]
@@ -37,11 +36,12 @@ from taskq.backend._protocol import (
     validate_snooze_outcome,
 )
 
-# Why: the twin's deadline arms must stamp the exact failure text the SQL
-# arms stamp (the differential corpus pins the two sides equal), so the
-# message is read from the shared constant the templates interpolate, never
-# restated here. The constants live in the driver-free _sql_fragments module
-# (no backend imports): this file is part of the driver-free testing surface.
+# The twin's deadline arms stamp the exact failure text the SQL arms
+# stamp (the differential pins hold the two sides equal), so the message
+# is read from the shared constant the templates interpolate, never
+# restated here. The constants live in the driver-free _sql_fragments
+# module (no backend imports): this file is part of the driver-free
+# testing surface.
 from taskq.backend._sql_fragments import (
     DEADLINE_EXCEEDED_MESSAGE,
     DEADLINE_RETRY_EXCEEDED_MESSAGE,
@@ -155,6 +155,32 @@ def _fenced(
         or row.locked_by_worker != worker_id
         or row.attempt != attempt
         or row.claim_epoch != claim_epoch
+    )
+
+
+def _append_deadline_attempt(
+    self: "InMemoryBackend",
+    *,
+    row: JobRow,
+    now: datetime,
+    worker_id: UUID,
+) -> None:
+    """The deadline arm's failed attempt row, identical in all three
+    deadline arms: outcome 'failed', DeadlineExceeded, the claim-time
+    due time the PG terminal write stamps."""
+    self._append_attempt(
+        job_id=row.id,
+        attempt=row.attempt,
+        started_at=row.started_at,
+        now=now,
+        outcome="failed",
+        error_class="DeadlineExceeded",
+        error_message=DEADLINE_EXCEEDED_MESSAGE,
+        error_traceback=None,
+        worker_id=worker_id,
+        # The pre-write row's scheduled_at: the claim-time due time the
+        # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
+        due_at=row.scheduled_at,
     )
 
 
@@ -942,20 +968,7 @@ async def _mark_snoozed(
             progress_seq=max(row.progress_seq, progress_seq),
             progress_state=deadline_merged_progress,
         )
-        self._append_attempt(
-            job_id=job_id,
-            attempt=row.attempt,
-            started_at=row.started_at,
-            now=now,
-            outcome="failed",
-            error_class="DeadlineExceeded",
-            error_message=DEADLINE_EXCEEDED_MESSAGE,
-            error_traceback=None,
-            worker_id=worker_id,
-            # The pre-write row's scheduled_at: the claim-time due time the
-            # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
-            due_at=row.scheduled_at,
-        )
+        _append_deadline_attempt(self, row=row, now=now, worker_id=worker_id)
         self._append_state_change_event(
             job_id=job_id,
             from_state="running",
@@ -1166,20 +1179,7 @@ async def _mark_retry_after(
             progress_seq=max(row.progress_seq, progress_seq),
             progress_state=deadline_merged_progress,
         )
-        self._append_attempt(
-            job_id=job_id,
-            attempt=row.attempt,
-            started_at=row.started_at,
-            now=now,
-            outcome="failed",
-            error_class="DeadlineExceeded",
-            error_message=DEADLINE_EXCEEDED_MESSAGE,
-            error_traceback=None,
-            worker_id=worker_id,
-            # The pre-write row's scheduled_at: the claim-time due time the
-            # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
-            due_at=row.scheduled_at,
-        )
+        _append_deadline_attempt(self, row=row, now=now, worker_id=worker_id)
         self._append_state_change_event(
             job_id=job_id,
             from_state="running",
@@ -1396,20 +1396,7 @@ async def _mark_interrupted(
             progress_seq=max(row.progress_seq, progress_seq),
             progress_state=deadline_merged_progress,
         )
-        self._append_attempt(
-            job_id=job_id,
-            attempt=row.attempt,
-            started_at=row.started_at,
-            now=now,
-            outcome="failed",
-            error_class="DeadlineExceeded",
-            error_message=DEADLINE_EXCEEDED_MESSAGE,
-            error_traceback=None,
-            worker_id=worker_id,
-            # The pre-write row's scheduled_at: the claim-time due time the
-            # PG terminal write stamps (01.00.20_04_pre_attempt_due_at.sql).
-            due_at=row.scheduled_at,
-        )
+        _append_deadline_attempt(self, row=row, now=now, worker_id=worker_id)
         self._append_state_change_event(
             job_id=job_id,
             from_state="running",

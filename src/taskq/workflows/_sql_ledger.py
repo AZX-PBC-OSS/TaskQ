@@ -90,8 +90,7 @@ SET status = $2,
     capture = $6::jsonb,
     updated_at = clock_timestamp()
 WHERE id = $1
-  -- THE RE-MINT GUARD (the re-mint guard's law, LEDGER_FENCE_BY_ID_SQL's own — the
-  -- deadline burn's hardening): a caller presenting its OWN claim's
+  -- The re-mint guard: a caller presenting its OWN claim's
   -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
   -- instance identity) writes ONLY the row that claim actually wrote.
   -- The arbiter's re-use (the refund re-claims the SAME ordinal → the
@@ -131,7 +130,7 @@ SET status = 'fenced',
     updated_at = clock_timestamp()
 WHERE id = $1
   AND status = 'running'
-  -- THE RE-MINT GUARD: a caller presenting its OWN claim's
+  -- The re-mint guard: a caller presenting its OWN claim's
   -- RETURNING instant (``claim_step_ledger``'s updated_at — the claim's
   -- instance identity) fences ONLY the row that claim actually wrote.
   -- The refund re-mints the ordinal — the arbiter re-use hands a LIVE

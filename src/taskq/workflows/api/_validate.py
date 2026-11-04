@@ -48,9 +48,9 @@ THE TOTALITY REFUSALS (the dispatcher's list, each a named rule):
   the message naming the fix.
 * E13 gate-door — a node's ``gates=`` must carry ``GateDecl``
   declarations: the channel.gate(...) bound-door object wired into the
-  declaration seat is the build refusal (it used to crash the
-  validator's own gate walk — a raw AttributeError).
-* E14 gate-wiring (THE TEARDOWN ROUND'S E2-ANALOG) — the gate seat and
+  declaration seat is the build refusal — a bound-door object refuses
+  by name, never a raw AttributeError.
+* E14 gate-wiring — the gate seat and
   the bodies' waits are walked against each other, BOTH provable
   directions: a DECLARED gate whose body carries NO ``wait_signal``
   reference at all (the hold seat with no waiter), and a body's
@@ -773,17 +773,16 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
       that skipped both arms and terminalized succeeded-having-routed-
       nothing), an UNKNOWN member would never fire;
     * every arm body declares its arm's MODEL on the item param — the
-      decode's target (R3): a DUCK-typed arm (``dict``/unannotated/
-      ``Any``) consumes the element UNVALIDATED (E5's own finding
-      shape at the consumer face), and the declared model must be the
-      EXACT union member (the fix — the "related" door tightened):
-      a SUPERCLASS builds clean but the runtime decode drops the
-      subclass's own fields (pydantic's ``extra='ignore'`` default —
-      the silent data loss the sum's reader cannot see), and an
-      UNRELATED model is the wiring promising data the arm cannot
-      accept. The pre-fix "related" check accepted BOTH directions of
-      the issubclass relation — a ``item: DocBase`` arm for a
-      ``DocItem`` member passed the fence and died the silent-field
+      decode's target: a DUCK-typed arm (``dict``/unannotated/
+      ``Any``) consumes the element UNVALIDATED (the E5 defect class
+      at the consumer face), and the declared model must be the
+      EXACT union member: a SUPERCLASS builds clean but the runtime
+      decode drops the subclass's own fields (pydantic's
+      ``extra='ignore'`` default — the silent data loss the sum's
+      reader cannot see), and an UNRELATED model is the wiring
+      promising data the arm cannot accept. An issubclass fence in
+      either direction is too loose: a ``item: DocBase`` arm for a
+      ``DocItem`` member would pass it and die the silent-field
       drop at runtime.
 
     An unresolvable source or arm annotation SKIPS (the zero-false-
@@ -841,9 +840,8 @@ def _rule_route_totality(compiled: CompiledWorkflow) -> list[WorkflowValidationE
                 duck, related = True, False
             elif isinstance(item_param, type) and issubclass(item_param, BaseModel):
                 duck = False
-                # THE EXACT-MEMBER LAW (the fix — the "related" door
-                # tightened): the declared type must BE the member — a
-                # superclass passes the old issubclass fence and the
+                # The exact-member rule: the declared type must BE the
+                # member — a superclass passes an issubclass fence and the
                 # runtime decode drops the subclass's fields
                 # (extra='ignore'), an unrelated model the arm cannot
                 # accept at all.
@@ -1078,7 +1076,7 @@ def _union_members_of(annotation: object) -> tuple[type[BaseModel], ...] | None:
 
 
 def _rule_union_discriminator(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E16 (THE CONSUMER DISCRIMINATOR LAW — the fix): every body
+    """E16 (the consumer discriminator rule): every body
     param decoded as a UNION of models (the typed sum's consumer face —
     the join's downstream reads ``list[ImageResult | AudioResult]``) is
     decoded by the codec's left-to-right smart union: the FIRST member
@@ -1185,19 +1183,18 @@ def _rule_union_discriminator(compiled: CompiledWorkflow) -> list[WorkflowValida
 
 
 def _rule_gate_door(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E13 (THE GATE DOOR): a node's ``gates=``
+    """E13 (the gate door): a node's ``gates=``
     must carry DECLARATIONS (``GateDecl`` — the compile-visible shape the
     Mermaid render, the W1 timeout warning and the hold machinery read), not
     the channel's BOUND-DOOR object. ``app.channel().gate(Model)`` returns
-    a ``TypedGate`` — the runtime delivery handle — and wiring it into
-    ``step(gates=(…,))`` used to crash the validator's own gate walk (a
-    raw ``AttributeError`` out of W1's ``gate.timeout_s`` read): the
-    mistake now refuses by NAME, the message naming both doors and the
-    fix."""
+    a ``TypedGate`` — the runtime delivery handle. A bound-door object
+    wired into ``step(gates=(…,))`` refuses by NAME (the message names
+    both doors and the fix), never a raw ``AttributeError`` out of W1's
+    ``gate.timeout_s`` read."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
         for gate in node.gates:
-            if isinstance(gate, GateDecl):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: the declaration's type is a LIE this rule rejects (a TypedGate rides the tuple at runtime) — the isinstance IS the check; statically the tuple claims GateDecl.
+            if isinstance(gate, GateDecl):  # pyright: ignore[reportUnnecessaryIsInstance] — a TypedGate rides the tuple at runtime, so the isinstance IS the check; statically the tuple claims GateDecl.
                 continue
             diagnostics.append(
                 WorkflowValidationError(
@@ -1303,10 +1300,10 @@ def _wait_signal_sites(body: object) -> list[_WaitSite] | None:
 def _node_bodies(node: object) -> list[Callable[..., object]]:
     """The node's OWN bodies (the walks' candidate set): the step body,
     the loop driver's body, the map's item child, AND the typed route's
-    arm bodies (the fix — the arm-held HITL's face): each arm runs
+    arm bodies — each arm runs
     as its own fork-spawned child, so an arm body's ``ctx.wait_signal``
-    is a HOLD the compile surfaces must see (the pre-fix walk skipped
-    the arms — an arm's hold was ROW-real but COMPILE-invisible: no
+    is a HOLD the compile surfaces must see (a walk that skipped the
+    arms leaves an arm's hold row-real but compile-invisible: no
     Mermaid hold node, no W1 timeout read)."""
     bodies: list[Callable[..., object]] = []
     for candidate in (
@@ -1326,14 +1323,15 @@ def _node_bodies(node: object) -> list[Callable[..., object]]:
 
 
 def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
-    """E14 (THE GATE-WIRING WALK — the teardown round's E2-analog fix):
-    the gate seat and the bodies' waits, walked against each other in
+    """E14 (the gate-wiring walk): the gate seat and the bodies' waits,
+    walked against each other in
     BOTH provable directions. E2 walks the promise wiring (every
-    produced promise is consumed); the gate wiring had no walk — a
+    produced promise is consumed); the gate wiring needs its own walk — a
     DECLARED gate the body never waits on, and a body's
-    ``ctx.wait_signal`` with NO declared gate, both validated CLEAN.
+    ``ctx.wait_signal`` with NO declared gate, must both fail here, not
+    validate clean.
 
-    THE TWO PROVABLE FACES:
+    Two provable faces:
 
     * declared-never-waited — a node's ``gates=`` carries a ``GateDecl``
       and NO body of the node references ``wait_signal`` AT ALL: the
@@ -1345,7 +1343,7 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
       resolve/deliver doors — the loop declaration's own docstring names
       the invisibility).
 
-    THE CONDITIONAL-INTERIOR BOUND: a wait inside a branch cannot be
+    The conditional-interior bound: a wait inside a branch cannot be
     proven never-to-fire — that face is the documented question, the
     loop-kind mis-index W5 names (a conditional wait in a LOOP body
     mis-indexes the answer cursor). The static walk never guesses: an
@@ -1353,12 +1351,12 @@ def _rule_gate_wiring(compiled: CompiledWorkflow) -> list[WorkflowValidationErro
     the node — a guess is never rejected."""
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        # THE BODIES' OWNERS (the fix — the arm-held HITL's face):
-        # the waits are read PER BODY and the warning names the body's
+        # The bodies' owners: the waits are read PER BODY and the warning
+        # names the body's
         # own address — the arm child's derived key
         # (``<source>.item:<tag>``) for an arm body, the node's key for
-        # its own. (The pre-fix warning said "node X's body" whatever
-        # body waited — an arm's hold read as the source's own.)
+        # its own (the address, never a bare "node X's body", whatever
+        # body waited).
         owned: list[tuple[str, Callable[..., object]]] = []
         for candidate, owner in (
             (node.body, node.key),
@@ -1589,7 +1587,7 @@ def _rule_loop_wait_shape(compiled: CompiledWorkflow) -> list[WorkflowValidation
 
 def _rule_eternal_loop(compiled: CompiledWorkflow) -> list[WorkflowValidationError]:
     """W3: the loop's "waits forever" class — the docstring's own
-    promise (F-LOOP-6's finding, kept honest): a loop with NO ``until=``
+    promise: a loop with NO ``until=``
     and NEITHER wall set can never stop on its own; the refiner runs
     until the fleet dies under it. Probably wrong, never a refusal (the
     warning class — an unbounded refiner may be exactly what a
@@ -1639,12 +1637,12 @@ def _rule_unknown_queue(compiled: CompiledWorkflow) -> list[WorkflowValidationEr
         return []  # no declared queue universe — nothing to reject
     diagnostics: list[WorkflowValidationError] = []
     for node in compiled.nodes.values():
-        # THE WALK'S FACES (the fix — the typo'd arm queue): the
+        # The walk's faces: the
         # node's own queue AND every fork child's EFFECTIVE queue — the
         # typed route's arms (arm.queue or the map queue) and the map's
-        # own map_queue. The pre-fix walk read node.queue only: a
-        # RouteArm(queue="gp") typo built CLEAN and the arm's children
-        # dispatched onto a queue no worker may listen on.
+        # own map_queue. A walk that read node.queue only would let a
+        # RouteArm(queue="gp") typo build CLEAN and the arm's children
+        # would dispatch onto a queue no worker may listen on.
         projections: list[tuple[str, str]] = [(node.key, node.queue)]
         projections.append((f"{node.key}.join", node.map_queue))
         if node.map_arms is not None:
@@ -1746,13 +1744,13 @@ def _rule_carrier_type(compiled: CompiledWorkflow) -> list[WorkflowValidationErr
         spec = node.loop_spec
         if spec is None or node.loop_body is None:
             continue
-        # THE CARRY'S TYPED SPLIT (the ergonomic tail's fix): the
+        # The carry's typed split: the
         # CARRIER-TYPE is its own declared field — the model the body's
         # Refine[Feedback] must match. It is DERIVED from the initial
         # carry when the author passed a model instance (the instance
         # carries its own type); a dict/list/scalar carry declares NO
-        # model — the check is skipped, never guessed (the old silent
-        # no-check was the conflation's gap).
+        # model — the check is skipped, never guessed (a silent
+        # no-check would conflate the two).
         carry_model = spec.carry_type
         if carry_model is None:
             continue  # no declared model — nothing to enforce against

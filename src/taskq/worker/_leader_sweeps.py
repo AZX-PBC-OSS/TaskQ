@@ -210,7 +210,7 @@ async def _sleep_until_next_attempt(
     attempt, the next backoff retry, whichever is earlier; interruptible
     by shutdown.
 
-    ``tick_period_secs`` (the RETENTION-CHECK lane's cadence): when set,
+    ``tick_period_secs``: when set,
     a SCHEDULED wake (no
     retry pending) sleeps no longer than the tick period, so a sub-daily
     retention policy is CHECKED every leader tick instead of waiting for
@@ -751,14 +751,14 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         # first (a tiny jobs-side set via jobs_finished_at_idx) and
         # deletes each selected flow's rows via the table's flow_id
         # index — the zero-doomed steady state is O(terminal flows),
-        # never the full-table walk with 2 jobs-probes per row the old
-        # shape was (TimeoutError at 3M rows); the rootless leg (the
+        # never the full-table walk with 2 jobs-probes per row (that walk
+        # hit TimeoutError at 3M rows); the rootless leg (the
         # orphan class: the pointee absent or not a flow root) rides the
         # batch-bounded walk on the coarser cadence above, SEEKING
         # strictly past its arm's persisted cursor (migration
         # 01.00.36_01: a live PK front's rows are visited once and
-        # the walk moves past them; the old shape re-read the
-        # same first batch forever, the orphans stranded). The period
+        # the walk moves past them; without the cursor it would re-read
+        # the same first batch forever, the orphans stranded). The period
         # gate is the settings-level disable sentinel (timedelta(0) →
         # the spec's period gate skips the arm), and the arms DEFAULT
         # OFF — they prune the FLOW HISTORY, not derived data (the

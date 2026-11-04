@@ -217,14 +217,15 @@ def claim_health_snapshot(*, now: float | None = None) -> dict[str, ClaimQueueHe
     """Per-queue claim health over the recent window, at *now*.
 
     Pure read: trims nothing the next record wouldn't, yields NOTHING for
-    a queue with no window entries (the empty-not-zero discipline - a
+    a queue with no window entries (empty, not zero — a
     scrape of an idle worker produces no data points, never zeros).
 
-    THE ATOMIC READ (the race fix): the window walk, the baseline
+    The atomic read: the window walk, the baseline
     roll, and the baseline read all hold ``_store_lock`` — the OTel
-    collection thread's scrape can no longer interleave with the event
-    loop's records inside a deque/dict iteration (the 287-RuntimeErrors-
-    in-3s race, dead). The math on the copied latencies runs outside the
+    collection thread's scrape cannot interleave with the event
+    loop's records inside a deque/dict iteration (the measured
+    287-RuntimeErrors-in-3s race). The math on the copied latencies runs
+    outside the
     lock.
     """
     ts = now if now is not None else _clock()

@@ -65,12 +65,12 @@ _SELECT_COLS_LIVE = (
 # covers every column the ordering uses. The finished NULL range is pinned
 # to the walk's top by the same COALESCE ceiling the cursor compares, so a
 # NULL-finished row can never sit on the far side of a seam its cursor
-# cannot describe. The old shape ordered by a status_priority CASE the
-# cursor never carried and dropped created_at from the predicate entirely:
-# rows whose id order disagreed with their created_at order (id is the
-# ENQUEUING worker's UUIDv7 clock, created_at is the DATABASE clock --
-# skewed workers invert the two) replayed the previous page and skipped
-# rows no page ever served.
+# cannot describe. Ordering by a status_priority CASE the
+# cursor never carried, dropping created_at from the predicate entirely,
+# would replay the previous page and skip
+# rows no page ever served: id order and created_at order disagree
+# wherever a worker's clock is skewed (id is the
+# ENQUEUING worker's UUIDv7 clock, created_at is the DATABASE clock).
 #
 # The ordering cannot sit as a bare ORDER BY over the UNION ALL --
 # PostgreSQL rejects an ORDER BY that is not an output column of the set

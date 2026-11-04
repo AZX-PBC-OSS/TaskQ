@@ -76,13 +76,12 @@ __all__ = [
 #: The on-exhausted vocabulary (the named states, never a silent stop).
 ExhaustionPolicy = Literal["escalate", "fail"]
 
-#: The ESCALATION STEP KEY (the escalation fix): the workflow's registered
+#: The escalation step key: the workflow's registered
 #: escalation step — the outbox's ``consumer_step_key`` for EVERY
 #: ``on_exhausted="escalate"`` loop. The step's BODY resolves from the
 #: REGISTERED DEFINITION (D1 — ``_register_bodies`` puts it there at
 #: compile; the runner's ``_resolve_body`` reads it back at claim), so the
-#: drained consumer job is never the dead-letter ghost the hardcoded
-#: ``loop_escalation`` actor was.
+#: drained consumer job always resolves a body — never a dead letter.
 #:
 #: THE CONSTANT'S HOME is ``taskq.constants`` (backend and workflows read
 #: ONE constant): the dispatch fence's terminal-flow leg carries the
@@ -129,13 +128,13 @@ class LoopSpec:
     budget_s: float | None
     on_exhausted: ExhaustionPolicy
     carry_type: type[BaseModel] | None = None
-    #: THE CARRY'S TYPED SPLIT (the ergonomic tail's fix): the declared
+    #: The carry's typed split: the declared
     #: CARRIER-TYPE (the model the body's ``Refine[Feedback]`` must
     #: match — the W-rules' subject); ``None`` = no model declared (the
     #: type check is skipped, never guessed). DERIVED from ``initial``
     #: when it is a model instance and this is left unset.
     initial_carry: object = None
-    #: The REGISTERED ESCALATION STEP's body (the escalation fix): the
+    #: The registered escalation step's body: the
     #: author's ``escalates_to=`` when declared; the framework default
     #: otherwise. Registered under :data:`ESCALATION_STEP_KEY` at compile
     #: (D1 — the registry is the only body source), so the outbox's
@@ -277,7 +276,7 @@ def loop(
 
     ``on_exhausted="escalate"`` (the default) ENQUEUES the escalation
     through the SAME outbox the fired joins use, addressed to THIS
-    WORKFLOW'S REGISTERED ESCALATION STEP (the escalation fix): the
+    WORKFLOW'S REGISTERED ESCALATION STEP: the
     step's body is *escalates_to* when declared, the framework's
     :func:`default_escalation_body` otherwise — registered under
     ``loop.escalation`` at compile (D1), so the drained consumer job

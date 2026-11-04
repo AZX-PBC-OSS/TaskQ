@@ -64,13 +64,12 @@ _flow_reducers: dict[JobId, dict[str, Callable[[], Awaitable[None]]]] = {}
 
 @dataclass(frozen=True, slots=True)
 class FlowReducerResolution:
-    """The fired join's body resolution's VERDICT (the three faces the
-    sweep's fire arm must distinguish — the wedged-hold fix's own
-    contract):
+    """The fired join's body resolution's verdict (the three faces the
+    sweep's fire arm must distinguish):
 
     * ``body`` set: the engine-level reducer (the tx2's own dict, warmed
-      into the memo) — the healer re-runs it INSIDE the fire's tx (the
-      B3 window's at-least-once body execution).
+      into the memo) — the healer re-runs it INSIDE the fire's tx
+      (at-least-once body execution across the tx1→tx2 window).
     * ``body`` None, ``loud`` False: the join HAS no body BY DESIGN —
       the identity packer (the compiled node's own body is None: the
       join/gather kinds) or a STEP body (whose execution is the CLAIM's,
@@ -79,18 +78,15 @@ class FlowReducerResolution:
       healthy — ``body_unavailable`` over an identity join is the stamp
       that lies.
     * ``body`` None, ``loud`` True: the stamped workflow name resolves to
-      NO compiled graph in this process (the R2-2 deployment-defect
+      NO compiled graph in this process (the deployment-defect
       class: the definitions not imported here) — the delivery continues
       and the record goes LOUD (the stamp + the warning).
 
-    THE REJECTED VARIANT this contract replaces: the registry leg that
-    adapted ANY registered body to the reducer convention
-    (``definition_body(None)``) — the registry's bodies are STEP bodies
-    (ctx + params), so the adapter was the TypeError machine: a crash-
-    window heal of a parented STEP row fired it, resolved the step's
-    body, called it with the reducer's arity, rolled the fire's tx back,
-    and re-fired FOREVER — the sweep arm wedged, the drive max_ticks
-    (the two-drivers pin's finding, 2026-10-09)."""
+    No other body source is valid: the registry's bodies are STEP bodies
+    (ctx + params), and an adapter that called a step body with the
+    reducer's arity is a TypeError machine — a crash-window heal of a
+    parented STEP row would fire it, roll the fire's tx back, and
+    re-fire forever, wedging the sweep arm until the drive max_ticks."""
 
     body: Callable[[], Awaitable[None]] | None
     loud: bool
@@ -120,10 +116,10 @@ def resolve_flow_reducer(
     The memo (the tx2's warmed cache) is the only body source: the
     registry's bodies are STEP bodies — a step's execution is the
     CLAIM's (the wired args), a join's the identity packer's — neither
-    is ever a zero-arg reducer, and the adapter that called one as the
-    other was the wedged-hold TypeError machine. The compiled graph's
+    is ever a zero-arg reducer, and an adapter that called one as the
+    other is the wedged-hold TypeError machine. The compiled graph's
     own truth decides the LOUD face: a stamped workflow name that
-    resolves to NO compiled graph in this process is the R2-2
+    resolves to NO compiled graph in this process is the
     deployment-defect class (the definitions not imported here) — the
     delivery continues and the record goes loud; a graph that resolves
     is the healthy shape, whatever the node's kind."""
@@ -149,7 +145,7 @@ def resolve_flow_reducer(
         if workflow_name in get_registry():
             return FlowReducerResolution(body=None, loud=False)
         return FlowReducerResolution(body=None, loud=True)
-    # No stamp and no memo: the pre-stamp/anonymous root — the R2-2 loud
+    # No stamp and no memo: the pre-stamp/anonymous root — the loud
     # face (the record must not look healthy while the resolution could
     # not even name the workflow to ask).
     return FlowReducerResolution(body=None, loud=True)

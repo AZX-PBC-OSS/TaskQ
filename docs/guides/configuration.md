@@ -349,8 +349,7 @@ never mounted on the admin UI surface.
 The same dump is available without enabling the endpoint by sending
 **`SIGUSR2`** to the worker, which writes it to the log. Reach for either
 when a worker is alive but idle and you need to know what it is waiting
-on; that question previously required rebuilding the image with
-instrumentation.
+on — no rebuilt image with instrumentation required.
 
 ### NOTIFY Listener
 

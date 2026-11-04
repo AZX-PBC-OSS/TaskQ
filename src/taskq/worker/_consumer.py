@@ -1809,8 +1809,8 @@ async def _enforce_start_to_close(
     External cancellation (shutdown interrupt, operator phase 2) is
     forwarded to the body task and re-raised: the consumer's cancel arm
     runs while the body unwinds detached, and the interrupt hold reads the
-    ctx handle instead of the old "the cancellation propagated through the
-    body's frames, so an async actor has provably unwound" assumption.
+    ctx handle — the tracked-handles park proves the unwind, never the
+    assumption that a propagated cancellation unwound the body's frames.
 
     THE SHARED FACE: the enforcement is ONE machinery for both carriers —
     the vanilla consumer's call sites (the *job* is the claimed

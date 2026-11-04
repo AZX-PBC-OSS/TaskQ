@@ -45,7 +45,7 @@ permissions:
 #    `uv python install 3.12` only downloads an interpreter; it does not
 #    select one, so a later `uv sync` with no `--python` reads .python-version
 #    (3.13) and builds a 3.13 environment under a step labelled "Set up Python
-#    3.12" -- which is what several jobs here used to do. UV_PYTHON is read by
+#    3.12" while actually building a 3.13 environment. UV_PYTHON is read by
 #    `sync` and `run` alike, so nothing downstream can disagree with the sync.
 #
 # `--no-dev` is the only sanctioned pruning, and only for deployment
@@ -183,9 +183,10 @@ jobs:
     # green solo). The 451 precedent: the density is the defect.
 
     # except the load-sensitive family (which owns its serial lane below).
-    # One leg per Python version replaces the old 12-leg matrix (3 x 4
-    # extra-sets, each re-running the same 9,000 tests with different skips):
-    # the extras' tests were the only per-leg difference, and they now have
+    # One leg per Python version — a 12-leg matrix (3 x 4
+    # extra-sets, each re-running the same 9,000 tests with different skips)
+    # is the shape this replaced:
+    # the extras' tests were the only per-leg difference, and they have
     # their own spot-check legs below. The intended lane is the 4-core
     # larger runner at -n 4 (the same per-core density the fast lanes
     # always ran, a dedicated core per worker); the standard runner is the
@@ -484,15 +485,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      # fetch-depth 0: the evidence-estate read face (tests/_evidence.py).
-      # The docs-honesty pins resolve MEASUREMENTS at COLLECTION time from
+      # fetch-depth 0 is REQUIRED: the docs-honesty pins resolve the
+      # evidence ref at collection. The docs-honesty pins resolve
+      # MEASUREMENTS at COLLECTION time from
       # origin/evidence/taskqflow when no local registry exists; a default
       # shallow PR checkout fetches only the merge ref, the ref does not
-      # resolve, and the lane dies in collection before a single test runs
-      # (run 38346989984: slow-suite + load-sensitive, both legs, exit 1/2).
+      # resolve, and the lane dies in collection before a single test runs.
       # Every leg that collects tests/ with fetch-depth 0 collected the
-      # same module GREEN in the same run — the depth is the cure, not a
-      # test change.
+      # same module GREEN in the same run.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0

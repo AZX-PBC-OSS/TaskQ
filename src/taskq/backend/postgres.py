@@ -122,7 +122,6 @@ from taskq.backend._reads import (
 from taskq.backend._records import parse_rowcount
 from taskq.backend._schedules import (
     ScheduleSql,
-    schedule_record_from_record,
 )
 from taskq.backend._schedules import (
     create_schedule as _create_schedule,
@@ -1382,10 +1381,6 @@ class PostgresBackend:
         return _SubscriberContext(event, self._leader_wake_subscribers, self._leader_wake_lock)
 
     # ── Schedule CRUD ────────────────────────────────────────────────────
-
-    @staticmethod
-    def _schedule_record_from_record(rec: "asyncpg.Record") -> ScheduleRecord:
-        return schedule_record_from_record(rec)
 
     async def create_schedule(self, args: ScheduleCreateArgs) -> ScheduleRecord:
         return await _create_schedule(self._worker_pool, self._schedule_sql, args)

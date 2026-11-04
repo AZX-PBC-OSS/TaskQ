@@ -70,7 +70,7 @@ class WorkflowDef:
     capture_policy: str = "errors-only"
     redact: Callable[[str], str] | None = None
     #: The loop nodes' declared ``on_exhausted`` policies, keyed by loop
-    #: key (the policy fix): the SWEEP's arm reads the policy from
+    #: key: the SWEEP's arm reads the policy from
     #: the REGISTERED DEFINITION (D1) — a hand-crafted loop row carries
     #: no policy face, and the node row's metadata is the counter's
     #: cache, never the declaration's source.

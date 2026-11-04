@@ -395,7 +395,7 @@ async def _reclaim_expired_locks(
             # computed by more than one path for the same row (the leader's
             # sweep, a partitioned worker's isolate_self, a replayed sweep,
             # this mirror), and every one must stamp the same instant ,
-            # replay idempotence the old per-statement random() could not
+            # replay idempotence a per-statement random() draw cannot
             # provide. A fleet-wide event still spreads: a whole cohort
             # handed back at once lands across the jitter band because
             # distinct ids hash to distinct fractions, rather than at one

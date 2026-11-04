@@ -236,7 +236,7 @@
 
     // The data <pre>'s text: pretty-printed JSON, bounded by the same
     // depth cap the fingerprint uses - stringify on a poisoned deep state
-    // would RangeError exactly where the old canonicalize could, so the
+    // would RangeError exactly where canonicalize could, so the
     // render degrades to a notice instead of throwing out of the tick.
     function stringifyDataBounded(data) {
         try {

@@ -114,15 +114,15 @@ class ChildWorkflowUnknownError(RuntimeError):
 
 
 class ChildFlowLostError(RuntimeError):
-    """THE RETENTION-RESPAWN FAIL-CLOSE: the
+    """The retention-respawn fail-close: the
     parent's resume found a DANGLING child pointer — the parent's row
     still names a child flow whose rows are GONE (the retention purge's
-    own law: the purge must walk the parent links first).
+    own rule: the purge must walk the parent links first).
 
-    The pre-fix shape SILENTLY RE-MINTED a fresh child on the resume —
-    the child's side effects (emails, payments) ran twice while the
-    parent run SUCCEEDED (the worst face: the fabricated health). The
-    spawn now REFUSES: the dangling pointer is the failure, the run
+    A dangling pointer must fail the run, never respawn: re-minting a
+    fresh child would run the child's side effects (emails, payments)
+    twice while the parent run reads SUCCEEDED — the fabricated-health
+    face. The spawn REFUSES: the dangling pointer is the failure, the run
     terminal-fails with this class on the record — never a silent
     respawn. A DETERMINISTIC death (re-running cannot restore the
     purged rows — the deterministic-authoring-failure ladder's own
@@ -130,10 +130,10 @@ class ChildFlowLostError(RuntimeError):
 
 
 class SpawnDepthExceededError(ValueError):
-    """THE DEPTH BOUND (``FanInBoundExceededError``'s
+    """The depth bound (``FanInBoundExceededError``'s
     sibling): the spawn's ancestor walk (the rows' ``parent_flow_id``
     links, the cycle detection folded into the same walk) reached the
-    declared max depth — a self-spawning flow can no longer mint a
+    declared max depth — a self-spawning flow cannot mint a
     generation per sweep tick forever, and a corrupted (cyclic) parent
     link cannot run the walk forever either.
 
@@ -434,18 +434,18 @@ class CtxSpawnOps(_SpawnHost):
         needs it — the bound's typed arm is
         :class:`SpawnDepthExceededError`.
 
-        THE SPAWN'S ATOMICITY FACE (the gather guard):
+        The spawn's atomicity face (the gather guard):
         the default slot's read+write is ONE atomic claim at the row
         (an ``UPDATE … RETURNING`` increment), so K CONCURRENT spawns
         (``asyncio.gather(*[ctx.spawn_flow(...) …])`` — the natural
         fan-out spelling) take K DISTINCT slots and mint K DISTINCT
-        children — the pre-fix shape raced the cursor's read and
-        write, all K spawns adopted the same slot (run key), minted ONE
-        child, and every caller received tenant-0's verdict wearing K
+        children — a cursor read/write race would adopt the same slot
+        (run key) for all K spawns, mint ONE
+        child, and hand every caller tenant-0's verdict wearing K
         labels (the silent fabricated result). A SAME-key concurrent
         spawn ADOPTS the same child (the arbiter's CAS — the run-key
         claim at the row) and every caller receives THAT child's
-        handle: the honest shared face, never a fabricated per-caller
+        handle: the shared face, never a fabricated per-caller
         verdict. A CONCURRENT fan-out that must join STABLY across the
         resume passes ``key=`` (the slot's allocation order is the
         scheduler's, the author's identity is the caller's)."""
@@ -468,12 +468,11 @@ class CtxSpawnOps(_SpawnHost):
                 "terminal-less child (the join could never read a result)"
             )
 
-        # THE FAIL-CLOSE: a dangling child pointer on the
+        # The fail-close: a dangling child pointer on the
         # parent's own receipts — a receipt whose child rows are GONE —
-        # is the TYPED refusal, never a silent respawn. The pre-fix
-        # shape re-minted a fresh child on the resume (the purge took
-        # the arbiter's row with it): the child's side effects ran
-        # twice, the parent SUCCEEDED.
+        # is the TYPED refusal, never a silent respawn (a respawn would
+        # run the child's side effects twice while the parent reads
+        # SUCCEEDED).
         async with self._pool.acquire() as conn:
             dangling = await conn.fetchval(
                 render_sql(_DANGLING_RECEIPT_SQL, self._wsql.schema), self.flow_id

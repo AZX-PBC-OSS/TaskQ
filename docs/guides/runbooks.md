@@ -914,14 +914,15 @@ top to bottom.
    `collect` join).
 4. **Resume through the fleet door**: `drive(flow_id, execute=False)`
    on a runner (the orchestration-only drive — the tick runs the sweep
-   arms, the fleet's workers execute the re-pended work), or simply
-   keep a worker running; the re-pended rows dispatch like any work.
+   arms, the fleet's workers execute the re-pended work), or keep a
+   worker running; the re-pended rows dispatch like any work.
    The kill-retry cycle is bounded by the child's ladder — budget
    `max_attempts=` for the crashes you expect.
-5. **The manual verbs refuse live rows — by design**: `taskq flows
+5. **The manual verbs refuse live rows**: `taskq flows
    retry <run_id> <node>` refuses a node that is not terminal-FAILED
    ("is live … or spent past the attempt ceiling"), and `taskq job
-   retry` refuses a running job. A `running` row under a dead lease is
+   retry` refuses a running job — retrying a live row would double-run
+   it. A `running` row under a dead lease is
    step 2's patient, not a retry target. A terminal-FAILED child (the
    ladder spent) is the retry verbs' customer.
 6. **When the re-drive is not wanted — cancel + re-issue**: `taskq

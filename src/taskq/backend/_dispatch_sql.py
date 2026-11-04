@@ -102,7 +102,7 @@ The geometry below pins each stage to the round's own constants:
   the ``stamp`` UPDATE) is a correlated primary-key LATERAL or a
   one-shot ``ANY(ARRAY(SELECT ...))`` InitPlan, never a plain join the
   planner can serve as a Seq Scan + hash over the whole registry.
-* the per-actor RUNNING count (the old ``running_per_actor`` CTE) is
+* the per-actor RUNNING count is
   precomputed once per round in the ``capped_running`` CTE over the
   round's OWN live actors and only those declaring
   ``max_concurrent`` (the driver is ``pa_actors`` plus the re-pended
@@ -116,10 +116,9 @@ The geometry below pins each stage to the round's own constants:
   live actor (a scan over that actor's running-row partial indexes, the
   planner picks ``jobs_actor_running_idx`` or the
   ``jobs_locked_by_worker_running_idx`` partial at its own cost
-  discretion, heap-visiting either way), never the fleet-wide
-  materialization the old CTE cost on every round and never the
-  per-claimed-row recount the intermediate correlated form paid
-  (O(oversample x cap^2) per round: measured 28/648/2550/10100
+  discretion, heap-visiting either way), never a fleet-wide
+  materialization per round and never a
+  per-claimed-row recount (O(oversample x cap^2) per round: measured 28/648/2550/10100
   running-index rows at caps 5/25/50/100, ~cap/2 after this CTE).
   Pinned by tests/test_dispatch_running_rows_scope_bound.py.
 * the terminal UPDATE re-finds its rows through

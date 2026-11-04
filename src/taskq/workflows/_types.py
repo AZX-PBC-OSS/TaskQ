@@ -59,13 +59,13 @@ __all__ = [
     "duration_seconds",
 ]
 
-#: THE MAP_INDEX CEILING — the wire-format fact the ceiling error
+#: The map_index ceiling — the wire-format fact the ceiling error
 #: documents: ``jobs.map_index`` is a SMALLINT (the ledger's claim
 #: arbiter column, 01.00.23_05), so a record's per-run identity tops out
-#: at 32767. Record #32768 is the rejected shape: the raw DataError the
-#: smallint cast raised MID-TRANSACTION took the valid page-mates down
-#: with it (an accidental untyped ceiling — the whole page rolled back
-#: and the raw error laddered as transient). The engine now refuses the
+#: at 32767. Without the door, record #32768 is the raw DataError the
+#: smallint cast raises MID-TRANSACTION, taking the valid page-mates down
+#: with it (an accidental untyped ceiling — the whole page rolls back
+#: and the raw error ladders as transient). The engine refuses the
 #: poison record AT THE DOOR (:class:`taskq.workflows._emit.
 #: MapIndexExhaustedError` — named, loud, the record named): the valid
 #: page-mates COMMIT (the batch semantics — a poison record kills
@@ -125,7 +125,7 @@ class ConsumerBinding:
     #: propagation reads the policy off the ledger when the JOIN itself
     #: terminal-fails.
     failure_policy: str = "fail_closed"
-    #: THE CONSUMER'S DECLARED DEADLINE (the wf start_to_close bound): the
+    #: The consumer's declared deadline (the start_to_close bound): the
     #: downstream node's own resolution rides the binding — the join row's
     #: metadata `consumers` array (jsonb, serialized as SECONDS) → the
     #: fire's outbox bindings → the drain's consumer INSERT stamps the
@@ -157,14 +157,14 @@ class ChildSpec:
     #: resolved registry (the instances live there) and acquires them
     #: with the same denial discipline. ``()`` = no reservation.
     reservations: tuple[str, ...] = ()
-    #: THE CHILD'S RESOLVED PRIORITY (the priority surface): the
+    #: The child's resolved priority (the priority surface): the
     #: ``jobs.priority`` column value the fork's INSERT stamps — the
     #: builder's own resolution of the precedence law (per-call > the
     #: arm's > the source node's > the column default). ``None`` = the
     #: column default (the insert coalesces it to 0 — the pre-fix
     #: byte-identical value).
     priority: int | None = None
-    #: THE CHILD'S DECLARED DEADLINE (the wf start_to_close bound): the
+    #: The child's declared deadline (the start_to_close bound): the
     #: ``jobs.start_to_close`` column value the fork's INSERT stamps — the
     #: builder's own resolution (the arm's own > the source node's > the
     #: row's NULL). ``None`` = nothing declared — the column NULL (the

@@ -50,11 +50,7 @@ worker bootstrap and the CLI). Four values, case-insensitive:
     ``terminal-write-failed``, ``worker-watchdog-trip``): ``off`` turns
     off the event STREAM, never the operator's sight of failures.
     Unclassified events FAIL OPEN here as at every other level: they
-    pass at every method. (The first cut of this filter dropped every
-    INFO/DEBUG-method event at ``off``, classified or not — which
-    silently failed CLOSED on unclassified INFO events and broke this
-    contract. Found by adversarial review; fixed: the INFO-method drop now applies
-    only to names the classification table has actually met.)
+    pass at every method.
 ``debug``
     Everything ``info`` emits PLUS the DEBUG_ONLY per-tick internals:
     the loop-lag traces and the poll-cadence details (see the
@@ -227,9 +223,9 @@ Boundary cases, argued:
   ``sweep-drained-pending-reservation-reclaims`` is emitted at stdlib
   DEBUG (worker/_leader_sweeps.py), so the root INFO level gates it
   before this filter ever sees it — at ``warning``, at ``off``, and
-  even at ``debug`` (the knob never raises the root level). A
-  the adversarial kill -9/reclaim run proved it: the surviving worker's
-  stream shows nothing about the reclaim at any knob setting. The
+  even at ``debug`` (the knob never raises the root level). The
+  surviving worker's stream shows nothing about the reclaim at any
+  knob setting. The
   ``job_events`` ledger rows are the reclaim's audit trail; the
   failed-reclaim WARNING (``sweep-drain-pending-reservation-reclaims-
   failed``) is the log-visible half. Do not promote the DEBUG line to
@@ -307,7 +303,7 @@ _HAPPY_PATH_EVENTS: frozenset[str] = frozenset(
         # completion lines are "prune-completed" and "batches pruned"
         # (worker/_leader_sweeps.py), the archive-expiry family's is
         # "archive-expiry-completed"; a table entry under a name no call
-        # site emits is a dead classification (found by adversarial review).
+        # site emits is a dead classification.
         "prune-completed",
         "batches pruned",
         "archive-expiry-completed",
@@ -503,10 +499,7 @@ def _events_level_filter(
     # ANOMALY at WARNING-and-above still emits. UNCLASSIFIED events FAIL
     # OPEN here too — they pass at every method — so the contract "a
     # future event can never be silently suppressed by a stale table"
-    # holds at every level, not just at warning. (This arm previously
-    # dropped EVERY info/debug-method event, classified or not, which
-    # silently failed CLOSED on unclassified INFO events: a real event
-    # the table had not met yet vanished at off. Found by adversarial review.)
+    # holds at every level, not just at warning.
     if name in _ANOMALY_EVENTS and method in ("info", "debug"):
         raise structlog.DropEvent
     return event_dict

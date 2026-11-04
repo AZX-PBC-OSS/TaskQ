@@ -38,10 +38,9 @@ jobs:
 
       # See the uv discipline comment at the top of ci.yaml. The version check
       # below reads installed distribution metadata, so the project has to be
-      # in the environment. It used to arrive via the implicit sync inside a
-      # bare `uv run`, which resolved and installed whatever it liked on the
-      # release path; syncing through the shared action makes the release
-      # verify against the locked dependency set instead. `--no-dev` is the
+      # in the environment — synced through the shared action so the release
+      # verifies against the locked dependency set, not whatever a bare
+      # `uv run` resolves on the release path. `--no-dev` is the
       # sanctioned pruning for a deployment artifact -- nothing in the dev
       # group has any bearing on the packaged version.
       - uses: ./.github/actions/setup-uv-env

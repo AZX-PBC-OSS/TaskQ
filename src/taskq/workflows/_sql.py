@@ -131,11 +131,11 @@ BLOCKING_REASON_ORPHAN_PARENT: Final[str] = "orphan_parent"
 #: joined node's side of the counter is RESOLVED by this stamp (the
 #: rederive locks 'join' rows only); metadata.failed_parent names it.
 BLOCKING_REASON_FAILED_PARENT: Final[str] = "failed_parent"
-#: The loudness stamp (R2-2): a fired join whose reducer body resolved
+#: The loudness stamp: a fired join whose reducer body resolved
 #: NOWHERE — the consumers' delivery continues (the delivery contract),
 #: but the record names the defect instead of looking healthy.
 BLOCKING_REASON_BODY_UNAVAILABLE: Final[str] = "body_unavailable"
-#: The flow-fenced join (the phase-2 attack's finding): a never-fired join row
+#: The flow-fenced join: a never-fired join row
 #: whose resolution the FLOW'S OWN DEATH fenced — the fire's flow-status
 #: leg refuses a terminal flow, so the join can never fire again. The
 #: sweep's flow-fenced arm stamps it (the blocked-with-reason terminal

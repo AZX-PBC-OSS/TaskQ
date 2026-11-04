@@ -1999,13 +1999,13 @@ class WorkerSettings(TaskQSettings):
         "row is narration — the drain's arbiter already inserted the "
         "consumer rows and wf_join_fire is the exactly-once ledger — and "
         "without this TTL the delivered population grows monotonically "
-        "forever (the D2 soak's finding: 5.9k at close, monotone, no "
+        "forever (measured in the soak: 5.9k at close, monotone, no "
         "pruner). One bounded committed batch per leader tick; "
         "UNDELIVERED rows are never touched (the drain owns them — a "
         "deleted undelivered row is a lost delivery). timedelta(0) "
         "DISABLES the sweep, the deletion-sweep family's zero-means-off "
         "sentinel (a brand-new deletion loop's safe misconfiguration is "
-        "off), deliberately opposite to the prune family's "
+        "off), opposite to the prune family's "
         "zero-means-now. Negative values raise at settings load.",
     )
 
@@ -2744,8 +2744,8 @@ class WorkerSettings(TaskQSettings):
         # the check interval therefore warns on EVERY healthy poll — and
         # each warn dumps every live asyncio task, the dump blocks the
         # loop, the block triggers the next warn: a self-sustaining
-        # storm (the adoption team's measured shape: warn 0.4 / check
-        # 0.5 passed this lattice's pre-fix legs, then 295 warn+dump
+        # storm (the measured shape: warn 0.4 / check
+        # 0.5 passes this lattice's unguarded legs, then 295 warn+dump
         # pairs starved the worker's heartbeat past the fleet's
         # readiness timeout). Same watchdog gating as the lease
         # invariant above; the remedy is taught (raise the warn budget —

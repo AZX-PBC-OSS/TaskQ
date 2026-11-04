@@ -340,7 +340,7 @@ Queue detail page. Lists jobs in the named queue filtered by `status` (query par
 
 Returns `400` if `status` is not an allowed value, if only one of `cursor_at` / `cursor_id` is provided, or if the request carries a query parameter the page does not declare (the declared set is exactly the table above).
 
-**The undeclared-filter contract.** FastAPI silently drops query parameters a route does not declare, so a mistyped filter (`actr=` for `actor=`) would render the page 200-unfiltered — the ask ignored without a word. The jobs list, the queues overview, the queue detail page, and the batches pages refuse instead: any query parameter outside the route's declared set is a `400` naming the offending key and what the route accepts. This is a behavior change for consumers of the HTML pages: a bookmarked URL or integration that carried an undeclared parameter used to receive a 200 page (rendered without the filter) and now receives a `400`; remove the stale parameter from the URL.
+**The undeclared-filter contract.** FastAPI silently drops query parameters a route does not declare, so a mistyped filter (`actr=` for `actor=`) would render the page 200-unfiltered — the ask ignored without a word. The jobs list, the queues overview, the queue detail page, and the batches pages refuse instead: any query parameter outside the route's declared set is a `400` naming the offending key and what the route accepts. A bookmarked URL or integration carrying an undeclared parameter receives the `400`; remove the stale parameter from the URL.
 
 ### `GET /admin/insights`
 

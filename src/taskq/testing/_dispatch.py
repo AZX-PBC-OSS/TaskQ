@@ -356,8 +356,8 @@ async def _dispatch_batch(
         # fairness_rank (round_robin only; strict-FIFO rows carry none), then
         # priority DESC, then the claim-recency stamp (never-claimed first,
         # then least-recently-claimed, the cross-round actor rotation), then
-        # scheduled_at, id, NEVER alphabetical actor order,
-        # which the old per-rank interleave substituted whenever a round's
+        # scheduled_at, id, NEVER alphabetical actor order — alphabetical
+        # order would substitute for the ranks whenever a round's
         # limit cut inside a rank shared by jobs of different actors.
         _ranked_by_actor: dict[str, list[JobRow]] = _dd(list)
         for c in _deduped:

@@ -70,8 +70,8 @@ RETURNING p.occurrences, p.dropped
 # The ring keeps the newest $6 rows for the node; every trimmed row is
 # COUNTED (the dropped counter lands on the record in the same flush —
 # the honest emitted-vs-delivered pair, the coalesce fence). The trim is
-# rank-based per node (the global seq-window trim was rejected: it
-# under-retains under interleave — the PoC's adversarial note).
+# rank-based per node (a global seq-window trim under-retains under
+# interleave).
 PROGRESS_STREAM_APPEND_TRIM_SQL = """\
 WITH ins AS (
     INSERT INTO {schema}.wf_node_stream (node_id, flow_id, class, kind, payload)
@@ -148,9 +148,9 @@ PROGRESS_RING_OLDEST_RUN_SQL = """\
 SELECT min(seq)::bigint FROM {schema}.wf_node_stream WHERE flow_id = $1::uuid
 """
 
-# 8-9. THE STATE CHANNEL READS (the re-sync payload + the display's
+# 8-9. The state channel reads (the re-sync payload + the display's
 # backfill). Latest-wins needs no history: these rows alone reconstruct
-# the display's progress half at every connect (the display fix).
+# the display's progress half at every connect.
 PROGRESS_STATE_READ_NODE_SQL = """\
 SELECT p.node_id, p.channel, p.pct, p.message, p.data, p.occurrences,
        p.dropped, p.last_seq, p.updated_at

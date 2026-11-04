@@ -391,8 +391,7 @@ async def _fire_and_deliver(
                             "queue": c.queue,
                             "payload": c.payload,
                             "trace_id": trace_id,
-                            # THE CONSUMER'S DECLARED DEADLINE (the wf
-                            # start_to_close fix): the binding's own
+                            # The consumer's declared deadline: the binding's own
                             # resolution rides the fire's bindings (as
                             # SECONDS — the jsonb wire form the drain
                             # parses back); the undeclared consumer

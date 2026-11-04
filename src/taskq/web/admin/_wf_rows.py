@@ -394,12 +394,12 @@ async def fetch_run_view(conn: ConnLike, schema: str, run_id: uuid.UUID) -> RunV
     node_ids = [r["id"] for r in node_rows]
     edge_rows = await conn.fetch(_RUN_EDGES_SQL.format(schema=schema), node_ids) if node_ids else []
     hold_rows = await conn.fetch(_RUN_HOLDS_SQL.format(schema=schema), run_id)
-    # THE MAP PROGRESS READS THE TRUE PARENTS: the children
+    # The map progress reads the true parents: the children
     # group by the map SOURCE they were born parented at (the fork/emit
     # INSERT binds the source's job id) — the read passes THE RUN'S NODE
-    # IDS, never the root's (the root parents nothing: the old read fed
-    # the root's id to ``parent_id = $1`` and every counter read zero —
-    # the hexagon could never fire, and a 10k fan-out rendered 10k raw
+    # IDS, never the root's (the root parents nothing; feeding
+    # the root's id to ``parent_id = $1`` reads every counter zero —
+    # the hexagon never fires, and a 10k fan-out renders 10k raw
     # node lines).
     progress = (
         summarize_map_children(

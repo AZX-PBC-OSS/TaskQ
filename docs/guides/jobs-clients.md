@@ -361,8 +361,8 @@ remaining steps. Later steps only execute when earlier ones did not match or rai
    this actor. Raises `SingletonCollisionError` on collision — **including the actor's own
    self-enqueued successor** (a singleton tick that enqueues its own next round collides with
    itself; the working shapes are in [actors.md's singleton section](actors.md#singleton-actors)).
-   Cron fires now carry the same
-   `metadata["singleton"]` stamp and pre-flight: previously the flag was client-enqueue-only
+   Cron fires carry the same
+   `metadata["singleton"]` stamp and pre-flight as client enqueues
    (see [Cron Scheduling: singleton and `max_pending` interaction](cron.md#singleton-and-max_pending-interaction)).
  4. **`max_pending` count check**: if `ref.max_pending` is set, counts `pending + scheduled` jobs
     for this actor. Raises `MaxPendingExceededError` when `count >= max_pending`. Single enqueues
@@ -620,10 +620,9 @@ EnqueueItem(
 On **every** enqueue arm (single, batch, and COPY (`enqueue_batch_fast`)),
 an interval-form `schedule_to_close` (`retry.time_budget` on the actor) is
 anchored to the **database clock at enqueue time**
-(`clock_timestamp() + interval`). The batch and COPY arms previously
-anchored it to `scheduled_at + interval`, so a future-scheduled item's
-budget started when it became dispatchable. Under the unified contract a
-future-scheduled batch item with a short `time_budget` fails
+(`clock_timestamp() + interval`), never to
+`scheduled_at + interval`: a future-scheduled batch item with a short
+`time_budget` fails
 `DeadlineExceeded` (via the deadline sweep) **before it is ever
 dispatched**. If you batch future-scheduled jobs with deadlines, size
 `time_budget` from enqueue time, not from `scheduled_at`.

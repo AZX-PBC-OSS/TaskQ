@@ -262,19 +262,15 @@ WHERE id = $1 AND status = 'active'"""
 # (complete_batch's bounded handshake) -- it is the guard + completion
 # write, not the whole arbitration body.
 #
-# Why the caller's handshake BLOCKS (bounded) instead of the former
-# membership CTE's FOR UPDATE SKIP LOCKED: the counter reset used to
-# serialize a batch's terminal writers -- its lock handoff granted only at
-# the previous writer's COMMIT, sequencing every writer's snapshot after
-# the earlier writers' commits -- which is what made "the attempt after
-# the last terminal write is the one that lands" hold. Guarding the reset
-# (the per-job hot path must not write the batches row; see
-# _RESET_BATCH_FAILURES_SQL) removed that serialization, and a skip-fast
-# attempt re-opens a lost-wakeup hole: the last committer's attempt
-# snapshots BEFORE its peers commit, vetoes on members it saw open, and
-# no attempt exists after the final commit -- an all-terminal batch stays
-# 'active' until the sweep. A bounded BLOCKING grant restores the
-# sequencing: grant means every earlier holder committed, so the
+# Why the caller's handshake BLOCKS (bounded) instead of a FOR UPDATE
+# SKIP LOCKED membership CTE: a skip-fast grant does not sequence a
+# batch's terminal writers — the last committer's attempt snapshots
+# BEFORE its peers commit, vetoes on members it saw open, and no attempt
+# exists after the final commit, so an all-terminal batch stays 'active'
+# until the sweep (the lost-wakeup hole). The rule "the attempt after
+# the last terminal write is the one that lands" needs the
+# serialization the counter reset's lock handoff provides: grant means
+# every earlier holder committed, so the
 # grantee's guard (this statement's fresh READ COMMITTED snapshot) sees
 # their terminal writes and the tail's last seeker lands. The bounded
 # wait keeps the no-parking constraint the skip enforced: the completer
@@ -305,10 +301,9 @@ RETURNING id"""
 # (the caller's on the transactional-caller shape, the bounded wait's on
 # the autonomous shape), so the write's READ COMMITTED statement
 # snapshot postdates the grant AND no appender can take the row between
-# the two statements -- the property the guarded counter reset's queue
-# used to provide for free (see _COMPLETE_BATCH_SQL's and
-# complete_batch's docstrings for the gap the split-transaction shape
-# re-opened).
+# the two statements — the property the guarded counter reset's queue
+# provides (see _COMPLETE_BATCH_SQL's and
+# complete_batch's docstrings).
 _LOCK_BATCH_ROW_SQL = """\
 SELECT id FROM "{schema}".batches
 WHERE id = $1
@@ -873,8 +868,8 @@ async def complete_batch(
     BLOCKING wait (a savepoint scopes a transaction-local
     ``lock_timeout``, the counter writes' machinery): the grant sequences
     the completion write's fresh snapshot after every earlier holder's
-    commit -- the counter reset's lock handoff used to provide this
-    ordering for free, and it is what makes the attempt after the last
+    commit -- the counter reset's lock handoff provides this
+    ordering, and it is what makes the attempt after the last
     terminal write land instead of leaving an all-terminal batch
     'active' for the sweep. On expiry -- the streaming appender holding
     the membership lock across its chunks (see _enqueue.py's

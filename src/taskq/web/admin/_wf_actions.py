@@ -89,15 +89,14 @@ logger = structlog.get_logger("taskq.web.admin.wf_actions")
 CANCEL_NOT_APPLIED_BANNER: Final[str] = "cancel-not-applied"
 RERUN_NOT_APPLIED_BANNER: Final[str] = "rerun-not-applied"
 RERUN_REFUSED_BANNER: Final[str] = "rerun-refused"
-#: THE DEADLOCK'S NAMED BANNER: a laggard
-#: writer's deadlock used to land a 500 wall — the retry faces catch the
+#: The deadlock's named banner: the retry faces catch the
 #: SAME named pair the cancel/resolve CLI verbs carry and answer the
-#: audited refusal + THIS banner (the race's honest loser, the remedy
-#: named; the audited-refusal law).
+#: audited refusal + THIS banner (the race's loser and the remedy
+#: named).
 RERUN_RACED_BANNER: Final[str] = "rerun-raced"
-#: THE DEADLOCK'S REFUSAL TEXT (the named pair's shared copy): the audit
+#: The deadlock's refusal text (the named pair's shared copy): the audit
 #: row records these words and the CLI's ``flows retry`` echoes the same
-#: law (the race's honest loser — the winner's own voice is honest).
+#: refusal.
 DEADLOCK_REFUSAL: Final[str] = (
     "the run's writers raced and PG resolved the deadlock in another "
     "writer's favour — the retry is being applied OR the run cancelled "
@@ -376,21 +375,21 @@ def _bounded_io_projection(doc: object) -> tuple[object, str | None, dict[str, i
 
     def _walk(value: object, depth: int) -> object:
         state["nodes"] += 1
-        # THE SYNTAX FRAME: every node's render carries punctuation
+        # The syntax frame: every node's render carries punctuation
         # (quotes, colon, comma, braces) — the flat charge that makes
-        # the count the served size's honest proxy (the keys and the
-        # structure used to ride free).
+        # the count a proxy for the served size (keys and
+        # structure charge too).
         state["chars"] += _WALK_NODE_SYNTAX_CHARS
         if depth > _WALK_DEPTH_BUDGET or _budget_out():
             return _mark()
         if isinstance(value, str):
-            # THE STRING'S SERVED RENDER: the pair of quotes rides the
+            # The string's served render: the pair of quotes rides the
             # count — the proxy counts the text the panel carries, not
             # the bare value.
             rendered = len(value) + _WALK_STRING_QUOTES
             remaining = _WALK_CHAR_BUDGET - _WALK_CUT_RESERVE - state["chars"]
             if rendered > remaining:
-                # THE CUT IS NAMED AT ITS OWN SITE (the same honesty
+                # The cut is named at its own site (the same marker
                 # _bound_for_panel's suffix carries): the kept head rides
                 # WITH the marker — a partial value never reads as whole,
                 # and a token cut mid-body carries no secret (the body is
@@ -404,16 +403,16 @@ def _bounded_io_projection(doc: object) -> tuple[object, str | None, dict[str, i
             return value
         if isinstance(value, dict):
             out: dict[object, object] = {}
-            # THE CAST IS THE JSONB BOUNDARY's declared contract (RFC
+            # The cast is the jsonb boundary's declared contract (RFC
             # 8259: the wire's object keys are strings) — the same face
             # _redact_io_doc's walk declares.
             for k, v in cast("dict[str, object]", value).items():
                 state["nodes"] += 1
-                # THE KEY'S SERVED RENDER: the key node's syntax frame
-                # PLUS the key's own characters (the keys used to ride free).
+                # The key's served render: the key node's syntax frame
+                # PLUS the key's own characters (keys charge too).
                 state["chars"] += _WALK_NODE_SYNTAX_CHARS + len(k)
                 if _budget_out():
-                    # THE CUT REPLACES THIS ENTRY: the marker rides as
+                    # The cut replaces this entry: the marker rides as
                     # the key (collision-safe, above) AND the value —
                     # both contents charge (the frames already have).
                     state["chars"] += len(_WALK_PRUNED_MARKER)
@@ -500,7 +499,7 @@ def _redact_io_doc(doc: object) -> object:
         if isinstance(value, str):
             return _mask_str(value)
         if isinstance(value, dict):
-            # THE CAST IS THE JSONB BOUNDARY's declared contract (RFC
+            # The cast is the jsonb boundary's declared contract (RFC
             # 8259: the wire's object keys are strings) — the decode's
             # shape, never an inferred Unknown.
             walked: dict[object, object] = {}

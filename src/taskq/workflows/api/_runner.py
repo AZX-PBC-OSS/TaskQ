@@ -334,11 +334,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
          ATOMICITY) — the wiring's downstream consumers ride the join's
          declared consumers (the outbox).
 
-         THE CREATE ATOMICITY (the fork-atomicity law at creation
+         The create's atomicity (the fork-atomicity rule at creation
          granularity): the ROOT INSERT rides the SAME transaction as the
-         static nodes + edges + ROOT_START. The pre-fix shape committed
-         the root ALONE (its own acquire) and the wiring rode a second
-         transaction — the kill in between stranded the ORPHAN ROOT
+         static nodes + edges + ROOT_START. Committing the root ALONE
+         (its own acquire) with the wiring in a second
+         transaction — a kill in between strands the ORPHAN ROOT
          (pending, ZERO nodes): a root the maintenance derivation can
          never develop (its rollup INNER-JOINS the node rows — a nodeless
          root never derives, never terminalizes, never prunes) and one
@@ -459,10 +459,10 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     # when the re-drive passes no kwarg — the adopted run's
                     # stamp is its own truth, and the fork's cohort never
                     # splits (the children riding the declarations while the
-                    # root says 6 was the rejected shape).
+                    # root says 6 would split the fork's cohort).
                     self._run_priority = await self._adopted_run_priority(conn, claim.flow_id)
         except asyncpg.exceptions.UndefinedTableError as exc:
-            # THE FIRST CONTACT'S TRANSLATION: the runner door on an
+            # The first contact's translation: the runner door on an
             # unmigrated schema raises the same typed
             # SchemaNotMigratedError the packaged run() raises — the
             # setup defect is actionable (the remedy's message), never a
@@ -517,15 +517,14 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
             node = self.compiled.nodes[key]
             if node.kind == "map_join":
                 continue  # spawned by the source's fork
-            # THE MAP-JOIN'S DOWNSTREAM IS A STATIC ROW (the ecosystem
-            # mapper's consumption defect's structural half): every
+            # The map-join's downstream is a static row: every
             # non-join node is inserted upfront — a node whose parent is
             # a fork-spawned map join carries the RESERVED dep (below),
-            # so it can never dispatch before the join's terminal. (The
-            # rejected shape: the descendant was NOT inserted and rode
-            # only the outbox's side-channel — no edge row, an arg
-            # resolution with no result to read, and a transitive
-            # downstream that the side-channel never creates at all.)
+            # so it can never dispatch before the join's terminal. (A
+            # descendant that rode only the outbox's side-channel — no
+            # edge row — would leave an arg
+            # resolution with no result to read and a transitive
+            # downstream the side-channel never creates at all.)
             data_args = [v for kind, v in node.args if kind == "d"]
             payload: dict[str, object] = (
                 {INPUT_KEY: encode_data_arg(input)} if not node.parents else {}
@@ -914,17 +913,16 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         return (self._deps,)
 
     def _body_deadline_seconds(self, row: dict[str, Any]) -> float | None:
-        """THE DEADLINE RESOLUTION AT THE ENFORCEMENT (the wf
-        start_to_close fix — the vanilla consumer's own
+        """The deadline resolution at the enforcement (the vanilla
+        consumer's own
         ``_effective_start_to_close`` arithmetic):
         the ROW's own stamp (the declared bound the INSERTs wrote — the
         step's/arm's resolution) > the worker's default (the runner's
         field — the fleet door threads the worker settings' value);
-        ``None`` everywhere = UNBOUNDED (the body invoked inline, the
-        pre-fix shape)."""
+        ``None`` everywhere = UNBOUNDED (the body invoked inline)."""
         row_bound = row.get("start_to_close")
         effective = (
-            row_bound  # pyright: ignore[reportUnknownVariableType]  # Why: the row dict's jsonb read is Any-typed; the interval's decode is the timedelta the column carries.
+            row_bound  # pyright: ignore[reportUnknownVariableType] — the row dict's jsonb read is Any-typed; the interval's decode is the timedelta the column carries.
             if row_bound is not None
             else self._default_start_to_close
         )
@@ -1296,25 +1294,24 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
                     parents_values = [
                         item for v in parents_values for item in cast(list[object], v)
                     ]
-                # THE COLLECTED RESULT'S CAP (the F4 fix): the envelope
+                # The collected result's cap: the envelope
                 # compacts past the estate's result cap — the same
-                # discipline the failures'-collect ships (the cap, the
-                # honest __truncated__ marker, the detail on the child
-                # rows). Under the cap: byte-identical to the pre-fix
-                # shape.
+                # discipline the failures' collect ships (the cap, the
+                # __truncated__ marker, the detail on the child
+                # rows). Under the cap: byte-identical.
                 result = _bounded_collect(parents_values)
             else:
                 deps_tail = self._deps_tail(body, len(args))
                 deadline_s = self._body_deadline_seconds(row)
                 if deadline_s is None:
-                    # THE CONTROL (the byte-identical law): no declaration
+                    # The control (the byte-identical law): no declaration
                     # anywhere (the row's column NULL, no worker default)
-                    # — the body invoked INLINE, the pre-fix shape
-                    # exactly (no task, no machinery, no deadline).
+                    # — the body invoked INLINE, no task, no machinery, no
+                    # deadline.
                     outcome_value = await body(ctx, *args, *deps_tail)
                 else:
-                    # THE DEADLINE (the wf start_to_close bound — the
-                    # vanilla enforcement, imported: the #791
+                    # The deadline (the start_to_close bound — the
+                    # vanilla enforcement, imported: the
                     # TimeoutError-conflation fix, the unwind budget,
                     # the hostile-finally handling inherited). The body
                     # runs in its own task; the deadline's expiry raises
@@ -1582,12 +1579,12 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         cannot read (a builtin, a partial) records as NULL, the loss
         logged; the row's claim never fails on its own audit.
 
-        THE WRAPPER'S UNWRAP (the teardown fix): the
+        The wrapper's unwrap: the
         ``@app.actor`` canonical path wires the ``WorkflowActor`` HANDLE
-        into the node — the stamp read the WRAPPER's identity and
-        ``getsource`` refused the instance outright (every canonical
-        node recorded ``node.code-version-unstamped``, the
-        deploy-drift feature dead where the docs teach the path). The
+        into the node — a stamp that read the WRAPPER's identity would
+        have ``getsource`` refuse the instance outright (every canonical
+        node would record ``node.code-version-unstamped``, the
+        deploy-drift record dead where the docs teach the path). The
         stamp reads the INNER function through
         :func:`taskq.workflows.api._hints.inner_fn` — the one-unwrap
         seam the validator's own walk shares."""
@@ -1787,11 +1784,11 @@ class FlowRunner(ChainOps, ExitOps, LadderOps, LoopOps, DeferOps):
         the payload codec hook). The map child's item key is the fork's
         single-arg form."""
         if ITEM_KEY in payload:
-            item_raw: object = payload[ITEM_KEY]  # pyright: ignore[reportUnknownVariableType]  # Why: the Any-contract walk — the fork wrote the shape.
+            item_raw: object = payload[ITEM_KEY]  # pyright: ignore[reportUnknownVariableType] — the Any-contract walk; the fork wrote the shape.
             return (self._coerce(item_raw, node, body, 0),)
         if node is None:
-            # THE OUTBOX CONSUMER with no compiled NodeDecl (the
-            # escalation step — the escalation fix): its declared
+            # The outbox consumer with no compiled NodeDecl (the
+            # escalation step): its declared
             # payload rides the row as data args (the bindings'
             # ``wf_args``), the body's OWN contract with the enqueue's
             # context. No parents exist for such a consumer — the

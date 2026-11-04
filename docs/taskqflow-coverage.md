@@ -52,12 +52,12 @@ case**: the consumer workload the capability carries.
 | Saga / compensation (the typed surface) | The LEDGER fit is proven (every terminal outcome a compensator needs is recorded; the cancel cascade already walks reverse edges) — but there is no `on_failure="compensate"` wiring verb, no undo-node pass. Authors hand-roll compensation steps today. | Backlog head — a design-first ticket path exists; the reverse-edge walk is the engine's own precedent. See [Patterns](guides/patterns.md) §saga. |
 | Named typed query handlers | The rows answer everything raw; there is no registered, typed "ask the run a question" surface. | Recorded-not-built (S). |
 | Subflows / cross-flow triggering (the typed verb) | **BUILT since this row was filed**: `ctx.spawn_flow(name, input=…, result=G)` — the typed child-flow face: a REAL sub-flow, the typed `ChildOk[G] / ChildFailed / ChildCancelled / Expired` join, the retry-adoption run key, the depth bound. The manual `create_flow`-inside-a-body composition stays legal (the run-key arbiter still makes it idempotent for free) — the typed verb is the taught face. | Shipped — see the matrix's child-flows row. |
-| Windowed / event-time aggregation | Deliberately declined: one clock domain (the DB clock). The loop + `gather` + the progress projection cover the real cases; tumbling/sliding windows fight the architecture. | The refusal is a design position — see [Patterns](guides/patterns.md) §map-reduce; the recipe is the documented answer. |
+| Windowed / event-time aggregation | Declined: one clock domain (the DB clock). The loop + `gather` + the progress projection cover the real cases; tumbling/sliding windows fight the architecture. | The refusal is a design position — see [Patterns](guides/patterns.md) §map-reduce; the recipe is the documented answer. |
 | Multi-key state channels (per-key reducers) | The loop carry is a single-channel reducer (frozen at spawn, advanced exactly once per iteration). | The known gap — the carry covers the common case. |
 | Token-level LLM streaming INTO a hold's UI | The engine's two channels + the SSE faces are shipped; the token stream is the embedding app's job (the per-user SSE fan-out). | The documented boundary — see [Agent fleet](guides/agent-fleet.md) §the board. |
 | The stuck-running class | NOT a gap — structurally impossible while the status derivation re-derives from rows on the DB clock. The claim is pinned, not promised. | [Patterns](guides/patterns.md) §stuck-running. |
 
-## § The ecosystem parity matrix — the honest competitor comparison
+## § The ecosystem parity matrix — capability comparison
 
 *Researched October 2026 from the competitors' current documentation,
 blogs and changelogs (Temporal's Replay 2026 announcements, DBOS's
@@ -66,10 +66,11 @@ foundations docs, Prefect 3.x docs, Dagster's 2026 declarative-automation
 material, Airflow 3.x release notes, Windmill/Trigger.dev/Inngest product
 docs). The states per cell: **HAVE** (shipped, the same face),
 **DIFFERENT-SHAPE** (the need is served — the shape is named),
-**LACK** (the gap is real — named, with its cost). The OSS law holds:
+**LACK** (the gap is real — named, with its cost). The OSS rule holds:
 the ecosystem products are WELCOME in the frame; this section is the
-feature-parity question's home, not a war poster. Where a competitor's
-doc says something better than we ship, the cell says so.*
+feature-parity question's answer, not a comparison poster. Where a
+competitor's doc describes a capability TaskQ ships worse or not at
+all, the cell says so.*
 
 ### The ten, in one line each
 
@@ -258,7 +259,7 @@ doc says something better than we ship, the cell says so.*
 7. **Ecosystem gravity.** Connectors, AI-SDK plugins (Pydantic AI,
    Vercel AI, LangChain extensions), academies, Discord-scale communities,
    and the 2026 consolidation (Dagster into Prefect). This is not a
-   feature gap — it is the funnel we do not have, and no matrix row
+   feature gap — it is the funnel TaskQ does not have, and no matrix row
    closes it.
 
 ## § What the gaps cost (the adoption segments)
@@ -271,8 +272,8 @@ doc says something better than we ship, the cell says so.*
 | Multi-tenant SaaS (fairness / priority / affinity) | the weighted dispatch dimension (PAIN) | Temporal, Hatchet, Inngest |
 | Fintech / multi-step side effects | the saga verb (PAIN until landed) | Restate, Temporal samples |
 | Event-driven architectures | event triggers (PAIN) | Inngest, Hatchet, Airflow 3 |
-| Data-platform teams (assets, backfills, connectors) | NOT OUR SEGMENT — the asset frame was declined by design | Dagster, Prefect, Airflow |
-| **The segment we win** | **a Python shop already running Postgres, today assembling Celery + APScheduler + a hand-rolled admin, being told the answer is Temporal's fleet** | **us — if the gap list below stays short** |
+| Data-platform teams (assets, backfills, connectors) | not a target segment — the asset frame was declined | Dagster, Prefect, Airflow |
+| **The target segment** | **a Python shop already running Postgres, today assembling Celery + APScheduler + a hand-rolled admin, being told the answer is Temporal's fleet** | **TaskQ — if the gap list below stays short** |
 
 ## § The ranked gap list (top 10 by adoption impact — the ticket seeds)
 

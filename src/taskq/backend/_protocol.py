@@ -771,8 +771,8 @@ class EnqueueArgs:
         Enforced here, at construction, rather than per enqueue path: every
         path (single, batch, the ``COPY``-based fast batch, the atomic batch,
         and the InMemory mirror) funnels through this struct, so a new path
-        cannot reintroduce the gap, and each of the previous four
-        occurrences of this class of bug was exactly a path the fix had not
+        cannot reintroduce the gap — each earlier occurrence of this class
+        of bug was a path this check had not
         reached.  ``payload`` and ``metadata`` need no check here: they
         transit jsonb via :func:`~taskq.backend._records.jsonb_param`, whose
         :func:`~taskq._json.dumps_jsonb_str` rejects a NUL anywhere in the

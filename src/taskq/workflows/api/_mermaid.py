@@ -71,14 +71,13 @@ def render_mermaid(compiled: CompiledWorkflow) -> str:
         node = compiled.nodes[key]
         gated = bool(node.gates)
         glyph = " ⇅" if gated else ""
-        # THE FORK-CARRYING NODE'S SHAPE (the fix — the Mermaid
-        # arms' render): a node carrying the plain map's item body or
+        # A fork-carrying node's shape: a node carrying the plain map's
+        # item body or
         # the typed route's arms IS a map source — it finalizes into
-        # fork children the rows will name. The pre-fix render drew it
-        # as the plain rectangle (the route's branches invisible — the
-        # diagram lied about the fork the wiring declared); the stadium
+        # fork children the rows will name. The stadium
         # + the arms ON the label render the branches the compile
-        # carries (byte-stable: sorted tags, declared body names).
+        # carries (byte-stable: sorted tags, declared body names); the
+        # plain rectangle would hide the route's branches.
         is_map_source = node.map_item is not None or node.map_arms is not None
         open_, close = _shape("route_source" if is_map_source else node.kind, gated)
         gate_note = ""

@@ -1523,8 +1523,8 @@ async def di_consumer_loop(
                         # back to the pending pool budget-free, the
                         # stamp naming ITS arm on the record (the
                         # helper's two shapes — the denial's bucket,
-                        # the fail-closed park's kind). The disown here
-                        # was the old churn: an assert failure in
+                        # the fail-closed park's kind). A disown here
+                        # would churn: an assert failure in
                         # this try's except → _disown_job → the
                         # heartbeat stops renewing → the reclaim hands
                         # the row back → the re-claim re-denies, at
@@ -1623,10 +1623,10 @@ async def di_consumer_loop(
                     # the lease, the reclaim sweep hands it back) exactly
                     # as the vanilla leg disowns its own
                     # SlotPoolAcquireError. THE LOOP MUST SURVIVE: an
-                    # uncaught transient here used to kill the whole
+                    # uncaught transient here would kill the whole
                     # consumer loop (every co-resident job stalled behind
-                    # the corpse) and LEAKED the claim intent (the
-                    # hand-back fences kept firing forever).
+                    # the corpse) and LEAK the claim intent (the
+                    # hand-back fences firing forever).
                     _disown_job(deps.disowned_jobs, job)
                     deps.active_jobs.resolve_claim(job.id, _claim)
                     continue

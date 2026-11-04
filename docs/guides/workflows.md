@@ -387,19 +387,19 @@ arbiter physically blocks double-recording, and map children of one step
 key are DIFFERENT claims. `ctx.substep("name", fn)` is the user-facing
 shape: default idempotent ON, `idempotent=False` opts a step out.
 
-**THE SUBSTEP HOLDS NO CONNECTION ACROSS THE BODY** (the LedgerWatch F4
-fix — the measured tax, stated so nobody re-pays it): the claim and the
+**The substep holds no connection across the body** (the measured tax,
+stated so nobody re-pays it): the claim and the
 terminal write are ~1 ms statements, each on its OWN pool acquisition;
-between them the body runs with NO connection held. The pre-fix shape
-held ONE connection from the claim to the terminal — and the workflow
-execution door runs bodies on the DISPATCHER pool (4 connections at the
-shipped default), so a hot map fan-out's concurrent substeps collapsed
-to the conn count: a 300-child fan-out measured the drop from 32 in-flight
+between them the body runs with NO connection held. Holding ONE
+connection from the claim to the terminal would collapse a hot map
+fan-out's concurrent substeps to the execution door's conn count (the
+dispatcher pool, 4 connections at the shipped default): a 300-child
+fan-out measured the drop from 32 in-flight
 to 4 (10.1 s → 27.1 s at the demo profile; 11.1 s → 42.2 s at 0.5
-s/call). The exactly-once law
-never needed the held connection — the claim arbiter linearizes the
+s/call). The exactly-once guarantee
+never needs the held connection — the claim arbiter linearizes the
 grant, and the terminal keys the claim's OWN row id. Substep the calls
-that cannot tolerate a re-run freely: the replay face is now
+that cannot tolerate a re-run freely: the replay face is
 throughput-free.
 
 Run-level idempotency claims against
@@ -1792,17 +1792,15 @@ addresses it), so naming the node means naming the SOURCE. (A `key=`
 parameter on the map does not exist and no value of one would be
 honored — the derived key is the only form.)
 
-**THE ITEM LADDER HONORS THE STAMPED `max_attempts`** (the LedgerWatch
-F3 fix — the knob is the operator's, the record keeps it): a
+**The item ladder honors the stamped `max_attempts`** (the knob is the
+operator's, the record keeps it): a
 transient-failing item ladders to the `max_attempts` wired on the
 `map_source` — the SAME knob a plain `step` honors, stamped on every
-child row by the fork. The pre-fix ladder capped items at the bare 3
-regardless (the row LIED — a plain step wired 7 laddered
-7; a map item wired 7 died at 3 — and every adoption
-re-implemented the ladder client-side). The deterministic-failure and
+child row by the fork: a plain step wired 7 ladders 7, and a map item
+wired 7 does the same. The deterministic-failure and
 `permanent` routes are unchanged (they never ride the ladder).
 
-**THE LADDER'S BACKOFF CURVE** (the LedgerWatch F5 fix — the plan-ahead
+**The ladder's backoff curve** (the plan-ahead
 numbers): a laddered attempt's re-pend waits
 `0.05 × 2^(failed_count)` seconds — 50 ms after the first failure, then
 100 ms, 200 ms, 400 ms, 800 ms, 1.6 s, 3.2 s… doubling with no cap
@@ -1960,23 +1958,23 @@ walk below. The fan-out is the body's own loop: spawn K handles (each
 slot a distinct, retry-stable key) and join each — the fork's
 all-members semantics at the flow level.
 
-**THE SPAWN'S ATOMICITY FACE.** The default
+**The spawn's atomicity face.** The default
 slot is CLAIMED in one atomic statement (the per-attempt cursor's
 increment and the returned slot are one row-CAS), so K CONCURRENT
 spawns — `asyncio.gather(*[ctx.spawn_flow(...) for t in tenants])`, the
 natural fan-out spelling — take K DISTINCT slots and mint K DISTINCT
-children, each carrying its own input. The pre-fix shape raced the
-cursor's read and write: all K spawns adopted the same slot, minted ONE
-child, and every caller received tenant-0's verdict wearing K labels —
+children, each carrying its own input. A cursor read/write race would
+adopt the same slot for all K spawns, mint ONE
+child, and hand every caller tenant-0's verdict wearing K labels —
 silent fabricated results, zero errors, green pins. A SAME-key
 concurrent spawn ADOPTS the same child (the arbiter's run-key CAS) and
-every caller receives THAT child's handle — the honest shared face.
+every caller receives THAT child's handle — the shared face.
 One discipline applies: a concurrent fan-out that must join STABLY
 across the resume passes `key=` (the slot's allocation order is the
 scheduler's; the author's identity is the caller's — a resumed body
 re-executes the gather and the adoption follows the KEYS).
 
-**THE DEPTH BOUND.** A self-spawning flow (a workflow that spawns
+**The depth bound.** A self-spawning flow (a workflow that spawns
 itself, directly or through a cycle of children) cannot mint a
 generation per sweep tick forever: the spawn walks the ancestor chain
 from the ROWS' `parent_flow_id` links — capped at the declared max
@@ -1988,15 +1986,14 @@ links (a corrupted/operator-written link cannot run the walk forever —
 the same bound fires, the message names it). A fan-out that genuinely
 needs more depth declares `max_depth=` at the spawn site.
 
-**THE RETENTION INTERPLAY (the operator's law).** The cancel cascade
+**The retention interplay (the operator's rule).** The cancel cascade
 cancels the family; the retention purge must WALK THE PARENT LINKS the
 same way — purging a child's rows while its parent still runs leaves a
-DANGLING child pointer on the parent's row. The parent's resume now
+DANGLING child pointer on the parent's row. The parent's resume
 FAILS CLOSE on it: the dangling pointer raises the typed
 `ChildFlowLostError` and the run terminal-fails with the class on the
-record. It is NEVER a silent respawn — the pre-fix shape re-minted a
-fresh child on the resume (the purge took the arbiter's row with it),
-the child's side effects ran twice, and the parent SUCCEEDED.
+record. It is NEVER a silent respawn: a respawn would run
+the child's side effects twice while the parent reads SUCCEEDED.
 
 **THE CASCADE WALKS THE ROWS.** The cancel cascade collects children
 from the ROWS' crash-safe `parent_flow_id` direction first — the
@@ -2009,14 +2006,12 @@ Python recursion: a 1200-deep family cancels clean (the recursive walk
 raised `RecursionError` at the operator and left hundreds of runs
 running).
 
-**THE DEV-DRIVES PARITY.** The dev-loop driver's tick runs the expiry
+**The dev-drives parity.** The dev-loop driver's tick runs the expiry
 arm, so a `timeout_s` wait — including a child join's — fires the
 `Expired` member in a dev drive exactly as it does under the leader's
-sweep belt. The pre-fix dev face parked on the hold until
-`max_ticks`: the deadline inert, the dev loop a different engine from
-the fleet's.
+sweep belt: the dev loop is the same engine as the fleet's.
 
-**THE ADMIN SEES THE FAMILY.** The run explorer renders the
+**The admin sees the family.** The run explorer renders the
 parent↔child links the rows carry: the parent's page links each child
 flow's run page, a child's page links its parent — the identity faces
 the child line landed, surfaced.
@@ -2376,18 +2371,16 @@ hold_epoch)` — the map index rides the identity, so two items of one
 `map_index` — the UI renders the item it addresses). Each resolve wakes
 exactly the hold it names: the resume addresses the hold's OWN node by
 the hold id stamped into that node's metadata — one hold, one node,
-one answer consumed by its own sibling. The pre-fix shape (one shared
-identity per node key) collided the siblings — the second sibling
+one answer consumed by its own sibling. A single shared
+identity per node key would collide the siblings — the second sibling
 wedged `running` forever in-process, or its hold INSERT died of the
 unique arbiter into the ladder and its retry STOLE the first sibling's
 delivered answer. A per-item review workflow (one hold per item, all
 concurrent) is spelled directly on the map — no per-item run keys, no
 side table.
 
-**THE HOLD ROW'S STATUS VOCABULARY** (the LedgerWatch F8 fix — the
-four spellings the ROWS carry, in one table; the guides previously said
-"pending" for the wait and "abandoned" for the expiry while the rows
-say `held`):
+**The hold row's status vocabulary** (the
+four spellings the ROWS carry, in one table):
 
 | `status` | how a hold gets there | what the wait site does on resume |
 | --- | --- | --- |
@@ -2520,11 +2513,11 @@ the DEFINED `abandoned` state (the resume's wait site returns the
 union's `Expired` member — the typed face, never a silent orphan);
 `timeout=None` must be EXPLICIT (the W1 validate warning).
 
-**THE TIMEOUT FACE IS THE UNION'S SECOND ARM**: after the sweep marks the hold `abandoned`, the
+**The timeout face is the union's second arm**: after the sweep marks the hold `abandoned`, the
 resume's wait site RETURNS the `Expired` member — the fail-close arm
 the CHECKER forces — and NEVER mints an automatic new epoch (hold →
-expire → re-hold → ∞ is the rejected shape, kept failing by the attack
-probe). A body that WANTS the failure raises `SignalTimeoutError`
+expire → re-hold → ∞ is the shape the face refuses). A body that WANTS
+the failure raises `SignalTimeoutError`
 ITSELF off the member (the escalation ladder's own use — the machinery
 never raises): a step ladders and terminal-fails (the `fail` policy's
 shape); a loop's failure-class rules route it as the BODY failure it

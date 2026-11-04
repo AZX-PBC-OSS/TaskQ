@@ -27,15 +27,14 @@ replayed history or the pre-outage raw queue (the ghost) is dropped by
 the same reconcile: the ghost may cross the stream; its card cannot
 survive the snapshot (P6).
 
-THE FAN-OUT, NOT A PARTITION (the fan-out contract — the product
+The fan-out, not a partition (the product
 shape is ONE backend listener fanning out to N watching users, the
 progress stream's own pub/sub discipline): every subscriber —
 ``async for event in listener``, ``events()``, ``holds(run=…)``,
 ``frames()`` — gets its OWN queue and its OWN end-of-stream sentinel;
 two concurrent consumers each see EVERY event (a shared queue would
 PARTITION the stream, each consumer stealing the other's events, and a
-single sentinel on stop would strand all but one waiter — P7's
-rejected shape). A subscriber attaching late replays the bounded event
+single sentinel on stop would strand all but one waiter). A subscriber attaching late replays the bounded event
 history first (the buffer-then-consume behavior — a backfill announced
 before the subscribe is still delivered), then goes live.
 
@@ -242,11 +241,11 @@ class HitlListener:
         self._backoff_max = backoff_max
         self._acquire_timeout = acquire_timeout
         self._raw: asyncio.Queue[_Raw | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        # THE FAN-OUT (the fan-out fix): per-SUBSCRIBER queues (each its own
+        # The fan-out: per-SUBSCRIBER queues (each its own
         # sentinel on stop), a bounded history each late subscriber
         # replays first (the buffer-then-consume behavior), and the
-        # single raw queue only the pump reads. A shared consumer queue
-        # here is the rejected shape: N consumers would PARTITION the
+        # single raw queue only the pump reads — a shared consumer queue
+        # would PARTITION the
         # stream, each stealing the other's events.
         self._subs: dict[int, asyncio.Queue[HoldEvent | None]] = {}
         self._history: deque[HoldEvent] = deque(maxlen=_QUEUE_MAXSIZE)
@@ -267,9 +266,7 @@ class HitlListener:
 
     async def stop(self) -> None:
         """Stop the pump and release the dedicated connection, then end
-        EVERY subscriber with its OWN sentinel (the pre-fix single
-        ``None`` on one shared queue stranded all but one waiter — P7's
-        rejected shape; the teardown is SHIELDED: a cancellation
+        EVERY subscriber with its OWN sentinel (the teardown is SHIELDED: a cancellation
         delivered while the pump's own finally releases the LISTEN
         connection must not strand it against the pool cap — the admin
         feed's release discipline, carried over)."""
@@ -438,16 +435,16 @@ class HitlListener:
         ``HoldCreated(source="backfill")`` — including a hold created
         BEFORE this listener existed. The snapshot's ids
         enter the dedup set: their own (already-queued) notifies yield
-        nothing. AND THE RECONCILE (the fourth member — the reconcile fix):
+        nothing. The reconcile (the fourth member):
         after the snapshot's creations, ONE :class:`Backfilled` event
         carries the OPEN ids — the consumer drops any card the rows
         disown (a hold resolved/expired during the outage never
         announces its own death)."""
         rows = await conn.fetch(
-            f"SELECT id, workflow_id, node_key, signal_name, created_at "  # noqa: S608  # Why: the f-string's ONLY interpolation is the require_schema-validated schema identifier — values never interpolate.
+            f"SELECT id, workflow_id, node_key, signal_name, created_at "  # noqa: S608 — the f-string's only interpolation is the require_schema-validated schema identifier; values never interpolate.
             f"FROM \"{self._schema}\".wf_signals WHERE status = 'held' "
-            # THE TIMER'S EXCLUSION (the timer hardening's fix 2 — the
-            # reserved prefix's ONE mechanism, applied at this face too):
+            # The timer's exclusion (the reserved prefix's ONE
+            # mechanism, applied at this face too):
             # the snapshot is the pending-APPROVALS read — a timer hold
             # is the clock's, never a human's decision (the SAME split
             # HitlClient.list's SQL keeps; the create broadcast skips

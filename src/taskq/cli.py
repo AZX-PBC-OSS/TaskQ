@@ -346,8 +346,8 @@ def _load_actor_registry(actors: str) -> Mapping[str, ActorRef[Any, Any]]:
         # loud-refusal contract as the empty-registry guard below. The
         # exact-same ActorRef object listed twice is NOT a collision: the
         # dispatch behavior is byte-identical (one function, one config),
-        # so collapsing it preserves the old shape for restart/registry-
-        # rebuild flows that may re-list an entry.
+        # so collapsing it preserves the behavior restart/registry-
+        # rebuild flows that re-list an entry rely on.
         registry = {}
         for ref in items:
             existing = registry.get(ref.name)
@@ -680,8 +680,8 @@ def worker(
         # just warned look healthy. A pid-unique path makes every
         # co-located worker own its socket; an explicit value here or in
         # the cascade stays authoritative verbatim, including one spelled
-        # as the old default (that operator asked for the shared path and
-        # keeps its collision warning).
+        # as the static shared path (that operator asked for the shared
+        # path and keeps its collision warning).
         settings.health_socket_path = default_worker_health_socket_path()
     connections, pg_provider = _credential_connections(
         settings,
@@ -1873,9 +1873,8 @@ def doctor(
     except (SystemExit, typer.Exit):
         raise
     except Exception as exc:
-        # An unreachable Postgres used to escape as a raw traceback (the
-        # connect's OSError, exit 1), a shape no other CLI failure surface
-        # shows. The report's own contract is a rendered answer, so the
+        # An unreachable Postgres is a rendered answer, never a raw
+        # traceback: the report's own contract is a rendered answer, so the
         # connection failure gets the same treatment every other CLI
         # failure gets: migrate up's two-line pattern, the cause's
         # headline and the one action to take, no traceback.
@@ -3418,7 +3417,7 @@ _JOB_SHOW_COLUMNS: Final = (
     "error_message",
     "idempotency_key",
     "tags",
-    # THE 3AM FACES (the observability lane's fix): the lease columns
+    # The 3am faces: the lease columns
     # (the lost-worker probe's "the worker died" vs "the work is slow"
     # distinction — the reclaim sweep's input is lock_expires_at) + the
     # metadata jsonb (the cross-run cache hit's receipt lives at
@@ -4635,18 +4634,14 @@ async def _flows_status(
             typer.echo("Action: taskq flows list shows the recent runs.", err=True)
             raise typer.Exit(code=1)
         node_rows = await conn.fetch(wsql.workflow_nodes, parsed)
-        # THE ONE-READ LAW (the engine-faces lane's fix): the 3am
-        # columns ride the ENGINE query — WORKFLOW_NODES_SQL selects
-        # started_at + the failed_parent stamp + the lease face's columns
-        # at the source. The supplement read this seat used to carry (a
-        # second, CLI-owned jobs fetch keyed by the row id) is RETIRED:
-        # two reads where one suffices was the engine query's missing
-        # columns forcing the workaround.
-        # THE STAMPS (the drift face's data) ride
-        # THE SAME READ: WORKFLOW_NODES_SQL carries j.code_version, so
-        # the drift face derives from the node rows themselves (a run
-        # redeployed mid-flight carries >1 DISTINCT stamp on its rows —
-        # the stamps are the record, the rows are the truth, ONE read).
+        # The 3am columns ride the engine query — WORKFLOW_NODES_SQL
+        # selects started_at + the failed_parent stamp + the lease
+        # face's columns at the source; one read per run, no CLI-owned
+        # supplement fetch. The drift face's stamps ride the same read:
+        # WORKFLOW_NODES_SQL carries j.code_version, so the drift face
+        # derives from the node rows themselves (a run redeployed
+        # mid-flight carries >1 distinct stamp on its rows — the rows
+        # are the truth, one read).
         stamps = [
             (str(r["step_key"]), r["code_version"])
             for r in node_rows
@@ -4853,12 +4848,11 @@ def _validate_through_gate(
         )
         raise typer.Exit(code=1) from None
     except WorkflowValidationError as exc:
-        # THE DOOR'S OWN REPORT IS THE REFUSAL (the registration door's
-        # CLI face — found by THIS lane's attack round: app.get() validates
-        # since the F-LOOP-7 fix, so an INVALID graph's compile error
-        # escaped the typed door as a rich traceback — the diagnostics-
-        # first law's own violation). The validation report NAMES the rule
-        # + the fix; the operator's terminal carries it, exit 1.
+        # The registration door's CLI face: app.get() validates, so an
+        # invalid graph's compile error surfaces here; render the door's
+        # own validation report rather than a rich traceback. The report
+        # names the rule and the fix; the operator's terminal carries
+        # it, exit 1.
         typer.echo(
             f"the run's workflow {workflow!r} does not validate on this "
             f"app — {exc} (fix the definition and redeploy; the typed "

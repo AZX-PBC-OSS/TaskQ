@@ -175,10 +175,10 @@ class RunClaim:
     run; a conflicting caller gets the EXISTING run's id + status — never a
     second silent run.
 
-    THE CLAIM SURFACE HONEST (the run-key failure lie's fix): the
-    pre-fix surfaces discarded ``status`` and returned a bare id — the
-    caller could not tell 'already running' from 'already failed' without
-    a second query, and a FAILED run's key replayed as a silent 202. The
+    The claim surface is honest: the
+    verdict carries ``status`` — a bare id would leave the caller unable
+    to tell 'already running' from 'already failed' without
+    a second query, and a FAILED run's key would replay as a silent 202. The
     typed verdict is :attr:`kind`: ``created`` (THIS caller's run),
     ``existing-running`` (the live run's id — idempotent replay), or
     ``existing-terminal`` (the REFUSED-TO-REUSE verdict, stated LOUDLY:

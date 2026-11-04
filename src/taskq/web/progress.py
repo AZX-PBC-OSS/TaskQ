@@ -346,10 +346,10 @@ async def _event_generator(
                 # client was away and the durable progress_seq never
                 # advanced past the client's cursor (the terminal write's
                 # GREATEST() expression can stand still), so there is
-                # NOTHING to replay - the old arm fell through into the
-                # pub/sub loop, which only ever forwards NEW events: the
+                # NOTHING to replay — falling through into the
+                # pub/sub loop would only ever forward NEW events: the
                 # reconnecting EventSource subscribed to a finished job
-                # and received keepalives forever. The client cannot learn
+                # would receive keepalives forever. The client cannot learn
                 # the job is over from any frame; tell it directly - the
                 # replay contract is "catch up OR say done", not "be quiet".
                 yield _make_done_event()
@@ -923,10 +923,9 @@ def create_router(
                 headers=_SSE_HEADERS,
                 # We emit our own keepalive comments via the get_message timeout
                 # loop; sse-starlette's ping is only a fallback. Bounded at twice
-                # the effective (capped) heartbeat: the old 24-hour value was a
-                # no-lifetime-cap stream -- exactly the property the re-check bound
-                # removes -- while ping=0 causes a tight loop (anyio.sleep(0)
-                # returns immediately).
+                # the effective (capped) heartbeat: an unbounded value is a
+                # no-lifetime-cap stream, while ping=0 causes a tight loop
+                # (anyio.sleep(0) returns immediately).
                 ping=_effective_heartbeat_secs * 2,
                 sep=_SSE_SEPARATOR,
             )

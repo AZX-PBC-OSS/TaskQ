@@ -432,11 +432,11 @@ LEFT JOIN {schema}.jobs n
 WHERE r.id = $2 AND r.step_key = '__flow__'
 """
 
-#: THE FAILURE FACE (the teardown fix): the run's newest
+#: The failure face: the run's newest
 #: terminal-FAILED NODE row (the root's own row carries the propagation
 #: verdict — UnabsorbedNodeFailure — but the NODE row carries the body's
 #: error class + message: the failed run's first question's ANSWER).
-#: THE VERDICT NAMES THE FAILURE THAT FAILED THE RUN: the ABSORBED
+#: The verdict names the failure that failed the run: the ABSORBED
 #: failures are excluded — the same POLICY-vs-FENCE predicate the
 #: derivation and the maintenance leg read (the three can never drift):
 #: a branch whose failure its join's collect policy absorbed (the join

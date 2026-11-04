@@ -380,6 +380,38 @@ def _cancel_origin_counts(deps: "WorkerDeps") -> dict[str, int]:
     return counts
 
 
+async def _shielded_mark_cancelled(
+    backend: Backend,
+    job_id: JobId,
+    worker_id: UUID,
+    *,
+    attempt: int,
+    claim_epoch: int | None,
+) -> bool:
+    """One shielded ``mark_cancelled`` write: True when this write
+    landed, False when cancelled or when the backend failed (warned as
+    ``cancel-pg-write-failed``, never raised — the shutdown walk
+    continues past it)."""
+    try:
+        return await shield_with_retrieval(
+            backend.mark_cancelled(
+                job_id,
+                worker_id,
+                attempt=attempt,
+                claim_epoch=claim_epoch,
+            )
+        )
+    except asyncio.CancelledError:
+        return False
+    except Exception as exc:
+        _log.warning(
+            "cancel-pg-write-failed",
+            job_id=str(job_id),
+            error=str(exc),
+        )
+        return False
+
+
 async def orchestrate_shutdown(
     deps: "WorkerDeps",
     settings: "WorkerSettings",
@@ -596,24 +628,14 @@ async def orchestrate_shutdown(
             # mark_cancelled writes commits, the other's fence no-ops,
             # and the row reads `cancelled` at every timing.
             if active.cancel_origin is CancelOrigin.OPERATOR:
-                try:
-                    if await shield_with_retrieval(
-                        backend.mark_cancelled(
-                            active.job_id,
-                            worker_id,
-                            attempt=active.ctx.attempt,
-                            claim_epoch=active.ctx.claim_epoch,
-                        )
-                    ):
-                        cancelled_count += 1
-                except asyncio.CancelledError:
-                    pass
-                except Exception as exc:
-                    _log.warning(
-                        "cancel-pg-write-failed",
-                        job_id=str(active.job_id),
-                        error=str(exc),
-                    )
+                if await _shielded_mark_cancelled(
+                    backend,
+                    active.job_id,
+                    worker_id,
+                    attempt=active.ctx.attempt,
+                    claim_epoch=active.ctx.claim_epoch,
+                ):
+                    cancelled_count += 1
                 continue
             _buf = deps.progress_buffers.get(active.job_id)
             _seq, _state = _terminal_seq_and_state(_buf)
@@ -684,24 +706,14 @@ async def orchestrate_shutdown(
                     worker_id=str(worker_id),
                     cancel_origin=int(active.cancel_origin),
                 )
-                try:
-                    if await shield_with_retrieval(
-                        backend.mark_cancelled(
-                            active.job_id,
-                            worker_id,
-                            attempt=active.ctx.attempt,
-                            claim_epoch=active.ctx.claim_epoch,
-                        )
-                    ):
-                        cancelled_count += 1
-                except asyncio.CancelledError:
-                    pass
-                except Exception as exc:
-                    _log.warning(
-                        "cancel-pg-write-failed",
-                        job_id=str(active.job_id),
-                        error=str(exc),
-                    )
+                if await _shielded_mark_cancelled(
+                    backend,
+                    active.job_id,
+                    worker_id,
+                    attempt=active.ctx.attempt,
+                    claim_epoch=active.ctx.claim_epoch,
+                ):
+                    cancelled_count += 1
             else:
                 released_count += 1
         _log.info(

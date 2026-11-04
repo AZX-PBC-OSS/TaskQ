@@ -72,8 +72,7 @@ class FlowNodeRow:
     hold: HoldContext | None = None
     max_attempts: int = 3
     attempt: int = 0
-    # THE 3AM FIELDS (the observability lane's fixes; the ENGINE-FACES
-    # fix rides the engine query — WORKFLOW_NODES_SQL selects them at
+    # The 3am fields (the engine query selects them at
     # the source, ONE read): the node row's own id + started_at (the
     # RUNNING face's age source) + the failed_parent stamp
     # (metadata.failed_parent — the dead parent NAMED on the record) +
@@ -405,8 +404,8 @@ def _running_lines(
     *running_face_after_s* is live work, not a finding — its line would
     be noise on every progress report.
 
-    THE RECLAIM-REQUIRES-A-LEADER MARKER (the engine-faces lane's fix —
-    the dead-fleet face): a running row whose ``lock_expires_at`` has
+    The reclaim-requires-a-leader marker (the dead-fleet face): a running
+    row whose ``lock_expires_at`` has
     passed is the OPPOSITE verdict — the holder is presumed dead and the
     row is RECLAIMABLE, but the reclaim sweep runs only under a leader:
     with the fleet down nothing ever stamps the row (a sweep-stamp face

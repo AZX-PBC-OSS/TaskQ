@@ -1585,7 +1585,7 @@ async def _refuse_boot_on_pending_migrations(deps: WorkerDeps, settings: WorkerS
 
     Why hand-rolled ``fetch``-only queries instead of reusing
     :func:`taskq.migrate.list_applied`: the boot path's established
-    duck-typing contract. The unit lane's pool stubs
+    duck-typing contract. The unit tests' pool stubs
     (``tests/conftest.py``'s ``_FakeConn``) implement exactly
     ``fetch``/``execute``/``transaction``, the same surface
     ``_apply_batch_statement_timeout`` documents as the complete

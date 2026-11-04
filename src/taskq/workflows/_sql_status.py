@@ -62,8 +62,8 @@ GROUP BY status
 
 # The PER-NODE variant (the admin page's read, bounded by the run's own
 # node count): the node's identity rides the row TOO (step_key +
-# map_index — the display's named view reads them; the consumer-face
-# lane's the identity fix), the derived view fields ride the row — the join
+# map_index — the display's named view reads them), the derived view
+# fields ride the row — the join
 # counter (join-wait), the blocked-with-reason stamp, the hold shape (the
 # future scheduled_at + the unresolved signal), the ABSORPTION record
 # (the edge ledger's declared policy for this node's failure + the
@@ -72,14 +72,14 @@ GROUP BY status
 # admin run view collapses a row parented at another run node into its
 # source's hexagon; static nodes are parented at NULL).
 #
-# THE 3AM COLUMNS AT THE SOURCE (the engine-faces lane's fix): the row
+# The 3am columns at the source: the row
 # also carries started_at (the RUNNING face's age source), the
 # failed_parent stamp (metadata.failed_parent — the dead parent's id,
 # named on the record by the failed-parent cascade), and the LEASE face's columns
 # (lock_expires_at + last_heartbeat_at — the reclaim-requires-a-leader
 # marker's derivation input). Every status surface reads THIS query; the
-# columns at the source are ONE read — the CLI's own supplement read
-# (two reads where one suffices) is retired by them.
+# columns at the source are ONE read — no CLI-side supplement fetch
+# (two reads where one suffices).
 # The absorption record is absorbed_exists's POLICY-vs-
 # FENCE predicate — the edge's declaration alone absorbs nothing (the
 # envelope never lies).
@@ -200,20 +200,21 @@ GROUP BY p.id, p.step_key
 # (FOR UPDATE SKIP LOCKED, LIMIT $2), and the per-root node scan rides
 # jobs_wf_flow_nodes_idx (01.00.26_02) — never a seq scan.
 #
-# THE ROWS ARE TRUTH, THE ROOT ROW IS A CACHE (the
-# fix): the maintenance leg derives the root's terminal state from THE
+# The rows are truth, the root row is a cache: the maintenance leg
+# derives the root's terminal state from THE
 # NODE ROWS — the same reconstruction the debug view uses — and finalizes
 # the root IN THE SAME TX when the derivation is terminal and the root
-# row isn't. THE PRECEDENCE IS THE DERIVATION'S (, applied in
-# order): a non-absorbed FAILURE finalizes the root 'failed' even while
+# row isn't. The precedence is the derivation's, applied in
+# order: a non-absorbed FAILURE finalizes the root 'failed' even while
 # resolved-blocked rows rest on the run — the failed row outranks the
-# blocked row. THE WEDGE THIS FIXES: the crash-window fail_closed run
-# whose blocked_required heal stamps the join but whose root nothing
-# ever failed — the old gate required EVERY row terminal before the CASE
-# ran, and the stamped join row is terminalizable by nothing (nothing
-# dispatches it, nothing fires it): the root wedged 'running' forever
-# (unbounded retention — the pruner's liveness guard held every row —
-# and the dead run re-scanned every sweep pass). The finalize names its
+# blocked row. The wedge this guards: the crash-window fail_closed run
+# whose blocked_required heal stamps the join — the stamped join row is
+# terminalizable by nothing (nothing
+# dispatches it, nothing fires it), so a gate that required EVERY row
+# terminal before the CASE ran would leave the root wedged 'running'
+# forever (unbounded retention — the pruner's liveness guard holds every
+# row — and the dead run re-scanned every sweep pass). The finalize names
+# its
 # terminal state AND the reason: error_class carries the maintenance
 # stamp when the root has no error of its own (the cascade's flip stamps
 # the peer-cancel origin; a root the sweep finalizes carries

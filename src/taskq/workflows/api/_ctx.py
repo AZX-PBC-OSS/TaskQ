@@ -292,18 +292,18 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         result (the re-execution doctrine's cheap side: pre-wait side
         effects are substep-ledgered and replay cheap).
 
-        THE CONNECTION IS NEVER YOURS, BODY (the LedgerWatch F4 fix):
-        the claim and the terminal write each take their own
+        The connection is never yours, body: the claim and the terminal
+        write each take their own
         acquisition; between them the body runs with NO pool connection
         held — a hot map fan-out's concurrent substeps are bounded by
-        the workers, never by the execution pool's conn count (the
-        pre-fix shape held ONE connection across *fn* and throttled a
-        300-child fan-out to the dispatcher pool's 4).
+        the workers, never by the execution pool's conn count (holding
+        ONE connection across *fn* would throttle a 300-child fan-out
+        to the dispatcher pool's 4).
 
-        THE GLOSSARY LAW (the ergonomic tail's fix): this was
-        ``ctx.step`` — the wiring verb ``step()`` already owns that name
+        The name is ``substep``, not ``step``: the wiring verb
+        ``step()`` already owns that name
         with DIFFERENT semantics (a graph NODE's declaration vs a node's
-        INNER ledgered effect). The lesser noun renamed: the substep is
+        INNER ledgered effect). The substep is
         the step-ledger's own vocabulary (``wf_step_ledger`` rows are
         what make it exactly-once)."""
         steps = WorkflowSteps(

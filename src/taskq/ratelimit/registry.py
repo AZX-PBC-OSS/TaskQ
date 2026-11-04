@@ -283,7 +283,7 @@ def _rate_limit_config_diff(
     a: "TokenBucket | SlidingWindow", b: "TokenBucket | SlidingWindow"
 ) -> list[str]:
     """The FIELD NAMES (with their values) the two rate-limit primitives
-    differ on — the reservation face's own law (the fix, mirrored):
+    differ on — the reservation face's own rule (mirrored here):
     the refusal names the field, never a values-only repr dump (the
     default repr is an address, not a diagnosis)."""
     differing: list[str] = []

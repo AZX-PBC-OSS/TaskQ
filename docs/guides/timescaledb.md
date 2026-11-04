@@ -463,7 +463,7 @@ fully passed its retention. Two consequences to know:
   against `timescaledb_information`, failing open to "no floor" on vanilla
   Postgres or any probe error) and bounds its DELETE with it: rows older
   than the floor are the POLICY's — silently, chunk-granular, watermark-blind
-  — and the sweep no longer pays the chunk-fan-out tax to re-delete them.
+  — and the sweep does not pay the chunk-fan-out tax to re-delete them.
   The ownership claim requires the policy to actually RUN: a PAUSED job
   (`alter_job(job_id, scheduled => FALSE)`) is registered but never
   executes, so it reads as "no floor" — the sweep resumes full-range on

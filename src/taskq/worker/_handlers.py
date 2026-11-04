@@ -352,6 +352,39 @@ class _StartToCloseExceededError(TimeoutError):
     """
 
 
+async def _failed_or_retry_write(
+    backend: Backend,
+    job: JobRow,
+    worker_id: UUID,
+    error_info: ErrorInfo,
+    retry_delay: timedelta | None,
+    *,
+    progress_seq: int,
+    progress_state: dict[str, object] | None,
+    log: structlog.stdlib.BoundLogger,
+) -> JobRow | None:
+    """The mark_failed_or_retry terminal write under the retry budget
+    (see :func:`_terminal_write_with_retry`); returns the persisted row,
+    or None when the write fenced out."""
+    return await _terminal_write_with_retry(
+        lambda: safe_mark_failed_or_retry(
+            backend,
+            job.id,
+            worker_id,
+            error_info,
+            retry_delay,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
+            log=log,
+            attempt=job.attempt,
+            claim_epoch=job.claim_epoch,
+        ),
+        log=log,
+        job=job,
+        write_name="mark_failed_or_retry",
+    )
+
+
 def _unwrap_actor_system_exit(exc: BaseException) -> BaseException:
     """Return the actor's own exception for a ``_ActorSystemExitAttemptError``
     carrier, *exc* unchanged otherwise.
@@ -746,22 +779,15 @@ async def _handle_timeout(
         )
         return "scheduled"
     else:
-        updated_row = await _terminal_write_with_retry(
-            lambda: safe_mark_failed_or_retry(
-                backend,
-                job.id,
-                worker_id,
-                error_info,
-                None,
-                progress_seq=progress_seq,
-                progress_state=progress_state,
-                log=log,
-                attempt=job.attempt,
-                claim_epoch=job.claim_epoch,
-            ),
+        updated_row = await _failed_or_retry_write(
+            backend,
+            job,
+            worker_id,
+            error_info,
+            None,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
             log=log,
-            job=job,
-            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out, see the retry branch above.
@@ -1227,22 +1253,15 @@ async def _handle_generic_exception(
         )
         return "scheduled"
     else:
-        updated_row = await _terminal_write_with_retry(
-            lambda: safe_mark_failed_or_retry(
-                backend,
-                job.id,
-                worker_id,
-                error_info,
-                None,
-                progress_seq=progress_seq,
-                progress_state=progress_state,
-                log=log,
-                attempt=job.attempt,
-                claim_epoch=job.claim_epoch,
-            ),
+        updated_row = await _failed_or_retry_write(
+            backend,
+            job,
+            worker_id,
+            error_info,
+            None,
+            progress_seq=progress_seq,
+            progress_state=progress_state,
             log=log,
-            job=job,
-            write_name="mark_failed_or_retry",
         )
         if updated_row is None:
             # Fenced out, see the retry branch above.

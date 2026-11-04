@@ -232,7 +232,7 @@ FROM {schema}.jobs
 WHERE id = $1
 """
 
-#: THE POLICY'S SOURCE (the policy fix): the flow root's stamped
+#: The policy's source: the flow root's stamped
 #: workflow name — the sweep's arm resolves the loop's REGISTERED
 #: DEFINITION from it (D1: the policy is read from the definition, never
 #: from the row's metadata cache).

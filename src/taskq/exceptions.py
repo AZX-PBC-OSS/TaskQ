@@ -1306,7 +1306,7 @@ class UnknownQueueError(TaskQError):
     raises HERE, before any backend write, instead of storing an
     orphaned row on a queue no worker claims. Silent data non-delivery
     is the worst failure class a queueing library has, and a
-    one-character typo used to be enough to cause it.
+    one-character typo is enough to cause it.
 
     Two raising sites, one class, both naming the offending queue AND
     the set it was judged against (the unserved-queue note's quality
@@ -1450,7 +1450,7 @@ class SignalPayloadError(TaskQError):
     models (the typed door's runtime boundary — the unknown-field refusal):
     the refusal happens BEFORE the deliver CAS consumes the hold, so the
     hold SURVIVES and the operator sees WHY. Never a silent drop into the
-    body's re-validation (the rejected shape: the payload consumed, then
+    body's re-validation (that shape consumes the payload, then
     the body's laddering ``ValidationError`` kills the flow).
 
     See also :class:`SignalPayloadAmbiguousError` — the same refusal when
