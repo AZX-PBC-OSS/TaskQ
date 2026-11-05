@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Self
 import asyncpg
 import structlog
 
+from taskq._reaper import reap_cancelled_child
 from taskq._shield import shield_with_retrieval
 from taskq.constants import require_schema
 from taskq.obs import get_logger
@@ -409,15 +410,16 @@ class _BroadcastListener[EventT]:
 
     async def stop(self) -> None:
         """Stop the pump and release the dedicated connection, then end
-        EVERY subscriber with its OWN sentinel (the teardown is SHIELDED: a
-        cancellation delivered while the pump's own finally releases the
-        LISTEN connection must not strand it against the pool cap)."""
+        every subscriber with its own sentinel (the teardown is shielded:
+        a cancellation delivered while the pump's own finally releases
+        the LISTEN connection must not strand it against the pool cap).
+        The reaper owns the cancel discipline: the pump's own
+        cancellation is absorbed, the caller's propagates."""
         self._fanout.closing = True
         task, self._pump = self._pump, None
         if task is not None:
             task.cancel()
-            with suppress(asyncio.CancelledError):
-                await shield_with_retrieval(task)
+            await reap_cancelled_child(task)
         self._fanout.end()
 
     async def __aenter__(self) -> Self:

@@ -111,7 +111,7 @@ from uuid import UUID
 
 import structlog
 
-from taskq._advisory import DEADLINE_ERRORS
+from taskq import _advisory
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend._records import compute_duration_ms, jsonb_param, parse_rowcount
 from taskq.backend._retention_floor import retention_policy_floor
@@ -1485,7 +1485,7 @@ def _batch_failure_arms(
     """
     try:
         yield
-    except DEADLINE_ERRORS:
+    except _advisory.DEADLINE_ERRORS:
         if sizer is not None:
             sizer.on_timeout()
         raise
