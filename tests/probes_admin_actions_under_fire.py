@@ -466,7 +466,7 @@ async def test_a_nodes_error_text_carrying_markup_is_escaped_everywhere(
     module_pg_pool: asyncpg.Pool,
     demo_env: types.ModuleType,
 ) -> None:
-    """The xSS probe: a node's error text contains <script>, an
+    """The XSS probe: a node's error text contains <script>, an
     <img onerror>, and a literal </script> closer (the wf-boot JSON
     renders INSIDE a <script> tag — an unescaped closer is the injected
     script's exit). The page must render it ESCAPED (server), and the

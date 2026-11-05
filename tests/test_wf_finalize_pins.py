@@ -667,7 +667,7 @@ async def test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
 ) -> None:
-    """The f4 fix's read side (the envelope-cap fix's own regression,
+    """The F4 fix's read side (the envelope-cap fix's own regression,
     rejected by the recertifier): the bounded collect's envelope is
     THREE keys over the cap — ``{"value": […], "__truncated__": N,
     "detail_home": …}`` — and a decode that unwraps by

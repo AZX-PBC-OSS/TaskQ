@@ -43,8 +43,8 @@ from taskq.workflows.engine import finalize_node, render_workflow_sql
 MIGRATIONS = Path(__file__).parent.parent / "src" / "taskq" / "migrations"
 MEASUREMENTS = Path(__file__).parent.parent / ".measurements"
 
-BASELINE_QUEUE = "t20-perf-base"
-CHAIN_QUEUE = "t20-perf-chain"
+BASELINE_QUEUE = "perf-plain-jobs"
+CHAIN_QUEUE = "perf-streaming-chain"
 
 
 def band(latencies: list[float]) -> dict[str, float]:
@@ -71,7 +71,7 @@ def page_children(page: list[int], flow_id: object) -> list[EmitChild]:
     return [
         EmitChild(
             step_key="screen",
-            actor="t20-chain",
+            actor="streaming-chain",
             queue=CHAIN_QUEUE,
             payload={"application": {"app_id": i}},
             trace_id=f"app-{i}",
@@ -149,7 +149,7 @@ async def main() -> int:
         )
         await conn.execute(
             f'INSERT INTO "{schema}".actor_config (actor, max_concurrent, max_pending, queue) '
-            "VALUES ('t20-chain', NULL, NULL, $1) ON CONFLICT DO NOTHING",
+            "VALUES ('streaming-chain', NULL, NULL, $1) ON CONFLICT DO NOTHING",
             CHAIN_QUEUE,
         )
         await conn.execute(
@@ -200,7 +200,7 @@ async def main() -> int:
 
     # ── 3. the plain baseline @ 200 ──────────────────────────────────
     rows = [
-        (str(new_uuid()), "t20-vanilla", BASELINE_QUEUE, json.dumps({"v": 1}), 3, "transient")
+        (str(new_uuid()), "plain-jobs", BASELINE_QUEUE, json.dumps({"v": 1}), 3, "transient")
         for _ in range(200)
     ]
     async with pool.acquire() as conn:
@@ -211,7 +211,7 @@ async def main() -> int:
         )
         await conn.execute(
             f'INSERT INTO "{schema}".actor_config (actor, max_concurrent, max_pending, queue) '
-            "VALUES ('t20-vanilla', NULL, NULL, $1) ON CONFLICT DO NOTHING",
+            "VALUES ('plain-jobs', NULL, NULL, $1) ON CONFLICT DO NOTHING",
             BASELINE_QUEUE,
         )
     results["dispatch_band_200_plain"] = await dispatch_band(
@@ -220,7 +220,7 @@ async def main() -> int:
 
     # ── 4. the 800-row mixed backlog ─────────────────────────────────
     extra = [
-        (str(new_uuid()), "t20-chain", CHAIN_QUEUE, json.dumps({"v": 1}), 3, "transient")
+        (str(new_uuid()), "streaming-chain", CHAIN_QUEUE, json.dumps({"v": 1}), 3, "transient")
         for _ in range(600)
     ]
     async with pool.acquire() as conn:
@@ -279,7 +279,7 @@ async def main() -> int:
                 children=(
                     ChildSpec(
                         step_key="enrich",
-                        actor="t20-chain",
+                        actor="streaming-chain",
                         queue=CHAIN_QUEUE,
                         payload={"application": {"app_id": map_index}},
                         map_index=map_index,

@@ -1346,7 +1346,7 @@ async def test_the_node_panel_honors_the_capture_policies(
 
 
 def test_the_page_js_carries_the_base_path_and_rerun_laws() -> None:
-    """The jS law' s source pin: the page script builds every URL on the
+    """The JS law's source pin: the page script builds every URL on the
     boot's mounted prefix (the relative-URL 404 bug), asks
     once before the rerun forms submit (form[data-confirm] →
     window.confirm), and escapes the row key before it touches a

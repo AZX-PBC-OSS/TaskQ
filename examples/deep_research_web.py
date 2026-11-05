@@ -1,35 +1,35 @@
-"""THE EMBEDDING DEMO'S WEB HALF: the
-maintainer's cowork-agent scenario, the part the admin UI is NOT — the
-hosting application's OWN approval board, one user at a time.
+"""The embedding demo's web half: the
+maintainer's cowork-agent scenario, the part the admin UI is not — the
+hosting application's own approval board, one user at a time.
 
-THE PRODUCT SHAPE THIS DEMONSTRATES: ONE backend listener
+The product shape this demonstrates: one backend listener
 (``taskq.workflows.HitlListener`` — a single dedicated LISTEN
-connection per process, the fan-out's hub) serving EVERY watching user;
-each user's SSE stream is the listener's fan-out SCOPED BY THE APP'S
-OWN AUTHZ (the run filter — ``holds(run=…)``'s discipline; ``frames()``
+connection per process, the fan-out's hub) serving every watching user;
+each user's SSE stream is the listener's fan-out scoped by the app's
+own authz (the run filter — ``holds(run=…)``'s discipline; ``frames()``
 is the keepalive-carrying form of the same per-subscriber queue). The
-admin's ``/sse/holds`` topic is the OPS surface (every hold in the
-schema, operator-session gated); THIS is the embedding face — the user
+admin's ``/sse/holds`` topic is the ops surface (every hold in the
+schema, operator-session gated); this is the embedding face — the user
 sees only their run's cards:
 
-1. **THE APP-LIFESPAN LISTENER**: the FastAPI lifespan starts ONE
+1. **the app-lifespan listener**: the FastAPI lifespan starts one
    ``HitlListener`` (one pool slot for the stream's life — the
    landmine doc's capacity tax) and stops it on shutdown (every
    subscriber gets its own end sentinel).
-2. **THE PER-USER SSE ENDPOINT** (``GET /runs/{run_id}/events``): the
+2. **the per-user SSE endpoint** (``GET /runs/{run_id}/events``): the
    demo's token→run map stands in for the real identity system — the
-   authz is the RUN SCOPE: a token minted for run A can never subscribe
+   authz is the run scope: a token minted for run A can never subscribe
    to run B's stream (403), because the stream only forwards the
    run-filtered fan-out (and the schema-wide ``Backfilled`` reconcile).
-3. **THE HoldCreated HANDLER READS THE ROW**: the event is a POINTER —
+3. **the HoldCreated handler reads the row**: the event is a pointer —
    the reason/deadline for display come from
    ``HitlClient.get(hold_id)`` (the row is the truth; the redact law
    holds at the row read exactly as it holds at ``list()``).
-4. **THE RESOLVE POST** (``POST /runs/{run_id}/holds/{hold_id}/resolve``):
+4. **the resolve post** (``POST /runs/{run_id}/holds/{hold_id}/resolve``):
    the same typed door the admin's Resolve form rides
    (``HitlClient.resolve``) — the boundary validates the payload
-   against the hold's declared models BY SHAPE.
-5. **THE BROADCAST CLEARS THE CARD**: the resolve's ``HoldResolved``
+   against the hold's declared models by shape.
+5. **the broadcast clears the card**: the resolve's ``HoldResolved``
    fan-out frame reaches the user's stream; the board drops the card.
    And the ``Backfilled(open_hold_ids=…)`` reconcile (the union's
    fourth member) is taught verbatim: on subscribe — and after every
@@ -39,7 +39,7 @@ sees only their run's cards:
 Runnable: ``TASKQ_HITL_DEMO=1 uv run uvicorn examples.deep_research_web:app
 --port 8088`` (the DSN from ``TASKQ_PG_DSN``, the schema from
 ``TASKQ_WF_SCHEMA``). The verification lives at
-``tests/test_wf_hitl_web_demo.py`` (it builds the app over ITS fixture
+``tests/test_wf_hitl_web_demo.py`` (it builds the app over its fixture
 pool through :func:`build_app` — the module-level ``app`` below stays
 import-inert without the demo switch).
 """
@@ -72,10 +72,10 @@ _KEEPALIVE_S: float = 15.0
 
 
 class DemoAuthz:
-    """THE DEMO'S IDENTITY SYSTEM (deliberately small): a token→run map
-    standing in for the real thing. The SHAPE is the product's: the
+    """The demo's identity system (deliberately small): a token→run map
+    standing in for the real thing. The shape is the product's: the
     request presents a credential; the app resolves the run it may
-    watch/resolve; the SSE stream is SCOPED by construction — the
+    watch/resolve; the SSE stream is scoped by construction — the
     forwarder only lets a run's own events (plus the reconcile
     snapshot) through, so the data path cannot leak another run's holds
     even if the endpoint wanted it to. Replace the dict with your
@@ -85,13 +85,13 @@ class DemoAuthz:
         self._tokens: dict[str, str] = {}
 
     def issue(self, run_id: str) -> str:
-        """Mint a token scoped to ONE run (the demo's 'login')."""
+        """Mint a token scoped to one run (the demo's 'login')."""
         token = os.urandom(16).hex()
         self._tokens[token] = run_id
         return token
 
     def run_for(self, token: str, run_id: str) -> str:
-        """The authz gate: the token's run must BE the addressed run —
+        """The authz gate: the token's run must be the addressed run —
         otherwise 403 (never a silent cross-run stream)."""
         scoped = self._tokens.get(token)
         if scoped is None or scoped != run_id:
@@ -100,9 +100,9 @@ class DemoAuthz:
 
 
 def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
-    """THE EMBEDDING APP FACTORY: the host's pool (or a DSN — the
+    """The embedding app factory: the host's pool (or a DSN — the
     runnable form; the pool then opens in the lifespan and closes at
-    shutdown), ONE listener, the per-user faces."""
+    shutdown), one listener, the per-user faces."""
     owned = not isinstance(pool, asyncpg.Pool)
     authz = DemoAuthz()
 
@@ -151,7 +151,7 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
 
     @app.get("/runs/{run_id}/events")
     async def run_events(run_id: str, request: Request) -> StreamingResponse:
-        """THE PER-USER SSE STREAM: the fan-out scoped by authz. The
+        """The per-user SSE stream: the fan-out scoped by authz. The
         ``hold`` frame carries the typed union's JSON; ``hold_context``
         carries the ROW-read display facts; ``backfilled`` carries the
         reconcile snapshot the board drops its dead cards on. The id is
@@ -170,8 +170,8 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
 
     @app.post("/runs/{run_id}/holds/{hold_id}/resolve")
     async def resolve_hold(run_id: str, hold_id: str, request: Request) -> dict[str, str]:
-        """THE RESOLVE POST: the same typed door the admin's Resolve
-        form rides. THE BROADCAST CLEARS THE CARD: the winning CAS's
+        """The resolve post: the same typed door the admin's Resolve
+        form rides. The broadcast clears the card: the winning CAS's
         ``HoldResolved`` fan-out reaches every subscribed stream; the
         board drops the card on the frame (no polling, no refresh). The
         ids canonicalize at the door (a malformed id is a 404 — never a
@@ -182,8 +182,8 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
         except ValueError:
             raise HTTPException(status_code=404, detail="no such run or hold") from None
         _gate(request, canonical_run)
-        # THE RUN SCOPE IS THE HOLD'S OWN RUN: a token scoped to run A
-        # does not resolve run B's hold — the door checks the HOLD's run
+        # The run scope is the hold's own run: a token scoped to run A
+        # does not resolve run B's hold — the door checks the hold's run
         # (the admin door's rule), not just the token's.
         hold_row = await _client().get(canonical_hold)
         if hold_row is None or hold_row.run_id != canonical_run:
@@ -192,14 +192,14 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
         try:
             decision = _json_loads(body)
         except ValueError:
-            # THE HOUSE'S BOUNDED PARSER (the admin doors' own rule): a
-            # malformed body — the shallow junk AND the nesting bomb the
+            # The demo parses with the admin doors' own bounded parser: a
+            # malformed body — the shallow junk and the nesting bomb the
             # stdlib decoder answers with RecursionError — is the named
             # 400, never a 500 out of the door.
             raise HTTPException(status_code=400, detail="the body is not JSON") from None
         if not isinstance(decision, dict):
-            # THE TYPED DOOR'S OWN REQUIREMENT: the decision is the
-            # declared model's SHAPE — a non-object body cannot fit it
+            # The typed door's own requirement: the decision is the
+            # declared model's shape — a non-object body cannot fit it
             # (the cold-catalog fallback cannot judge a non-object), so
             # the door refuses it instead of delivering a payload the
             # resumed body never declared.
@@ -207,7 +207,7 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
         try:
             dumps_jsonb_str(decision)
         except (ValueError, TypeError) as exc:
-            # THE PAYLOAD'S WIRE SHAPE: a control character (a NUL) is
+            # The payload's wire shape: a control character (a NUL) is
             # the serializer's ValueError; an unencodable value (a lone
             # surrogate) its TypeError — both refuse loud, the hold
             # survives.
@@ -232,18 +232,18 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
 async def stream_run_cards(
     listener: HitlListener, client: HitlClient, run_id: str
 ) -> AsyncGenerator[str, None]:
-    """ONE USER'S STREAM (the endpoint's body, exposed for the
-    verification): the run-filtered fan-out + the keepalive tick + THE
-    ROW READ — a ``HoldCreated`` pointer triggers
+    """One user's stream (the endpoint's body, exposed for the
+    verification): the run-filtered fan-out + the keepalive tick + the
+    row read — a ``HoldCreated`` pointer triggers
     ``HitlClient.get(hold_id)`` and the frames carry the reason and the
-    deadline the board renders (the event is a pointer; the ROW is the
+    deadline the board renders (the event is a pointer; the row is the
     truth).
 
-    THE KEEPALIVE MECHANICS (the part worth copying): the generator is
-    consumed by a pump task into a plain queue, and the TICK sits on
-    the queue read — never ``wait_for`` around the LISTENER generator's
+    The keepalive mechanics (the part worth copying): the generator is
+    consumed by a pump task into a plain queue, and the tick sits on
+    the queue read — never ``wait_for`` around the listener generator's
     own ``__anext__`` (a timeout's cancellation propagates through the
-    async generator's frame and CLOSES it — the stream dies at its
+    async generator's frame and closes it — the stream dies at its
     first quiet interval; a bare ``asyncio.Queue.get()`` is safe to
     cancel, the admin's ``_iterate`` runs its tick on exactly that
     seam)."""
@@ -278,7 +278,7 @@ async def stream_run_cards(
 
 async def _render_frame(event: HoldEvent, client: HitlClient) -> str:
     if isinstance(event, HoldCreated):
-        # THE ROW READ (leg 3): the pointer event fetches the context
+        # The row read (leg 3): the pointer event fetches the context
         # the board displays (redacted exactly as the list/get surface
         # redacts).
         context = await client.get(event.hold_id)
@@ -306,10 +306,10 @@ async def _render_frame(event: HoldEvent, client: HitlClient) -> str:
             f"event: hold_context\ndata: {ctx_doc}\n\n"
         )
     if isinstance(event, Backfilled):
-        # THE RECONCILE (the fourth member): forwarded verbatim — the
+        # The reconcile (the fourth member): forwarded verbatim — the
         # board drops any card the snapshot disowns.
         return f"event: backfilled\ndata: {event.model_dump_json()}\n\n"
-    # HoldResolved (the card CLEARS) / HoldExpired (ditto — the
+    # HoldResolved (the card clears) / HoldExpired (ditto — the
     # deadline passed): the pointer, verbatim.
     return f"event: hold\ndata: {event.model_dump_json()}\n\n"
 
@@ -325,8 +325,8 @@ body {{ font: 14px/1.5 system-ui, sans-serif; margin: 2rem; }}
 <h1>Approvals — run {run_id}</h1>
 <div id="board"></div>
 <script>
-// THE BOARD: the card set — open on HoldCreated (rendering the ROW
-// context), cleared on HoldResolved/HoldExpired, RECONCILED on
+// The board: the card set — open on HoldCreated (rendering the row
+// context), cleared on HoldResolved/HoldExpired, reconciled on
 // Backfilled (drop anything the snapshot disowns — a hold resolved
 // during an outage never announces its own death).
 const board = document.getElementById("board");

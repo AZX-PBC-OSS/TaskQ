@@ -505,7 +505,7 @@ async def test_sunk_join_for_progress_warns_at_validate(
 async def test_http_face_streams_display_then_progress(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """The hTTP face: the route is REGISTERED on the admin router (the
+    """The HTTP face: the route is REGISTERED on the admin router (the
     thin mapping — the import law's lazy import), and the WIRE SHAPE is
     the generator's, pinned here on the real pool: the ``display`` frame
     FIRST (ledger-derived), the ``progress`` frames in seq order with

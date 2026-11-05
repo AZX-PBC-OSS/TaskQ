@@ -5,34 +5,34 @@ typed actions (deliver / resolve / cancel — each guarded, each audited).
 The pages live in ``workflows``; the split is the read/write concern
 boundary (the same shape the jobs page + backend routes keep).
 
-THE STREAM (the replay contract, PINNED): every frame is a revisioned
-FULL SNAPSHOT; the rows are the durable ring — a reconnect replays BY
-CONSTRUCTION (the next snapshot carries the whole state), and the
+The stream (the replay contract, pinned): every frame is a revisioned
+full snapshot; the rows are the durable ring — a reconnect replays by
+construction (the next snapshot carries the whole state), and the
 seq-cursor drops stale frames client-side. A killed connection cannot
 strand the page on a stale render, and a memory ring would be a second
-copy of a ledger that already exists. THE SESSION LAW (the
+copy of a ledger that already exists. The session law (the
 same re-check ``/sse/{topic}`` carries): the stream re-invokes the
 host's ``session_verifier`` before the first frame and once per poll
-iteration — a session revoked MID-STREAM ends the stream at the next
+iteration — a session revoked mid-stream ends the stream at the next
 tick, fail-closed on any verifier error or a check that outlives
-``SESSION_RECHECK_TIMEOUT_SECS``. THE SUBSCRIBE LAW: an unknown run id is a 404 AT SUBSCRIBE — the
+``SESSION_RECHECK_TIMEOUT_SECS``. The subscribe law: an unknown run id is a 404 at subscribe — the
 estate's own SSE convention (``/sse/{topic}`` refuses an unknown topic
 at subscribe; the empty-snapshot-forever stream was an existence oracle
 behind the auth gate and a wasted poll task per probe). A run that
-EXISTS but whose node rows are not inserted yet still streams (the
+exists but whose node rows are not inserted yet still streams (the
 generator's not-started state).
 
-THE TYPED DOOR: deliver + resolve validate through the bound
+The typed door: deliver + resolve validate through the bound
 ``TypedGate``s of the WorkflowApp the host mounted (``create_router(
 workflow_app=...)``). Without one the endpoints answer ``501`` with the
-named reason — NO untyped deliver surface ships. THE AUDITED REFUSAL:
-the gate's 422 IS an operator action — the refusal writes
+named reason — no untyped deliver surface ships. The audited refusal:
+the gate's 422 is an operator action — the refusal writes
 its own ``admin_audit`` row (``refused`` + the reason) before the
-HTTPException propagates, so an attacker's shape-probing lands IN the
+HTTPException propagates, so an attacker's shape-probing lands in the
 trail the page claims covers every Resolve/deliver; the hold survives.
 
-THE AUDIT: every resolve/deliver/cancel writes its ``admin_audit``
-row (principal + reason + run/node) — "who approved this" is a ROW, not
+The audit: every resolve/deliver/cancel writes its ``admin_audit``
+row (principal + reason + run/node) — "who approved this" is a row, not
 a log line. The resolve/deliver rides HitlClient's own same-tx row; the
 cancel rides the engine cascade's row; the audit entries carry the
 operator principal the auth dependency captured.
@@ -102,9 +102,9 @@ DEADLOCK_REFUSAL: Final[str] = (
     "writer's favour — the retry is being applied OR the run cancelled "
     "by the winner; re-check the run's settled state"
 )
-#: THE PARTIAL RERUN'S KEY: the run-rerun composition tracks the
-#: applied/refused counts, and a refusal landing MID-composition carries
-#: them — ``rerun-partial:<rows>:<keys>:<total>`` (the ROWS
+#: The partial rerun's key: the run-rerun composition tracks the
+#: applied/refused counts, and a refusal landing mid-composition carries
+#: them — ``rerun-partial:<rows>:<keys>:<total>`` (the rows
 #: count leads) — the detail page renders
 #: the counts (the half-rerun's honest banner; a bare ``rerun-refused``
 #: would imply nothing moved).
@@ -145,9 +145,9 @@ _RUN_EXISTS_SQL = "SELECT 1 FROM \"{schema}\".jobs WHERE id = $1 AND step_key = 
 
 #: The node detail panel's read (the recorded failure-down: status header, attempts,
 #: the trace id, captured error, one upstream hop — the causal chain
-#: via parent_id). MAP CHILDREN share one step key (``<src>.item``), so
+#: via parent_id). Map children share one step key (``<src>.item``), so
 #: the panel addresses a child by (step, map_index): the bare read
-#: lands on the FIRST child in map order (deterministic), and the
+#: lands on the first child in map order (deterministic), and the
 #: ``map_index=`` query param selects the row itself — the run page's
 #: observation surface (``watch this item's attempt go 1 → 2``) is
 #: (step, map_index)-addressable, not step-key-arbitrary.
@@ -189,12 +189,12 @@ _NODE_LEDGER_SQL = (
     'FROM "{schema}".wf_step_ledger WHERE job_id = $1 ORDER BY id'
 )
 
-#: The node I/O panel's capture read: the LATEST FAILED attempt's
-#: failure IO-capture WITH a capture on it (a later attempt's
-#: SUCCESS must not hide the failed attempt's capture: the diagnostic's
+#: The node I/O panel's capture read: the latest failed attempt's
+#: failure IO-capture with a capture on it (a later attempt's
+#: success must not hide the failed attempt's capture: the diagnostic's
 #: whole point is the failure's input + error), falling back to the
 #: latest terminal ledger row when no failed row carries one. The panel
-#: labels WHICH attempt's capture it shows.
+#: labels which attempt's capture it shows.
 _NODE_IO_CAPTURE_FAILED_SQL = (
     'SELECT attempt, status, capture FROM "{schema}".wf_step_ledger '
     "WHERE job_id = $1 AND status = 'failed' AND capture IS NOT NULL "
@@ -207,14 +207,14 @@ _NODE_IO_CAPTURE_SQL = (
     "ORDER BY attempt DESC LIMIT 1"
 )
 
-#: The panel's children RENDER cap (bounded render): a 10k
-#: fan-out's census ships the FIRST cap rows + the total — the "N more"
+#: The panel's children render cap (bounded render): a 10k
+#: fan-out's census ships the first cap rows + the total — the "N more"
 #: arm names the rest; the rows stay one indexed query away (the child
 #: read is (step, map_index)-addressable).
 _PANEL_CHILDREN_CAP: Final[int] = 200
 
 #: The children census read: the cap bounds the rows; ``count(*) OVER ()``
-#: carries the TOTAL in the same statement (one read, no second count).
+#: carries the total in the same statement (one read, no second count).
 _NODE_CHILDREN_SQL = (
     "SELECT map_index, status, attempt, max_attempts, error_class, "
     "count(*) OVER () AS total "
@@ -223,8 +223,8 @@ _NODE_CHILDREN_SQL = (
     "ORDER BY map_index LIMIT $3"
 )
 
-#: The ROOT-ROW STATUS read (the pruned-history arm's discriminator):
-#: a FAILED node with an EMPTY step history on a TERMINAL run is
+#: The root-row status read (the pruned-history arm's discriminator):
+#: a failed node with an empty step history on a terminal run is
 #: retention's prune, never a policy suppression.
 _ROOT_STATUS_SQL = "SELECT status FROM \"{schema}\".jobs WHERE id = $1 AND step_key = '__flow__'"
 
@@ -281,13 +281,13 @@ def _panel_truncated(texts: list[str | None]) -> bool:
     return any(t is not None and len(t) > _PANEL_FIELD_CAP_CHARS for t in texts)
 
 
-#: THE WALK BUDGET (the bounded-display law):
-#: the result face's redaction walk runs on a PRE-TRIMMED projection —
-#: the doc's depth, node count, and SERVED SIZE each budgeted
-#: BEFORE the walk, never a multi-MB walk per drill-down. The size
-#: budget counts the SERVED size — keys, structure, and values (a
+#: The walk budget (the bounded-display law):
+#: the result face's redaction walk runs on a pre-trimmed projection —
+#: the doc's depth, node count, and served size each budgeted
+#: before the walk, never a multi-MB walk per drill-down. The size
+#: budget counts the served size — keys, structure, and values (a
 #: values-only count once let a key-heavy doc's keys and
-#: JSON syntax ride FREE — the served text ran ~46k for a claimed
+#: JSON syntax ride free — the served text ran ~46k for a claimed
 #: 1,023, and the panel's own truncation arm fired on top of the
 #: walk's). Every node carries a flat syntax frame (the quotes, colon,
 #: comma, and braces its JSON render needs) beside its content's
@@ -317,35 +317,35 @@ _WALK_CUT_RESERVE: Final[int] = 2 * len(_WALK_PRUNED_MARKER) + 4 * _WALK_NODE_SY
 
 
 def _bounded_io_projection(doc: object) -> tuple[object, str | None, dict[str, int]]:
-    """THE DISPLAY WALK'S PRE-TRIM: project the
-    doc into the walk budget BEFORE the redaction walk — depth, node
-    count, and SERVED SIZE each capped, every cut site carrying
+    """The display walk's pre-trim: project the
+    doc into the walk budget before the redaction walk — depth, node
+    count, and served size each capped, every cut site carrying
     the named marker (never a silent discard). Returns (the projected
     doc, the named size arm — None when the whole doc fit — and the
     walk's own census: the nodes and served characters actually
     processed).
 
-    THE ORDER IS THE HONESTY'S OWN: the trim runs BEFORE the redaction
-    (a multi-MB doc never pays the multi-MB walk), and the REDACTION
+    The order is the honesty's own: the trim runs before the redaction
+    (a multi-MB doc never pays the multi-MB walk), and the redaction
     still runs on everything served (the projected doc's strings go
     through the same chain — the served text stays post-redaction). A
     secret cut by the trim is absent entirely (never served raw); a
     secret inside the kept band is masked by the chain.
 
-    THE SIZE BUDGET'S UNIT IS THE SERVED TEXT (the values-only count
+    The size budget's unit is the served text (the values-only count
     under-counted): keys, structure, and values all count —
     the census is the json-serialized length's honest proxy, and the
-    note's number is the SAME accounting (a key-heavy doc's keys can no
+    note's number is the same accounting (a key-heavy doc's keys can no
     longer ride free past the budget)."""
     state = {"nodes": 0, "chars": 0, "pruned": 0, "done": 0}
 
     def _budget_out() -> bool:
-        # THE FIRST CUT ENDS THE WALK: once any site is trimmed, every
+        # The first cut ends the walk: once any site is trimmed, every
         # further node is the marker — a long list of cheap strings past
-        # the budget must not earn one marker PER ITEM (the markers
+        # the budget must not earn one marker per item (the markers
         # would out-grow the budget they bound; the red-measure: 300
         # marker copies ballooned the "bounded" text to 17k). The char
-        # check runs against the budget LESS the cut's own render
+        # check runs against the budget less the cut's own render
         # reserve — a cut must land the census at/under the budget.
         return (
             bool(state["done"])
@@ -356,13 +356,13 @@ def _bounded_io_projection(doc: object) -> tuple[object, str | None, dict[str, i
     def _mark() -> str:
         state["pruned"] += 1
         state["done"] = 1
-        # THE MARKER'S OWN CONTENT counts (it is served text).
+        # The marker's own content counts (it is served text).
         state["chars"] += len(_WALK_PRUNED_MARKER)
         return _WALK_PRUNED_MARKER
 
     def _marker_key(out: dict[object, object]) -> str:
-        # THE COLLISION-SAFE MARKER: a doc whose OWN
-        # entry's key equals the marker string must not be OVERWRITTEN
+        # The collision-safe marker: a doc whose own
+        # entry's key equals the marker string must not be overwritten
         # by the walk's prune marker — the ordinal suffix disambiguates
         # until unique (the masked-key collision law's own shape), the
         # legit entry survives beside the marker.
@@ -424,7 +424,7 @@ def _bounded_io_projection(doc: object) -> tuple[object, str | None, dict[str, i
             out_list: list[object] = []
             for v in cast("list[object]", value):
                 if _budget_out():
-                    # THE CUT REPLACES THIS ELEMENT: the marker's node
+                    # The cut replaces this element: the marker's node
                     # (frame + content) stands where the element would.
                     state["nodes"] += 1
                     state["chars"] += _WALK_NODE_SYNTAX_CHARS
@@ -432,7 +432,7 @@ def _bounded_io_projection(doc: object) -> tuple[object, str | None, dict[str, i
                     return out_list
                 out_list.append(_walk(v, depth + 1))
             return out_list
-        # THE SCALAR LEAF: the jsonb boundary's own scalar kinds — the
+        # The scalar leaf: the jsonb boundary's own scalar kinds — the
         # exact render length (cheap; no recursion, no big materialize).
         if value is None or isinstance(value, bool | int | float):
             state["chars"] += len(_json_dumps_str(value))
@@ -470,25 +470,25 @@ _WF_PAYLOAD_INPUT_KEYS: Final[frozenset[str]] = frozenset({"wf_input", "wf_args"
 
 
 def _redact_io_doc(doc: object) -> object:
-    """THE I/O DOC'S DISPLAY REDACTION (the same symmetry the capture
-    chain runs): the FULL
+    """The I/O doc's display redaction (the same symmetry the capture
+    chain runs): the full
     chain the input face runs — ``mask_credentials`` (the vetted chain,
     the tors pre-pass included) → the hold-context's token-head pass —
-    over EVERY string the doc carries: VALUES and KEY NAMES both (a
+    over every string the doc carries: values and key names both (a
     ``{"sk-…": …}`` key masks like the value it held). Deep nesting and
     list elements walk. Over-redaction is the safe failure: the row
     keeps the truth, the panel shows the masked form.
 
-    THE MASKED-KEY COLLISION LAW: two keys
-    that mask to the SAME ``***`` must not overwrite each other (a
+    The masked-key collision law: two keys
+    that mask to the same ``***`` must not overwrite each other (a
     dict keyed on the masked name keeps only the last) — colliding
     masked keys are disambiguated ``***[2]``, ``***[3]``, … until
-    unique: every masked entry SURVIVES, no raw key byte rides, and
+    unique: every masked entry survives, no raw key byte rides, and
     the ordinal keeps the count on the record.
 
-    The private passes are imported for the SAME reason the capture
+    The private passes are imported for the same reason the capture
     pipeline composes them (a copy could drift from the masks the
-    composition pin holds): this is the CHAIN, not a re-derivation."""
+    composition pin holds): this is the chain, not a re-derivation."""
     from taskq.obs._redact_exc import mask_credentials  # pyright: ignore[reportPrivateUsage]
     from taskq.workflows._capture import _mask_hold_token  # pyright: ignore[reportPrivateUsage]
 
@@ -505,7 +505,7 @@ def _redact_io_doc(doc: object) -> object:
             walked: dict[object, object] = {}
             for k, v in cast("dict[str, object]", value).items():
                 masked_key = _mask_str(k)
-                # THE COLLISION (5b): the second key masking to the same
+                # The collision (5b): the second key masking to the same
                 # form gets the ordinal suffix — no entry is silently
                 # dropped, no raw key is exposed by the disambiguation.
                 unique = masked_key
@@ -528,39 +528,39 @@ def _node_io_view(
     *,
     capture_pruned: bool = False,
 ) -> dict[str, object]:
-    """THE NODE I/O VIEW (the panel's input/output faces — the engine's
+    """The node I/O view (the panel's input/output faces — the engine's
     own display disciplines, never a raw dump of what a policy
     suppressed):
 
-    * ``input`` — the node's WIRED args (the entry input ``wf_input``,
+    * ``input`` — the node's wired args (the entry input ``wf_input``,
       the wiring's recorded data args ``wf_args``, the map child's item
-      ``wf_item``), read off the row's payload and REDACTED THROUGH THE
-      ENGINE'S OWN PIPELINE at display (``_redact_io_doc``: the vetted
-      chain → the token-head pass, VALUES and KEY NAMES both — exactly
+      ``wf_item``), read off the row's payload and redacted through the
+      engine's own pipeline at display (``_redact_io_doc``: the vetted
+      chain → the token-head pass, values and key names both — exactly
       the hold-context discipline; the rows-alone law keeps the
       workflow's own ``redact=`` hook unresolvable here, and
       over-redaction is the safe failure);
     * ``result`` — the terminal node's result envelope, decoded and
-      UNWRAPPED the read-side display's own way (``{"value": x}`` alone
-      → ``x``, the shape read_map_aggregate decodes), through the SAME
+      unwrapped the read-side display's own way (``{"value": x}`` alone
+      → ``x``, the shape read_map_aggregate decodes), through the same
       full chain the input face runs (the token-head
       pass included — the chain-only face once rendered bare ``sk-…``
-      heads RAW), bounded, with the ``truncated`` flag computed
-      POST-redaction (the flag describes the text SERVED);
+      heads raw), bounded, with the ``truncated`` flag computed
+      post-redaction (the flag describes the text served);
     *   ``capture`` — the failure IO-capture as the engine wrote it,
-        THEN through the SAME display-time chain the other faces run
+        then through the same display-time chain the other faces run
         (the write's own mask — a pre-chain-
         release write or a hostile row — is not trusted at display; the
         panel adds no unmasked byte and only bounds the display),
-        labeled with WHICH attempt's capture it shows
-        (``capture_attempt`` / ``capture_status`` — the LATEST
-        FAILED attempt's capture preferred, so a later success's NULL
+        labeled with which attempt's capture it shows
+        (``capture_attempt`` / ``capture_status`` — the latest
+        failed attempt's capture preferred, so a later success's NULL
         capture cannot hide it);
     * ``capture_suppressed`` — a FAILED node whose capture policy
-      captured nothing: the DEFINED state, named as such — the panel
+      captured nothing: the defined state, named as such — the panel
       never substitutes raw rows for a suppressed capture;
-    * ``capture_pruned`` — a FAILED node whose step history the
-      RETENTION arms deleted (the ledger read finds no rows for an
+    * ``capture_pruned`` — a failed node whose step history the
+      retention arms deleted (the ledger read finds no rows for an
       attempted node on a terminal run): the honest arm — the
       capture was not policy-suppressed, the flow history is gone."""
     io: dict[str, object] = {
@@ -583,21 +583,21 @@ def _node_io_view(
 
     result = _jsonb_doc(node["result"])
     if result is not None and node["status"] == "succeeded":
-        # THE RESULT FACE IS THE SUCCESS PATH'S (the output's "decoded
-        # result" arm): a failed node's output is the CAPTURE below —
+        # The result face is the success path's (the output's "decoded
+        # result" arm): a failed node's output is the capture below —
         # the engine writes no result on the failure path, and an empty
         # envelope rendered as one would be a lie of shape.
-        # THE ENVELOPE UNWRAP (the read-side display's own shape): a lone
+        # The envelope unwrap (the read-side display's own shape): a lone
         # ``{"value": …}`` is the runner's wrapper, not the body's return.
         unwrapped: object = result
         if isinstance(result, dict) and set(cast("dict[str, object]", result)) == {"value"}:
             unwrapped = cast("dict[str, object]", result)["value"]
-        # THE BOUNDED WALK: the display walks a
-        # PRE-TRIMMED projection (depth/width/chars budgeted BEFORE the
+        # The bounded walk: the display walks a
+        # pre-trimmed projection (depth/width/chars budgeted before the
         # walk — a multi-MB row is a bounded walk, never a multi-MB
-        # dump), then the FULL chain (the token-head pass included, key
+        # dump), then the full chain (the token-head pass included, key
         # names masked) runs on what is served; the text and its
-        # truncated flag both describe the POST-redaction bytes. The trim is
+        # truncated flag both describe the post-redaction bytes. The trim is
         # never silent: the named size arm rides the
         # face when the projection cut.
         projected, walk_note, _walk_stats = _bounded_io_projection(unwrapped)
@@ -607,9 +607,9 @@ def _node_io_view(
             "truncated": len(text) > _PANEL_FIELD_CAP_CHARS,
         }
         if walk_note is not None:
-            # THE NAMED SIZE ARM: the walk
+            # The named size arm: the walk
             # budget's cut is on the record — the served size's honest
-            # count ("the first N characters of the SERVED doc") —
+            # count ("the first N characters of the served doc") —
             # never a silent discard.
             face["walk_note"] = walk_note
         io["result"] = face
@@ -617,12 +617,12 @@ def _node_io_view(
     if capture_row is not None:
         capture = _jsonb_doc(capture_row["capture"])
         if isinstance(capture, dict):
-            # THE CAPTURE FACE'S DISPLAY-TIME MASK (the symmetry's own
+            # The capture face's display-time mask (the symmetry's own
             # logic): the input/result
             # faces re-run the chain at display (the hostile-row
-            # defense); the capture face trusts the write NO LONGER —
-            # the SAME chain runs here (a pre-chain-release write's raw
-            # canary renders masked, never raw). The cast is the JSONB
+            # defense); the capture face trusts the write no longer —
+            # the same chain runs here (a pre-chain-release write's raw
+            # canary renders masked, never raw). The cast is the jsonb
             # boundary's declared contract (the decode's shape, never an
             # inferred Unknown).
             cap_map = cast(
@@ -640,12 +640,12 @@ def _node_io_view(
             if view:
                 io["capture"] = view
                 io["capture_suppressed"] = False
-                # THE CAPTURE'S LABEL: WHICH attempt's capture the
+                # The capture's label: which attempt's capture the
                 # panel shows — the failed attempt the read preferred.
                 io["capture_attempt"] = capture_row["attempt"]
                 io["capture_status"] = capture_row["status"]
     if capture_pruned:
-        # THE PRUNED ARM WINS: the history is GONE — naming a
+        # The pruned arm wins: the history is gone — naming a
         # policy suppression here would be the retention lie.
         io["capture_pruned"] = True
         io["capture_suppressed"] = False
@@ -667,19 +667,19 @@ async def _audit_rerun_refusal(
     total: int,
     rows: int = 0,
 ) -> None:
-    """THE AUDITED RERUN REFUSAL (the audited-refusal law at the rerun
-    door): a refused rerun — grantless, cancelled, MID-composition, or
+    """The audited rerun refusal (the audited-refusal law at the rerun
+    door): a refused rerun — grantless, cancelled, mid-composition, or
     the raced loser — writes its own ``admin_audit`` row (``refused`` +
     the counts) before the redirect lands. The refusal moves no rows of
     its own, so the row stands alone (the same-tx discipline's
-    degenerate case), written with the SAFE recorder: a bookkeeping row
+    degenerate case), written with the safe recorder: a bookkeeping row
     the trail missed is the exact invisible-probe failure mode, but the
     redirect's refusal state must not fake-fail on a bookkeeping blip.
-    ``applied``/``total`` are the composition's KEY counts and ``rows``
-    the ROWS the granted keys re-opened (the map-key retry's honest
+    ``applied``/``total`` are the composition's key counts and ``rows``
+    the rows the granted keys re-opened (the map-key retry's honest
     census — the half-rerun's state, on the record). The detail carries
     the ``run_id`` the run page's trail keys on — the refusal renders
-    on THE RUN's trail, not just the target lookup."""
+    on the run's trail, not just the target lookup."""
     from taskq.audit import record_admin_action_safe
 
     await record_admin_action_safe(
@@ -713,14 +713,14 @@ async def _audit_gate_refusal(
     reason: Any,
     refusal: str,
 ) -> None:
-    """THE AUDITED REFUSAL: the typed door's 422 is an
-    operator ACTION — it writes its ``admin_audit`` row (``refused`` +
+    """The audited refusal: the typed door's 422 is an
+    operator action — it writes its ``admin_audit`` row (``refused`` +
     the gate's reason) before the HTTPException propagates. The refusal
     moves no rows, so the row stands alone (nothing to share a tx with —
     the same-tx discipline's degenerate case); it is written with the
-    UNsafe recorder so a failure SURFACES (a refusal the trail missed is
+    UNsafe recorder so a failure surfaces (a refusal the trail missed is
     the exact invisible-probe failure mode). The detail carries the run_id
-    the trail's page query keys on — the refusal renders on THE RUN's
+    the trail's page query keys on — the refusal renders on the run's
     trail, not just the hold's target lookup. ``target_type``/``target_id``
     name what the refusal was ABOUT: a hold (the default) by its canonical
     id, a run-scoped refusal (the deliver door's wire-shape pre-check,
@@ -780,9 +780,9 @@ async def _validated_through_gates_audited(
 def _validate_through_gates(
     wf_app: Any, hold: Any, decision: dict[str, object]
 ) -> dict[str, object]:
-    """THE TYPED DOOR (the hitl-proof's send boundary): the payload
-    re-validates against the bound gate's declared models BEFORE any row
-    moves. A wrong payload raises the named 422 the operator SEES;
+    """The typed door (the hitl-proof's send boundary): the payload
+    re-validates against the bound gate's declared models before any row
+    moves. A wrong payload raises the named 422 the operator sees;
     nothing is delivered."""
     from pydantic import BaseModel, ValidationError
 
@@ -823,9 +823,9 @@ def _validate_through_gates(
 
 async def _form_body(request: Request) -> dict[str, Any]:
     """The action body's read — the guarded-POST discipline: the fields
-    arrive FORM-ENCODED (the admin's own convention; the CSRF token is a
+    arrive form-encoded (the admin's own convention; the CSRF token is a
     form field, so the body must be one). ``decision``/``payload`` are
-    JSON TEXT fields (the payload's shape is the typed door's business,
+    JSON text fields (the payload's shape is the typed door's business,
     parsed here — a malformed one is the named 400, never a traceback)."""
     form = await request.form()
     body: dict[str, Any] = {k: v for k, v in form.items() if isinstance(v, str)}
@@ -851,14 +851,14 @@ async def _stream_generator(
     """The feed: snapshot-on-revision, full replacement each frame (the
     replay contract's body — see the module docstring).
 
-    THE SESSION LAW (the ``sse.py`` session-recheck pattern): ``session_verifier`` re-runs before the first frame and
+    The session law (the ``sse.py`` session-recheck pattern): ``session_verifier`` re-runs before the first frame and
     once per poll iteration — a session revoked mid-stream ends the
-    stream at the next tick, before ANY further frame. Fail-closed: a
+    stream at the next tick, before any further frame. Fail-closed: a
     verifier error is revocation, and a check that outlives
     ``SESSION_RECHECK_TIMEOUT_SECS`` (a wedged IdP introspection) is
     unknown state, not a pass.
 
-    THE GENERATOR TRAP (P2's pin 6): state crosses as PARAMETERS — a
+    The generator trap (P2's pin 6): state crosses as parameters — a
     reassignment of a variable captured from the endpoint's scope is the
     UnboundLocalError dragon; nothing here shadows it."""
     seq = cursor
@@ -892,7 +892,7 @@ async def _stream_generator(
             return False
 
     while True:
-        # THE SESSION RE-CHECK GATES EVERY ITERATION (before the poll and
+        # The session re-check gates every iteration (before the poll and
         # every frame it would yield — the revoked session's stream
         # terminates at the next tick, never keeps receiving frames).
         if not await _session_still_valid():
@@ -926,9 +926,9 @@ async def _stream_generator(
             yield _frame(seq, run_state_json(view, seq=seq))
             since_keepalive = 0.0
         elif revision != last_revision:
-            # THE NOT-STARTED RUN (the states matrix's defined state): the
+            # The not-started run (the states matrix's defined state): the
             # revision moved but the run has no rows yet — the subscribe
-            # 404s an UNKNOWN run id (the existence oracle's refusal), so
+            # 404s an unknown run id (the existence oracle's refusal), so
             # this branch is the mid-stream race only: the root row the
             # subscribe probe found is pruned between subscribe and this
             # poll. Still a defined state, never a silent hang.
@@ -963,7 +963,7 @@ def _run_redirect(
     """The action routes' redirect back to the run page (the base_path
     law: the URL rides the mounted prefix — a relative redirect would
     land the operator on a raw 404). A refusal banner key rides
-    the ``?error=`` param the detail page DECLARES."""
+    the ``?error=`` param the detail page declares."""
     url = f"{base_path}/workflows/{run_id}" + (f"?error={banner}" if banner else "")
     return RedirectResponse(url=url, status_code=303)
 
@@ -989,7 +989,7 @@ def register_actions(router: APIRouter) -> None:
     ) -> dict[str, Any]:
         """The node detail panel's data (the click → panel surface).
 
-        THE MAP-INDEX ADDRESSING: a map's children share one step key —
+        The map-index addressing: a map's children share one step key —
         the panel addresses a child by (step, ``map_index``); the bare
         read lands on the FIRST child in map order and carries the
         ``children`` census, so the operator can click through to the
@@ -1016,8 +1016,8 @@ def register_actions(router: APIRouter) -> None:
                 raise HTTPException(status_code=404, detail="Node not found")
             parent = await conn.fetchrow(_NODE_PARENT_SQL.format(schema=schema), node["id"])
             ledger = await conn.fetch(_NODE_LEDGER_SQL.format(schema=schema), node["id"])
-            # THE NODE I/O's capture read: the LATEST FAILED
-            # attempt's capture preferred — a later attempt's SUCCESS
+            # The node I/O's capture read: the latest failed
+            # attempt's capture preferred — a later attempt's success
             # must not hide the failed attempt's capture (the
             # diagnostic's whole point); the fallback keeps the latest
             # terminal row's capture when no failed row carries one.
@@ -1028,9 +1028,9 @@ def register_actions(router: APIRouter) -> None:
                 capture_row = await conn.fetchrow(
                     _NODE_IO_CAPTURE_SQL.format(schema=schema), node["id"]
                 )
-            # THE PRUNED-HISTORY DISCRIMINATOR: a FAILED node with
-            # an ATTEMPT on the clock, an EMPTY step history, and a
-            # TERMINAL root is the retention arms' prune — the honest
+            # The pruned-history discriminator: a failed node with
+            # an attempt on the clock, an empty step history, and a
+            # terminal root is the retention arms' prune — the honest
             # arm the panel names (never the suppression lie). One
             # bounded root read decides.
             capture_pruned = False
@@ -1042,7 +1042,7 @@ def register_actions(router: APIRouter) -> None:
             ):
                 root_status = await conn.fetchval(_ROOT_STATUS_SQL.format(schema=schema), run_id)
                 capture_pruned = root_status in TERMINAL_STATUSES
-            # THE CHILDREN'S RENDER CAP (bounded read): the first
+            # The children's render cap (bounded read): the first
             # cap rows + the total (count(*) OVER ()) — a 10k fan-out
             # ships 200 rows, never 10k; the "N more" arm names the rest.
             siblings = await conn.fetch(
@@ -1055,7 +1055,7 @@ def register_actions(router: APIRouter) -> None:
                 "status": r["status"],
                 "attempt": r["attempt"],
                 "max_attempts": r["max_attempts"],
-                # THE CLASS FIELD RIDES THE SAME BOUND: a hostile row's 200KB
+                # The class field rides the same bound: a hostile row's 200KB
                 # error_class once served whole
                 # through the panel while the sibling fields were bound.
                 "error_class": _bound_for_panel(r["error_class"]),
@@ -1071,7 +1071,7 @@ def register_actions(router: APIRouter) -> None:
             "retry_kind": node["retry_kind"],
             "trace_id": str(node["trace_id"]) if node["trace_id"] else None,
             "error_class": _bound_for_panel(node["error_class"]),
-            # THE READ-SIDE BOUND: the display-capped
+            # The read-side bound: the display-capped
             # delivery — a foreign/hostile row's 5MB error fields render
             # bounded with the dropped-count named; the full detail
             # stays in the ROWS (the CLI/SQL surface reads them
@@ -1088,19 +1088,19 @@ def register_actions(router: APIRouter) -> None:
                 ]
             ),
             "parent": dict(parent) | {"id": str(parent["id"])} if parent else None,
-            # THE CACHE-HIT RECEIPT (the provenance face): the cross-run cache's hit stamp (address
+            # The cache-hit receipt (the provenance face): the cross-run cache's hit stamp (address
             # + producing run + stored instant), None on an executed
             # step. A step that never executed must not read like one
             # that did. The jsonb arrives as a JSON string through the
-            # bare -> operator — decoded HERE so the panel's JSON is the
+            # bare -> operator — decoded here so the panel's JSON is the
             # object the JS renders.
             "cache_hit": _cache_hit_of(node["cache_hit"]),
             "timeline": [
                 dict(r)
                 | {
                     "created_at": _iso(r["created_at"]),
-                    # THE PANEL'S DISPLAY CAP COVERS THE LEDGER'S OWN
-                    # ERROR FIELD (the attempt rows' error_message
+                    # The panel's display cap covers the ledger's own
+                    # error field (the attempt rows' error_message
                     # rides the same read-side bound as the job
                     # columns' — a 500k-char ledger message renders
                     # capped with the dropped count named, never raw).
@@ -1109,10 +1109,10 @@ def register_actions(router: APIRouter) -> None:
                 for r in ledger
             ],
             "children": children if len(children) > 1 else [],
-            # THE CHILDREN'S TOTAL (the "N more" arm): the
+            # The children's total (the "N more" arm): the
             # count beyond the render cap — the JS names the rest.
             "children_total": children_total,
-            # THE NODE I/O (the panel's input/output faces): the wired
+            # The node I/O (the panel's input/output faces): the wired
             # args, the decoded result, the failure capture — each
             # through the engine's own display discipline (see
             # _node_io_view; never a raw dump of a suppressed capture,
@@ -1138,15 +1138,15 @@ def register_actions(router: APIRouter) -> None:
         """The run's SSE state feed (the revisioned-snapshot replay —
         the module docstring states the contract).
 
-        THE SUBSCRIBE LAW: an unknown run id is a 404 HERE —
+        The subscribe law: an unknown run id is a 404 here —
         the estate's own SSE convention (``/sse/{topic}`` refuses an
-        unknown topic at subscribe; this endpoint refuses an unknown RUN
+        unknown topic at subscribe; this endpoint refuses an unknown run
         the same way). The empty-snapshot-forever stream was an
-        existence oracle behind the auth gate AND a poll task per probe,
+        existence oracle behind the auth gate and a poll task per probe,
         held until the client let go; the 404 is the defined refusal. A
         run that exists but has no node rows yet still streams (the
         generator's not-started state)."""
-        # THE EXISTENCE PROBE (bounded, one indexed read, BEFORE the slot
+        # The existence probe (bounded, one indexed read, before the slot
         # acquire — a refused stream must not consume the SSE budget the
         # cap guards).
         async with pool.acquire() as conn:
@@ -1162,14 +1162,14 @@ def register_actions(router: APIRouter) -> None:
                 cursor = max(0, int(last_event_id))
             except ValueError:
                 cursor = 0
-        # THE CAP: each stream pins a poll task + a socket for as long as
+        # The cap: each stream pins a poll task + a socket for as long as
         # the client holds it — the uncapped scan's guard (the SSE-cap
         # law) refuses an endpoint without this, and a burst of open
         # streams would exhaust exactly what the cap bounds.
         sse_slot = await acquire_sse_slot(
             "wf-run-stream", settings.admin_max_sse_connections, surface="admin"
         )
-        # THE SESSION LAW's binding (the sse.py re-check pattern): the
+        # The session law's binding (the sse.py re-check pattern): the
         # verifier reads the same session cookie the request arrived
         # with; a session revoked mid-stream fails the re-check at the
         # next tick even though those bytes are unchanged.
@@ -1198,7 +1198,7 @@ def register_actions(router: APIRouter) -> None:
         principal: Any = Depends(get_principal),
         wf_app: Any = Depends(get_workflow_app),
     ) -> dict[str, Any]:
-        """Reply to a hold BY ID (the typed door; the audit row)."""
+        """Reply to a hold by id (the typed door; the audit row)."""
         if wf_app is None:
             raise HTTPException(
                 status_code=501,
@@ -1255,9 +1255,9 @@ def register_actions(router: APIRouter) -> None:
         hold = await client.get(canonical_hold_id)
         if hold is None or hold.run_id != str(run_id):
             raise HTTPException(status_code=404, detail="Hold not found on this run")
-        # THE AUDITED REFUSAL: the gate's 422 writes its
+        # The audited refusal: the gate's 422 writes its
         # admin_audit row (refused + the reason) before propagating —
-        # the shape-probing operator lands IN the trail.
+        # the shape-probing operator lands in the trail.
         validated = await _validated_through_gates_audited(
             pool,
             schema=schema,
@@ -1269,7 +1269,7 @@ def register_actions(router: APIRouter) -> None:
             target_id=str(_as_hold_id(hold_id)),
             reason=reason,
         )
-        # THE PAYLOAD'S WIRE SHAPE: a control character (a NUL above
+        # The payload's wire shape: a control character (a NUL above
         # all) cannot ride the jsonb bind — the door refuses it as the
         # typed gate's own refusal (audited, the hold survives), never
         # a 500 from the serializer.
@@ -1307,8 +1307,8 @@ def register_actions(router: APIRouter) -> None:
         principal: Any = Depends(get_principal),
         wf_app: Any = Depends(get_workflow_app),
     ) -> dict[str, Any]:
-        """Deliver to a run's held node BY (run, node) — the wire form's
-        address; the SAME typed door the resolve rides."""
+        """Deliver to a run's held node by (run, node) — the wire form's
+        address; the same typed door the resolve rides."""
         if wf_app is None:
             raise HTTPException(
                 status_code=501,
@@ -1329,7 +1329,7 @@ def register_actions(router: APIRouter) -> None:
         payload_doc = cast(dict[str, object], payload)
         from taskq.workflows.api._hitl import HitlClient
 
-        # THE PAYLOAD'S WIRE SHAPE: a control character (a NUL above
+        # The payload's wire shape: a control character (a NUL above
         # all) cannot ride the jsonb bind — the door refuses it as the
         # typed gate's own refusal (audited, the hold survives), never
         # a 500 from the serializer.
@@ -1341,7 +1341,7 @@ def register_actions(router: APIRouter) -> None:
                 schema=schema,
                 principal=principal,
                 action="hitl.deliver",
-                # THE REFUSAL IS ABOUT THE RUN: no hold was looked up
+                # The refusal is about the run: no hold was looked up
                 # (the wire shape preceded the lookup) — the row targets
                 # the run by its canonical spelling, the form every
                 # run-targeted row speaks.
@@ -1366,7 +1366,7 @@ def register_actions(router: APIRouter) -> None:
                 detail="ambiguous: the node holds "
                 f"{len(held)} signals — address one BY ID (the resolve's door)",
             )
-        # THE AUDITED REFUSAL: the deliver door's 422 audits
+        # The audited refusal: the deliver door's 422 audits
         # exactly like the resolve's (the page's claim names deliver).
         validated = await _validated_through_gates_audited(
             pool,
@@ -1430,31 +1430,31 @@ def register_actions(router: APIRouter) -> None:
         principal: Any = Depends(get_principal),
         base_path: str = Depends(get_base_path),
     ) -> RedirectResponse:
-        """Re-arm ONE terminal-failed node (THE NODE RERUN) — the
-        ENGINE'S OWN manual-resume verb (``retry_workflow_node``):
+        """Re-arm one terminal-failed node (the node rerun) — the
+        engine's own manual-resume verb (``retry_workflow_node``):
         the failed→pending CAS + the blocked closure's re-open + the
-        terminal-FAILED flow's re-open; the attempt ordinal CONTINUES
+        terminal-failed flow's re-open; the attempt ordinal continues
         (the next claim buys exactly one more attempt). No engine
         semantics are invented here — the route is the verb's audited
-        HTTP face. THE ROOT KEY IS NOT A NODE: the CAS's own
+        HTTP face. The root key is not a node: the CAS's own
         guard refuses the run's root key — ``__flow__`` lands the
         not-applied banner like any other grantless key (the run's own
-        re-run is the RUN-rerun's concern).
+        re-run is the run-rerun's concern).
 
-        THE AUDIT: the verb writes its own same-transaction
+        The audit: the verb writes its own same-transaction
         ``admin_audit`` row (``workflow.retry_node``, principal + reason
         + run/node) — the same discipline the resolve/cancel routes
-        carry. THE REFUSALS (the audited-refusal law): a live/unknown
-        node (the CAS granted nothing) and a CANCELLED run (the verb's
-        second-decision refusal) write THEIR OWN ``admin_audit`` row
+        carry. The refusals (the audited-refusal law): a live/unknown
+        node (the CAS granted nothing) and a cancelled run (the verb's
+        second-decision refusal) write their own ``admin_audit`` row
         (``refused`` + the reason) before the redirect, and land the
         named banner — the refused-op contract, never a 400 wall."""
         from taskq.workflows import WorkflowRunError, retry_workflow_node
 
-        # THE NODE KEY'S SHAPE IS THE DOOR'S OWN CHECK: a NUL byte can
+        # The node key's shape is the door's own check: a NUL byte can
         # never ride the CAS's text bind (the encoding refusal) — an
         # audited refusal, never a 500. (Length is not the door's
-        # business: a long DECLARED key binds fine; the pointer's bound
+        # business: a long declared key binds fine; the pointer's bound
         # is the audit leaf's own law.)
         if "\x00" in node_key:
             await _audit_rerun_refusal(
@@ -1505,8 +1505,8 @@ def register_actions(router: APIRouter) -> None:
             )
             return _run_redirect(base_path, run_id, banner=RERUN_REFUSED_BANNER)
         except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
-            # THE RACE'S HONEST LOSER (the retry faces' named pair): a laggard writer's deadlock lands the
-            # AUDITED refusal row + the raced banner, never a 500 wall —
+            # The race's honest loser (the retry faces' named pair): a laggard writer's deadlock lands the
+            # audited refusal row + the raced banner, never a 500 wall —
             # the same pair the cancel/resolve CLI verbs name.
             await _audit_rerun_refusal(
                 pool,
@@ -1551,38 +1551,38 @@ def register_actions(router: APIRouter) -> None:
         principal: Any = Depends(get_principal),
         base_path: str = Depends(get_base_path),
     ) -> RedirectResponse:
-        """Re-enqueue a FAILED run's work (THE RUN RERUN).
+        """Re-enqueue a failed run's work (the run rerun).
 
-        THE SCOPE, STATED HONESTLY: the engine has NO run-level
+        The scope, stated honestly: the engine has no run-level
         re-enqueue verb — the run-key arbiter is terminal-forever (a
-        fresh input, or a CANCELLED run, is a NEW run — the engine's own
+        fresh input, or a cancelled run, is a new run — the engine's own
         run-key-arbiter contract, and the CLI's remedy line says the same). What the
-        engine DOES offer is the per-node manual resume
+        engine does offer is the per-node manual resume
         (``retry_workflow_node``: the node's CAS re-arm + the blocked
         children's reset + the flow re-open + the exit-skipped branches'
         re-arm — each call audited in its own transaction). This route
-        composes THAT verb over the run's terminal-FAILED step keys (the
+        composes that verb over the run's terminal-failed step keys (the
         rows' census — a map's failed children share one step key, and
         the verb's CAS re-arms every failed row of the key at once). No
         engine semantics are invented: nothing here writes a row the
         verb does not.
 
-        THE PARTIAL STATE, NAMED: the composition tracks the
-        applied/refused counts — a refusal landing MID-composition (the
+        The partial state, named: the composition tracks the
+        applied/refused counts — a refusal landing mid-composition (the
         run cancelled between calls, a verb raise) redirects with the
-        PARTIAL banner ("N of M re-opened before the refusal") and the
+        partial banner ("N of M re-opened before the refusal") and the
         refusal's own audit row carries the counts, agreeing with the
         per-key rows the granted calls wrote.
 
-        THE CLOSURE WALK'S BLINDNESS, STATED: the verb's blocked-
+        The closure walk's blindness, stated: the verb's blocked-
         closure read walks ``wf_edge`` — a run whose edge ledger the
-        retention arms PRUNED re-opens no blocked rows (the stamps stand
+        retention arms pruned re-opens no blocked rows (the stamps stand
         as the rows remain); the pruned-history run's rerun is
         best-effort by the rows that survive, and the page's capture
         block names the prune rather than a policy suppression.
 
-        THE REFUSALS: nothing resumable → the not-applied banner; a
-        CANCELLED run → the verb's second-decision refusal banner (the
+        The refusals: nothing resumable → the not-applied banner; a
+        cancelled run → the verb's second-decision refusal banner (the
         first call raises before any row moves). Both write their own
         audit row (the audited-refusal law)."""
         from taskq.workflows import WorkflowRunError, retry_workflow_node
@@ -1596,10 +1596,10 @@ def register_actions(router: APIRouter) -> None:
             raise HTTPException(status_code=404, detail="Workflow run not found")
         failed_keys = sorted({n.key for n in view.nodes if n.status == "failed"})
         reason = await _form_reason(request)
-        # THE TWO COUNTS (the map-key retry's
-        # honest census): the verb returns the ROWS it re-armed (a map's
-        # failed children share one step key — ONE key's grant can move
-        # several rows), so the composition tracks KEYS applied AND ROWS
+        # The two counts (the map-key retry's
+        # honest census): the verb returns the rows it re-armed (a map's
+        # failed children share one step key — one key's grant can move
+        # several rows), so the composition tracks keys applied and rows
         # re-opened; the audit row carries both (the applied-count is no
         # longer a key count wearing a row count's clothes).
         keys_applied = 0
@@ -1622,17 +1622,17 @@ def register_actions(router: APIRouter) -> None:
         except WorkflowRunError as exc:
             refusal = str(exc)
         except (asyncpg.DeadlockDetectedError, asyncpg.SerializationError):
-            # THE RACE'S HONEST LOSER (the composition's own catch — the
+            # The race's honest loser (the composition's own catch — the
             # same named pair the per-node door catches): the deadlock is
-            # a REFUSAL with the counts on the record (the half-rerun's
+            # a refusal with the counts on the record (the half-rerun's
             # law holds for the raced loser too), never a 500 wall.
             refusal = DEADLOCK_REFUSAL
             raced = True
         if refusal is not None or keys_applied == 0:
-            # THE AUDITED REFUSAL (the audited-refusal law at the rerun door): the
-            # refusal's own row — the counts ON IT, agreeing with the
+            # The audited refusal (the audited-refusal law at the rerun door): the
+            # refusal's own row — the counts on it, agreeing with the
             # per-key rows the granted calls wrote (the half-rerun is on
-            # the record); the ROWS count rides beside the keys
+            # the record); the rows count rides beside the keys
             # (the map-key retry's honest census).
             await _audit_rerun_refusal(
                 pool,
@@ -1652,8 +1652,8 @@ def register_actions(router: APIRouter) -> None:
             )
         if refusal is not None:
             if keys_applied:
-                # THE HALF-RERUN'S HONEST BANNER: the run was
-                # PARTLY re-opened before the refusal — the operator
+                # The half-rerun's honest banner: the run was
+                # partly re-opened before the refusal — the operator
                 # hears the counts, never a clean redirect (the audit
                 # row names the refusal's kind — the race included).
                 return _run_redirect(
@@ -1662,8 +1662,8 @@ def register_actions(router: APIRouter) -> None:
                     banner=rerun_partial_banner(rows_reopened, keys_applied, len(failed_keys)),
                 )
             if raced:
-                # THE RACED LOSER'S OWN BANNER: "the run is cancelled"
-                # would LIE for a deadlock — the race's loser answers the
+                # The raced loser's own banner: "the run is cancelled"
+                # would lie for a deadlock — the race's loser answers the
                 # raced banner (the remedy: reload, re-check, re-run).
                 return _run_redirect(base_path, run_id, banner=RERUN_RACED_BANNER)
             return _run_redirect(base_path, run_id, banner=RERUN_REFUSED_BANNER)

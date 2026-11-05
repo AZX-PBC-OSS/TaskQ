@@ -115,7 +115,7 @@ async def test_the_wedged_corpse_derives_terminal(
 
     reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
     wedge_redlog.red(
-        "t20-wedged-corpse-derivation",
+        "crashed-terminal-derivation",
         "the derivation's row-1 liveness (running/crashed/abandoned) reading "
         "the terminal-crash class: the corpse derives 'running' forever — "
         "G7 green on a dead run, retention held forever",
@@ -184,7 +184,7 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
     wf_sql: WorkflowSql,
     wedge_redlog: RedLog,
 ) -> None:
-    """The g7 mutation-pin (the mutation's proof): G7 stayed green ON THE
+    """The G7 mutation-pin (the mutation's proof): G7 stayed green ON THE
     CORPSE — the anti-drift assertion could not fail on a wedged run.
     THE TEETH: a live root whose rows reconstruct a TERMINAL
     verdict contradicts the rows; the assertion runs the one-pass heal

@@ -567,7 +567,7 @@ async def test_two_different_inputs_two_addresses_no_cross_serve(
 async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any
 ) -> None:
-    """The cAS-freshness pin (FIX 4b — the strengthened pack): the TWO
+    """The CAS-freshness pin (FIX 4b — the strengthened pack): the TWO
     SEMANTICS distinguished, both arms provable.
 
     * FIRST-WINNER-KEEPS: a store against a FRESH row LOSES (the

@@ -421,7 +421,7 @@ async def test_shutdown_exit_gate_trips_when_a_sync_actor_outlives_teardown(
     chaos_schema: ChaosSchema,
     chaos_pool: asyncpg.Pool,
 ) -> None:
-    """The f1 closure, at process level: a sync actor whose thread outlives
+    """The F1 closure, at process level: a sync actor whose thread outlives
     the TaskGroup makes the process exit at the deadline trip: not park in
     the default executor's join past the hold it modeled.
 

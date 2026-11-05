@@ -190,7 +190,7 @@ _SOURCE_CHANGES_MEMO: dict[tuple[str, str | None, str | None], bool] = {}
 
 
 def head_sha() -> str:
-    """The hEAD-stamp law (the evidence-integrity round, fix 5): every
+    """The head-stamp law (the evidence-integrity round, fix 5): every
     evidence artifact RECORDS ITS HEAD — the sha the verification
     (``scripts/verify_evidence_heads.py``) re-runs the artifact against.
     An unstamped capture is a rumor; a stale one is history, never the

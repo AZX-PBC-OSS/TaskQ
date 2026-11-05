@@ -30,7 +30,7 @@ class Ingest(BaseModel):
 
 
 async def test_drive_until_held_sees_a_no_deadline_hold(wf_pool: object, wf_schema: str) -> None:
-    """The lIVELock pin, green: the fix landed IN PHASE 4 (the held
+    """The livelock pin, green: the fix landed IN PHASE 4 (the held
     marker is the question — `metadata ? 'hold'` replaced
     `scheduled_at > now()` in the driver's held-count). The RED
     evidence (the spin, 126.82 s / 5000 ticks) is captured in

@@ -164,7 +164,7 @@ async def test_queue_local_depth_of_an_unrelated_actor_never_falses_over() -> No
 
 
 async def test_differential_actor_split_across_queues_is_seen() -> None:
-    """The f1 differential (the false-ok the first design had): one actor's
+    """The F1 differential (the false-ok the first design had): one actor's
     pending split across two queues — 9 in its assigned queue + 9 via the
     queue= override, cap 10. The cap governs the actor's ALL-QUEUE count
     (18 >= 10, the next enqueue is REFUSED); a queue-local verdict read

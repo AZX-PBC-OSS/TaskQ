@@ -209,7 +209,7 @@ def test_the_honest_green_family_stays_green(tmp_path: Path) -> None:
 
 
 def test_the_json_band_family_stays_green(tmp_path: Path) -> None:
-    """The jSON band family: the band payloads record MEASUREMENTS, not
+    """The JSON band family: the band payloads record MEASUREMENTS, not
     verdicts — the honest shape loads as JSON and greens, no unparsable
     warning (the door knows the estate's actual families)."""
     band = {

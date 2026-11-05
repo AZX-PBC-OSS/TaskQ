@@ -717,7 +717,7 @@ async def test_code_owned_uncapping_deploys_null_and_warns(
     pg_conn: asyncpg.Connection,
     structlog_capture: list[structlog.types.EventDict],
 ) -> None:
-    """The nULL-out (the re-review's residual 2): a code-owned actor
+    """The NULL-out (the re-review's residual 2): a code-owned actor
     whose literal UNCAPS (a numeric cap → ``None``) deploys the NULL —
     the code-owned SET assigns unconditionally (the declaration-of-
     record-wins law) — AND the deploy announces itself: the

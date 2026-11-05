@@ -259,7 +259,7 @@ async def test_success_only_a_failed_body_never_squats_the_key(
 async def test_expired_ttl_is_a_miss(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The tTL's freshness leg: an expired row IS a miss — the second
+    """The TTL's freshness leg: an expired row IS a miss — the second
     run re-executes the body and RE-FILLS the cache (a fresh
     expires_at). The expiry comparison is the DB clock's; the re-fill
     beats the corpse (the CAS's DO UPDATE arm is gated on the EXPIRED
@@ -297,7 +297,7 @@ async def test_expired_ttl_is_a_miss(
 async def test_concurrent_miss_one_winner(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The cAS: two concurrent misses — the two-claims law's honest
+    """The CAS: two concurrent misses — the two-claims law's honest
     face, the cache dedups TEMPORAL, never CONCURRENT (both bodies run;
     the ARBITER owns concurrent dedup) — yield ONE winning cache row,
     and the loser's re-read (the NEXT lookup) picks the winner's

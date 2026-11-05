@@ -537,7 +537,7 @@ async def test_isolate_self_records_no_attempt_row_for_a_refunded_epoch(
 async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_window(
     pg_dsn: str,
 ) -> None:
-    """The cI interleaving, frozen: the refund commits BETWEEN the
+    """The CI interleaving, frozen: the refund commits BETWEEN the
     isolate's SELECT and its arbiter UPDATE. The SELECT takes no row
     lock, so the reconcile's refund (the same worker's heartbeat pool,
     the shutdown drain's refund arm) serialises right there; the
