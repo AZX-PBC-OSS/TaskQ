@@ -163,6 +163,10 @@ class MintProbe(CtxWaitOps, CtxTimerOps):
         self._workflow_name = "timer_cures_probe_flow"
         self._redact = None
         self._runtime = {}
+        # the wait machinery's per-attempt call counter (the WaitHost
+        # protocol's field — the probe never reaches the mint paths, but
+        # it implements the host's shape).
+        self._wait_call_seq = 0
 
 
 @pytest.fixture(autouse=True)

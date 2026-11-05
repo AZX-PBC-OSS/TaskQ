@@ -19,7 +19,10 @@ no stubbed seam.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import sys
+import time
 import types
 import uuid
 from collections.abc import Iterator
@@ -296,3 +299,181 @@ async def test_route_refuses_a_post_without_the_csrf_token(
         uuid.UUID(hold.hold_id),
     )
     assert still == "held", still
+
+
+async def _node_id_of(pool: asyncpg.Pool, schema: str, run_id: str) -> uuid.UUID:
+    node_id = await pool.fetchval(
+        f"SELECT id FROM \"{schema}\".jobs WHERE step_key = 'review' AND "
+        "(metadata->>'flow_id')::uuid = $1",
+        uuid.UUID(run_id),
+    )
+    assert node_id is not None
+    return uuid.UUID(str(node_id))
+
+
+async def _wait_for_lock_wait(park: asyncpg.Connection, *, count: int) -> None:
+    """The bounded condition wait: the route's writer is parked on the
+    park's lock (a pg_stat_activity lock wait from another pid). Never a
+    fixed sleep."""
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        waits = await park.fetchval(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
+        )
+        if waits and int(waits) >= count:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"the route's writer never queued on the park's lock ({count} wanted)")
+
+
+async def test_route_answers_the_refused_verdict_when_the_writers_race(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    abandon_app_module: Any,
+) -> None:
+    """THE RACE'S HONEST LOSER AT THE ROUTE: a ``DeadlockDetectedError``
+    out of the client's own transaction is the REFUSED verdict (the CLI
+    verbs' named refusal is the wording model) — never a 500. The shape:
+    a second connection holds the hold's wf_signals row FOR UPDATE; the
+    route's abandon takes the node's job row (its pre-lock) and blocks on
+    the signal row; the second connection then asks for that job row —
+    the cycle; PG kills the route's writer; the route answers the refused
+    dict."""
+    schema = module_pg_schema.schema_name
+    run_id = await _seed_held_run(module_pg_pool, schema)
+    node_id = await _node_id_of(module_pg_pool, schema, run_id)
+    from taskq.workflows import HitlClient
+
+    client = HitlClient(module_pg_pool, schema=schema)
+    (hold,) = await client.list(run_id)
+    app = _make_admin_app(module_pg_pool, schema)
+    park = await asyncpg.connect(module_pg_schema.pg_dsn)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            await http.get("/queues")
+            token = _csrf_of(http)
+            async with park.transaction():
+                # THE PARK: the hold's signal row — the route's abandon
+                # CAS queues behind it (its job-row pre-lock already
+                # taken — the order both doors keep).
+                await park.execute(
+                    f'SELECT id FROM "{schema}".wf_signals WHERE id = $1 FOR UPDATE',
+                    uuid.UUID(hold.hold_id),
+                )
+                post_task = asyncio.create_task(
+                    http.post(
+                        f"/api/runs/{run_id}/abandon",
+                        data={
+                            "hold_id": hold.hold_id,
+                            "reason": "the raced stop",
+                            "csrf_token": token,
+                        },
+                    )
+                )
+                await _wait_for_lock_wait(park, count=1)
+                # THE CYCLE: the park now asks for the job row the
+                # route's writer holds. PG kills the route's writer (its
+                # wait began first — its detector fires first).
+                await park.execute(
+                    f'SELECT id FROM "{schema}".jobs WHERE id = $1 FOR UPDATE', node_id
+                )
+            response = await post_task
+    finally:
+        await park.close()
+    assert response.status_code == 200, (
+        f"the raced writer 500'd: {response.status_code} {response.text}"
+    )
+    body = response.json()
+    assert body["status"] == "refused", body
+    assert "writers raced" in body["reason"], body
+
+
+async def test_resolve_route_answers_the_refused_verdict_when_the_writers_race(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    abandon_app_module: Any,
+) -> None:
+    """The resolve route's same arm (the pre-existing gap, the same
+    cure): the resolve's writer killed by the deadlock answers the
+    REFUSED verdict, never a 500."""
+    schema = module_pg_schema.schema_name
+    run_id = await _seed_held_run(module_pg_pool, schema)
+    node_id = await _node_id_of(module_pg_pool, schema, run_id)
+    from taskq.workflows import HitlClient
+
+    client = HitlClient(module_pg_pool, schema=schema)
+    (hold,) = await client.list(run_id)
+    # the resolve route is the TYPED door: the definitions must be
+    # mounted (the abandon route needs none — a stop-wait, no verdict).
+    wf_app = abandon_app_module.app
+    bundle = create_router(module_pg_pool, schema=schema, base_path="", workflow_app=wf_app)
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    park = await asyncpg.connect(module_pg_schema.pg_dsn)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            await http.get("/queues")
+            token = _csrf_of(http)
+            async with park.transaction():
+                await park.execute(
+                    f'SELECT id FROM "{schema}".wf_signals WHERE id = $1 FOR UPDATE',
+                    uuid.UUID(hold.hold_id),
+                )
+                post_task = asyncio.create_task(
+                    http.post(
+                        f"/api/runs/{run_id}/resolve",
+                        data={
+                            "hold_id": hold.hold_id,
+                            "decision": '{"verdict": "approve"}',
+                            "csrf_token": token,
+                        },
+                    )
+                )
+                await _wait_for_lock_wait(park, count=1)
+                await park.execute(
+                    f'SELECT id FROM "{schema}".jobs WHERE id = $1 FOR UPDATE', node_id
+                )
+            response = await post_task
+    finally:
+        await park.close()
+    assert response.status_code == 200, (
+        f"the raced writer 500'd: {response.status_code} {response.text}"
+    )
+    body = response.json()
+    assert body["status"] == "refused", body
+    assert "writers raced" in body["reason"], body
+
+
+async def test_route_malformed_id_audit_names_the_id_gate(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    clean_pg_conn: asyncpg.Connection,
+    abandon_app_module: Any,
+) -> None:
+    """The abandon route's malformed-id audit names the gate that refused
+    (the id gate) — the abandon has NO payload gate, so the old
+    ``admin-payload-gate`` label lied about the surface."""
+    schema = module_pg_schema.schema_name
+    run_id = await _seed_held_run(module_pg_pool, schema)
+    app = _make_admin_app(module_pg_pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as http:
+        await http.get("/queues")
+        refused = await http.post(
+            f"/api/runs/{run_id}/abandon",
+            data={"hold_id": "not-a-uuid", "csrf_token": _csrf_of(http)},
+        )
+    assert refused.status_code == 400, refused.text
+    row = await clean_pg_conn.fetchval(
+        f'SELECT detail FROM "{schema}".admin_audit '
+        "WHERE action = 'hitl.abandon' ORDER BY id DESC LIMIT 1"
+    )
+    detail = json.loads(row) if isinstance(row, str) else row
+    assert detail is not None and detail.get("stage") == "admin-hold-id-gate", detail

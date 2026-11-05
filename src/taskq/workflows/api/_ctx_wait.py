@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 import asyncpg
 from pydantic import BaseModel
 
-from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
 from taskq.workflows.api._sql_runner import render_sql
@@ -124,6 +123,11 @@ class WaitHost(Protocol):
     job_id: JobId
     node_key: str
     attempt: int
+    #: The per-attempt wait-call counter (the wait site's deterministic
+    #: CALL identity — see ``CtxWaitOps.wait_signal``): the body replays
+    #: the same call order within an attempt, so the Nth ``wait_signal``
+    #: call of attempt N has the same site id on every execution.
+    _wait_call_seq: int
     _pool: asyncpg.Pool
     _wsql: WorkflowSql
     _is_loop: bool
@@ -258,6 +262,25 @@ class CtxWaitOps(WaitHost):
         # or writes.
         for model_name in names:
             refuse_reserved_timer_name(model_name, mint="ctx.wait_signal")
+
+        # THE CALL SITE'S DETERMINISTIC IDENTITY (the shared timeout-face
+        # marker's fix): this attempt's Nth wait CALL — the body replays
+        # the same call order within an attempt (the re-execution
+        # doctrine: from the top), so the id is stable across the
+        # resume's re-execution. The hold row carries it as its call_id
+        # (the mint below), the abandoned-row read filters its OWN
+        # site's rows by it, and the face marker keys on the pair — two
+        # sequential waits on the SAME signal in one node can never
+        # surface each other's abandoned rows (the wrong-site claim that
+        # then re-held, leaving the run hung).
+        seq = self._wait_call_seq
+        object.__setattr__(self, "_wait_call_seq", seq + 1)
+        call_site = f"call:{self.attempt}:{seq}"
+        # the site's own rows across the attempts whose mints THIS call
+        # can read: the row's call_id carries the MINTING attempt, the
+        # reader replays the same ordinal under its own — the spellings
+        # set covers every attempt up to this one.
+        site_call_ids = [f"call:{a}:{seq}" for a in range(1, self.attempt + 1)]
 
         # The catalog (the typed door's runtime registry): this process
         # ran the wait site — the deliver boundary validates against
@@ -430,6 +453,7 @@ class CtxWaitOps(WaitHost):
                     "FROM {schema}.wf_signals "
                     "WHERE workflow_id = $1 AND node_key = $2 AND signal_name = ANY($3) "
                     "AND map_index IS NOT DISTINCT FROM $4 "
+                    "AND call_id = ANY($5) "
                     "AND status = 'abandoned' ORDER BY hold_epoch DESC LIMIT 1",
                     self._wsql.schema,
                 ),
@@ -437,13 +461,17 @@ class CtxWaitOps(WaitHost):
                 self.node_key,
                 [*names, "|".join(names)],
                 self._map_index,
+                site_call_ids,
             )
             if abandoned_row is not None:
                 # one body's second wait site must surface its own abandoned
-                # row's face — a shared per-attempt key would let the first
-                # site's marker suppress the second site's Expired return (the
-                # same epoch minted per node, both sites' rows can carry it).
-                face_key = f"timeout_face_{self.attempt}_{signal_name}"
+                # row's face — the face marker keys the CALL (attempt + the
+                # call ordinal), never the signal: two sequential waits on one
+                # signal each carry their own one-shot marker (the shared
+                # per-signal key let the first site's marker suppress the
+                # second site's Expired return — the wrong-site claim that
+                # then re-held).
+                face_key = f"timeout_face_{self.attempt}_{seq}"
                 face_seen = await conn.fetchval(
                     render_sql(
                         "SELECT (metadata ->> $2)::int FROM {schema}.jobs WHERE id = $1",
@@ -507,7 +535,10 @@ class CtxWaitOps(WaitHost):
                 node_key=self.node_key,
                 signal_name=signal_name,
                 hold_epoch=int(epoch),  # pyright: ignore[reportAny, reportArgumentType]
-                call_id=f"call:{new_uuid()}",
+                # the call site's OWN id (deterministic — the replay
+                # reproduces it), never a random uuid: the abandoned-row
+                # read above filters its site's rows by it.
+                call_id=call_site,
                 payload_schema=schema_ref,
                 timeout_s=timeout_s,
                 context={"reason": reason, "tool": tool, "args": args},

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid as uuid_module
 from typing import Any
 
@@ -1209,3 +1210,401 @@ async def test_sweep_broadcast_names_the_timeout_door(
     assert knocks, "the sweep's broadcast never fired"
     knock = json.loads(knocks[0])
     assert knock["abandoned_by"] == "timeout", knock
+
+
+# ── the race cures: the CAS-lost arm's door, the merge, the call sites ──
+
+
+async def test_the_sweep_winning_the_abandon_race_is_the_refused_loser(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+) -> None:
+    """THE CAS-LOST ARM READS THE DOOR: the expiry sweep winning the race
+    between the abandon's held-read and its CAS lands the REFUSED verdict
+    (the timeout door did the work) — the pre-fix arm's bare-status read
+    answered ANY 'abandoned' row ``no-op`` (exit 0 over the sweep's win,
+    zero audits, the doors' records crossed). The attacker's recipe: the
+    node's job row parked FOR UPDATE on a second connection parks the
+    abandon at its node pre-lock (after its held-read), the REAL sweep
+    statement commits under the park, and the release hands the abandon
+    the CAS-lost arm."""
+    from taskq.workflows.api._hitl import (  # pyright: ignore[reportPrivateUsage]  # Why: the pin drives the REAL sweep statement (the arm the leader's loop runs), never a re-spelled copy.
+        _EXPIRY_SWEEP_SQL,
+        _render,
+    )
+
+    flow_id, _runner, node_id = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=_wait_body, name="abandon_race_flow"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    (hold,) = await client.list(run=flow_id)
+    hold_uuid = uuid_module.UUID(hold.hold_id)
+    # the deadline past (the injected clock) — the sweep CAN win.
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    park = await asyncpg.connect(module_pg_schema.pg_dsn)
+    try:
+        async with park.transaction():
+            # THE PARK: the abandon's node pre-lock blocks here — AFTER
+            # its held-read (the row still 'held').
+            await park.fetchval(
+                f'SELECT id FROM "{wf_schema}".jobs WHERE id = $1 FOR UPDATE', node_id
+            )
+            abandon_task = asyncio.create_task(
+                client.abandon(str(hold_uuid), reason="a late stop", principal="op-7")
+            )
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                waits = await park.fetchval(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
+                )
+                if waits:
+                    break
+                await asyncio.sleep(0.01)  # bounded condition wait, never a fixed sleep
+            else:
+                raise AssertionError("the abandon never blocked on the node pre-lock")
+            # the sweep wins the race while the abandon is parked.
+            swept = await park.fetch(_render(_EXPIRY_SWEEP_SQL, wf_schema), 100)
+            assert len(swept) == 1, f"the arrangement's guard: the sweep must win — {swept}"
+        # the COMMIT releases the park: the abandon unblocks into its CAS,
+        # which matches nothing (the row is 'abandoned').
+        result = await abandon_task
+    finally:
+        await park.close()
+    assert result.status == "refused", (
+        f"the sweep won the race; the abandon must answer the REFUSED "
+        f"loser verdict, never the no-op: {result}"
+    )
+    assert "timeout door already resolved" in str(result.reason), result
+    row = await wf_conn.fetchrow(
+        f"SELECT status, payload->>'abandoned_by' AS door FROM \"{wf_schema}\".wf_signals "
+        "WHERE id = $1",
+        hold_uuid,
+    )
+    assert row is not None and row["status"] == "abandoned", row
+    assert row["door"] is None, (
+        f"the row's door must read the sweep's (no marker on the sweep's "
+        f"row — the timeout door): {dict(row)}"
+    )
+    audits = await wf_conn.fetchval(
+        f"SELECT count(*) FROM \"{wf_schema}\".admin_audit WHERE action = 'hitl.abandon' "
+        "AND target_id = $1",
+        str(hold_uuid),
+    )
+    assert audits == 0, (
+        f"the raced loser wrote {audits} hitl.abandon audit rows — the "
+        "loser matches no rows and writes NOTHING"
+    )
+
+
+async def test_the_abandon_merge_keeps_the_declared_context_keys(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE MERGE PRESERVES THE DECLARED CONTEXT: the abandon CAS writes
+    the operator's reason under ``abandon_reason`` — never onto the
+    wait's declared ``reason`` (the pre-fix key clobbered the mint's
+    context: by the operator's text, or by JSON null when the operator
+    gave none). ``abandoned_by`` still names the door — the wait/door
+    readers read only that — and the audit row carries the operator's
+    reason."""
+
+    async def hold_body(ctx: StepContext, params: Ingest) -> Any:
+        return await ctx.wait_signal(
+            Approval, timeout_s=120.0, reason="editorial approval", args={"doc": "d1"}
+        )
+
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="abandon_merge_flow"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    (hold,) = await client.list(run=flow_id)
+    result = await client.abandon(hold.hold_id, reason="op stop", principal="op-7")
+    assert result.status == "delivered", result
+    row = await wf_conn.fetchrow(
+        f"SELECT payload->>'reason' AS declared_reason, "
+        f"payload->>'abandon_reason' AS operator_reason, "
+        f"payload->>'abandoned_by' AS door, payload->'args'->>'doc' AS doc "
+        f'FROM "{wf_schema}".wf_signals WHERE id = $1',
+        uuid_module.UUID(hold.hold_id),
+    )
+    assert row is not None
+    assert row["declared_reason"] == "editorial approval", (
+        f"the operator's abandon clobbered the wait's declared reason: {dict(row)}"
+    )
+    assert row["operator_reason"] == "op stop", dict(row)
+    assert row["door"] == "operator", dict(row)
+    assert row["doc"] == "d1", f"the merge lost the declared args: {dict(row)}"
+
+    # the operator giving NO reason: the declared reason survives, the
+    # abandon_reason is JSON null — never a clobber of the declared key.
+    flow2, _r2, _n2 = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="abandon_merge_bare_flow"
+    )
+    (hold2,) = await client.list(run=flow2)
+    bare = await client.abandon(hold2.hold_id, principal="op-7")
+    assert bare.status == "delivered", bare
+    row2 = await wf_conn.fetchrow(
+        f"SELECT payload->>'reason' AS declared_reason, "
+        f"payload->>'abandon_reason' AS operator_reason, "
+        f"payload->>'abandoned_by' AS door "
+        f'FROM "{wf_schema}".wf_signals WHERE id = $1',
+        uuid_module.UUID(hold2.hold_id),
+    )
+    assert row2 is not None
+    assert row2["declared_reason"] == "editorial approval", (
+        f"the bare abandon clobbered the wait's declared reason: {dict(row2)}"
+    )
+    assert row2["operator_reason"] is None, dict(row2)
+    assert row2["door"] == "operator", dict(row2)
+
+
+async def test_two_waits_one_signal_each_sees_its_own_timeout_face(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """TWO SEQUENTIAL WAITS ON ONE SIGNAL, the timeout door: the first
+    call surfaces ITS OWN abandoned row (the read filters the site's own
+    call_id) and the second call surfaces its own — the pre-fix read
+    matched by signal alone, so the second hold's abandoned row (the
+    latest epoch) reached the FIRST call and the body re-held: the run
+    hung past its own fail-close."""
+    from taskq.workflows import Expired
+
+    rounds: list[tuple[str, str, str]] = []
+
+    async def two_waits_body(ctx: StepContext, params: Ingest) -> Any:
+        first = await ctx.wait_signal(Approval, timeout_s=0.3)
+        if isinstance(first, Expired):
+            # the deliberate continue: the first site's expiry is not
+            # fatal — the body moves on to its second wait.
+            rounds.append((str(ctx.attempt), "first", first.hold_id))
+        second = await ctx.wait_signal(Approval, timeout_s=0.3)
+        if isinstance(second, Expired):
+            rounds.append((str(ctx.attempt), "second", second.hold_id))
+            return {"fail_closed_on": second.abandoned_by}
+        return {"answered": True}
+
+    flow_id, runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=two_waits_body, name="two_waits_timeout_flow"
+    )
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    assert await sweep_expired_signals(wf_pool, schema=wf_schema) == 1
+    out = await runner.drive(flow_id, max_ticks=60)
+    assert out == "terminal", f"the two-wait body never terminated: {out!r} ({rounds})"
+    flow_result = await runner.result(flow_id)
+    assert flow_result == {"fail_closed_on": "timeout"}, flow_result
+    # the sites' own rows: the FIRST call claimed the FIRST hold's expiry,
+    # the SECOND call the second's — never a cross-claim.
+    first_claims = [r for r in rounds if r[1] == "first"]
+    second_claims = [r for r in rounds if r[1] == "second"]
+    assert first_claims, rounds
+    assert second_claims, rounds
+    rows = await wf_conn.fetch(
+        f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(rows) == 2 and all(r["status"] == "abandoned" for r in rows), (
+        f"the expiry faces re-held: {[dict(r) for r in rows]}"
+    )
+    assert {r[2] for r in first_claims} == {str(rows[0]["id"])}, (
+        f"the first call claimed a row that is not its own: {rounds}"
+    )
+    assert {r[2] for r in second_claims} == {str(rows[1]["id"])}, (
+        f"the second call claimed a row that is not its own: {rounds}"
+    )
+
+
+async def test_two_waits_one_signal_the_operator_abandon_fails_closed_at_its_own_site(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE OPERATOR DOOR'S PROMISE (the CLI's 'the wait fails closed on
+    its next drive') FOR THE TWO-WAIT BODY: the operator abandons the
+    SECOND hold; on the resume the SECOND call returns
+    ``Expired(abandoned_by="operator")`` and the run TERMINATES (no
+    re-hold, ``runner.result`` not None) — the first call never claims
+    the second's row (the call_id filter), and the face marker keys the
+    CALL (attempt + ordinal), never the signal."""
+    from taskq.workflows import Expired
+
+    rounds: list[tuple[str, str, str]] = []
+
+    async def two_waits_body(ctx: StepContext, params: Ingest) -> Any:
+        first = await ctx.wait_signal(Approval, timeout_s=0.3)
+        if isinstance(first, Expired):
+            rounds.append((str(ctx.attempt), "first", first.hold_id))
+        second = await ctx.wait_signal(Approval, timeout_s=120.0)
+        if isinstance(second, Expired):
+            rounds.append((str(ctx.attempt), "second", second.hold_id))
+            return {"fail_closed_on": second.abandoned_by}
+        return {"answered": True}
+
+    flow_id, runner, node_id = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=two_waits_body, name="two_waits_operator_flow"
+    )
+    # attempt 1: the first call's hold (0.3 s); the sweep abandons it.
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    assert await sweep_expired_signals(wf_pool, schema=wf_schema) == 1
+    # attempt 2: the first call surfaces its own Expired (timeout); the
+    # second call mints ITS hold (the long deadline — the operator's).
+    verdict = await runner.drive(flow_id, until="held", max_ticks=60)
+    assert verdict == "held", verdict
+    holds = await wf_conn.fetch(
+        f'SELECT id, hold_epoch, status, call_id FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(holds) == 2 and holds[1]["status"] == "held", [dict(r) for r in holds]
+    second_hold = holds[1]
+    # the second hold is the SECOND call site's own mint (attempt 2, the
+    # second call ordinal).
+    assert second_hold["call_id"] == "call:2:1", dict(second_hold)
+    # THE OPERATOR DOOR on the SECOND hold.
+    client = HitlClient(wf_pool, schema=wf_schema)
+    abandoned = await client.abandon(str(second_hold["id"]), reason="op stop", principal="op-7")
+    assert abandoned.status == "delivered", abandoned
+    # the resume: the second call fails closed at ITS OWN site; the run
+    # TERMINATES — no re-hold.
+    out = await runner.drive(flow_id, max_ticks=60)
+    assert out == "terminal", f"the run hung after the operator's abandon: {out!r} ({rounds})"
+    flow_result = await runner.result(flow_id)
+    assert flow_result is not None, "the run never terminated"
+    assert flow_result == {"fail_closed_on": "operator"}, flow_result
+    # the first call never claimed the second's row: its every claim is
+    # the first hold's id, carrying the timeout door.
+    first_claims = [r for r in rounds if r[1] == "first"]
+    assert first_claims and {r[2] for r in first_claims} == {str(holds[0]["id"])}, (
+        f"THE WRONG SITE: the first call claimed the second hold's abandoned row: {rounds}"
+    )
+    assert ("3", "second", str(second_hold["id"])) in rounds, rounds
+    # no re-hold: exactly the two rows, both abandoned.
+    after = await wf_conn.fetch(
+        f'SELECT hold_epoch, status FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(after) == 2 and all(r["status"] == "abandoned" for r in after), (
+        f"the operator door re-held the run: {[dict(r) for r in after]}"
+    )
+    # the face marker keys the CALL: the second call's one-shot marker is
+    # its own (attempt, ordinal) key — never the shared per-signal key.
+    face_keys = await wf_conn.fetchval(
+        f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', node_id
+    )
+    meta = json.loads(face_keys) if isinstance(face_keys, str) else face_keys
+    assert "timeout_face_3_1" in meta, (
+        f"the face marker is not per CALL: {sorted(k for k in meta if k.startswith('timeout_face'))}"
+    )
+
+
+async def test_the_deliberate_rewait_after_a_timeout_mints_a_new_hold(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """THE DELIBERATE RE-WAIT (the docs' own words): the body that
+    MATCHED the expiry member and waits again within the attempt
+    registers a NEW hold with a NEW epoch — the call site's own identity
+    keeps the re-wait's read off the expired row (a different call
+    ordinal's call_id set), so the mint is the body's decision, never the
+    face's suppression."""
+    from taskq.workflows import Expired
+
+    async def rewait_body(ctx: StepContext, params: Ingest) -> Any:
+        outcome = await ctx.wait_signal(Approval, timeout_s=0.3)
+        if isinstance(outcome, Expired):
+            # the deliberate re-wait: a NEW body decision.
+            return await ctx.wait_signal(Approval, timeout_s=120.0)
+        return outcome
+
+    flow_id, runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=rewait_body, name="rewait_flow"
+    )
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    assert await sweep_expired_signals(wf_pool, schema=wf_schema) == 1
+    verdict = await runner.drive(flow_id, until="held", max_ticks=40)
+    assert verdict == "held", verdict
+    rows = await wf_conn.fetch(
+        f'SELECT hold_epoch, status, call_id FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(rows) == 2, f"the deliberate re-wait never minted: {[dict(r) for r in rows]}"
+    assert rows[0]["status"] == "abandoned" and rows[0]["hold_epoch"] == 1, dict(rows[0])
+    assert rows[1]["status"] == "held" and rows[1]["hold_epoch"] == 2, dict(rows[1])
+    # the re-wait's hold carries the SECOND call site's id (attempt 2,
+    # the second call ordinal) — the site identity the read filters by.
+    assert rows[1]["call_id"] == "call:2:1", dict(rows[1])
+
+
+async def test_deliver_and_abandon_take_one_lock_order_no_deadlock(
+    wf_conn: asyncpg.Connection,
+    wf_schema: str,
+    wf_pool: asyncpg.Pool,
+    module_pg_schema: Any,
+) -> None:
+    """THE LOCK ORDER'S TEETH (the module's 'no opposite pair left'
+    claim): ``deliver_payload`` takes the held node's job row FOR UPDATE
+    BEFORE its signal CAS — the same jobs → wf_signals order the
+    abandon/resolve doors keep. The attacker's shape: the hold's signal
+    row parked FOR UPDATE on a second connection, the deliver and the
+    abandon queued against it, then the release — the pair completes (one
+    delivered, one refused), never DeadlockDetectedError. The pre-fix
+    order (the CAS, then the node lookup) left the deliver the opposite
+    pair, and the shape deadlocked: the deliver's uncommitted signal-row
+    lock against the abandon's held job-row lock."""
+    flow_id, _runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=_wait_body, name="deliver_abandon_order_flow"
+    )
+    client = HitlClient(wf_pool, schema=wf_schema)
+    (hold,) = await client.list(run=flow_id)
+    hold_uuid = uuid_module.UUID(hold.hold_id)
+    park = await asyncpg.connect(module_pg_schema.pg_dsn)
+    try:
+        async with park.transaction():
+            # THE PARK: the hold's own signal row — the deliver's CAS
+            # (and the abandon's) queue behind it.
+            await park.execute(
+                f'SELECT id FROM "{wf_schema}".wf_signals WHERE id = $1 FOR UPDATE', hold_uuid
+            )
+            deliver_task = asyncio.create_task(
+                deliver_payload(
+                    wf_pool,
+                    schema=wf_schema,
+                    workflow_id=flow_id,
+                    hold_id=JobId(hold_uuid),
+                    payload={"verdict": "approve"},
+                    payload_json=json.dumps({"verdict": "approve"}),
+                )
+            )
+            abandon_task = asyncio.create_task(
+                client.abandon(str(hold_uuid), reason="the race's loser", principal="op-7")
+            )
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline:
+                waits = await park.fetchval(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
+                )
+                if waits and int(waits) >= 2:
+                    break
+                await asyncio.sleep(0.01)  # bounded condition wait, never a fixed sleep
+            else:
+                raise AssertionError("the deliver/abandon pair never queued on the parked row")
+        # the release: the pair resolves by the one lock order.
+        deliver_result, abandon_result = await asyncio.gather(
+            deliver_task, abandon_task, return_exceptions=True
+        )
+    finally:
+        await park.close()
+    for name, outcome in (("deliver", deliver_result), ("abandon", abandon_result)):
+        assert not isinstance(outcome, asyncpg.DeadlockDetectedError), (
+            f"THE DEADLOCK: {name} deadlocked against the other verb — the "
+            f"opposite lock order is back: {outcome!r}"
+        )
+    verdicts = sorted(
+        o.status if not isinstance(o, BaseException) else f"raised:{type(o).__name__}"
+        for o in (deliver_result, abandon_result)
+    )
+    assert verdicts == ["delivered", "refused"], (
+        f"the raced pair's verdicts: {deliver_result!r} / {abandon_result!r}"
+    )

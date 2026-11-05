@@ -103,6 +103,15 @@ DEADLOCK_REFUSAL: Final[str] = (
     "writer's favour — the retry is being applied OR the run cancelled "
     "by the winner; re-check the run's settled state"
 )
+#: The writer-race's honest-loser pair (the admin JSON routes' deadlock
+#: arm): a ``DeadlockDetectedError``/``SerializationError`` out of the
+#: client's own transaction is PG killing one writer of a raced pair —
+#: the route answers the refused verdict (the CLI verbs' named refusal is
+#: the wording model), never a 500.
+RACED_WRITER_ERRORS: Final[tuple[type[Exception], ...]] = (
+    asyncpg.DeadlockDetectedError,
+    asyncpg.SerializationError,
+)
 #: The partial rerun's key: the run-rerun composition tracks the
 #: applied/refused counts, and a refusal landing mid-composition carries
 #: them — ``rerun-partial:<rows>:<keys>:<total>`` (the rows
@@ -1260,12 +1269,24 @@ def register_actions(router: APIRouter) -> None:
                 refusal=str(exc),
             )
             raise HTTPException(status_code=422, detail=str(exc)) from None
-        result = await client.resolve(
-            canonical_hold_id,
-            validated,
-            reason=reason,
-            principal=principal,
-        )
+        try:
+            result = await client.resolve(
+                canonical_hold_id,
+                validated,
+                reason=reason,
+                principal=principal,
+            )
+        except RACED_WRITER_ERRORS:
+            # the race's honest loser (the CLI resolve verb's own named
+            # refusal — the wording model): PG killed this writer; the
+            # route answers the refused verdict, never a 500.
+            return {
+                "status": "refused",
+                "reason": f"the hold {canonical_hold_id}'s writers raced and PG resolved "
+                "the deadlock in another writer's favour — the hold is being "
+                "resolved OR the run cancelled by the winner; re-check the "
+                "run's settled state",
+            }
         return {"status": result.status, "reason": result.reason}
 
     @router.post("/api/runs/{run_id}/abandon")
@@ -1325,7 +1346,9 @@ def register_actions(router: APIRouter) -> None:
                     detail={
                         "refused": "the hold id is not a valid id",
                         "node": "unknown",
-                        "stage": "admin-payload-gate",
+                        # the abandon has no payload gate — this audit row
+                        # names the gate that refused: the id's shape.
+                        "stage": "admin-hold-id-gate",
                         "run_id": str(run_id),
                     },
                 )
@@ -1336,8 +1359,19 @@ def register_actions(router: APIRouter) -> None:
         if hold is None or hold.run_id != str(run_id):
             raise HTTPException(status_code=404, detail="Hold not found on this run")
         # the abandon (the audit row rides the client's own tx — the
-        # principal is THIS route's, never a second row from here).
-        result = await client.abandon(canonical_hold_id, reason=reason, principal=principal)
+        # principal is THIS route's, never a second row from here). The
+        # race's honest loser: the same named pair the resolve route
+        # wraps — the refused verdict, never a 500.
+        try:
+            result = await client.abandon(canonical_hold_id, reason=reason, principal=principal)
+        except RACED_WRITER_ERRORS:
+            return {
+                "status": "refused",
+                "reason": f"the hold {canonical_hold_id}'s writers raced and PG resolved "
+                "the deadlock in another writer's favour — the hold is being "
+                "abandoned OR resolved/cancelled by the winner; re-check the "
+                "run's settled state",
+            }
         return {"status": result.status, "reason": result.reason}
 
     @router.post("/api/runs/{run_id}/deliver")

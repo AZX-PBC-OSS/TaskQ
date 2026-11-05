@@ -2512,7 +2512,10 @@ consumption-ordered; conditional waits are legal there.)
 `taskq flows abandon <hold_id> [--reason …]`, `HitlClient.abandon(...)`,
 or the admin run page's Abandon button. The row lands in the SAME
 DEFINED `abandoned` state (with `abandoned_by='operator'` on the
-row's payload) and the resumed wait returns the SAME `Expired` member —
+row's payload, and the operator's `--reason` beside it under
+`abandon_reason` — the wait's declared context keys, its own
+`reason`/`tool`/`args` among them, survive the merge) and the resumed
+wait returns the SAME `Expired` member —
 now carrying `abandoned_by="operator"` (the sweep's rows read
 `"timeout"`). The value-not-machinery law is the operator door's own:
 a body that wants the operator abandon to be a FAILURE raises
