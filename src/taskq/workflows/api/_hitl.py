@@ -1469,12 +1469,7 @@ class HitlClient:
             node_id: str | None = None
             if held["node_key"] is not None:
                 node_id = await conn.fetchval(
-                    _render(
-                        "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                        "AND (metadata->>'flow_id')::uuid = $2 "
-                        "AND metadata->>'hold' = $3 FOR UPDATE",
-                        self._schema,
-                    ),
+                    _render(_HELD_NODE_BY_HOLD_SQL + " FOR UPDATE", self._schema),
                     held["node_key"],
                     held["workflow_id"],
                     str(hold_id),
@@ -1698,12 +1693,7 @@ class HitlClient:
             node_id: str | None = None
             if held["node_key"] is not None:
                 node_id = await conn.fetchval(
-                    _render(
-                        "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
-                        "AND (metadata->>'flow_id')::uuid = $2 "
-                        "AND metadata->>'hold' = $3 FOR UPDATE",
-                        self._schema,
-                    ),
+                    _render(_HELD_NODE_BY_HOLD_SQL + " FOR UPDATE", self._schema),
                     held["node_key"],
                     held["workflow_id"],
                     str(hold_id),
