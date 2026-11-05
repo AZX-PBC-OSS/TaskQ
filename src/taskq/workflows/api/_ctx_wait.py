@@ -59,27 +59,25 @@ class SignalUnavailableError(RuntimeError):
 
 
 class LoopWaitShapeError(RuntimeError):
-    """A
-    LOOP-kind body's wait site found the iteration cursor PAST the
-    answer queue — the state a CONDITIONAL wait mints (some iterations
-    wait, others don't). The loop's answer-queue cursor IS the
-    iteration counter (the ADVANCE statement's own write), so the
-    mis-aligned state means: an earlier iteration's answer is stranded
-    (it can never be consumed again — the cursor indexes answers BY
-    ITERATION), and a retry of a waited iteration would replay the
-    WRONG slot (the retry-replay law, silently broken). Pre-fix the
-    mis-index was SILENT (the wait minted a fresh hold; the operator
-    was asked again; the stranded answer rotted on the rows) — the rule
-    gives the loop-shape law ("one wait per iteration") TEETH: the
-    named typed failure at the wait site, the loop's failure-class
-    rules route it exactly as they route the body's own exceptions.
-    The boundary, stated honestly: a body that waits TWICE in one
+    """E13: a LOOP-kind body's wait site found the iteration cursor past
+    the answer queue — the state a conditional wait mints (some
+    iterations wait, others don't). The loop's answer-queue cursor is
+    the iteration counter (the advance statement's own write), so the
+    mis-aligned state means an earlier iteration's answer is stranded
+    (it can never be consumed again — the cursor indexes answers by
+    iteration), and a retry of a waited iteration would replay the
+    wrong slot (the retry-replay law, silently broken). Before the
+    typed error, the mis-index was silent (the wait minted a fresh
+    hold; the operator was asked again; the stranded answer rotted on
+    the rows) — this error gives the loop-shape rule ("one wait per
+    iteration") its teeth: the named typed failure at the wait site,
+    routed by the loop's failure-class rules exactly as they route the
+    body's own exceptions. The boundary: a body that waits twice in one
     iteration is indistinguishable at the wait site from a retry (both
     are cursor < len) — the second wait re-reads the iteration's own
-    answer; the shape law's doc sentence is that shape's only guard.
-    A plain (non-loop) step never sees this rule: its per-attempt
-    cursor is consumption-ordered, so conditional waits are legal
-    there."""
+    answer; this docstring is that shape's only guard. A plain
+    (non-loop) step never sees this rule: its per-attempt cursor is
+    consumption-ordered, so conditional waits are legal there."""
 
 
 class Expired(BaseModel):
