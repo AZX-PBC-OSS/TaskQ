@@ -319,7 +319,8 @@ async def _wait_for_lock_wait(park: asyncpg.Connection, *, count: int) -> None:
     while time.monotonic() < deadline:
         waits = await park.fetchval(
             "SELECT count(*) FROM pg_stat_activity "
-            "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
+            "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() "
+            "AND datname = current_database()"
         )
         if waits and int(waits) >= count:
             return

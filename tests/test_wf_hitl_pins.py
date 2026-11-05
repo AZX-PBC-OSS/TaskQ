@@ -1258,7 +1258,8 @@ async def test_the_sweep_winning_the_abandon_race_is_the_refused_loser(
             while time.monotonic() < deadline:
                 waits = await park.fetchval(
                     "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
+                    "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() "
+                    "AND datname = current_database()"
                 )
                 if waits:
                     break
@@ -1972,7 +1973,8 @@ async def test_deliver_and_abandon_take_one_lock_order_no_deadlock(
             while time.monotonic() < deadline:
                 waits = await park.fetchval(
                     "SELECT count(*) FROM pg_stat_activity "
-                    "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid()"
+                    "WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() "
+                    "AND datname = current_database()"
                 )
                 if waits and int(waits) >= 2:
                     break
