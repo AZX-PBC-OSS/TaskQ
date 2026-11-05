@@ -2269,9 +2269,11 @@ async def test_failure_totals_round_trip_only_when_telemetry_enabled(
 
 class _GateSession:
     """A connection that CAN carry the commit gate: records the channel
-    fail-closed-exempt: the commit-gate's LISTEN session: scripted gate pages for the gate's own state machine (no PG)
     listener, captures the arming ``pg_notify``, and fires termination
     listeners on death (asyncpg's ``Connection._cleanup`` behavior).
+
+    fail-closed-exempt: the commit-gate's LISTEN session: scripted gate
+    pages for the gate's own state machine (no PG).
 
     Implausible pids, like ``_GatelessCronConn``'s, so the process-global
     gate maps never collide with a real session's entry.

@@ -10,8 +10,6 @@ to WorkerDeps pools opened by the fixture - subprocess spawning
 would duplicate pool setup and complicate fixture sharing.
 Known limitation: pool teardown and deregister_worker cleanup are
 not exercised; those paths are covered by unit tests.
-
-anchors:,,,.
 """
 
 import asyncio

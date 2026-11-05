@@ -153,11 +153,14 @@ def test_cancel_phase_change_line_carries_no_clock_value() -> None:
 
 class _HeldLockConn:
     """ConnLike stand-in whose contended-tier blocking acquire never
-        fail-closed-exempt: the held-lock ORDER fault injection: the deterministic holder interleaving the two clock domains
     grants: the try-lock fast path refuses, the GUC read answers "0", and
     the ``pg_advisory_xact_lock`` statement hangs until the CLIENT-side
     backstop cancels it -- the network-black-hole shape the server-side
-    ``lock_timeout`` cannot see."""
+    ``lock_timeout`` cannot see.
+
+    fail-closed-exempt: the held-lock ORDER fault injection: the
+    deterministic holder interleaving the two clock domains (no PG).
+    """
 
     async def fetchval(self, sql: str, *args: object) -> object:
         del args

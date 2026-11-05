@@ -183,7 +183,6 @@ def test_enqueue_lock_budget_settings_default_to_the_current_constants() -> None
 
 class _ContendedFakeConn:
     """ConnLike stand-in modelling a holder that outlives any default
-    fail-closed-exempt: the advisory-lock CONTENTION fault injection: the two-tier try-lock/savepoint shape under a held lock
     budget: the fast-path try-lock returns False (someone holds the lock
     now) and the contended tier's blocking acquire raises the raw 55P03
     (the server-side ``lock_timeout`` fired at the budget the acquire
@@ -191,7 +190,11 @@ class _ContendedFakeConn:
     which budget actually reached the server-side wait bound -- the same
     fake shape tests/test_postgres_enqueue_max_pending_lock.py drives
     the module functions with; here it sits behind the REAL backend
-    wrappers, which is the plumbing under attack."""
+    wrappers, which is the plumbing under attack.
+
+    fail-closed-exempt: the advisory-lock CONTENTION fault injection: the
+    two-tier try-lock/savepoint shape under a held lock (no PG).
+    """
 
     def __init__(self, *, actor: str, identity_key: str | None = None) -> None:
         self._in_tx = False

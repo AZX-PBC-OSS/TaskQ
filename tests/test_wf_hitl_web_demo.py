@@ -156,11 +156,11 @@ async def test_the_web_half_lives_and_clears(
         listener,
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://demo") as http,
     ):
-        # THE DEMO'S LOGIN: a token scoped to the run.
+        # the demo's login: a token scoped to the run.
         minted = (await http.get(f"/runs/{flow_id}/token")).json()
         assert set(minted) == {"token", "run_id"} and minted["run_id"] == flow_id
-        # THE AUTHZ IS THE RUN SCOPE: a token for ANOTHER run (minted
-        # through the app's OWN identity store — a well-formed run id
+        # the authz is the run scope: a token for another run (minted
+        # through the app's own identity store — a well-formed run id
         # this run's token is not scoped to) cannot subscribe here;
         # neither can the tokenless.
         other = (await http.get(f"/runs/{new_uuid()}/token")).json()
@@ -170,7 +170,7 @@ async def test_the_web_half_lives_and_clears(
         tokenless = (await http.get(f"/runs/{flow_id}/events")).status_code
         assert scoped_elsewhere == 403 and tokenless == 403
 
-        # THE DOORS' ID SHAPE: a malformed run id is a 404 on every door
+        # the doors' id shape: a malformed run id is a 404 on every door
         # (the canonicalize-at-entry rule) — never a 500, never a silent
         # stream.
         malformed_status = (
@@ -183,16 +183,16 @@ async def test_the_web_half_lives_and_clears(
         )
         assert malformed_resolve.status_code == 404
 
-        # THE BRACED SPELLING: the same run named the list doors' other
+        # the braced spelling: the same run named the list doors' other
         # accepted way — the token door mints a token scoped to the
-        # CANONICAL run (the doors canonicalize at entry; the events
+        # canonical run (the doors canonicalize at entry; the events
         # door's stream behavior rides the canonical form the same way).
         braced = "{" + str(flow_id).upper() + "}"
         braced_login = (await http.get(f"/runs/{braced}/token")).json()
         assert braced_login["run_id"] == flow_id, braced_login
 
-        # THE SUBSCRIBE + THE ROW READ: the board's stream carries the
-        # create AND the context fetched from the row.
+        # the subscribe + the row read: the board's stream carries the
+        # create and the context fetched from the row.
         board = await _read_until(
             listener, demo_client, flow_id, lambda b: b.reconciled and bool(b.contexts)
         )
@@ -201,7 +201,7 @@ async def test_the_web_half_lives_and_clears(
         assert card["run_id"] == flow_id and card["signal"] == "Approval"
         assert board.contexts[hold_id]["reason"] == "the demo's gate", board.contexts
 
-        # THE RESOLVE POST: the typed door, the demo's endpoint.
+        # the resolve post: the typed door, the demo's endpoint.
         answer = await http.post(
             f"/runs/{flow_id}/holds/{hold_id}/resolve",
             params={"token": minted["token"]},
@@ -210,8 +210,8 @@ async def test_the_web_half_lives_and_clears(
         assert answer.status_code == 200, answer.text
         assert answer.json()["status"] == "delivered", answer.json()
 
-        # THE CARD CLEARS ON THE BROADCAST: the stream's HoldResolved —
-        # the POST's answer is the door's receipt, the CARD closes on
+        # the card clears on the broadcast: the stream's HoldResolved —
+        # the post's answer is the door's receipt, the card closes on
         # the frame.
         cleared = await _read_until(listener, demo_client, flow_id, lambda b: not b.cards)
         assert not cleared.cards, f"the card never cleared: {cleared.cards}"
@@ -235,13 +235,13 @@ async def test_the_board_reconciles_after_an_outage(
         board = await _read_until(listener, demo_client, flow_id, lambda b: b.reconciled)
         assert len(board.cards) == 1, board.cards
         hold_id = next(iter(board.cards))
-        # THE OUTAGE: the listener down, the rows move on.
+        # the outage: the listener down, the rows move on.
         await listener.stop()
         resolved = await demo_client.resolve(hold_id, {"verdict": "approve"})
         assert resolved.status == "delivered"
-        # THE RECONNECT: the same listener (its history replays the
+        # the reconnect: the same listener (its history replays the
         # ghost create), the fresh backfill — the card clears on the
-        # SNAPSHOT, never on a notify.
+        # snapshot, never on a notify.
         await listener.start()
         board2 = await _read_until(listener, demo_client, flow_id, lambda b: b.reconciled)
         assert board2.cards == {}, f"the dead hold's card survived the reconcile: {board2.cards}"
@@ -303,7 +303,7 @@ async def test_the_dsn_form_opens_its_own_pool_and_the_doors_live(
         ) as http:
             minted = (await http.get(f"/runs/{flow_id}/token")).json()
             assert minted["run_id"] == flow_id
-            # THE DB-FACING DOORS LIVE ON THE APP'S OWN POOL (the DSN
+            # the db-facing doors live on the app's own pool (the DSN
             # form's whole point — the pool-form tests own the stream
             # logic): the resolve delivers through it.
             result = await http.post(

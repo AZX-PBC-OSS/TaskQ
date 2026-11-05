@@ -1120,7 +1120,13 @@ class _RLRedisPipeline:
 
 
 class _RLRedis:
-    """Redis stub whose every read comes back empty (the bucket-has-no-"""
+    """Redis stub whose every read comes back empty — the
+    bucket-has-no-Redis-state shape. ``pipeline()`` hands back a
+    pipeline whose ``hgetall``, ``get`` and ``zcard`` all queue and whose
+    ``execute()`` answers one empty result per queued command, so every
+    bucket the rate-limits page reads resolves to no state at all (the
+    empty-state cell renders, not a leaked ``{}`` dict repr and not an
+    error)."""
 
     def pipeline(self) -> _RLRedisPipeline:
         return _RLRedisPipeline()

@@ -470,7 +470,10 @@ _AUDIT_ROW = StubRecord(
 
 class _DetailConn(_RecordingConnection):
     """
-    fail-closed-exempt: the audit-trail detail's scripted rows (the audit rows' real writes are the mutation arms' own recording)Connection stub scripting the job detail route's four reads:
+    fail-closed-exempt: the audit-trail detail's scripted rows (the audit
+    rows' real writes are the mutation arms' own recording).
+
+    Connection stub scripting the job detail route's four reads:
     job fetchrow, attempts fetch, events fetch, admin_audit fetch."""
 
     def __init__(self, *, job: StubRecord | None, audit: list[StubRecord]) -> None:

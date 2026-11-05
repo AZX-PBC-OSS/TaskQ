@@ -1996,6 +1996,40 @@ _TASKQ_PATCH_EXEMPT: dict[str, dict[str, str]] = {
         "_reservations": "same registry-state hygiene for the reservations page's arms",
         "reset": "the reset SEAM: the arm pins the route's delegation to the registry's reset; the reset's real behavior is the token-bucket _pg pack's",
         "peek_all": "the peek-all SEAM: the arm pins the route's error wrapping around the registry's own aggregate",
+        "compute_next_fire_after": (
+            "the skip/run-now fire computation's SEAM: the arms pin the "
+            "route's wiring - the row's stored dst_strategy is what the "
+            "route forwards, and a computation that never advances past "
+            "the db clock (fault injection) must 400 before the skip "
+            "UPDATE runs; the computation's own real behavior, the DST "
+            "overlap included, is tests/test_cron_integration.py's DST "
+            "tests (the unit arithmetic: tests/test_cron.py)"
+        ),
+        "resolve_payload": (
+            "the payload-resolution FAULT-INJECTION seam: a factory "
+            "raising (a wrong-type return, a generic error) is a branch "
+            "the real factory path cannot reach deterministically; the "
+            "arms pin the route's redirect-with-error-code wrapping "
+            "around the raise, and the resolution's own behavior is "
+            "tests/test_cron.py's resolve_payload unit pack"
+        ),
+        "sync_slots": (
+            "the reservations page's sync SEAM: the success arm pins the "
+            "page's re-fetch of the held/free rows after a successful "
+            "sync, and the spy arm pins that foreign-schema reservations "
+            "never reach the sync; the sync's real row behavior "
+            "(reservation_slots insert/delete) is "
+            "tests/test_ratelimit_reservation_pg.py's"
+        ),
+        "_fetch_redis_rl_state": (
+            "the Redis-outage FAULT-INJECTION seam: the fetch returning "
+            "None is the broker-down shape (no real Redis here) - the arm "
+            "pins the page's visible degradation (redis_available flips "
+            "back to False); the fetch's own contract (key conventions, "
+            "decode, the one-pipeline round trip) is "
+            "tests/web_admin/test_ops.py's fetch_redis_rl_state pack - "
+            "no PG sibling can own a Redis read"
+        ),
     },
 }
 
@@ -2014,28 +2048,75 @@ def _taskq_module_aliases(tree: ast.Module) -> dict[str, str]:
     return aliases
 
 
-def _setattr_site_target(node: ast.Call, aliases: dict[str, str]) -> tuple[str, str] | None:
-    """The (taskq module path, attribute name) a ``setattr`` call patches,
-    when statically resolvable; ``None`` otherwise."""
+def _setattr_site_target(node: ast.Call, aliases: dict[str, str]) -> tuple[str, str, bool] | None:
+    """The (taskq module path, attribute name, string-form flag) a
+    ``setattr`` call patches, when statically resolvable; ``None``
+    otherwise.
+
+    pytest's two spellings name the same (module, attribute) pair and the
+    guard must read both:
+
+    * the object form - ``monkeypatch.setattr(module, "attr", value)`` -
+      where the module comes from the file's ``taskq.*`` imports and the
+      SECOND positional argument is the attribute-name literal;
+    * the string form - ``monkeypatch.setattr("taskq.mod.attr", value)`` -
+      where the FIRST argument is the fully-qualified dotted path and the
+      second argument is already the replacement value: the attribute is
+      the path's last component, the module everything before it.
+    """
     args = node.args
     if len(args) < 2:
         return None
-    target, name = args[0], args[1]
-    module_path: str | None = None
+    target, second = args[0], args[1]
     if isinstance(target, ast.Name) and target.id in aliases:
-        module_path = aliases[target.id]
-    elif isinstance(target, ast.Constant) and isinstance(target.value, str):
+        # The object form: the attribute name is the second argument's
+        # string literal; the second argument is NOT the replacement here.
+        if isinstance(second, ast.Constant) and isinstance(second.value, str):
+            # ``import taskq.worker.leader as leader_mod`` aliases the
+            # module; a ``from taskq.x import Thing`` alias binds a class
+            # - the attribute is patched on the class whose module the
+            # alias names.
+            return aliases[target.id], second.value, False
+        return None
+    if isinstance(target, ast.Constant) and isinstance(target.value, str):
         dotted = target.value
-        if dotted.startswith("taskq"):
-            module_path = dotted
-    if module_path is None or not isinstance(name, ast.Constant):
-        return None
-    if not isinstance(name.value, str):
-        return None
-    # ``import taskq.worker.leader as leader_mod`` aliases the module; a
-    # ``from taskq.x import Thing`` alias binds a class - the attribute is
-    # patched on the class whose module the alias names.
-    return module_path, name.value
+        if not dotted.startswith("taskq"):
+            return None
+        module_path, _, attr = dotted.rpartition(".")
+        if not module_path or not attr:
+            return None
+        return module_path, attr, True
+    return None
+
+
+def _taskq_patch_offenders(
+    tree: ast.Module, aliases: dict[str, str], allowed: set[str]
+) -> list[str]:
+    """The tree's unregistered ``taskq.*`` patch sites, one description
+    each; ``allowed`` is the pack's registered attribute names."""
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if not (node.func.attr == "setattr" and isinstance(node.func.value, ast.Name)):
+            continue
+        target = _setattr_site_target(node, aliases)
+        if target is None:
+            continue
+        module_path, attr, string_form = target
+        if attr in allowed:
+            continue
+        if string_form:
+            offenders.append(
+                f"line {node.lineno}: monkeypatch.setattr("
+                f'"{module_path}.{attr}", ...) is unregistered'
+            )
+        else:
+            offenders.append(
+                f"line {node.lineno}: monkeypatch.setattr({module_path}, "
+                f'"{attr}", ...) is unregistered'
+            )
+    return offenders
 
 
 def test_taskq_patch_sites_in_the_cured_packs_are_registered() -> None:
@@ -2061,21 +2142,8 @@ def test_taskq_patch_sites_in_the_cured_packs_are_registered() -> None:
             continue
         tree = ast.parse(path.read_text())
         aliases = _taskq_module_aliases(tree)
-        allowed = _TASKQ_PATCH_EXEMPT[name]
-        for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
-                continue
-            if not (node.func.attr == "setattr" and isinstance(node.func.value, ast.Name)):
-                continue
-            target = _setattr_site_target(node, aliases)
-            if target is None:
-                continue
-            module_path, attr = target
-            if attr not in allowed:
-                offenders.append(
-                    f"{name}:{node.lineno}: monkeypatch.setattr({module_path}, "
-                    f'"{attr}", ...) is unregistered'
-                )
+        for site in _taskq_patch_offenders(tree, aliases, set(_TASKQ_PATCH_EXEMPT[name])):
+            offenders.append(f"{name}:{site}")
     assert not offenders, (
         "Found unregistered taskq.* patch site(s) in the mock-subtraction's "
         "cured packs:\n"
@@ -2085,5 +2153,59 @@ def test_taskq_patch_sites_in_the_cured_packs_are_registered() -> None:
         "stay. Add the attribute to _TASKQ_PATCH_EXEMPT[<this pack>] with the "
         "reason naming the real-PG sibling that owns the attribute's behavior "
         "(or why no sibling can - fault injection, the obs seams, the "
-        "delegation proxies) - or delete the patch and drive the real seam."
+        "delegation proxies) - or delete the patch and drive the real seam. "
+        "Both pytest spellings count: the object form "
+        'monkeypatch.setattr(module, "attr", ...) and the string form '
+        'monkeypatch.setattr("taskq.mod.attr", ...) - in the string form the '
+        "second argument is the replacement, not the name."
+    )
+
+
+# The registry guard's adversarial self-check: pytest's string spelling
+# must resolve to the same (module, attribute) the object form names. The
+# synthetic sites live as source strings (the guard scans this pack too,
+# so the offenders must never exist as real call sites).
+
+_PATCH_GUARD_SELF_STRING_FORM_UNREGISTERED = """
+import pytest
+
+
+def _synthetic_string_form_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("taskq.web.admin.ops._synthetic_unregistered_attr", None)
+"""
+
+_PATCH_GUARD_SELF_STRING_FORM_REGISTERED = """
+import pytest
+
+
+def _synthetic_string_form_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "taskq.web.admin.ops.compute_next_fire_after", lambda *args: None
+    )
+"""
+
+
+def test_taskq_patch_guard_catches_the_string_form() -> None:
+    """The guard's two verdicts on pytest's string spelling: a
+    ``monkeypatch.setattr("taskq.mod.attr", value)`` site whose attribute
+    is unregistered must red the same walk the object form feeds, and the
+    same spelling over a registered attribute must pass."""
+    unregistered_tree = ast.parse(_PATCH_GUARD_SELF_STRING_FORM_UNREGISTERED)
+    registered_tree = ast.parse(_PATCH_GUARD_SELF_STRING_FORM_REGISTERED)
+    assert _taskq_patch_offenders(unregistered_tree, {}, set()), (
+        '(a) a string-form setattr("taskq.mod.attr", ...) over an '
+        "unregistered attribute must be an offender"
+    )
+    registered_attrs = set(_TASKQ_PATCH_EXEMPT["web_admin/test_ops_mutations.py"])
+    assert not _taskq_patch_offenders(registered_tree, {}, registered_attrs), (
+        "(b) a string-form setattr over a registered attribute must pass"
+    )
+    # And the object form's verdicts are unchanged by the shared walk.
+    object_form = ast.parse(
+        "import pytest\n"
+        "def _synthetic_object_form_patch(monkeypatch: pytest.MonkeyPatch) -> None:\n"
+        "    monkeypatch.setattr(ops, '_synthetic_unregistered_attr', None)\n"
+    )
+    assert _taskq_patch_offenders(object_form, {"ops": "taskq.web.admin.ops"}, set()), (
+        "(c) the object form over an unregistered attribute must still be an offender"
     )

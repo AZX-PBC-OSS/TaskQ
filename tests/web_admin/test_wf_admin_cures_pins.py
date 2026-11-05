@@ -145,7 +145,7 @@ async def _seed_run(pool: asyncpg.Pool, schema: str, *, name: str = "cure_hold_f
     compiled = sys.modules[MODULE_NAME].app.get(name)  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, pool, schema)
     flow_id = (await runner.create_flow()).flow_id
-    # THE HOLD FLOW stops at its hold (a drive to terminal would burn
+    # the hold flow stops at its hold (a drive to terminal would burn
     # max_ticks against the 120s hold deadline); the map flows run to
     # terminal.
     until = "held" if "hold" in name else "terminal"
@@ -185,13 +185,13 @@ async def test_map_hexagon_counter_feeds_from_the_true_parent(
     kids = [n for n in view.nodes if n.key == "src.item"]
     assert len(kids) == 3
     assert all(k.map_child for k in kids), "the child rows must carry the collapse mark"
-    # THE ROOT'S COUNTER: the SUM across sources.
+    # the root's counter: the sum across sources.
     assert view.root_map_children == 3 and view.root_map_done == 3
-    # THE MERMAID: ZERO child boxes — the hexagon speaks for the fan-out.
+    # the mermaid: zero child boxes — the hexagon speaks for the fan-out.
     mermaid = rows_mermaid(view)
     assert "src.item" not in mermaid, "a collapsed child must render no line"
     assert '{{"' in mermaid or "{{" in mermaid, "the source renders the hexagon shape"
-    # THE SNAPSHOT: the frame's node list is the collapsed projection.
+    # the snapshot: the frame's node list is the collapsed projection.
     state = run_state_json(view, seq=1)
     keys = {n["key"] for n in state["nodes"]}
     assert "src.item" not in keys
@@ -233,7 +233,7 @@ async def test_10k_fan_out_renders_one_hexagon_never_10k_lines(
             "absorbed": False,
             "error_class": None,
             "error_message": None,
-            # THE DEFERRAL FACES (the read's own row shape — the
+            # the deferral faces (the read's own row shape — the
             # assembly's KeyError is the corpus-matches-the-read guard):
             "attempt": 1,
             "scheduled_at": None,
@@ -352,8 +352,8 @@ async def test_wrong_shaped_resolve_writes_the_refused_audit_row(
         page = await http.get(f"/workflows/{run_id}")
     assert "hitl.resolve" in page.text, "the refused probe is visible in the trail"
 
-    # THE POINTER'S ONE SPELLING: the SAME refusal posted through a
-    # braced spelling of the id writes its audit pointer CANONICAL —
+    # the pointer's one spelling: the same refusal posted through a
+    # braced spelling of the id writes its audit pointer canonical —
     # the strict target_id query finds every refused call's row under
     # one spelling.
     async with httpx.AsyncClient(
@@ -454,7 +454,7 @@ async def test_run_stream_ends_when_the_session_is_revoked_mid_stream(
     setup_admin_state(app, bundle)
     app.include_router(bundle.router)
 
-    # THE RAW-ASGI READER (the #316 test's own shape): httpx's
+    # the raw-asgi reader (the #316 test's own shape): httpx's
     # ASGITransport buffers a streaming body to completion — a stream
     # that ends on revocation never returns to an aiter loop there.
     received: list[bytes] = []
@@ -489,7 +489,7 @@ async def test_run_stream_ends_when_the_session_is_revoked_mid_stream(
             break
         await asyncio.sleep(0.005)
     assert b"event: run_state" in b"".join(received), "the first frame arrived"
-    auth_state["valid"] = False  # THE REVOCATION mid-stream
+    auth_state["valid"] = False  # the revocation mid-stream
     await asyncio.sleep(_TICK * 3)
     deadline = asyncio.get_running_loop().time() + 5.0
     while not task.done() and asyncio.get_running_loop().time() < deadline:  # noqa: ASYNC110  # Why: bounded task-done poll - completion is observable on the task, not a signal this task can await.
@@ -576,7 +576,7 @@ async def test_refused_cancel_lands_on_the_banner_never_a_400_wall(
     redirect renders 200 WITH the refused-op banner; an undeclared
     param still 400s (the refuse-undeclared law keeps its teeth)."""
     schema = module_pg_schema.schema_name
-    # THE HONEST TERMINAL RUN: the map flow drives to terminal (the root
+    # the honest terminal run: the map flow drives to terminal (the root
     # row written by the engine, the G7 law intact) — the cancel then
     # refuses for real (an already-terminal run cancels nothing).
     run_id = await _seed_run(module_pg_pool, schema, name="cure_map_flow")
@@ -585,7 +585,7 @@ async def test_refused_cancel_lands_on_the_banner_never_a_400_wall(
         transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
     ) as http:
         await http.get("/queues")
-        # THE TERMINAL RUN: the cancel refuses (idempotent no-op) and
+        # the terminal run: the cancel refuses (idempotent no-op) and
         # redirects with the banner key.
         r = await http.post(
             f"/api/runs/{run_id}/cancel", data={"csrf_token": _csrf_of(http), "reason": "x"}
@@ -599,7 +599,7 @@ async def test_refused_cancel_lands_on_the_banner_never_a_400_wall(
             f"400 wall — got {followed.status_code}"
         )
         assert "Cancel not applied" in followed.text, "the refused-op banner renders"
-        # THE UNDECLARED PARAM still refuses (the law keeps its teeth).
+        # the undeclared param still refuses (the law keeps its teeth).
         wall = await http.get(f"/workflows/{run_id}?bogus=1")
         assert wall.status_code == 400
 
@@ -654,7 +654,7 @@ async def test_node_panel_error_fields_are_display_capped(
     )
     assert body["error_truncated"] is True, "the truncated marker rides the reply"
     assert "truncated" in (body["error_message"] or ""), "the dropped-count is named"
-    # THE ROW IS THE TRUTH: the full detail stays in the rows.
+    # the row is the truth: the full detail stays in the rows.
     row = await module_pg_pool.fetchval(
         f'SELECT length(error_message) FROM "{schema}".jobs WHERE id = $1', node_id
     )
@@ -786,7 +786,7 @@ async def test_malformed_hold_id_is_an_audited_400_never_a_500(
             "ORDER BY id DESC LIMIT 1"
         )
         assert pointer is not None
-        # THE LEAF'S LAW: the NUL rendered as its visible escape (a
+        # the leaf's law: the NUL rendered as its visible escape (a
         # deleted NUL could alias a different real key), the value
         # bounded to the pointer index's shape, the cut marked.
         assert "\x00" not in pointer["target_id"], "the pointer carries no NUL byte"
@@ -872,7 +872,7 @@ async def test_hostile_node_key_is_an_audited_refusal_that_renders(
         "the refusal renders on THE RUN's trail (the detail's run_id is "
         "what the page's query keys on)"
     )
-    # THE REFUSAL'S FACT IS VISIBLE: the page renders WHAT was refused
+    # the refusal's fact is visible: the page renders what was refused
     # (the amber badge), not just that a row exists.
     assert "refused:" in page.text and "the node key is not a valid key" in page.text, (
         "the trail's refused badge names the refusal"

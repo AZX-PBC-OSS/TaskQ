@@ -70,8 +70,10 @@ class _SavepointTx:
 
 class _ConnStandin:
     """ConnLike stand-in routing calls by SQL substring and recording the
-        fail-closed-exempt: the savepoint-isolation fault injection: an injected UniqueViolationError mid-transaction
     savepoint shape around each statement.
+
+    fail-closed-exempt: the savepoint-isolation fault injection: an
+    injected UniqueViolationError mid-transaction (no PG).
 
     ``caller_tx_open`` models the two caller shapes the savepoint must
     distinguish: a caller-owned OPEN transaction (True - the caller owns

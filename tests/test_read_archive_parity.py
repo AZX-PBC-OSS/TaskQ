@@ -75,8 +75,12 @@ class _FakeReadPool:
 
 class _FakeReadConn:
     """asyncpg.Connection stand-in routing ``fetchrow``/``fetch`` by SQL
-        fail-closed-exempt: the archive/read-parity scripted rows (jobs vs jobs_archive row shapes, no PG)
-    substring. Probes are logged so a pin can assert WHICH tier a read
+    substring.
+
+    fail-closed-exempt: the archive/read-parity scripted rows (jobs vs
+    jobs_archive row shapes, no PG).
+
+    Probes are logged so a pin can assert which tier a read
     consulted, not only what it answered."""
 
     def __init__(

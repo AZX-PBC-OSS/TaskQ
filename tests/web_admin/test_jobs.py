@@ -798,7 +798,10 @@ def test_build_paginated_sql_prev_direction_without_a_cursor_is_the_first_page()
 
 class _OneJobConnection(StubConnection):
     """
-    fail-closed-exempt: the job pages' scripted rows (the REAL job data is tests/test_web_admin_integration.py's)Connection whose jobs-list query returns one row so the table (and its
+    fail-closed-exempt: the job pages' scripted rows (the real job data
+    is tests/test_web_admin_integration.py's).
+
+    Connection whose jobs-list query returns one row so the table (and its
     pagination block) renders; every other query stays empty."""
 
     async def fetch(self, query: str, *args: object) -> list[StubRecord]:
@@ -1259,7 +1262,10 @@ def test_started_at_sort_header_links_to_the_column(stub_pool: _StubPool) -> Non
 
 class _ArchivedJobConnection(StubConnection):
     """
-    fail-closed-exempt: the archived-job view's scripted rows (same real sibling)Connection answering the archive arm's reads: no live row, the
+    fail-closed-exempt: the archived-job view's scripted rows (same real
+    sibling).
+
+    Connection answering the archive arm's reads: no live row, the
     archive row, its archived attempts, and the event rows the
     ``job_events`` table still holds. Records every query so the pin can
     assert the events table was actually read for the archived job."""

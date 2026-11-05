@@ -180,7 +180,10 @@ def test_batches_page_queries_only_the_batches_table(
 
 class _BatchDetailConnection(StubConnection):
     """
-    fail-closed-exempt: the batch drilldown's scripted rows (the REAL drilldown data is tests/web_admin/test_batch_detail_pg.py's)Connection answering the drilldown's reads, routed by SQL shape.
+    fail-closed-exempt: the batch drilldown's scripted rows (the real
+    drilldown data is tests/web_admin/test_batch_detail_pg.py's).
+
+    Connection answering the drilldown's reads, routed by SQL shape.
 
     ``fetchrow`` serves the batches-table row (or raises UndefinedTableError
     when the migration has not run); ``fetch`` serves the member status
