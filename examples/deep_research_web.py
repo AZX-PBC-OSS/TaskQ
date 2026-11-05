@@ -153,7 +153,7 @@ def build_app(pool: asyncpg.Pool | str, schema: str) -> FastAPI:
     async def run_events(run_id: str, request: Request) -> StreamingResponse:
         """The per-user SSE stream: the fan-out scoped by authz. The
         ``hold`` frame carries the typed union's JSON; ``hold_context``
-        carries the ROW-read display facts; ``backfilled`` carries the
+        carries the row-read display facts; ``backfilled`` carries the
         reconcile snapshot the board drops its dead cards on. The id is
         canonicalized at the door (a malformed id is a 404 before any
         stream starts — the listener's own refusal class, surfaced)."""

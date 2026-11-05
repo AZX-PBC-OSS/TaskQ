@@ -718,11 +718,11 @@ async def _audit_gate_refusal(
     the gate's reason) before the HTTPException propagates. The refusal
     moves no rows, so the row stands alone (nothing to share a tx with —
     the same-tx discipline's degenerate case); it is written with the
-    UNsafe recorder so a failure surfaces (a refusal the trail missed is
+    unsafe recorder so a failure surfaces (a refusal the trail missed is
     the exact invisible-probe failure mode). The detail carries the run_id
     the trail's page query keys on — the refusal renders on the run's
     trail, not just the hold's target lookup. ``target_type``/``target_id``
-    name what the refusal was ABOUT: a hold (the default) by its canonical
+    name what the refusal was about: a hold (the default) by its canonical
     id, a run-scoped refusal (the deliver door's wire-shape pre-check,
     before any hold is looked up) by the run's canonical spelling."""
     from taskq.web.admin._audit import record_admin_action
