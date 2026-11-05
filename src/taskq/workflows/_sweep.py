@@ -931,9 +931,7 @@ async def sweep_loop_budget(
             # WHICH wall (the named state's truth): the metadata's
             # iteration counter vs max_iterations — the cap names
             # ``iteration_cap_exhausted``, the budget its own state.
-            state = await conn.fetchrow(
-                LOOP_NODE_WALL_SQL.replace("{schema}", wsql.schema), loop_id
-            )
+            state = await conn.fetchrow(render_loop_sql(LOOP_NODE_WALL_SQL, wsql.schema), loop_id)
             assert state is not None
             cap_hit = (
                 state["max_iterations"] is not None

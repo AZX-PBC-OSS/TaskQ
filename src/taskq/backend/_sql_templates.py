@@ -393,7 +393,8 @@ WITH upd AS (
                               'worker_id', $2::text)
     FROM upd
 )
-SELECT * FROM upd""",
+-- the caller reads the attempt (the state-change log's field), nothing else
+SELECT upd.attempt FROM upd""",
         mark_failed=f"""\
 WITH upd AS (
     UPDATE "{s}".jobs
@@ -706,7 +707,8 @@ WITH upd AS (
                               'worker_id', $2::text)
     FROM upd
 )
-SELECT * FROM upd""",
+-- the caller reads the attempt (the state-change log's field), nothing else
+SELECT upd.attempt FROM upd""",
         mark_abandoned=f"""\
 WITH upd AS (
     UPDATE "{s}".jobs
@@ -781,7 +783,8 @@ WITH upd AS (
                                                 'worker_id', upd.locked_by_worker::text))
     FROM upd
 )
-SELECT * FROM upd""",
+-- the caller reads the attempt, the holder, the lease and the actor
+SELECT upd.attempt, upd.locked_by_worker, upd.lock_expires_at, upd.actor FROM upd""",
         # A non-consuming deferral never spends retry budget, and the
         # ceiling is never a counter, no arm here raises max_attempts.
         # Every deferral shape REFUNDS the claim's attempt increment:

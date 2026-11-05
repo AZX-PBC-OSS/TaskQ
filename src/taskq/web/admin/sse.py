@@ -26,7 +26,7 @@ from taskq.obs import (
     record_sse_rejection,
 )
 from taskq.settings import TaskQSettings
-from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS
+from taskq.web._sse_limit import session_gate
 from taskq.web.admin._factory import (
     get_pg_pool,
     get_realtime_mode,
@@ -67,51 +67,6 @@ def _get_semaphore(topic: str, max_connections: int) -> asyncio.Semaphore:
     return _TOPIC_SEMAPHORES[scoped]
 
 
-def _session_gate(
-    session_verifier: Callable[[], Awaitable[bool]] | None,
-    schema: str | None,
-) -> Callable[[], Awaitable[bool]]:
-    """The mid-stream re-check, built once per stream: runs before
-    the first frame and once per loop iteration — before every yielded
-    event and at every keepalive tick. A failure ends the stream (fail
-    closed); a verifier exception is revocation; a check that outlives
-    ``SESSION_RECHECK_TIMEOUT_SECS`` is unknown state, also revocation
-    (a hung host verifier must not freeze the stream inside its own
-    keepalive path)."""
-    recheck_count = {"n": 0}
-
-    async def _session_still_valid() -> bool:
-        if session_verifier is None:
-            return True
-        first_check = recheck_count["n"] == 0
-        try:
-            recheck_count["n"] += 1
-            return bool(
-                await asyncio.wait_for(
-                    session_verifier(),
-                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
-                )
-            )
-        except TimeoutError:
-            # A verifier that outlives its bound is an unknown session
-            # state, not a pass: fail closed, and say WHY -- a hung verifier
-            # (wedged IdP introspection call) wedging the stream is a
-            # different incident from a revoked session.
-            logger.warning(
-                "admin-sse-session-recheck-timeout",
-                topic=schema,
-                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
-                stream_phase="initial" if first_check else "streaming",
-            )
-            return False
-        except Exception:
-            # Fail closed: an unknown session state must not keep an
-            # admin stream open.
-            return False
-
-    return _session_still_valid
-
-
 async def _sse_generator(
     semaphore: asyncio.Semaphore,
     resolve_pool: Callable[[], asyncpg.Pool | None],
@@ -131,7 +86,12 @@ async def _sse_generator(
     path.
     """
 
-    _session_still_valid = _session_gate(session_verifier, schema)
+    _session_still_valid = session_gate(
+        session_verifier,
+        logger,
+        timeout_warning="admin-sse-session-recheck-timeout",
+        timeout_fields={"topic": schema},
+    )
 
     try:
         if not await _session_still_valid():
@@ -276,7 +236,12 @@ async def _holds_generator(
         HitlListener,  # the import law (the import law): lazy, never at module scope
     )
 
-    _session_still_valid = _session_gate(session_verifier, schema)
+    _session_still_valid = session_gate(
+        session_verifier,
+        logger,
+        timeout_warning="admin-sse-session-recheck-timeout",
+        timeout_fields={"topic": schema},
+    )
     try:
         if not await _session_still_valid():
             logger.warning("admin-sse-session-revoked", topic=schema, stream_phase="initial")

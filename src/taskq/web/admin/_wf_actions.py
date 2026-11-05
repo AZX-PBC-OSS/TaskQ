@@ -60,7 +60,7 @@ from taskq.backend._protocol import JobId
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
-from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS, acquire_sse_slot, release_after
+from taskq.web._sse_limit import acquire_sse_slot, release_after, session_gate
 from taskq.web.admin._factory import (
     get_admin_pool,
     get_base_path,
@@ -851,7 +851,8 @@ async def _stream_generator(
     """The feed: snapshot-on-revision, full replacement each frame (the
     replay contract's body — see the module docstring).
 
-    The session law (the ``sse.py`` session-recheck pattern): ``session_verifier`` re-runs before the first frame and
+    The session law (the shared ``session_gate``, ``taskq.web._sse_limit``):
+    ``session_verifier`` re-runs before the first frame and
     once per poll iteration — a session revoked mid-stream ends the
     stream at the next tick, before any further frame. Fail-closed: a
     verifier error is revocation, and a check that outlives
@@ -864,32 +865,12 @@ async def _stream_generator(
     seq = cursor
     last_revision: str | None = None
     since_keepalive = 0.0
-    _recheck_count = {"n": 0}
-
-    async def _session_still_valid() -> bool:
-        if session_verifier is None:
-            return True
-        first_check = _recheck_count["n"] == 0
-        try:
-            _recheck_count["n"] += 1
-            return bool(
-                await asyncio.wait_for(
-                    session_verifier(),
-                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
-                )
-            )
-        except TimeoutError:
-            logger.warning(
-                "wf-run-sse-session-recheck-timeout",
-                run_id=str(run_id),
-                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
-                stream_phase="initial" if first_check else "streaming",
-            )
-            return False
-        except Exception:
-            # Fail closed: an unknown session state must not keep an
-            # admin stream open (the caller names the revocation).
-            return False
+    _session_still_valid = session_gate(
+        session_verifier,
+        logger,
+        timeout_warning="wf-run-sse-session-recheck-timeout",
+        timeout_fields={"run_id": str(run_id)},
+    )
 
     while True:
         # The session re-check gates every iteration (before the poll and

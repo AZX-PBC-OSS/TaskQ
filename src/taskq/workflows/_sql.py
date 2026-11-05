@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+from taskq._sql_render import render as shared_render
 from taskq.backend._sql_fragments import MIN_DEFERRAL_INTERVAL_SQL
 from taskq.constants import (
     PRIORITY_STAMP_INT_PATTERN,
@@ -144,6 +145,22 @@ BLOCKING_REASON_BODY_UNAVAILABLE: Final[str] = "body_unavailable"
 #: terminalized fine and whose fire the flow's death fenced anyway.
 BLOCKING_REASON_FLOW_DEAD: Final[str] = "flow_dead"
 
+#: The bundle's token substitutions beyond ``{schema}`` (the shared
+#: render applies the validated schema itself, first): the terminal
+#: status set, the deferral floor (the vanilla mark_snoozed's own
+#: guard — a fixed fragment rendered from the shared constant, never
+#: caller input; NODE_DEFER_SQL is its only consumer), the
+#: run-priority stamp's SQL face (the grammar and the smallint domain
+#: are the shared constants — resolve_priority_stamp's own parse reads
+#: the same law) and the smallint bounds.
+_CANONICAL_SUBS: Final[tuple[tuple[str, str], ...]] = (
+    ("{terminal}", TERMINAL_SQL_SET),
+    ("{min_deferral_interval}", MIN_DEFERRAL_INTERVAL_SQL),
+    ("{priority_stamp_int_pattern}", PRIORITY_STAMP_INT_PATTERN),
+    ("{smallint_min}", str(SMALLINT_MIN)),
+    ("{smallint_max}", str(SMALLINT_MAX)),
+)
+
 
 @dataclass(frozen=True, slots=True)
 class WorkflowSql:
@@ -224,28 +241,11 @@ class WorkflowSql:
         ``backend/_sql_templates.render``).
         """
         require_schema(schema)
-        subs: Final[tuple[tuple[str, str], ...]] = (
-            ("{schema}", schema),
-            ("{terminal}", TERMINAL_SQL_SET),
-            # The deferral floor (the vanilla mark_snoozed's own guard) —
-            # a fixed fragment rendered from the shared constant, never
-            # caller input (NODE_DEFER_SQL is its only consumer).
-            ("{min_deferral_interval}", MIN_DEFERRAL_INTERVAL_SQL),
-            # The run-priority stamp's SQL face — the grammar and the
-            # smallint domain are the shared constants
-            # (resolve_priority_stamp's own parse reads the same law).
-            ("{priority_stamp_int_pattern}", PRIORITY_STAMP_INT_PATTERN),
-            ("{smallint_min}", str(SMALLINT_MIN)),
-            ("{smallint_max}", str(SMALLINT_MAX)),
-        )
 
         def render(template: str) -> str:
-            out = template
-            for token, value in subs:
-                out = out.replace(token, value)
-            # The doubled braces in the jsonb shape literals are the
-            # migration-runner convention; substitution needs them single.
-            return out.replace("{{", "{").replace("}}", "}")
+            """One statement's render (the shared helper's substitution:
+            the token table above, then the doubled braces un-doubled)."""
+            return shared_render(template, schema, subs=_CANONICAL_SUBS, collapse_braces=True)
 
         return WorkflowSql(
             schema=schema,

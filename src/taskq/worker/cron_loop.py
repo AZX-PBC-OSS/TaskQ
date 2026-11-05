@@ -25,6 +25,7 @@ from opentelemetry.trace import Span, SpanKind, StatusCode
 
 from taskq._ids import new_job_id, new_uuid
 from taskq._json import loads, sanitize_nul_str
+from taskq._sql_render import render as shared_render
 from taskq.backend._protocol import Backend, DstStrategy, EnqueueArgs, IdentityKey, parse_retry_kind
 from taskq.backend._records import parse_rowcount
 from taskq.backend._sweeps import (
@@ -380,18 +381,18 @@ LIMIT.  The index-audit test pins that shape.
 
 
 def cron_lock_sql(schema: str) -> str:
-    """The tick's lock statement for *schema*, token replacement, like every
-    other schema interpolation, so a literal brace in the template can
-    never turn a tick into a ``KeyError``."""
-    return CRON_LOCK_SQL_TEMPLATE.replace("{schema}", schema)
+    """The tick's lock statement for *schema*, the shared render's token
+    substitution, like every other schema interpolation, so a literal
+    brace in the template can never turn a tick into a ``KeyError``."""
+    return shared_render(CRON_LOCK_SQL_TEMPLATE, schema)
 
 
 def cron_due_sql(schema: str) -> str:
-    """The tick's due statement for *schema*, same token replacement
+    """The tick's due statement for *schema*, same token substitution
     discipline as :func:`cron_lock_sql`; the plan-shape audit
     (``tests/test_index_audit.py``) explains this statement, so the
     index-servable due bound cannot drift there unnoticed."""
-    return CRON_DUE_SQL_TEMPLATE.replace("{schema}", schema)
+    return shared_render(CRON_DUE_SQL_TEMPLATE, schema)
 
 
 # The commit-gate channel, ``cron_commit_gate_channel(schema)`` in

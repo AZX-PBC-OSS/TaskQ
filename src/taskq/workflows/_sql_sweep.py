@@ -7,7 +7,7 @@ binding. See _sql.py for the bundle and the JSONB-landmine rule.
 
 from __future__ import annotations
 
-from taskq.constants import require_schema
+from taskq._sql_render import render as shared_render
 
 # The sweep's lock-first re-derive — one batched statement. The fanout
 # shape beats the per-join round-trip variant on measure: 14.9 ms @ 200
@@ -1390,12 +1390,13 @@ def render_rootless_retention_sql(template: str, schema: str) -> str:
     fields (the bundle renders them in ``build``); the rootless
     statements render HERE rather than growing the bundle, so the
     two-pass law lives entirely in this module. The substitution is the
-    bundle's own discipline — the schema identifier validated (and the
-    ONLY interpolated value), ``$N`` binding for everything a caller
-    controls. The rootless statements carry no ``{terminal}`` token (the
-    root identity is a step-key check, never a status list), so no
-    import of the bundle is needed — _sql.py imports THIS module's
-    constants, the reverse import would be a cycle.
+    shared render's (the validated schema, the doubled braces
+    un-doubled) — the schema identifier stays the ONLY interpolated
+    value, ``$N`` binding for everything a caller controls. The
+    rootless statements carry no ``{terminal}`` token (the root
+    identity is a step-key check, never a status list), so no import of
+    the bundle is needed — _sql.py imports THIS module's constants, the
+    reverse import would be a cycle.
 
     Each rootless statement is SELF-CONTAINED on its cursor (01.00.36_01,
     the persisted-cursor fix): it seeks past the arm's persisted
@@ -1405,5 +1406,4 @@ def render_rootless_retention_sql(template: str, schema: str) -> str:
     watermark's own law. The caller binds (batch[, retention]) and
     nothing else.
     """
-    require_schema(schema)
-    return template.replace("{schema}", schema).replace("{{", "{").replace("}}", "}")
+    return shared_render(template, schema, collapse_braces=True)

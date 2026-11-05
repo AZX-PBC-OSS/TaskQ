@@ -15,6 +15,7 @@ from typing import Any, Final
 
 import asyncpg
 
+from taskq._sql_render import render as shared_render
 from taskq.backend.statemachine import TERMINAL_STATUSES
 from taskq.constants import WF_LOOP_ESCALATION_STEP_KEY
 from taskq.workflows._sql_status import absorbed_exists
@@ -573,7 +574,7 @@ _SQL_TOKEN_SUBS: Final[tuple[tuple[str, str], ...]] = (
 
 
 def render_sql(template: str, schema: str) -> str:
-    out = template.replace("{schema}", schema)
-    for token, value in _SQL_TOKEN_SUBS:
-        out = out.replace(token, value)
-    return out
+    """One runner statement's render (the shared render's substitution:
+    the validated schema, then the token table above — the schema
+    identifier is checked before anything renders)."""
+    return shared_render(template, schema, subs=_SQL_TOKEN_SUBS)

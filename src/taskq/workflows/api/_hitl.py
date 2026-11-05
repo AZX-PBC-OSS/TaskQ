@@ -47,6 +47,7 @@ from pydantic import BaseModel
 from taskq._ids import new_uuid
 from taskq._json import dumps_jsonb_str
 from taskq._json import loads as _json_loads
+from taskq._sql_render import render as shared_render
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.exceptions import ReservedTimerNamespaceError
 from taskq.obs import get_logger
@@ -423,10 +424,9 @@ RETURNING s.id, s.workflow_id, s.node_key, s.signal_name, s.expires_at
 
 
 def _render(template: str, schema: str) -> str:
-    from taskq.constants import require_schema
-
-    require_schema(schema)
-    return template.replace("{schema}", schema)
+    """One hold statement's render (the shared render's substitution:
+    the validated schema identifier, ``{schema}`` the only token)."""
+    return shared_render(template, schema)
 
 
 async def _broadcast(conn: ConnLike, channel: str, payload: dict[str, object]) -> None:

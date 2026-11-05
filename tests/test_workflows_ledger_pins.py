@@ -14,6 +14,7 @@ RE-RUNS on re-fire).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from typing import Any
 
@@ -23,7 +24,7 @@ import pytest
 from taskq._ids import new_uuid
 from taskq.workflows._sql import WorkflowSql
 from taskq.workflows._sweep import reap_phantom_ledger
-from taskq.workflows.engine import finalize_node, render_workflow_sql
+from taskq.workflows.engine import finalize_node
 from taskq.workflows.ledger import (
     claim_step_ledger,
     insert_flow_run,
@@ -42,7 +43,6 @@ async def test_pin_1_double_run_red_and_memoized_green(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     ledger_redlog: RedLog,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A step re-delivered gets the recorded result rather than
     re-executing — the memoized replay through the SHIPPED claim path. THE
@@ -91,14 +91,14 @@ async def test_pin_1_double_run_red_and_memoized_green(
     # THE RED — A REAL ENGINE MUTATION: the memoized-lookup statement
     # mutated to match nothing (the replay lookup broken), the SAME body
     # re-delivered re-EXECUTES: the double-run dragon, on the shipped path.
-    import taskq.workflows._sql as sql_module
-
+    # The mutated statement rides a copy of the rendered bundle (the
+    # dataclass replace — the engine consumes the same frozen bundle
+    # shape the shipped build returns), the render seam unpatched.
     mutated = wf_sql.ledger_memoized.replace(
         "AND status IN ('succeeded', 'failed')", "AND status IN ('no-such-status')"
     )
     assert mutated != wf_sql.ledger_memoized, "the mutation test did not arm"
-    monkeypatch.setattr(sql_module, "LEDGER_MEMOIZED_SQL", mutated)
-    mutated_sql = render_workflow_sql(wf_schema)
+    mutated_sql = dataclasses.replace(wf_sql, ledger_memoized=mutated)
     executions = 0
 
     async def red_body() -> Any:
@@ -121,7 +121,6 @@ async def test_pin_1_double_run_red_and_memoized_green(
         "the mutated replay must re-execute — the red comparator is broken "
         "(the lookup is load-bearing)"
     )
-    monkeypatch.undo()
 
 
 # ── Pin 2: LOST-COMPLETION-WINDOW (crash between effect and finalize) ───
@@ -363,7 +362,6 @@ async def test_pin_6_ledger_terminal_atomic(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
     ledger_redlog: RedLog,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The ledger's terminal-outcome write OUTSIDE the finalize TX — a
     cancel between the node flip and the ledger write leaves
@@ -427,17 +425,17 @@ async def test_pin_6_ledger_terminal_atomic(
     # ...the split variant is a REAL ENGINE MUTATION: the ledger's
     # terminal statement mutated to update NOTHING (the write lost — the
     # cancel ate the window); the node terminalized, the ledger did not.
-    # The shipped statement greens it (the tx1 co-location above).
-    import taskq.workflows._sql as sql_module
-
+    # The shipped statement greens it (the tx1 co-location above). The
+    # mutated statement rides a copy of the rendered bundle (the
+    # dataclass replace), the render seam unpatched.
+    #
     # The mutation lands BEFORE the RETURNING (a suffix would corrupt the
     # statement's tail): the terminal matches nothing — the write is lost.
     mutated_terminal = wf_sql.ledger_terminal.replace(
         "RETURNING id", "  AND status = 'no-such-status'\nRETURNING id"
     )
     assert mutated_terminal != wf_sql.ledger_terminal, "the mutation test did not arm"
-    monkeypatch.setattr(sql_module, "LEDGER_TERMINAL_SQL", mutated_terminal)
-    mutated_sql = render_workflow_sql(wf_schema)
+    mutated_sql = dataclasses.replace(wf_sql, ledger_terminal=mutated_terminal)
     split_node = new_uuid()
     split_worker = new_uuid()
     await wf_conn.execute(

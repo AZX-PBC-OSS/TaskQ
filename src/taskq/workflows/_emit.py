@@ -487,8 +487,6 @@ async def emit_batch(
                     # valid work back (the raw DataError's own crime).
                 if poison:
                     _raise_poison(flow_id, source_id, poison)
-                if poison:
-                    _raise_poison(flow_id, source_id, poison)
                 return tuple(child_ids)
             except _AdmissionLostError:
                 if loop.time() > deadline:

@@ -14,28 +14,27 @@ from __future__ import annotations
 
 from typing import Final
 
-from taskq.constants import require_schema
+from taskq._sql_render import render as shared_render
 
 __all__ = ["render_loop_sql"]
 
 
 def render_loop_sql(template: str, schema: str) -> str:
     """Render one loop statement for *schema* — the SAME substitution
-    the bundle's render does (the doubled braces are the
-    migration-runner convention; substitution needs them single; the
-    schema identifier is validated before anything renders; the
+    every statement family rides (the shared render's law: the schema
+    identifier is validated before anything renders; the
     ``{terminal}`` token is the terminal-status SQL set — the bundle's
-    own constant). The loop statements live beside the bundle
-    (``_sql_loop.py``) for the same no-god-file law; the RENDER is the
-    bundle's."""
+    own constant; the doubled braces are the migration-runner
+    convention, substitution needs them single). The loop statements
+    live beside the bundle (``_sql_loop.py``) for the same no-god-file
+    law; the RENDER is the shared helper's."""
     from taskq.workflows._sql import TERMINAL_SQL_SET
 
-    require_schema(schema)
-    return (
-        template.replace("{schema}", schema)
-        .replace("{terminal}", TERMINAL_SQL_SET)
-        .replace("{{", "{")
-        .replace("}}", "}")
+    return shared_render(
+        template,
+        schema,
+        subs=(("{terminal}", TERMINAL_SQL_SET),),
+        collapse_braces=True,
     )
 
 

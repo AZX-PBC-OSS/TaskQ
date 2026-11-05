@@ -23,8 +23,8 @@ from taskq.web.admin.auth._session import (
     AuthBundle,
     IdentityClaims,
     SessionManager,
+    _logout_route,
     create_auth_dependency,
-    require_logout_csrf,
     warn_if_no_group_allowlist,
 )
 
@@ -703,16 +703,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             _clear_request_cookie(resp, config.secure_cookie, callback_path)
             return resp
 
-    @router.post("/logout")
-    async def logout(request: Request) -> Response:  # pyright: ignore[reportUnusedFunction]  # Why: registered via FastAPI decorator.
-        # Same contract as the OIDC backend (shared require_logout_csrf): a
-        # forced top-level navigation is a GET and cannot clear an
-        # admin session, and a cross-site form POST carries neither the
-        # session cookie it must derive the token from nor the secret.
-        await require_logout_csrf(request, session_manager)
-        response = RedirectResponse(url=base_path or "/", status_code=302)
-        session_manager.clear_session_cookie(response)
-        return response
+    router.post("/logout")(_logout_route(session_manager, base_path))
 
     dependency = create_auth_dependency(
         session_manager,

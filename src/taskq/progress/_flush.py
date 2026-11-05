@@ -9,6 +9,7 @@ import asyncpg
 import structlog
 
 from taskq._json import dumps_jsonb_str, embed_encoded
+from taskq._sql_render import render as shared_render
 from taskq.constants import (
     require_schema,
 )
@@ -48,6 +49,27 @@ _FLUSH_BATCH_ROWS: Final[int] = 32
 _FLUSH_MAX_BATCHES_PER_TICK: Final[int] = 8
 
 
+# The flush UPDATE's template (the single-source-of-truth statement, the
+# two call sites render it per schema through the shared render — the
+# validated schema identifier is the only interpolated value, so the
+# S608 rule's rationale rides here, never an inline f-string at a call
+# site).
+_FLUSH_UPDATE_SQL: Final[str] = (
+    # Why: the schema is the only interpolated value, validated against
+    # _IDENT_RE by the shared render before the substitution.
+    'UPDATE "{schema}".jobs AS j '
+    "SET progress_state = COALESCE(j.progress_state, '{}'::jsonb) || f.state_delta, "
+    "    progress_seq   = j.progress_seq + f.seq_delta "
+    "FROM unnest($1::uuid[], $2::int[], $3::jsonb[], $4::int[]) "
+    "    AS f(job_id, seq_delta, state_delta, attempt) "
+    "WHERE j.id = f.job_id "
+    "  AND j.status = 'running' "
+    "  AND j.locked_by_worker = $5::uuid "
+    "  AND j.attempt = f.attempt "
+    "RETURNING j.id, j.progress_seq"
+)
+
+
 def _flush_update_sql(schema: str) -> str:
     """Render the single-source-of-truth progress flush UPDATE.
 
@@ -71,19 +93,7 @@ def _flush_update_sql(schema: str) -> str:
       ``$4::int[]``    per-row attempt epochs (the fence's epoch conjunct)
       ``$5::uuid``     the flushing worker, the loop-wide owner
     """
-    require_schema(schema)
-    return (
-        f'UPDATE "{schema}".jobs AS j '  # noqa: S608  # Why: schema validated against _IDENT_RE immediately above.
-        "SET progress_state = COALESCE(j.progress_state, '{}'::jsonb) || f.state_delta, "
-        "    progress_seq   = j.progress_seq + f.seq_delta "
-        "FROM unnest($1::uuid[], $2::int[], $3::jsonb[], $4::int[]) "
-        "    AS f(job_id, seq_delta, state_delta, attempt) "
-        "WHERE j.id = f.job_id "
-        "  AND j.status = 'running' "
-        "  AND j.locked_by_worker = $5::uuid "
-        "  AND j.attempt = f.attempt "
-        "RETURNING j.id, j.progress_seq"
-    )
+    return shared_render(_FLUSH_UPDATE_SQL, schema)
 
 
 def _drop_fenced_out_buffer(

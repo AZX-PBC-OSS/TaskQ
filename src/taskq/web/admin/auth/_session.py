@@ -27,7 +27,7 @@ from typing import Any, NoReturn
 
 import structlog
 from fastapi import HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 
 __all__ = [
     "SESSION_COOKIE_NAME",
@@ -105,6 +105,30 @@ async def require_logout_csrf(request: Request, session_manager: "SessionManager
             detail="logout CSRF token missing or mismatched — the page's token "
             "is stale — reload the page and submit again",
         )
+
+
+def _logout_route(  # pyright: ignore[reportUnusedFunction]  # Why: registered by both SSO factories (saml.py, oidc.py) via their router decorators — the same checker-invisible registration the previous per-factory handlers carried.
+    session_manager: "SessionManager",
+    base_path: str,
+) -> Callable[[Request], Awaitable[Response]]:
+    """The POST /logout route handler both SSO backends register: gate
+    the POST on the live session and its logout CSRF token, then clear
+    the session cookie and redirect to the admin base. One body for
+    both protocols — the gate cannot be forgotten at a factory, the
+    handler is the gate."""
+
+    async def logout(request: Request) -> Response:
+        # POST + the session-bound CSRF token (shared
+        # require_logout_csrf): a forced top-level navigation is a GET
+        # and cannot clear an admin session, and a cross-site form POST
+        # carries neither the session cookie it must derive the token
+        # from (HttpOnly, SameSite=Lax) nor the secret.
+        await require_logout_csrf(request, session_manager)
+        response = RedirectResponse(url=base_path or "/", status_code=302)
+        session_manager.clear_session_cookie(response)
+        return response
+
+    return logout
 
 
 def warn_if_no_group_allowlist(backend: str, allowed_groups: frozenset[str]) -> None:

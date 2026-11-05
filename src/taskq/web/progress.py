@@ -74,7 +74,7 @@ from taskq.obs import get_meter, record_sse_connection_closed
 from taskq.settings import TaskQSettings
 from taskq.web._pool import BoundedPool
 from taskq.web._routing import HeadForGetRoute
-from taskq.web._sse_limit import SESSION_RECHECK_TIMEOUT_SECS, acquire_sse_slot
+from taskq.web._sse_limit import acquire_sse_slot, session_gate
 
 logger = structlog.get_logger("taskq.web.progress")
 
@@ -277,39 +277,12 @@ async def _event_generator(
     browser's EventSource reconnects and is refused at the door.
     """
 
-    _recheck_count = {"n": 0}
-
-    async def _session_still_valid() -> bool:
-        if session_verifier is None:
-            return True
-        first_check = _recheck_count["n"] == 0
-        try:
-            _recheck_count["n"] += 1
-            return bool(
-                await asyncio.wait_for(
-                    session_verifier(),
-                    timeout=SESSION_RECHECK_TIMEOUT_SECS,
-                )
-            )
-        except TimeoutError:
-            # A verifier that outlives its bound is an unknown session
-            # state, not a pass: fail closed, but say WHY -- a hung verifier
-            # (wedged IdP introspection call) wedging the stream is a
-            # different incident from a revoked session, and the revocation
-            # warning below would misname it.
-            logger.warning(
-                "sse-session-recheck-timeout",
-                job_id=str(job_id),
-                channel=channel,
-                timeout_secs=SESSION_RECHECK_TIMEOUT_SECS,
-                stream_phase="initial" if first_check else "streaming",
-            )
-            return False
-        except Exception:
-            # Fail closed: an unknown session state must not keep a
-            # privileged stream open. Logged below via the shared
-            # revocation path's caller.
-            return False
+    _session_still_valid = session_gate(
+        session_verifier,
+        logger,
+        timeout_warning="sse-session-recheck-timeout",
+        timeout_fields={"job_id": str(job_id), "channel": channel},
+    )
 
     try:
         if not await _session_still_valid():
