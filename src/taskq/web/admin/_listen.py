@@ -1,97 +1,20 @@
-"""Shared async generator for PG LISTEN/NOTIFY with automatic reconnection."""
+"""Shared async generator for PG LISTEN/NOTIFY with automatic reconnection.
 
-import asyncio
+The body is the shared LISTEN pump (:mod:`taskq.workflows.api._listen_pump`)
+— the same LISTEN → BACKFILL → TAIL reconnect skeleton, the bounded raw
+queue, and the SHIELDED teardown the two workflow listeners ride. This
+module is the admin feed's thin adapter over it: one channel, payload
+strings (no channel carried — the feed listens one channel and the
+frames' consumers know which), and the pool resolved through the
+caller's callable.
+"""
+
 from collections.abc import AsyncGenerator, Callable
-from contextlib import suppress
-from typing import TYPE_CHECKING
 
 import asyncpg
 import structlog
 
-from taskq._shield import shield_with_retrieval
-
-if TYPE_CHECKING:
-    from asyncpg.pool import PoolConnectionProxy
-
-type _Conn = asyncpg.Connection | PoolConnectionProxy
-
 _log = structlog.get_logger("taskq.web.admin.listen")
-
-# Why: an unbounded queue lets a slow/disconnected SSE consumer accumulate
-# NOTIFY payloads without limit, which is an unbounded-memory-growth risk
-# under sustained load. Cap it and drop the oldest payload on overflow ,
-# admin-UI live updates are best-effort, so losing a stale event in favor
-# of newer ones is the right tradeoff.
-_QUEUE_MAXSIZE = 1000
-
-
-def _make_notify_callback(
-    q: asyncio.Queue[str | None],
-    channel: str = "",
-) -> Callable[[_Conn, int, str, str], None]:
-    dropped_logged = False
-
-    def _on_notify(c: _Conn, pid: int, ch: str, payload: str) -> None:
-        nonlocal dropped_logged
-        if not payload:
-            return
-        if q.full():
-            with suppress(asyncio.QueueEmpty):
-                q.get_nowait()
-            if not dropped_logged:
-                _log.warning(
-                    "listen-queue-overflow-drop-oldest",
-                    channel=channel,
-                    maxsize=_QUEUE_MAXSIZE,
-                )
-                dropped_logged = True
-        q.put_nowait(payload)
-
-    return _on_notify
-
-
-async def _release_listen_connection(
-    conn: _Conn,
-    pool: asyncpg.Pool,
-    channel: str,
-    cb: Callable[[_Conn, int, str, str], None],
-) -> None:
-    """Tear down one LISTEN connection: remove_listener, UNLISTEN, release.
-
-    Every step below is exception-suppressed, but ``suppress(Exception)``
-    does NOT hold ``CancelledError`` (a BaseException since 3.8): a
-    cancellation delivered while the cleanup runs dies at whatever step it
-    lands on and skips ``pool.release`` -- and a generator abandoned inside
-    its own finally is terminated and can never be closed again, so the
-    connection strands against the pool cap for the life of the process
-    (no GC revival: the generator is already closed). This cancellation is
-    not hypothetical: the consumer bounds its close with
-    ``asyncio.wait_for`` (sse.py), whose timeout cancels the close
-    mid-flight -- exactly this shape.
-
-    The whole cleanup therefore runs under a shield: if THIS await is
-    cancelled, the cleanup detaches and runs to completion -- the release
-    happens -- while the CancelledError still propagates to the closer.
-    ``shield_with_retrieval`` retrieves the detached cleanup's outcome, so
-    a late failure is a structured warning rather than asyncio's "Task
-    exception was never retrieved" noise.
-
-    Defense boundary: the detached cleanup itself is not re-shielded
-    against a cancellation delivered INTO it -- no source reaches it in the
-    shapes the consumers produce (the consumer's bound cancels the close
-    task once; the stream's own cancellation stays behind the consumer's
-    shield).
-    """
-
-    async def _cleanup() -> None:
-        with suppress(Exception):
-            await conn.remove_listener(channel, cb)  # pyright: ignore[reportArgumentType]  # Why: carried over from the inline cleanup this replaces; stubs over-narrow callback type; runtime asyncpg accepts sync callbacks
-        with suppress(Exception):
-            await conn.execute(f'UNLISTEN "{channel}"')
-        with suppress(Exception):
-            await pool.release(conn)  # pyright: ignore[reportArgumentType]  # Why: carried over from the inline cleanup this replaces; asyncpg's release accepts both connection types it hands out
-
-    await shield_with_retrieval(_cleanup())
 
 
 async def listen_with_reconnect(
@@ -119,46 +42,47 @@ async def listen_with_reconnect(
     terminated LISTEN connection raises nothing on its own; the queue
     just goes quiet.
     """
-    backoff = backoff_initial
-    while True:
-        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        conn: _Conn | None = None
-        pool: asyncpg.Pool | None = None
-        cb = _make_notify_callback(queue, channel)
-        try:
-            pool = resolve_pool()
-            conn = await asyncio.wait_for(pool.acquire(), timeout=acquire_timeout)
-            await conn.execute(f'LISTEN "{channel}"')
-            await conn.add_listener(channel, cb)  # pyright: ignore[reportArgumentType]  # Why: stubs over-narrow callback type; runtime asyncpg accepts sync callbacks
-            backoff = backoff_initial
-            while True:
-                try:
-                    payload = await asyncio.wait_for(queue.get(), timeout=keepalive_interval)
-                    if payload is None:
-                        return
-                    yield payload
-                except TimeoutError:
-                    if conn.is_closed():
-                        raise ConnectionError(
-                            "LISTEN connection was closed underneath the stream"
-                        ) from None
-                    yield None
-        except Exception as exc:
-            # Every failure here - a lost session, a pool that cannot
-            # connect, a bouncer rejecting the session-scoped LISTEN - leaves
-            # the feed on keepalives only until a reconnect succeeds. The
-            # consumer sees a healthy-looking stream that never delivers, so
-            # the reconnect is what carries the cause to the operator.
-            _log.warning(
-                "listen-reconnect",
-                channel=channel,
-                error_type=type(exc).__name__,
-                error=str(exc),
-                backoff=backoff,
-            )
-            yield None
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, backoff_max)
-        finally:
-            if conn is not None and pool is not None:
-                await _release_listen_connection(conn, pool, channel, cb)
+    # The import law (the admin's): taskq.workflows loads lazily, never
+    # at module scope.
+    from taskq.workflows.api._listen_pump import pump
+
+    def _log_reconnect(exc: Exception, backoff: float) -> None:
+        # Every failure here - a lost session, a pool that cannot
+        # connect, a bouncer rejecting the session-scoped LISTEN - leaves
+        # the feed on keepalives only until a reconnect succeeds. The
+        # consumer sees a healthy-looking stream that never delivers, so
+        # the reconnect is what carries the cause to the operator.
+        _log.warning(
+            "listen-reconnect",
+            channel=channel,
+            error_type=type(exc).__name__,
+            error=str(exc),
+            backoff=backoff,
+        )
+
+    inner = pump(
+        resolve_pool,
+        (channel,),
+        None,
+        keepalive=keepalive_interval,
+        backoff_initial=backoff_initial,
+        backoff_max=backoff_max,
+        acquire_timeout=acquire_timeout,
+        overflow_log=_log,
+        closed_message="LISTEN connection was closed underneath the stream",
+        on_reconnect=_log_reconnect,
+    )
+    # The adapter's own finally closes the inner pump: a bare ``async
+    # for`` abandons the inner generator to the GC finalizer when THIS
+    # generator is closed, and the dedicated LISTEN connection's release
+    # would wait on garbage collection instead of the close (the
+    # deterministic-release contract the SSE teardown pins hold).
+    try:
+        async for item in inner:
+            if item is None:
+                yield None
+            else:
+                _chan, payload = item
+                yield payload
+    finally:
+        await inner.aclose()

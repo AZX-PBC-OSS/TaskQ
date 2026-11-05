@@ -201,7 +201,7 @@ def test_f_loop_2_the_advance_and_exhaust_statements_carry_the_claim_fence() -> 
     from taskq.workflows.api import _sql_loop
 
     missing: list[str] = []
-    for name in ("LOOP_ADVANCE_SQL", "LOOP_EXHAUST_SQL"):
+    for name in ("LOOP_ADVANCE_SQL", "LOOP_EXHAUST_SQL", "LOOP_EXHAUST_BATCH_SQL"):
         statement = getattr(_sql_loop, name)
         for leg in ("locked_by_worker", "attempt", "claim_epoch"):
             if leg not in statement:

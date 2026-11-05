@@ -174,7 +174,7 @@ async def _sse_generator(
                 # A close that outlives the bound gives up loudly (the
                 # wait_for TimeoutError is logged below, and the feed's
                 # own cleanup is cancellation-tolerant and finishes the
-                # release detached - see _listen._release_listen_connection),
+                # release detached - see _listen_pump.release_listen_connection),
                 # no worse than the GC-driven status quo it replaces.
                 try:
                     await shield_with_retrieval(

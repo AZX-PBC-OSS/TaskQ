@@ -45,10 +45,8 @@ own scope: a knock whose ``flow_id`` is another run's is dropped here.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from collections.abc import AsyncGenerator
-from contextlib import suppress
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
 import asyncpg
@@ -56,15 +54,15 @@ import structlog
 from pydantic import BaseModel, Field
 
 from taskq._json import loads as _json_loads
-from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import JobId
-from taskq.constants import require_schema
 from taskq.obs import get_logger
 from taskq.workflows._progress import PROGRESS_NOTIFY_CHANNEL
 from taskq.workflows._sql import WorkflowSql
-
-if TYPE_CHECKING:
-    from asyncpg.pool import PoolConnectionProxy
+from taskq.workflows.api._listen_pump import (
+    DEFAULT_QUEUE_MAXSIZE,
+    _BroadcastListener,  # pyright: ignore[reportPrivateUsage]  # Why: the shared LISTEN→BACKFILL→TAIL body; the listener keeps only its own face (the channel, the snapshot, the decode, the knock, the log names).
+    _Conn,  # pyright: ignore[reportPrivateUsage]  # Why: the pool's two faces, one union — the pump's own alias.
+)
 
 __all__ = [
     "ProgressBackfilled",
@@ -80,7 +78,7 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: OLDEST event — the row is the truth, the poll converges). Bounds the
 #: raw queue, every subscriber queue, and the late-subscriber replay
 #: history alike.
-_QUEUE_MAXSIZE = 1000
+_QUEUE_MAXSIZE = DEFAULT_QUEUE_MAXSIZE
 
 
 class ProgressUpdated(BaseModel):
@@ -114,14 +112,8 @@ class ProgressBackfilled(BaseModel):
 #: live knocks.
 ProgressEvent = Annotated[ProgressUpdated | ProgressBackfilled, Field(discriminator="event")]
 
-type _Raw = tuple[str, str]
 
-# The pool hands out BOTH faces (the proxy and the bare connection) —
-# the HITL listener's own union.
-type _Conn = asyncpg.Connection | PoolConnectionProxy
-
-
-class ProgressListener:
+class ProgressListener(_BroadcastListener[ProgressEvent]):
     """THE TYPED PROGRESS LISTENER (public — the SSE face and
     programmatic consumers share it), DIRECTLY ASYNC-ITERABLE (the
     amendment — no ceremony between the author and the events):
@@ -142,6 +134,12 @@ class ProgressListener:
     partition (P7). :meth:`wait` is the SSE face's knock-wait (the push
     primary's own primitive; the poll tick is the belt)."""
 
+    _log = logger
+    _task_name = "taskq-progress-listener"
+    _reconnect_event = "progress-listener-reconnect"
+    _overflow_event = "progress-listener-queue-overflow-drop-oldest"
+    _closed_message = "the progress listener's connection was closed underneath the pump"
+
     def __init__(
         self,
         pool: asyncpg.Pool,
@@ -154,25 +152,21 @@ class ProgressListener:
         acquire_timeout: float = 5.0,
         wsql: WorkflowSql | None = None,
     ) -> None:
-        self._pool = pool
-        self._schema = schema
+        super().__init__(
+            pool,
+            schema,
+            keepalive_interval=keepalive_interval,
+            backoff_initial=backoff_initial,
+            backoff_max=backoff_max,
+            acquire_timeout=acquire_timeout,
+        )
         self._flow_id = str(flow_id)
-        self._keepalive = keepalive_interval
-        self._backoff_initial = backoff_initial
-        self._backoff_max = backoff_max
-        self._acquire_timeout = acquire_timeout
         if wsql is not None:
             self._backfill_sql = wsql.progress_state_read_run
         else:
             from taskq.workflows.engine import render_workflow_sql
 
             self._backfill_sql = render_workflow_sql(schema).progress_state_read_run
-        self._raw: asyncio.Queue[_Raw | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        # THE FAN-OUT (the fan-out fix): per-SUBSCRIBER queues (each its own
-        # sentinel on stop), a bounded history each late subscriber
-        # replays first (the buffer-then-consume behavior).
-        self._subs: dict[int, asyncio.Queue[ProgressEvent | None]] = {}
-        self._history: deque[ProgressEvent] = deque(maxlen=_QUEUE_MAXSIZE)
         # THE DEDUP'S LEDGER (per-connection): node_id → the snapshot's
         # last_seq. Reset on every (re)backfill — a previous connection's
         # announced seqs would suppress nothing valid.
@@ -180,43 +174,24 @@ class ProgressListener:
         # THE KNOCK (the SSE face's primitive): set on EVERY event — the
         # generator's wait returns, the replay read is owed.
         self._knock = asyncio.Event()
-        self._pump: asyncio.Task[None] | None = None
-        self._closing = False
-        self._dropped_logged = False
 
-    # ── the lifecycle ────────────────────────────────────────────────
+    # ── the per-listener face ────────────────────────────────────────
 
-    async def start(self) -> None:
-        """Start the pump task (idempotent)."""
-        if self._pump is not None:
-            return
-        require_schema(self._schema)
-        self._closing = False
-        self._pump = asyncio.create_task(self._pump_loop(), name="taskq-progress-listener")
+    def _channels(self) -> tuple[str, ...]:
+        return (PROGRESS_NOTIFY_CHANNEL,)
 
-    async def stop(self) -> None:
-        """Stop the pump and release the dedicated connection, then end
-        EVERY subscriber with its OWN sentinel (the teardown is SHIELDED: a
-        cancellation delivered while the pump's own finally releases the LISTEN
-        connection must not strand it against the pool cap)."""
-        self._closing = True
-        pump, self._pump = self._pump, None
-        if pump is not None:
-            pump.cancel()
-            with suppress(asyncio.CancelledError):
-                await shield_with_retrieval(pump)
-        for queue in list(self._subs.values()):
-            with suppress(asyncio.QueueFull):
-                queue.put_nowait(None)  # each subscriber's OWN sentinel
-        self._subs.clear()
-        self._history.clear()
+    def _reconnect_fields(self) -> dict[str, object]:
+        return {"flow_id": self._flow_id}
 
-    async def __aenter__(self) -> ProgressListener:
-        await self.start()
-        return self
+    def _queue_maxsize(self) -> int:
+        return _QUEUE_MAXSIZE
 
-    async def __aexit__(self, *exc: object) -> None:
-        await self.stop()
+    def _note_activity(self) -> None:
+        # THE KNOCK: set on EVERY event — the generator's wait returns,
+        # the replay read is owed. Fires at the raw notify (a knock is
+        # owed even when the decode drops another run's payload) and on
+        # every emit (the backfill's emissions included).
+        self._knock.set()
 
     # ── the surfaces ─────────────────────────────────────────────────
 
@@ -255,99 +230,7 @@ class ProgressListener:
         self._knock.clear()
         return True
 
-    async def _iterate(self, keepalive: float | None) -> AsyncGenerator[ProgressEvent | None, None]:
-        if self._pump is None:
-            await self.start()
-        queue = self._subscribe()
-        try:
-            while True:
-                try:
-                    if keepalive is None:
-                        item = await queue.get()
-                    else:
-                        item = await asyncio.wait_for(queue.get(), timeout=keepalive)
-                except TimeoutError:
-                    yield None
-                    continue
-                if item is None:
-                    return
-                yield item
-        finally:
-            self._unsubscribe(queue)
-
-    # ── the subscriber registry (the fan-out's mechanics) ────────────
-
-    def _subscribe(self) -> asyncio.Queue[ProgressEvent | None]:
-        """Register ONE subscriber: its own bounded queue, seeded with
-        the bounded event history (a backfill announced before the
-        subscribe is still delivered — the buffer-then-consume
-        behavior). ATOMIC by construction (the listener's own
-        argument): no await between the history copy and the registry
-        insert."""
-        queue: asyncio.Queue[ProgressEvent | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        if self._closing:
-            queue.put_nowait(None)  # a subscriber after stop ends immediately
-            return queue
-        for event in self._history:
-            queue.put_nowait(event)
-        self._subs[id(queue)] = queue
-        return queue
-
-    def _unsubscribe(self, queue: asyncio.Queue[ProgressEvent | None]) -> None:
-        with suppress(KeyError):
-            del self._subs[id(queue)]
-
-    # ── the pump (connect → LISTEN → backfill → tail, with reconnect) ──
-
-    async def _pump_loop(self) -> None:
-        backoff = self._backoff_initial
-        while not self._closing:
-            conn: _Conn | None = None
-            try:
-                conn = await asyncio.wait_for(self._pool.acquire(), timeout=self._acquire_timeout)
-                await self._listen_and_backfill(conn)
-                backoff = self._backoff_initial
-                while not self._closing:
-                    try:
-                        raw = await asyncio.wait_for(self._raw.get(), timeout=self._keepalive)
-                    except TimeoutError:
-                        if conn.is_closed():
-                            raise ConnectionError(
-                                "the progress listener's connection was closed underneath the pump"
-                            ) from None
-                        continue
-                    if raw is None:
-                        return
-                    event = self._decode(*raw)
-                    if event is not None:
-                        self._emit(event)
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                if self._closing:
-                    return
-                logger.warning(
-                    "progress-listener-reconnect",
-                    schema=self._schema,
-                    flow_id=self._flow_id,
-                    error_type=type(exc).__name__,
-                    error=str(exc),
-                    backoff=backoff,
-                )
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, self._backoff_max)
-            finally:
-                if conn is not None:
-                    await self._release(conn)
-
-    async def _listen_and_backfill(self, conn: _Conn) -> None:
-        """THE ZERO-WINDOW SEQUENCE, IN ORDER: LISTEN the channel FIRST,
-        THEN the snapshot — the order IS the construction (a backfill
-        that ran before the LISTEN would open the missed-event window
-        the design closes)."""
-        await conn.execute(f'LISTEN "{PROGRESS_NOTIFY_CHANNEL}"')
-        await conn.add_listener(PROGRESS_NOTIFY_CHANNEL, self._on_notify)  # pyright: ignore[reportArgumentType]  # Why: the stubs over-narrow the callback type; the runtime accepts sync callbacks (the admin feed's own carry-over).
-        await self._backfill(conn)
+    # ── the listener's own halves of the pump ────────────────────────
 
     async def _backfill(self, conn: _Conn) -> None:
         """THE RUN'S STATE ROWS, FROM THE SNAPSHOT (the zero-window
@@ -378,26 +261,6 @@ class ProgressListener:
             )
         self._emit(ProgressBackfilled(last_seqs=dict(self._last_seqs)))
 
-    def _on_notify(self, _conn: object, _pid: int, channel: str, payload: str) -> None:
-        """The session callback (sync, loop-thread): the raw pair into
-        the bounded queue — drop-oldest on overflow (THE COALESCE ORDER:
-        the writer never blocks, observability degrades first — logged
-        once)."""
-        if not payload:
-            return
-        self._knock.set()
-        if self._raw.full():
-            with suppress(asyncio.QueueEmpty):
-                self._raw.get_nowait()
-            if not self._dropped_logged:
-                logger.warning(
-                    "progress-listener-queue-overflow-drop-oldest",
-                    channel=channel,
-                    maxsize=_QUEUE_MAXSIZE,
-                )
-                self._dropped_logged = True
-        self._raw.put_nowait((channel, payload))
-
     def _decode(self, channel: str, payload: str) -> ProgressEvent | None:
         """The raw knock → the typed event (or ``None``: another
         schema's, another run's, or a shape this decoder refuses — a
@@ -427,27 +290,3 @@ class ProgressListener:
             return None  # THE DEDUP (the zero-window's other half): the snapshot already announced this seq
         self._last_seqs[node_id] = seq
         return ProgressUpdated(flow_id=flow_id, node_id=node_id, last_seq=seq, source="notify")
-
-    def _emit(self, event: ProgressEvent) -> None:
-        """The typed event to EVERY subscriber (the fan-out — never a
-        partition), plus the bounded history (each late subscriber
-        replays it first). Each queue is drop-oldest on overflow — the
-        same bound as the raw leg."""
-        self._knock.set()
-        self._history.append(event)
-        for queue in list(self._subs.values()):
-            if queue.full():
-                with suppress(asyncio.QueueEmpty):
-                    queue.get_nowait()
-            with suppress(asyncio.QueueFull):
-                queue.put_nowait(event)
-
-    async def _release(self, conn: _Conn) -> None:
-        """The dedicated connection's teardown (the admin feed's
-        shielded discipline)."""
-        with suppress(Exception):
-            await conn.remove_listener(PROGRESS_NOTIFY_CHANNEL, self._on_notify)  # pyright: ignore[reportArgumentType]  # Why: the stubs over-narrow the callback type.
-        with suppress(Exception):
-            await conn.execute(f'UNLISTEN "{PROGRESS_NOTIFY_CHANNEL}"')
-        with suppress(Exception):
-            await self._pool.release(conn)  # pyright: ignore[reportArgumentType]  # Why: the stubs over-narrow release to the proxy; the runtime accepts both faces it hands out.

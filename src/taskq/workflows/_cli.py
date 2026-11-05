@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from taskq._json import loads as _json_loads
 from taskq.workflows._status import NodeView, WorkflowStatus, derive_workflow_status
@@ -49,6 +49,7 @@ __all__ = [
     "parse_decision",
     "stranded_lines",
     "stuck_lines",
+    "validate_gate_payload",
 ]
 
 #: The flow root row's step_key — the run's linearization point, never
@@ -627,3 +628,63 @@ def gate_models_for(app: Any, workflow: str, node_key: str) -> tuple[type[BaseMo
     for gate in decl.gates:
         models.extend(gate.payload_models)
     return tuple(models)
+
+
+def validate_gate_payload(
+    models: Sequence[type[BaseModel]],
+    signal_name: str,
+    payload: dict[str, object],
+    *,
+    fallback_all: bool = False,
+) -> tuple[dict[str, object] | None, str | None]:
+    """The typed door's shared core — the CLI's and the admin's one
+    validation body: split the hold's signal name on ``|``, take the
+    bound gate models that name it, and validate *payload* against the
+    candidates in turn; the first acceptance wins and its
+    ``model_dump(mode="json")`` is the delivered shape.
+
+    The candidate policy is the two surfaces' DELIBERATE divergence,
+    carried by *fallback_all*: the CLI resolves the gates for the run's
+    named workflow and REFUSES when no bound model names the signal (the
+    shapes cannot match is the operator's answer); the admin loops every
+    mounted workflow — it cannot know the run's — and FALLS BACK TO ALL
+    BOUND MODELS when none names the signal.
+
+    Returns ``(dump, None)`` on acceptance.  On refusal:
+    ``(None, refusal_text)`` — *refusal_text* is the full refusal
+    sentence the caller renders in its own error shape (the CLI's
+    ``typer.echo`` + exit 1, the admin's HTTP 422 detail, which its
+    audited wrapper records verbatim).  Each surface's established
+    wording rides the same flag as the policy it belongs to: the CLI's
+    pydantic refusal names the signal, the admin's does not.
+    """
+    members = signal_name.split("|")
+    candidates = [m for m in models if m.__name__ in members]
+    if not candidates:
+        if fallback_all:
+            candidates = list(models)
+        else:
+            return None, (
+                f"the hold declares signal {signal_name!r} but the node's bound gates are "
+                f"{[m.__name__ for m in models]} — the shapes cannot match"
+            )
+    errors: list[str] = []
+    for model in candidates:
+        try:
+            validated = model.model_validate(payload)
+        except ValidationError as exc:
+            errors.append(
+                f"{model.__name__}: "
+                + "; ".join(
+                    f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()
+                )
+            )
+            continue
+        dumped: dict[str, object] = validated.model_dump(mode="json")
+        return dumped, None
+    lead = (
+        "pydantic refused the payload"
+        if fallback_all
+        else f"pydantic refused the payload for signal {signal_name!r}"
+    )
+    return None, f"{lead}: " + " | ".join(errors)

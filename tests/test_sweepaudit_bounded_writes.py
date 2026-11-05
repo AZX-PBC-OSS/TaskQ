@@ -489,6 +489,24 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single loop-node row + its flow's root row (the CTE pair)",
     ),
+    "LOOP_EXHAUST_BATCH_SQL": (
+        "$1::uuid[]",
+        "the budget sweep's set-based exhaust (the DRIVER keeps the keyed "
+        "LOOP_EXHAUST_SQL); its write set is the loop rows the LIMIT-ed "
+        "LOOP_BUDGET_SWEEP_SQL window locked in the same transaction, "
+        "bound as parallel arrays (the sweep_join_rederive fire arm's "
+        "shape), identity-fenced per row",
+    ),
+    "_FLUSH_UPDATE_SQL": (
+        "FROM unnest($1::uuid[]",
+        "the progress flush's batched UPDATE: its write set is the "
+        "tick's dirty-buffer rows, bound as parallel arrays and capped "
+        "by the caller's discipline (_FLUSH_BATCH_ROWS per statement, "
+        "_FLUSH_MAX_BATCHES_PER_TICK per tick - the incremental-commit "
+        "shape _drain_bounded uses), fenced per row (running + this "
+        "worker + this attempt); a fenced-off row neither updates nor "
+        "returns, so the write set cannot grow with the jobs backlog",
+    ),
     "LOOP_INIT_SQL": (
         "WHERE id = $1",
         "keyed single loop-node row (the budget deadline's stamp)",

@@ -26,7 +26,6 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from taskq._advisory import DEADLINE_ERRORS
 from taskq._json import dumps_str
 from taskq.backend._batch_sql import (
     BatchSql,
@@ -150,6 +149,7 @@ from taskq.backend._sweeps import (
     _SWEEP_IDLE_KEYED_SLOTS_SQL,
     _SWEEP_RESULT_TTL_SQL,
     SweepBatchSizer,
+    _batch_failure_arms,  # pyright: ignore[reportPrivateUsage]  # Why: the sizer-accounting arms are the shared batch machinery's; restating them here is the drift the cure removes.
     sweep_deadline_exceeded,
     sweep_expired_events,
     sweep_expired_locks,
@@ -1127,11 +1127,13 @@ class PostgresBackend:
         # conversion for SET LOCAL statement_timeout's integer parameter,
         # not a defensive coercion.
         timeout_ms = int(self._deps.settings.event_writer_statement_timeout_ms)
-        try:
+        # The sizer-accounting half of the shared batch machinery, with
+        # the backend sweeps' own failure policy: a non-deadline error
+        # propagates uncounted (the breaker's control signal is a
+        # cancelled batch, not any failure - the deliberate divergence
+        # from the prune family, see _batch_failure_arms).
+        with _batch_failure_arms(sweep_name, sizer, count_unexpected=False):
             count = await run(size, timeout_ms)
-        except DEADLINE_ERRORS:
-            sizer.on_timeout()
-            raise
         sizer.on_success()
         return count
 

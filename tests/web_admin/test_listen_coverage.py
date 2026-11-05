@@ -16,11 +16,11 @@ pytest.importorskip("fastapi")
 pytest.importorskip("jinja2")
 
 from taskq.web.admin._listen import (  # Why: importorskip guard must precede.
-    _make_notify_callback,
     listen_with_reconnect,
 )
+from taskq.workflows.api._listen_pump import make_notify_callback
 
-# ── _make_notify_callback ───────────────────────────────────────────────
+# ── make_notify_callback (the shared pump's session callback) ───────────
 
 
 pytestmark = [pytest.mark.fastapi]
@@ -40,8 +40,8 @@ def _open_conn() -> AsyncMock:
 
 async def test_make_notify_callback_puts_nonempty_payload() -> None:
     """A non-empty NOTIFY payload is enqueued."""
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    cb = _make_notify_callback(queue)
+    queue: asyncio.Queue[object] = asyncio.Queue()
+    cb = make_notify_callback(queue)
     cb(None, 1, "chan", "hello")  # pyright: ignore[reportArgumentType]  # Why: connection arg unused by callback.
     assert queue.qsize() == 1
     assert queue.get_nowait() == "hello"
@@ -49,16 +49,16 @@ async def test_make_notify_callback_puts_nonempty_payload() -> None:
 
 async def test_make_notify_callback_skips_empty_payload() -> None:
     """An empty payload string is not enqueued (falsy)."""
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    cb = _make_notify_callback(queue)
+    queue: asyncio.Queue[object] = asyncio.Queue()
+    cb = make_notify_callback(queue)
     cb(None, 1, "chan", "")  # pyright: ignore[reportArgumentType]  # Why: connection arg unused by callback.
     assert queue.empty()
 
 
 async def test_make_notify_callback_skips_none_payload() -> None:
     """A None payload is not enqueued (falsy)."""
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    cb = _make_notify_callback(queue)
+    queue: asyncio.Queue[object] = asyncio.Queue()
+    cb = make_notify_callback(queue)
     cb(None, 1, "chan", None)  # pyright: ignore[reportArgumentType]  # Why: connection arg unused by callback.
     assert queue.empty()
 

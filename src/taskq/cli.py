@@ -4824,10 +4824,10 @@ def _validate_through_gate(
     boundary): the shell's JSON payload re-validates against the gate's
     declared models BEFORE any row moves. A wrong payload answers the
     NAMED pydantic error and nothing is delivered — no untyped deliver
-    surface ships."""
-    from pydantic import ValidationError
-
-    from taskq.workflows._cli import gate_models_for
+    surface ships. The validation core is the shared
+    ``validate_gate_payload`` (the admin's twin body); the resolution
+    and the refusal rendering are this surface's own."""
+    from taskq.workflows._cli import gate_models_for, validate_gate_payload
     from taskq.workflows.api._validate import WorkflowValidationError
 
     try:
@@ -4867,34 +4867,15 @@ def _validate_through_gate(
             err=True,
         )
         raise typer.Exit(code=1)
-    members = signal_name.split("|")
-    candidates = [m for m in models if m.__name__ in members]
-    if not candidates:
-        typer.echo(
-            f"the hold declares signal {signal_name!r} but the node's bound gates are "
-            f"{[m.__name__ for m in models]} — the shapes cannot match",
-            err=True,
-        )
+    # THE CLI'S CANDIDATE POLICY (fallback_all=False): the gates resolved
+    # for the NAMED workflow; no candidate naming the signal is the
+    # shapes-cannot-match refusal, never a validate-everything fallback.
+    dumped, refusal = validate_gate_payload(models, signal_name, payload, fallback_all=False)
+    if dumped is None:
+        assert refusal is not None  # the shared core always states its reason
+        typer.echo(refusal, err=True)
         raise typer.Exit(code=1)
-    errors: list[str] = []
-    for model in candidates:
-        try:
-            validated = model.model_validate(payload)
-        except ValidationError as exc:
-            errors.append(
-                f"{model.__name__}: "
-                + "; ".join(
-                    f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()
-                )
-            )
-            continue
-        dumped = validated.model_dump(mode="json")
-        return dict(dumped)  # type: ignore[arg-type]  # Why: model_dump(mode='json') returns dict[str, Any]; the gate's models are object-valued pydantics and the delivered payload is the row's jsonb.
-    typer.echo(
-        f"pydantic refused the payload for signal {signal_name!r}: " + " | ".join(errors),
-        err=True,
-    )
-    raise typer.Exit(code=1)
+    return dumped
 
 
 async def _workflow_name_of(pool: asyncpg.Pool, schema: str, run_id: UUID) -> tuple[str, str, str]:

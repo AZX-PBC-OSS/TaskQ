@@ -30,7 +30,7 @@ survive the snapshot (P6).
 The fan-out, not a partition (the product
 shape is ONE backend listener fanning out to N watching users, the
 progress stream's own pub/sub discipline): every subscriber —
-``async for event in listener``, ``events()``, ``holds(run=…)``,
+``async for event in listener``, ``events()``, ``holds(run=…)```,
 ``frames()`` — gets its OWN queue and its OWN end-of-stream sentinel;
 two concurrent consumers each see EVERY event (a shared queue would
 PARTITION the stream, each consumer stealing the other's events, and a
@@ -75,20 +75,15 @@ filter IS the isolation between the estate's schemas — P8).
 
 from __future__ import annotations
 
-import asyncio
-from collections import deque
-from collections.abc import AsyncGenerator
-from contextlib import suppress
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from collections.abc import AsyncGenerator, Sequence
+from typing import Annotated, Literal, cast
 
 import asyncpg
 import structlog
 from pydantic import BaseModel, Field
 
 from taskq._json import loads as _json_loads
-from taskq._shield import shield_with_retrieval
 from taskq.backend._protocol import JobId
-from taskq.constants import require_schema
 from taskq.obs import get_logger
 from taskq.workflows.api._hitl import (
     HOLD_CREATED_CHANNEL,
@@ -96,9 +91,11 @@ from taskq.workflows.api._hitl import (
     HOLD_RESOLVED_CHANNEL,
     _as_hold_id,  # pyright: ignore[reportPrivateUsage]  # Why: the id's canonical form is the hitl module's own normalizer — the listener door binds through it (the same surface, the same parse).
 )
-
-if TYPE_CHECKING:
-    from asyncpg.pool import PoolConnectionProxy
+from taskq.workflows.api._listen_pump import (
+    DEFAULT_QUEUE_MAXSIZE,
+    _BroadcastListener,  # pyright: ignore[reportPrivateUsage]  # Why: the shared LISTEN→BACKFILL→TAIL body; the listener keeps only its own face (the channels, the snapshot, the decode, the log names).
+    _Conn,  # pyright: ignore[reportPrivateUsage]  # Why: the pool's two faces, one union — the pump's own alias.
+)
 
 __all__ = [
     "BROADCAST_CHANNELS",
@@ -124,7 +121,7 @@ BROADCAST_CHANNELS: frozenset[str] = frozenset(
 #: ``_listen.py`` made: a slow consumer drops the OLDEST event — the
 #: row is the truth, the poll converges). Bounds the raw queue, every
 #: subscriber queue, and the late-subscriber replay history alike.
-_QUEUE_MAXSIZE = 1000
+_QUEUE_MAXSIZE = DEFAULT_QUEUE_MAXSIZE
 
 
 class HoldCreated(BaseModel):
@@ -191,14 +188,8 @@ HoldEvent = Annotated[
     HoldCreated | HoldResolved | HoldExpired | Backfilled, Field(discriminator="event")
 ]
 
-type _Raw = tuple[str, str]
 
-# The pool hands out BOTH faces (the proxy and the bare connection) —
-# the admin feed's own union (\_listen.py).
-type _Conn = asyncpg.Connection | PoolConnectionProxy
-
-
-class HitlListener:
+class HitlListener(_BroadcastListener[HoldEvent]):
     """THE TYPED LISTENER (public — the SSE face and programmatic
     consumers share it), DIRECTLY ASYNC-ITERABLE (the amendment — no
     ceremony between the author and the events):
@@ -224,6 +215,12 @@ class HitlListener:
     tick). EVERY subscriber gets its own queue and its own end sentinel
     — the fan-out, never a partition (P7)."""
 
+    _log = logger
+    _task_name = "taskq-hitl-listener"
+    _reconnect_event = "hitl-listener-reconnect"
+    _overflow_event = "hitl-listener-queue-overflow-drop-oldest"
+    _closed_message = "the HITL listener's connection was closed underneath the pump"
+
     def __init__(
         self,
         pool: asyncpg.Pool,
@@ -234,60 +231,26 @@ class HitlListener:
         backoff_max: float = 30.0,
         acquire_timeout: float = 5.0,
     ) -> None:
-        self._pool = pool
-        self._schema = schema
-        self._keepalive = keepalive_interval
-        self._backoff_initial = backoff_initial
-        self._backoff_max = backoff_max
-        self._acquire_timeout = acquire_timeout
-        self._raw: asyncio.Queue[_Raw | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        # The fan-out: per-SUBSCRIBER queues (each its own
-        # sentinel on stop), a bounded history each late subscriber
-        # replays first (the buffer-then-consume behavior), and the
-        # single raw queue only the pump reads — a shared consumer queue
-        # would PARTITION the
-        # stream, each stealing the other's events.
-        self._subs: dict[int, asyncio.Queue[HoldEvent | None]] = {}
-        self._history: deque[HoldEvent] = deque(maxlen=_QUEUE_MAXSIZE)
+        super().__init__(
+            pool,
+            schema,
+            keepalive_interval=keepalive_interval,
+            backoff_initial=backoff_initial,
+            backoff_max=backoff_max,
+            acquire_timeout=acquire_timeout,
+        )
         self._backfilled: set[str] = set()
-        self._pump: asyncio.Task[None] | None = None
-        self._closing = False
-        self._dropped_logged = False
 
-    # ── the lifecycle ────────────────────────────────────────────────
+    # ── the per-listener face ────────────────────────────────────────
 
-    async def start(self) -> None:
-        """Start the pump task (idempotent)."""
-        if self._pump is not None:
-            return
-        require_schema(self._schema)
-        self._closing = False
-        self._pump = asyncio.create_task(self._pump_loop(), name="taskq-hitl-listener")
+    def _channels(self) -> Sequence[str]:
+        return sorted(BROADCAST_CHANNELS)
 
-    async def stop(self) -> None:
-        """Stop the pump and release the dedicated connection, then end
-        EVERY subscriber with its OWN sentinel (the teardown is SHIELDED: a cancellation
-        delivered while the pump's own finally releases the LISTEN
-        connection must not strand it against the pool cap — the admin
-        feed's release discipline, carried over)."""
-        self._closing = True
-        pump, self._pump = self._pump, None
-        if pump is not None:
-            pump.cancel()
-            with suppress(asyncio.CancelledError):
-                await shield_with_retrieval(pump)
-        for queue in list(self._subs.values()):
-            with suppress(asyncio.QueueFull):
-                queue.put_nowait(None)  # each subscriber's OWN sentinel
-        self._subs.clear()
-        self._history.clear()
+    def _reconnect_fields(self) -> dict[str, object]:
+        return {}
 
-    async def __aenter__(self) -> HitlListener:
-        await self.start()
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        await self.stop()
+    def _queue_maxsize(self) -> int:
+        return _QUEUE_MAXSIZE
 
     # ── the surfaces ─────────────────────────────────────────────────
 
@@ -334,100 +297,7 @@ class HitlListener:
         async for event in self._iterate(self._keepalive):
             yield event
 
-    async def _iterate(self, keepalive: float | None) -> AsyncGenerator[HoldEvent | None, None]:
-        if self._pump is None:
-            await self.start()
-        queue = self._subscribe()
-        try:
-            while True:
-                try:
-                    if keepalive is None:
-                        item = await queue.get()
-                    else:
-                        item = await asyncio.wait_for(queue.get(), timeout=keepalive)
-                except TimeoutError:
-                    yield None
-                    continue
-                if item is None:
-                    return
-                yield item
-        finally:
-            self._unsubscribe(queue)
-
-    # ── the subscriber registry (the fan-out's mechanics) ────────────
-
-    def _subscribe(self) -> asyncio.Queue[HoldEvent | None]:
-        """Register ONE subscriber: its own bounded queue, seeded with
-        the bounded event history (a backfill announced before the
-        subscribe is still delivered — the buffer-then-consume
-        behavior). ATOMIC by construction: no await between the history
-        copy and the registry insert, so no event is both replayed AND
-        fanned out, and none is lost in between (the loop thread
-        schedules nothing else mid-function)."""
-        queue: asyncio.Queue[HoldEvent | None] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        if self._closing:
-            queue.put_nowait(None)  # a subscriber after stop ends immediately
-            return queue
-        for event in self._history:
-            queue.put_nowait(event)
-        self._subs[id(queue)] = queue
-        return queue
-
-    def _unsubscribe(self, queue: asyncio.Queue[HoldEvent | None]) -> None:
-        with suppress(KeyError):
-            del self._subs[id(queue)]
-
-    # ── the pump (connect → LISTEN → backfill → tail, with reconnect) ──
-
-    async def _pump_loop(self) -> None:
-        backoff = self._backoff_initial
-        while not self._closing:
-            conn: _Conn | None = None
-            try:
-                conn = await asyncio.wait_for(self._pool.acquire(), timeout=self._acquire_timeout)
-                await self._listen_and_backfill(conn)
-                backoff = self._backoff_initial
-                while not self._closing:
-                    try:
-                        raw = await asyncio.wait_for(self._raw.get(), timeout=self._keepalive)
-                    except TimeoutError:
-                        if conn.is_closed():
-                            raise ConnectionError(
-                                "the HITL listener's connection was closed underneath the pump"
-                            ) from None
-                        continue
-                    if raw is None:
-                        return
-                    event = self._decode(*raw)
-                    if event is not None:
-                        self._emit(event)
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                if self._closing:
-                    return
-                logger.warning(
-                    "hitl-listener-reconnect",
-                    schema=self._schema,
-                    error_type=type(exc).__name__,
-                    error=str(exc),
-                    backoff=backoff,
-                )
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, self._backoff_max)
-            finally:
-                if conn is not None:
-                    await self._release(conn)
-
-    async def _listen_and_backfill(self, conn: _Conn) -> None:
-        """THE ZERO-WINDOW SEQUENCE, IN ORDER: LISTEN every broadcast
-        channel FIRST, THEN the snapshot — the order IS the
-        construction (a backfill that ran before the LISTEN would open
-        the missed-event window the design closes)."""
-        for channel in sorted(BROADCAST_CHANNELS):
-            await conn.execute(f'LISTEN "{channel}"')
-            await conn.add_listener(channel, self._on_notify)  # pyright: ignore[reportArgumentType]  # Why: the stubs over-narrow the callback type; the runtime accepts sync callbacks (the admin feed's own carry-over).
-        await self._backfill(conn)
+    # ── the listener's own halves of the pump ────────────────────────
 
     async def _backfill(self, conn: _Conn) -> None:
         """The OPEN holds, FROM THE ROWS (the snapshot the zero-window
@@ -475,24 +345,6 @@ class HitlListener:
                 )
             )
         self._emit(Backfilled(open_hold_ids=open_ids))
-
-    def _on_notify(self, _conn: object, _pid: int, channel: str, payload: str) -> None:
-        """The session callback (sync, loop-thread): the raw pair into
-        the bounded queue — drop-oldest on overflow (the admin feed's
-        own tradeoff, logged once)."""
-        if not payload:
-            return
-        if self._raw.full():
-            with suppress(asyncio.QueueEmpty):
-                self._raw.get_nowait()
-            if not self._dropped_logged:
-                logger.warning(
-                    "hitl-listener-queue-overflow-drop-oldest",
-                    channel=channel,
-                    maxsize=_QUEUE_MAXSIZE,
-                )
-                self._dropped_logged = True
-        self._raw.put_nowait((channel, payload))
 
     def _decode(self, channel: str, payload: str) -> HoldEvent | None:
         """The raw knock → the typed event (or ``None``: another
@@ -545,28 +397,3 @@ class HitlListener:
                 node_key=str(doc.get("node_key", "")),
             )
         return None
-
-    def _emit(self, event: HoldEvent) -> None:
-        """The typed event to EVERY subscriber (the fan-out — never a
-        partition), plus the bounded history (each late subscriber
-        replays it first). Each queue is drop-oldest on overflow — the
-        same bound as the raw leg."""
-        self._history.append(event)
-        for queue in list(self._subs.values()):
-            if queue.full():
-                with suppress(asyncio.QueueEmpty):
-                    queue.get_nowait()
-            with suppress(asyncio.QueueFull):
-                queue.put_nowait(event)
-
-    async def _release(self, conn: _Conn) -> None:
-        """The dedicated connection's teardown (the admin feed's
-        shielded discipline: a cancellation delivered mid-cleanup must
-        not strand the connection against the pool cap)."""
-        for channel in sorted(BROADCAST_CHANNELS):
-            with suppress(Exception):
-                await conn.remove_listener(channel, self._on_notify)  # pyright: ignore[reportArgumentType]  # Why: the stubs over-narrow the callback type.
-            with suppress(Exception):
-                await conn.execute(f'UNLISTEN "{channel}"')
-        with suppress(Exception):
-            await self._pool.release(conn)  # pyright: ignore[reportArgumentType]  # Why: the stubs over-narrow release to the proxy; the runtime accepts both faces it hands out (the admin feed's carry-over).

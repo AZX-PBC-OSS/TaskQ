@@ -907,8 +907,20 @@ async def sweep_loop_budget(
     mechanism. §22.6's exclusivity: the arm never touches a reclaim-owned
     row; the clock comparison is PG's own.
 
+    The pass is SET-BASED (the sweep_join_rederive fire arm's shape): the
+    driving statement selects the batch under lock WITH its wall columns
+    and the flow root's workflow name (one round trip), the exhaust runs
+    ONCE over the batch's parallel arrays (the claim identity's fence
+    bound per row), the outbox rows are one ``executemany`` — three
+    statements per pass, never four per loop row.
+
     Returns the number of loops exhausted."""
     from taskq._ids import new_uuid
+    from taskq.workflows.api._loop import (
+        ESCALATION_STEP_KEY,
+        escalation_bindings,
+        registered_loop_policy,
+    )
     from taskq.workflows.api._sql_loop import (
         ITERATION_STATE_BUDGET_EXHAUSTED,
         ITERATION_STATE_CAP_EXHAUSTED,
@@ -916,75 +928,90 @@ async def sweep_loop_budget(
         LOOP_ERROR_BUDGET,
         LOOP_ERROR_CAP,
         LOOP_ESCALATION_OUTBOX_SQL,
-        LOOP_EXHAUST_SQL,
+        LOOP_EXHAUST_BATCH_SQL,
         LOOP_KIND_MARKER,
-        LOOP_NODE_WALL_SQL,
-        LOOP_WORKFLOW_NAME_SQL,
         render_loop_sql,
     )
 
-    exhausted = 0
     async with pool.acquire() as conn, conn.transaction():
         loops = await conn.fetch(render_loop_sql(LOOP_BUDGET_SWEEP_SQL, wsql.schema), batch_size)
+        if not loops:
+            return 0
+        # The batch's exhaust rows, in the driving query's order (the
+        # DISTINCT ON's ordinal keys the flow's first-writer-wins off
+        # this order). WHICH WALL (the named state's truth): the
+        # metadata's iteration counter vs max_iterations — the cap names
+        # ``iteration_cap_exhausted``, the budget its own state.
+        ids: list[object] = []
+        error_classes: list[str] = []
+        exhaust_metas: list[str] = []
+        messages: list[str] = []
+        workers: list[object] = []
+        attempts: list[int] = []
+        epochs: list[int] = []
+        error_class_of: dict[object, str] = {}
         for loop_row in loops:
-            loop_id = loop_row["id"]
-            # WHICH wall (the named state's truth): the metadata's
-            # iteration counter vs max_iterations — the cap names
-            # ``iteration_cap_exhausted``, the budget its own state.
-            state = await conn.fetchrow(render_loop_sql(LOOP_NODE_WALL_SQL, wsql.schema), loop_id)
-            assert state is not None
             cap_hit = (
-                state["max_iterations"] is not None
-                and (state["iteration"] or 0) >= state["max_iterations"]
+                loop_row["max_iterations"] is not None
+                and (loop_row["iteration"] or 0) >= loop_row["max_iterations"]
             )
             error_class = LOOP_ERROR_CAP if cap_hit else LOOP_ERROR_BUDGET
             iteration_state = (
                 ITERATION_STATE_CAP_EXHAUSTED if cap_hit else ITERATION_STATE_BUDGET_EXHAUSTED
             )
-            # THE CLAIM IDENTITY'S FENCE (the same legs the driver's
-            # exhaust carries): the identity is read under THIS arm's own
-            # row lock (FOR UPDATE — stable to statement end), so the
-            # exhaust lands exactly on the row the lock admitted — a
-            # stale identity is unrepresentable here by construction; the
-            # fence's refusal shape (a zombie driver) is the DRIVER's
-            # finding, and the legs make the statement ONE vocabulary.
-            result = await conn.fetchrow(
-                render_loop_sql(LOOP_EXHAUST_SQL, wsql.schema),
-                loop_id,
-                error_class,
-                f'{{"iteration_state": "{iteration_state}", "kind": "{LOOP_KIND_MARKER}"}}',
-                f"the loop's {'iteration cap' if cap_hit else 'budget'} wall fired "
-                f"(the sweep's arm; the named state: {iteration_state})",
-                loop_row["locked_by_worker"],
-                loop_row["attempt"],
-                loop_row["claim_epoch"],
+            ids.append(loop_row["id"])
+            error_classes.append(error_class)
+            error_class_of[loop_row["id"]] = error_class
+            exhaust_metas.append(
+                f'{{"iteration_state": "{iteration_state}", "kind": "{LOOP_KIND_MARKER}"}}'
             )
-            if result is None or not result["loop_exhausted"]:
-                continue  # another writer got there first — the CAS held
-            # THE COUNT IS THE EXHAUSTION'S (the exhaustion count's fix): the named
-            # state + the flow's terminalization COMPLETED at the exhaust
+            messages.append(
+                f"the loop's {'iteration cap' if cap_hit else 'budget'} wall fired "
+                f"(the sweep's arm; the named state: {iteration_state})"
+            )
+            workers.append(loop_row["locked_by_worker"])
+            attempts.append(loop_row["attempt"])
+            epochs.append(loop_row["claim_epoch"])
+        # THE CLAIM IDENTITY'S FENCE (the same legs the driver's
+        # exhaust carries, bound per row): the identity was read under
+        # THIS arm's own row lock (FOR UPDATE — stable to statement
+        # end), so the exhaust lands exactly on the row the lock
+        # admitted — a stale identity is unrepresentable here by
+        # construction; the fence's refusal shape (a zombie driver) is
+        # the DRIVER's finding, and the legs make the statement ONE
+        # vocabulary. The refusals fall out of the RETURNING.
+        winners = await conn.fetch(
+            render_loop_sql(LOOP_EXHAUST_BATCH_SQL, wsql.schema),
+            ids,
+            error_classes,
+            exhaust_metas,
+            messages,
+            workers,
+            attempts,
+            epochs,
+        )
+        won_ids = {row["id"] for row in winners}
+        exhausted = len(won_ids)
+        outbox_rows: list[tuple[object, ...]] = []
+        for loop_row in loops:
+            if loop_row["id"] not in won_ids:
+                continue  # the CAS held — another writer got there first
+            # THE COUNT IS THE EXHAUSTION'S (the exhaustion count's fix): the
+            # named state + the flow's terminalization COMPLETED at the exhaust
             # statement — every CAS-held exhaustion is ONE exhaustion,
             # whatever the policy does next (the escalate arm's enqueue is
             # ADDITIONAL work; a fail-policy loop IS exhausted and the
             # return must say so).
-            exhausted += 1
+            error_class = error_class_of[loop_row["id"]]
             # THE POLICY (the policy fix — the sweep READS the
             # registered declaration, D1): ``fail`` = the named state is
             # the record, NO enqueue; ``escalate`` = the escalation
             # enqueues through the SAME outbox IN THE SAME TX, addressed
             # to the workflow's REGISTERED escalation step (the body
             # resolves from the definition registry at claim — never the
-            # ``loop_escalation``-actor ghost).
-            from taskq.workflows.api._loop import (
-                ESCALATION_STEP_KEY,
-                escalation_bindings,
-                registered_loop_policy,
-            )
-
-            workflow_name = await conn.fetchval(
-                render_loop_sql(LOOP_WORKFLOW_NAME_SQL, wsql.schema),
-                loop_row["flow_id"],
-            )
+            # ``loop_escalation``-actor ghost). The workflow name rode
+            # the driving query (the flow root's own metadata).
+            workflow_name = loop_row["workflow_name"]
             if registered_loop_policy(workflow_name, loop_row["step_key"]) != "escalate":
                 continue
             bindings = escalation_bindings(
@@ -996,12 +1023,17 @@ async def sweep_loop_budget(
             )
             if bindings is None:
                 continue  # no registered escalation body — never a ghost row
-            await conn.execute(
-                render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, wsql.schema),
-                new_uuid(),
-                loop_id,
-                loop_row["flow_id"],
-                ESCALATION_STEP_KEY,
-                _jsonb(bindings),
+            outbox_rows.append(
+                (
+                    new_uuid(),
+                    loop_row["id"],
+                    loop_row["flow_id"],
+                    ESCALATION_STEP_KEY,
+                    _jsonb(bindings),
+                )
+            )
+        if outbox_rows:
+            await conn.executemany(
+                render_loop_sql(LOOP_ESCALATION_OUTBOX_SQL, wsql.schema), outbox_rows
             )
     return exhausted

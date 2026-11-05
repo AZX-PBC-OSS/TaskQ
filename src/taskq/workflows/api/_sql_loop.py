@@ -160,6 +160,58 @@ INSERT INTO {schema}.wf_outbox
 VALUES ($1, $2, $3, $4, $5::jsonb)
 """
 
+#: THE SET-BASED EXHAUST (the budget sweep arm's own — the DRIVER keeps
+#: the keyed LOOP_EXHAUST_SQL above): the batch's exhaust rows bound as
+#: parallel arrays (the sweep_join_rederive fire arm's shape — one
+#: statement per pass, never one round trip per loop row). The claim
+#: identity's fence rides EVERY row of the batch (the same three legs
+#: the keyed statement carries — worker + attempt + claim_epoch, the
+#: NULL-tolerant IS NOT DISTINCT FROM forms — bound per row), the flow
+#: terminalizes in the SAME statement (the stranded-flow law), and the
+#: refusals (a CAS leg that no longer matches) fall out of the
+#: RETURNING — the sweep's count and escalation arm read the winners
+#: only. The flow root's error class is the FIRST winner's in the
+#: batch's order (DISTINCT ON the flow id by ordinal), the same
+#: first-writer-wins the sequential per-row statements produced.
+LOOP_EXHAUST_BATCH_SQL = """\
+WITH batch AS (
+    SELECT b.loop_id, b.error_class, b.exhaust_meta, b.message,
+           b.worker, b.attempt, b.claim_epoch, b.ord
+    FROM unnest($1::uuid[], $2::text[], $3::jsonb[], $4::text[],
+                $5::uuid[], $6::int[], $7::bigint[])
+        WITH ORDINALITY AS b(loop_id, error_class, exhaust_meta, message, worker, attempt, claim_epoch, ord)
+),
+loop_row AS (
+    UPDATE {schema}.jobs j
+    SET status = 'failed',
+        error_class = b.error_class,
+        error_message = b.message,
+        finished_at = clock_timestamp(),
+        metadata = j.metadata || b.exhaust_meta
+    FROM batch b
+    WHERE j.id = b.loop_id
+      AND j.status = 'running'
+      AND j.locked_by_worker IS NOT DISTINCT FROM b.worker
+      AND j.attempt IS NOT DISTINCT FROM b.attempt
+      AND j.claim_epoch IS NOT DISTINCT FROM b.claim_epoch
+    RETURNING j.id, (j.metadata->>'flow_id')::uuid AS flow_id, b.error_class, b.ord
+),
+flow_terminal AS (
+    UPDATE {schema}.jobs f
+    SET status = 'failed',
+        error_class = w.error_class,
+        finished_at = clock_timestamp()
+    FROM (
+        SELECT DISTINCT ON (flow_id) flow_id, error_class
+        FROM loop_row
+        WHERE flow_id IS NOT NULL
+        ORDER BY flow_id, ord
+    ) w
+    WHERE f.id = w.flow_id
+      AND f.status NOT IN {terminal}
+)
+SELECT id, flow_id FROM loop_row
+"""
 #: THE BUDGET SWEEP ARM (the sweep's exclusivity law + P3 rule 1's
 #: held-row inertness): the arm's HEART is ``AND NOT budget_paused`` —
 #: a loop holding on a human is INVISIBLE to the wall even when its
@@ -173,11 +225,24 @@ VALUES ($1, $2, $3, $4, $5::jsonb)
 #: columns ride the select: the sweep's exhaust binds the identity it
 #: read under this lock (the fence's under-lock read — the exhaust
 #: statement's legs).
+#:
+#: THE WALL COLUMNS AND THE POLICY'S SOURCE RIDE THE DRIVING QUERY: the
+#: which-wall read (iteration vs max_iterations) is a read of the row
+#: THIS statement locked (FOR UPDATE — stable to statement end, so the
+#: separate per-row wall fetch it replaced could never see a different
+#: value), and the workflow name — the registered definition's key — is
+#: the flow root's own metadata, one LEFT JOIN against the root row.
+#: One statement, one round trip: the per-row wall fetch and the
+#: per-row name fetch they replaced were the un-batched shape.
 LOOP_BUDGET_SWEEP_SQL = """\
 WITH loops AS (
     SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.step_key,
-           j.locked_by_worker, j.attempt, j.claim_epoch
+           j.locked_by_worker, j.attempt, j.claim_epoch,
+           (j.metadata->>'iteration')::int AS iteration,
+           (j.metadata->>'max_iterations')::int AS max_iterations,
+           root.metadata->>'workflow' AS workflow_name
     FROM {schema}.jobs j
+    LEFT JOIN {schema}.jobs root ON root.id = (j.metadata->>'flow_id')::uuid
     WHERE j.metadata @> '{{"kind": "loop"}}'::jsonb
       AND j.status = 'running'
       AND NOT j.budget_paused
@@ -192,9 +257,10 @@ WITH loops AS (
       )
     ORDER BY j.id
     LIMIT $1
-    FOR UPDATE SKIP LOCKED
+    FOR UPDATE OF j SKIP LOCKED
 )
-SELECT l.id, l.flow_id, l.step_key, l.locked_by_worker, l.attempt, l.claim_epoch
+SELECT l.id, l.flow_id, l.step_key, l.locked_by_worker, l.attempt, l.claim_epoch,
+       l.iteration, l.max_iterations, l.workflow_name
 FROM loops l
 """
 
@@ -229,14 +295,6 @@ LOOP_NODE_STATE_SQL = """\
 SELECT status, metadata, budget_deadline, budget_paused
 FROM {schema}.jobs
 WHERE id = $1
-"""
-
-#: The policy's source: the flow root's stamped
-#: workflow name — the sweep's arm resolves the loop's REGISTERED
-#: DEFINITION from it (D1: the policy is read from the definition, never
-#: from the row's metadata cache).
-LOOP_WORKFLOW_NAME_SQL = """\
-SELECT metadata->>'workflow' FROM {schema}.jobs WHERE id = $1
 """
 
 #: The iteration's carried state update is the ADVANCE statement's job —

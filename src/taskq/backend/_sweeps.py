@@ -102,7 +102,8 @@ why the ladder is essential.
 
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Generator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import NamedTuple
@@ -110,6 +111,7 @@ from uuid import UUID
 
 import structlog
 
+from taskq._advisory import DEADLINE_ERRORS
 from taskq.backend._protocol import ConnLike, JobId
 from taskq.backend._records import compute_duration_ms, jsonb_param, parse_rowcount
 from taskq.backend._retention_floor import retention_policy_floor
@@ -133,6 +135,7 @@ from taskq.obs import (
     log_state_change,
     record_deadline_exceeded_swept,
     record_reclaimed_jobs,
+    record_sweep_unexpected_error,
 )
 
 __all__ = [
@@ -147,7 +150,9 @@ __all__ = [
     "_SWEEP_IDLE_KEYED_SLOTS_SQL",
     "_SWEEP_RESULT_TTL_SQL",
     "SweepBatchSizer",
+    "_batch_failure_arms",
     "_reclaim_disposition",
+    "_run_bounded_batch",
     "prune_job_events",
     "sweep_deadline_exceeded",
     "sweep_expired_events",
@@ -1439,6 +1444,101 @@ async def _restore_statement_timeout(conn: ConnLike, prev: str) -> None:
         "SELECT set_config('statement_timeout', $1, true)",
         prev,
     )
+
+
+@contextmanager
+def _batch_failure_arms(
+    sweep_name: str,
+    sizer: SweepBatchSizer | None,
+    *,
+    count_unexpected: bool,
+) -> Generator[None]:
+    """The batch-failure accounting arms every bounded-batch runner shares.
+
+    A deadline-family abort (the server-side ``statement_timeout``
+    arriving as ``QueryCanceledError``, SQLSTATE 57014, or a client-side
+    ``command_timeout`` arriving as ``TimeoutError``) counts against
+    *sizer* and re-raises.
+
+    The not-deadline arm is the one DELIBERATE divergence between the
+    two runner shapes, carried by *count_unexpected*: the prune family
+    counts EVERY aborted batch - the reduced tier is the safety net for
+    the next unknown failure mode, so an archive UniqueViolation-class
+    error must latch the breaker too instead of leaving every retry at
+    the full-size batch - and lands the failure on
+    ``record_sweep_unexpected_error``, the metric plane the deadline
+    family's ``sweep_timeouts`` counter leaves silent (the loops record
+    the deadline family there; counting it here too would double-count
+    one failure).  The backend sweeps propagate a non-deadline error
+    uncounted: their breaker's control signal is a cancelled batch (the
+    database refusing a full-size bite), and an ordinary error belongs
+    to the caller's retry policy - latching on it would degrade batch
+    sizes for reasons that have nothing to do with batch duration
+    (pinned by
+    ``tests/test_rt_sweeps_breaker.py::test_non_timeout_errors_do_not_count_toward_the_breaker``).
+
+    CancelledError is not counted by either arm: it is a BaseException
+    on this project's Python floor (>= 3.12), so it never enters the
+    not-deadline arm at all, which is the correct accounting either way
+    - a shutdown cancellation is not a sweep failure.  The same holds
+    for KeyboardInterrupt and SystemExit: they bypass both arms and the
+    callers' except Exception handlers alike, and propagate to the
+    shutdown chain with the transaction rolled back.
+    """
+    try:
+        yield
+    except DEADLINE_ERRORS:
+        if sizer is not None:
+            sizer.on_timeout()
+        raise
+    except Exception:
+        if count_unexpected:
+            if sizer is not None:
+                sizer.on_timeout()
+            record_sweep_unexpected_error(sweep_name)
+        raise
+
+
+async def _run_bounded_batch[T](
+    conn: ConnLike,
+    work: Callable[[], Awaitable[T]],
+    *,
+    statement_timeout_ms: int,
+    sweep_name: str,
+    sizer: SweepBatchSizer | None,
+) -> T:
+    """Run one bounded batch's statements inside the shared batch
+    machinery: one short transaction, a server-side ``statement_timeout``
+    bound via ``SET LOCAL`` semantics (captured and restored on the
+    success path; the savepoint rollback restores it on the error path),
+    and the shared failure arms (:func:`_batch_failure_arms`, the prune
+    family's count-everything policy).  *work* is the batch's inner
+    fetch/write sequence - one statement or several, the batch commits
+    or not as a unit either way.  Every aborted batch counts against
+    *sizer* when given, and re-raises; the caller's failure path retries
+    later at the latched reduced tier, and every batch this call already
+    committed stays committed, a stopped drain is a pause, not a
+    rollback.
+
+    This is the one body of the epilogue the prune family and the
+    backend sweeps used to state three times (the two
+    ``worker/_leader_shared.py`` prune runners and the sizer-accounting
+    half of ``PostgresBackend._run_bounded_sweep``); the timeout restore
+    order, the error recording, and the savepoint shape cannot drift
+    between them again.
+    """
+    async with conn.transaction():
+        prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
+        with _batch_failure_arms(sweep_name, sizer, count_unexpected=True):
+            result = await work()
+        # Success path only: restore the caller's timeout inside the
+        # still-open transaction (a savepoint RELEASE would otherwise
+        # keep the batch's bound); on error the savepoint rollback has
+        # already restored it.
+        await _restore_statement_timeout(conn, prev_timeout)
+    if sizer is not None:
+        sizer.on_success()
+    return result
 
 
 async def sweep_expired_locks(

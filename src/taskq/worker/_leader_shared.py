@@ -18,7 +18,6 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from taskq._advisory import DEADLINE_ERRORS
 from taskq.actor_config import normalize_retention_days
 from taskq.backend._batch_sql import open_member_where
 from taskq.backend._protocol import Backend, ConnLike
@@ -26,8 +25,7 @@ from taskq.backend._retention_floor import retention_policy_floor
 from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 from taskq.backend._sweeps import (
     SweepBatchSizer,
-    _apply_batch_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: the prune family runs its batches through the same SET LOCAL batch-timeout machinery the backend sweeps use; importing the helpers (rather than redefining them) is what keeps the two from drifting.
-    _restore_statement_timeout,  # pyright: ignore[reportPrivateUsage]  # Why: same helpers, same reason.
+    _run_bounded_batch,  # pyright: ignore[reportPrivateUsage]  # Why: the prune family runs its batches through the same bounded-batch machinery as the backend sweeps (the transaction, the SET LOCAL batch-timeout, the failure arms); importing the runner (rather than restating its epilogue) is what keeps the two from drifting.
     _validate_positive,  # pyright: ignore[reportPrivateUsage]  # Why: the single typed boundary for sweep bounds; a second validator here would drift from the backend's.
 )
 from taskq.backend.clock import Clock
@@ -48,7 +46,6 @@ from taskq.obs import (
     record_pruned_jobs,
     record_sweep_batch_size,
     record_sweep_batch_size_configured,
-    record_sweep_unexpected_error,
 )
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
@@ -811,38 +808,17 @@ async def _run_prune_batch(
     rollback. A non-deadline abort also lands on
     ``record_sweep_unexpected_error`` under *sweep_name*, the metric
     plane the deadline family's ``sweep_timeouts`` counter leaves silent.
+    All of that is :func:`taskq.backend._sweeps._run_bounded_batch`'s one
+    body - the transaction, the timeout bind/restore and the failure
+    arms this module used to state twice.
     """
-    async with conn.transaction():
-        prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
-        try:
-            rows = await conn.fetch(sql, *args)
-        except DEADLINE_ERRORS:
-            if sizer is not None:
-                sizer.on_timeout()
-            raise
-        except Exception:
-            # The not-deadline arm of the same control signal: any batch
-            # this machinery ran and lost must reach the breaker, whatever
-            # the fault. CancelledError is not counted: it is a
-            # BaseException on this project's Python floor (>= 3.12), so it
-            # never enters this arm at all, which is the correct
-            # accounting either way - a shutdown cancellation is not a
-            # prune failure. The same holds for KeyboardInterrupt and
-            # SystemExit: they bypass both arms and the callers' except
-            # Exception handlers alike, and propagate to the shutdown
-            # chain with the transaction rolled back.
-            if sizer is not None:
-                sizer.on_timeout()
-            record_sweep_unexpected_error(sweep_name)
-            raise
-        # Success path only: restore the caller's timeout inside the
-        # still-open transaction (a savepoint RELEASE would otherwise
-        # keep the batch's bound); on error the savepoint rollback has
-        # already restored it.
-        await _restore_statement_timeout(conn, prev_timeout)
-    if sizer is not None:
-        sizer.on_success()
-    return rows
+    return await _run_bounded_batch(
+        conn,
+        lambda: conn.fetch(sql, *args),
+        statement_timeout_ms=statement_timeout_ms,
+        sweep_name=sweep_name,
+        sizer=sizer,
+    )
 
 
 async def _run_prune_archive_batch(
@@ -885,7 +861,9 @@ async def _run_prune_archive_batch(
     batch (deadline family and any other exception alike) counts against
     *sizer* when given, a non-deadline abort lands on
     ``record_sweep_unexpected_error`` under *sweep_name*, and the
-    exception re-raises.
+    exception re-raises - the shared
+    :func:`taskq.backend._sweeps._run_bounded_batch` body with the
+    candidate window + write as its *work*.
 
     Returns the write statement's
     deleted groups (empty when the window found nothing eligible, and
@@ -893,36 +871,24 @@ async def _run_prune_archive_batch(
     concurrent retry made live, or a batch another transaction is
     already moving).
     """
-    async with conn.transaction():
-        prev_timeout = await _apply_batch_statement_timeout(conn, statement_timeout_ms)
-        try:
-            candidate_args: tuple[object, ...] = (status, retention, size)
-            if actor is not None:
-                candidate_args += (actor,)
-            candidates = await conn.fetch(candidate_sql, *candidate_args)
-            rows: Sequence[asyncpg.Record] = ()
-            if candidates:
-                ids = [row["id"] for row in candidates]
-                rows = await conn.fetch(write_sql, status, archive_interval, ids, retention)
-        except DEADLINE_ERRORS:
-            if sizer is not None:
-                sizer.on_timeout()
-            raise
-        except Exception:
-            # The not-deadline arm of the same control signal, same
-            # derivation as _run_prune_batch above: the candidate window
-            # and the archive write are ONE batch, so a UniqueViolation
-            # (or any other non-deadline fault) aborting either must
-            # reach the breaker and the metric plane.
-            if sizer is not None:
-                sizer.on_timeout()
-            record_sweep_unexpected_error(sweep_name)
-            raise
-        # Success path only, same derivation as _run_prune_batch above.
-        await _restore_statement_timeout(conn, prev_timeout)
-    if sizer is not None:
-        sizer.on_success()
-    return rows
+
+    async def work() -> Sequence[asyncpg.Record]:
+        candidate_args: tuple[object, ...] = (status, retention, size)
+        if actor is not None:
+            candidate_args += (actor,)
+        candidates = await conn.fetch(candidate_sql, *candidate_args)
+        if not candidates:
+            return ()
+        ids = [row["id"] for row in candidates]
+        return await conn.fetch(write_sql, status, archive_interval, ids, retention)
+
+    return await _run_bounded_batch(
+        conn,
+        work,
+        statement_timeout_ms=statement_timeout_ms,
+        sweep_name=sweep_name,
+        sizer=sizer,
+    )
 
 
 async def prune_terminal_jobs(

@@ -783,10 +783,14 @@ def _validate_through_gates(
     """The typed door (the hitl-proof's send boundary): the payload
     re-validates against the bound gate's declared models before any row
     moves. A wrong payload raises the named 422 the operator sees;
-    nothing is delivered."""
-    from pydantic import BaseModel, ValidationError
+    nothing is delivered. The validation core is the shared
+    ``validate_gate_payload`` (the CLI's twin body) with THIS surface's
+    candidate policy — ``fallback_all=True``: the admin loops every
+    mounted workflow (it cannot know the run's) and falls back to ALL
+    bound models when none names the signal."""
+    from pydantic import BaseModel
 
-    from taskq.workflows._cli import gate_models_for
+    from taskq.workflows._cli import gate_models_for, validate_gate_payload
 
     models: list[type[BaseModel]] = []
     for workflow in getattr(wf_app, "_workflows", {}):
@@ -800,25 +804,11 @@ def _validate_through_gates(
             detail=f"node {hold.node_key!r} declares no bound gate in the mounted "
             "definitions — the delivery refuses (no untyped door ships)",
         )
-    members = hold.signal_name.split("|")
-    candidates = [m for m in models if m.__name__ in members] or models
-    errors: list[str] = []
-    for model in candidates:
-        try:
-            validated = model.model_validate(decision)
-        except ValidationError as exc:
-            errors.append(
-                f"{model.__name__}: "
-                + "; ".join(
-                    f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()
-                )
-            )
-            continue
-        dumped: dict[str, object] = validated.model_dump(mode="json")
-        return dumped
-    raise HTTPException(
-        status_code=422, detail="pydantic refused the payload: " + " | ".join(errors)
-    )
+    dumped, refusal = validate_gate_payload(models, hold.signal_name, decision, fallback_all=True)
+    if dumped is None:
+        assert refusal is not None  # the shared core always states its reason
+        raise HTTPException(status_code=422, detail=refusal)
+    return dumped
 
 
 async def _form_body(request: Request) -> dict[str, Any]:
