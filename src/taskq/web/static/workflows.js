@@ -526,12 +526,15 @@
         .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
         .then(function (res) {
           var note = document.createElement("div");
-          note.className = res.ok && res.body.status === "delivered"
+          var ok = res.ok && (res.body.status === "delivered" || res.body.status === "no-op");
+          note.className = ok
             ? "text-xs text-green-700 dark:text-green-400 mt-1"
             : "text-xs text-red-600 dark:text-red-400 mt-1";
-          note.textContent = res.ok && res.body.status === "delivered"
-            ? "delivered — the node resumes on its next drive"
-            : "refused: " + (res.body.detail || res.body.reason || "unknown");
+          note.textContent = !ok
+            ? "refused: " + (res.body.detail || res.body.reason || "unknown")
+            : res.body.status === "no-op"
+              ? (res.body.reason || "already resolved")
+              : "delivered — the node resumes on its next drive";
           form.appendChild(note);
         })
         .catch(function (err) {
@@ -555,7 +558,7 @@
 
   // ── the Abandon form (the operator door: the resolve handler's guarded
   // POST, minus the decision — an abandon is a stop-wait, not a verdict).
-  // Registered AFTER the confirm block: the confirm handler's cancel
+  // Registered after the confirm block: the confirm handler's cancel
   // lands as defaultPrevented, and this handler's fetch skips it — the
   // dialog asks once and a "no" never abandons. The success note names
   // the fail-close (the body sees Expired), not a resume. ─────────────
@@ -575,12 +578,15 @@
         .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
         .then(function (res) {
           var note = document.createElement("div");
-          note.className = res.ok && res.body.status === "delivered"
+          var ok = res.ok && (res.body.status === "delivered" || res.body.status === "no-op");
+          note.className = ok
             ? "text-xs text-green-700 dark:text-green-400 mt-1"
             : "text-xs text-red-600 dark:text-red-400 mt-1";
-          note.textContent = res.ok && res.body.status === "delivered"
-            ? "abandoned — the wait fails closed"
-            : "refused: " + (res.body.detail || res.body.reason || "unknown");
+          note.textContent = !ok
+            ? "refused: " + (res.body.detail || res.body.reason || "unknown")
+            : res.body.status === "no-op"
+              ? (res.body.reason || "already resolved")
+              : "abandoned — the wait fails closed";
           form.appendChild(note);
         })
         .catch(function (err) {

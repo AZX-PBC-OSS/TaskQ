@@ -1357,3 +1357,26 @@ def test_the_page_js_carries_the_base_path_and_rerun_laws() -> None:
         "CONTRACT: the node-table selector escapes the hostile-actor-controlled key"
     )
     assert 'BASE + "/api/runs/"' in js, "the Resolve door's fetch rides the base path too"
+
+
+def test_the_page_js_answers_the_no_op_as_success_in_both_handlers() -> None:
+    """The defined no-op is success, not a refusal: the route answers it
+    200 (the CLI exits 0), so both the resolve and the abandon handlers
+    render its note in the success color — the reason the door returned,
+    never the red 'refused' lie a second abandon/resolve would earn."""
+    from pathlib import Path
+
+    js = Path(__file__).parents[2].joinpath("src/taskq/web/static/workflows.js").read_text()
+    success = 'res.ok && (res.body.status === "delivered" || res.body.status === "no-op")'
+    assert js.count(success) == 2, (
+        "CONTRACT: both handlers (resolve + abandon) treat the defined no-op as success"
+    )
+    assert 'res.body.reason || "already resolved"' in js, (
+        "CONTRACT: the no-op note carries the door's reason (the defined idempotence)"
+    )
+    assert '"abandoned — the wait fails closed"' in js, (
+        "CONTRACT: the delivered note keeps the abandon verb's line"
+    )
+    assert '"delivered — the node resumes on its next drive"' in js, (
+        "CONTRACT: the delivered note keeps the resolve verb's line"
+    )

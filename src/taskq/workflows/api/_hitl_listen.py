@@ -149,15 +149,15 @@ class HoldResolved(BaseModel):
 
 
 class HoldExpired(BaseModel):
-    """A hold landed in the DEFINED ``abandoned`` state — whichever door
+    """A hold landed in the defined ``abandoned`` state — whichever door
     wrote it: the sweep (the deadline passed the DB clock) or the
     operator's abandon (``HitlClient.abandon``). ``abandoned_by`` names
     the door (``"timeout"`` — the sweep's broadcast; ``"operator"`` —
-    the abandon door's). The wait's outcome is the CLOSED UNION's
-    ``Expired`` MEMBER, not an exception: the body MATCHES ``case
+    the abandon door's). The wait's outcome is the closed union's
+    ``Expired`` member, not an exception: the body matches ``case
     Expired():`` (the fail-close arm the checker forces; a body that
-    wants the FAILURE raises ``SignalTimeoutError`` — or, for the
-    operator door, ``SignalAbandonedError`` — ITSELF off the member,
+    wants the failure raises ``SignalTimeoutError`` — or, for the
+    operator door, ``SignalAbandonedError`` — itself off the member,
     which carries the same door; the machinery never raises)."""
 
     event: Literal["hold_expired"] = "hold_expired"

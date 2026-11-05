@@ -1299,16 +1299,16 @@ def register_actions(router: APIRouter) -> None:
         schema: str = Depends(get_schema),
         principal: Any = Depends(get_principal),
     ) -> dict[str, Any]:
-        """Abandon a hold by id (the OPERATOR DOOR; the audit row): the
+        """Abandon a hold by id (the operator door; the audit row): the
         wait fails closed on its next drive — the body sees the
         ``Expired`` member carrying ``abandoned_by="operator"``.
 
-        The resolve route's guards WITHOUT the payload gate: an abandon
+        The resolve route's guards without the payload gate: an abandon
         is a stop-wait, never a verdict — there is no decision to
         validate, so no typed-gate pass and no mounted-definitions
         requirement. Timer holds are refused (the clock is their only
         resolver — the client's own refusal, audited there); the audit
-        row rides the client's own winning tx under THIS route's
+        row rides the client's own winning tx under this route's
         principal — the route never double-audits."""
         body = await _form_body(request)
         hold_id = body.get("hold_id")

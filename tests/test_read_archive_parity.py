@@ -394,8 +394,14 @@ class TestGetAttemptsArchiveFallbackParity:
         )
         await _seed_attempt(clean_pg_conn, schema, jid, due_at=None)
 
-        pg_attempts = await _pg_get_attempts(module_pg_pool, sql, jid)
+        # the recording proxy (COUNT, DON'T ANSWER): the hot read's
+        # statements, recorded — the archive tier must not be among
+        # them (a live job's history answers from the hot tier alone).
+        recording = _ProbeRecordingPool(module_pg_pool)
+        pg_attempts = await _pg_get_attempts(recording, sql, jid)  # type: ignore[arg-type]  # Why: the recording proxy satisfies the acquire surface the read uses.
         assert [(a.attempt, a.outcome) for a in pg_attempts] == [(1, "succeeded")]
+        archive_probes = [p for p in recording.probes if "archive" in p]
+        assert not archive_probes, f"the hot read consulted the archive tier: {archive_probes}"
 
         mem_backend = _memory_backend()
         enqueued = await mem_backend.enqueue(_enqueue_args())

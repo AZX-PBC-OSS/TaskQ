@@ -1,15 +1,20 @@
 """Unit tests for the cron tick - :mod:`taskq.worker.cron_loop`.
 
-Drives ``tick_cron`` end-to-end against a recording fake connection (no
-PG): lock probe, server clock, due-schedule select, batched actor_config
+Drives ``tick_cron`` end-to-end against a recording fake connection:
+lock probe, server clock, due-schedule select, batched actor_config
 lookup, planning (miss-handling, payload resolution, identity keys),
 batched enqueue through the in-memory backend, and the batched
 success/failure UPDATE statements - plus consecutive_failures tracking,
-auto-disable, and the PRODUCER-span link contract.
+auto-disable, and the producer-span link contract.
 
-Also covers regression: PRODUCER span is linked (not parented)
+The commit-gate pins drive real Postgres sessions: the arm runs inside
+a real transaction, the session's own NOTIFY rides back on commit, and
+the death retirement fires the real listener path. The pid-recycle
+wrapper lies about one attribute (the backend pid); everything else on
+those sessions is the server's own.
+
+Also covers regression: the producer span is linked (not parented)
 to the ambient trace context.
-Pure-Python, no PG required.
 """
 
 import asyncio
@@ -2543,23 +2548,27 @@ async def test_commit_gate_relistens_for_a_recycled_pid(
     await dead.close()
     await asyncio.sleep(0)
     await asyncio.sleep(0)
+    # the dead session's proof died with it - nothing a fresh session on
+    # the recycled pid could inherit.
+    assert dead_pid not in cron_loop._confirmed_listening, (
+        "the dead session's confirmed-listening proof outlived its death hook"
+    )
+    assert dead_pid not in cron_loop._armed_commit_emits, (
+        "the dead session's armed emission outlived its death hook"
+    )
 
     second_conn = await asyncpg.connect(pg_dsn)
     # The recycle: the fresh session reports the DEAD session's pid (the
     # one fact no live server hands out twice).
     second = _RecycledPidConn(second_conn, dead_pid)
     await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
-    # The recycle: the fresh session reports the DEAD session's pid (the
-    # one fact no live server hands out twice).
-    second = _RecycledPidConn(second_conn, dead_pid)
-    await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
 
     channel = cron_commit_gate_channel("taskq")
-    assert (
-        f"remove:{channel}" in second.listener_calls and f"add:{channel}" in second.listener_calls
-    ), (
-        "a recycled pid inherited its dead predecessor's confirmed-listening "
-        "proof - the fresh session skipped the defensive re-LISTEN"
+    # exactly one arm on the fresh session: the defensive re-LISTEN is
+    # the remove-then-add pair, in that order - the recycled pid ran as
+    # never-seen, inheriting no proof.
+    assert second.listener_calls == [f"remove:{channel}", f"add:{channel}"], (
+        f"a recycled pid must force exactly one remove+add re-LISTEN, got {second.listener_calls!r}"
     )
     await second_conn.close()
 
@@ -2638,20 +2647,52 @@ async def test_commit_gate_hooks_each_connection_sharing_a_pid(
     unhooked, so its close retired nothing: its confirmed-listening
     entry outlived it and a later session on the recycled pid would
     inherit the dead session's proof. The shared pid is the wrappers'
-    one injected fact; the LISTEN/NOTIFY sessions are real connections.
+    one injected fact - the first session's own pid, which the second
+    reports as its own (a recycled pid is exactly that lie); the
+    LISTEN/NOTIFY sessions are real connections. The first session's
+    committed arm confirms the pid; the second's arm rolls back (its
+    emission can never be answered, so no delivery can consume it);
+    the deaths retire their own state and the shared pid's confirmed
+    proof.
     """
     first_conn = await asyncpg.connect(pg_dsn)
     second_conn = await asyncpg.connect(pg_dsn)
-    first = _RecycledPidConn(first_conn, 2**30 + 500)
-    second = _RecycledPidConn(second_conn, 2**30 + 500)
+    pid = first_conn.get_server_pid()
+    first = _RecycledPidConn(first_conn, pid)
+    second = _RecycledPidConn(second_conn, pid)
 
-    await cron_loop._emit_on_commit(first, lambda: None, schema="taskq")
-    await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
+    # the first session's arm, inside a transaction that commits: the
+    # session's own NOTIFY rides back and its emission runs - the
+    # confirmed-listening proof for the shared pid.
+    emitted: list[str] = []
+    async with first_conn.transaction():
+        await cron_loop._emit_on_commit(first, lambda: emitted.append("first"), schema="taskq")
+    await wait_for_condition(
+        lambda: emitted == ["first"],
+        description="the first session's commit must deliver its own NOTIFY and run the emission",
+    )
+    assert pid in cron_loop._confirmed_listening, (
+        "the committed arm's LISTEN must be the confirmed-listening proof"
+    )
+
+    # the second session's arm: the pid is confirmed, so the cheap path
+    # (no defensive re-LISTEN); the transaction ROLLS BACK - the armed
+    # emission can never be answered, and no delivery can consume it.
+    with pytest.raises(RuntimeError, match="rollback the arm"):
+        async with second_conn.transaction():
+            await cron_loop._emit_on_commit(
+                second, lambda: emitted.append("second"), schema="taskq"
+            )
+            raise RuntimeError("rollback the arm")
+    assert second.listener_calls == [f"add:{cron_commit_gate_channel('taskq')}"], (
+        "a confirmed pid's arm must skip the defensive re-LISTEN"
+    )
     assert len(first.termination_listeners) == 1
     assert len(second.termination_listeners) == 1, (
         "the second connection sharing the pid got no termination hook - "
         "its close can never retire its own gate state (issue #292)"
     )
+    assert emitted == ["first"], "no commit, no emission - the rolled-back arm never fires"
 
     first.die()
     # The armed entry is the SECOND session's own (its arm replaced the
@@ -2661,6 +2702,10 @@ async def test_commit_gate_hooks_each_connection_sharing_a_pid(
     assert len(cron_loop._termination_hooked) == 1, (
         "the first session's death must not retire the second connection's "
         "own hook - the suppression is per connection, not per pid"
+    )
+    # the first close retires the shared pid's confirmed-listening proof.
+    assert pid not in cron_loop._confirmed_listening, (
+        "the first session's death left the shared pid's confirmed-listening proof standing"
     )
 
     second.die()

@@ -5073,7 +5073,7 @@ def flows_abandon(
         str | None, typer.Option("--reason", help="Why — recorded on the audit row.")
     ] = None,
 ) -> None:
-    """Abandon a hold BY ID (the operator door: the wait fails closed on
+    """Abandon a hold by id (the operator door: the wait fails closed on
     its next drive — the body sees ``Expired``). Timer holds refuse: the
     clock is their only resolver."""
     settings = TaskQSettings.load()

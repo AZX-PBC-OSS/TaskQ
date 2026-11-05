@@ -1438,19 +1438,19 @@ class SignalTimeoutError(TaskQError):
 
 
 class SignalAbandonedError(TaskQError):
-    """A held signal was abandoned by the OPERATOR'S DOOR (the same
-    DEFINED state as :class:`SignalTimeoutError` — a named ledger
+    """A held signal was abandoned by the operator's door (the same
+    defined state as :class:`SignalTimeoutError` — a named ledger
     record, never a silent orphan): the operator abandon
     (``HitlClient.abandon`` / ``taskq flows abandon <hold_id>`` / the
     admin run page's Abandon) wrote ``abandoned_by='operator'`` on the
-    row's payload and resumed the node. The distinction is the DOOR
+    row's payload and resumed the node. The distinction is the door
     (the timeout sweep vs the operator's action), not the state.
 
-    the MACHINERY never RAISES THIS (the same value-not-machinery law
-    as :class:`SignalTimeoutError`): the wait site RETURNS the closed
+    the machinery never raises this (the same value-not-machinery law
+    as :class:`SignalTimeoutError`): the wait site returns the closed
     union's ``Expired`` member with ``abandoned_by='operator'`` and the
-    body MATCHES the fail-close arm; a body that WANTS the failure
-    raises THIS exception ITSELF off the member (the escalation
+    body matches the fail-close arm; a body that wants the failure
+    raises this exception itself off the member (the escalation
     ladder's own use — the raised error is a body exception exactly
     like any other). A timer hold never reaches this door: the
     ``__timer__`` prefix's abandon is refused — the clock is its only

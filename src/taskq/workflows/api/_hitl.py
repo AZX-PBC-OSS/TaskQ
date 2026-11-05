@@ -727,16 +727,17 @@ RETURNING workflow_id, node_key, signal_name, call_id
 """
 
 # the operator-abandon CAS: the same 'held' → 'abandoned' transition the
-# expiry sweep writes, plus the DOOR MARKER + the operator's reason riding
-# the row's EXISTING payload jsonb (the migrations are frozen — no schema
-# change; the marker is the only thing that tells the operator door from
-# the timeout door: a marker-less abandoned row reads as the sweep's).
-# THE MERGE PRESERVES THE DECLARED CONTEXT KEYS (reason/tool/args — the
-# mint's own keys): the operator's reason lands under `abandon_reason`,
-# never over the wait's declared `reason` (a jsonb_build_object onto the
-# `reason` key CLOBBERED the declared context — by the operator's text, or
-# by JSON null when the operator gave none). The wait/door readers read
-# only `abandoned_by`; the audit row still carries the operator's reason.
+# expiry sweep writes, plus the door marker ('abandoned_by': 'operator')
+# and the operator's reason, merged onto the row's existing payload jsonb
+# (the migrations are frozen — no schema change; the marker is the only
+# thing that tells the operator door from the timeout door: a
+# marker-less abandoned row reads as the sweep's). the merge preserves
+# the declared context keys: the operator's reason lands under
+# 'abandon_reason', never over the wait's declared 'reason' (writing the
+# 'reason' key directly would clobber the declared context — by the
+# operator's text, or by JSON null when the operator gave none). the
+# wait/door readers read only 'abandoned_by'; the audit row still
+# carries the operator's reason.
 _ABANDON_CAS_SQL = """\
 UPDATE {schema}.wf_signals
 SET status = 'abandoned',
@@ -876,14 +877,12 @@ async def deliver_payload(
     if refusal is not None:
         return delivery_refused(refusal)
     async with pool.acquire() as conn, conn.transaction():
-        # THE NODE PRE-LOCK (the deadlock order — the resolve/abandon
-        # doors' own): the held node's job row is locked FIRST, FOR
-        # UPDATE, then the wf_signals CAS — every verb here takes
-        # jobs → wf_signals, so no opposite pair is left for the
-        # deliver/abandon (or deliver/resolve) overlap to deadlock on
-        # (the pre-fix order — the CAS, then the node lookup — was the
-        # one verbs-take-opposite-paths shape, and a concurrent abandon
-        # holding the job row deadlocked against it).
+        # the node pre-lock (the deadlock order — the resolve/abandon
+        # doors' own): the held node's job row is locked FOR UPDATE
+        # first, then the wf_signals CAS. every verb here takes
+        # jobs → wf_signals in that order, so no opposite pair is left
+        # for the deliver/abandon (or deliver/resolve) overlap to
+        # deadlock on.
         held = await conn.fetchrow(
             _render(
                 "SELECT workflow_id, node_key, status FROM {schema}.wf_signals WHERE id = $1",
@@ -1026,8 +1025,8 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
                     "flow_id": str(row["workflow_id"]),
                     "signal": row["signal_name"],
                     "node_key": row["node_key"],
-                    # the DOOR MARKER: the sweep's rows carry no payload
-                    # marker — the broadcast names the door so the typed
+                    # the door marker: the sweep's rows carry no payload
+                    # marker, so the broadcast names the door — the typed
                     # consumer reads the timeout face without re-reading
                     # the row (the abandon door's broadcast carries
                     # 'operator').
@@ -1551,45 +1550,42 @@ class HitlClient:
         reason: str | None = None,
         principal: Any = None,
     ) -> DeliveryResult:
-        """The OPERATOR DOOR on a held signal (by id — one hold
-        addressed): the row's ``'held' → 'abandoned'`` CAS with the door
-        marker (``abandoned_by='operator'``) riding the row's EXISTING
-        payload jsonb (the operator's *reason* lands beside it under
-        ``abandon_reason`` — the declared context keys, the wait's own
-        ``reason``/``tool``/``args`` among them, survive the merge) — the
-        same DEFINED state the expiry sweep writes, the DOOR is the
-        difference. The wait's outcome is the closed
-        union's ``Expired`` member carrying ``abandoned_by="operator"``:
-        the body fail-closes (or raises
-        :class:`taskq.exceptions.SignalAbandonedError` ITSELF off the
-        member — the machinery never raises it). The transition + the
-        AUDIT + the KNOCK share one transaction whose linearization
-        point is the ABANDON CAS itself; the loser matches no rows and
-        writes NOTHING. The lock order is the resolve door's own — the
-        held node's job row FOR UPDATE first, then the wf_signals CAS
-        (never the reverse; the cancel tx takes jobs → wf_signals too).
+        """The operator door on a held signal (by id — one hold
+        addressed).
 
-        THE TIMER REFUSAL: a hold under the reserved ``__timer__``
-        prefix is refused — the clock is its only resolver (the timer
-        wait site has no abandoned arm by design; a deadline pass there
-        is the WAKE, never the fail-close). Refused: the hold SURVIVES,
-        no state moves, the typed refusal teaches (the child-join
-        refusal's shape — audited, ``refused`` with the why).
+        The write: the row's ``'held' → 'abandoned'`` CAS, the door
+        marker (``abandoned_by='operator'``) and the operator's *reason*
+        (under ``abandon_reason``) merged onto the row's existing payload
+        jsonb — the declared context keys, the wait's own
+        ``reason``/``tool``/``args`` among them, survive the merge. the
+        state is the one defined ``abandoned`` state; the door is the
+        difference.
 
-        CHILD-JOIN HOLDS ARE ALLOWED: an abandon is a STOP-WAIT, not a
-        verdict — the childflow wait's abandoned arm already returns the
-        ``Expired`` member, so the parent fail-closes while the child
-        keeps running (the child's own run is untouched; cancel the
+        The verdict: the resumed wait returns the closed union's
+        ``Expired`` member carrying ``abandoned_by="operator"`` — the
+        body fail-closes, or raises
+        :class:`taskq.exceptions.SignalAbandonedError` itself off the
+        member (the machinery never raises it). the transition, the
+        audit and the knock share one transaction whose linearization
+        point is the abandon CAS; the loser matches no rows and writes
+        nothing. the lock order is the resolve door's own — the held
+        node's job row FOR UPDATE first, then the wf_signals CAS (never
+        the reverse; the cancel tx takes jobs → wf_signals too).
+
+        A hold under the reserved ``__timer__`` prefix is refused: the
+        clock is its only resolver (the timer wait site has no abandoned
+        arm — a deadline pass there is the wake, never the fail-close).
+        the refused abandon moves no state; the hold survives. child-join
+        holds are allowed: an abandon is a stop-wait, not a verdict —
+        the parent fail-closes while the child keeps running (cancel the
         child flow separately if the child's work must stop too).
 
-        the IDEMPOTENCE (the verdict mapping — the resolve door's logic
-        with the abandon's own arms): a second abandon of an
-        operator-abandoned hold is the DEFINED ``no-op``; a DELIVERED,
-        CANCELLED, or sweep-abandoned (``expired`` — the marker-less
-        row reads as the timeout door) hold REFUSES the abandon; a
-        missing id refuses the same way. The ``delivered`` result's
-        resume consumes no ladder attempts (the resume-not-retry law —
-        the same face the resolve door keeps)."""
+        The idempotence (the verdict mapping): a second abandon of an
+        operator-abandoned hold is the defined ``no-op``; a delivered,
+        cancelled, or sweep-abandoned hold refuses the abandon (the
+        marker-less row reads as the timeout door); a missing id refuses
+        the same way. the ``delivered`` result's resume consumes no
+        ladder attempts (the resume-not-retry law)."""
         from taskq.audit import record_admin_action
 
         # every leg speaks the canonical id (the held-row read, the
@@ -1601,9 +1597,9 @@ class HitlClient:
 
         # the reason's wire shape (the NUL's own refusal — the discipline
         # the admin routes' jsonb-bind checks keep): a control character
-        # cannot ride the CAS's jsonb_build_object bind. The typed
-        # refusal, audited, the hold SURVIVES — never a 500 from the
-        # serializer's bind.
+        # cannot ride the CAS's jsonb_build_object bind. the typed
+        # refusal is audited and the hold survives — never a 500 from
+        # the serializer's bind.
         if reason is not None and "\x00" in reason:
             refusal = (
                 "the abandon reason carries a NUL byte — it cannot ride the "
@@ -1632,10 +1628,10 @@ class HitlClient:
             )
         if named is not None and starts_with_timer(str(named["signal_name"])):
             refusal = (
-                f"hold {hold_id} is a DURABLE TIMER (signal {named['signal_name']!r}) — "
+                f"hold {hold_id} is a durable timer (signal {named['signal_name']!r}) — "
                 "the clock is its only resolver and the timer wait site has no "
-                "abandoned arm: a deadline pass there is the WAKE (the body "
-                "continues), never the fail-close. The hold SURVIVES — to stop "
+                "abandoned arm: a deadline pass there is the wake (the body "
+                "continues), never the fail-close. the hold survives — to stop "
                 "the wait, cancel the run."
             )
             async with self._pool.acquire() as conn, conn.transaction():
@@ -1652,10 +1648,11 @@ class HitlClient:
             return delivery_refused(refusal)
 
         # the CAS is the transition's only grant; the audit + the knock ride
-        # the WINNING tx (exactly-once). THE NODE PRE-LOCK (the deadlock
-        # order — the resolve door's own): the held node's job row is locked
-        # FIRST, FOR UPDATE, then the wf_signals CAS — both verbs (abandon,
-        # cancel) take jobs → wf_signals; there is no opposite pair left.
+        # the winning tx (exactly-once). the node pre-lock (the deadlock
+        # order — the resolve door's own): the held node's job row is
+        # locked FOR UPDATE first, then the wf_signals CAS — both verbs
+        # (abandon, cancel) take jobs → wf_signals; there is no opposite
+        # pair left.
         async with self._pool.acquire() as conn, conn.transaction():
             held = await conn.fetchrow(
                 _render(
@@ -1674,12 +1671,12 @@ class HitlClient:
                     if held["abandoned_by"] == "operator":
                         # the idempotence arm: the operator door already
                         # wrote this row — the second abandon is the
-                        # DEFINED no-op.
+                        # defined no-op.
                         return DeliveryResult(
                             status="no-op",
                             reason=f"hold {hold_id} is already abandoned (by the operator)",
                         )
-                    # the marker-less abandoned row is the SWEEP's — the
+                    # the marker-less abandoned row is the sweep's — the
                     # timeout door already resolved it (the operator's
                     # abandon has nothing to add).
                     return delivery_refused(
@@ -1700,14 +1697,15 @@ class HitlClient:
                 )
             cas = await conn.fetchrow(_render(_ABANDON_CAS_SQL, self._schema), hold_id, reason)
             if cas is None:
-                # THE CAS-LOST ARM READS THE DOOR (the same map the pre-CAS
-                # held-read keeps): the sweep can win the race between this
-                # abandon's held-read and its CAS — a bare status read would
-                # answer the sweep's win `no-op` (exit 0 over the TIMEOUT
-                # door's work, zero audits). The row's `abandoned_by` marker
-                # separates the doors: the operator's own earlier abandon is
-                # the idempotence no-op; the marker-less (sweep) row is the
-                # refused loser's answer.
+                # the CAS-lost arm reads the door (the same map the
+                # pre-CAS held-read keeps): the sweep can win the race
+                # between this abandon's held-read and its CAS — a bare
+                # status read would answer the sweep's win `no-op` (exit
+                # 0 over the timeout door's work, zero audits). the row's
+                # `abandoned_by` marker separates the doors: the
+                # operator's own earlier abandon is the idempotence
+                # no-op; the marker-less (sweep) row is the refused
+                # loser's answer.
                 already = await conn.fetchrow(
                     _render(
                         "SELECT status, "
@@ -1721,12 +1719,12 @@ class HitlClient:
                     if already["abandoned_by"] == "operator":
                         # the idempotence arm: the operator door already
                         # wrote this row — the second abandon is the
-                        # DEFINED no-op.
+                        # defined no-op.
                         return DeliveryResult(
                             status="no-op",
                             reason=f"hold {hold_id} is already abandoned (by the operator)",
                         )
-                    # the marker-less abandoned row is the SWEEP's — the
+                    # the marker-less abandoned row is the sweep's — the
                     # timeout door already resolved it (the operator's
                     # abandon has nothing to add).
                     return delivery_refused(

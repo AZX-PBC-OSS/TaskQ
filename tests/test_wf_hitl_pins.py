@@ -1926,6 +1926,134 @@ async def test_the_symmetric_order_first_delivered_second_expired(
     ]
 
 
+async def test_a_legacy_delivered_row_still_answers_its_site(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """Rows minted before the call-site identity carry ``call:<uuid>``
+    (one colon, no attempt/ordinal) — a dev database can hold them. The
+    site's delivered-answer read must treat the legacy row as its own:
+    the operator's old answer replays and the run completes — never a
+    re-ask (a second hold minted for an answer already given). A new
+    ``call:{attempt}:{seq}`` row still filters exactly (the identity
+    pins above hold that)."""
+    from taskq.workflows import Expired
+
+    async def legacy_answer_body(ctx: StepContext, params: Ingest) -> Any:
+        answer = await ctx.wait_signal(Approval, timeout_s=120.0)
+        if isinstance(answer, Expired):
+            return {"fail_closed_on": answer.abandoned_by}
+        return {"verdict": answer.verdict}
+
+    flow_id, runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=legacy_answer_body, name="legacy_delivered_flow"
+    )
+    legacy_call_id = f"call:{new_uuid()}"
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".wf_signals SET call_id = $2 WHERE workflow_id = $1',
+        flow_id,
+        legacy_call_id,
+    )
+    (hold,) = await wf_conn.fetch(
+        f'SELECT id, call_id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
+    )
+    assert hold["call_id"] == legacy_call_id, "the arrangement's guard: the legacy mint is in place"
+    delivered = await deliver_payload(
+        wf_pool,
+        schema=wf_schema,
+        workflow_id=flow_id,
+        hold_id=JobId(hold["id"]),
+        payload={"verdict": "legacy-verdict"},
+        payload_json=json.dumps({"verdict": "legacy-verdict"}),
+    )
+    assert delivered.status == "delivered", delivered
+    out = await runner.drive(flow_id, max_ticks=60)
+    assert out == "terminal", f"the legacy answer was ignored (the operator re-asked): {out!r}"
+    flow_result = await runner.result(flow_id)
+    assert flow_result == {"verdict": "legacy-verdict"}, flow_result
+    after = await wf_conn.fetch(
+        f'SELECT status FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
+    )
+    assert len(after) == 1 and after[0]["status"] == "delivered", (
+        f"the site re-asked for an answer it already holds: {[dict(r) for r in after]}"
+    )
+
+
+async def test_a_legacy_abandoned_row_still_surfaces_the_expired(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The legacy face of the abandoned-row read: a pre-identity
+    abandoned row (``call:<uuid>``) is the site's own — the wait
+    surfaces its one-shot ``Expired`` member on the resume, never a
+    fresh hold (the body that matched the fail-close arm must land the
+    same deterministic face every replay)."""
+    from taskq.workflows import Expired
+
+    async def legacy_expired_body(ctx: StepContext, params: Ingest) -> Any:
+        outcome = await ctx.wait_signal(Approval, timeout_s=120.0)
+        match outcome:
+            case Approval() as approval:
+                return {"verdict": approval.verdict}
+            case Expired():
+                return {"fail_closed_on": outcome.abandoned_by}
+
+    flow_id, runner, _node = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=legacy_expired_body, name="legacy_abandoned_flow"
+    )
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".wf_signals SET call_id = $2 WHERE workflow_id = $1',
+        flow_id,
+        f"call:{new_uuid()}",
+    )
+    await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
+    assert await sweep_expired_signals(wf_pool, schema=wf_schema) == 1
+    out = await runner.drive(flow_id, max_ticks=60)
+    assert out == "terminal", f"the legacy abandoned row was ignored (the wait re-held): {out!r}"
+    flow_result = await runner.result(flow_id)
+    assert flow_result == {"fail_closed_on": "timeout"}, flow_result
+    after = await wf_conn.fetch(
+        f'SELECT status FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
+    )
+    assert len(after) == 1 and after[0]["status"] == "abandoned", (
+        f"the abandoned face re-held: {[dict(r) for r in after]}"
+    )
+
+
+async def test_a_legacy_held_row_is_the_re_hold_s_own_no_duplicate(
+    wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
+) -> None:
+    """The legacy face of the standing-hold read: a pre-identity held
+    row (``call:<uuid>``) answers its own site's re-hold read — the
+    duplicate execution lands ``NodeHeldError`` for the SAME hold and
+    registers nothing (a legacy row must not turn one wait into two
+    standing holds)."""
+    flow_id, runner, node_id = await _held_flow(
+        wf_conn, wf_schema, wf_pool, wait_body=_wait_body, name="legacy_held_flow"
+    )
+    await wf_conn.execute(
+        f'UPDATE "{wf_schema}".wf_signals SET call_id = $2 WHERE workflow_id = $1',
+        flow_id,
+        f"call:{new_uuid()}",
+    )
+    # the duplicate execution's surrogate: the hold-stamp surgery re-opens
+    # the claim while the (legacy) hold row stands held.
+    await wf_conn.execute(
+        f"UPDATE \"{wf_schema}\".jobs SET metadata = metadata - 'hold' - 'held_signal', "
+        "scheduled_at = now() WHERE id = $1",
+        node_id,
+    )
+    await runner.tick(flow_id)
+    after = await wf_conn.fetch(
+        f'SELECT id, status, call_id FROM "{wf_schema}".wf_signals '
+        "WHERE workflow_id = $1 ORDER BY hold_epoch",
+        flow_id,
+    )
+    assert len(after) == 1, (
+        f"the duplicate registration: the legacy held row did not answer its own "
+        f"site's re-hold read: {[dict(r) for r in after]}"
+    )
+    assert after[0]["status"] == "held", dict(after[0])
+
+
 async def test_deliver_and_abandon_take_one_lock_order_no_deadlock(
     wf_conn: asyncpg.Connection,
     wf_schema: str,

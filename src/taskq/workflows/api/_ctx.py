@@ -147,7 +147,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     claimed_at: datetime | None = None
     budget_remaining_ms: int | None = None
     _runtime: dict[str, int] = field(default_factory=lambda: dict[str, int]())  # pyright: ignore[reportUnknownVariableType]  # Why: pyright's inference for the slots+frozen dataclass's mutable default degrades; the annotation is the truth.
-    #: The per-attempt wait-call counter (the wait site's deterministic CALL
+    #: The per-attempt wait-call counter (the wait site's deterministic call
     #: identity — ``_ctx_wait.wait_signal`` mints ``call:{attempt}:{seq}``
     #: from it): the body replays the same call order within an attempt, so
     #: the Nth wait call's id is stable across the resume's re-execution.

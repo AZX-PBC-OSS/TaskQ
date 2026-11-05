@@ -1,4 +1,12 @@
-"""Unit tests for isolate_self - pure-Python, no PG required."""
+"""Unit tests for isolate_self, the departing worker's self-reclaim.
+
+The row and statement shapes drive real Postgres: the module's schema
+holds the seeded jobs, and the disposition UPDATE is captured by a
+recording proxy over a real connection (COUNT, DON'T ANSWER). The
+driver-fault shapes - a scripted execute error, a connect that fails -
+ride the fail-closed-exempt FakeConn: faults a live server cannot
+arrange on demand.
+"""
 
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
 # identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
