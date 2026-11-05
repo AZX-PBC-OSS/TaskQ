@@ -278,7 +278,7 @@ def _find_call(fn: ast.AsyncFunctionDef, name: str) -> ast.Call:
 
 
 def test_prune_and_archive_expiry_loops_share_the_policy_scaffold() -> None:
-    """THE PARITY PIN. Both loops' scaffolds must be token-identical after
+    """The parity pin. Both loops' scaffolds must be token-identical after
     loop-specific renaming, except the whitelisted by-design segments (the
     sweep operation, its preps, its completed-log detail, prune's batch
     cleanup). An edit to ONE loop that forks the shared policy — a changed
@@ -434,8 +434,7 @@ def test_both_loops_keep_the_date_latch_unstamped_on_a_demotion_cut() -> None:
             f"{label} lost the once-per-day date gate (the DAILY lane's — "
             "the check_lane bypass is the retention-cadence decoupling's "
             "own: a sub-daily schedule is a retention policy, checked "
-            "every tick, never latched — the D2 soak's at-most-daily "
-            "recorded finding)"
+            "every tick, never latched — the D2 soak's at-most-daily contract)"
         )
         gate_idx = lines.index(day_gate)
         # Invariants, not token shapes: a mirrored edit inside the gate

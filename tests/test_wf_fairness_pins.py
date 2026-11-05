@@ -1,4 +1,4 @@
-"""THE WORKFLOW FAIRNESS STAMP — every claimable wf row is born with its
+"""The workflow fairness stamp — every claimable wf row is born with its
 run's ``flow_id`` as the ``jobs.fairness_key`` cohort.
 
 The dispatch's round-robin variant partitions candidates by

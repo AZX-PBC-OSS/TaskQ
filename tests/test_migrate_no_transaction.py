@@ -316,7 +316,7 @@ async def test_transactional_migration_rolls_back_on_failure(
 async def test_failed_no_transaction_migration_is_not_recorded_but_effects_persist(
     pg_dsn: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE distinguishing failure mode: statements before the failure commit
+    """The distinguishing failure mode: statements before the failure commit
     independently (no rollback), yet the ledger records nothing - completion
     is recorded only after every statement succeeds."""
     schema = f"mig_nt_fail_{new_base62()}".lower()

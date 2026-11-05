@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE WORKFLOWS INTERFACE'S TEARDOWN PINS — the teardown contract at
+"""The workflows interface's teardown pins — the teardown contract at
 every face this pack exercises: a body's signal cleanup, a cancelled
 run's held-row resolution, and a wedged teardown's loud failure. Each
 pin asserts the SAFE behavior and stands as the permanent green guard.
@@ -10,7 +10,7 @@ The findings (each rejected live at the pin head):
   every value but the derived key raises ``WorkflowBuildError`` (the
   accept-and-ignore class's guard), so the param's only possible
   outcome is the author's own refusal — the param should not exist.
-  THE FIX IS A REMOVAL (documented in the changelog + the guide).
+  The contract is a REMOVAL (documented in the changelog + the guide).
 * the packaged run's first contact on an unmigrated schema
   raises the RAW ``asyncpg.exceptions.UndefinedTableError`` — the
   client arm's typed ``SchemaNotMigratedError`` translation exists and
@@ -179,7 +179,7 @@ def test_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
 
 
 def test_4c_the_conditional_interior_wait_is_not_the_static_refusal() -> None:
-    """E14's ZERO-FALSE-POSITIVE bound (the reviewer's own rule): a
+    """E14's ZERO-FALSE-POSITIVE bound: a
     declared gate whose body DOES reference ``wait_signal`` is never
     E14-rejected — the static walk cannot prove a conditional-interior
     wait never fires (that face is the documented W-face,
@@ -535,7 +535,7 @@ def test_10b_the_gate_decl_docstring_names_the_union_face() -> None:
 def test_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     """The loop's shape law ("ONE wait per iteration") as a NAMED W-rule:
     a loop body whose ``wait_signal`` sits in a CONDITIONAL interior
-    mis-indexes the answer cursor (the recorded finding — the iteration
+    mis-indexes the answer cursor (the mis-index — the iteration
     counter is the cursor, so an iteration that does not wait drifts the
     sequence). The mis-index shape is the warning's subject; the
     docstring's prose is not the enforcement."""
@@ -572,7 +572,7 @@ def test_12_a_conditional_loop_wait_is_a_named_warning() -> None:
     shape = [d for d in diagnostics if d.rule == "W5-loop-wait-shape"]
     assert shape, (
         "the loop body's conditional-interior wait validates clean — the "
-        "shape law is docstring-enforced and the mis-index (the recorded finding): "
+        "shape law is docstring-enforced and the mis-index: "
         "review's C9) has no name at the validator"
     )
 

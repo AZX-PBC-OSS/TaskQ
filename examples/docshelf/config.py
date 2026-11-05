@@ -59,9 +59,9 @@ class AdverseDynamics:
     sub_analysis_max_s: float = 3.0
 
     #: The extraction ladder's depth (stamped on the map's child rows).
-    #: The ladder HONORS this stamp (friction F1 is CURED — the holdmap
-    #: lane's ladder-inheritance cure: the map item ladders to the
-    #: wired max_attempts, pinned green). The inner budget below stays
+    #: The ladder HONORS this stamp (the map item ladders to the
+    #: wired max_attempts, pinned in
+    #: tests/test_wf_holdmap_cures_pins.py). The inner budget below stays
     #: as the cheap in-attempt absorber — a flake costs a re-call, not
     #: a body re-run.
     extract_max_attempts: int = 8
@@ -93,8 +93,8 @@ class DocShelfConfig:
     reindex_cron: str = "0 3 * * *"
 
     #: The feed's PAGE SIZE (one flow run per page): the measured safe
-    #: scale for one flow's route fan (the digest's early-fire face past
-    #: ~150 elements — friction F4).
+    #: scale for one flow's route fan (the route join's arg resolution
+    #: races its terminal past ~150 elements).
     delivery_page_docs: int = 100
 
     #: The happy-path batch size (the 50-document shelf).

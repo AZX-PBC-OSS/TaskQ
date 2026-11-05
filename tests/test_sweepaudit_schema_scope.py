@@ -267,7 +267,7 @@ async def test_keyed_reservation_with_pool_but_no_settings_raises() -> None:
     """Materializing a keyed reservation against PG needs the schema source.
 
     A direct library caller that supplies ``pg_pool`` but no ``settings``
-    used to fall back to the ``ConcurrencyReservation`` default schema
+    must never fall back to the ``ConcurrencyReservation`` default schema
     (``"taskq"``) - a silent wrong-schema write: the reservation's slot
     rows land in whatever ``"taskq".reservation_slots`` happens to exist
     (or the write fails noisily against a schema the caller never

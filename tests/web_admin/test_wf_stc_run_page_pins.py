@@ -1,6 +1,6 @@
 # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE STEP DEADLINE'S ADMIN FACE — the run page shows the bound where
+"""The step deadline's admin face — the run page shows the bound where
 declared, and the deadline's reality for a RUNNING node.
 
 The wf start_to_close fix (``tests/test_wf_start_to_close_pins.py``)
@@ -126,7 +126,7 @@ async def test_run_page_renders_the_declared_bound(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE USEFULNESS PIN: the run page's node table renders the
+    """The usefulness pin: the run page's node table renders the
     declared bound on the step that carries one (``deadline 30s``), and
     a step whose row declares no bound renders NO line."""
     schema = module_pg_schema.schema_name
@@ -156,7 +156,7 @@ async def test_the_running_face_renders_the_deadline_reality(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE DEADLINE'S REALITY (the claim's instant's use): a RUNNING
+    """The deadline's reality (the claim's instant's use): a RUNNING
     node's label carries the time left (the claim's instant + the
     bound); a non-running node's label is the bound alone. THE CLOCK
     ARBITER (the single-arbiter doctrine — the label reads the database
@@ -164,7 +164,7 @@ async def test_the_running_face_renders_the_deadline_reality(
     remaining/age is the READ's own ``clock_timestamp()`` computation
     (``RunNode.deadline_remaining_s``) — the label never measures the
     DB-written ``started_at`` against the APP clock, so a DB two minutes
-    ahead of the app no longer self-contradicts (the pre-fix shape: the
+    ahead of the app does not self-contradict (the stale shape: the
     DB-written instant read against the app clock as ``expired 120s
     ago`` on a step that just started). The derivation is the view's own
     (``RunNode.deadline_label`` — one spelling, the page's and the SSE
@@ -229,7 +229,7 @@ async def test_a_genuinely_running_row_reads_the_deadline_reality(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE READ'S OWN PIN, END TO END: a genuinely RUNNING row — a slow
+    """The read's own pin, end to end: a genuinely RUNNING row — a slow
     body under a LONG declared bound — read through the page's own read
     (``fetch_run_view`` — the one read the page, the boot JSON, and
     every SSE frame share). The SQL's ``deadline_remaining_s`` CASE is
@@ -350,7 +350,7 @@ async def test_sse_frame_carries_the_deadline_label(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE LIVE PATCH'S DATA: the SSE snapshot's node entries carry the
+    """The live patch's data: the SSE snapshot's node entries carry the
     deadline label (the JS paints/clears the line from the frame — the
     same pattern the deferral line keeps); the frame for a node whose
     row declares no bound carries none."""

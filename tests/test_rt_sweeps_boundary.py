@@ -257,7 +257,7 @@ async def test_batch_size_one_drains_oldest_eligible_first(
     row) and the documented oldest-first drain determinism.
 
     Rewritten for the promotion-writes-no-events contract: the drain
-    order was previously observed through the one ``job_events`` row per
+    order is observable through the one ``job_events`` row per
     promoted row the sweep then wrote.  That per-row event is exactly
     the unbounded-growth vector the denial-events decision abolished
     (promotion is scheduler bookkeeping - pinned green in

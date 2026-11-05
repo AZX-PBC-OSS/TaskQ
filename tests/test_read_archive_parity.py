@@ -1,9 +1,9 @@
 """Differential parity pins: the read seams' archive-tier fallback.
 
-The #314 class of liability: the twin's read seams used to answer from
-the hot tier only, while production's reads fall back to the archive
-tier on a hot miss. A test written against the twin saw a DIFFERENT
-world than production for the same scenario: an archived id answered
+The #314 class of liability: a twin whose read seams answer from
+the hot tier only sees a DIFFERENT
+world than production (whose reads fall back to the archive
+tier on a hot miss) for the same scenario: an archived id answered
 ``None`` (twin) where production answered ``archived=True``, and an
 archived job's attempt history answered ``[]`` where production answers
 the moved history. A documented divergence is still a divergence: tests

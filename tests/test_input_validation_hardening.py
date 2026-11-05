@@ -5,7 +5,7 @@ caller text sailed past a validator that existed but never ran, or past a
 boundary that had none at all:
 
 - queue names are actually validated where they enter (enqueue and actor
-  declaration) - a malformed name used to be silently accepted, stranding
+  declaration) - a malformed name silently accepted strands
   jobs on a queue no worker's ``queue = ANY($1)`` ever matches;
 - the InMemory enqueue mirror rejects a NUL in payload/metadata the same
   way PG's bind-time jsonb guard does, so an app validated against

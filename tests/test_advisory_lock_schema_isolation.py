@@ -109,7 +109,7 @@ async def test_maintenance_leader_locks_independent_across_schemas(
     module_pg_schema: ModulePgSchema,
     module_pg_schema_b: ModulePgSchema,
 ) -> None:
-    """THE cross-schema regression: two schemas in one database must BOTH
+    """The cross-schema regression: two schemas in one database must BOTH
     win their own maintenance-leader election lock.
 
     Under the unqualified name both schemas contended one lock and the
@@ -292,7 +292,7 @@ def test_corpus_is_valid_distinct_schema_names() -> None:
 
 
 def test_purpose_locks_and_keyed_locks_never_collide_for_any_schema() -> None:
-    """THE invariant: for every valid schema name, no purpose lock (any
+    """The invariant: for every valid schema name, no purpose lock (any
     purpose, any schema) equals any keyed lock (any format, any bucket
     name, any schema) - the two families share one hashtextextended
     namespace and one collision would serialize a rate limiter against a

@@ -1,4 +1,4 @@
-"""THE MAX_PENDING IMPOSSIBILITY PINS (the H-A6 verdict, proven).
+"""The max_pending impossibility pins (proven).
 
 THE QUESTION (the repo's law: a documented omission ships only with a
 red-proven impossibility pin behind it — an assertion is not a proof):
@@ -125,7 +125,7 @@ class _GatedFanOutApp:
 
 
 class ClaimSideMaxPendingGate:
-    """THE MANDATE'S OWN MINIMAL GATE, at the runner's claim seat: per
+    """The mandate's own minimal gate, at the runner's claim seat: per
     cohort, when the cohort's pending count >= max_pending, those rows
     are not claimed this pass — the row keeps its pending status (delay
     semantics, never an error) and the next pass re-derives from the

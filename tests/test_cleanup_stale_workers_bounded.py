@@ -1,7 +1,8 @@
 """``cleanup_stale_workers``: one call = one bounded, committed batch.
 
-The stale-worker sweep used to be an UNBOUNDED single DELETE whose DDL
-``ON DELETE`` clauses fan out per deleted worker - each removed worker
+The stale-worker sweep is one call = one bounded, committed batch - never
+an UNBOUNDED single DELETE whose DDL
+``ON DELETE`` clauses fan out per deleted worker (each removed worker
 rewrites every ``job_attempts`` row it holds (``ON DELETE SET NULL``) in
 the same transaction, so a whole-fleet crash is one multi-second
 transaction. The rewrite windows stale ids in a MATERIALIZED CTE

@@ -835,8 +835,8 @@ async def test_refund_memory_gcra_raises_when_not_initialised() -> None:
 # `_InMemorySlidingWindowLog.acquire` (and its GCRA counterpart) always
 # gate `append` behind a `len(...) >= limit` check, so under normal use
 # the deque/log can never hold more than `limit` entries.  Combined with
-# `peek()` filtering on the exact same `ts > cutoff` predicate used to
-# compute `is_exhausted`, this makes it structurally impossible for the
+# `peek()` filtering on the exact same `ts > cutoff` predicate that
+# computes `is_exhausted`, this makes it structurally impossible for the
 # retry_after-scan loop to skip a non-matching entry while still being
 # "exhausted" -- whenever exhausted, *every* stored entry passes the
 # filter and the loop always breaks on its first iteration.  The tests
@@ -908,7 +908,7 @@ async def test_gcra_peek_exhausted_by_tat_alone_with_log_below_limit() -> None:
 async def test_refund_log_redis_propagates_connection_error() -> None:
     """Log-style refund propagates Redis ConnectionError instead of swallowing it.
 
-    Regression: _refund_redis_log previously caught and logged ConnectionError,
+    Regression: _refund_redis_log catching and logging ConnectionError (instead
     preventing the composition-level rollback loop from seeing the failure.
     """
     from unittest.mock import AsyncMock

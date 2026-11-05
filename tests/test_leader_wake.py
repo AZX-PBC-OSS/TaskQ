@@ -412,7 +412,7 @@ async def _start_two(
 
 @pytest.mark.asyncio
 async def test_lw1_wake_driven_handover_is_sub_second(pg_dsn: str) -> None:
-    """THE feature pin: a graceful stop hands over within the wake round trip.
+    """The feature pin: a graceful stop hands over within the wake round trip.
 
     The follower listens through the PRODUCTION callback
     (``_make_leader_wake_callback``) on a raw conn, so the whole chain is

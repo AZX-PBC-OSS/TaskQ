@@ -1,4 +1,4 @@
-"""THE TYPE-TAGGED ROUTE PROOF — the per-element dispatch refutation.
+"""The type-tagged route proof — the per-element dispatch refutation.
 
 THE SCENARIO (the routing-proof work order): a fan-out map whose
 children produce a UNION per element (the success type + the failure
@@ -19,7 +19,7 @@ the exhaustiveness idiom PER-NODE). The closest working shape is the
 enum-ladder chain — the ladder lives IN the body, which is exactly what
 the scenario forbids.
 
-THE FIX (this lane's implementation — the Route surface's honest
+THE IMPLEMENTATION (the Route surface's honest
 extension, additive and small): the route's keys may be the union's
 member TYPES (a TYPE-TAGGED route); the body returns the union ELEMENT
 itself; the router dispatches on the element's runtime type; on a
@@ -33,7 +33,7 @@ doors: declaration (the route must be total over the union's member
 types) and runtime (``RouterNotTotal`` for the element type with no
 arm — the body that lied about its type).
 
-The rejected shape: the proof's pins ran RED at the pre-fix head (the receipt:
+The rejected shape (the mutation red:
 ``.measurements/type-tagged-route-reds.json`` — the union declaration
 itself refused, ``TypeError`` out of the enum-only bind).
 """
@@ -88,7 +88,7 @@ async def screen(ctx: object, item: dict[str, object]) -> Summary | Unreadable:
 
 
 async def reduce_summary(ctx: object, item: Summary) -> dict[str, object]:
-    """THE REDUCER — the success arm's body: the NARROWED ARM in the
+    """The reducer — the success arm's body: the NARROWED ARM in the
     editor (the param declares ``Summary``; the typed boundary
     re-validates the round-trip). The body's own return proves the
     element arrived AS its type (attribute access on the model)."""
@@ -96,7 +96,7 @@ async def reduce_summary(ctx: object, item: Summary) -> dict[str, object]:
 
 
 async def dead_letter(ctx: object, item: Unreadable) -> dict[str, object]:
-    """THE DEAD-LETTER — the failure arm's body: the OTHER narrowed arm
+    """The dead-letter — the failure arm's body: the OTHER narrowed arm
     (``item: Unreadable``)."""
     return {"dead": item.doc_id, "why": item.reason}
 
@@ -172,7 +172,7 @@ def test_type_route_unknown_key_is_refused_at_declaration() -> None:
 
 
 async def lying_screen(ctx: object, item: dict[str, object]) -> Summary | Unreadable:
-    """THE BODY THAT LIED: returns an element of a THIRD type — outside
+    """The body that lied: returns an element of a THIRD type — outside
     the declared union."""
 
     class Ghost(BaseModel):
@@ -191,7 +191,7 @@ async def test_type_tagged_route_routes_each_element_by_its_type(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE WHOLE SCENARIO, LIVED: a fan-out map whose children produce
+    """The whole scenario, lived: a fan-out map whose children produce
     the UNION per element (13 elements: 12 readable + the ghost), the
     type-tagged route dispatching EACH element BY ITS TYPE — the
     successes to the reducer, the failures to the dead-letter — with NO
@@ -311,7 +311,7 @@ async def test_the_misroute_is_loud_not_silent(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE MIS-ROUTE RECEIPT: an arm body declaring the WRONG arm's type
+    """The mis-route receipt: an arm body declaring the WRONG arm's type
     (the reducer declaring ``Unreadable`` while Summary elements route
     there) cannot silently swallow the element — the typed boundary's
     re-validation fails the row LOUDLY (the coercion refusal names the

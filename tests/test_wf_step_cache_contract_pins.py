@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE CROSS-RUN STEP CACHE'S PINS — the cache's contract: the address
+"""The cross-run step cache's pins — the cache's contract: the address
 is input-sensitive, a hit never crosses runs or tenants, a store lands
 only on a terminal-succeeded body, and the TTL bounds what a hit may
 serve. Each pin asserts the SAFE behavior; the input-sensitivity guard
@@ -72,7 +72,7 @@ The findings (each rejected live; the receipts carry the verbatim reds):
 THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
 acceptance law — each marker left only when its fix landed):
 
-* K1, K5 — the markers are REMOVED WITH THE FIXES (the cache-fixes
+* K1, K5 — green here (the cache
   lane's shapes: the cached route-source's refusal + the Exit+cache
   wiring refusal — the pins were xpass-strict at the reconciliation
   ground).
@@ -263,7 +263,7 @@ async def _cache_rows(conn: asyncpg.Connection, schema: str) -> list[asyncpg.Rec
 async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE WEDGE MUST BE IMPOSSIBLE — either fix satisfies:
+    """The wedge must be impossible — either fix satisfies:
 
     * THE BUILD REFUSAL: ``cache=True`` on a typed-route source refuses
       at the wiring/validate door NAMING the why (the route's fork is
@@ -340,7 +340,7 @@ async def test_k1_a_cached_route_source_is_refused_or_the_hit_reforks(
 async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE GREEN GUARD (already correct at the head — pinned so the
+    """The green guard (already correct at the head — pinned so the
     mutation that drops the address's input leg can never ship silently):
     ONE cached body under TWO different wired inputs → the second call
     MISSES the first's entry (the body re-executes) and the two calls
@@ -395,7 +395,7 @@ async def test_k2_two_inputs_to_one_cached_body_miss_each_other(
 
 
 def test_k3_a_cached_body_reading_ctx_input_is_a_build_diagnostic() -> None:
-    """THE RUN-SCOPED STATE UNDER THE CACHE OPT-IN (the house's W-rule
+    """The run-scoped state under the cache opt-in (the house's W-rule
     doctrine — the deterministic-looking body reading run-scoped state):
     ``step(..., cache=True)`` whose body reads ``ctx.input`` is REFUSED
     AT THE WIRING — the E18 rule's face (the reconciled flip: the
@@ -426,7 +426,7 @@ _DOCS = Path(__file__).resolve().parent.parent / "docs"
 
 
 def test_k4_the_docs_carry_the_closure_holes_law() -> None:
-    """THE HONEST MINIMUM (the campaign's docs-numbers pattern): the
+    """The honest minimum (the campaign's docs-numbers pattern): the
     guide's cache section states the closure law — the address covers
     the body's OWN source; a changed HELPER (a module-level callable the
     body calls) does NOT move the address. An operator who fixes a
@@ -464,7 +464,7 @@ def test_k4_the_docs_carry_the_closure_holes_law() -> None:
 
 
 def test_k5_cache_on_an_exit_returning_body_refuses() -> None:
-    """THE SILENT NO-OP DIES AT THE DOOR: a body whose declared return is
+    """The silent no-op dies at the door: a body whose declared return is
     ``Exit[...]`` under ``cache=True`` is a wiring/validate REFUSAL
     naming the combination (the Exit finalize is a DIFFERENT terminal —
     the cached envelope can never replay the skipped-downstream record;
@@ -505,7 +505,7 @@ async def test_k6_the_cache_purge_verb_evicts(
     wf_pool: asyncpg.Pool,
     cli_settings: Any,
 ) -> None:
-    """THE OPERATOR'S DOOR: the eviction verb evicts the named entry —
+    """The operator's door: the eviction verb evicts the named entry —
     after the eviction the row is GONE and the next run MISSES (the body
     re-executes).
 
@@ -569,7 +569,7 @@ async def test_k6_the_cache_purge_verb_evicts(
 # at EITHER finalize face as the reclaim class (the ledger says
 # 'crashed', the ladder unburned, the row re-pended reclaim-eligible,
 # the escape preserved) and the cleared-fault re-drive completes the run
-# via the HIT. The red receipt (the pre-fix live repro) rides the
+# via the HIT. The red receipt rides the
 # receipts file's flip row.
 
 

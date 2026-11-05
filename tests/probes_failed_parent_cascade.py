@@ -1,4 +1,4 @@
-"""THE FAIL-CLOSED PEER-CASCADE'S WINDOWS.
+"""The fail-closed peer-cascade's windows.
 
 The probes, each an independent test (RED = a finding):
 

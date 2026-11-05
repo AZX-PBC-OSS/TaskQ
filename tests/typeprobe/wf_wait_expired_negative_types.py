@@ -1,4 +1,4 @@
-"""THE EXPIRY-AS-VALUE'S PROBES — the wait's timeout face: the wait's timeout face
+"""The expiry-as-value's probes — the wait's timeout face: the wait's timeout face
 returns the TYPED UNION (the declared decision models joined with the
 house ``Expired`` member), so the CHECKER forces the fail-close arm.
 
@@ -36,7 +36,7 @@ class Params(BaseModel):
 
 
 async def probe_bare_unwrap_ignores_expired(ctx: StepContext, params: Params) -> Approval:
-    """THE BARE UNWRAP: the body reads the decision straight off the
+    """The bare unwrap: the body reads the decision straight off the
     outcome — but the outcome may be the EXPIRY member (the deadline
     passed the DB clock). The union's forcing: ``Expired`` carries no
     ``verdict``; the checker reds the attribute."""
@@ -50,7 +50,7 @@ async def probe_bare_unwrap_ignores_expired(ctx: StepContext, params: Params) ->
 async def probe_match_ignores_expired(
     ctx: StepContext, params: Params
 ) -> Approval:  # MUST_ERROR(reportReturnType, invalid-return-type): the match below ignores the Expired arm — the fall-through implicitly returns None against the declared Approval (the marker rides the DEF line: the checker reports the fall-through at the signature's return annotation; the fail-close arm is not optional — the body's own signature enforces it)
-    """THE MATCH THAT IGNORES THE ARM: only the decision case is
+    """The match that ignores the arm: only the decision case is
     handled — the Expired arm falls through and the body IMPLICITLY
     returns None against the declared return type."""
     _ = params
@@ -63,7 +63,7 @@ async def probe_match_ignores_expired(
 
 
 async def probe_the_green_door(ctx: StepContext, params: Params) -> Approval:
-    """THE GREEN DOOR (the shape the docs teach): BOTH arms handled —
+    """The green door (the shape the docs teach): BOTH arms handled —
     the decision arm continues, the expiry arm is the fail-close. This
     function must stay CLEAN (the gate reds on any error outside the
     markers — a green-surface regression is a failure)."""
@@ -92,7 +92,7 @@ async def probe_the_green_door(ctx: StepContext, params: Params) -> Approval:
 
 
 async def probe_timer_green_door(ctx: StepContext, params: Params) -> str:
-    """THE TIMER'S GREEN DOOR (the shape the docs' §4b teaches): the
+    """The timer's green door (the shape the docs' §4b teaches): the
     wake is consumed as the typed value it is. This function must stay
     CLEAN (the gate reds on any error outside the markers)."""
     _ = params
@@ -103,7 +103,7 @@ async def probe_timer_green_door(ctx: StepContext, params: Params) -> str:
 async def probe_timer_when_must_be_temporal(
     ctx: StepContext, params: Params
 ) -> str:  # MUST_ERROR(reportArgumentType, invalid-argument-type): the deadline is a datetime | float — a bare str is the authoring error the typed door refuses
-    """THE WRONG `when`: a string deadline is not a clock reading — the
+    """The wrong `when`: a string deadline is not a clock reading — the
     signature refuses it at the checker (both checkers red the
     argument)."""
     _ = params
@@ -116,7 +116,7 @@ async def probe_timer_when_must_be_temporal(
 async def probe_timer_wake_bare_unwrap(
     ctx: StepContext, params: Params
 ) -> str:  # MUST_ERROR(reportAttributeAccessIssue, unresolved-attribute): the wake carries NO decision fields — a body reading a human gate's verdict off the clock's receipt reds
-    """THE WAKE IS NOT A DECISION: a body that treats the timer's
+    """The wake is not A decision: a body that treats the timer's
     receipt as a human gate's answer (reading a `verdict` off it) reds
     — the timer's face has no fail-close to borrow fields from."""
     _ = params

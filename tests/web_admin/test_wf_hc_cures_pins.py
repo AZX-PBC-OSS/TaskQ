@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE H-C WAVE'S PINS — the ledger §H-C's rejected admin-UI defects,
-each pinned against the unfixed tree, then fixed:
+"""The admin hold surface's pins — the retry verb's root guard, the
+redaction symmetry, the cancel/retry TOCTOU, the rerun faces:
 
 - H-C1 THE BRICKED RUN: ``POST /nodes/__flow__/retry`` re-armed the
   RUN'S ROOT — the CAS had no root guard, the root flipped failed→
@@ -120,7 +120,7 @@ async def _canary_body(ctx: Any, params: IngestDoc) -> dict[str, object]:
     # DEEP-NESTED one, a LIST-ELEMENT one, and a token-head KEY NAME —
     # plus the bulk band whose PRE-redaction text crosses the panel's
     # display cap while the POST-redaction text does not (the
-    # truncated-flag recorded finding).
+    # truncated-flag contract).
     return {
         "note": "sk-canary-value-1234567890",
         "nested": {"deep": ["sk-canary-list-9876543210"]},
@@ -477,7 +477,7 @@ class _SpyConn:
     first ``SELECT status`` read) fires the cancel on a SECOND connection
     the moment the read returns, then gives the cancel a BOUNDED window
     to commit before the CAS runs — the interleaving the TOCTOU
-    recorded finding names: the cancel commits BETWEEN the read and the CAS.
+    race shape: the cancel commits BETWEEN the read and the CAS.
 
     THE WINDOW'S TWO OUTCOMES (why this is deterministic, not a race):
     the bare read (the red) holds no lock — the cancel's whole cascade
@@ -574,7 +574,7 @@ async def test_the_retry_serializes_behind_a_concurrent_cancel_no_pending_under_
     assert root_after == "cancelled", f"the cancel wins the race's tail: {root_after}"
     assert mid_after["status"] != "pending", (
         f"CONTRACT: NO pending node under a cancelled root — the wedged-forever "
-        f"shape the TOCTOU recorded finding names. Got mid={mid_after['status']} "
+        f"shape the TOCTOU names. Got mid={mid_after['status']} "
         f"(the red: the bare root read let the cancel land between the read "
         f"and the CAS)"
     )

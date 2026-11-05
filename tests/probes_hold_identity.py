@@ -1,4 +1,4 @@
-"""THE HOLD IDENTITY'S ADVERSARIAL PINS:
+"""The hold identity's adversarial pins:
 under concurrent deliver, the epoch on a retried hold-site, the redact
 chain on the list() surface, the knock's pointer-only law, the typed
 door's runtime boundary, the timeout face, the driver's held check.

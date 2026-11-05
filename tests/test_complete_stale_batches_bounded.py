@@ -1,8 +1,9 @@
 """``complete_stale_batches``: one call = one bounded, committed batch.
 
-The stale-batch safety net used to be an UNBOUNDED UPDATE with a
-correlated NOT EXISTS - one call could complete every stale batch in the
-table inside the leader's single-deadline iteration. The rewrite windows
+The stale-batch safety net is one call = one bounded batch - never an
+UNBOUNDED UPDATE with a
+correlated NOT EXISTS (one call completing every stale batch in the
+table inside the leader's single-deadline iteration). The statement windows
 candidates in a MATERIALIZED CTE (``LIMIT $1``) and updates by id, so one
 call commits at most ``batch_size`` completions and the sweep loop drains
 the remainder one bounded batch per tick.

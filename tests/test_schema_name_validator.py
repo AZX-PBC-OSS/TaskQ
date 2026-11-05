@@ -70,9 +70,9 @@ def test_error_message_names_the_field_and_the_rule() -> None:
 
 
 # A source scan asserting `validator=_schema_name_validator` in the field
-# definition used to live here, on the stated grounds that reverting to
-# `regex=` "would keep every behavioural test above green". That reasoning was
-# wrong, and measurably so: every test in this file loads with
+# definition is the wrong guard, measurably: reverting to
+# `regex=` keeps every behavioural test above green because every test in
+# this file loads with
 # `validate=False`, which is precisely where a built-in constraint is skipped
 # and a validator hook is not. Reverting the field to
 # `regex=r"\A[A-Za-z_][A-Za-z0-9_]*\Z"` fails NINE tests here - both

@@ -365,9 +365,9 @@ def e2e_worker_image() -> Iterator[BuiltImage]:
     (``taskq-e2e-worker-r<pid>``, see :mod:`tests.e2e._image_hygiene`) only
     re-tags, so a repeat run re-exports in seconds instead of re-installing.
 
-    Why pid ownership: the image used to be tagged under the shared name
-    ``taskq-e2e-worker:sha-<content hash>`` and was NEVER removed - teardown
-    deleted only the wheel dir, stranding one ~277 MB image per unique
+    Why pid ownership: an image tagged under the shared name
+    ``taskq-e2e-worker:sha-<content hash>`` is NEVER removed by teardown
+    (which deletes only the wheel dir), stranding one ~277 MB image per unique
     source content (in practice one per run). Under a pid-owned name this
     session's tag is exclusively its own - no concurrent session can be
     using it, even one with byte-identical source - so teardown can remove

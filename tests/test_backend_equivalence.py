@@ -1570,7 +1570,7 @@ async def test_result_size_bytes_set_on_mark_succeeded(backend_pair: Backend) ->
     """mark_succeeded with a non-None result sets result_size_bytes
     to a positive integer reflecting the UTF-8 byte length of the serialized
     result. Verifies the A-5 code fix: InMemoryBackend.mark_succeeded now
-    sets result_size_bytes (previously it was always None).
+    sets result_size_bytes (it is never None).
     """
     from taskq._json import dumps_str as _json_dumps
 
@@ -2749,7 +2749,8 @@ async def test_enqueue_batch_fast_intra_batch_duplicate_aborts_entire_batch(
     ``idempotency_key`` WITHIN one batch violates the unique index and
     aborts the ENTIRE batch - all-or-nothing, nothing written, and both
     backends surface the typed ``DuplicateIdempotencyKeyError`` (the
-    classification fix; previously a raw ``asyncpg.UniqueViolationError``).
+    classification fix; the raw ``asyncpg.UniqueViolationError`` is the
+    unguarded shape).
     An InMemory mirror that silently deduplicates item-by-item and
     returns a count that includes rows PG would never have written
     (count=2 for a batch whose every row PG would have rejected)."""
@@ -2844,8 +2845,8 @@ async def test_enqueue_batch_fast_existing_key_aborts_entire_batch(
 async def test_enqueue_batch_fast_count_is_items_written(backend_pair: Backend) -> None:
     """D7 parity pin, count semantics: on success the count is exactly the
     number of items - this path never deduplicates, so the count never
-    includes pre-existing rows (the InMemory mirror used to include
-    them)."""
+    includes pre-existing rows (the InMemory mirror includes them and
+    is wrong)."""
     args_list = [
         EnqueueArgs(
             id=new_job_id(),
@@ -2870,8 +2871,9 @@ async def test_enqueue_batch_fast_multi_defect_batch_raises_payload_validation(
     error on both backends - PayloadValidationError, because PG's fast
     path serializes every item in the build loop (NUL guard) BEFORE the
     pre-COPY cap count and long before the COPY's duplicate violation.
-    The InMemory mirror used to check duplicates first, so the same batch
-    raised DuplicateIdempotencyKeyError in memory and
+    The InMemory mirror checks duplicates in the same order as PG, never
+    first — a mirror that checks duplicates first raises
+    DuplicateIdempotencyKeyError in memory where PG raises
     PayloadValidationError on PG - a multi-defect batch could pass app
     tests and break on the first real enqueue."""
     from taskq.exceptions import PayloadValidationError

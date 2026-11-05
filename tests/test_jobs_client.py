@@ -646,10 +646,8 @@ def test_enqueue_args_unique_states_default() -> None:
     """EnqueueArgs() omitting unique_states gets the shipped default.
 
     The default covers ``succeeded`` (the state that says the work
-    already happened) and excludes the failure states. (This pin
-    previously asserted the narrower three-state default; the window
-    deliberately widened to cover success, and the explicit three-state
-    set remains the opt-out.)
+    already happened) and excludes the failure states; the explicit
+    three-state set is the opt-out.)
     """
     args = EnqueueArgs(
         id=new_job_id(),

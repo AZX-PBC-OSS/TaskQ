@@ -1,4 +1,4 @@
-"""THE BOOT GATE'S DIAGNOSIS: a refusal must name the condition that is
+"""The boot gate's diagnosis: a refusal must name the condition that is
 actually true. The gate now refuses a mounted app with no runnable
 workflow — but an imported, empty app and a module that never imported an
 app are two different defects with two different remedies, and the

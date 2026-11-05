@@ -1,14 +1,13 @@
-"""THE TYPED ROUTE'S PINS AT THE GRAPH LEVEL (``route(promise, arms)``).
+"""The typed route's pins at the graph level (``route(promise, arms.)``)
 
-THE RECORDED FINDING (the reviewer's, lived on the routing-proof corpus): the
+The defect the graph-level route exists for: the
 chain's route works but the chain is graph-INVISIBLE (no join-back, the
 items untyped, one placement per chain, the enum middleman), and the graph
-DSL's ``skip=``-predicates are STRINGLY — the live recorded finding: a "video"
+DSL's ``skip=``-predicates are STRINGLY — a "video"
 tag skipped BOTH arms and the run terminalized SUCCEEDED having routed
 NOTHING (the exact silent drop ``RouterNotTotal`` exists to prevent).
 
-THE FIX (the ticket: ``dag-research/tickets/typed-route.md``):
-the union MEMBERS key a route dict at the graph level —
+The graph-level face: the union MEMBERS key a route dict —
 
     route(source_promise, {ImageItem: RouteArm(body=process_image, queue="gpu"),
                            AudioItem: RouteArm(body=process_audio, queue="io")})
@@ -43,7 +42,7 @@ from taskq.workflows import Promise, StepContext
 if TYPE_CHECKING:
     from taskq.workflows import WorkflowApp
 
-# ── the demo's union (the images/audio shape: the reviewer's scenario) ──
+# ── the demo's union (the images/audio shape) ─────────────────────────
 
 
 class ImageItem(BaseModel):
@@ -66,7 +65,7 @@ class AudioResult(BaseModel):
     transcript: str
 
 
-#: THE GHOST (the reviewer's "video" tag): a third element type outside the
+#: THE GHOST: a third element type outside the
 #: declared union — the runtime door's subject.
 class VideoItem(BaseModel):
     doc_id: str
@@ -87,29 +86,27 @@ async def media_source(ctx: StepContext) -> list[ImageItem | AudioItem]:
 
 
 async def process_image(ctx: object, item: ImageItem) -> ImageResult:
-    """THE IMAGE ARM — the narrowed arm (the param declares its model;
+    """The image arm — the narrowed arm (the param declares its model;
     the decode's target IS this annotation — R3)."""
     return ImageResult(doc_id=item.doc_id, ocr=f"ocr:{item.doc_id}")
 
 
 async def process_audio(ctx: object, item: AudioItem) -> AudioResult:
-    """THE AUDIO ARM — the other narrowed arm."""
+    """The audio arm — the other narrowed arm."""
     return AudioResult(doc_id=item.doc_id, transcript=f"tr:{item.doc_id}")
 
 
 async def lying_media_source(ctx: StepContext) -> list[ImageItem | AudioItem]:
-    """THE BODY THAT LIED (the reviewer's live recorded finding, inverted): the
+    """The body that lied: the
     declared union is ImageItem | AudioItem but a "video" element rides
-    the list — at the pre-fix heads this element skipped BOTH arms (the
-    stringly skip face) and the run terminalized SUCCEEDED having routed
-    NOTHING. The cast IS the scenario (the runtime door exists for the body
+    the list — under a stringly skip face this element skips BOTH arms
+    and the run terminalizes SUCCEEDED having routed NOTHING. The cast
+    IS the scenario (the runtime door exists for the body
     that lies about its type — the checker cannot see a cast)."""
     ghost: object = VideoItem(doc_id="vid-999")
     return [
         ImageItem(doc_id="d1", uri="s3://b/d1.png"),
-        cast(
-            "ImageItem | AudioItem", ghost
-        ),  # the "video" tag — the live recorded finding's element
+        cast("ImageItem | AudioItem", ghost),  # the "video" tag — the ghost element
         AudioItem(doc_id="d2", uri="s3://b/d2.wav"),
     ]
 
@@ -119,7 +116,7 @@ def wire_the_scenario(
     name: str,
     source_body: Callable[..., Awaitable[object]],
 ) -> None:
-    """Wire the reviewer's exact scenario on *app*: the source step → the
+    """Wire the scenario on *app*: the source step → the
     typed route (the two placements) → the typed-sum join (the terminal).
     The lazy imports ARE the door: at the base head they raise
     ``ImportError`` and every pin xfails."""
@@ -190,7 +187,7 @@ def test_r1_an_unknown_arm_key_refuses_at_the_wiring() -> None:
 
 
 def test_r1_e15_route_totality_reds_the_validator() -> None:
-    """THE VALIDATOR'S OWN DOOR (the checker-independent fence): E15 —
+    """The validator's own door (the checker-independent fence): E15 —
     the next free rule id — re-proves the route's totality from the
     COMPILED graph (public, mutable data — E3's precedent: the rule owns
     the shape injected into it). Both directions reject: a MISSING
@@ -249,7 +246,7 @@ async def test_r1_the_video_element_dies_loud_at_runtime(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE LIVE RECORDED FINDING INVERTED: the same "video" scenario — a
+    """The live recorded finding inverted: the same "video" scenario — a
     third-type element where the route expects the declared union — now
     DIES LOUDLY: the source row terminal-FAILED with
     ``error_class='RouterNotTotal'``, NO child routed (the skip-silent
@@ -381,7 +378,7 @@ async def test_r3_the_arm_bodies_receive_their_declared_models(
 
 
 def test_r3_a_duck_typed_arm_param_refuses_at_build() -> None:
-    """THE DUCK-SHAPED HOLE (E5's own recorded finding shape, at the route's
+    """The duck-shaped hole (E5's shape, at the route's
     arms): an arm body whose param is a plain dict (or unannotated/Any)
     consumes the element UNVALIDATED — the route is the typed boundary
     and the duck arm is the hole it exists to close. E15 refuses at
@@ -494,7 +491,7 @@ async def test_r4_the_child_rows_stamp_their_arms_placement(
     ]
 
 
-# ── the e2e: the reviewer's exact scenario ───────────────────────────────
+# ── the e2e: the exact scenario ───────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -504,7 +501,7 @@ async def test_e2e_the_reviewers_scenario(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE WHOLE SCENARIO, LIVED: the images/audio map → the typed route
+    """The whole scenario, lived: the images/audio map → the typed route
     (the union's members as keys) → the two placements (gpu/io) → the
     typed-sum join → the downstream consumer's summary ON result(). The
     rows are the receipt."""
@@ -563,7 +560,7 @@ async def test_e2e_the_reviewers_scenario(
 
 def test_map_source_dict_form_is_the_same_machinery() -> None:
     """``map_source(src, {A: fn_a, B: fn_b})`` — the per-element case
-    spelled at the map face (the reviewer's (b)) — lowers through the
+    spelled at the map face — lowers through the
     SAME route attachment: the compiled source carries ``map_arms`` and
     the same ``.join`` node."""
     from taskq.workflows import RouteArm, WorkflowApp, build, map_source, step
@@ -617,7 +614,7 @@ async def test_mime_route_e2e_the_mixed_corpus(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE MAINTAINER'S SCENARIO, LIVED: the mixed corpus (2 text docs +
+    """The maintainer's scenario, lived: the mixed corpus (2 text docs +
     2 image docs + ONE unsupported mime) → the typed route → the text
     children on the cpu queue, the OCR children on the gpu queue, the
     unsupported doc in the dead-letter arm (the envelope recorded — the
@@ -671,7 +668,7 @@ async def test_barrier_chunk_fires_once_after_the_last_element(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE BARRIER'S SYNC (the maintainer's amendment): the staggered
+    """The barrier's sync (the maintainer's amendment): the staggered
     arms — the text extraction fast, the OCR slow — the chunk fires
     EXACTLY ONCE, AFTER THE LAST element's text has landed. The event
     order asserted FROM THE ROWS: every route child's finished_at ≤ the
@@ -741,7 +738,7 @@ async def test_barrier_fail_closed_the_chunk_never_fires(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE BARRIER'S FAILURE FACE (fail_closed — the route's default):
+    """The barrier's failure face (fail_closed — the route's default):
     one arm's element fails → the join fails CLOSED → the chunk NEVER
     fires (no finished_at, the blocked join naming the failed parent)
     and the run FAILS — the partial result never silently masquerades as
@@ -808,7 +805,7 @@ async def test_barrier_maybe_the_chunk_fires_on_the_survivors(
     module_pg_pool: object,
     wf_sql: object,
 ) -> None:
-    """THE BARRIER'S OTHER FACE (the maybe policy — the partial-success
+    """The barrier's other face (the maybe policy — the partial-success
     law's fan-in face): the route's on_failure='maybe' absorbs the
     failing arm's elements — the chunk fires ONCE on the survivors (the
     2 text docs), the envelope names the absorbed children ON THE RECORD

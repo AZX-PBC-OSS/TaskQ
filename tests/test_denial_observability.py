@@ -352,7 +352,7 @@ async def test_denial_past_the_close_deadline_fails_through_the_deadline_path() 
 async def test_retry_after_consume_true_on_non_retryable_at_budget_fails() -> None:
     """The consuming arm's exhaustion exit is enum-complete over
     ``retry_kind``: a ``non_retryable`` job at budget under
-    ``RetryAfter(consume_budget=True)`` must fail terminally - previously
+    ``RetryAfter(consume_budget=True)`` must fail terminally - otherwise
     the arm matched only ``retry_kind = 'transient'`` and the job fell
     through to a reschedule."""
     backend, job_id, worker_id = await _mem_job(max_attempts=1, retry_kind="non_retryable")

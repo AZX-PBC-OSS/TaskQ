@@ -1,4 +1,4 @@
-"""THE PERSISTENCE PINS: the two-channel progress substrate.
+"""The persistence pins: the two-channel progress substrate.
 
 The obligations these pins hold were proven in the design phase and are
 pinned here against the built surface.
@@ -276,7 +276,7 @@ async def test_ring_prune_arm_prunes_leaked_ring(
     wf_pool: asyncpg.Pool,
     progress_redlog: RedLog,
 ) -> None:
-    """THE RETENTION ARM (DH1's "prunes on schedule"): rings that leaked
+    """The retention arm (DH1's "prunes on schedule"): rings that leaked
     past the bound — the red world's shape, seeded here by bypassing the
     append-trim — are pruned back to the bound in ONE pass. The LEAK is
     observed first (the red): rows growing past the bound with no trim."""
@@ -325,7 +325,7 @@ async def test_ring_prune_arm_prunes_leaked_ring(
 async def test_map_progress_line_reads_the_state_channel(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
-    """THE AGGREGATION'S MAP LINE (decision c): the certified grouped read
+    """The aggregation's map line (decision c): the certified grouped read
     LEFT JOINed to the state channel — the children's emitted progress
     (avg pct, the freshest update) rides the SAME read, computed IN the
     query, never a second instrument. A child that never emitted reads
@@ -394,7 +394,7 @@ async def test_child_results_read_is_the_aggregate_input(
 
 
 def test_zero_finalize_changes_probe() -> None:
-    """THE ASYMMETRY, structurally pinned: the finalize's terminal-mark
+    """The asymmetry, structurally pinned: the finalize's terminal-mark
     statement touches NO progress table — the emission path can never
     block the finalize because the finalize does not know the emission
     path exists (the PoC's P4.finalize_touches_no_progress_table, ported

@@ -2,7 +2,7 @@
 
 The in-memory consumer loop now drives retry classification end-to-end
 via decide_after_failure (); the explicit mark_failed_or_retry
-call that was previously required after run_until_drained is no longer needed.
+call that older examples made after run_until_drained is not needed.
 
 Verifies (a) idempotent enqueue, (b) terminal writes
 (c) per-attempt history, and (d) job_events

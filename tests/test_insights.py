@@ -1187,7 +1187,7 @@ async def test_attack_ledger_anchor_admits_prior_and_current_archived_fires(
 async def test_attack_runaway_not_suppressed_by_current_window_archived_fires(
     matrix: tuple[asyncpg.Connection, str],
 ) -> None:
-    """THE runaway-suppression attack.  A short-retention deployment
+    """The runaway-suppression attack.  A short-retention deployment
     (prune retention < 2 x window — explicitly supported, the module's
     own 'retention floor is the analytics floor' doctrine): a schedule
     whose fires are NOT clearing (one stuck pending fire per window,

@@ -16,7 +16,7 @@ CALLER's stream.
 
 The in-memory mirror answers identically: it consumes the same chunks
 and preflights each through the same shared jsonb guards at the same
-base, where it previously surfaced a BARE ``ValueError(NUL_JSONB_ERROR)``
+base, where it surfaced a BARE ``ValueError(NUL_JSONB_ERROR)``
 with no attribution at all - a divergence the in-memory equivalence
 rule forbids (same observable answer on both backends).
 
@@ -117,7 +117,7 @@ async def test_atomic_nul_at_later_stream_position_names_stream_global_index() -
 
     This is the in-memory half of the parity pair: the mirror consumes
     the same chunks the PG arm does and preflights each through the
-    same shared guards at the same base, where it previously surfaced a
+    same shared guards at the same base, where it surfaces a
     BARE ``ValueError`` with no item attribution at all.
     """
     backend = _make_backend()

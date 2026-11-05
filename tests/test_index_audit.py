@@ -1771,7 +1771,7 @@ async def test_move_queue_drain_batch_bounds_cost_on_actor_and_queue_together(
     With only single-column partial indexes (actor, id) and (queue, id),
     whichever one the planner picks leaves the other predicate as a Filter
     that walks the already-moved population, so each batch pays for every
-    row previously moved and total drain time grows quadratically in the
+    row moved earlier and total drain time grows quadratically in the
     backlog size. On a large backlog that turns a routine operator action
     into a per-batch statement timeout.
     """

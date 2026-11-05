@@ -698,8 +698,8 @@ async def test_isolate_self_fast_close_not_terminated(
 async def test_isolate_self_cancels_live_actors_and_excludes_their_rows() -> None:
     """A still-executing actor's row must never enter the re-pend.
 
-    Isolate used to re-pend every running row at the reclaim backoff while
-    the local actor kept executing: a peer claimed the row when its
+    Isolate must never re-pend a running row whose local actor is still
+    executing: a peer claims the row when its
     scheduled_at arrived and ran it concurrently with the body still in
     flight, a double run. Now isolate cancels the local actors the same way
     the orchestrator's CANCELLING phase does (origin stamp, cancel event,

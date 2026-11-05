@@ -1,8 +1,8 @@
 """Integration tests: rotating Postgres credentials refresh per connection.
 
 The regression these guard against: ``make_pg_pool_factory`` /
-``make_dedicated_conn_factory`` used to resolve the credential once, at factory
-invocation, and pass it to asyncpg as a fixed ``password=`` string. asyncpg
+``make_dedicated_conn_factory`` resolving the credential once, at factory
+invocation, and passing it to asyncpg as a fixed ``password=`` string. asyncpg
 reuses that string for every physical connection it opens afterwards, and
 Postgres authenticates at **connect time only** - so with a finite-lifetime
 token (Entra ID, AWS IAM RDS) the pool is healthy at deploy and then, roughly

@@ -1,5 +1,5 @@
-"""THE FLEET EXECUTOR'S OWN TESTS (the evidence-integrity fix 1a: the
-scoped-coverage gate's least-tested seam is its most important new one).
+"""The fleet executor's own tests (``taskq/workflows/_worker_execution.py``
+is the scoped-coverage gate's least-tested seam and its most important one).
 
 ``taskq/workflows/_worker_execution.py`` is THE queue-IS-the-runtime seam:
 the app registry (the capability predicate's input), the boot projection
@@ -139,7 +139,7 @@ def test_the_compiled_cache_round_trips_and_misses_loud() -> None:
 
 
 def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) -> None:
-    """THE DEPS SEAM'S WORKER DOOR (the DI capability): the compile
+    """The deps seam's worker door (the DI capability): the compile
     carries the app's bound instance (``WorkflowApp(deps=…)``) and
     ``_runner_for`` — the worker-hosted execution door's runner factory —
     hands THE instance to its runner, the SAME binding the vanilla door
@@ -166,7 +166,7 @@ def test_the_runner_door_carries_the_apps_deps_binding(wf_pool: asyncpg.Pool) ->
 
 
 def test_the_runner_door_hands_each_worker_its_own_runner(wf_pool: asyncpg.Pool) -> None:
-    """THE RUNNER CACHE'S BEHAVIOR, from the caller's side: the same
+    """The runner cache's behavior, from the caller's side: the same
     (schema, workflow, worker) against the same pool hands back THE SAME
     runner (one deps binding, one validation per worker process), a
     different worker_id hands back a DIFFERENT one (the worker-scoped
@@ -244,7 +244,7 @@ def test_the_projection_projects_the_declared_cohorts() -> None:
 
 
 def test_the_projection_refuses_one_actor_over_two_queues() -> None:
-    """THE ONE-QUEUE LAW: one actor name declared over TWO queues is the
+    """The one-queue law: one actor name declared over TWO queues is the
     refused defect (``actor_config`` is keyed by actor) — the split
     placement is expressed with DISTINCT actor names per queue. TWO
     granularities (the F2-3 isolation's law): a workflow whose OWN
@@ -360,7 +360,7 @@ async def test_the_door_executes_a_claimed_row_exactly_once_queue_routed(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """THE FLEET PATH, end to end: the app registered → the projection
+    """The fleet path, end to end: the app registered → the projection
     stamps the cohorts → ``create_flow`` writes the root + the node row →
     ``dispatch_batch`` CLAIMS the row (queue-routed through the projected
     cohort, capability-fenced) → ``execute_flow_job`` resolves the body

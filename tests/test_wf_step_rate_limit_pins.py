@@ -1,11 +1,11 @@
-"""THE PER-STEP TOKEN BUCKET ON THE AUTHORING SURFACE (the consumer-face
-lane's FIX 2 — the verified gap): the workflow authoring face had NO
+"""The per-step token bucket on the authoring surface: the workflow
+authoring face had NO
 rate limit at all — ``taskq.actor``'s ``rate_limits=[TokenBucket(...)]``
 is vanilla-only, ``WorkflowApp.actor()``/``step()``/``RouteArm`` carried
 nothing, and "5 concurrent" (the queue cap) is not "50/min" under the
 LLM fleet's varying latency.
 
-THE FIX'S SHAPE (ONE mechanism, the authoring face added):
+THE SHAPE (ONE mechanism, the authoring face added):
 
 * the authoring surface: ``step(body, rate_limits=[TokenBucket(...)])``,
   ``RouteArm(body=..., rate_limits=[...])`` (the typed route's per-arm
@@ -27,7 +27,7 @@ THE FIX'S SHAPE (ONE mechanism, the authoring face added):
   budget-free, LOUD — never a silent pass-through, the admitted-never-
   limited lie).
 
-The rejected shape: the pins ran RED at the pre-fix head; the reds are captured
+The rejected shape (the mutation red, captured
 in ``.measurements/cons-cure2-reds.json``.
 """
 
@@ -192,7 +192,7 @@ def test_step_carries_its_rate_limits(cons2_redlog: RedLog) -> None:
 
 
 def test_route_arms_carry_their_own_rate_limits(cons2_redlog: RedLog) -> None:
-    """THE PER-ARM BUCKETS (R4's placement sibling): the gpu arm's
+    """The per-arm buckets (R4's placement sibling): the gpu arm's
     children ride the gpu bucket, the io arm's the io bucket — the ROWS
     name their arm's admission terms."""
     app = WorkflowApp()
@@ -261,7 +261,7 @@ def test_map_source_children_carry_the_map_rate_limits(cons2_redlog: RedLog) -> 
 
 
 def test_a_keyed_ref_resolves_per_child_at_the_fork() -> None:
-    """THE RESOLVING LAW: a keyed ref's concrete bucket resolves PER
+    """The resolving law: a keyed ref's concrete bucket resolves PER
     CHILD from the child's own payload at the fork — the declaration is
     admitted at the wiring, the map's children stamp their own concrete
     names (the wiring refusal was the old law)."""
@@ -309,7 +309,7 @@ def test_the_forks_name_read_is_the_instances_names() -> None:
 async def test_the_fork_stamps_the_buckets_onto_the_child_rows(
     cons2_redlog: RedLog, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE FORK'S STAMP: a map flow's tick forks the children — each
+    """The fork's stamp: a map flow's tick forks the children — each
     child row's metadata carries the map's declared bucket NAMES (the
     row its own admission terms; the claim path reads exactly this)."""
     bucket = TokenBucket("cons2-fork-stamp", 3, 0.3)
@@ -383,7 +383,7 @@ async def test_a_static_step_row_carries_its_own_bucket_names(
 def test_the_boot_collection_registers_the_instances_and_names_the_unknowns(
     cons2_redlog: RedLog,
 ) -> None:
-    """THE BOOT'S COLLECT (the vanilla actors' collection pass's
+    """The boot's collect (the vanilla actors' collection pass's
     sibling): every workflow-declared bucket instance registers into the
     resolved registry (idempotent, _same_config's law); a str name
     nothing registers is REPORTED (the warning's input — W2's register),
@@ -425,7 +425,7 @@ def test_the_boot_collection_registers_the_instances_and_names_the_unknowns(
 async def test_the_gate_acquires_the_rows_buckets_and_the_deny_is_observable(
     cons2_redlog: RedLog, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ACQUIRE + THE OBSERVABLE DENY: the row's metadata names the
+    """The acquire + the observable deny: the row's metadata names the
     bucket; the gate drains a token per acquire; the burst past the
     capacity DENIES — the denial names the bucket, the denials counter
     bumps (the same observable the queue-concurrency fence keeps)."""
@@ -460,7 +460,7 @@ async def test_the_gate_acquires_the_rows_buckets_and_the_deny_is_observable(
 async def test_the_cadence_the_bucket_rate_holds_under_the_burst(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE CADENCE (the never-bursts pin's pattern): capacity 1, refill
+    """The cadence (the never-bursts pin's pattern): capacity 1, refill
     1/s — acquire, deny, TIME, acquire. The third admission happens ONLY
     after the refill: the bucket's rate is the admission's clock, the
     latency variance cannot buy a burst."""
@@ -491,7 +491,7 @@ async def test_the_cadence_the_bucket_rate_holds_under_the_burst(
 async def test_an_unknown_bucket_name_is_the_fail_closed_arm(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE UNKNOWN NAME (the refusal/warning face's claim-time teeth): a
+    """The unknown name (the refusal/warning face's claim-time teeth): a
     row naming a bucket NO registry entry backs parks budget-free — the
     FAIL-CLOSED arm (the dependency arm's shape), LOUD, never a silent
     pass-through (the admitted-never-limited lie), never a crash."""

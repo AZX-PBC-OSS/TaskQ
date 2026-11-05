@@ -1,4 +1,4 @@
-"""THE OPERATOR'S MARCH (the system tier's composed walk).
+"""The operator's march (the system tier's composed walk).
 
 ONE scenario walks the operator's own path end to end (the deploy
 matrix scenarios the CELLS; this march walks the DAY):

@@ -3,8 +3,8 @@
 Uniqueness is ``(idempotency_scope, idempotency_key)`` - schema-wide, not
 per actor, and the jobs guide tells callers to namespace keys per actor.
 When they do not, ``enqueue(send_receipt, key="order-1")`` after
-``enqueue(refund, key="order-1")`` used to return the REFUND's handle with
-``was_existing=True`` and an INFO-level dedup log: a handle whose
+``enqueue(refund, key="order-1")`` must never return the REFUND's handle
+with ``was_existing=True`` and an INFO-level dedup log — that handle's
 ``.result()`` is another actor's, indistinguishable to the caller from a
 successful dedup of its own job. A uniqueness contract that includes the
 actor cannot hand back a different actor's job; TaskQ's index cannot

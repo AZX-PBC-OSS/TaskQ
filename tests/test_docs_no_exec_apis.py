@@ -351,10 +351,10 @@ def _check_pages() -> _PageReport:
 def test_no_exec_fragments_taskq_apis_resolve() -> None:
     """Every taskq API a ``no-exec`` fence spells exists in the live package.
 
-    The drift this closes: a renamed export used to leave the docs lying
-    silently (only the RUNNABLE fences were ever executed). The failure
-    below names each fence and the exact spelling that no longer
-    resolves, so the fix is a docs edit, not an archaeology dig.
+    The drift this closes: a renamed export would otherwise leave the docs
+    lying silently (only the RUNNABLE fences are ever executed). The failure
+    below names each fence and the exact spelling that does not
+    resolve, so the fix is a docs edit, not an archaeology dig.
     """
     report = _check_pages()
     assert not report.failures, (

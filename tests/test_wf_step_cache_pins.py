@@ -1,4 +1,4 @@
-"""THE CROSS-RUN STEP CACHE's pins — integration: real PG.
+"""The cross-run step CACHE's pins — integration: real PG.
 
 THE LAW THE PINS HOLD (the two-claims law — the design's spine):
 
@@ -181,7 +181,7 @@ async def _cache_rows(conn: asyncpg.Connection, schema: str) -> list[asyncpg.Rec
 async def test_hit_the_body_runs_once_across_runs(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE HIT PATH (the cache's entire point): the SAME input, the
+    """The hit path (the cache's entire point): the SAME input, the
     second run — the body runs ONCE across BOTH runs. The second run's
     step row carries THE RECEIPT (the address + the producing run's
     id), and its consumer sees the SAME typed result — the body NEVER
@@ -225,7 +225,7 @@ async def test_hit_the_body_runs_once_across_runs(
 async def test_success_only_a_failed_body_never_squats_the_key(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SUCCESS-ONLY LAW: a FAILING body's key never squats the
+    """The success-only law: a FAILING body's key never squats the
     address — the failure path writes NOTHING. The second run
     re-EXECUTES the body (never a cached failure): the address is free,
     the body's own attempt is the only truth."""
@@ -259,7 +259,7 @@ async def test_success_only_a_failed_body_never_squats_the_key(
 async def test_expired_ttl_is_a_miss(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TTL'S FRESHNESS LEG: an expired row IS a miss — the second
+    """The tTL's freshness leg: an expired row IS a miss — the second
     run re-executes the body and RE-FILLS the cache (a fresh
     expires_at). The expiry comparison is the DB clock's; the re-fill
     beats the corpse (the CAS's DO UPDATE arm is gated on the EXPIRED
@@ -297,7 +297,7 @@ async def test_expired_ttl_is_a_miss(
 async def test_concurrent_miss_one_winner(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE CAS: two concurrent misses — the two-claims law's honest
+    """The cAS: two concurrent misses — the two-claims law's honest
     face, the cache dedups TEMPORAL, never CONCURRENT (both bodies run;
     the ARBITER owns concurrent dedup) — yield ONE winning cache row,
     and the loser's re-read (the NEXT lookup) picks the winner's
@@ -370,7 +370,7 @@ async def test_concurrent_miss_one_winner(
 async def test_hit_delivers_the_declared_type(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TYPED DECODE AT THE HIT (R3's face): the cached jsonb decodes
+    """The typed decode at the hit (R3's face): the cached jsonb decodes
     to the consumer's DECLARED param type — the consumer's body asserts
     the model instance (the module-level ``_consume``), and the hit run
     SUCCEEDS only if the decode held."""
@@ -388,7 +388,7 @@ async def test_hit_delivers_the_declared_type(
 async def test_code_change_is_a_new_address(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ADDRESS'S SENSITIVITY: the body's code change = a NEW address
+    """The address's sensitivity: the body's code change = a NEW address
     (§22.1's stamper's canon in the hash) — a different body over the
     same input NEVER hits the first body's entry: the stale-code face is
     dead by construction."""
@@ -456,7 +456,7 @@ def test_non_positive_ttl_refuses() -> None:
 
 
 def test_cache_on_a_gather_refuses() -> None:
-    """THE V1 SURFACE IS THE PLAIN STEP: cache=True on the multi-parent
+    """The v1 surface is the plain step: cache=True on the multi-parent
     fan-in (the gather) is refused at the wiring site."""
     app = WorkflowApp()
 
@@ -477,7 +477,7 @@ def test_cache_on_a_gather_refuses() -> None:
 async def test_the_sweep_prunes_expired_rows_only(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SWEEP'S RETENTION ARM: expired rows delete (bounded batch),
+    """The sweep's retention arm: expired rows delete (bounded batch),
     fresh rows survive — the dead weight never grows monotone-forever
     (the delivered-outbox arm's own shape)."""
     from taskq.workflows._sweep import prune_expired_step_cache

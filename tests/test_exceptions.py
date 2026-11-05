@@ -642,7 +642,7 @@ def test_schema_not_migrated_error_does_not_claim_worker_auto_migrates() -> None
     ``TASKQ_MIGRATE_ON_START=true`` will cause automatic migration "at worker
     startup". That remedy is false and, followed literally, leads to a
     crash-loop at worker boot (see the pending-migrations guard in
-    ``_bootstrap.py``) rather than the silent no-op it used to produce.
+    ``_bootstrap.py``) rather than a silent no-op.
     """
     exc = SchemaNotMigratedError(schema="taskq")
     message = str(exc)

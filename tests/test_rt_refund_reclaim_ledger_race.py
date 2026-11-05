@@ -1,7 +1,7 @@
 """The refund-then-reclaim ledger race: the counter and the ledger must
 move TOGETHER across the claim-loss reconcile's refund.
 
-The soak's grand mixin red on CI (run 36175331443, ``grand_mixin[1]``) at
+The soak's grand mixin red on CI (``grand_mixin[1]``) at
 the reconciliation pin: ``attempt counter 1 vs 2 attempt rows``. The
 mechanism, frozen here one writer at a time (the writers genuinely run
 concurrently in production - the heartbeat tick on the worker's loop, the
@@ -537,7 +537,7 @@ async def test_isolate_self_records_no_attempt_row_for_a_refunded_epoch(
 async def test_isolate_self_fences_the_refund_commit_inside_the_select_update_window(
     pg_dsn: str,
 ) -> None:
-    """THE CI INTERLEAVING, frozen: the refund commits BETWEEN the
+    """The cI interleaving, frozen: the refund commits BETWEEN the
     isolate's SELECT and its arbiter UPDATE. The SELECT takes no row
     lock, so the reconcile's refund (the same worker's heartbeat pool,
     the shutdown drain's refund arm) serialises right there; the

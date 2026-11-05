@@ -1,4 +1,4 @@
-"""THE PROGRESS NUMBERS RUN — the design's numbers re-proven ON THE BUILT CODE.
+"""The progress numbers run — the design's numbers re-proven ON THE BUILT CODE.
 
 The capture law: this run writes a timestamped JSON file into
 `.measurements/` — the verdicts read back in minutes, the file is the

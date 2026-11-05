@@ -1,4 +1,4 @@
-"""THE DELIVERED OUTBOX'S TTL — the D2 soak's P3 fix's pins (integration:
+"""The delivered outbox's TTL — the d2 soak's p3 fix's pins (integration:
 real PG).
 
 The soak's evidence (REPORT-D2-soak): the delivered ``wf_outbox``
@@ -48,7 +48,7 @@ async def _outbox_row(
 async def test_delivered_outbox_ttl_prunes_delivered_only(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE OUTBOX TTL (the D2 soak's P3): delivered rows past the period
+    """The outbox TTL (the D2 soak's P3): delivered rows past the period
     delete (the retention policy's own row — the soak measured the
     delivered population monotone-forever, 5.9k at close, no pruner);
     DELIVERED-FRESH and UNDELIVERED-OLD rows survive (a deleted

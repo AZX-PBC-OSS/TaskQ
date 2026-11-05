@@ -1,7 +1,7 @@
 """UI-review pins: page-by-page render correctness, refresh transports,
 asset paths, and render bounds, written red against the served pages.
 
-This module is the reviewer's pass over every admin page (the review that
+This module is the adversarial pass over every admin page (the pass that
 produced it served each page and compared what renders against a computed
 oracle). The pins it leaves behind hold the four contracts the review found
 broken or unproven:
@@ -168,7 +168,7 @@ def test_job_detail_runs_exactly_one_refresh_transport_per_mode(
     """The job detail page's transport is realtime.js in EVERY mode (its own
     script block says so: polling deployments would otherwise have a
     progress section nothing ever updated). The meta refresh alongside it is
-    the #337 double-fetch on this page: polling mode used to render BOTH.
+    the #337 double-fetch on this page: polling mode must never render BOTH.
     """
     import taskq.web.admin.jobs as jobs_module
 

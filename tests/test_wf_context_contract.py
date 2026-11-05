@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""THE CONTEXT CONTRACT PIN (the maintainer's addendum — the runtime
+"""The context contract pin (the maintainer's addendum — the runtime
 info on the context, surface-driven): a BODY asserting on ctx sees ALL
 of it — the attempt ordinal, the node key, the map index, the run id,
 the flow name, the queue, the claim timestamp, the remaining loop

@@ -6,11 +6,9 @@ nowhere. One pin per field, each asserting the field's value AT its
 consumer, not merely that the field parses:
 
 * ``WorkerSettings.dispatch_scope_by_home_queue`` -- finding first: this
-  flag is a DEPRECATED NO-OP. The per-actor-capacity dispatch scoping it
-  used to apply no longer exists (dispatch is assignment-routed; see the
-  field's own description and the bootstrap's startup-warning block), so
-  the "resolved-scope difference" an older audit describes is gone by
-  design. Its only remaining consumer is the bootstrap's
+  flag is a DEPRECATED NO-OP. Dispatch is assignment-routed; the flag
+  applies no scoping (see the
+  field's own description and the bootstrap's startup-warning block). Its only remaining consumer is the bootstrap's
   ``deprecated-setting-ignored`` warning, which is what the pin below
   holds: flag on warns (naming the env var to delete), flag off is silent.
 * ``watchdog_loop_lag_startup_grace`` / ``watchdog_dump_after_fraction``

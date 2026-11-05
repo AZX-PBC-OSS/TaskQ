@@ -247,7 +247,7 @@ def test_no_backend_import() -> None:
         "            if name not in allowed:\n"
         "                raise AssertionError(f'taskq.retry imports disallowed name {name!r} from {node.module}')\n"
     )
-    result = subprocess.run(  # noqa: S603 Why: subprocess used to run a hardcoded introspection script verifying import boundary; no untrusted input
+    result = subprocess.run(  # noqa: S603 Why: subprocess runs a hardcoded introspection script verifying import boundary; no untrusted input
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,

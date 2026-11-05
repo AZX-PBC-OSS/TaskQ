@@ -4,7 +4,7 @@ ceil(actor_count / limit) rounds) or merely probabilistic?
 The rotation tiebreak is ``actor_claimed_at ASC NULLS FIRST`` stamped once
 per round for every admitted actor with the SAME statement_timestamp().
 If the stamp is a true round-robin (each round admits a disjoint,
-previously-least-recently-served cohort), the bound should be TIGHT: with
+least-recently-served cohort), the bound should be TIGHT: with
 ``actor_count`` actors and a round ``limit``, every actor should be served
 within ceil(actor_count / limit) rounds -- not just "eventually" within
 some generous round budget.

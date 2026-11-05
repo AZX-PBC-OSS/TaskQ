@@ -87,9 +87,9 @@ def _leader_teardown_wait_budget(settings: WorkerSettings) -> float:
     budget is that tail plus one tick cadence, scaled for runner
     congestion (a starved CI runner stretches every await) and floored.
     The leader task's own tail is three bounded steps - one resign
-    attempt plus two conn closes - already 3x the fixed 5s cap that
-    used to cover the whole teardown, so on congested runners
-    ``wait_for`` cancelled leaders mid-teardown and red TimeoutError;
+    attempt plus two conn closes - already 3x a fixed 5s whole-teardown
+    cap would allow: on congested runners
+    ``wait_for`` cancels leaders mid-teardown and reds TimeoutError;
     a budget that moves with the product's own constants cannot be
     undercut by them.
     """

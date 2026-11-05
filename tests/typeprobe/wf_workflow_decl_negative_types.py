@@ -49,7 +49,7 @@ async def _body(ctx: object, params: Ingest) -> Report:
 
 
 def probe_object_decl_refused() -> None:
-    """THE RECORDED FINDING: the fleet's ``-> object`` decl declares the
+    """The recorded finding: the fleet's ``-> object`` decl declares the
     erasure while the body returns ``build(...)``'s ``Promise[R]`` — the
     decorator refuses it at the decoration site (the marker trails the
     decorator line, the line BOTH checkers name)."""
@@ -98,7 +98,7 @@ def probe_async_decl_refused() -> None:
 
 
 def probe_typed_decls_green() -> None:
-    """THE GREEN FACE (clean lines — no marker, no error): the concrete
+    """The green face (clean lines — no marker, no error): the concrete
     ``Promise[Report]`` decl and the covariant ``Promise[object]`` decl
     both satisfy the door; R rides the generic into the registry."""
     app = WorkflowApp()

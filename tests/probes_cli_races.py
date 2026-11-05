@@ -1,5 +1,5 @@
 # ruff: noqa: S608, S603, ASYNC220, ASYNC221, N802  # Why: the dash-named attack4-* module; the CLI probes run REAL subprocesses (the stranger's own terminal) with fixed argv and fixture-derived env; the TRUE blocker's name is the pin's claim.
-"""THE CLI UNDER FIRE (the adversarial probes' suite).
+"""The CLI under fire (the adversarial probes' suite).
 
 The stranger's probes against ``taskq flows`` , NOT the
 builder's pins (tests/test_wf_cli_pins.py owns those) — the adversarial
@@ -364,7 +364,7 @@ async def test_the_why_stuck_arm_names_the_TRUE_blocker(
     name the FAILED row as the thing to retry (with its remedy), and the
     blocked row's answer must be TRUE — run5's observed output failed
     both honesty halves of the why-stuck face; both
-    fixes are pinned here as hard asserts (the xfail was the pre-fix
+    fixes are pinned here as hard asserts (the xfail was the pre-cure
     shape, a later pass removed it):
 
     * the LADDER-LIE face: the status read carries the
@@ -414,7 +414,7 @@ async def test_the_why_stuck_arm_names_the_TRUE_blocker(
 async def test_the_exit_code_contract_the_empty_error_and_missing_states(
     module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
 ) -> None:
-    """THE EXIT CODES: a bad UUID → exit 1 + the named error; an unknown
+    """The exit codes: a bad UUID → exit 1 + the named error; an unknown
     run's status/holds → exit 1 + the named error + the remedy; an empty
     schema's ``flows list`` → exit 0 + the honest zero (never a blank
     section, never a traceback)."""
@@ -466,12 +466,12 @@ async def test_the_exit_code_contract_the_empty_error_and_missing_states(
 async def test_the_stale_app_resolve_is_the_named_refusal_never_a_traceback(
     module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any
 ) -> None:
-    """THE KEYERROR-TRACEBACK PIN (the why-stuck face's medium finding;
+    """The keyerror-traceback pin (the why-stuck face's medium finding;
     the race's own red ran live on the unfixed tree): a
     run whose workflow is NOT declared on the --app module (the
     stale-deploy world) meets 'flows resolve' — the typed door must
     refuse with the NAMED error + exit 1, never a rich traceback. The
-    pre-fix shape: gate_models_for → app.get(workflow) → the uncaught
+    uncured shape: gate_models_for → app.get(workflow) → the uncaught
     KeyError → the traceback (the admin's twin catches it; the CLI did
     not)."""
 
@@ -552,7 +552,7 @@ async def test_the_cancel_of_an_already_terminal_run_is_the_named_noop(
 async def test_the_torn_cancel_the_signal_leg_rides_a_second_connection(
     module_pg_schema: ModulePgSchema, module_pg_pool: Any, demo_env: Any, monkeypatch: Any
 ) -> None:
-    """THE STRUCTURAL PROBE: ``cancel_workflow_run`` opens ONE
+    """The structural probe: ``cancel_workflow_run`` opens ONE
     transaction, but its held-signal leg (``cancel_run_signals``) runs on
     a SECOND pool connection OUTSIDE that transaction. If the outer tx
     rolls back after the signal leg ran, the signals stay 'cancelled'

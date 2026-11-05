@@ -1,4 +1,4 @@
-"""THE TYPED-CONTEXT PINS (the §7b hygiene round): ``StepContext`` is
+"""The typed-context pins (the §7b hygiene round): ``StepContext`` is
 the DOCUMENTED annotation of a workflow body's ``ctx`` — the verdict's
 finding was that the story died in the wild (the docs' example bodies
 carried a bare ``ctx``, the test corpus carried ``ctx: Any`` — and users

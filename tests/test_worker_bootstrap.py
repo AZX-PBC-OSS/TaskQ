@@ -102,9 +102,9 @@ async def _run_until_ready(
     """Run ``_main``-wrapping coroutine until ``ready()`` answers truthy —
     the boot-race fix: poll the CONDITION, never the clock.
 
-    THE BOOT-RACE CLASS (named and fixed 2026-10-08): the boot tests used to
-    sleep a fixed 2-4s and then assert the boot's durable effects (the
-    actor_config sync, the worker registration). The sleeps were sized on a
+    THE BOOT-RACE CLASS: a boot test that
+    sleeps a fixed 2-4s and then asserts the boot's durable effects (the
+    actor_config sync, the worker registration) is sized on a
     quiet box; under a loaded one — a parallel battery, the 10-container
     co-tenancy this campaign's own lanes created — the boot takes longer,
     the sleep expires before the sync, and the assertion reads the PRE-boot

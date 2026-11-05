@@ -1,4 +1,4 @@
-"""THE WF-OTEL PINS — the workflow spans' contract.
+"""The wf-otel pins — the workflow spans' contract.
 
 THE DEFECT (the consumers' report): the vanilla lifecycle emits spans at
 every messaging point — ``enqueue {actor}`` (PRODUCER), ``process
@@ -9,7 +9,7 @@ vanilla consumer path) and the dev drive never enters it, so a consumer
 running otel (an Azure Monitor backend, a ddtrace backend) sees
 its flows as silence.
 
-THE FIX'S LAW (mirroring the vanilla exactly — no new otel machinery):
+THE LAW (mirroring the vanilla exactly — no new otel machinery):
 
 * the SAME ``safe_start_span`` at the wf lifecycle's own points; the
   SAME no-op law (telemetry off → no spans, the flow runs, nothing
@@ -117,7 +117,7 @@ async def _hold_body(ctx: StepContext, params: Ingest) -> Any:
 async def test_a_small_flow_emits_the_run_span_over_its_step_children(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE TREE: one run of a one-step flow exports the RUN span (a root —
+    """The tree: one run of a one-step flow exports the RUN span (a root —
     ``new_root=True``, the producer-link pattern) and the STEP span, and
     the step span's parent IS the run span (the dev drive executes both
     in one process — otel's context propagation parents them for free).
@@ -164,7 +164,7 @@ async def test_a_small_flow_emits_the_run_span_over_its_step_children(
 async def test_the_run_span_carries_the_declared_attribute_contract(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE RUN SPAN'S ATTRIBUTES (the ``taskq.*`` namespace): the
+    """The run span's attributes (the ``taskq.*`` namespace): the
     workflow's name, the run's flow id, the root's queue, the caller's
     run key, and the per-call priority — plus the vanilla lifecycle
     events' grammar (``lifecycle.running`` at the create, the terminal
@@ -217,7 +217,7 @@ async def test_the_run_span_carries_the_declared_attribute_contract(
 async def test_the_run_span_omits_the_unset_optionals(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE ABSENCE FACE: no key and no priority → ``taskq.run_key`` and
+    """The absence face: no key and no priority → ``taskq.run_key`` and
     ``taskq.priority`` are absent (the minted ``flow:{uuid}`` key is the
     arbiter's business, never a span attribute; the priority's ``when
     set`` law)."""
@@ -245,7 +245,7 @@ async def test_the_run_span_omits_the_unset_optionals(
 async def test_the_step_span_carries_the_attribute_contract(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE STEP SPAN'S ATTRIBUTES: the flow link, the workflow name, the
+    """The step span's attributes: the flow link, the workflow name, the
     step key, the attempt ordinal, the node's queue, and the OUTCOME
     (the claim tail's own label — the record's echo) with the status
     (OK on the succeeded class). A plain step carries no map_index."""
@@ -281,7 +281,7 @@ async def test_the_step_span_carries_the_attribute_contract(
 async def test_a_failing_step_records_the_ladder_scrubbed(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE LADDER'S TWO FACES ON THE SPAN: attempt 1's span records the
+    """The ladder's two faces on the span: attempt 1's span records the
     failure SCRUBBED (the exception event's text is the redaction pass's
     — the DSN password never reaches the exporter) with the
     ``wf.laddered`` event naming the route (retried); the last attempt's
@@ -351,7 +351,7 @@ async def test_a_failing_step_records_the_ladder_scrubbed(
 async def test_a_deferred_step_records_the_deferral_event(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE DEFERRAL (the body's typed control flow): one tick of the
+    """The deferral (the body's typed control flow): one tick of the
     runner drives the body's ``Snooze`` — the step span's outcome is the
     tail's own ``deferred`` label, the ``wf.deferred`` event names the
     signal and the delay, and the status stays UNSET (a mid-state, the
@@ -392,7 +392,7 @@ async def test_a_deferred_step_records_the_deferral_event(
 async def test_an_exhausted_deferral_records_the_ladder_scrubbed(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE DEFERRAL'S EXHAUSTED FACE (the consuming signal past the
+    """The deferral's exhausted face (the consuming signal past the
     budget): the body's ``RetryAfter(consume_budget=True)`` rides the
     deferral arm, the budget gate refuses (``max_attempts=1`` — the
     claim at the budget's edge), the wf terminal door lands — and the
@@ -449,7 +449,7 @@ async def test_an_exhausted_deferral_records_the_ladder_scrubbed(
 async def test_a_held_step_records_the_hold_event(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE HOLD (the hold machinery : a body at its gate — the step span's outcome is
+    """The hold (the hold machinery : a body at its gate — the step span's outcome is
     ``held``, the ``wf.held`` event names the hold id and the signals,
     the status stays UNSET; the run span (``until='held'``) records the
     drive's stop and NO terminal lifecycle event (the run is not
@@ -504,7 +504,7 @@ async def test_a_held_step_records_the_hold_event(
 async def test_the_fork_and_join_fires_are_events_on_the_step_spans(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE FAN-OUT'S SHAPE (the brief's law — events on the spans, never
+    """The fan-out's shape (the brief's law — events on the spans, never
     separate spans): the map source's step span carries ``wf.forked``
     (the children's count), and the item's finalize that FIRES the join
     carries ``wf.join_fired``. The join node itself is still just a step
@@ -550,7 +550,7 @@ async def test_the_fleet_door_emits_a_root_step_span(
     module_pg_pool: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE FLEET DOOR (production's own path): the claimed row executes
+    """The fleet door (production's own path): the claimed row executes
     through ``execute_flow_job`` — the step span emits THERE, as a
     per-process ROOT (no run span exists in the worker's process — the
     vanilla's cross-process law has no wf producer span to stamp ids
@@ -620,7 +620,7 @@ async def test_the_fleet_door_emits_a_root_step_span(
 async def test_the_run_span_links_to_the_ambient_trace(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE PRODUCER-LINK PATTERN (the cron fire span's own law): a run()
+    """The producer-link pattern (the cron fire span's own law): a run()
     called inside an AMBIENT span — a caller's own trace — starts the run
     span as a ROOT that LINKS to the ambient context (``new_root=True`` +
     ``links=``), never parents to it: the caller's trace is not held open
@@ -657,7 +657,7 @@ async def test_the_run_span_links_to_the_ambient_trace(
 async def test_an_escaped_machinery_fault_records_the_crashed_outcome(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE MACHINERY BOUNDARY's re-raise (the reclaim class): an infra
+    """The machinery boundary's re-raise (the reclaim class): an infra
     fault escaping the claim tail's own statements re-raises (the driver
     counts it) — the step span ends ``crashed`` (the ledger's own
     vocabulary) with the scrubbed error the fallback recorded, ERROR
@@ -711,7 +711,7 @@ async def test_an_escaped_machinery_fault_records_the_crashed_outcome(
 async def test_otel_disabled_flow_runs_and_exports_nothing(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE NO-OP LAW (the vanilla's own): telemetry off → the flow runs
+    """The no-op law (the vanilla's own): telemetry off → the flow runs
     to terminal, ZERO spans export, nothing raises."""
     _, exporter = setup_tracer(monkeypatch)
     set_otel_enabled(False)
@@ -727,7 +727,7 @@ async def test_otel_disabled_flow_runs_and_exports_nothing(
 
 
 async def test_otel_provider_absent_flow_still_runs(wf_schema: str, wf_pool: asyncpg.Pool) -> None:
-    """THE ABSENT-PROVIDER FACE: no SDK configured (the default no-op
+    """The absent-provider face: no SDK configured (the default no-op
     tracer) → the flow runs to terminal, no import fails, no raise —
     the library never installs a provider itself (the deployment
     default)."""
@@ -747,7 +747,7 @@ async def test_otel_provider_absent_flow_still_runs(wf_schema: str, wf_pool: asy
 async def test_the_drive_outcome_and_rows_are_byte_identical_under_spans(
     wf_schema: str, wf_pool: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE NO-BEHAVIOR-CHANGE LAW, pinned: the same flow driven under the
+    """The no-behavior-change law, pinned: the same flow driven under the
     spans ends at the same terminal, with the same rows (the root's
     status, the node's statuses, the map's children) — the spans wrap
     the lifecycle points, they never steer them."""

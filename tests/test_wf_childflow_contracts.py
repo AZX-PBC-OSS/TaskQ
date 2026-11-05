@@ -1,10 +1,10 @@
 # ruff: noqa: S608  # Why: every schema interpolation is the pack's own fixture-minted chp_* test identifier (never user input); every value is $-bound.
-"""THE CHILD FLOWS' PINS — the spawn/join contract's rejected defects,
+"""The child flows' pins — the spawn/join contract's rejected defects,
 each pinned asserting the SAFE behavior
 each standing as the permanent green guard after its fix landed.
 
 The findings (each rejected live at the pin head; the attack scripts'
-harness shapes at the recorded findings' root):
+harness shapes at the contract's root):
 
 * THE GATHER DRAGON — ``asyncio.gather`` over K
   ``ctx.spawn_flow`` in one body mints ONE child run, not K: the spawn
@@ -52,7 +52,7 @@ zero; C3: the DEPTH BOUND — the ancestor-chain walk, the typed
 reconciliation weakens the pin: the fixed shape carries every property
 the safe behavior asked, and the reconciled assertions read the ROWS.
 
-THE FIXTURE STACK (the pack's own, per the lane's prefix law): the
+THE FIXTURE STACK (the pack's own, per the pack's prefix law): the
 module-minted ``chp_*`` schema on ``TASKQ_TEST_PG_DSN``, truncated +
 reseeded per test (the house ``clean_pg_conn`` pattern), dropped CASCADE
 at module teardown. The module-local ``wf_conn`` / ``wf_schema`` /
@@ -99,12 +99,11 @@ from taskq.workflows.engine import render_workflow_sql
 #: THE PACK'S DSN SEAM IS THE HOUSE ``pg_dsn`` FIXTURE (module-scoped
 #: database on the invocation's shared container). The dev loop's
 #: external cluster keeps working: the shared fixture honors
-#: ``TASKQ_TEST_PG_DSN`` as-is when it is set. The dead
-#: ``localhost:5891`` literal a previous constant defaulted to was the
-#: pack's never-executed-in-CI face (run 38351644136: 7 connection-
-#: refused errors per leg — the review cluster the pack was authored
-#: against does not exist on a runner, and the import-time read
-#: bypassed the fixture seam no matter what CI set).
+#: ``TASKQ_TEST_PG_DSN`` as-is when it is set. A dead
+#: ``localhost:5891`` default literal is the never-executed-in-CI face
+#: (connection-refused errors per leg — a review cluster the pack was
+#: authored against does not exist on a runner, and an import-time read
+#: bypasses the fixture seam no matter what CI set).
 
 
 # ── the pack's fixture stack (the chp_ prefix law; house idioms) ────────
@@ -112,7 +111,7 @@ from taskq.workflows.engine import render_workflow_sql
 
 @pytest_asyncio.fixture(scope="module")
 async def chp_schema(pg_dsn: str) -> AsyncIterator[str]:
-    """The pack's own schema: ``chp_<token>`` on the lane's DSN —
+    """The pack's own schema: ``chp_<token>`` on the pack's DSN —
     created migrated, dropped CASCADE at module teardown (the residue
     is attributable and self-cleaning). The token mixes the house's
     RUN-ISOLATION token (the invocation-unique basetemp path —
@@ -155,7 +154,7 @@ async def wf_schema(chp_schema: str, pg_dsn: str) -> AsyncIterator[str]:
 
 @pytest_asyncio.fixture
 async def wf_pool(wf_schema: str, pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
-    """The runner's pool on the lane's DSN (one per test — the house
+    """The runner's pool on the pack's DSN (one per test — the house
     ``wf_pool`` pattern). Teardown TERMINATES, never graceful-closes:
     the recursion-bomb red's RecursionError destroys a holder-release task
     mid-flight, and ``close()`` waits on that never-released holder
@@ -169,7 +168,7 @@ async def wf_pool(wf_schema: str, pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 @pytest_asyncio.fixture
 async def wf_conn(wf_schema: str, pg_dsn: str) -> AsyncIterator[asyncpg.Connection]:
-    """A bare connection on the lane's DSN (the row reads; per-test)."""
+    """A bare connection on the pack's DSN (the row reads; per-test)."""
     conn = await asyncpg.connect(pg_dsn)
     try:
         yield conn
@@ -265,7 +264,7 @@ class GatherOut(BaseModel):
 async def test_c1_concurrent_spawns_in_one_body_each_mint_their_own_child(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
-    """THE SAFE BEHAVIOR: K concurrent spawns in one body mint K DISTINCT
+    """The safe behavior: K concurrent spawns in one body mint K DISTINCT
     child runs, each carrying its own input; the fan-in returns each
     child's own verdict. (The alternative fix — a LOUD refusal of
     concurrent spawns naming the sequential spelling — is flagged in
@@ -343,7 +342,7 @@ class PurgeOut(BaseModel):
 async def test_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
-    """THE SAFE BEHAVIOR: the child the parent joined is GONE at the wake
+    """The safe behavior: the child the parent joined is GONE at the wake
     (the retention purge's shape) → the fail-close fires — NO new child
     run is minted (never a silent respawn) and the parent's run
     terminal-FAILS LOUDLY with the typed class on the record.
@@ -357,7 +356,7 @@ async def test_c2_a_missing_child_root_at_the_wake_is_a_loud_fail_close(
     node with the class on the record, the failed-parent propagation fails the
     root. The original pin's wait-arm shape (the ``ChildFailed`` member
     through ``handle.wait()``) is unreachable behind spawn-then-wait —
-    the recorded finding's own words — so the fixed pin reads the ROWS: the
+    the contract's own words — so the pin reads the ROWS: the
     node's error class names the wedge, the root followed it, the
     census stayed at zero."""
     _child_app("chil-3").get("chil-3")
@@ -452,7 +451,7 @@ class GenOut(BaseModel):
 async def test_c3_a_self_spawning_flow_is_refused_loudly_and_bounded(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
-    """THE SAFE BEHAVIOR: a self/ancestor-spawning flow is BOUNDED and
+    """The safe behavior: a self/ancestor-spawning flow is BOUNDED and
     the bound's refusal is LOUD — the bomb's tree TERMINALIZES with the
     typed ``SpawnDepthExceededError`` on the record (never an unbounded
     mint).
@@ -559,7 +558,7 @@ C4_DEPTH = 1200
 async def test_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
-    """THE SAFE BEHAVIOR: the cascade is ITERATIVE (or depth-bounded with
+    """The safe behavior: the cascade is ITERATIVE (or depth-bounded with
     a loud partial-failure report naming the survivors — the alternative
     recorded here): cancelling the head of a depth-1200 child
     chain cancels EVERY link and returns the count, never raising the
@@ -612,7 +611,7 @@ async def test_c4_the_cancel_cascade_is_iterative_over_a_deep_chain(
 async def test_c5_the_cascade_walks_both_directions_no_child_escapes(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
-    """THE SAFE BEHAVIOR: the cascade walks BOTH directions — the parent
+    """The safe behavior: the cascade walks BOTH directions — the parent
     node's receipts AND the children's ``parent_flow_id`` provenance — so
     no child escapes a parent's cancel. The orphan window is staged
     exactly: the child's create is the spawn's own create call (the
@@ -712,12 +711,12 @@ class NeverGate(BaseModel):
 async def test_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
-    """THE SAFE BEHAVIOR: the dev driver's tick runs the expiry arm — a
+    """The safe behavior: the dev driver's tick runs the expiry arm — a
     child that OUTLIVES its join deadline across ticks yields the
     ``Expired`` member to the resumed parent (the Expired face works in
     dev loops). The child parks on a never-resolved signal (the honest
     staging: a child that completes INSIDE one tick is legitimately
-    ChildOk under the deadline's at-least semantics — the recorded finding is
+    ChildOk under the deadline's at-least semantics — the contract is
     the arm's ABSENCE, not the race). The alternative
     fix — refusing timeout_s loudly on the dev path — is flagged in
     the recorded gap."""
@@ -778,7 +777,7 @@ async def test_c6_the_dev_drive_s_tick_runs_the_child_join_expiry_arm(
 async def test_c7_resolving_a_child_join_hold_is_a_named_boundary_refusal(
     wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
 ) -> None:
-    """THE SAFE BEHAVIOR: the resolve boundary REFUSES a child-join hold
+    """The safe behavior: the resolve boundary REFUSES a child-join hold
     with the hold's KIND named (the timer boundary's own pattern — a
     machine-owned hold is not operator-answerable), the hold SURVIVES
     'held', and the node keeps its held representation (nothing

@@ -1,4 +1,4 @@
-"""THE STEP LEDGER'S PINS — the ledger, the run-key arbiter, the idempotency, the run-key arbiter, the idempotency
+"""The step ledger's pins — the ledger, the run-key arbiter, the idempotency, the run-key arbiter, the idempotency
 contract, driven against a live Postgres through the REAL engine.
 
 Method: every pin's rejected variant is made to manifest its dragon (the
@@ -257,7 +257,7 @@ async def test_pin_4_run_key_replay_one_run(
     # scope): a DIFFERENT flow with the same key is silently deduped onto
     # THIS flow's run — created=False, someone else's run id, nothing
     # launched. The shipped per-flow scope greens it (the attack file
-    # keeps the same recorded finding:
+    # keeps the same contract:
     # tests/attack_wf_runkey_scope_collision.py).
     import taskq.workflows.ledger as ledger_module
 
@@ -302,7 +302,7 @@ async def test_pin_5_ledger_claim_atomic(
     """The claim and the attempt's ledger ``running`` row in SEPARATE
     transactions — a cancel landing in the window fences NOTHING (the
     attempt isn't on the record yet) and the row appears POST-CANCEL as a
-    phantom ``running``. THE FIX: claim + ledger insert = ONE statement
+    phantom ``running``. THE CONTRACT: claim + ledger insert = ONE statement
     (the shipped shape — the ledger row IS the claim; the phantom the
     window produced is reconciled by the reaper arm, pin 15). The
     two-transaction variant reds."""
@@ -367,7 +367,7 @@ async def test_pin_6_ledger_terminal_atomic(
 ) -> None:
     """The ledger's terminal-outcome write OUTSIDE the finalize TX — a
     cancel between the node flip and the ledger write leaves
-    node=succeeded with ledger=running. THE FIX: the ledger terminal write
+    node=succeeded with ledger=running. THE CONTRACT: the ledger terminal write
     is IN the finalize TX (the shipped shape: ``_run_tx1`` co-locates
     them). The split-write variant reds."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -502,7 +502,7 @@ async def test_pin_7_map_children_own_ledger_rows(
     """Two map children of ONE step key (map_index 0 and 1, first attempt
     each) claim DIFFERENT ledger rows and terminalize WITHOUT overwrite:
     each replay returns ITS OWN child's result (the iteration ledger's key contract; the
-    recorded finding — an arbiter omitting map_index — is the RED scenario, the
+    contract — an arbiter omitting map_index — is the RED scenario, the
     shipped statements are what the scenario mutates)."""
     flow_id = new_uuid()
     node_0, node_1 = new_uuid(), new_uuid()

@@ -435,8 +435,8 @@ async def test_pg_enqueue_batch_inserts_admitted_items_only() -> None:
     assert err.admitted_count == 2
     # One aggregated count query for the whole (mixed-actor) batch - the
     # per-actor admission never degrades to one count per actor (the
-    # unit-tier pin for the aggregation TI7's integration test used to
-    # cover at the client layer).
+    # unit-tier pin for the aggregation TI7's integration test
+    # covers at the client layer).
     count_calls = [c for c in conn.fetch_calls if "GROUP BY actor" in c[0]]
     assert len(count_calls) == 1
     # The INSERT statement ran exactly once and carried only the admitted

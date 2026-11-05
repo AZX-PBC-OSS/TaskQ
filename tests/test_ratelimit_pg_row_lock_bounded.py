@@ -994,7 +994,7 @@ class TestAdmissionLockBudgetReDerivesTheDispatcherPoolBound:
 
     There is deliberately NO settings-level cross-field validator here:
     refusing a valid configuration would be strictly weaker than
-    honouring it. (This class previously pinned the pre-reconciliation
+    honouring it. (An earlier shape of this class pinned the pre-reconciliation
     defect - a widened budget silently accepted and then truncated at
     run time; its negative form is ungreenable now that the derivation
     exists, and its own failure message instructed this rewrite.)

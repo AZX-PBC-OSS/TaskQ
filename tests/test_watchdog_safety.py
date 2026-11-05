@@ -1919,7 +1919,7 @@ async def test_scheduled_wake_backstop_tolerates_then_goes_fatal(
 # family: server-side cancels, admin shutdown, crash recovery, connection
 # saturation, transaction-rollback states, session timeouts. Every one of
 # them is "PG is having a moment; retry next tick", and every one of them
-# used to be a coin-flip away from crashing a loop that enumerated only
+# is a coin-flip away from crashing a loop that enumerates only
 # the OSError flavours. The taxonomy pin locks the classification facts
 # the set relies on (so an asyncpg re-parenting breaks it loudly), and the
 # parametrized behavioral test drives each shape through a real loop.
@@ -1934,7 +1934,7 @@ def test_transient_pg_error_taxonomy_facts() -> None:
     from taskq.worker._transient import TRANSIENT_PG_ERRORS
 
     # None of the OperatorIntervention/InsufficientResources/TransactionRollback
-    # shapes are covered by the OSError-only tuples loops used to enumerate;
+    # shapes are covered by an OSError-only enumeration;
     # that is exactly why they must be named explicitly.
     for cls in (
         asyncpg.QueryCanceledError,

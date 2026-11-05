@@ -1,4 +1,4 @@
-"""SQL-exception routing pins: the (site x family) cells that used to leak.
+"""SQL-exception routing pins: the (site x family) refusal cells.
 
 Three leak classes this file pins, each against the shared classification
 doctrine in ``taskq.worker._transient`` ("any shape a site learns, every

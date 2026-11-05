@@ -544,8 +544,8 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
     reds were the budget firing on a healthy run: asyncpg's protocol timer
     (``protocol.pyx`` ``_on_timeout``) throws the bare TimeoutError when a
     co-tenanted runner lets a ~1ms round trip outlive 0.1s — observed on the
-    coverage/test lanes (run 36768177771, the red in ``heartbeat_jobs``
-    itself), then AGAIN on this serial lane post-move (run 37583577754, same
+    coverage/test lanes (the red in ``heartbeat_jobs``
+    itself), then again on the serial lane post-move (the same
     statement, same function). One budget firing in 90 tests on a quiet lane
     is the signature of a timer with no headroom, not a hung pool — the
     dispatch (24 direct-pool claims) succeeded immediately before it. So the

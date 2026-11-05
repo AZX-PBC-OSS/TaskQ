@@ -19,7 +19,7 @@ What is pinned and why:
   ``lock_expires_at`` in place (they are the audit trail of which worker was
   abandoned), so a zombie actor's stale abandon can still name the row; only
   this clause stops it from writing a second terminal state over an
-  already-terminal row (a cancelled, crashed, failed or previously-abandoned
+  already-terminal row (a cancelled, crashed, failed or earlier-abandoned
   one alike).
 * ``cancel_phase = 2`` -- abandon applies only once the cooperative protocol
   has escalated to phase 2. Below that the row's live holder still owns the

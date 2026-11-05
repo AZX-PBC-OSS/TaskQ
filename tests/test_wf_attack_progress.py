@@ -1,17 +1,11 @@
-"""THE PROGRESS SUBSYSTEM'S PINS — the progress contract's stated
-faces, each held against its rejected shape on the real PG. The two
-guards are the
-own repros of laws that HELD under attack — green, so they can never
-rot silently.
+"""The progress subsystem's pins — the progress contract's stated
+faces, each held against its rejected shape on the real PG.
 
-The surfaces under recorded finding: ``taskq/workflows/_progress.py`` (the
+The surfaces under pin: ``taskq/workflows/_progress.py`` (the
 emission op + the emitter) and migration ``01.00.28`` (the two-channel
 storage).
 
-THE FINDINGS (each landed live; the probe transcripts are in this pack's
-:
-
-* ``validate_emission`` validates LAX and stores the
+* ``validate_emission`` must never validate LAX and store the
   PRE-VALIDATION dict: ``{"page": "42"}`` against a declared
   ``page: int`` passes and the STRING lands in
   ``wf_node_progress.data``; undeclared extra keys pass and store.
@@ -163,7 +157,7 @@ async def test_f_prog_2a_out_of_domain_pct_refused_and_check_constrained(
 async def test_f_prog_2b_the_validated_path_is_the_only_write_path(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """THE ONE-DOOR LAW: every write path into the buffer passes the typed
+    """The one-door law: every write path into the buffer passes the typed
     gate. A public ``submit`` that skips it is a second, unguarded door —
     the pin probes the PUBLIC surface: if a ``submit`` exists at all, it
     must refuse a wrong shape exactly as ``validate_emission`` does."""
@@ -292,7 +286,7 @@ async def test_f_prog_4_the_refusal_classifies_permanent(
 async def test_guard_progress_writes_never_block_the_finalize(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """THE FINALIZE-UNAFFECTED LAW (decision e — the asymmetry, the
+    """The finalize-unaffected law (decision e — the asymmetry, the
     front's battery B1): a node whose EVERY flush fails still
     terminalizes normally — the failures are counted on the record
     (``write_errors``), the first loss warned, never raised into the
@@ -334,7 +328,7 @@ async def test_guard_progress_writes_never_block_the_finalize(
 async def test_guard_the_progress_lie_never_flips_the_terminal_state(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """THE PROGRESS-LIE FENCE (DH4/DH7, the battery's finding E1): a body
+    """The progress-lie fence (DH4/DH7, the battery's finding E1): a body
     reports pct=100 'done!' and the node then FAILS — the record shows
     FAILED with the 100% rendered INSIDE it, never 100%-running; a
     STRAGGLER emission landing after the terminal (the aclose race's

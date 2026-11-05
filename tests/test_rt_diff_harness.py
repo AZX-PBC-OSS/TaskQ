@@ -193,7 +193,7 @@ def _duration_bucket(ts: datetime | None, anchor: datetime | None, created_at: d
     load) rounds a 60 s claim lease to 59 on PG while the frozen mirror
     reads exactly 60 — the CI failure on
     test_diff_dispatch_max_concurrent_admission, whose only differing
-    observable was that one bucket. This is the third recorded finding of the
+    observable was that one bucket. This is the third face of the
     runner-latency-is-not-a-backend-difference class: the span fence (a
     write stamped inside the span reads "now" on both engines) and the
     per-side re-anchor (offsets measure from each side's own scenario start)
@@ -1362,7 +1362,7 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
     that). The field list derives
     from the dataclass itself - one source of truth - so adding a
     ``JobRow`` field without projecting it fails this test. The planted
-    row carries non-default values for the previously unprojected fields
+    row carries non-default values for the then-unprojected fields
     so their serialization is exercised, not just their key presence.
     """
     side = _memory_side(())

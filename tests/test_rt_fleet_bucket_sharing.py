@@ -141,7 +141,7 @@ async def test_redis_deny_then_allow_boundary_at_the_hint(private_redis_url: str
         # clock and starts only when the denial reply lands. A runner
         # stall between the two expires the window before the early
         # acquire runs, and the refill - the hint honored exactly -
-        # legitimately grants. Observed on CI (run 36353068609): a 5.5s
+        # legitimately grants. Observed on CI: a 5.5s
         # deschedule between the denial and the early acquire against a
         # 0.999s hint; the bucket had refilled to full (remaining=0.0 on
         # the grant), the stored state self-consistent end to end.

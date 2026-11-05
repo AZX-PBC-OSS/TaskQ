@@ -296,7 +296,7 @@ async def test_sweep_loop_backstop_tolerates_then_goes_fatal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Behavioral: a non-transient sweep error (a bug shape - e.g. the
-    constraint-violation class that used to crash the reclaim sweep) is
+    constraint-violation class that crashes the reclaim sweep unguarded) is
     ridden out loudly for a few consecutive iterations, then the loop dies
     deliberately: never an instant silent leader teardown (which leaves
     the cluster with no sweeper and orphans 'running' forever), never an

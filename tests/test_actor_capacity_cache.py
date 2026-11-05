@@ -586,7 +586,7 @@ def _stored_count(backend: InMemoryBackend, actor_name: str) -> int:
 async def test_enqueue_batch_streaming_honors_stored_limit() -> None:
     """The streaming chunked arm resolves the same effective caps as
     ``enqueue_batch``: a stored override on a literal-less actor must
-    refuse. The arm previously built its chunk args with no resolved
+    refuse. An arm that builds its chunk args with no resolved
     caps, so the actor carried ``max_pending=None`` and was invisible to
     the backend's cap groups - the override was silently unenforced while
     the docs claimed partition parity with ``enqueue_batch``.

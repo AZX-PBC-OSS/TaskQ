@@ -1,4 +1,4 @@
-"""THE 3AM PINS — the operator-truth faces fenced (the
+"""The 3am pins — the operator-truth faces fenced (the
 observability lane's evidence, ).
 
 Each pin is a scenario gap's fence: the surface MUST say X, where X is the

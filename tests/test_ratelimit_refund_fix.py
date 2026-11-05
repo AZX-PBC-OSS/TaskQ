@@ -1,6 +1,6 @@
 """Tests for the SlidingWindow log-style refund fix (memory + postgres).
 
-Regression: ``refund()`` previously dispatched ``pass`` (no-op) for the
+Regression: ``refund()`` dispatching ``pass`` (no-op) for the
 ``("memory", "log")`` and ``("postgres", "log")`` cases, so a refunded
 slot was never freed -- capacity stayed artificially constrained until
 the timestamp slid out of the window.  These tests verify the slot is
@@ -49,7 +49,7 @@ def _sw_log(limit: int = 2, window: timedelta = timedelta(seconds=60)) -> Slidin
 
 async def test_refund_log_memory_frees_slot() -> None:
     """Refunding an allowed memory-log decision releases the slot so a
-    previously-denied acquire succeeds immediately."""
+    denied acquire succeeds immediately after the refund."""
     sw = _sw_log(limit=2)
     clock = FakeClock(_START)
 

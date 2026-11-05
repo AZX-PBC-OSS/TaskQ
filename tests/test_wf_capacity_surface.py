@@ -1,4 +1,4 @@
-"""THE CAPACITY-SURFACE PINS: the workflow actor's declared capacity
+"""The capacity-surface pins: the workflow actor's declared capacity
 terms (``max_concurrent`` / ``max_pending`` / ``reservations`` /
 ``result_ttl``) — the declaration→projection leg the engine's per-actor
 claim arithmetic already reads.
@@ -689,7 +689,7 @@ def test_empty_consumed_set_leaves_the_gate_silent() -> None:
 
 
 def test_app_declared_strict_queues_refuse_the_boot() -> None:
-    """THE APP-DECLARED FACE of the strict gate: a WorkflowApp declaring
+    """The app-declared face of the strict gate: a WorkflowApp declaring
     ``queues_strict=True`` carries the contract in CODE — the boot
     REFUSES with NO env set at all. The fleet that needs this face
     structurally cannot use the env var (its workgroup children each
@@ -720,7 +720,7 @@ def test_app_declared_strict_queues_refuse_the_boot() -> None:
 
 
 def test_app_without_declaration_keeps_the_warning_arm() -> None:
-    """THE DEFAULT ARM, unchanged (the additive-only law): a registered
+    """The default arm, unchanged (the additive-only law): a registered
     app with NO declaration and no env keeps the ONE aggregated warning;
     the boot proceeds. The declaration's absence is today's behavior —
     even with an app in the registry (the getattr default's face)."""
@@ -747,7 +747,7 @@ def test_app_without_declaration_keeps_the_warning_arm() -> None:
 
 
 def test_env_only_strict_still_refuses_with_an_undeclared_app() -> None:
-    """THE ENV FACE, preserved (today's behavior): ``TASKQ_QUEUES_STRICT``
+    """The env face, preserved (today's behavior): ``TASKQ_QUEUES_STRICT``
     refuses the boot even when a registered app did NOT declare strict —
     the env can only ADD strictness, and the env-only fleet loses
     nothing."""
@@ -839,7 +839,7 @@ def test_consumed_cohorts_boot_under_env_strict() -> None:
 
 
 def test_heterogeneous_fleet_child_keeps_the_warning_arm() -> None:
-    """THE HETEROGENEOUS FLEET's per-worker law: a child whose OWN
+    """The heterogeneous fleet's per-worker law: a child whose OWN
     cohorts are consumed, while a SIBLING worker serves another queue,
     stays on the WARNING arm when nothing declares strict — the check is
     per-worker over THIS worker's projected cohorts, and the sibling's
@@ -872,7 +872,7 @@ def test_heterogeneous_fleet_child_keeps_the_warning_arm() -> None:
     assert warnings[0]["cohorts"] == {"wf-sibling": "remote"}, warnings[0]
 
 
-# ── (f) the hold round recorded findings' pins ────────────────────────────
+# ── the reservation/capacity contract's pins ────────────────────────────
 
 
 def test_shared_reservation_boots_clean_on_a_non_default_schema() -> None:
@@ -881,9 +881,9 @@ def test_shared_reservation_boots_clean_on_a_non_default_schema() -> None:
     (the vanilla pass AND the wf pass's rebind at the SAME registry) and
     must stay CLEAN on a non-default schema: ONE rebind doctrine (the
     vanilla pass rebinds too, the same ``rebind_schema`` at the same
-    phase). The pre-fix split (the vanilla pass registered the RAW
-    declaration, the wf pass the rebind) died in the registry's
-    ``_same_config`` schema comparison — the boot REFUSED."""
+    phase). A split registration (the vanilla pass registering the RAW
+    declaration, the wf pass the rebind) dies in the registry's
+    ``_same_config`` schema comparison — the boot REFUSES."""
     from datetime import timedelta
 
     from pydantic import BaseModel, TypeAdapter
@@ -994,8 +994,8 @@ def test_collect_dedup_ignores_schema_but_heeds_keyed_and_lock_lease() -> None:
 def test_collect_dedup_refuses_differing_keyed_and_lock_lease() -> None:
     """H-A9's teeth: the dedup's identity HEEDS ``keyed`` — two same-name
     declarations differing on it are the refused defect (ValueError,
-    both configs named). The pre-fix dedup ignored it (and compared the
-    rebind-away schema)."""
+    both configs named). A dedup that ignored ``keyed`` (and compared
+    the rebind-away schema) admits the defect."""
     from datetime import timedelta
 
     from taskq.workflows._worker_execution import collect_workflow_reservations
@@ -1189,8 +1189,8 @@ def test_equal_terms_different_reservation_instances_do_not_conflict() -> None:
     nodes, one actor name, equal ``max_concurrent``/``result_ttl``,
     DIFFERENT reservation instances of the SAME (name, slots, lease):
     NO conflict (the reservation's identity is the collect's own
-    name-keyed law — one registration). The pre-fix law compared the
-    INSTANCES (no ``__eq__``): equal configs were false conflicts."""
+    name-keyed law — one registration). A law that compares the
+    INSTANCES (no ``__eq__``) reads equal configs as false conflicts."""
     from taskq.workflows._worker_execution import (
         collect_workflow_reservations,
         project_workflow_actor_configs,
@@ -1504,12 +1504,12 @@ def test_escalation_cohort_projects() -> None:
 
 
 async def test_a_workflow_reservation_rebinds_its_schema_at_registration() -> None:
-    """THE SCHEMA-AT-IMPORT SEAM (the flows demo's recorded finding): a
+    """The schema-at-import seam: a
     workflow-declared reservation is constructed at module import —
     before settings exist — so its schema is the declaration's default,
     not the deployment's. The bootstrap's registration must rebind a
     COPY (the declaration never mutates — the same module-level instance
-    may be registered by many processes); the pre-fix shape filtered
+    may be registered by many processes); a schema-blind filter
     silently, the guard failing closed invisibly: registered, never
     slotted, every acquire denied forever."""
     from datetime import timedelta
@@ -1577,7 +1577,7 @@ def test_the_explicit_registry_door_boots_clean_on_the_docs_pattern() -> None:
     vanilla pass AND the wf pass) register the REBOUND copy, and the
     pre-registered raw instance REBINDS at the register step — the
     resolved registry's entries are ALWAYS settings-schema-bound. The
-    pre-fix shape died in ``_same_config``'s schema comparison (the raw
+    schema-blind shape dies in ``_same_config``'s schema comparison (the raw
     instance's ``taskq`` default vs the deployment's ``acme``): the boot
     REFUSED — the docs' own pattern was a crash."""
     from datetime import timedelta
@@ -1636,7 +1636,7 @@ def test_the_explicit_registry_door_boots_clean_on_the_docs_pattern() -> None:
         {"TASKQ_QUEUES": "default", "TASKQ_SCHEMA_NAME": "acme"}
     )
     # THE VANILLA PASS (the real bootstrap function) against the EXPLICIT
-    # registry — the pre-fix shape raised ValueError here.
+    # registry — a schema-blind shape raises ValueError here.
     _di_registry, resolved = _bootstrap_guards_and_registries(
         settings, {"vanilla-sharer": vanilla_ref}, None, None, explicit
     )
@@ -1853,7 +1853,7 @@ def _declare_the_doomed_app() -> None:
     """Declare the doomed app in THIS frame: the projection records its
     compile (the D1 cache), and on return the app object itself dies
     (the registry is weak) — its graph survives in ``_compiled`` as the
-    ORPHAN the hold round recorded finding names (the cache has no eviction)."""
+    ORPHAN shape (the cache has no eviction)."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
     doomed = WorkflowApp()
@@ -1917,7 +1917,7 @@ def test_the_dropped_workflows_ghost_stops_registering_the_boot_stays_clean() ->
     project_workflow_actor_configs()
 
     # THE RATE-LIMIT COLLECT: no ghost refusal — the LIVE config is what
-    # registers (pre-fix red: the orphan's capacity-5 bucket registered
+    # registers (the orphan's capacity-5 bucket registers
     # first, the live capacity-9 raised the conflict ValueError).
     registry = RateLimitRegistry()
     registered, _unknown = collect_workflow_rate_limits(registry)
@@ -2033,7 +2033,7 @@ def test_map_body_handle_flows_the_code_owner() -> None:
     """The review's blocker, the map arm: a ``capacity_owner="code"``
     handle wired as the MAP body flows its owner into the node's decl
     under the SAME handle-terms law as the caps — the projected
-    ``ActorConfig`` for THAT cohort reads "code". The pre-fix shape
+    ``ActorConfig`` for THAT cohort reads "code". A shape without the sync
     honored the handle's ``max_concurrent`` and silently dropped the
     owner (the opt-in no-op with zero signal)."""
     app = WorkflowApp()
@@ -2179,7 +2179,7 @@ def test_the_code_only_handle_is_never_silent() -> None:
     caps) is a capacity declaration — wired as the MAP body (owner only,
     the caps' slots stay unset), refused NAMED at the route's placement
     override and the chain (the surfaces that would drop it). Never the
-    zero-signal no-op the pre-fix shape was."""
+    zero-signal no-op shape."""
     from taskq.workflows._worker_execution import project_workflow_actor_configs as project
     from taskq.workflows.api._graph import RouteArm, WorkflowBuildError
 

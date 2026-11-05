@@ -1,5 +1,5 @@
 # ruff: noqa: S608, TID251, ASYNC230  # Why: the brief mandates the dash-named attack4-* module; the seeded adversarial rows deliberately use uuid4 (a row whose id must NOT collinearly pack the B-tree); the open() writes the latency capture beside the test.
-"""THE ADMIN PAGE UNDER FIRE (the adversarial probes' suite).
+"""The admin page under fire (the adversarial probes' suite).
 
 The stranger's adversarial probes against the workflow-run explorer:
 NOT the builder's happy-path pins (tests/web_admin/test_workflows_page.py
@@ -295,7 +295,7 @@ async def test_a_stale_or_hostile_last_event_id_still_replays_the_full_snapshot(
     live_server: str,
     cursor: str,
 ) -> None:
-    """THE REPLAY CONTRACT under a hostile cursor: whatever the client
+    """The replay contract under a hostile cursor: whatever the client
     sends in Last-Event-ID (stale-huge, negative, garbage, float-notation),
     the NEXT frame over the wire is the run's FULL snapshot — a reconnect
     can never strand the page on a stale render, and none of them 500s."""
@@ -466,7 +466,7 @@ async def test_a_nodes_error_text_carrying_markup_is_escaped_everywhere(
     module_pg_pool: asyncpg.Pool,
     demo_env: types.ModuleType,
 ) -> None:
-    """THE XSS PROBE: a node's error text contains <script>, an
+    """The xSS probe: a node's error text contains <script>, an
     <img onerror>, and a literal </script> closer (the wf-boot JSON
     renders INSIDE a <script> tag — an unescaped closer is the injected
     script's exit). The page must render it ESCAPED (server), and the
@@ -565,7 +565,7 @@ async def test_every_action_button_lands_its_audit_row(
     module_pg_pool: asyncpg.Pool,
     demo_env: types.ModuleType,
 ) -> None:
-    """THE AUDIT TRAIL (G4) under fire: the resolve and the cancel each
+    """The audit trail (G4) under fire: the resolve and the cancel each
     land their admin_audit row, attributed, and the page's trail renders
     them. A button whose action is NOT a row is the unaccountable
     surface."""
@@ -638,7 +638,7 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
     module_pg_pool: asyncpg.Pool,
     demo_env: types.ModuleType,
 ) -> None:
-    """THE PINNED 50 ms BAND, re-measured on the ADVERSARIAL shape: a
+    """The pinned 50 ms band, re-measured on the adversarial shape: a
     run whose map has 200 children (the builder's band was measured on a
     small run — the collapsed hexagon must keep the panel cheap at map
     scale). MY OWN numbers, captured to the private temp captures root

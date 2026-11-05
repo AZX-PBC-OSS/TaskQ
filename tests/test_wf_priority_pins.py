@@ -1,4 +1,4 @@
-"""THE WF-PRIORITY PINS — the workflow surface's priority law.
+"""The wf-priority pins — the workflow surface's priority law.
 
 THE RECORDED FINDING (the deepest downstream consumer — a 36+-actor deployment,
 23 ``priority=`` enqueue-time call sites, a BACKLOG/interactive split):
@@ -218,7 +218,7 @@ async def test_run_priority_out_of_domain_refused() -> None:
 async def test_actor_declared_priority_lands_on_the_rows(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ACTOR DECLARATION'S RIDE: ``@app.actor(priority=5)`` wired via
+    """The actor declaration's ride: ``@app.actor(priority=5)`` wired via
     ``step()`` without its own priority — the node's rows land with the
     actor's declared priority in the ``jobs.priority`` COLUMN (asserted
     directly). The rejected variant: every wf INSERT omitted the column
@@ -245,9 +245,9 @@ async def test_actor_declared_priority_lands_on_the_rows(
 async def test_undeclared_priority_keeps_the_column_default_and_the_row_shape(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE BYTE-IDENTITY LAW (the fix's own non-negotiable): no
+    """The byte-identity law (the fix's own non-negotiable): no
     priority declared anywhere — the row's priority is the COLUMN DEFAULT
-    (0) and the row's metadata keeps the pre-fix shape exactly (the
+    (0) and the row's metadata keeps the unset shape exactly (the
     flow_id stamp, no new keys). The no-kwarg surface is today's surface,
     byte for byte."""
     app = WorkflowApp()
@@ -269,7 +269,7 @@ async def test_undeclared_priority_keeps_the_column_default_and_the_row_shape(
 
 @pytest.mark.integration
 async def test_the_precedence_law_all_four_levels(wf_schema: str, wf_pool: asyncpg.Pool) -> None:
-    """THE FOUR LEVELS, PINNED IN TWO RUNS of one workflow:
+    """The four levels, pinned in two runs of one workflow:
 
     * run A (no per-call): the actor-only step reads the ACTOR's 5; the
       step-declared step reads its own 7 (the step overrides the actor,
@@ -315,7 +315,7 @@ async def test_the_precedence_law_all_four_levels(wf_schema: str, wf_pool: async
 async def test_the_packaged_run_carries_the_per_call_override(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE PACKAGED DOOR (the ergonomic face): ``run(...,
+    """The packaged door (the ergonomic face): ``run(...,
     priority=6)`` — the run's rows land at 6, the same law the
     create_flow face carries (the packaged run is create + drive, not a
     second enqueue semantics)."""
@@ -343,7 +343,7 @@ async def test_the_packaged_run_carries_the_per_call_override(
 async def test_map_children_carry_the_source_step_declaration(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE MAP'S RIDE: the map's children share the source node's cohort
+    """The map's ride: the map's children share the source node's cohort
     (the capacity law's own arithmetic) — the source step's declared
     priority rides the children's rows AND the join's (the fork's rows
     land at the fork's declared priority; the join is the source's own
@@ -371,7 +371,7 @@ async def test_map_children_carry_the_source_step_declaration(
 async def test_route_arm_priority_overrides_down_and_the_join_stays_the_sources(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ARM'S DOWN-OVERRIDE (the RouteArm placement law's own
+    """The arm's down-override (the RouteArm placement law's own
     arithmetic — an arm overrides DOWN from the source, never up): the
     image arm's ``priority=9`` lands on the image rows ONLY; the bare
     audio arm keeps the source step's declared 2; the join (the SOURCE's
@@ -412,7 +412,7 @@ async def test_the_run_override_reaches_the_fleet_forks(
     wf_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """THE FLEET DOOR'S THREAD (production's own path): the run-level
+    """The fleet door's thread (production's own path): the run-level
     override stamps the ROOT row's metadata (``wf_priority``) at create;
     the worker-hosted door's bounded read (the SAME round trip the
     workflow-name stamp rides) resolves it, and the fork spawned at the
@@ -534,7 +534,7 @@ async def _stamp_capable_worker(conn: asyncpg.Connection, schema: str) -> UUID:
 async def test_the_claim_orders_the_high_priority_wf_row_first(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE RECORDED FINDING'S OWN SCENARIO, IN MINIATURE: a small pending
+    """The recorded finding's own scenario, in miniature: a small pending
     backlog (three vanilla rows, priority 0, older scheduled_at — they
     win every tie today) and ONE wf step carrying priority 5 → the
     dispatch's next round claims the wf row FIRST. The wf rows ride the
@@ -592,7 +592,7 @@ async def test_the_claim_orders_the_high_priority_wf_row_first(
 async def test_the_claim_orders_a_high_priority_vanilla_row_over_a_default_wf_row(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE NO-BIAS ARM: the wf surface adds no wf-favoring ordering — a
+    """The no-bias arm: the wf surface adds no wf-favoring ordering — a
     vanilla row at priority 5 beats a wf row at the column default (0)
     even though the wf row is NEWER. The column decides; the surface
     that declares it is irrelevant (the shared claim SQL's own law)."""
@@ -667,7 +667,7 @@ def test_the_vanilla_per_call_priority_law_is_untouched() -> None:
 async def test_the_loop_escalation_materializes_at_the_run_priority(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """FIX 1 (review 3a-ii — the reviewer's preferred remedy): the
+    """The declared-stamp door: the
     root's ``wf_priority`` stamp threads through the OUTBOX DRAIN —
     ``run(priority=10)`` whose loop exhausts enqueues the escalation
     through the outbox, and the drain's consumer INSERT lands the
@@ -919,7 +919,7 @@ async def test_the_adoption_drive_resolves_the_run_priority_from_the_row(
 async def test_the_adoption_drive_degrades_an_out_of_domain_stamp(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ADOPTION DOOR'S POST-PARSE DOMAIN CLAMP (the re-review's
+    """The adoption door's post-parse domain clamp (the re-review's
     one-line residual — fix 4's own law at the adopt door): a
     hand-crafted root stamp ``wf_priority="99999"`` — PARSEABLE, past the
     smallint domain — degrades to NO override at the ADOPT door too, and

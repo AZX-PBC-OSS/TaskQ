@@ -1,6 +1,6 @@
 """UX pins for the job-detail progress driver's poll path (the flicker fix).
 
-A polling-degraded page used to repaint the progress section on every poll
+The polling-degraded page must never repaint the progress section on every poll
 tick: the render rebuilt the entry's DOM per accepted snapshot, so an idle
 job whose worker re-flushed its (unchanged) snapshot with a bumped seq and
 a fresh ts flickered forever. Polling is a first-class mode of the portal,
@@ -127,8 +127,8 @@ const SCENARIOS = {
         ],
     },
     // The data monster: a progress_state whose data is nested 10000 deep.
-    // The fingerprint machinery (canonicalize + JSON.stringify) used to
-    // recurse unbounded and RangeError on exactly this shape, killing the
+    // The fingerprint machinery (canonicalize + JSON.stringify) must not
+    // recurse unbounded: unbounded, it RangeErrors on exactly this shape, killing the
     // poll's then-chain: the tick wrote nothing and every later tick was
     // swallowed by the same throw. Depth-capped, the tick renders and the
     // machine stands.
@@ -546,7 +546,7 @@ def test_a_seq_at_the_double_precision_boundary_still_renders() -> None:
 
 @requires_node
 def test_a_deeply_nested_data_monster_cannot_crash_the_fingerprint() -> None:
-    """The data monster: a progress state nested 10000 deep used to
+    """The data monster: a progress state nested 10000 deep must not
     RangeError the fingerprint's recursive canonicalize (and the
     JSON.stringify beneath it) - the poll's then-chain died mid-tick, the
     tick wrote nothing, and every later tick died the same way: the

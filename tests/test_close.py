@@ -1,7 +1,6 @@
 """Unit pins for the :mod:`taskq._close` bounded-close contract.
 
-Pins the promises the helpers' docstrings make but the suite previously
-never asserted: the helpers never raise EXCEPT ``asyncio.CancelledError``
+Pins the promises the helpers' docstrings make: the helpers never raise EXCEPT ``asyncio.CancelledError``
 (which must still propagate so outer cancellation unwinds promptly - a
 refactor to ``except BaseException`` would otherwise pass the whole suite);
 a hung conn close is terminated after the bound; and ``family`` selects the

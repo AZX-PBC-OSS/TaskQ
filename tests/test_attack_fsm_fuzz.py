@@ -767,8 +767,8 @@ def test_regression_ceiling_repeat_keeps_first_attempt_row() -> None:
     INSERT carries.  Shrunken from the differential counterexample in
     ``test_attack_fsm_fuzz_pg.py`` (plant at 32767 -> reclaim -> claim ->
     consuming RetryAfter -> claim -> succeed): the twin's terminal and
-    deferral writers used to append duplicates PG refused to store, so
-    the mirror's attempt ledger disagreed with the contract source's."""
+    deferral writers append no duplicates (PG refuses to store them), so
+    the mirror's attempt ledger agrees with the contract source's."""
     clock = FakeClock(_START)
     backend = InMemoryBackend(
         clock=clock, cancellation_grace_period=_GRACE, cleanup_grace_period=_GRACE

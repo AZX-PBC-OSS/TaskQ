@@ -1,7 +1,7 @@
 """Unit-level execution of ``backend/_sweeps.py``'s retention sweeps.
 
 The retention sweeps (`sweep_expired_results`, `sweep_expired_events`,
-`sweep_idle_keyed_rows`) previously executed only inside
+`sweep_idle_keyed_rows`) executed only inside
 integration-marked tests, so the SQL *rendering* and the boundary
 validation were unpinned at unit level. Against a stub connection this
 module runs the real function bodies and pins:

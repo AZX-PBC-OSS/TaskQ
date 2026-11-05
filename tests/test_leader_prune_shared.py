@@ -367,7 +367,7 @@ class _WriteViolatesNTimes(_ScriptedConn):
 
 
 async def test_a_non_deadline_batch_failure_counts_against_the_sizer_and_raises() -> None:
-    """THE pin: a repeated non-deadline failure arms the reduced tier.
+    """The pin: a repeated non-deadline failure arms the reduced tier.
 
     The breaker's control signal is an aborted batch, and a batch that
     aborts on a UniqueViolation (or any other transient error the
@@ -475,9 +475,9 @@ async def test_an_unexpected_prune_batch_error_is_counted_on_the_metric_plane(
     """A non-deadline prune batch failure must surface on a counter.
 
     The deadline family has ``sweep_timeouts``; an archive
-    UniqueViolation-class error used to have NOTHING - the prune loop
-    logged, backed off, and retried, and every metric read healthy while
-    the drain silently stopped. The counter must name the sweep and fire
+    UniqueViolation-class error has its own counter - without it the prune loop
+    logs, backs off, and retries, and every metric reads healthy while
+    the drain silently stops. The counter names the sweep and fires
     on the failure path, so a silent stoppage can never be invisible again.
     """
     sizer = SweepBatchSizer(default_size=4, divisor=4, failure_threshold=3, window_secs=600.0)

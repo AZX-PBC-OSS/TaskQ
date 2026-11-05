@@ -1,10 +1,9 @@
 """Coverage tests for taskq.web.admin.history (history list + stats routes).
 
-The module previously shipped as ``_history.py``, whose leading underscore
-kept it off the admin factory's auto-discovery path, so these tests had to
-attach it explicitly. The rename to ``history.py`` (the /history panel
-never being registered on any router) puts it on the auto-discovery path
-``create_router`` already walks, so the routes arrive with the router.
+The module lives at ``history.py`` (no leading underscore), so it sits on
+the admin factory's auto-discovery path ``create_router`` already walks
+(the /history panel is registered by its own ``register()``, the routes
+arrive with the router).
 
 A configurable stub pool/connection lets us drive the cursor-pagination and
 summary branches that the default empty ``StubPool`` cannot reach.

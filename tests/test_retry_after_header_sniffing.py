@@ -442,8 +442,8 @@ def test_jitter_zero_keeps_exact_retry_after_compliance() -> None:
 
 #: The tracemalloc noise floor, from MEASURED bands: batch-to-batch
 #: bookkeeping jitter observed on CI runners is tens of bytes over 10k
-#: calls (32B in red run 37263479699; 0B in 10 consecutive local runs) —
-#: noise, not signal. The CI's recorded finding re-measured the ceiling
+#: calls (32B observed on a red CI leg; 0B in 10 consecutive local runs) —
+#: noise, not signal. The CI leg re-measured the ceiling
 #: under the coverage leg's tracer on a co-tenant runner: 7007B over the
 #: second batch (0.7B/call — arithmetic no real allocation can produce;
 #: Python's smallest meaningful per-call object is ≥ 32B) against the
@@ -491,7 +491,7 @@ def test_miss_path_allocates_nothing() -> None:
     band regardless of what the first batch absorbed. The once-pinned
     zero-growth assertion over-tightened past the signal: tracemalloc's
     own bookkeeping jitters by tens of bytes per batch on CI runners
-    (32B over 10k calls, red run 37263479699), which is noise. A
+    (32B observed over 10k calls on the red leg), which is noise. A
     genuine per-call allocation grows linearly (~320KB over the same
     calls) and still reds; the two-batch shape exists so one-off
     interpreter/tracer warm-up artifacts land in the first batch and

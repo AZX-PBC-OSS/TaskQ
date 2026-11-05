@@ -110,7 +110,7 @@ def test_advance_keeps_the_maximum_not_the_last_write() -> None:
 
 
 def test_bound_cannot_outlive_the_reset_window() -> None:
-    """THE JITTER PIN - the mutation target. The bound is forgotten once
+    """The jitter pin - the mutation target. The bound is forgotten once
     the reset window (the only knob) has elapsed, so a cursor stranded by
     any divergence between claim order and id order heals within one
     window. A cursor that never expires (the jitter broken) reds this."""

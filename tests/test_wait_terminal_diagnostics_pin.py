@@ -1,7 +1,7 @@
 """Pin: ``wait_terminal_with_diagnostics``'s timeout carries its evidence.
 
 The PG-restart chaos test's recovery wait (``handle.wait(timeout=180)``)
-failed once in CI (run 35748283472) as a bare ``TimeoutError`` from
+failed once in CI as a bare ``TimeoutError`` from
 ``JobHandle._fetch_row_bounded_by`` - and the failure carried nothing that
 could attribute it: no worker logs, no last observed row, so "the reclaim
 never happened", "the attempt starved mid-run", and "the replacement

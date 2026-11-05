@@ -1,4 +1,4 @@
-"""THE DECLARED-TERM SEAMS: the wiring faces' stated laws where a term is
+"""The declared-term seams: the wiring faces' stated laws where a term is
 declared twice — once by an actor handle, once by the wiring site — or
 declared in a second accepted spelling.
 
@@ -57,7 +57,7 @@ async def _item_arm(ctx: object, item: Item) -> Item:
 
 
 def test_a_step_declaring_three_attempts_overrides_a_handle_declaring_seven() -> None:
-    """THE EXPLICIT-THREE SEAM: ``step(max_attempts=3)`` is a DECLARED
+    """The explicit-three seam: ``step(max_attempts=3)`` is a DECLARED
     three — the same number as the step's own default, which is why the
     fold's sentinel comparison cannot see it. The wiring site's explicit
     term overrides the handle's seven, exactly as every other explicit
@@ -104,7 +104,7 @@ def test_a_workflow_capture_policy_and_capture_alias_disagreeing_is_refused() ->
 
 
 def test_the_capture_alias_accepts_agreeing_and_single_declarations() -> None:
-    """THE REFUSAL'S OTHER SIDE: only two DECLARED values that disagree
+    """The refusal's other side: only two DECLARED values that disagree
     are refused. Unset both (the errors-only default), one spelling
     declared (that value wins), and both declared with the SAME value are
     all accepted — the None sentinel separates "unset" from "declared the
@@ -140,7 +140,7 @@ def test_the_capture_alias_accepts_agreeing_and_single_declarations() -> None:
 
 
 def test_a_route_arms_timedelta_result_ttl_projects_as_seconds() -> None:
-    """THE DURATION LAW'S ROUTE-ARM FACE: ``RouteArm(result_ttl=…)`` is a
+    """The duration law's route-arm face: ``RouteArm(result_ttl=…)`` is a
     second-denominated term, so the duration law's "every face" accepts a
     ``timedelta`` and normalizes it to the seconds number that is the only
     stored form. The arm's terms project onto its effective cohort's

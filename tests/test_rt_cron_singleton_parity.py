@@ -109,7 +109,7 @@ class TestSingletonParity:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """THE parity pin. A running singleton job blocks the actor's due
+        """The parity pin. A running singleton job blocks the actor's due
         schedule: the tick enqueues nothing, advances the schedule strictly
         into the future, and records neither a fire (``last_fired_at``
         stays NULL) nor a strike. Today the tick enqueues a second active

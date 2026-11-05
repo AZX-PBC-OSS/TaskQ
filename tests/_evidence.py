@@ -1,4 +1,4 @@
-"""THE EVIDENCE BRANCH'S READ FACE (the extraction's own — the estate
+"""The evidence branch's read face (the extraction's own — the estate
 lives on ``evidence/taskqflow``, the reviewable PR stops carrying it):
 the pins that read the measurement estate's FILES read them from the
 branch (the same files, the same paths, one indirection). The sha

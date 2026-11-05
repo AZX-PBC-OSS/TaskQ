@@ -250,7 +250,7 @@ async def test_map_retry_barrier(
         "no decrement mid-ladder: the join counts children, not attempts"
     )
     assert await fire_count(wf_conn, wf_schema, join_id) == 0, (
-        "the attempt-counting variant fires here (the recorded finding)"
+        "the attempt-counting variant fires here (the contract)"
     )
 
     # (b) ATTEMPT-FAILURE != NODE-FAILURE — the parent does NOT fail when a

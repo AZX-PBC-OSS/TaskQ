@@ -199,7 +199,7 @@ _RERUN_BUDGET_S = 460.0
 #: independent of the weather this cell arms and answers to exactly one
 #: bound, the harness's own readiness gate (``_harness.wait_for_socket``:
 #: 30s) awaited before the cut exists. NONE of it rides in this budget
-#: any more - the CI red that forced the redesign (run 36401866377):
+#: any more - the CI red that forced the redesign:
 #: enqueued mid-cut before B's gate, the bootstrap rode INSIDE the old
 #: 63s budget at full weight and outgrew it on a loaded -n 2 runner
 #: (the probe stuck at ``status='running'`` past the deadline). The
@@ -354,7 +354,7 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         # weather this cell is about to arm and answers to exactly one
         # bound: the harness's own readiness gate (30s). No part of it
         # rides in the probe's budget below - the CI red that forced
-        # this shape (run 36401866377): enqueued mid-cut before B's
+        # this shape (the CI red): enqueued mid-cut before B's
         # gate, the bootstrap rode INSIDE the old 63s budget at full
         # weight and outgrew it on a loaded -n 2 runner. B still spawns
         # only after A's claim is observed: A remains the claimer by

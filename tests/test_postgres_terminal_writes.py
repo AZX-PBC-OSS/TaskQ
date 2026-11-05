@@ -1360,9 +1360,10 @@ class TestMarkSucceededResultExpiryFallback:
     stored override → fallback literal ($7) → enqueue-time value.
 
     Regression tier for the cleared-result_ttl bug: with the stored
-    override cleared to NULL, the terminal write used to keep the
-    enqueue-pinned expiry, so a job that sat in the queue longer than
-    its TTL completed already expired and the sweep ate its result
+    override cleared to NULL, the terminal write must re-read the
+    row's effective ttl (NULL -> the default), never keep the
+    enqueue-pinned expiry — keeping it, a job that sits in the queue longer than
+    its TTL completes already expired and the sweep eats its result
     milliseconds later.
     """
 

@@ -695,7 +695,7 @@ async def test_tc1_forcing_recovery(
     CancelledError). Oracle: FORCING escalates the row to phase 2 and
     re-stamps the entry OPERATOR; RELEASING writes mark_cancelled (the
     operator's own verdict, #596's contract - NEVER an abandon, which is
-    the pre-fix verdict this assertion refuses to tolerate); job not
+    the false verdict this assertion refuses to tolerate); job not
     running.
     """
     deps = clean_jobs_app.deps
@@ -1162,7 +1162,7 @@ async def test_tn1_signal_handler_must_not_await(
     # `add_signal_handler` invokes its callback synchronously, in the signal
     # context: a coroutine function would never run. This assertion is
     # the whole check - a companion scan for `"await " not in getsource(...)`
-    # used to follow it and could not fail. Python rejects `await` in a
+    # could not fail beside it. Python rejects `await` in a
     # non-async def at compile time ("SyntaxError: 'await' outside async
     # function"), so given the assertion above, the substring could only ever
     # have appeared inside a nested `async def` (legal, and not a defect) or

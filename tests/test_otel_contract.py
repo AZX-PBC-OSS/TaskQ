@@ -6,8 +6,8 @@ version the suite ran green on. These tests fail loudly if a version inside
 that range stops providing what TaskQ relies on, instead of letting it surface
 as an ImportError or an AttributeError somewhere deep in a metrics assertion.
 
-They exist mainly because of one seam. `src/taskq/testing/otel.py` used to
-import `HistogramDataPoint` and `NumberDataPoint` from
+They exist mainly because of one seam. `src/taskq/testing/otel.py` must
+not import `HistogramDataPoint` and `NumberDataPoint` from
 `opentelemetry.sdk.metrics._internal.point`, which carries no stability
 guarantee at all: a private module can be renamed in any release, including a
 patch. Both names turn out to be re-exported from the public
@@ -106,9 +106,10 @@ def test_prometheus_reader_accepts_the_registry_kwarg() -> None:
 
 # ── The memoized-tracer contract ───────────────────────────────────────
 #
-# ``get_tracer()`` used to call ``importlib.metadata.version`` per span
-# (~320µs, benchmarks/ab_otel_hotspots.py); it now resolves the tracer
-# once per process. The pins below hold the two halves of that design:
+# ``get_tracer()`` resolves the tracer
+# once per process, never per span (a per-span
+# ``importlib.metadata.version`` call costs ~320µs,
+# benchmarks/ab_otel_hotspots.py). The pins below hold the two halves of that design:
 # the memo actually memoizes, and - the part that makes memoization
 # legal - a tracer resolved BEFORE an SDK registers still rebinds to the
 # real one afterwards (the API's ProxyTracer re-checks the global

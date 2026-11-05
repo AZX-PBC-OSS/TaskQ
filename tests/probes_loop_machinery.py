@@ -1,4 +1,4 @@
-"""THE LOOP MACHINERY'S ADVERSARIAL PINS:
+"""The loop machinery's adversarial pins:
 load: the escalation path, the ladder classes, the answer-queue cursor
 through a retry, the body-controlled infra classifier.
 

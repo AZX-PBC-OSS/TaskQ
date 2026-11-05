@@ -183,7 +183,7 @@ async def _drive_one_sample(
 
 
 async def test_backlog_gauges_fed_with_leadership_held_by_nobody() -> None:
-    """THE loop-level pin for hosting nothing behind the gate: ``is_leader``
+    """The loop-level pin for hosting nothing behind the gate: ``is_leader``
     is NEVER set on the deps - the exact condition of the second-schema
     lock loss - and the backlog detectors must still report. A leader gate
     reintroduced here is the detector hosted behind the failure it

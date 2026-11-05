@@ -1,15 +1,10 @@
-"""the emit/chain subsystem's landed findings.
+"""the emit/chain subsystem's pins.
 
-Each pin's rejected shape was reproduced live against the real
-database. Every pin below was written as the SAFE behavior, executed
-against the real PG, and watched fail before its fix landed — the fix
-flipped it green; the assertion stands as the permanent guard.
+Each pin's rejected shape is reproduced live against the real
+database; the assertion stands as the permanent guard.
 
-The surfaces under recorded finding: ``taskq/workflows/_emit.py`` (the emit
+The surfaces under pin: ``taskq/workflows/_emit.py`` (the emit
 tx) and ``taskq/workflows/chain.py`` (the router's record identity).
-
-THE FINDINGS (each landed live; the probe transcripts are in this pack's
-:
 
 * a resume that re-emits a COMMITTED page (or re-pages at a
   different width) dies on a RAW ``asyncpg.UniqueViolationError``,

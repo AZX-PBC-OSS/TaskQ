@@ -408,26 +408,26 @@ async def test_election_loop_degrades_when_advisory_lock_privilege_is_refused(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
     """A winning election whose courtesy ``pg_try_advisory_lock`` probe hits a
-    refused privilege (``InsufficientPrivilegeError``, as a managed Postgres
-    deployment that restricts advisory-lock functions would raise) must not
-    crash the election loop.
+        refused privilege (``InsufficientPrivilegeError``, as a managed Postgres
+        deployment that restricts advisory-lock functions would raise) must not
+        crash the election loop.
 
-    ``_try_election_lock`` only catches ``TRANSIENT_PG_ERRORS`` (see
-    ``leader.py``): a privilege error is not in that tuple, so it propagates
-    out of ``_try_election_lock``, through ``_assume_leadership`` (called at
-    line ~745, OUTSIDE the try/except that guards the election statement
-    itself), and out of ``_election_loop`` entirely unhandled. In production
-    that loop runs inside ``MaintenanceLeader.run()``'s ``TaskGroup``
-    alongside the watchdog, cron, sweep, prune, and every other leader-gated
-    loop - one task raising cancels every sibling and tears down the whole
-    maintenance plane, exactly the failure this project's own docstring
-    on ``_try_election_lock`` says a courtesy probe must never cause
-    ("a miss ... must never again gate the election it used to decide").
+        ``_try_election_lock`` only catches ``TRANSIENT_PG_ERRORS`` (see
+        ``leader.py``): a privilege error is not in that tuple, so it propagates
+        out of ``_try_election_lock``, through ``_assume_leadership`` (called at
+        line ~745, OUTSIDE the try/except that guards the election statement
+        itself), and out of ``_election_loop`` entirely unhandled. In production
+        that loop runs inside ``MaintenanceLeader.run()``'s ``TaskGroup``
+        alongside the watchdog, cron, sweep, prune, and every other leader-gated
+        loop - one task raising cancels every sibling and tears down the whole
+        maintenance plane, exactly the failure this project's own docstring
+        on ``_try_election_lock`` says a courtesy probe must never cause
+    ("a miss ... must never gate the election").
 
-    This is the same defect shape reported for the retired
-    ``pg_terminate_backend`` recovery path (a refused privilege escaping as
-    a raw driver error instead of degrading to follower) - it has resurfaced
-    at the new call site the row-lease redesign introduced.
+        This is the same defect shape reported for the retired
+        ``pg_terminate_backend`` recovery path (a refused privilege escaping as
+        a raw driver error instead of degrading to follower) - it has resurfaced
+        at the new call site the row-lease redesign introduced.
     """
 
     class _PrivilegeRefusedConn(FakeConn):
@@ -1909,14 +1909,14 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
     latched = [e for e in captured if e["event"] == "prune-skipped-day-latch"]
     assert latched, (
         "the day-latch deferred the second fire SILENTLY — the D2 soak's "
-        "recorded finding (the surfaced truth: the skip-reason states the latch "
+        "contract (the surfaced truth: the skip-reason states the latch "
         "and the next fire)"
     )
     assert latched[0]["next_fire"]
 
 
 async def test_prune_loop_sub_daily_retention_lane_checks_every_tick(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
-    """THE RETENTION-CHECK LANE (the D2 soak's P1 fix (b) — the
+    """The retention-check lane (the D2 soak's P1 fix (b) — the
     at-most-daily class is DEAD): a SUB-DAILY prune cron with a 180 s
     retention and rows past retention is CHECKED EVERY LEADER TICK — the
     arm attempts (and prunes) on successive wakes within the observation
@@ -2060,9 +2060,9 @@ async def test_archive_expiry_loop_gates_on_is_leader() -> None:
 
 # ── Prune family: bounded, interruptible, retrying batches ──────────
 #
-# The once-a-day prune used to be the one maintenance family outside the
-# repo's bounded-per-transaction discipline: bare while-True drains with
-# no shutdown check (a SIGTERM mid-drain hung MaintenanceLeader's
+# The once-a-day prune is under the repo's bounded-per-transaction
+# discipline, like every maintenance family: bare while-True drains with
+# no shutdown check (a SIGTERM mid-drain hangs MaintenanceLeader's
 # TaskGroup for the whole backlog while holding the prune advisory lock
 # and a pool connection), no per-batch statement timeout or batch-size
 # breaker (a 10 000-row archive CTE under the dispatcher pool's 5 s
@@ -4203,10 +4203,10 @@ async def test_the_hand_back_warn_does_not_fire_when_the_resign_did_not_land(
     fire only when the resign actually DELETED the row.
 
     The review run logged 20 of those WARNs against zero successful
-    resigns: the WARN used to follow the best-effort ``resign()``
-    unconditionally, and a resign with no live conn returns silently,
-    so the runbook's "the fleet is leading from elsewhere" advice was
-    pointed at a row nobody had resigned. The gate is ``resign()``'s own
+    resigns: the WARN must follow a resign that actually happened -
+    a resign with no live conn returns silently,
+    and warning anyway points the runbook's "the fleet is leading from
+    elsewhere" advice at a row nobody had resigned. The gate is ``resign()``'s own
     return: the delete count from the command tag, not the absence of
     an error (a fenced no-op is success-shaped).
     """

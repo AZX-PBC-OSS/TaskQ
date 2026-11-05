@@ -184,7 +184,7 @@ trigger's envelope names the app's `/taskq/...` path.
 
 ```bash
 curl -X POST http://localhost:8000/workflows/doc_ingest/run
-# → 202 {"run_id": "...", "url": "/taskq/workflows/..."}   (the F3 envelope)
+# → 202 {"run_id": "...", "url": "/taskq/workflows/..."}   (the enqueue envelope)
 ```
 
 Open the returned URL ON THE APP (:8000) — the run page renders the

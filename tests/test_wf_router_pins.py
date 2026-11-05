@@ -1,4 +1,4 @@
-"""THE ROUTER'S PINS — the typed-outcome Chain/Step/Route surface
+"""The router's pins — the typed-outcome Chain/Step/Route surface
 (PROOF.md §3 + §4).
 
 TOTALITY IS THE FENCE, at TWO doors (the asymmetry doctrine — the spike's
@@ -358,7 +358,7 @@ async def test_router_not_total_fails_the_row_loudly(
     wf_sql: Any,
     redlog: RedLog,
 ) -> None:
-    """THE RUNTIME REFUSAL'S ROW: a chain step whose body returns a
+    """The runtime refusal's row: a chain step whose body returns a
     FOREIGN outcome (not the declared enum) terminal-FAILS with
     ``error_class='RouterNotTotal'`` — the record NAMES the defect; the
     chain visibly dies. The silent-drop variant (the record vanishing,
@@ -517,7 +517,7 @@ async def test_chain_end_to_end_through_the_runner(
     wf_sql: Any,
     redlog: RedLog,
 ) -> None:
-    """THE WHOLE AUTHOR SURFACE (PROOF §4's ergonomics bar), lived: a
+    """The whole author surface (PROOF §4's ergonomics bar), lived: a
     ``chain_source`` node whose paged body emits the chain starts; the
     chain's steps route on their TYPED OUTCOMES; the run drains and the
     root derives from the rows (no join anywhere). One query per record's
@@ -567,7 +567,7 @@ async def test_chain_end_to_end_through_the_runner(
 
 
 async def lying_screen(ctx: object, item: dict[str, object]) -> ScreenOutcome:
-    """THE BODY THAT LIED: returns a raw string — not the declared enum."""
+    """The body that lied: returns a raw string — not the declared enum."""
     return "corrupted"  # type: ignore[return-value]  # Why: the scenario — the foreign outcome IS the runtime door's subject.
 
 
@@ -599,7 +599,7 @@ async def test_router_not_total_through_the_runner(
     wf_sql: Any,
     redlog: RedLog,
 ) -> None:
-    """THE RUNTIME LOUD REFUSAL, END TO END: a chain step whose body
+    """The runtime loud refusal, end to end: a chain step whose body
     returns a foreign outcome fails the row LOUDLY —
     ``error_class='RouterNotTotal'`` on the record — and the RUN dies
     'failed' (the envelope cannot lie about a chain that died mid-route).

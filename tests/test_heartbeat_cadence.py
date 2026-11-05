@@ -1,4 +1,4 @@
-"""THE HEARTBEAT-CADENCE PIN (the HB-deltas instrument, permanent).
+"""The heartbeat-cadence pin (the HB-deltas instrument, permanent).
 
 The behavior this pin settles: "every task sits idle yet timers fire
 7x late, ALTERNATING". The 2026-10-08 investigation measured the cadence
@@ -79,7 +79,7 @@ _INJECTED_BLOCK_SECS = 1.0
 async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
     pg_dsn: str, module_pg_schema: ModulePgSchema
 ) -> None:
-    """THE CADENCE BOUND + THE NO-DRIFT LAW, measured on the real loop.
+    """The cadence bound + the no-drift law, measured on the real loop.
 
     Two assertions over the same beat record:
 

@@ -7,8 +7,7 @@ nested conftest's fixtures for a file revisited non-adjacently in the
 argument list (pytest-dev/pytest#14971). The workflow pins span four files
 (the engine's finalize/sweep/fork families, the schema's structural +
 band families, the ledger family), so the seed helpers and the red-log
-sink live here ONCE — a fixture duplicated across two files is a seam owed
-now, and this is the seam's home.
+sink live here ONCE.
 
 Every helper drives the REAL engine surfaces (``taskq.workflows``); the
 seed shapes are the flow-row/join-row/running-node representations the
@@ -43,17 +42,17 @@ MEASUREMENTS = Path(__file__).parent.parent / ".measurements"
 
 
 def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[object]]:
-    """THE NEGATIVE PROBE'S NAMED SEAM (the typed door's runtime face):
+    """The negative probe's named seam (the typed door's runtime face):
     the ``@app.workflow`` decorator takes ``Callable[[], Promise[R]]`` —
     a build function whose runtime return is NOT a promise (a bare dict,
     a bare ``None``) is refused STATICALLY at the decoration site (the
-    probe corpus pins that refusal). The RUNTIME refusals those lying
-    declarations used to reach — the build door's "the return IS the
-    terminal promise" ``TypeError``, the E2 produced-never-consumed
+    probe corpus pins that refusal). The runtime refusals such a lying
+    declaration would otherwise reach — the build door's "the return IS
+    the terminal promise" ``TypeError``, the E2 produced-never-consumed
     verdict — are still runtime behavior worth pinning: the probes
     construct the static-impossible shape through THIS seam, one cast,
-    named and commented, so the checker sees the lie typed and the
-    runtime door keeps its pin."""
+    so the checker sees the lie typed and the runtime door keeps its
+    pin."""
     return cast("Callable[[], Promise[object]]", fn)
 
 
@@ -110,7 +109,7 @@ DOCS_SENSITIVE_STEM_PREFIXES: tuple[str, ...] = (
 def source_changes_since(
     head_sha_value: str, stem: str | None = None, *, anchor: str | None = None
 ) -> bool:
-    """THE OFF-BY-ONE RULE (the head-stamp verifier's own, mirrored for
+    """The off-by-one rule (the head-stamp verifier's own, mirrored for
     the in-suite guards): whether ANY commit since *head_sha_value*
     touched a BEHAVIORAL path. For a plain stem that is anything
     outside the measurements estate and the non-behavioral paths
@@ -191,7 +190,7 @@ _SOURCE_CHANGES_MEMO: dict[tuple[str, str | None, str | None], bool] = {}
 
 
 def head_sha() -> str:
-    """THE HEAD-STAMP LAW (the evidence-integrity round, fix 5): every
+    """The hEAD-stamp law (the evidence-integrity round, fix 5): every
     evidence artifact RECORDS ITS HEAD — the sha the verification
     (``scripts/verify_evidence_heads.py``) re-runs the artifact against.
     An unstamped capture is a rumor; a stale one is history, never the
@@ -339,7 +338,7 @@ def resolve_redlog_capture(
 
 
 def write_band_artifact(name: str, payload: dict[str, object]) -> Path:
-    """THE APPEND-ONLY CONVERSION (the receipts law): a band artifact is
+    """The append-only conversion (the receipts law): a band artifact is
     a RUN-SCOPED file, never a write_text-in-place name. The rejected
     defect: every run rewrote the SAME file whole — two concurrent runs'
     writes tore each other (the 11 torn rows the ledgers' union found),
@@ -378,16 +377,16 @@ def latest_band_artifact(stem: str) -> Path | None:
     return None
 
 
-# ── THE LOADED BAR (the load-flake band's discipline — finding 3's fix) ─
+# ── the loaded bar (the load-flake band's discipline) ────────────────
 
 #: The bar: ambient load (1-min run-queue average) per core at or below
 #: which the box counts QUIET and a wall-clock band may assert honestly.
 #: Above it, an absolute wall-clock bound measures the NEIGHBORS, not the
-#: code under test — the pin that greened solo and flaked loaded (the
-#: census's own record: "green solo x2" while the box sat at 61/72).
+#: code under test — a pin that greened solo while the box sat at 61/72
+#: is the shape this bar refuses.
 LOADED_BAR_PER_CORE: Final[float] = 0.5
 
-#: The loaded round's honesty scale: a deadline polled under load stretches
+#: The loaded run's honesty scale: a deadline polled under load stretches
 #: by at most this factor (the box at 2x saturation gets 2x the bound —
 #: condition-not-clock: the CONDITION scales the clock, never a fixed
 #: number pretending the machine is quiet).
@@ -435,8 +434,7 @@ class RedLog:
     Every pin's rejected variant appends its observed dragon here; the
     fixture flushes on teardown.
 
-    THE PRESERVATION LAW (the hygiene finding's own
-    lane): the evidence sinks are APPEND-ONLY and RUN-SCOPED — flush()
+    THE PRESERVATION LAW: the evidence sinks are APPEND-ONLY and RUN-SCOPED — flush()
     appends ONE JSONL record (``{"run": …, "entries": [...]}``) and
     never rewrites the file. The rejected defect: ``write_text``
     rewrote the WHOLE sink per run, so a PARTIAL run (one pin file
@@ -447,7 +445,7 @@ class RedLog:
     truncated. The run id (pid + a token + the timestamp) makes each
     record attributable.
 
-    THE PROVENANCE LAW (the evidence-integrity round, fix 3): every
+    THE PROVENANCE LAW: every
     entry cites a RECEIPT CHAIN — (a) its scenario's run-id, (b) the
     scenario's captured output FILE PATH, (c) a sha256 of that file. The
     capture is written at RECORD time (the scenario's own observation,
@@ -458,7 +456,7 @@ class RedLog:
     literal-only scan): that guard was defeatable twice over (a
     keyword-form payload skipped inspection; a name-laundered
     module-level constant walked past it) — the receipt chain inspects
-    the SINK, never the call's shape, and recorded findings are by provenance.
+    the SINK, never the call's shape, and verdicts are by provenance.
 
     The captures are written outside the repository tree by default
     (see :func:`redlog_captures_root`) — per-run scratch receipts, not
@@ -600,8 +598,8 @@ def createseam_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def wedge_redlog() -> Iterator[RedLog]:
-    """The red sink for the crashed-terminal wedge pins (the pre-fix
-    tree's corpse-greens: the reconstruction's running, the maintenance
+    """The red sink for the crashed-terminal wedge pins (the
+    corpse-green shapes: the reconstruction's running, the maintenance
     pass's non-heal, the G7 blind spot)."""
     log = RedLog("wedge-pin-reds.json")
     yield log
@@ -610,8 +608,8 @@ def wedge_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def timer_redlog() -> Iterator[RedLog]:
-    """The red sink for the child flows durable-timer pins (the pre-implementation
-    reds + the rejected variants)."""
+    """The red sink for the child flows durable-timer pins (the
+    rejected variants)."""
     log = RedLog("t28-timer-pin-reds.json")
     yield log
     log.flush()
@@ -628,7 +626,7 @@ def versioning_redlog() -> Iterator[RedLog]:
 
 @pytest.fixture
 def timer_cures_redlog() -> Iterator[RedLog]:
-    """The red sink for the timer-fixes lane's pins (the six fixes' reds:
+    """The red sink for the timer-fixes pins (the reds:
     the trojan prefix, the broadcast leak, the explorer's template, the
     10k tail, the versioning wedge's surface, the naive-datetime doc)."""
     log = RedLog("timer-fixes-pin-reds.json")
@@ -972,7 +970,7 @@ async def fire_count(conn: asyncpg.Connection, schema: str, join_id: JobId) -> i
 async def expire_holds(
     conn: asyncpg.Connection, schema: str, flow_id: JobId, *, timer_only: bool = True
 ) -> None:
-    """THE INJECTED CLOCK for the hold pins: every held hold's expiry
+    """The injected clock for the hold pins: every held hold's expiry
     stamp is written PAST — due-ness becomes a row fact the test sets,
     never a wall-clock race. The declared deadlines stay generous (no
     loaded tick can outlive them), so the dev drive's own tail sweep —

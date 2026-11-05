@@ -1,4 +1,4 @@
-"""THE PROOF, MEASURED: the claim path's MVCC death spiral, reproduced
+"""The proof, measured: the claim path's MVCC death spiral, reproduced
 through the real claim statements, and the claim cursor's measured
 scope on it.
 

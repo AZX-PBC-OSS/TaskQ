@@ -118,7 +118,7 @@ def _configure(backend: InMemoryBackend, ref: ActorRef[Any, Any]) -> None:
 
 
 async def test_strict_submit_to_unknown_queue_raises_and_stores_nothing() -> None:
-    """THE RED: strict on, a one-character typo'd queue name raised
+    """The red: strict on, a one-character typo'd queue name raised
     NOTHING and stored the row anyway -- pending forever, no worker
     claims it, silent data non-delivery. The green: the refusal fires
     at the submit site and the row is NOT stored.
@@ -475,7 +475,7 @@ async def test_strict_fail_open_makes_no_retry_storm() -> None:
 
 
 async def test_batch_finalizer_refuses_unknown_queue_atomic() -> None:
-    """THE FINALIZER BYPASS (the adversarial review's blocking find): the
+    """The finalizer bypass (the adversarial review's blocking find): the
     finalizer's args write through their OWN sites after the per-item
     verdict loop, which iterates items only — a finalizer routed to an
     unregistered queue stored the orphan SILENTLY (no refusal, no note)
@@ -729,7 +729,7 @@ def test_worker_boot_gate_judges_nothing_on_empty_configured_set() -> None:
 
 
 async def test_empty_snapshot_never_refuses_first_deploy() -> None:
-    """THE EMPTY-SNAPSHOT RULE (the first-deploy explosion guard): a
+    """The empty-snapshot rule (the first-deploy explosion guard): a
     stored-assignment snapshot that is EMPTY — no worker has ever
     started — carries ZERO evidence of stranding, so strict DISABLES
     itself (advisory posture, the note still fires) and the job is
@@ -747,7 +747,7 @@ async def test_empty_snapshot_never_refuses_first_deploy() -> None:
 
 
 async def test_env_declared_queue_passes_through_registration_lag() -> None:
-    """THE TWO-SOURCE RULE, mid-deploy pin: a queue the process's env
+    """The two-source rule, mid-deploy pin: a queue the process's env
     set declares but the snapshot lacks is a NEW queue mid-deploy (the
     worker boots later) — ALLOWED through the registration lag, the
     advisory note still fires. Only a queue absent from BOTH sources
@@ -821,7 +821,7 @@ async def test_partial_read_heals_via_the_next_refresh() -> None:
 
 
 def test_worker_boot_gate_flags_retired_queue_assignments_as_advisory() -> None:
-    """THE RETIREMENT HALF (no silent allowance forever): stored
+    """The retirement half (no silent allowance forever): stored
     assignments for actors this worker neither serves nor consumes —
     retired-actor drift — surface as ONE aggregated ADVISORY at boot,
     never a refusal (the inverse of the configured-but-unrouted gate,

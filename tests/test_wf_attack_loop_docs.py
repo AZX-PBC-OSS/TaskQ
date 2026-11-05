@@ -98,7 +98,7 @@ def _measurements_bases() -> list[Path]:
     """EVERY real capture corpus the law reads — the staged evidence
     branch's estate PLUS the local tree's own overlay when one exists.
 
-    THE THREE-FACES FIX (the estate audit's recorded finding, live at -n 8):
+    THE THREE FACES (live under xdist load):
     the pool was EITHER the staged copy OR the local tree, chosen by
     which worker resolved first — a writer creating the local
     runs/CLAIMS.json mid-run flipped the other workers' pool to the
@@ -178,7 +178,7 @@ def _perf_doc_figures(text: str) -> list[tuple[int, str, str]]:
 
 
 def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
-    """THE DOCS-NUMBERS LAW: every measured point figure in
+    """The docs-numbers law: every measured point figure in
     ``perf-evidence-workflows.md`` resolves to an artifact in
     ``.measurements/``.
 
@@ -245,7 +245,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
             failures.append(
                 "'p50 477 ms / p95 1.73 s @ ~340 live joins' (perf-evidence-"
                 "workflows.md:30,46 and _sweep.py's own comment): NO artifact "
-                "carries the pair (the second recorded finding of this figure — the "
+                "carries the pair (the second face of this figure — the "
                 "prior round's finding is unrepaired)"
             )
 
@@ -340,7 +340,7 @@ def test_docs_the_disposition_counts_agree_across_their_three_homes() -> None:
     """One count, one home: the ledger's table (the truth), the ledger's
     header line, and the guide's parenthetical must agree. (The
     ``applied`` class tolerates the #3b fold convention — the drifted
-    classes are the recorded finding; the two prose homes must additionally
+    classes are the contract; the two prose homes must additionally
     agree with EACH OTHER on every class.)"""
     ledger = next(
         base / "t17-dispositions.md"

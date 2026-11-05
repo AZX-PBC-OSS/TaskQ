@@ -392,8 +392,8 @@ def test_the_setup_action_pins_the_interpreter_for_the_whole_job() -> None:
 
     ``uv python install 3.12`` only downloads an interpreter; it does not select one. A later
     ``uv sync`` with no ``--python`` reads ``.python-version`` (3.13 here) and builds a 3.13
-    environment under a step labelled "Set up Python 3.12" -- several jobs used to advertise one
-    interpreter and use another.
+    environment under a step labelled "Set up Python 3.12" -- a job that advertises one
+    interpreter and uses another is the defect.
 
     A per-command ``--python`` is not enough either: it decides one command's interpreter and
     leaves every other uv call in the job free to disagree, and a ``uv run`` that disagrees

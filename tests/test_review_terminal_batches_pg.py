@@ -198,9 +198,9 @@ class _GrantGate:
 
 
 async def test_completion_write_races_an_append_into_the_grant_gap(pg_dsn: str) -> None:
-    """RED: on the autonomous shape the handshake's lock used to be released
-    before the completion write ran, so an appender that took the row in the
-    gap committed a member the completion write's snapshot never saw. The
+    """RED: on the autonomous shape the handshake's lock is released
+    before the completion write runs, so an appender that takes the row in the
+    gap commits a member the completion write's snapshot never sees. The
     batch must not reach 'complete' with a non-terminal member -- the
     docstring's "an appender arriving after the grant serializes behind the
     completion" promise, which the gap defeated.

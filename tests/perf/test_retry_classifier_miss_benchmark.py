@@ -7,7 +7,7 @@ not-claimed path is the hot path: it must stay allocation-free
 tests/test_retry_after_header_sniffing.py) and within its cost class.
 
 HARDWARE-RELATIVE, not absolute. This gate once asserted an absolute
-``1.0µs/call`` budget and red on CI (run 37263479699: 2.845µs taxonomy,
+``1.0µs/call`` budget and red on CI (2.845µs taxonomy,
 2.375µs rate-limit) while the same paths measure 0.17-0.23µs on the
 builder's local box, a 12-17x pure-hardware spread at µs scale. An
 absolute µs budget pins the calibration machine, not the code — the

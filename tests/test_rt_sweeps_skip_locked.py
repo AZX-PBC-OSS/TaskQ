@@ -154,7 +154,7 @@ async def test_locked_row_is_skipped_then_reclaimed_after_holder_rollback(
         schema=schema,
         batch_size=_JOBS,
     )
-    assert second == 1, "the previously contended row must now be reclaimable"
+    assert second == 1, "the contended row must be reclaimable once the holder exits"
 
     running, attempts, events = await _counts(clean_pg_conn, schema, job_ids)
     assert running == 0
@@ -174,7 +174,7 @@ async def test_mid_batch_attempt_collision_skips_and_commits_the_batch(
     still commits whole - every sibling transitioned and audited.
 
     Rewritten for the merged keep-first-record doctrine: the pre-seeded
-    duplicate previously unique-violated the batched attempt INSERT and
+    duplicate unique-violated the batched attempt INSERT and
     rolled the whole batch back, which this pin asserted.  Every
     ``job_attempts`` insert now carries ``ON CONFLICT (job_id, attempt)
     DO NOTHING`` - an attempt number can legitimately already have its

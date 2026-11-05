@@ -1,4 +1,4 @@
-"""THE DURABLE TIMER'S PINS: the hold whose resolver is the clock.
+"""The durable timer's pins: the hold whose resolver is the clock.
 
 ``ctx.wait_until(when)`` mints an ORDINARY hold row under the reserved
 ``__timer__`` signal prefix; the sweep's TIMER arm resolves it
@@ -169,7 +169,7 @@ async def test_timer_hold_releases_the_slot(
 async def test_crash_mid_wait_the_successor_sweep_wakes_the_body(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, timer_redlog: Any
 ) -> None:
-    """THE DURABILITY PIN (the row's the truth): the arming process
+    """The durability pin (the row's the truth): the arming process
     DIES mid-wait — the hold tx was its last write; the surviving
     row-state (a held ``__timer__`` row + the stamped node, the arming
     process's objects gone) is exactly a SIGKILL's surviving state by
@@ -388,7 +388,7 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
 # teeth), the deadline swept the row to 'abandoned', the body returned
 # the fail-close arm, and THE RUN TERMINALIZED `succeeded` with the
 # operator's decision a dead letter (the family's face on an
-# unwritten boundary). THE FIX — E13's per-site discipline generalized:
+# unwritten boundary). THE CONTRACT — E13's per-site discipline generalized:
 # the answer queue's cursor is keyed to the WAIT SITE (its own signal
 # name, beneath the attempt), so every site counts ITS OWN
 # consumptions; the loop kind keeps the iteration counter (the ADVANCE
@@ -398,7 +398,7 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
 async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE STRAND'S EXACT REPRO: the timer, then the signal, the
+    """The strand's exact repro: the timer, then the signal, the
     resolve, the wake — the body receives THE DELIVERED VERDICT (never
     the ``Expired`` fail-close; the delivered answer's row is CONSUMED,
     never abandoned). Red x2 at the shared-cursor head (the timer's
@@ -482,7 +482,7 @@ async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
 async def test_two_signal_sites_one_plain_step_stays_green(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE CONTROL (the I5b face — the shape that was NEVER broken): one
+    """The control (the I5b face — the shape that was NEVER broken): one
     plain step, TWO signal waits, disjoint names. The per-site cursor
     keeps each site's own count exactly as the old shared cursor did
     when the sites each consume once per resume — the two delivered

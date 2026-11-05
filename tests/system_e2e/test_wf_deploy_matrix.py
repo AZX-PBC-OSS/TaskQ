@@ -1,4 +1,4 @@
-"""THE DEPLOY MATRIX (§22's cells as system-tier scenarios).
+"""The deploy matrix (§22's cells as system-tier scenarios).
 
 The workflow variant of the rolling-fleet harness's contract (see
 ``test_rolling_release_fleet.py``'s header): real worker subprocesses on
@@ -9,7 +9,7 @@ every scenario (``_invariants.assert_balanced``) plus the workflow
 invariants (the join fires exactly once, the ledger reconciles).
 
 The cells — each maps to the test function that runs it, and the
-header lists NOTHING ELSE (the recorded finding's fix: three cells here
+header lists NOTHING ELSE (the harness's own rule: three cells here
 named no test function anywhere, and the header cited a defect-scenario
 file and a deployment-guide table that do not exist; the header now
 carries only the cells this file actually tests — the missing

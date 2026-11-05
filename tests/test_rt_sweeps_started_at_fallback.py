@@ -23,7 +23,7 @@ crashed attempt row at that number would permanentise an epoch the
 counter no longer carries - the claim-loss refund de-charged it - and
 the next claim re-mints the number, closing the job's lineage with one
 more attempt row than the counter: the soak's reconciliation red
-(``attempt counter 1 vs 2 attempt rows``, run 36175331443, the
+(``attempt counter 1 vs 2 attempt rows``, the
 refund-then-reclaim ledger race pinned by
 ``tests/test_rt_refund_reclaim_ledger_race.py``). The reclaim itself is
 still audited: the ``job_events`` state_change (the crash-reclaim outbox

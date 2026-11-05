@@ -1,4 +1,4 @@
-"""THE KEYED ADMISSION TERMS ON THE WORKFLOW SURFACE — the declaration
+"""The keyed admission terms on the workflow surface — the declaration
 accepts a keyed ref, the fork/static-insert resolves each child's
 CONCRETE name (``f"{base_name}:{key}"``) from the child's own declared
 payload, and the claim path materializes the named bucket against the

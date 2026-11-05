@@ -1,4 +1,4 @@
-"""THE IN-FLIGHT VERSIONING CONTRACT's pins: the redeploy face.
+"""The in-flight versioning CONTRACT's pins: the redeploy face.
 
 THE DECISION (the registry-is-truth contract — the guide's versioning
 section carries the full text): **a redeployed definition = the
@@ -57,7 +57,7 @@ async def _second_v2(ctx: StepContext, params: str) -> str:
 
 
 def _install_registry(name: str, bodies: dict[str, Any]) -> None:
-    """THE REDEPLOY SEAM (the pin's honest simulation): in production a
+    """The redeploy seam (the pin's honest simulation): in production a
     redeploy is a NEW PROCESS whose registry carries the new code — the
     module-level map simply holds the new definition. In-test the same
     map is replaced under the SAME workflow name (the registry IS the
@@ -71,7 +71,7 @@ def _install_registry(name: str, bodies: dict[str, Any]) -> None:
 async def test_redeploy_adopts_the_new_body_at_the_next_node_claim(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, versioning_redlog: Any
 ) -> None:
-    """THE REDEPLOY FACE (the contract's pin, both halves):
+    """The redeploy face (the contract's pin, both halves):
 
     * THE ADOPT — the flow's FIRST node runs the OLD code (its claim
       predates the deploy); the registry mutates mid-flow (the
@@ -148,7 +148,7 @@ async def test_redeploy_adopts_the_new_body_at_the_next_node_claim(
 async def test_redeploy_mid_wait_the_wake_reenters_the_new_body(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE CONTRACT's mid-WAIT edge case (the timer interplay — the child flows
+    """The contract's mid-wait edge case (the timer interplay — the child flows
     x the versioning contract): a run holding on a DURABLE TIMER when the registry mutates —
     the wake's resume re-enters the NEW body (the claim-time resolution
     is the only body source; a wake is a resume like any other). The

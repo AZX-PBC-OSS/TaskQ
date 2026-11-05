@@ -8,9 +8,10 @@ race, which is how two installs on different databases of one cluster race
 
 Why this needs a pin: the role is cluster-wide state, and the suite's
 xdist workers share one Postgres cluster across per-module databases. Two
-workers whose first installs interleave used to race the check-then-create
-inside the single DO block, and the loser failed on pg_authid_rolname_index
-with UniqueViolationError. The failure needed full-suite ordering to line
+workers whose first installs interleave race the check-then-create
+inside the single DO block unless it is collision-safe: the loser fails on
+pg_authid_rolname_index
+with UniqueViolationError. The failure needs full-suite ordering to line
 the two windows up, so a subset run could not reproduce it.
 
 The tests here never drop the shared counter role. Dropping cluster-level

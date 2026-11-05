@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE ENGINE'S CLAIM-FENCE PINS — a terminal flow's rows are never
+"""The engine's claim-fence pins — a terminal flow's rows are never
 re-claimed (the in-process driver's claim path AND the fleet's dispatch
 claim both fence on the flow's terminal status), and a hold's wake is
 addressed to the hold's own stamped identity (a stale epoch's wake
@@ -21,10 +21,8 @@ The findings (each rejected live):
   door doesn't. THE PIN: the in-process claim carries the same
   terminal-flow fence — a body never executes on a terminal flow through
   ANY door.
-* THE HOLD→NODE WAKE'S MISSING MAP-INDEX LEG (the holdmap lane's
-  resume-addressing hole, pinned at THIS head — the map_index fix
-  (1528719d2) is NOT an ancestor of this tree; the shape pinned is the
-  one this tree ships): the deliver path's wake
+* THE HOLD→NODE WAKE'S MISSING MAP-INDEX LEG (the resume-addressing
+  hole this tree ships): the deliver path's wake
   (``workflows/api/_hitl.py``'s ``deliver_payload``) resolves the held
   node by ``step_key + flow + metadata ? 'hold'`` — NO map_index leg, NO
   ORDER BY — so with several map siblings held (one step_key, distinct
@@ -52,7 +50,7 @@ from tests._wf_fixtures import seed_flow
 
 #: THE EXECUTION SENTINEL : the staged body appends here when it
 #: runs. Module-level (the in-process driver executes in THIS process);
-#: cleared at the pin's start — the recorded finding is "the body NEVER ran".
+#: cleared at the pin's start — the defect is "the body NEVER ran".
 _E1_SENTINEL: list[str] = []
 
 
@@ -63,7 +61,7 @@ _E1_SENTINEL: list[str] = []
 
 async def _e1_child_body(ctx: StepContext) -> str:
     """The born-on-cancelled child: if this EVER runs, the post-terminal
-    execution hole is live (the sentinel is the recorded finding)."""
+    execution hole is live (the sentinel is the witness)."""
     _E1_SENTINEL.append("e1-body-ran")
     return "done"
 
@@ -75,7 +73,7 @@ async def _e1_child_body(ctx: StepContext) -> str:
 async def test_e1_the_in_process_claim_never_executes_on_a_terminal_flow(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE FENCE IS THE CLAIM'S, not the loop's: a bare ``tick()`` (the
+    """The fence is the claim's, not the loop's: a bare ``tick()`` (the
     driver's public dispatch pass — the sweep-cron and the embedders'
     seam, never gated by ``drive()``'s loop-top check) on a flow whose
     root is CANCELLED must claim NOTHING and execute NOTHING. The staged
@@ -143,7 +141,7 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
 ) -> None:
     """ONE HOLD, ONE NODE, ONE RESUME: three map siblings (one step_key
     ``work.item``, map_index 0/1/2, each held on its OWN signal — the
-    pre-fix hold identity ``(workflow_id, node_key, signal_name,
+    node-keyed hold identity ``(workflow_id, node_key, signal_name,
     hold_epoch)`` admits the distinct names). Resolving the MIDDLE
     sibling's hold must resume THE HOLD'S OWN NODE — the row whose
     ``metadata->>'hold'`` IS the resolved hold's id (the stamp
@@ -196,7 +194,7 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
     )
     assert result.status == "delivered", (
         f"the staging must hold: the middle hold's delivery was {result.status!r} "
-        f"({result.reason!r}) — the recorded finding is the WAKE leg, not the CAS"
+        f"({result.reason!r}) — the defect is the WAKE leg, not the CAS"
     )
     rows = await wf_conn.fetch(
         f"SELECT id, map_index, metadata ? 'hold' AS still_held FROM \"{wf_schema}\".jobs "

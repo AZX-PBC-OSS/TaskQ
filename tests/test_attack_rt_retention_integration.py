@@ -108,7 +108,7 @@ async def _seed_ghost_pair(
 ) -> Any:
     """A stale ghost: one id with a STANDING archive row (the pre-retry
     version) and a LIVE terminal row (the retried, re-terminalized
-    version). This is the state a pre-guard wedge used to die on."""
+    version). This is the state a pre-guard wedge dies on."""
     gid = new_uuid()
     now = datetime.now(UTC)
     await conn.execute(

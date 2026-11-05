@@ -1,4 +1,4 @@
-"""THE STATE TOTALITY PROPERTY: the derivation table's
+"""The state totality property: the derivation table's
 totality is a tested property — a hypothesis-driven generator over RANDOM
 multisets of node views (including the two derived pending-row shapes —
 join-wait and held — and the ABSORBED-failure class, B2's clause) asserts
@@ -56,7 +56,7 @@ def _node_views(draw: st.DrawFn) -> NodeView:
 
 
 class TestDerivationTotality:
-    """THE TOTALITY IS A PROPERTY: exactly one workflow status per input,
+    """The totality is A property: exactly one workflow status per input,
     zero inputs uncovered."""
 
     @settings(max_examples=500, deadline=None, suppress_health_check=[HealthCheck.too_slow])

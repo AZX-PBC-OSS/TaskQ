@@ -1,4 +1,4 @@
-"""THE PHASE-3 FIX PINS (the phase-3 fixes) — the in-commit pins for the
+"""The phase-3 fix pins (the phase-3 fixes) — the in-commit pins for the
 fixes whose failures the probes demonstrated first:
 
 * B2's BOTH-FIT arm: an ambiguous payload is the typed refusal UNLESS
@@ -262,7 +262,7 @@ async def test_escalation_enqueues_and_the_registered_body_runs(
 async def test_escalation_consumer_dispatches_through_the_fleet_claim(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ESCALATION'S FENCEABLE SHAPE (the FLEET-TRUTH pin): the
+    """The escalation's fenceable shape (the FLEET-TRUTH pin): the
     exhaustion tx commits the escalation's outbox row and the flow's
     terminal TOGETHER — the consumer row is BORN into a terminal flow —
     and the dispatch fence's terminal-flow leg (a workflow row on a
@@ -272,7 +272,7 @@ async def test_escalation_consumer_dispatches_through_the_fleet_claim(
     fence, while its comment named 'the fleet worker's queue poll' —
     provably false).
 
-    THE FIX (the design decision, and why): a flow's death must not
+    THE DESIGN (and why): a flow's death must not
     orphan its pages-a-human duty — the operator's page is the ONE thing
     that must survive the flow's terminality. The fence's terminal-flow
     leg gains the ESCALATION-KIND exemption: the ``loop.escalation``
@@ -517,7 +517,7 @@ async def test_the_final_iteration_runs_and_the_counter_reaches_the_cap(
 async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TYPED EARLY-EXIT (§17.1): a body returns ``Exit(payload)`` —
+    """The typed early-exit (§17.1): a body returns ``Exit(payload)`` —
     the node terminal-succeeds with the typed payload (the envelope
     records the exit), every non-terminal DOWNSTREAM node is marked
     skipped-WITH-THE-RECORD (the record never lies about the nodes that
@@ -581,7 +581,7 @@ async def test_exit_terminal_succeeds_and_marks_the_downstream_skipped(
 async def test_retry_node_rearms_a_failed_node_the_ladder_continues(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE OPERATOR'S MANUAL RESUME (§17.2, the §22.6 redispatch row 3):
+    """The operator's manual resume (§17.2, the §22.6 redispatch row 3):
     the audited, CAS-guarded re-arm of a terminal-FAILED node — the
     attempt ordinal CONTINUES (never resets), the blocked closure
     re-opens, the flow re-opens, and the re-run is safe by the step
@@ -668,7 +668,7 @@ def test_carrier_type_mismatch_is_convicted() -> None:
         return build(loop("counter", _refines_wrong, initial=Counter(acc=0)))
 
     # the PROBE SEAM (app._compile): the carrier-mismatch graph is
-    # INVALID on purpose (E8's recorded finding is the pin's subject) — the
+    # INVALID on purpose (E8's refusal is the pin's subject) — the
     # door would raise before the diagnostics could be read.
     rules = [d.rule for d in _run_rules(app._compile("a3cure_carrier_flow"))]
     assert "E8-carrier-type" in rules, (
@@ -714,11 +714,11 @@ async def _map_tail(ctx: StepContext, items: list[dict[str, int]]) -> dict[str, 
 async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE FIRST SHAPE EVERY MAP USER WIRES: a downstream `step` consuming
+    """The first shape every map user wires: a downstream `step` consuming
     the map's JOIN promise. The rejected shape (the mapper's red): the
     downstream rode only the outbox's side-channel — no edge row, a
     duplicate consumer row whose arg resolution found no result (the
-    runner's own assert fired). THE FIX'S CONTRACT: the join's result is
+    runner's own assert fired). THE CONTRACT: the join's result is
     consumable through the SAME typed door as any node result — the edge
     ledger + the counter (the downstream's dep is RESERVED at create, the
     fork writes the edge row at the source's finalize, the join's own
@@ -776,7 +776,7 @@ async def test_map_join_promise_consumed_downstream_sees_the_collected_results(
 
 
 def test_e4_does_not_convict_a_fully_annotated_body() -> None:
-    """THE ZERO-FALSE-POSITIVE DOCTRINE at E4 (the miner's red): a
+    """The zero-false-positive doctrine at E4 (the miner's red): a
     fully-annotated body whose return type is NOT module-level (a
     function-scope model the body's code never names — the annotation
     string creates no closure cell, the resolved hints are {}) is NOT
@@ -806,7 +806,7 @@ def test_e4_does_not_convict_a_fully_annotated_body() -> None:
 
 def test_e4_still_convicts_the_genuinely_unannotated() -> None:
     """E4's teeth survive the raw-presence read: a body with NO return
-    annotation at all is the same recorded finding as before."""
+    annotation at all is the same refusal as before."""
     from taskq.workflows.api._validate import WorkflowValidationError
 
     async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType, reportMissingTypeStubs]  # Why: THE PROBE — the genuinely unannotated body is the mutation under test.
@@ -883,7 +883,7 @@ def test_cross_graph_smuggle_is_convicted_at_validate() -> None:
         )
 
     # the PROBE SEAM (app._compile): the smuggle's graph is INVALID on
-    # purpose (E7's recorded finding is the pin's subject) — the door would
+    # purpose (E7's refusal is the pin's subject) — the door would
     # raise before the diagnostics could be read.
     rules = [d.rule for d in _run_rules(app._compile("a3cure_smuggle_flow"))]
     assert "E7-cross-graph-promise" in rules, rules

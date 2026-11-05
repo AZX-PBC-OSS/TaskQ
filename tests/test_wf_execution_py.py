@@ -1,4 +1,4 @@
-"""THE EXECUTION MACHINERY'S DIRECT TESTS (F2-1): the Python half of the
+"""The execution machinery's direct tests (f2-1): the Python half of the
 production-execution fix — the door (:func:`~taskq.workflows.
 _worker_execution.execute_flow_job`), the fleet-claimed step
 (:meth:`FlowRunner.run_fleet_claimed_step`), the boot projection
@@ -350,7 +350,7 @@ async def _seed_flow_with_step(
 async def test_the_door_executes_the_fleet_claimed_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: Any
 ) -> None:
-    """THE DOOR'S GREEN (the machinery's own receipt): a claimed row
+    """The door's green (the machinery's own receipt): a claimed row
     resolves its body from the registered definition (D1), executes it
     ONCE, and the finalize lands — the row terminal-succeeds, the ledger
     says 'succeeded'."""
@@ -411,7 +411,7 @@ async def test_the_door_executes_the_fleet_claimed_row(
 async def test_the_door_fence_the_wrong_epoch_never_lands(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: Any
 ) -> None:
-    """THE EPOCH THREADING's receipt: a terminal write fenced on an epoch
+    """The epoch threading's receipt: a terminal write fenced on an epoch
     the row does not carry (a STALE read — the row was re-claimed between
     this worker's dispatch read and its finalize) updates NOTHING: the
     row stays running, the ledger records 'fenced' — the epoch parameter
@@ -540,7 +540,7 @@ def _seam_stub(execute: Any) -> types.ModuleType:
 
 
 async def test_the_intercept_absorbs_the_childs_cancellation() -> None:
-    """THE CANCEL-ABSORPTION ARM: the child cancelled alone (an operator
+    """The cancel-absorption arm: the child cancelled alone (an operator
     cancel's escalation, the loop alive) — the helper ABSORBS it (returns
     'cancelled'), never raises; the registry entry is gone."""
     from taskq.worker.cancel import ActiveJobRegistry

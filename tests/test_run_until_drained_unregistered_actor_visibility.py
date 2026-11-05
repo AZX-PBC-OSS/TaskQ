@@ -25,7 +25,7 @@ the same "no stub registered for actor" contract it already had for a
 non-terminal work for an actor nothing registered. An actor that can
 never be dispatched because it has no registered stub/config is a
 strictly worse failure mode than one that dispatches and then
-immediately errors, and previously produced no signal at all. The raise
+immediately errors, never silently producing no signal at all. The raise
 DETECTS, it does not mutate: the stranded row stays ``pending`` (nothing
 ran it, and a fabricated terminal write would be its own lie - and would
 corrupt retry bookkeeping if the actor is registered later).

@@ -503,10 +503,10 @@ def test_shadow_derived_cycle_verdict_does_not_depend_on_entry_point() -> None:
     """Two providers in a dependency cycle, one of which also reaches a
     shadowed type: the walk must answer the same for either entry point.
 
-    Entering the walk at the non-shadow member used to answer False for
-    its partner (the cycle's back-edge truncated the walk before the
-    shadow dependency was visible) and cached that artifact, so a later
-    query at the clean entry point returned the poisoned memo.
+    Entering the walk at the non-shadow member must answer the same for
+    its partner (a walk truncated by the cycle's back-edge before the
+    shadow dependency is visible must not cache that artifact, or a later
+    query at the clean entry point returns the poisoned memo).
     """
     registry = ProviderRegistry()
     registry.register_value(_SlotConnection, Scope.LOOP, _SlotConnection())

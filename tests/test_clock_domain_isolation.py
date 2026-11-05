@@ -692,8 +692,8 @@ async def test_batch_stc_anchored_to_enqueue_time_future_item_fails_pre_dispatch
     pg_dsn: str,
 ) -> None:
     """D9 pin: on EVERY arm the ``schedule_to_close`` budget runs from
-    ENQUEUE time (``clock_timestamp() + interval``) - previously the
-    batch/COPY arms anchored it to ``scheduled_at + interval``.  A
+    ENQUEUE time (``clock_timestamp() + interval``), never from
+    ``scheduled_at + interval``.  A
     future-scheduled batch item with a short interval therefore fails
     DeadlineExceeded BEFORE it is ever dispatched (sweep 2) - the unified
     single-arm contract, behavior-changing for batch users who relied on

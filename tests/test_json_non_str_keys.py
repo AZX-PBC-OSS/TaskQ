@@ -99,7 +99,7 @@ def test_dumps_str_keys_still_serialize() -> None:
 
 def test_encode_result_rejects_int_keyed_result() -> None:
     """An actor returning {1: ...} fails the attempt with TypeError where
-    OPT_NON_STR_KEYS previously coerced to {'1': ...}."""
+    without OPT_NON_STR_KEYS the keys coerce to {'1': ...}."""
     with pytest.raises(TypeError):
         _encode_result({1: "x"})
 

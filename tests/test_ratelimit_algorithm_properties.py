@@ -840,7 +840,7 @@ async def test_lost_redis_reply_charges_both_ledgers_within_a_bound(
     module_pg_pool: asyncpg.Pool,
     redis_url: str,
 ) -> None:
-    """THE double-admission hypothesis, answered: a Redis reply lost AFTER
+    """The double-admission hypothesis, answered: a Redis reply lost AFTER
     the token-bucket script's effects landed, persisted through the whole
     transient-retry budget, ends in the PG fallback — one caller-visible
     acquire whose effects landed in BOTH stores.

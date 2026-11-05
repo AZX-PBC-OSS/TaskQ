@@ -30,9 +30,10 @@ def test_trigger_migration_file_exists() -> None:
     assert len(sql) > 0
 
 
-# The eight DDL substring assertions that used to follow - CREATE FUNCTION,
+# The eight DDL substring assertions here are subsumed by the two
+# integration tests below (CREATE FUNCTION,
 # CREATE TRIGGER, pg_notify, the WHEN clause, TG_TABLE_SCHEMA, AFTER INSERT ON
-# jobs, FOR EACH ROW - are all subsumed by the two integration tests below.
+# jobs, FOR EACH ROW).
 # Every one of them was a restatement of the migration text: they passed on a
 # trigger that was syntactically present and semantically broken, and they
 # would fail on a correct trigger written with different whitespace. Applied

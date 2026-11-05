@@ -40,7 +40,7 @@ class Outcome(BaseModel):
 
 
 async def documented_body(ctx: StepContext, params: Params) -> Outcome:
-    """THE DOCS' BODY SHAPE — the annotation IS the type story."""
+    """The docs' body shape — the annotation IS the type story."""
     carried: object = ctx.input
 
     async def side_effect(_carried: object) -> int:

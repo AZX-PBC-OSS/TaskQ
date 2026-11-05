@@ -1,5 +1,5 @@
 # ruff: noqa: S603, S607, S608, ASYNC221, ASYNC230  # Why: the dash-named attack4-* module; the restart probe runs pg_ctl with the env-pinned data dir and reads/writes the cluster's own conf between restarts.
-"""THE NOTHING-STUCK PROBES' TEETH (the hostile shapes —
+"""The nothing-stuck probes' teeth (the hostile shapes) —
 NOT the builder's; tests/probes_nothing_stuck_shapes.py owns those).
 
 * THE SELF-CANCELLING BODY: a map's source body cancels ITS OWN run
@@ -178,7 +178,7 @@ async def test_a_resolve_arriving_after_the_flow_went_terminal(
 async def test_a_hold_without_payload_schema_meets_the_typed_door(
     module_pg_pool: Any, module_pg_schema: ModulePgSchema, clean_pg_conn: Any
 ) -> None:
-    """THE UPGRADE WORLD, COLD PROCESS: a hold row written WITHOUT a
+    """The upgrade world, cold process: a hold row written WITHOUT a
     payload_schema (a row from before the typed door, or a hand-migrated
     one) meets a resolve from a process that NEVER RAN THE WAIT SITE
     (the real cold process — a subprocess; this process ran the drive,
@@ -287,7 +287,7 @@ async def test_a_hold_with_payload_schema_in_the_warm_process_still_refuses_garb
 async def test_the_lost_job_probe_with_the_db_restarted_mid_round(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """THE RESTART ROUNDS: five rounds; each seeds a 2-node run, drives
+    """The restart rounds: five rounds; each seeds a 2-node run, drives
     one tick (the parent mid-flight), RESTARTS the database, reconnects,
     and drives to terminal. Every node lands terminal with its ledger
     row — a job lost across the restart is the defect; the claim's lease

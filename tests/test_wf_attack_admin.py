@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (module_pg_schema); every value is $-bound — the estate's test-SQL precedent (test_workflows_page.py).
-"""THE ADMIN WORKFLOW-RUN PAGE'S PINS — the page's stated contracts,
+"""The admin workflow-run page's pins — the page's stated contracts,
 each held against its rejected shape. Five findings landed and are pinned
 strict-xfail, each asserting the SAFE behavior against the live defect —
 the fix flips each to XPASS-strict (a red that tells you to remove the
@@ -435,7 +435,7 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
 
         auth_state["session_valid"] = False
         tail = len(received)
-        # A revision change AFTER the revocation: the pre-fix stream SERVES
+        # A revision change AFTER the revocation: the stale stream SERVES
         # the frame to the dead session (the finding's own words: it keeps
         # receiving frames); the fixed stream has already ended.
         await module_pg_pool.execute(

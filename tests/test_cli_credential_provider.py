@@ -577,8 +577,8 @@ async def test_provider_configurable_by_dotenv_file(
 ) -> None:
     """A provider named only in `.env` configures the worker.
 
-    The refs used to be read by Typer's ``envvar=``, which sees
-    ``os.environ`` and nothing else; every other TaskQ setting honours
+    The refs are read past Typer's ``envvar=`` (which sees
+    ``os.environ`` and nothing else); every other TaskQ setting honours
     dotenvmodel's ``.env`` cascade.
     """
     (tmp_path / ".env").write_text(f"TASKQ_PG_CREDENTIAL_PROVIDER={_MODULE}:PROVIDER\n")

@@ -1,25 +1,17 @@
-"""THE HITL BROADCAST'S PINS: the transactional NOTIFY legs, the
+"""The HITL broadcast's pins: the transactional NOTIFY legs, the
 zero-window backfill, the resolve wake, the expiry fail-close, the
-escalation interplay — plus the hold-broadcast round's pins P6-P10: the
-reconnect reconcile, the concurrent-consumer fan-out, the schema
-isolation, the payload-size bound, the resolve-rollback silence.
+escalation interplay — plus the hold-broadcast pins: the reconnect
+reconcile, the concurrent-consumer fan-out, the schema isolation, the
+payload-size bound, the resolve-rollback silence.
 
-The evidence: P1's rejected variant (the knock sent OUTSIDE
-the transaction — a rolled-back hold-create that still broadcasts) is
-captured as the mutation test through ``hitl_redlog``; the shipped
-legs are transactional by construction (``pg_notify`` inside the
-caller's tx — PG delivers on commit only). P6/P7/P9 were RED at the
-pre-fix head (the reconnect hole, the partitioned stream, the unnamed
-cap — the reds captured in ``.measurements/t26-fix-pins-red.txt``);
-P8/P10 reject their variant as a PERMANENT scenario (the unfiltered
-channel ear; the lying resolve knock — reproducible forever, recorded
-through ``hitl_redlog``).
-
-The channels are GLOBAL; the schema rides the payload (the
-schema-per-module estate shares one database across many schemas —
+The shipped legs are transactional by construction (``pg_notify`` inside
+the caller's tx — PG delivers on commit only). The mutation red for the
+broadcast-outside-the-transaction variant is captured through
+``hitl_redlog``. The channels are GLOBAL; the schema rides the payload
+(the schema-per-module estate shares one database across many schemas —
 ``pg_notify`` is per-database; the listener filters by payload). The
-legacy ``taskq_wf_holds`` pointer knob keeps its pinned shape (the hold machinery's
-pin 12); the broadcast legs ride their own channels.
+legacy ``taskq_wf_holds`` pointer knob keeps its pinned shape; the
+broadcast legs ride their own channels.
 """
 
 from __future__ import annotations
@@ -155,7 +147,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
     back under a knock that already fired, and the broadcast LIES (a
     hold the rows disown). The shipped leg cannot lie: the NOTIFY
     commits or nothing does."""
-    # ── THE MUTATION PIN (the pre-fix shape): the knock on a separate
+    # ── THE MUTATION PIN (the rejected shape): the knock on a separate
     # autocommit connection, the insert rolled back under it. ──
     drill_hold = str(new_uuid())
     async with _RawKnocks(module_pg_schema.pg_dsn, HOLD_CREATED_CHANNEL) as knocks:
@@ -186,7 +178,7 @@ async def test_hold_create_broadcast_is_transactional_and_shaped(
         )
         assert row is None, "the scenario's insert did not roll back — the scenario proves nothing"
         assert drill_knocks, (
-            "the pre-fix mutation did not reproduce the dragon — the scenario is vacuous"
+            "the mutation did not reproduce the rejected shape — the scenario is vacuous"
         )
         hitl_redlog.red(
             "the expiry-as-value-P1-create-knock-outside-the-tx",
@@ -370,7 +362,7 @@ async def _next_of(listener: HitlListener, kind: str) -> Any:
 async def test_deep_research_approve_path(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE WORKED EXAMPLE'S APPROVE PATH end-to-end: the loop → the
+    """The worked example's approve path end-to-end: the loop → the
     hold → the broadcast → the resolve → the resume → the FULL REPORT.
     The REAL 120 s default stands (the approval lands first —
     condition-not-clock); no constant is scaled on this path. THE
@@ -644,7 +636,7 @@ async def test_expiry_in_loop_escalation_leg_still_delivers(
 
 
 class _Cards:
-    """THE TAUGHT CONSUMER'S CARD SET (the watching user's state, driven
+    """The taught consumer's card set (the watching user's state, driven
     ONLY by the union's events): create opens a card, resolve/expired
     close it, and the ``Backfilled`` snapshot RECONCILES — anything open
     on the consumer's side that the snapshot's ids disown is DROPPED.
@@ -679,9 +671,9 @@ async def test_reconnect_reconcile_clears_holds_resolved_during_the_outage(
     during a listener outage never clears the consumer's card — the
     create event announced it, nothing ever announced its death.
 
-    THE FIX: the FOURTH union member — ``Backfilled(open_hold_ids=…)``
+    The contract: the FOURTH union member — ``Backfilled(open_hold_ids=…)``
     — emitted after EVERY (re)backfill; the consumer drops anything not
-    in the snapshot. THE RED (captured at the pre-fix head): after the
+    in the snapshot. THE RED (the rejected shape): after the
     reconnect the stream carried NOTHING that closes the card — the
     consume-until-reconcile timed out; the stale history even REPLAYED
     the dead hold's create (the ghost) into the new subscriber.
@@ -777,9 +769,9 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
     wf_pool: asyncpg.Pool,
     hitl_redlog: RedLog,
 ) -> None:
-    """Pin P7 (the silently single-consumer listener — the hostile
-    review's C2): the pre-fix listener pulled ONE shared queue — two
-    concurrent consumers PARTITIONED the stream (each stole the other's
+    """Pin P7 (the silently single-consumer listener): a listener that
+    pulls ONE shared queue — two
+    concurrent consumers PARTITION the stream (each stole the other's
     events) and ``stop()``'s single ``None`` sentinel stranded all but
     one waiter. THE PRODUCT SHAPE is one backend listener fanning out to
     N watching users (the progress stream's own pub/sub discipline —
@@ -797,7 +789,7 @@ async def test_two_consumers_fan_out_and_each_gets_its_own_sentinel(
     shared: asyncio.Queue[int | None] = asyncio.Queue()
     for i in range(3):
         shared.put_nowait(i)
-    shared.put_nowait(None)  # THE SINGLE SENTINEL — the pre-fix stop()'s shape
+    shared.put_nowait(None)  # THE SINGLE SENTINEL — the shape a shared-queue stop() takes
 
     async def _shared_consumer(haul: list[int]) -> None:
         while True:
@@ -1236,16 +1228,16 @@ async def test_loop_conditional_wait_is_the_named_shape_error(
 ) -> None:
     """Pin (C9/E13): the loop's answer-queue cursor IS the iteration
     counter — a body that CONDITIONALLY waits (some iterations, not
-    others) mis-indexes the queue SILENTLY pre-fix: the iteration
+    others) mis-indexes the queue SILENTLY: the iteration
     counter advances past answers that were never consumed, the stranded
     answer can never be read again, and a RETRY of a waited iteration
     replays the WRONG slot (the retry-replay law, broken silently).
 
-    THE FIX: the E13 RULE — the loop-kind wait site REFUSES the
+    THE E13 RULE: the loop-kind wait site REFUSES the
     mis-aligned state (the iteration cursor PAST the answer queue) with
     the named typed error: the shape law ("ONE wait per iteration")
-    gets teeth. The rejected shape: pre-fix the pin's loop silently minted a
-    second hold and the error never raised."""
+    gets teeth. The rejected shape: the pin's loop silently mints a
+    second hold and the error never raises."""
 
     app = WorkflowApp()
 

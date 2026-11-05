@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE RUN VIEW'S PINS — the run page's stated contracts under adversarial
+"""The run view's pins — the run page's stated contracts under adversarial
 shapes, one pin each. Each pin asserts the SAFE behavior; one finding
 whose resolved behavior already holds at the head stands GREEN as the
 guard that keeps the resolution from rotting.
@@ -60,7 +60,7 @@ The behaviors held:
   cohorts``): the test's chain-source declaration wires a
   ``(ctx, params)`` body with ZERO args — the runtime invokes source
   bodies with ctx alone, so the declaration IS a wiring lie and E10's
-  recorded finding is correct; the RESOLVED behavior (a ctx-only source
+  refusal is correct; the RESOLVED behavior (a ctx-only source
   body) is pinned green.
 * ``tests/typeprobe/wf_gather_negative_types.py`` is a
   ZOMBIE probe: on disk, carrying live MUST_ERROR markers, wired
@@ -172,7 +172,7 @@ async def _seed_failed_run_with_a_hostile_error_class(
 async def test_1_the_run_view_bounds_error_class(
     wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
-    """THE READ-SIDE BOUND'S RESIDUE: the run view (the run page's and
+    """The read-side bound's residue: the run view (the run page's and
     the SSE snapshot's shared read) must serve ``error_class`` BOUNDED
     with the truncation named — the same law the sibling error fields
     already keep. TODAY: 200KB in, 200KB out, no marker."""
@@ -390,7 +390,7 @@ async def _probe_pair(conn: asyncpg.Connection, sql: Any) -> tuple[int, int]:
 async def test_5_the_cursor_probe_fences_identically_to_the_plain_probe(
     wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
-    """THE FENCE-AGREEMENT LAW (the module's own, at
+    """The fence-agreement law (the module's own, at
     ``_WF_PROBE_FENCE_TEMPLATE``): the cursor probe and the plain probe
     answer "is anything routable" over the SAME candidacy — a row the
     claim statement must never admit (a ``__flow__`` root — never work;
@@ -497,8 +497,8 @@ class _StrictFifoModeCache:
 
 
 def test_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None:
-    """The round's own comment's claim ("the next attempt must then run
-    the plain shape, not a stale bound") made TRUE — or the degradation
+    """The cursor's own contract ("the next attempt must then run
+    the plain shape, not a stale bound") holds — or the degradation
     NAMED. The driver below models the expiry-mid-expansion honestly:
     a REAL ClaimCursor on a controllable clock (armed, then the jitter
     reset fires between the expansion loop's iterations) and a conn

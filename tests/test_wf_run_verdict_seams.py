@@ -1,4 +1,4 @@
-"""THE RUN-VERDICT SEAMS: what the packaged run door and the runner's read
+"""The run-verdict seams: what the packaged run door and the runner's read
 face report when a run ends on an edge the adoption cures just made loud.
 
 * a FRESH run's failure carries NO claim verdict — ``claim_verdict`` is the
@@ -6,7 +6,7 @@ face report when a run ends on an edge the adoption cures just made loud.
   wears;
 * a cancel landing between the read's status poll and its terminal-row
   read still raises the cancelled verdict — the race must not turn a
-  cancelled run back into the empty read the cure exists to remove;
+  cancelled run back into the empty read;
 * a route arm declaring ``reservations=None`` (the accepted "no
   reservations" spelling on every face) forks its children like an arm
   that declares nothing at all.
@@ -92,7 +92,7 @@ async def test_a_fresh_failure_raises_without_a_claim_verdict(
 async def test_a_cancel_landing_after_the_status_read_still_raises_cancelled(
     wf_pool: asyncpg.Pool, wf_schema: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """THE READ'S CANCEL RACE: ``result()`` polls the run's status, then
+    """The read's cancel race: ``result()`` polls the run's status, then
     reads the terminal node's row. An operator's cancel is a single flip
     of the root row; when it lands in the window between those two reads
     the poll saw ``running`` and the terminal row's result is NULL. The
@@ -194,7 +194,7 @@ async def test_a_route_arm_declaring_no_reservations_forks_its_children(
 async def test_a_succeeded_terminal_beside_a_failed_sink_branch_still_raises_the_failure(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
-    """THE ENDED-RUN VERDICT IS THE RUN'S, NOT THE TERMINAL NODE'S: a
+    """The ended-run verdict is the run's, not the terminal node's: a
     flow may finish its terminal node while a fire-and-forget branch
     (`sink(...)`) is still live; the branch's failure terminalises the
     RUN as failed (an unabsorbed failure). The read must raise that
@@ -249,7 +249,7 @@ async def test_a_succeeded_terminal_beside_a_failed_sink_branch_still_raises_the
 async def test_the_verdict_names_the_unabsorbed_failure_not_the_absorbed_one(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
-    """THE VERDICT NAMES THE FAILURE THAT FAILED THE RUN: in a fan-out,
+    """The verdict names the failure that failed the run: in a fan-out,
     one branch's failure may be ABSORBED — its edge declares
     ``collect``, the join fired with the typed report, the failure never
     reached the run — while a sibling's unabsorbed failure terminalises
@@ -336,7 +336,7 @@ async def test_the_verdict_names_the_unabsorbed_failure_not_the_absorbed_one(
 async def test_a_cancelled_run_whose_terminal_succeeded_still_raises_cancelled(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
-    """THE TERMINAL NODE IS NOT THE RUN: a flow's terminal step can
+    """The terminal node is not the run: a flow's terminal step can
     succeed while a sibling branch is still held; the operator then
     cancels the run. The read must raise the cancelled verdict — the
     cure's own property — not return the succeeded terminal's result and
@@ -392,7 +392,7 @@ async def test_a_cancelled_run_whose_terminal_succeeded_still_raises_cancelled(
 async def test_an_adopted_live_run_s_failure_wears_no_replay_verdict(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
-    """THE OTHER NON-REPLAY CLAIM VERDICT: a re-drive of a still-live run
+    """The other non-replay claim verdict: a re-drive of a still-live run
     claims it ``existing-running`` and then executes it. When that drive's
     step fails, the raise is a FRESH failure of this drive — not the
     terminal replay — so it carries no ``claim_verdict`` either. Only
@@ -426,7 +426,7 @@ async def test_an_adopted_live_run_s_failure_wears_no_replay_verdict(
 async def test_a_replayed_cancelled_run_carries_the_replay_verdict(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
-    """THE REPLAY FACE, CANCELLED FAMILY: replaying a terminal CANCELLED
+    """The replay face, cancelled family: replaying a terminal CANCELLED
     run's key re-raises the cancelled verdict with the claim verdict
     attached — the same replay contract the failed-run replay carries,
     across the new error family.

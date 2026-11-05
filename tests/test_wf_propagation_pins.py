@@ -121,7 +121,7 @@ async def test_pin1_fail_closed_join_resolves_never_hangs(
     """A fail_closed join whose parent TERMINALLY fails must NOT hang: the
     joined node's side of the counter is resolved by the flow-scoped
     transition (blocked-with-reason naming the parent), the flow fails.
-    THE REJECTED VARIANT (the pre-fix shipped shape): the parent's failed
+    THE REJECTED VARIANT (the block-arm-less shape): the parent's failed
     finalize plain-decrements (or never resolves), the join stays
     join-wait / fires silently over a partial — the record shows a hanging
     join. The mutation scenario: the cascade statement's block arm dropped —
@@ -153,7 +153,7 @@ async def test_pin1_fail_closed_join_resolves_never_hangs(
     state = await node_state(wf_conn, wf_schema, join_id)
     propagation_redlog.red(
         "t06-pin1-stranded-join",
-        "the cascade's block arm dropped (the pre-fix shipped shape: the "
+        "the cascade's block arm dropped (the block-arm-less shape: the "
         "join stays join-wait or fires over the failed parent)",
         {
             "status": state["status"],
@@ -179,7 +179,7 @@ async def test_pin1_fail_closed_join_resolves_never_hangs(
     # finalize on a FRESH shape — the shipped tx2 runs the mutant, the
     # join NEVER resolves (the rejected strand, observed in the row),
     # and the flow fails with NO blocked join (the cascade's flow arm is
-    # gated on the block arm — the mutant's other recorded finding).
+    # gated on the block arm — the mutant's other escape).
     import taskq.workflows._sql_finalize as finalize_sql_module
 
     mutated_cascade = finalize_sql_module.FAIL_CLOSED_CASCADE_SQL.replace(
@@ -222,7 +222,7 @@ async def test_pin1_fail_closed_join_resolves_never_hangs(
     propagation_redlog.red(
         "t06-pin1-block-arm-dropped",
         "the cascade's block arm dead in the REAL engine's tx2 — the join "
-        "never resolves (the pre-fix shipped shape: the record shows a "
+        "never resolves (the gate-less shape: the record shows a "
         "hanging join) and the flow's flip never lands (the flow arm is "
         "gated on the block arm)",
         {
@@ -232,13 +232,13 @@ async def test_pin1_fail_closed_join_resolves_never_hangs(
         },
     )
     assert state2["metadata"].get("blocking_reason") == "join", (
-        f"the scenario's recorded finding is broken: the mutant's cascade left the "
+        f"the scenario's contract is broken: the mutant's cascade left the "
         f"join {state2} — the block arm must be load-bearing"
     )
     flow2_state = await node_state(wf_conn, wf_schema, flow2)
     assert flow2_state["status"] == "running", (
         f"the mutant's flow flip landed without a blocked join: {flow2_state} "
-        "(the flow arm's gate is part of the recorded finding)"
+        "(the flow arm's gate is part of the contract)"
     )
 
 
@@ -729,6 +729,6 @@ async def test_pin8_mixed_policy_node_the_fence_is_not_absorption(
     mutated_sql = dataclasses.replace(wf_sql, workflow_nodes=mutated_nodes)
     lied = await reconstruct_workflow_status(wf_conn, mutated_sql, flow_id)
     assert lied == "blocked", (
-        f"the scenario's recorded finding is broken: the mutant derived {lied!r} — "
+        f"the scenario's contract is broken: the mutant derived {lied!r} — "
         "the fence clause must be load-bearing in the absorbed predicate"
     )

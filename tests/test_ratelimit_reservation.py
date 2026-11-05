@@ -775,7 +775,7 @@ async def test_slot_rows_exist_starved_pool_is_bounded() -> None:
 
 # ── Release / denial arms: unit-level execution (hardening wave) ────────
 #
-# The release and denial arms below previously executed only inside the
+# The release and denial arms below execute only inside the
 # integration tier (test_ratelimit_reservation_fencing.py runs the
 # zombie-release pins against real PG, integration-marked) or only at
 # the _InMemorySlotTable level, never through ConcurrencyReservation's

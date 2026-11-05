@@ -107,7 +107,7 @@ class TestUpgradeFromTheProdLedger:
 
         # The prod failure was exactly this call raising: the guard reads
         # every applied checksum against the bundled file and refuses all
-        # of it on a mismatch. On the pre-fix tree the rewritten files'
+        # of it on a mismatch. Under a naive edit the rewritten files'
         # checksums no longer match the originals' — this raise is the
         # deploy blocker, reproduced.
         applied = await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name)

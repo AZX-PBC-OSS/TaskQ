@@ -1,4 +1,4 @@
-"""THE LOOP MACHINERY'S PINS — the loop's contracts under adversarial
+"""The loop machinery's pins — the loop's contracts under adversarial
 shapes, run live against PG. Each pin asserts the SAFE
 behavior and marked ``pytest.mark.xfail(strict=True)``: the fix flips
 the pin to XPASS-strict (a red that says: remove the marker WITH the
@@ -318,7 +318,7 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
 async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_path(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE PRODUCTION SHAPE (the probe's finding, extended to the run): a
+    """The production shape (the probe's finding, extended to the run): a
     loop exhausted under the driver's cap (escalate policy, the author's
     ``escalates_to=`` body), the outbox drained — then the REAL dispatch
     CTE (the round-robin variant, the fleet worker's claim statement)
@@ -659,7 +659,7 @@ def test_f_loop_6_validate_warns_on_the_waits_forever_loop() -> None:
 
 
 def test_f_loop_7_the_carrier_type_refusal_fires_at_registration() -> None:
-    """The seam-late recorded finding: a body ``-> Refine[Foo] | Done[Foo]``
+    """The seam-late refusal: a body ``-> Refine[Foo] | Done[Foo]``
     with ``initial=Bar()`` must be refused at the compile/registration
     door — "refuse at compile" is E8's own docstring's claim; today the
     refusal lives one seam later (the first execution door)."""
@@ -926,8 +926,8 @@ async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
 
 
 def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None:
-    """THE LOOP-PARENTS GAP, refused at the construction door (the E11
-    rule). The rejected shape (probe-rejected at this head's pre-fix
+    """The loop-parents gap, refused at the construction door (the E11
+    rule). The rejected shape (probe-rejected here
     tree): ``loop("scan", body, initial=some_promise)`` — the natural
     reading of "the loop starts from the parent's result" — threaded the
     PROMISE HANDLE itself into the carry; the first claim died

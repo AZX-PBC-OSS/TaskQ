@@ -700,7 +700,7 @@ _SHOWING_RE = re.compile(r"Showing(?:\s|<span[^>]*>)+1\u2013(\d+) of ([\d,]+)</s
 # The number belongs to the phrase: `\bdays? ago\b` alone strips only the
 # words and LEAVES the bare digit, so "4 days ago" vs "5 days ago" (one
 # engine's render straddled the day tick - observed on the coverage leg,
-# run 36622474331, where instrumentation slows each render to seconds)
+# where instrumentation slows each render to seconds)
 # still disagreed as "4 …" vs "5 …". Strip the quantified phrase whole,
 # past and future; the article forms ("a day ago") too.
 # The relative/absolute timestamps two requests milliseconds apart can
@@ -710,10 +710,10 @@ _SHOWING_RE = re.compile(r"Showing(?:\s|<span[^>]*>)+1\u2013(\d+) of ([\d,]+)</s
 # ``running_for_ms`` — "elapsed since started_at, measured against the
 # database clock at render time" (job_table.html) — through duration_fmt's
 # compact arms ("226h 42m", "3m 42s", "45.0s", "150ms"). The duration cell
-# is the missing form that re-flaked the differentials (run 36658651637:
-# "the engines disagree on served fragment with the new row: 226h 42m vs
-# 226h 41m" — the two engines' sequential fetches straddled a minute
-# tick); _VOLATILE_RE's prose forms never covered duration_fmt's output.
+# is the missing form that re-flaked the differentials (the two engines'
+# sequential fetches straddled a minute tick and disagreed on the served
+# fragment: "226h 42m vs
+# 226h 41m"); _VOLATILE_RE's prose forms never covered duration_fmt's output.
 # Stripped before any differential so the comparison tests structure, not
 # wall-clock prose. The number belongs to the unit: the phrase is
 # stripped whole. The paired forms (d h / h m / m s) are the shared
@@ -750,7 +750,7 @@ class TestTheVolatileStripStripsWholePhrases:
             # duration_fmt's four arms (job_card.html): the running row's
             # live "running_for_ms" cell is measured against the database
             # clock at render time — the forms the two-engine differentials
-            # flaked on (run 36658651637).
+            # flake on at a minute-tick straddle.
             "150ms",
             "3.5s",
             "3m 42s",
@@ -1314,7 +1314,7 @@ async def test_null_partition_key_is_the_documented_divergence(
     lab: _Lab,
     ts_dsn: str,
 ) -> None:
-    """THE one row shape the hypertable mode cannot hold: a NULL
+    """The one row shape the hypertable mode cannot hold: a NULL
     ``finished_at`` archive row — the row the history walk's
     ``__NULL__`` sentinel cursor exists to describe.
 

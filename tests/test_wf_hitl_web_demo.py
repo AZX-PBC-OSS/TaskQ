@@ -1,4 +1,4 @@
-"""THE EMBEDDING DEMO'S WEB HALF, VERIFIED (the expiry-face's fix lane):
+"""The embedding demo's web half, verified (the expiry-face's fix lane):
 ``examples/deep_research_web.py`` — the app-lifespan listener → the
 per-user SSE endpoint (authz scoped by the run) → the HoldCreated
 handler reading the ROW for the display facts → the resolve POST → the
@@ -94,7 +94,7 @@ def _blocks(text: str) -> list[tuple[str, dict[str, Any]]]:
 
 
 class _Board:
-    """THE BOARD'S SERVER-SIDE TWIN: the card set driven ONLY by the
+    """The board's server-side twin: the card set driven ONLY by the
     demo's frames — create opens (with the ROW context), resolve/expired
     clear, Backfilled reconciles (drops what the snapshot disowns)."""
 
@@ -137,7 +137,7 @@ async def _read_until(
 async def test_the_web_half_lives_and_clears(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE WEB HALF'S SPINE: the authz gates are the RUN SCOPE (a
+    """The web half's spine: the authz gates are the RUN SCOPE (a
     token minted for another run — or no token — never subscribes); the
     per-user stream carries the run's HoldCreated WITH the ROW-read
     context (the reason the wait site declared — the pointer triggered
@@ -220,7 +220,7 @@ async def test_the_web_half_lives_and_clears(
 async def test_the_board_reconciles_after_an_outage(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE WEB HALF'S RECONCILE (C1's consumer face on the demo): a
+    """The web half's reconcile (C1's consumer face on the demo): a
     hold resolved while the app's listener was DOWN never clears its
     card from a notify — the Backfilled frame does the clearing on the
     next subscribe. The board's law, exercised through the demo's
@@ -287,7 +287,7 @@ async def test_resolve_is_scoped_to_the_url_runs_own_hold(
 async def test_the_dsn_form_opens_its_own_pool_and_the_doors_live(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, pg_dsn: str
 ) -> None:
-    """THE ADVERTISED RUNNABLE FORM: ``build_app(dsn, schema)`` — the
+    """The advertised runnable form: ``build_app(dsn, schema)`` — the
     lifespan opens the app's own pool and the doors live on it: the
     token mints, the events stream starts (200), the resolve delivers
     through the app's own pool. A well-formed id with NO hold is a 404

@@ -1330,7 +1330,7 @@ async def test_dispatch_one_job_counts_a_retried_failure(
     """One retryable raise → one taskq.jobs.attempt_failures sample labelled
     by actor, exception class and retryable="true", and the consumed
     outcome is "scheduled" (the retry went back to the queue) - not
-    "abandoned", which is what TaskQAbandonedJobs used to page on."""
+    "abandoned", which is what TaskQAbandonedJobs pages on."""
 
     class _FlakyError(RuntimeError):
         pass

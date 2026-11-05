@@ -1,27 +1,28 @@
-"""THE CACHE FIXES' PINS — the cache-attack front's recorded findings, fixed.
+"""The workflow cache's pins — the route-source refusal, the
+ctx.input scan, the input sensitivity, and the hit-finalize fault's
+seat.
 
-The lane's pins (each behavior was wrong before its fix):
+The rejected shapes the pins close:
 
-* FIX 1 (P8f, the ROUTE-SOURCE WEDGE): ``route_wedge_repro.py`` — run 1
-  stores, run 2 HITS and the hit path never rebuilds the route fork →
-  the run wedged FOREVER (``running``), the source row reading
+* the ROUTE-SOURCE WEDGE: a cached typed-route source whose run 1
+  stores and run 2 HITS — the hit path cannot rebuild the route fork, so
+  the run wedges FOREVER (``running``), the source row reading
   ``succeeded`` wearing the ``wf_cache_hit`` receipt, ZERO route
-  children, ZERO join rows.
-* FIX 3 (P2d, the ctx.input CROSS-TENANT LEAK):
-  ``ctx_input_leak_repro.py`` — tenant B's run terminal-succeeded with
-  tenant A's answer (the body never ran), audits clean.
-* AMENDMENT A (the import-probe's #4, the SOURCE-NODE INPUT BLINDNESS):
-  ``source_feed_stale_hit_repro.py`` — the 640-row feed stored; the
-  60-row feed was served 640 rows (the content-blind stale hit).
-* AMENDMENT B (the import-probe's #3, the UNVERIFIABLE-SOURCE SILENCE):
-  ``unverifiable_source_silent_repro.py`` — ``cache=True`` accepted at
-  wiring, the body ran EVERY run, zero cache rows, the only trace a log
-  line.
-* FIX 6a (the HIT-FINALIZE FAULT'S TWO SEATS):
-  ``hit_finalize_fault_repro.py`` — an InterfaceError inside the hit's
-  finalize was ABSORBED by the body ladder: the node terminal-FAILED on
-  a ``max_attempts=1`` step whose body NEVER ran, the run killed
-  ``UnabsorbedNodeFailure``.
+  children, ZERO join rows. The wiring refuses the shape.
+* the ctx.input CROSS-TENANT LEAK: a cached body reading ``ctx.input``
+  runs tenant B's step with tenant A's answer (the body never runs),
+  audits clean. The static source-scan refuses it.
+* the SOURCE-NODE INPUT BLINDNESS: a stale hit served by content-blind
+  identity — the 640-row feed stored; the 60-row feed was served 640
+  rows.
+* the UNVERIFIABLE-SOURCE SILENCE: ``cache=True`` accepted at
+  wiring on a source the cache cannot verify, the body running EVERY
+  run, zero cache rows, the only trace a log line.
+* the HIT-FINALIZE FAULT'S TWO SEATS: an InterfaceError inside the
+  hit's finalize takes the MACHINERY's seat (the reclaim-eligible
+  transport fault) — never ABSORBED by the body ladder: absorbed, the
+  node terminal-FAILED on a ``max_attempts=1`` step whose body NEVER
+  ran, the run killed ``UnabsorbedNodeFailure``.
 
 The fix choices are the READS' choices, and the pins hold them:
 
@@ -115,7 +116,7 @@ async def process_audio(ctx: StepContext, item: AudioItem) -> AudioResult:
 
 
 async def tenant_read(ctx: StepContext) -> str:
-    """THE UNCACHED LIFT (the teaching example's upstream): the flow
+    """The uncached lift (the teaching example's upstream): the flow
     input's value enters the DATAFLOW here — never cached."""
     CALLS["tenant_read"] = CALLS.get("tenant_read", 0) + 1
     flow_input = cast(
@@ -126,14 +127,14 @@ async def tenant_read(ctx: StepContext) -> str:
 
 
 async def tenant_body(ctx: StepContext, tenant: str) -> Report:
-    """THE CACHED BODY, FIXED: the tenant is a PARAM — it enters the
+    """The cached body, fixed: the tenant is a PARAM — it enters the
     address (the wired-param version caches per value)."""
     CALLS["tenant_body"] = CALLS.get("tenant_body", 0) + 1
     return Report(ref=f"{tenant}:{CALLS['tenant_body']}")
 
 
 async def leaking_tenant_body(ctx: StepContext) -> Report:
-    """THE LEAKY BODY (the E18 subject): the tenant rides ``ctx.input`` —
+    """The leaky body (the E18 subject): the tenant rides ``ctx.input`` —
     which the address NEVER covers."""
     CALLS["leaking"] = CALLS.get("leaking", 0) + 1
     flow_input = cast(
@@ -162,12 +163,12 @@ def _reset_calls() -> None:
 
 
 def test_route_source_cache_refuses_at_the_route_attachment() -> None:
-    """THE WEDGE'S DOOR (P8f): ``cache=True`` on a typed-route source is
+    """The wedge's door (P8f): ``cache=True`` on a typed-route source is
     refused at the wiring — the typed refusal names WHY (the hit path
     cannot rebuild the fork: the arm dispatch reads the element's runtime
     type) and the ALTERNATIVE (cache the arms' work, not the
-    fork-spawning source). The pre-fix shape wired clean and wedged
-    forever at the first hit — the red receipt is the lane's live repro."""
+    fork-spawning source). The uncured shape wires clean and wedges
+    forever at the first hit."""
     app = WorkflowApp()
 
     @app.workflow("wedge_flow")
@@ -225,7 +226,7 @@ def test_route_source_cache_refused_by_validate_e17() -> None:
 
 
 def test_ctx_input_cache_refuses_at_the_wiring() -> None:
-    """THE LEAK'S DOOR (P2d): a body reading ``ctx.input`` with
+    """The leak's door (P2d): a body reading ``ctx.input`` with
     ``cache=True`` is refused at the wiring — the flow input never
     enters the address, so the cached answer under one input would serve
     a LATER run whose input differs (the cross-tenant leak: the red
@@ -266,7 +267,7 @@ def test_ctx_input_cache_refused_by_validate_e18() -> None:
 async def test_the_wired_param_version_caches_per_value(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TEACHING EXAMPLE, GREEN (FIX 3's positive face): the tenant
+    """The teaching example, green (FIX 3's positive face): the tenant
     lifted into the dataflow by an UNcached upstream step and wired as
     the cached body's PARAM — the param enters the address, and two
     DIFFERENT flow inputs are two DIFFERENT addresses: both bodies run,
@@ -313,7 +314,7 @@ async def test_the_wired_param_version_caches_per_value(
 
 
 def test_source_node_run_input_refused_the_import_probe_shape() -> None:
-    """THE IMPORT PROBE'S #4 (AMENDMENT A): a SOURCE node whose body
+    """The import probe's #4 (AMENDMENT A): a SOURCE node whose body
     reads the RUN INPUT — the 640→60 stale-hit shape — is refused at the
     wiring. The address covers the wired args only; a source node whose
     only run-varying input is the flow input has NO sound address. The
@@ -334,7 +335,7 @@ def test_source_node_run_input_refused_the_import_probe_shape() -> None:
 
 
 def test_unverifiable_source_cache_refuses_at_the_wiring() -> None:
-    """THE SILENCE'S DOOR (AMENDMENT B — the import-probe's #3): an
+    """The silence's door (AMENDMENT B — the import-probe's #3): an
     unverifiable body source made the step SILENTLY uncached — the
     wiring accepted cache=True, every run re-executed the body, the only
     trace a log line (the red receipt). The operator must never learn
@@ -394,7 +395,7 @@ async def ghost_body(ctx: StepContext, d: Report) -> Report:
 
 
 def test_exit_body_cache_refuses_at_the_wiring() -> None:
-    """THE NO-OP'S DOOR (FIX 6b): cache=True on an Exit-returning body
+    """The no-op's door (FIX 6b): cache=True on an Exit-returning body
     is the silent no-op — the sentinel terminalizes through the exit
     finalize, which the success-only store never sees. Refused (the
     picked door), bare AND inside a union (the union face is the next
@@ -455,7 +456,7 @@ async def test_hit_finalize_fault_is_infra_never_a_body_failure(
     """ONE FAULT, ONE SEAT (FIX 6a): a transient blip escaping the HIT
     path's finalize is the MACHINERY's seat — the same seat the MISS
     path's finalize faults own (the escape-point contract: the
-    classifier reads WHERE the error escaped). The pre-fix seat routed
+    classifier reads WHERE the error escaped). A body-ladder seat routes
     the blip through the body ladder: the node terminal-FAILED on a
     max_attempts=1 step whose body NEVER ran (the red receipt — the
     live repro's exact shape). The fix: the blip ESCAPES the claim tail
@@ -517,9 +518,9 @@ async def test_hit_finalize_fault_is_infra_never_a_body_failure(
 async def test_two_different_inputs_two_addresses_no_cross_serve(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE INPUT-SENSITIVITY PIN (FIX 4a — the strengthened pack): the
+    """The input-sensitivity pin (FIX 4a — the strengthened pack): the
     pack feeds TWO DIFFERENT inputs to one body — different addresses,
-    different results, NO cross-serve. The pre-fix pack had no pin
+    different results, NO cross-serve. (A pack without a pin feeding
     feeding distinct inputs through one cached body: the mutation (an
     address that ignores the input) SURVIVED it — the amendment's
     640→60 red is that mutation's live face. Here the pin dies only if
@@ -566,7 +567,7 @@ async def test_two_different_inputs_two_addresses_no_cross_serve(
 async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any
 ) -> None:
-    """THE CAS-FRESHNESS PIN (FIX 4b — the strengthened pack): the TWO
+    """The cAS-freshness pin (FIX 4b — the strengthened pack): the TWO
     SEMANTICS distinguished, both arms provable.
 
     * FIRST-WINNER-KEEPS: a store against a FRESH row LOSES (the
@@ -677,7 +678,7 @@ async def test_cache_evict_bare_refuses(cache_cli_env: Any) -> None:
 async def test_cache_evict_dry_run_default_then_yes(
     cache_cli_env: Any, wf_pool: asyncpg.Pool, wf_schema: str, wf_sql: Any
 ) -> None:
-    """THE DRY-RUN DEFAULT (FIX 5's spine): ``evict`` prints what WOULD
+    """The dry-run default (FIX 5's spine): ``evict`` prints what WOULD
     go and touches NOTHING; ``--yes`` deletes. The row the eviction took
     out is a MISS for the next run — the lie's service ends when the
     operator says so, never silently."""
@@ -716,7 +717,7 @@ async def test_cache_evict_dry_run_default_then_yes(
 
 
 async def test_cache_list_shows_rows_and_receipts(cache_cli_env: Any) -> None:
-    """THE HIT OBSERVABILITY (FIX 5's other half): ``wf cache list``
+    """The hit observability (FIX 5's other half): ``wf cache list``
     shows the cache rows AND the hits' wf_cache_hit receipts — the
     receipt already existed on the node rows; the surface folds it into
     the operator's one command."""

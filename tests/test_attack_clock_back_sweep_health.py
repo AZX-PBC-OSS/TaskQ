@@ -81,7 +81,7 @@ def test_backward_wall_jump_cannot_hide_a_stalled_sweep(
     monkeypatch: pytest.MonkeyPatch,
     fresh_ledgers: None,
 ) -> None:
-    """THE attack: a sweep succeeds, the wall jumps back an hour, and the
+    """The attack: a sweep succeeds, the wall jumps back an hour, and the
     sweep then stops completing. The stalled view must still fire.
 
     On the wall-anchored implementation the health read computed

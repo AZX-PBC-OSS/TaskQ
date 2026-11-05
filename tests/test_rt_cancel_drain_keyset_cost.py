@@ -355,7 +355,7 @@ async def test_drain_cost_does_not_track_other_tenants_backlog(
     The filter is the whole point of a filtered write. If the drain's cost
     tracks the table's total live population rather than the match set,
     every tenant's offboard slows as the fleet grows -- and the only
-    symptom is a command that used to finish and now times out, with
+    symptom is a command that times out where it once finished, with
     nothing in that tenant's own metrics to explain it.
     """
     schema = module_pg_schema.schema_name

@@ -1,8 +1,8 @@
 """The in-memory dispatch round scans the job table a bounded number of times.
 
 The twin mirrors PG's per-actor capacity laterals by iterating the
-registered actors, and it used to rescan every stored job once per actor
-inside that loop - O(actors x jobs) per round, so a differential run with
+registered actors; it must not rescan every stored job once per actor
+inside that loop - O(actors x jobs) per round leaves a differential run with
 a few hundred registered actors and a few thousand jobs spent its time in
 the mirror rather than in the code under test. The pending, due rows are
 now grouped by actor in one pass before the actor loop (order-preserving,

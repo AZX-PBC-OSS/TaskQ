@@ -904,7 +904,7 @@ class TestConcurrentOverlapWindow:
         self, pg_conn: asyncpg.Connection, settings: TaskQSettings
     ) -> None:
         """End-to-end window exit: after the race above, applying the post
-        phase lets the previously-losing scope enqueue the same key --
+        phase lets the losing scope enqueue the same key --
         the window's error was transitional, not a lost job."""
         await migrate_mod.apply_pending(pg_conn, schema=settings.schema_name, phase="pre")
 

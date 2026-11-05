@@ -1,4 +1,4 @@
-"""THE CAPACITY ENFORCEMENT PINS (§H-A's claim-path + finalize faces):
+"""The capacity enforcement pins (§H-A's claim-path + finalize faces):
 
 * the — THE WF RESERVATIONS ARE ACQUIRED: the flow rows carry the
   step's declared reservation NAMES on their metadata (the static node
@@ -187,7 +187,7 @@ class OverlapGuard:
 async def test_the_reservation_stamp_rides_the_static_and_fork_rows(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE STAMP: the step's declared reservation NAMES ride the flow
+    """The stamp: the step's declared reservation NAMES ride the flow
     rows' metadata beside ``rate_limits`` — the static node inserts AND
     the fork's children (a map's items inherit the source node's terms:
     the children share the source's cohort). The claim path's read."""
@@ -250,7 +250,7 @@ def _meta(raw: Any) -> dict[str, Any]:
 async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ACQUIRE (H-A1's recorded finding): two flow rows sharing a slots=1
+    """The acquire (H-A1): two flow rows sharing a slots=1
     reservation, both CLAIMED concurrently — exactly ONE body runs at a
     time. The second gate DENIES (the row snoozed budget-free, its
     release_reason naming the reservation), and the release RE-OPENS the
@@ -412,7 +412,7 @@ async def test_two_flow_rows_sharing_a_reservation_run_one_body_at_a_time(
 async def test_an_unknown_reservation_name_parks_fail_closed(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE FAIL-CLOSED ARM (the rate_limits' own): a flow row whose
+    """The fail-closed arm (the rate_limits' own): a flow row whose
     metadata names a reservation this worker's registry does not carry
     parks budget-free, LOUD — never admitted unprotected, never a
     crash."""
@@ -436,7 +436,7 @@ async def test_an_unknown_reservation_name_parks_fail_closed(
 async def test_malformed_reservation_metadata_parks_fail_closed(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE HAND-CRAFTED ROW'S SHAPE (the jsonb boundary): a metadata
+    """The hand-crafted row's shape (the jsonb boundary): a metadata
     ``reservations`` value that is not a list of str is the SAME
     fail-closed arm — the row parks, the WARNING names it."""
     clock = FakeClock(_START)
@@ -544,7 +544,7 @@ async def test_terminal_node_writes_result_expires_at_from_the_cohort_ttl(
 
 
 class _RecordingParkBackend:
-    """THE PARK'S WITNESS: ``mark_snoozed`` records (the stamp's own
+    """The park's witness: ``mark_snoozed`` records (the stamp's own
     read); the fail-closed park touches nothing else on the backend."""
 
     def __init__(self) -> None:
@@ -566,7 +566,7 @@ class _RecordingParkBackend:
 async def _run_one_job_through_the_intercept(
     deps: WorkerDeps, registry: RateLimitRegistry, job: JobRow
 ) -> tuple[_RecordingParkBackend, WorkerDeps]:
-    """THE INTERCEPT'S OWN DRIVE: one claimed flow row through
+    """The intercept's own drive: one claimed flow row through
     ``di_consumer_loop``'s workflow intercept — the loop processes the
     ONE queued job, then the shutdown event ends it. The fail-closed
     park's witness (the stub backend + the deps' disowned set) is
@@ -621,7 +621,7 @@ async def test_a_renamed_reservation_park_snoozes_and_stamps_never_disowns(
     NAME the registry lacks hits the FAIL-CLOSED park arm — the park is
     a SNOOZE (``mark_snoozed`` called, the stamp landed: the
     ``released_reason`` naming the park, the arm's own kind beside it),
-    NEVER a disown. The pre-fix shape asserted ``denied is not None``
+    NEVER a disown. The asserted-``denied`` shape admits the defect
     inside the caller's broad except: the AssertionError disowned the
     row, the heartbeat stopped renewing it, the reclaim handed it back,
     the re-claim re-denied — the infinite churn at lease cadence, the
@@ -693,7 +693,7 @@ async def test_the_route_arm_stamp_symmetry_inherits_the_source_terms(
     rate_limits, no actor override) inherits the SOURCE node's
     ``rate_limits`` ALONGSIDE its ``reservations`` (the FIX-2 face's own
     terms ride the cohort); an arm declaring its own terms keeps its OWN
-    (no silent merge). The pre-fix asymmetry: the reservations flowed
+    (no silent merge). The asymmetry defect: the reservations flow
     from the source, the rate_limits didn't — the bare arm's rows lost
     the source's rate caps at the stamp."""
     from taskq.ratelimit.token_bucket import TokenBucket

@@ -2,9 +2,9 @@
 exited.
 
 ``task.cancel()`` on a sync actor cancels the *await* on the executor
-thread, never the thread: the consumer's cancellation handler used to write
-``mark_interrupted(hold=timedelta(0))`` on the assumption the actor had
-unwound with the await, so the row went straight back to ``pending``:
+thread, never the thread: the consumer's cancellation handler must never
+write ``mark_interrupted(hold=timedelta(0))`` on the assumption the actor
+unwound with the await — that sends the row straight back to ``pending``:
 claimable by another worker while the thread was still mid-body. The
 transactional path had the same gap: ``tx_task.cancel()`` followed by an
 immediate re-raise released the row while the transaction task was still
@@ -134,8 +134,7 @@ class _ParkedTxConnection:
     """asyncpg.Connection stand-in whose transaction unwind can be parked.
 
     The transactional path's unwind: the ``async with transaction()``
-    exit that rolls back: is the thing the release used to race (the
-    second mechanism). Parking it lets the test hold the unwind open past
+    exit that rolls back is the second mechanism the release races. Parking it lets the test hold the unwind open past
     the cancel and observe the ordering: the release write must land only
     after ``rollback_done``.
     """

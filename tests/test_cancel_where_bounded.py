@@ -1171,7 +1171,7 @@ async def test_drain_batch_cost_is_independent_of_non_matching_backlog(
     filter is the whole point. If the drive statement's cost tracks the
     table's total pending population rather than the match set, then every
     tenant's offboard slows down as the fleet grows, and the only symptom
-    is a command that used to finish and now times out -- with nothing
+    is a command that times out where it once finished -- with nothing
     about that tenant's own backlog having changed, so nothing in their
     metrics explains it.
 

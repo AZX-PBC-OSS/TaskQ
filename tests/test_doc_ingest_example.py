@@ -1,5 +1,5 @@
 # ruff: noqa: S608, S603  # Why: the schema is a fixture-derived test identifier and the grep gate runs the system grep on repo-fixed paths; every value is $-bound.
-"""THE EXAMPLES' PINS: the doc-ingest example (docs/examples/
+"""The examples' pins: the doc-ingest example (docs/examples/
 doc-ingest.md's fence) is CODE THAT RUNS, not decoration.
 
 * THE FAST-TIER SMOKE (no containers): the fence compiles, the graph
@@ -80,7 +80,7 @@ def example_ns(example_fence: str) -> dict[str, Any]:
 
 
 def test_the_abstraction_contract_grep_gate() -> None:
-    """THE GREP GATE: zero case-study strings in the shipped tree. The
+    """The grep gate: zero case-study strings in the shipped tree. The
     same check the CI runs repo-wide (cited identically by 13/14/16/17);
     a hit reds."""
     hits: list[str] = []
@@ -135,7 +135,7 @@ def test_fast_tier_the_graph_compiles_and_validates_clean(
     example_ns: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE FAST-TIER SMOKE: the fence's DEFINITIONS exec without
+    """The fast-tier smoke: the fence's DEFINITIONS exec without
     containers; the app compiles the graph; THE ZERO-WARNING BUDGET,
     ENFORCED AT BOTH SEVERITIES. ``validate()`` raises on ERROR severity
     only — a WARNING regression (W2-unknown-queue, W1-eternal-wait)
@@ -180,7 +180,7 @@ def test_fast_tier_the_graph_compiles_and_validates_clean(
 def test_fast_tier_the_mermaid_golden_is_byte_stable(
     example_ns: dict[str, Any],
 ) -> None:
-    """THE GOLDEN: the example's compiled Mermaid is byte-stable — a
+    """The golden: the example's compiled Mermaid is byte-stable — a
     wiring change that alters the graph reds until the golden is
     updated (the docs-truth discipline; the golden IS the reviewable
     diff of the graph's shape)."""
@@ -202,7 +202,7 @@ async def test_full_run_the_example_executes_and_the_join_fires_exactly_once(
     wf_conn: Any,
     example_ns: dict[str, Any],
 ) -> None:
-    """THE EXAMPLES-MARKER LANE: the example's flow runs on the REAL
+    """The examples-marker lane: the example's flow runs on the REAL
     engine; the barrier's join fires EXACTLY ONCE across 3 consecutive
     rounds; the hold resumes the loop toward publish; the terminal is
     the TYPED verdict."""
@@ -273,7 +273,7 @@ async def test_full_run_the_callers_input_is_the_corpus(
     wf_conn: Any,
     example_ns: dict[str, Any],
 ) -> None:
-    """THE INPUT IS WIRED (the fence's first-hour fix c):
+    """The input is wired (the fence's first-hour fix c):
     ``create_flow(input=…)`` is CONSUMED — the map fans the CALLER's
     batch, not the wiring's declared default. The most natural first
     experiment (hand the flow YOUR documents) must enrich YOUR

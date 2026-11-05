@@ -1,10 +1,9 @@
-"""THE COMPILE-TIME SURFACES' ADVERSARIAL PROBES: wf.validate()'s
+"""The compile-time surfaces' adversarial probes: ``wf.validate()``'s
 rules, the wiring verbs' doors, the Mermaid byte-stability.
 
-No PG: every probe compiles or validates. RED = the observed half
-contradicts the documented contract (the capture file names it).
-
-Captured to .measurements/attack3/ per BUILD-PROTOCOL §7b.
+No PG: every probe compiles or validates. A red means the observed half
+contradicts the documented contract; captures land in
+``.measurements/attack3/``.
 """
 
 from __future__ import annotations
@@ -194,7 +193,7 @@ def test_a3_e5_blind_to_untyped_and_duck_shapes() -> None:
         return build(step(_untyped_consumer, produced, key="consume"))
 
     # the PROBE SEAM (app._compile): the untyped consumer's graph is
-    # INVALID on purpose (E5's recorded finding is the pin's subject) — the
+    # INVALID on purpose (E5's refusal is the pin's subject) — the
     # door would raise before the diagnostics could be read.
     compiled = app._compile("a3_e5_blind")
     rules = [d.rule for d in _run_rules(compiled)]

@@ -123,9 +123,9 @@ def test_upgrading_guide_does_not_tell_operators_the_worker_applies_migrations()
     """The upgrade guide's migration step must not send operators toward a
     worker crash-loop.
 
-    Step 4 of ``upgrading.md`` used to read "Apply migrations explicitly, or
-    let the worker apply them at startup via ``TASKQ_MIGRATE_ON_START=true``".
-    The worker never honours that setting (it only warns and ignores it -
+    Step 4 of ``upgrading.md`` must not promise "Apply migrations explicitly, or
+    let the worker apply them at startup via ``TASKQ_MIGRATE_ON_START=true``":
+    the worker never honours that setting (it only warns and ignores it -
     see ``test_worker_bootstrap_warns_when_the_setting_is_set`` above), and
     since the pending-migrations boot guard landed, an operator who follows
     that literal advice now gets a crash-loop instead of a silent no-op: the

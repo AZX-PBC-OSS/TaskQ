@@ -1,4 +1,4 @@
-"""THE SOURCE-TERMINAL FENCE'S PROBE — the source-terminal fence + the premature-terminal
+"""The source-terminal fence's probe — the source-terminal fence + the premature-terminal
 fence (the spike's 30-sweep probe's shape, PROOF.md §2, translated).
 
 The no-fan-in design has NO join, so the original premature-FIRE fence
@@ -187,7 +187,7 @@ async def test_premature_terminal_fence_30_sweeps(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """THE 30-SWEEP PROBE (the spike's shape): a mid-stream death, then 30
+    """The 30-sweep probe (the spike's shape): a mid-stream death, then 30
     hard sweep passes with NO worker — the root NEVER finalizes (the
     premature-terminal fence holds), the join machinery is inert
     (firable=0, zero join-wait rows — with no fan-in there is nothing to

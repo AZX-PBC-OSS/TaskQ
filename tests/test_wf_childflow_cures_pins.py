@@ -1,38 +1,31 @@
-"""THE CHILD-FLOW FIXES' PINS — the pin pack (the child-flows
-recorded findings, fixed on the
-the child-fixes branch off the child line's head
-``f8bfc5033``).
+"""The child-flow machinery's pins — the spawn/join contracts under
+concurrency, recursion, retention, crash, and redeploy.
 
-THE PINS' BASELINE (each behavior was wrong before its fix, and the pin
-watched it fail):
-
-* THE ASYNCIO.GATHER DRAGON  — GRAND-MERGE BLOCKER): the natural
+* THE ASYNCIO.GATHER CONTRACT: the natural
   fan-out spelling ``gather(*[ctx.spawn_flow(...) for t in tenants])``
-  minted ONE child and returned tenant-0's verdict K times wearing K
-  labels — the per-attempt spawn cursor's read/write was not atomic, so
-  K concurrent spawns all adopted the same slot (run key), and the
-  arbiter's conflict path handed every caller THE ONE child's handle.
-  ZERO errors, green pins, silent fabricated results.
-* THE RECURSION BOMB + THE RECURSIVE CASCADE  — GRAND-MERGE
-  BLOCKER): (a) a self-spawning flow minted a generation per sweep tick
+  mints K children with K distinct verdicts — the per-attempt spawn
+  cursor's read/write is atomic (non-atomic, K
+  concurrent spawns all adopt the same slot (run key), and the
+  arbiter's conflict path hands every caller THE ONE child's handle:
+  ZERO errors, green pins, silent fabricated results).
+* THE RECURSION BOMB + THE RECURSIVE CASCADE: (a) a self-spawning flow mints a generation per sweep tick
   forever — no depth bound, no cycle check; (b) the cancel cascade was
   Python-recursive — a 1200-deep cascade raised ``RecursionError`` at
   the operator and left hundreds of runs running.
 * (THE RETENTION-RESPAWN FAIL-CLOSE): purging a child's rows +
-  resuming the parent SILENTLY RE-EXECUTED the child (the arbiter's row
-  went with the purge → the spawn re-minted a fresh child → the child's
-  side effects ran twice, the parent SUCCEEDED — the worst face). The
-  fail-close is now the typed arm: the dangling child pointer raises.
+  resuming the parent must NOT silently RE-EXECUTE the child: the
+  dangling child pointer raises (the typed arm) — without it the
+  spawn re-mints a fresh child, the child's
+  side effects run twice, the parent SUCCEEDS — the worst face.
 * (THE ORPHAN WINDOW): the crash between child-create and
-  receipt-write, then a parent cancel, let the child ESCAPE the cascade
-  forever — the cascade walked the crash-unsafe receipts and never read
-  the crash-safe ``parent_flow_id`` direction the rows already carry.
-* (THE SMALLER FACES): (a) the dev-loop tick never ran the
-  expiry arm — ``timeout_s`` was inert in dev drives; (b) the admin run
-  explorer was child-blind — the parent↔child links the rows carry
-  never rendered; (c) resolving a child-join hold no-op-bounced (the
-  resolve delivered, the body re-executed, the live child re-held) —
-  the typed refusal now teaches where the resolution actually lives.
+  receipt-write, then a parent cancel, must not let the child ESCAPE the
+  cascade — the cascade walks the crash-safe ``parent_flow_id``
+  direction the rows carry, not the crash-unsafe receipts alone.
+* (THE SMALLER FACES): (a) the dev-loop tick runs the
+  expiry arm — ``timeout_s`` is never inert in dev drives; (b) the admin run
+  explorer renders the parent↔child links the rows carry; (c) resolving a
+  child-join hold refuses typed (the resolution lives at the child's
+  own hold — the refusal teaches where).
 
 The fix choices are the reads' choices, and the pins hold them. Pin
 names carry the pack's own stem.
@@ -67,9 +60,8 @@ from taskq.workflows import (
     step,
 )
 
-#: The cascade's depth the recursion pin drives (the rejected shape's
-#: own number — the pre-fix Python-recursive walk raised
-#: ``RecursionError`` inside this depth).
+#: The cascade's depth the recursion pin drives (a Python-recursive
+#: walk raises ``RecursionError`` inside this depth).
 _CASCADE_DEPTH = 1200
 
 
@@ -235,7 +227,7 @@ class TestGatherDragonAtomicity:
     async def test_gather_spawns_mint_k_distinct_children_never_tenant_zero_k_times(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE DRAGON'S KILL PIN: ``gather`` over K spawn_flow calls —
+        """The dragon's kill pin: ``gather`` over K spawn_flow calls —
         the natural fan-out spelling — must mint K DISTINCT children,
         each carrying ITS OWN input, and every receipt must name its own
         child (no tenant-0 x K, no dropped tenants, no fabricated
@@ -282,7 +274,7 @@ class TestGatherDragonAtomicity:
     async def test_the_same_key_concurrent_spawn_adopts_one_child_all_callers_agree(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE HONEST SHARED FACE: a SAME-key concurrent spawn ADOPTS the
+        """The honest shared face: a SAME-key concurrent spawn ADOPTS the
         same child and EVERY caller receives THAT child's handle/outcome
         — never a fabricated per-caller verdict."""
         _child_app("c1_same_chil").get("c1_same_chil")
@@ -315,7 +307,7 @@ class TestGatherDragonAtomicity:
     async def test_input_fidelity_two_input_shapes_each_child_carries_its_own(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE INPUT-FIDELITY PIN: two DIFFERENT input shapes through one
+        """The input-fidelity pin: two DIFFERENT input shapes through one
         gather fan-out — each child's rows carry ITS OWN input (shape +
         values), never a sibling's."""
         app = WorkflowApp()
@@ -399,11 +391,11 @@ class TestSpawnDepthBound:
     async def test_the_self_spawning_flow_is_bounded_the_typed_error_names_the_fix(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE BOMB'S KILL PIN: a self-spawning flow must be STOPPED by
+        """The bomb's kill pin: a self-spawning flow must be STOPPED by
         the declared depth bound — the typed
         ``SpawnDepthExceededError`` (``FanInBoundExceededError``'s
         sibling) on the record, the child census bounded, the run
-        terminal. The pre-fix bomb minted a generation per sweep tick
+        terminal. The unbounded bomb mints a generation per sweep tick
         forever."""
         app = WorkflowApp()
 
@@ -449,7 +441,7 @@ class TestSpawnDepthBound:
     async def test_the_ancestor_cycle_fires_the_same_bound(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE CYCLE CHECK (folded into the same ancestor walk): a cycle
+        """The cycle check (folded into the same ancestor walk): a cycle
         in the rows' parent links cannot run the walk forever — the same
         typed bound fires."""
         _child_app("c2_cycle_chil").get("c2_cycle_chil")
@@ -525,7 +517,7 @@ class TestCancelCascadeIterative:
     async def test_the_1200_deep_cascade_cancels_clean_no_recursion_error(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE CASCADE'S DEPTH LAW: a 1200-deep cascade cancels CLEAN —
+        """The cascade's depth law: a 1200-deep cascade cancels CLEAN —
         the worklist walk, never Python recursion; every run terminal;
         the operator's face honest (no RecursionError, no 500)."""
         ids = await _chain_rows(wf_conn, wf_schema, _CASCADE_DEPTH)
@@ -550,7 +542,7 @@ class TestOrphanWindow:
     async def test_the_crash_orphan_child_is_cancelled_by_the_rows_law(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE ORPHAN WINDOW'S KILL PIN: the crash between child-create
+        """The orphan window's kill pin: the crash between child-create
         and receipt-write (simulated: the receipt removed from the
         parent's row — the crash window's committed state), then a
         parent cancel — the child must STILL be cancelled by the rows'
@@ -596,10 +588,10 @@ class TestChildLostFailClose:
     async def test_the_purged_child_never_silently_respawns_the_typed_arm(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """THE FAIL-CLOSE'S KILL PIN: purging a held child's rows +
+        """The fail-close's kill pin: purging a held child's rows +
         resuming the parent must NEVER silently re-execute the child —
         the dangling child pointer raises the typed arm, the parent's
-        run FAILS honestly (the pre-fix shape re-minted a fresh child:
+        run FAILS honestly (the respawn shape re-mints a fresh child:
         emails/payments twice, the parent SUCCEEDED)."""
         _child_app("c3_chil").get("c3_chil")
         parent_app = _parent_app("c3_chil", "c3_paren")
@@ -709,9 +701,9 @@ class TestDevDriveParity:
     async def test_a_dev_drive_runs_the_expiry_arm_timeout_s_fires_expired(
         self, wf_pool: asyncpg.Pool, wf_schema: str
     ) -> None:
-        """THE DEV FACE MATCHES THE LEADER'S: a ``timeout_s`` wait in a
+        """The dev face matches the leader's: a ``timeout_s`` wait in a
         dev drive fires the ``Expired`` member (the tick runs the expiry
-        arm) — the pre-fix dev face parked on the hold until
+        arm) — a dev face without the arm parks on the hold until
         ``max_ticks`` (the deadline inert)."""
         app = WorkflowApp()
 
@@ -755,7 +747,7 @@ class TestDevDriveAdminFaces:
         wf_conn: asyncpg.Connection,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """THE ADMIN IS NOT CHILD-BLIND: the run explorer's page renders
+        """The admin is not child-blind: the run explorer's page renders
         the parent↔child links the rows already carry (the child flows'
         links on the parent's page, the parent's link on the child's)."""
         import httpx
@@ -794,9 +786,9 @@ class TestDevDriveAdminFaces:
     async def test_resolving_a_child_join_hold_is_the_typed_refusal(
         self, wf_pool: asyncpg.Pool, wf_schema: str
     ) -> None:
-        """THE HONEST RESOLVE FACE: resolving a child-join hold is the
+        """The honest resolve face: resolving a child-join hold is the
         TYPED refusal teaching where the resolution actually lives (the
-        child's terminal) — the hold SURVIVES; the pre-fix face
+        child's terminal) — the hold SURVIVES; the bounce face
         delivered, the body re-executed, the live child re-held (the
         no-op bounce wearing a 200)."""
         _child_app("c5c_chil").get("c5c_chil")

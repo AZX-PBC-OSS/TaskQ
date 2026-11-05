@@ -6,7 +6,7 @@ entry is `import taskq.workflows` (or a submodule) by a caller that
 opted into the `taskq[flows]` extra. The engine is core-deps-only; the
 extra carries no requirements of its own.
 
-**THE GUIDES ARE THE TUTORIAL, THIS PAGE IS THE DICTIONARY** — every
+**The guides are the tutorial; this page is the dictionary** — every
 verb row below is taught, with runnable fences, in
 [the workflows guide](../guides/workflows.md) (the wiring, the joins,
 the routes, the retry ladder, the deps seam, the body's three input
@@ -101,7 +101,7 @@ CONTROL UNION:
   the memo replay would re-thread as a Refine), the loop exhausts with
   the named class, and the flow terminalizes.
 
-**THE CARRY'S TYPE IS THE CONTRACT**: the declared carrier-type
+**The carry's type is the contract:** the declared carrier-type
 (`carry_type=`, or derived from the `initial=` model instance) is
 re-applied at the ONE point a carry reaches the body — at iteration 0
 AND after EVERY resume and on the memo-replay path (the jsonb round-trip
@@ -111,7 +111,7 @@ declared type the jsonb boundary cannot honor is the loud
 `LoopCarryContractError` — a silent type change is refused. The compile
 side is E8 (the carrier-type check).
 
-**THE TWO WALLS ARE DIFFERENT**: `max_iterations` bounds TOTAL SPAWNS
+**The two walls are different:** `max_iterations` bounds TOTAL SPAWNS
 (the iteration cap); `budget_s` is the TIME wall — and it is BLIND while
 the loop holds on a human (`budget_paused` — holds are free). Exhaustion
 is NAMED, never silent: the cap or the budget wall terminates the loop
@@ -252,7 +252,7 @@ the test/demo driver:
 - `drive(flow_id, *, until="held" | "terminal", tick, max_ticks, execute=True) →
   str` — the driver (cut #10): no consumer hand-rolls a dispatch-poll
   loop; the drive is BOUNDED (`max_ticks` — a hang is a defect with no
-  stack trace). **THE RETURN IS THE VERDICT — CHECK IT**: `"terminal"`
+  stack trace). **The return is the verdict — check it:** `"terminal"`
   (the flow row reached `succeeded`/`failed`/`cancelled`), `"held"`
   (only with `until="held"` — a node waits on a human/deadline), or
   `"max_ticks"` (the tick budget SPENT WITHOUT reaching `until` — not a

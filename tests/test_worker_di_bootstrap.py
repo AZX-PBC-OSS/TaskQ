@@ -806,7 +806,7 @@ async def test_bootstrap_clear_error_when_redis_extra_missing(
     """TASKQ_REDIS_URL set + served redis limits + [redis] extra missing
     raises an actionable bootstrap error naming the extra and the limits.
 
-    Regression: this configuration previously surfaced as a bare
+    Regression: an unguarded configuration surfaces as a bare
     ``MissingProvider`` at DI validate, with no hint that the fix is
     installing the extra.
 
@@ -983,7 +983,7 @@ async def test_bootstrap_rejects_actor_registry_key_name_mismatch() -> None:
     fails fast at bootstrap, naming the mismatch.
 
     Regression: a mismapped entry (e.g. ``{"quick_result": <ref named
-    "enrich_order">}``) previously surfaced deep in ``sync_actor_config``
+    "enrich_order">}``) otherwise surfaces deep in ``sync_actor_config``
     as a raw ``ON CONFLICT DO UPDATE command cannot affect row a second
     time`` CardinalityViolation - the batch UPSERT hits the same actor row
     twice when two refs share a ``.name``. The key-equals-name check also

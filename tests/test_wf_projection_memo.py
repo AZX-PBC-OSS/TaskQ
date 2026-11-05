@@ -1,4 +1,4 @@
-"""THE BOOT PROJECTION'S MEMO: the projection computes once per boot and
+"""The boot projection's memo: the projection computes once per boot and
 shares the result, so its invalidation seams are the whole contract — a
 workflow declared after the first read, a second app registered after it,
 and the reset seam each must be seen by the next read.

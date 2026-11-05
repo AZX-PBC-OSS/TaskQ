@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE WF START_TO_CLOSE PINS — the step deadline's declaration + enforcement, .
+"""The wf start_to_close pins — the step deadline's declaration + enforcement, .
 
 THE RECORDED FINDING: the vanilla machinery EXISTS end to end — the ``jobs``
 table's ``start_to_close interval`` column (``migrations/
@@ -130,7 +130,7 @@ async def _poll_node_status(
 
 @pytest.fixture(autouse=True)
 async def reap_detached_unwinds() -> AsyncIterator[None]:
-    """THE DETACHED UNWINDS' REAP (teardown): the deadline pins leave
+    """The detached unwinds' reap (teardown): the deadline pins leave
     their HANG_S bodies unwinding past the expiry on purpose — the
     enforcement detaches the body task (the tracked-zombie shape the
     shutdown watchdog accounts for). At teardown every still-live
@@ -289,7 +289,7 @@ async def test_hung_step_past_its_bound_burns_the_attempt_and_retries(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE HEADLINE PIN: a claimed wf step hung past its declared bound —
+    """The headline pin: a claimed wf step hung past its declared bound —
     the deadline fires, the attempt BURNS (the ledger's failed row, the
     claim's increment kept), the ladder re-pends per the contract, and
     the RUN STAYS ALIVE (the root 'running' — never a zombie, never a
@@ -362,10 +362,10 @@ async def test_no_declaration_runs_the_body_inline_byte_identical(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE CONTROL (the byte-identical law): a step with NO declaration
+    """The control (the byte-identical law): a step with NO declaration
     anywhere — the row's column NULL, the body invoked INLINE (no
     enforcement task, no machinery, no deadline handle): the ctx's
-    body-task handle stays unset, the pre-fix execution shape
+    body-task handle stays unset — the plain execution shape
     exactly."""
     schema = module_pg_schema.schema_name
     app_obj = WorkflowApp()
@@ -384,7 +384,7 @@ async def test_no_declaration_runs_the_body_inline_byte_identical(
     flow_id = str((await runner.create_flow(input=Ingest(doc_id="d1"))).flow_id)
 
     # THE ROW: the unset declaration stamps NULL — the column default's
-    # own value (the pre-fix row).
+    # own value (the unset shape's row).
     row = await _node_row(module_pg_pool, schema, flow_id, "solo")
     assert row["start_to_close"] is None, row["start_to_close"]
 
@@ -404,7 +404,7 @@ async def test_the_fleet_door_enforces_the_row_deadline(
     wf_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """THE FLEET FACE (production's own path — the priority pins' own
+    """The fleet face (production's own path — the priority pins' own
     rig): the step's declared bound stamps the row at create; the REAL
     dispatch claims it; the worker-hosted door
     (``execute_flow_job``) runs the body through the SAME enforcement —
@@ -484,7 +484,7 @@ async def test_the_resolution_law_the_row_levels(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    """THE RESOLUTION LAW per row, first non-``None`` wins:
+    """The resolution law per row, first non-``None`` wins:
     the step's declaration > the actor's declaration (folded at the
     wiring) > the row's NULL — the stamps asserted on the rows."""
     schema = module_pg_schema.schema_name
@@ -570,7 +570,7 @@ async def test_the_row_stamp_beats_the_runner_default(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    """THE LAW'S ORDER AT THE ENFORCEMENT: the row's own stamp outranks
+    """The law's order at the enforcement: the row's own stamp outranks
     the runner's default (the vanilla ``_effective_start_to_close``
     chain: ``job.start_to_close if not None else default``) — a step
     declaring 0.25s under a runner defaulted to 300s dies at 0.25s."""
@@ -641,7 +641,7 @@ async def test_route_arm_declaration_overrides_down_and_the_join_stays_the_sourc
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE ARM'S DOWN-OVERRIDE (the priority fix's own shape): the arm's
+    """The arm's down-override (the priority fix's own shape): the arm's
     children land at the ARM's declaration; an arm declaring none keeps
     the source's; the JOIN (the source's own cohort) stays the source's
     resolution."""
@@ -681,11 +681,11 @@ async def test_the_drain_materializes_consumers_at_the_declared_bound(
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
 ) -> None:
-    """THE DRAIN'S LEG: an outbox-materialized consumer row inherits the
+    """The drain's leg: an outbox-materialized consumer row inherits the
     declared bound the way priority's consumer rows inherit the run's
     stamp — the fire's bindings carry it, the drain's consumer INSERT
     stamps the ``jobs.start_to_close`` column. The unset case binds
-    NULL (the pre-fix row)."""
+    NULL (the unset shape's row)."""
     from tests._wf_fixtures import seed_flow
 
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -736,11 +736,11 @@ async def test_the_fork_bindings_carry_the_downstream_resolution(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE BINDING'S CARRIER: the fork's join-row metadata ``consumers``
+    """The binding's carrier: the fork's join-row metadata ``consumers``
     array carries the downstream node's own resolution (serialized as
     the binding's seconds) — the fire copies it into the outbox
     bindings, the drain stamps the fresh-materialized consumer row. The
-    undeclared downstream keeps the pre-fix shape (no key)."""
+    undeclared downstream keeps the plain shape (no key)."""
     schema = module_pg_schema.schema_name
     app_obj = WorkflowApp()
 
@@ -870,7 +870,7 @@ async def test_the_deadline_fences_a_cancel_mark_and_the_cancel_wins(
     wf_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """THE CANCEL WINS (the vanilla ``mark_retry``'s own law — a
+    """The cancel wins (the vanilla ``mark_retry``'s own law — a
     phase-carrying row matches no arm; the C4 deferral's cancel_fenced
     shape): a claimed step hung past its bound, the operator's cancel
     mark (the wf cancel's metadata carrier) landing mid-flight — the
@@ -931,7 +931,7 @@ async def test_hostile_finally_cannot_defer_the_wf_deadline(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    """THE HOSTILE UNWIND (the vanilla scenario's shape 3 — the deferrable
+    """The hostile unwind (the vanilla scenario's shape 3 — the deferrable
     deadline): a body whose ``finally`` sleeps past the deadline cannot
     hold the attempt hostage — the attempt ends AT the deadline, the
     disposition lands (the re-pend), and the body unwinds DETACHED
@@ -993,7 +993,7 @@ async def test_hostile_finally_cannot_defer_the_wf_deadline(
 
 
 def test_the_declaration_refuses_a_nonpositive_bound() -> None:
-    """THE VANILLA LAW (``start_to_close must be > 0`` — the @actor
+    """The vanilla law (``start_to_close must be > 0`` — the @actor
     decorator's own refusal, at the resolution chain's every declaration
     site): zero and negative bounds are refused at the declaration,
     before anything registers. The step's and the arm's sites refuse at
@@ -1030,7 +1030,7 @@ def test_the_declaration_refuses_a_nonpositive_bound() -> None:
 
 
 def test_the_declaration_refuses_a_non_timedelta() -> None:
-    """THE DECLARED TYPE (a timedelta — the vanilla ``@actor``'s own
+    """The declared type (a timedelta — the vanilla ``@actor``'s own
     face): a bare number is the refused declaration, never a
     seconds-silent-coercion."""
     app_obj = WorkflowApp()
@@ -1069,7 +1069,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE ZOMBIE'S DEADLINE vs A LIVE RECLAIM (the fence legs bind the
+    """The zombie's deadline vs A live reclaim (the fence legs bind the
     caller's own claim identity): W1 claims the
     node (the ledger row live at its own instant); the 90s wf lease
     LAPSES; the reclaim re-pends the row; W2 re-claims (the attempt
@@ -1081,7 +1081,7 @@ async def test_the_zombie_deadline_cannot_flip_a_live_reclaimed_row(
     W2's finalize never refuses) — and W1's own attempt takes the ZOMBIE
     face (the ledger's 'fenced' record, keyed on the claim's own
     instant, stamped the deadline's truthful class — the C5 shape). The
-    pre-fix shape: the unfenced WHERE (id + status) flipped W2's row
+    rejected shape: the unfenced WHERE (id + status) flips W2's row
     out from under it."""
     from tests._wf_fixtures import seed_flow, seed_running_node
 
@@ -1185,7 +1185,7 @@ async def test_the_deadlines_burn_cannot_stamp_a_reminted_live_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE BURN'S GUARD (the re-mint rig): the refund cycle re-mints the
+    """The burn's guard (the re-mint rig): the refund cycle re-mints the
     ordinal — the arbiter re-use hands a LIVE winner the SAME ledger row
     a zombie once claimed (the row's instant moves to the winner). The
     zombie's deadline disposition — the fence legs refuse at the node

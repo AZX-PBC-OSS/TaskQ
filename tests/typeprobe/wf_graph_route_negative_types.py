@@ -72,7 +72,7 @@ def probe_string_key_on_route_refused(app: WorkflowApp) -> None:
 
 
 def probe_the_green_face(app: WorkflowApp) -> None:
-    """THE GREEN FACE (clean — never a marker): the arms keyed by the
+    """The green face (clean — never a marker): the arms keyed by the
     union's member TYPES, the promise the flat ``Promise[list[R]]`` with
     R solved to the union of the arms' returns."""
 
@@ -134,7 +134,7 @@ async def ocr_text(ctx: object, item: ImageDoc) -> ExtractedText:
 
 
 def probe_the_homogeneous_barrier_type(app: WorkflowApp) -> None:
-    """THE FAN-IN'S EDITOR FACE (the typed route's barrier — fork, fan back in at the
+    """The fan-in's editor face (the typed route's barrier — fork, fan back in at the
     chunking step): HOMOGENEOUS arms (both return ``ExtractedText``) —
     the route's promise solves to the flat ``Promise[list[ExtractedText]]``
     (the build fn's declared return pins the solve: a drifted ARM reds

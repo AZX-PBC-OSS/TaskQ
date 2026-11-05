@@ -181,7 +181,7 @@ async def test_copy_enqueue_columns_are_copy_from_minus_server_stamped(
 async def test_enqueue_copy_record_arity_matches_columns(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """THE ARITY PIN (the COPY record builder vs the column list it feeds).
+    """The arity pin (the COPY record builder vs the column list it feeds).
 
     The record tuples in ``_enqueue_batch_fast``'s build loop are built BY
     HAND, positionally, against ``copy_enqueue_columns`` -- nothing in the

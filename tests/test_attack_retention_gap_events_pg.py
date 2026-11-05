@@ -3,8 +3,8 @@
 trailing-watermark consumer can test its cursor against.
 
 The loss class these pins close: a ``watch_reclaims`` consumer parked at
-cursor K while event retention deletes ``(K, K+n]`` used to resume into a
-silent skip to live - the surviving rows returned, no error anywhere, the
+cursor K while event retention deletes ``(K, K+n]`` must never resume into a
+silent skip to live (the surviving rows returned, no error anywhere, the
 consumer free to believe it saw everything. The fix is the event-prune
 watermark (``job_events_prune_state``, migration 01.00.20_02): each deleter
 advances ``pruned_through_id`` to the highest event id its statement deleted,

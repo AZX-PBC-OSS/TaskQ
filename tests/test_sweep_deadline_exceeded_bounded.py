@@ -71,7 +71,7 @@ pytestmark = pytest.mark.integration
 # (2N + 1 = 121 vs. a small constant), small enough to stay a fast test.
 _SWEPT = 60
 
-# Row cap used to prove one call's transaction is bounded by a constant rather
+# Row cap that proves one call's transaction is bounded by a constant rather
 # than by the backlog. Deliberately smaller than _SWEPT so an unbounded sweep
 # overshoots it visibly.
 _CAP = 10

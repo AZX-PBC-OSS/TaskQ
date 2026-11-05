@@ -1,16 +1,11 @@
-"""THE ESTATE PACK: the content door's own holes
-(the evidence-integrity lane @ 3f69eaa32; the verifier under pin is
-``scripts/verify_evidence_heads.py`` there — the fixed content door whose
-own scan is the subject).
+"""The estate pack: the content door's own holes.
 
-Each pin's rejected shape was reproduced live against the recorded
-defect before its fix landed; the assertions stand as the permanent
-green guards.
-five to XPASS-strict, so the markers are REMOVED WITH the fix (the
-doctrine's flip): these pins now run GREEN and guard the five edges
-permanently.
+The verifier under pin is ``scripts/verify_evidence_heads.py`` — the
+content door whose own scan is the subject. Each pin's rejected shape
+was reproduced live against the recorded defect before its fix landed;
+the assertions stand as the permanent green guards.
 
-The method is the 13 pin's own: every pin builds a SYNTHETIC ESTATE in
+The method: every pin builds a SYNTHETIC ESTATE in
 a tmp dir (a ``runs/`` with a hand-written ``CLAIMS.json`` + the tampered
 capture) and runs the verifier as a subprocess against it
 (``--runs-dir``). Every claim is FRESH (``head_sha`` = the worktree's own
@@ -18,46 +13,26 @@ capture) and runs the verifier as a subprocess against it
 under pin can judge. The verifier's ``REPO`` is its own parent — the
 working tree's residue never enters.
 
-The findings (each WAS a live recorded finding — every estate exited rc=0
-before this branch's fix):
+The pin families (every estate below exits rc=0 today; each was a
+shape the door once greened):
 
-The method is the 13 pin's own: every pin builds a SYNTHETIC ESTATE in
-a tmp dir (a ``runs/`` with a hand-written ``CLAIMS.json`` + the tampered
-capture) and runs the verifier as a subprocess against it
-(``--runs-dir``). Every claim is FRESH (``head_sha`` = the worktree's own
-``git rev-parse HEAD``) so the head-stamp law holds and ONLY the door leg
-under pin can judge. The verifier's ``REPO`` is its own parent — the
-working tree's residue never enters.
-
-The findings (each rejected live — every estate below exits rc=0 today):
-
-* THE SCAN WINDOW (FIXED): the first cut's ``_scan_window`` read
-  only the first 3 + last 12 lines of a capture; a capture whose stamp
-  says ``rc=0`` whose TRUE red verdict (``1 failed, N passed``) sat
-  MID-FILE — pushed out of the tail window by trailing chatter —
-  greened silently. THE PIN (green): the door rejects a red verdict
-  ANYWHERE in the capture — the scan is verdict-shaped, never
+* THE SCAN WINDOW: ``_scan_window`` reads
+  the whole capture — a red verdict (``1 failed, N passed``) sitting
+  MID-FILE, pushed past a ``rc=0`` stamp by trailing chatter, is
+  still rejected: the scan is verdict-shaped, never
   line-counted.
-* THE JSON LAUNDER (FIXED): a capture named ``*.json`` carrying
-  ``{"rc": 1, "failed": 3}`` parsed as valid JSON and greened — the door
-  never read verdict content inside JSON (the suffix alone was the
-  exemption). THE PIN (green): JSON captures' verdict fields
+* THE JSON LAUNDER: JSON captures' verdict fields
   (``rc``/``failed``/``errors``) are read like any stamp; the band
   family's verdict-free measurements stay green.
-* THE EMPTY REGISTRY GREENS VACUOUSLY (FIXED): a claims registry
-  with ``"claims": []`` passed ("the head-stamp law holds"). THE PIN
-  (green): an empty registry is a loud refusal — an estate with no
+* THE EMPTY REGISTRY GREENS VACUOUSLY: an empty registry is a loud
+  refusal — an estate with no
   claims is unverifiable,
   per the verifier's own missing-registry law.
-* FUTURE-DATED CAPTURES (FIXED): ``captured_at`` was never
-  parsed — a capture dated 2030 with a fresh ``head_sha`` greened. THE
-  PIN (green): ``captured_at`` (and the filename's embedded stamp,
+* FUTURE-DATED CAPTURES: ``captured_at`` (and the filename's embedded
+  stamp,
   where present) must be sane — not future-dated beyond the law's
   stated tolerance (one day, in the verifier's docstring).
-* THE ENV-FORGED HEAD (FIXED): ``GITHUB_EVENT_PATH`` pointing at
-  a hand-written payload made ``_head()`` return a sha that exists
-  NOWHERE in the repo — the verifier then judged claims against the
-  forgery and printed it as "THIS head". THE PIN (green): the verified
+* THE ENV-FORGED HEAD: the verified
   head is the REPO'S OWN head (``git rev-parse HEAD``), env-
   influenceable never; the CI env face survives only under the
   cross-check against the repo's own history (a sha the repo cannot
@@ -82,8 +57,8 @@ _FORGED_SHA = "f" * 40
 
 def _repo_head() -> str:
     """The worktree's own HEAD — the fresh claim's stamp (never
-    hardcoded: the pin survives the lane's rebases)."""
-    return subprocess.run(  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it (the door lane's ruff config does not select S603 here; S607 below is the live one).
+    hardcoded: the pin survives rebases)."""
+    return subprocess.run(  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
         ["git", "rev-parse", "HEAD"],  # noqa: S607  # Why: as above.
         cwd=_REPO,
         capture_output=True,
@@ -136,7 +111,7 @@ def _claim(stem: str, file: str, head_sha: str, captured_at: str) -> dict[str, s
 
 
 def test_d1_the_door_convicts_a_red_verdict_anywhere_in_the_capture(tmp_path: Path) -> None:
-    """THE WINDOW MUST BE VERDICT-SHAPED, never line-counted: a red
+    """The window must be verdict-shaped, never line-counted: a red
     verdict ANYWHERE in the capture rejects the claim. The estate: a
     fresh claim whose capture's stamp greens (``rc=0`` in the first
     three lines) while the TRUE red verdict sits mid-file, outside the

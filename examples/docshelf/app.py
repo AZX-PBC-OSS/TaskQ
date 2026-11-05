@@ -125,8 +125,8 @@ async def _extract_inner(ctx: StepContext, chunk: ChunkRef, deps: DocShelfDeps) 
     """ONE chunk through the mock boundary under the app's inner budget
     (the fast absorber — a transient flake or timeout costs a cheap
     inner retry inside the SAME attempt, never a body re-run; the
-    framework ladder above it honors the stamped budget — friction F1
-    is CURED, see extract_doc_chunks' docstring)."""
+    framework ladder above it honors the stamped budget — see
+    extract_doc_chunks' docstring)."""
     pool = await deps.pool()
     dyn = deps.cfg.dynamics
     last: Exception | None = None
@@ -242,11 +242,11 @@ async def run_sub_analyses(
     outcome and delivers the BATCH payload into the hold — the resolve's
     CAS makes the delivery exactly-once (a second assembler's resolve is
     the defined no-op). THE SHAPE IS THE BATCH JOIN'S OWN DESIGN, NOT A
-    COLLISION DODGE: the hold identity now carries the MAP INDEX
-    (friction F5 is CURED — the holdmap lane's map-index identity:
-    concurrent per-item holds on ONE node key are addressable and
-    individually resolvable, pinned green), so a wait-per-child would
-    no longer collide; the batch still joins through ONE hold, ONE
+    COLLISION DODGE: the hold identity carries the MAP INDEX
+    (concurrent per-item holds on ONE node key are addressable and
+    individually resolvable, pinned in
+    tests/test_wf_holdmap_cures_pins.py), so a wait-per-child would
+    not collide; the batch still joins through ONE hold, ONE
     resume because the parent consumes ONE batch answer."""
     pool = await deps.pool()
     parent = str(ctx.flow_id)
@@ -415,7 +415,7 @@ async def contract_summary_arm(
     model — the route's decode law. The ARM'S PLACEMENT lives on the
     wiring's ``RouteArm(actor=..., queue=...)`` (the authoritative stamp
     the fork writes); the boot projection walks the arms' effective
-    placements since the engine-cures lane's F2 cure — the arm's rows
+    placements — the arm's rows
     project at boot, never strand (the decorator's registration is the
     same pair, belt-and-suspenders)."""
     return ContractSummary(
@@ -464,7 +464,7 @@ async def publish_digest(
 ) -> ShelfDigest:
     """The completion report — the typed terminal verdict, the ROUTE
     JOIN's SINGLE consumer (a multi-parent join's arg resolution races
-    the route join's terminal at scale — friction F4 — so the digest
+    the route join's terminal at scale, so the digest
     reads everything off the arms' outputs). The digest row publishes
     ONCE per delivery (idempotent upsert)."""
     raw = ctx.input
@@ -844,16 +844,14 @@ async def deliver_batch(pool: asyncpg.Pool, schema: str, batch: DeliveryBatch) -
     one flow's ROUTE fan is safe to ~150 classified elements SOLO — past
     it, AND under multi-page concurrency, the route join's
     fire/arg-resolution raced its consumer (friction F4). The in-process
-    face is clean since the engine-cures lane's re-probe (3 rounds x
-    200 elements, all green) and the connection-hold cure landed (the
-    holdmap lane's pool pin — a substep no longer pins the pool
-    connection across the body); the FLEET face was never re-convicted
-    and never disproven, so the feed still pages its deliveries AND
-    delivers the pages ONE AT A TIME (each page's run reaches terminal
-    before the next page fires). The zero-loss invariant is per DOCUMENT
-    across the pages. A single-page delivery returns without waiting
-    (the crash drills' shape: the flow must be RUNNING while the drill
-    kills the worker).
+    face is clean (re-probed at 3 rounds x 200 elements, all green, and
+    a substep no longer pins the pool connection across the body); the
+    FLEET face was never re-convicted and never disproven, so the feed
+    still pages its deliveries AND delivers the pages ONE AT A TIME
+    (each page's run reaches terminal before the next page fires). The
+    zero-loss invariant is per DOCUMENT across the pages. A single-page
+    delivery returns without waiting (the crash drills' shape: the flow
+    must be RUNNING while the drill kills the worker).
 
     Returns one flow id per page."""
     page_size = DOCSHELF_CONFIG.delivery_page_docs

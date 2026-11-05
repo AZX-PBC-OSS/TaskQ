@@ -193,7 +193,7 @@ class TestProtocolVersionConsistency:
     def test_fake_backend_version_matches_canonical(self) -> None:
         """``testing.actor.FakeBackend`` must track the canonical constant.
 
-        A hardcoded literal here previously drifted (stayed ``2`` across a
+        A hardcoded literal here drifts (stays ``2`` across a
         contract change); it is now bound to the canonical constant, and
         this pin keeps it that way.
         """
@@ -345,7 +345,7 @@ class TestReturnAnnotations:
         """The outcome parameter admits exactly the three deferral
         outcomes the statement's arms key on.
 
-        It was previously ``AttemptOutcome`` - eight values, five of
+        The narrower ``AttemptOutcome`` Literal (eight values, five of
         which key no arm: with ``outcome='succeeded'`` at budget, PG
         fired no arm (job stranded ``running``, call returned ``noop``)
         while the in-memory twin silently rescheduled it uncounted. The
@@ -390,7 +390,7 @@ class TestReturnAnnotations:
 class TestFakeBackendMarkSnoozedParity:
     """``FakeBackend`` exists to pin the worker against the protocol; a
     stale annotation on its own seam certifies calls the protocol
-    forbids. ``mark_snoozed``'s return Literal previously lacked
+    forbids. ``mark_snoozed``'s return Literal must carry
     ``"failed:MaxAttemptsExceeded"`` and its ``outcome`` parameter was
     the wide ``AttemptOutcome`` - both drifted behind the contract the
     fake is there to enforce.

@@ -201,8 +201,8 @@ class _GatedIsolateConn:
     the guarded UPDATE ... RETURNING that rides ``fetchrow`` (the
     standing-claim fence's source of truth) - so the test can interleave
     Sweep 1 exactly inside the race window between isolate's plain SELECT
-    (no row locks) and its first per-row transition. The gate used to sit
-    on the first ``execute``, which since the fence is the attempt INSERT -
+    (no row locks) and its first per-row transition. The gate sits
+    BEFORE the first ``execute``, which since the fence is the attempt INSERT -
     AFTER the arbiter has already transitioned the row: a park there
     misses the window and the sweep has nothing left to win.
     """

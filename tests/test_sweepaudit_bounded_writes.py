@@ -456,7 +456,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "AND result @> '{\"skipped\": true}'::jsonb",
         "the skip envelope's re-arm (H-C4): its write set is ONE run's "
         "exit-skipped rows (flow_id-bound, the engine's own "
-        "SKIPPED_RESULT containment predicate — the hold round recorded finding "
+        "SKIPPED_RESULT containment predicate — the hold round's contract "
         'replaced bare key-existence so a foreign writer\'s {"skipped": '
         "false} is never matched or destroyed; the root excluded) — "
         "cannot grow with the backlog, only with the run's own fan-out",

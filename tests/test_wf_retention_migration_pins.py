@@ -1,4 +1,4 @@
-"""THE FLOW-HISTORY RETENTION MIGRATION'S PINS (H-B5, H-B6) — the
+"""The flow-history retention migration's pins (h-b5, h-b6) — the
 01.00.35 index round's shape, structurally and on real PG.
 
 the (the boot-time SHARE locks → the boot-race deadlock): the file

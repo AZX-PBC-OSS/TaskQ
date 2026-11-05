@@ -95,12 +95,12 @@ counter ON the row the dispatch claim already touches.
 4. **FORK ATOMICITY** (pin 19): the terminal UPDATE + the fork's INSERTs
    in ONE transaction; a kill at any statement boundary rolls the whole
    tx; the fork-debt reconcile is a REPAIR, never the design.
-5. **THE OUTBOX DRAIN IS OWNED** (pin 20): idempotent consumer inserts
+5. **The outbox drain is owned** (pin 20): idempotent consumer inserts
    (`ON CONFLICT` on the step key); the flag flips in the insert's tx.
 6. **RESUME-NOT-RETRY**: a hold's resume consumes NO ladder attempt
    (erratum 15); the ladder burns for BODY failures only — an
    infra fault routes to the reclaim (the escape-point contract).
-7. **THE ABSORBED-FAILURE CLAUSE precedes the `failed` row** (the
+7. **The absorbed-failure clause precedes the `failed` row** (the
    derivation table): a failed node absorbed by its edge's declared policy
    derives through its PARENT'S outcome — the workflow succeeds WITH the
    failure report (the report is the point, not a consolation).
@@ -140,7 +140,7 @@ sentinel, the typed partial); the finalize CAS is the shape guard. THE
 STATUS IS DERIVED (the derivation table): the run's verdict reconstructs from the ROWS
 — never one column's cache.
 
-**THE DIVERGENCE TRADES, AS FEATURES** (the adoption pitch, not
+**The divergences trade as features** (the adoption pitch, not
 apologies):
 
 1. **Replay = ROWS-ONLY RE-DERIVATION.** There is no orchestrator
@@ -153,14 +153,14 @@ apologies):
    contract, no SDK sandbox, no history versioning — the rows version
    themselves per attempt), and run state is one SQL query away for any
    BI tool.
-2. **THE DB-CLOCK TIMERS.** Every timer (hold deadlines, loop budgets,
+2. **The db-clock timers.** Every timer (hold deadlines, loop budgets,
    lease expiry) evaluates against PG's clock INSIDE the statement
    owning the transition (the SkewedClock pin: a +1h-skewed app clock
    cannot fire or unfire a budget). *Costs:* event-time semantics
    (inexpressible — §0's refusal 4). *Buys:* ONE totally-ordered
    crash-safe clock domain; the fleet's lived "a row `running` forever"
    pain is structurally impossible while the derivation re-derives.
-3. **THE HOLD ROW — the headline.** Five ecosystem mechanisms behind
+3. **The hold row — the headline.** Five ecosystem mechanisms behind
    ONE CAS'd, idempotent, slot-releasing row: signal-and-wait,
    suspend-resume, deferrable-open-slot, poll-until-true,
    checkpoint-interrupt (probes 2+3: the slot RELEASES

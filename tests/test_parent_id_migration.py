@@ -74,9 +74,9 @@ def test_migration_index_serves_the_pending_children_count() -> None:
 
 
 def test_shipped_23_01_is_byte_frozen() -> None:
-    """THE UPGRADE-PATH LAW: the merge base's own chain applied this file's
+    """The upgrade-path law: the merge base's own chain applied this file's
     exact bytes, and its ledger checksum (bfd0a070b649, recorded at the CI
-    recorded finding) refuses any rewrite of the version key. The consolidation's
+    contract) refuses any rewrite of the version key. The consolidation's
     split-to-23_07 attempt edited the shipped file and the migrations gate
     rejected it — the columns file is frozen to the shipped digest."""
     import hashlib
@@ -105,7 +105,7 @@ def test_migration_creates_index_non_concurrently() -> None:
 
 
 def test_copy_from_columns_carries_parent_id() -> None:
-    """THE TRAILING LAW: parent_id is COPY_FROM_COLUMNS' LAST member.
+    """The trailing law: parent_id is COPY_FROM_COLUMNS' LAST member.
 
     The list is the single source the archive CSVs and the enqueue COPY
     both derive from, and the record builder writes parent_id LAST (the

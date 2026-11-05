@@ -1,4 +1,4 @@
-"""THE API LANE'S FIX-ROUND PROBES (the fresh reviewer's findings F1-1 +
+"""The API gather probes:
 F1-2) — the honest shapes:
 
 * F1-1: the HETEROGENEOUS gather's truth — the elements unify to the

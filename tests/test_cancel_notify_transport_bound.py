@@ -1,42 +1,37 @@
-"""THE CANCEL NOTIFY TRANSPORT'S BOUND — the system-e2e PG17 lane's recorded findings.
+"""The cancel notify transport's bound — the notify legs and the
+tier's ledger cleanup are bounded client-side.
 
-The CI recorded finding (run 38053606389, the ``system-e2e (17)`` leg at
-f7155214; PG15/16/18 green on the same commit): one silently-dead PG
-socket under the runner's weather converted ONE infrastructure event
-into THREE legs of the matrix:
+The law (the same one the HITL listener already declares): THE ROWS ARE
+THE TRUTH, THE NOTIFY IS TRANSPORT — a transport that never answers
+must not hold the operator's call, the leader's sweep tick, or the
+tier's own cleanup hostage. The failure class, observed as one
+silently-dead PG socket under a CI runner's weather turning one
+infrastructure event into three failure faces:
 
-1. (leg F) ``test_operator_cancel_racing_the_sigterm_owns_the_exit`` —
-   ``Timeout (>240.0s)``. The test's own captured stdout ends at the
-   enqueues: every await in its front half is bounded (the
-   ``_wait_running`` cap, the phase poll, the harness's stop/kill
-   bounds) EXCEPT the operator's ``cancel_where`` and the ledger reads
-   — and the cancel row writes had committed (the zombie rows read
-   ``cancel_phase=1`` downstream), so the await that never returned was
-   the NOTIFY TRANSPORT leg that follows the committed drain
+1. the operator's ``cancel_where`` hangs past the 240s backstop
+   (``test_operator_cancel_racing_the_sigterm_owns_the_exit``). Every
+   await in the test's front half is bounded (the ``_wait_running`` cap,
+   the phase poll, the harness's stop/kill bounds) EXCEPT the NOTIFY
+   TRANSPORT leg that follows the committed drain
    (``cancel_where_notify``): a plain ``conn.execute`` of
    ``pg_notify`` with no client-side bound, hung forever on a socket
    the server had stopped answering.
-2. (leg E) the teardown error — the test task still pending at call
-   end: the test's own ``finally`` hung the same way (``delete_tagged``
+2. the teardown error — the test task still pending at call end: the
+   test's own ``finally`` hung the same way (``delete_tagged``
    on the same dead ledger socket, unbounded), so the reaped workers'
    population (tagged, operator-cancel-requested rows) was never
    deleted and the test coroutine never finished.
-3. (leg F2) the sibling scenario — ``ended 'cancelled'
-   (archived=False)``: the zombie rows share the module schema AND the
-   ``sys-req`` tag; the successor's leader sweep reclaimed their
-   expired leases and terminalised them with the operator's OWN
-   recorded verdict (``cancelled``), and the sibling's per-row assert
-   read one of the ZOMBIE's rows, not its own.
+3. the sibling scenario — ``ended 'cancelled' (archived=False)``: the
+   zombie rows share the module schema AND the ``sys-req`` tag; the
+   successor's leader sweep reclaimed their expired leases and
+   terminalised them with the operator's OWN recorded verdict
+   (``cancelled``), and the sibling's per-row assert read one of the
+   ZOMBIE's rows, not its own.
 
-The root defect class: **the NOTIFY transport legs and the tier's
-ledger cleanup are unbounded client-side**. The law this lane lands
-(the same one the HITL listener already declares): THE ROWS ARE THE
-TRUTH, THE NOTIFY IS TRANSPORT — a transport that never answers must
-not hold the operator's call, the leader's sweep tick, or the tier's
-own cleanup hostage. The three pins below replay each rejected leg
-deterministically; the fixes (the transport bound in
-``taskq.backend.postgres``, the bounded ledger reads and the
-resilient cleanup in ``tests/system_e2e``) turn each red green.
+The three pins below replay each rejected leg
+deterministically: the transport bound in
+``taskq.backend.postgres`` and the bounded ledger reads + the
+resilient cleanup in ``tests/system_e2e`` turn each red green.
 
 Pin 1 is the house's structural-stand-in style
 (``tests/test_connections.py``'s ``_FakePool``): a wrapper pool that

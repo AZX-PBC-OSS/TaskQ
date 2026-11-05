@@ -47,7 +47,7 @@ async def test_fan_out_tx_band_1000_children(
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
 ) -> None:
-    """THE 1000-CHILD FAN-OUT TRANSACTION (the deep-research scale is
+    """The 1000-child fan-out transaction (the deep-research scale is
     exactly this): 1000 child INSERTs + edges + the join row ride the
     parent's finalize tx1, chunked parallel-array statements, ONE tx — the
     band recorded from the measurement, never assumed."""
@@ -112,7 +112,7 @@ async def test_join_fire_latency_band(
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
 ) -> None:
-    """THE JOIN-FIRE LATENCY BAND: last-parent-finalize → the joined row
+    """The join-fire latency band: last-parent-finalize → the joined row
     dispatchable (deps_pending = 0), measured on the finalize call (tx1 +
     tx2 — the fire is inside tx2)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -169,7 +169,7 @@ def _write_measurement(name: str, payload: object) -> None:
 @pytest.mark.integration
 @pytest.mark.load_sensitive
 async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
-    """THE ENQUEUE-LATENCY NOISE BAND: vanilla enqueue p50 inside the
+    """The enqueue-latency noise band: vanilla enqueue p50 inside the
     recorded band with the workflow-schema build present (best-round p50 —
     the house benchmark's noise-robust statistic). MUTATION PIN (recorded):
     a fixture hook touching the new columns on the hot path (extra
@@ -294,7 +294,7 @@ async def test_pin_4_enqueue_latency_band(jobs_app: Any) -> None:
 @pytest.mark.integration
 @pytest.mark.load_sensitive
 async def test_pin_5_dispatch_claim_band(jobs_app: Any) -> None:
-    """THE DISPATCH-CLAIM NOISE BAND: the claim statement's best-round p50
+    """The dispatch-claim noise band: the claim statement's best-round p50
     inside the band WITH the ``AND deps_pending = 0`` exclusion clause
     present (a semantic no-op for vanilla rows — the pin proves it stays
     that way). MUTATION PIN: a fixture plan regression (index plans disabled →
@@ -502,7 +502,7 @@ async def test_edge_join_scale_curve_across_the_bound(
     module_pg_pool: asyncpg.Pool,
     wf_sql: Any,
 ) -> None:
-    """THE SCALE CURVE, measured across the bound's boundary (the refit
+    """The scale curve, measured across the bound's boundary (the refit
     procedure, run on the LANDED implementation — F7's restated rule): the
     three fan-in points inside/at/past the declared-edge band, the refit
     from the endpoints, the outlier named, the per-edge marginal checked
@@ -559,7 +559,7 @@ async def test_edge_join_scale_curve_across_the_bound(
     )
 
     # THE ≥ 100k-EDGE JOIN: the plan must stay INDEX-DRIVEN (no seq scan
-    # of jobs or wf_edge — the unscoped monster's recorded finding). Seeded
+    # of jobs or wf_edge — the unscoped monster). Seeded
     # DIRECTLY (parallel-array chunks): the fork's map_index is smallint —
     # a fan-in past 32k cannot ride it, and the recount reads the EDGES.
     big_n = 100_000

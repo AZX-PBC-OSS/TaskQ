@@ -1,4 +1,4 @@
-"""THE DEEP-RESEARCH MARCH (the system tier's full walk).
+"""The deep-research march (the system tier's full walk).
 
 ONE scenario, the whole spine, on a real fleet (real worker
 subprocesses, one real Postgres — the deploy matrix's harness):
@@ -132,7 +132,7 @@ async def _resolve_review_holds(
             await asyncio.sleep(0.3)
 
 
-# load_sensitive (PR #698's recorded finding, the hold round law): the march's
+# load_sensitive (the settle-window law): the march's
 # verdict is its settle windows — the cron-kickoff loop (_KICKOFF_BOUND_S),
 # the map-fork loop (MARCH_SETTLE_BOUND_S), and wait_flow_terminal's
 # settle bound — and an observed run expired the settle with the rows STILL
@@ -401,7 +401,7 @@ async def test_the_streaming_emit_march_conditional_chains(
     module_pg_schema: Any,
     sys_ledger: asyncpg.Connection,
 ) -> None:
-    """THE STREAMING EMIT (the streaming router router lived on the tier): the paged
+    """The streaming emit (the streaming router router lived on the tier): the paged
     source emits TWO pages while running; the per-record chains route on
     the body's OWN typed outcomes — 2 flagged (risk > 0.8) walk the
     manual-review step, 2 clean go straight to done. The cursor
@@ -489,7 +489,7 @@ async def test_the_doc_ingest_march_fan_in_progress_render(
     module_pg_schema: Any,
     sys_ledger: asyncpg.Connection,
 ) -> None:
-    """THE DOC-INGEST MARCH: the map's fan-in barrier join
+    """The doc-ingest march: the map's fan-in barrier join
     (fail_closed), the maybe collect (a failed branch does not kill the
     run), the declared READ-SIDE aggregate (the progress reporting decision c), and the
     graph's mermaid RENDER matching the wiring."""

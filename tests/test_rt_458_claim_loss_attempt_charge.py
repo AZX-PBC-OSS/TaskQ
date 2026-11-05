@@ -319,7 +319,7 @@ async def test_reconcile_refunds_the_claim_time_increment_of_a_job_that_never_ra
     # epoch the counter no longer carries, and the next claim's re-mint
     # of the number would close the lineage with one more attempt row
     # than the counter - the soak's reconciliation red (``attempt counter
-    # 1 vs 2 attempt rows``, run 36175331443). The reclaim is still
+    # 1 vs 2 attempt rows``). The reclaim is still
     # audited - by the job_events state_change, which fires either way.
     # On main pre-fence the unrefunded charge left [(1, 'crashed', ...)]
     # and the pre-fence fence left the phantom [(0, 'crashed')]: both

@@ -584,7 +584,7 @@ the backpressure law: the bounded queues drop the OLDEST event on
 overflow — the writer never blocks, the newest survives, observability
 degrades FIRST, correctness never.
 
-**THE PUSH IS A POINTER, NOT A PAYLOAD — both event models, one law.**
+**The push is a pointer, not a payload** — both event models, one law.
 `ProgressUpdated` (the workflow listener's push) and the vanilla
 `ProgressEvent` push (§"the wire vs the rows", above) carry the
 event's IDENTITY, never its content: on every NOTIFY-arm push `pct`

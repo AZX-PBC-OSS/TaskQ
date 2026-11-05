@@ -295,7 +295,7 @@ class TestSingletonDstOverlap:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """THE attack. Across the full tick sequence - pre-overlap catch-up,
+        """The attack. Across the full tick sequence - pre-overlap catch-up,
         the first occurrence's tick (unblocked), the second occurrence's
         tick (unblocked) - a singleton actor must end up with a job for BOTH
         occurrences of the repeated hour. Today the first occurrence's tick

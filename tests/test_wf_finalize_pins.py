@@ -49,7 +49,7 @@ async def test_pin_1_snapshot_write_reds_and_the_shipped_arm_is_exact(
     engine_redlog: RedLog,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE FINGERPRINT: a sweep that WRITES FROM A SNAPSHOT (the count read
+    """The fingerprint: a sweep that WRITES FROM A SNAPSHOT (the count read
     outside the child's row lock) strands the join — the counter jumps
     backward off the ledger's truth when it races a committed decrement.
     The shipped lock-first arm: drift 0, deterministic (0/100)."""
@@ -201,7 +201,7 @@ async def test_pin_23_tx2_decrement_guard_deps_never_negative(
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """THE GREMLIN PIN: tx2 runs TWICE on ONE admitted view — the second
+    """The gremlin pin: tx2 runs TWICE on ONE admitted view — the second
     decrement must be a NO-OP. The shipped guard is ``j.deps_pending > 0``
     (the rowcount gate): a zeroed counter is not decrementable, the
     counter can never go negative, and the fire stays exactly one. The
@@ -252,7 +252,7 @@ async def test_pin_24_finalize_on_cancelled_flow_never_decrements(
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """THE GREMLIN PIN, green-half: the finalize path fires on a CANCELLED
+    """The gremlin pin, green-half: the finalize path fires on a CANCELLED
     flow — tx1's attempt fence admits the node's own terminal (the fence is
     the attempt token, not the flow's), and tx2's DECREMENT must refuse via
     the flow-status EXISTS leg: the counter freezes, the join never fires.
@@ -372,7 +372,7 @@ async def test_pin_25_concurrent_fire_window_one_row(
     Both guards pass; the belt decides: the UNIQUE(join_job_id) +
     ``ON CONFLICT DO NOTHING`` make the loser a CLEAN empty (no second
     fire row, no crash) — exactly one fire row, exactly one winning
-    return. THE REAL WINDOW the reviewer named: both paths pass their
+    return. THE REAL WINDOW: both paths pass their
     WHERE (the join row stays pending with the join marker; neither fire
     flips it), so the belt is the ONLY thing between the race and the
     double fire — this scenario stages it, and the belt's removal REDS (the
@@ -450,7 +450,7 @@ async def test_pin_25_concurrent_fire_window_one_row(
         await wf_conn.fetch(beltless, twin_join, twin_flow, new_uuid(), "sweep")
     assert await fire_count(wf_conn, wf_schema, twin_join) == 1, (
         "the constraint held the line even without the belt — the belt's "
-        "recorded finding is the graceful loss, not the row count"
+        "contract is the graceful loss, not the row count"
     )
     engine_redlog.red(
         "pin25-beltless-fire-raises",
@@ -565,19 +565,10 @@ async def test_pin_13_attempt_fence(
 
 
 # ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
-# (ported verbatim from the recorded recorded finding —
-# feat/verify-perf @ c8822df4a, tests/perf/test_wf_overhead_ledger.py —
+# (the fan-in envelope's contract, from tests/perf/test_wf_overhead_ledger.py
 # into the finalize-family pack: the bypassed write is THIS family's
-# TERMINAL_MARK face. The fixtures are this tree's own wf faces.)
-
-
-# ── THE F4 PIN: THE FAN-IN ENVELOPE WITHIN THE ESTATE'S RESULT CAP ──────
-# (ported from the recorded recorded finding — feat/verify-perf @
-# c8822df4a, tests/perf/test_wf_overhead_ledger.py — into the
-# finalize-family pack: the bypassed write is THIS family's
 # TERMINAL_MARK face. The model + the bodies live at module level so the
-# body-hints walk resolves them — the port's one deviation, documented
-# on the pin.)
+# body-hints walk resolves them.)
 
 
 class _F4ItemsIn(BaseModel):
@@ -600,7 +591,7 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
 ) -> None:
-    """THE FAN-IN ENVELOPE'S SIZE DISCIPLINE (the payload-bloat finding,
+    """The fan-in envelope's size discipline (the payload-bloat finding,
     MEASURED at the recorded head): a NO-aggregate map's join row
     collects every child's result into ONE jsonb envelope through the wf
     finalize's TERMINAL_MARK — and that write checks NO
@@ -613,7 +604,7 @@ async def test_pin_fanin_envelope_within_the_estate_result_cap(
     11.1x the 64 KiB cap; the ceiling at the fan-in bound with cap-sized
     children (5000 x 64 KiB) is ~305 MiB of jsonb in ONE row.
 
-    THE FIX'S SHAPE: the failures' own collect ALREADY compacts past
+    THE SHAPE: the failures' own collect ALREADY compacts past
     its cap (``FANIN_FAILURES_BYTE_CAP`` + the ``__truncated__`` marker +
     the ledger pointer, pinned in ``test_wf_pruner_pins.py``) — the
     collected RESULT envelope lacks the same discipline. Mirroring it
@@ -676,19 +667,18 @@ async def test_pin_fanin_truncated_envelope_unwraps_at_the_consumer_decode(
     wf_pool: asyncpg.Pool,
     wf_schema: str,
 ) -> None:
-    """THE F4 FIX'S READ SIDE (the envelope-cap fix's own regression,
+    """The f4 fix's read side (the envelope-cap fix's own regression,
     rejected by the recertifier): the bounded collect's envelope is
     THREE keys over the cap — ``{"value": […], "__truncated__": N,
-    "detail_home": …}`` — and the pre-fix decode unwrapped by
-    ``len(decoded) == 1``: the truncated envelope NEVER unwrapped, and
+    "detail_home": …}`` — and a decode that unwraps by
+    ``len(decoded) == 1`` NEVER unwraps it, and
     every consumer wired past a truncating collect received the
     ENVELOPE DICT where its declared param says ``list[...]`` — the
     typed decode died ``Input should be a valid list, input_type=dict``
     and the run failed (the LedgerWatch chaos feed's live face:
-    ``__truncated__: 272``; the SAME tests PASS at the pre-fix
-    baseline 57d38c7e6).
+    ``__truncated__: 272``).
 
-    THE FIX'S SHAPE: ``decode_result`` unwraps the runner's envelope
+    THE CONTRACT: ``decode_result`` unwraps the runner's envelope
     BY ITS KNOWN KEY SET — ``value`` alone OR ``value`` + the F4
     markers — so BOTH faces reach the consumer's typed decode as the
     declared list; and the truncated face's ``detail_home`` contract is

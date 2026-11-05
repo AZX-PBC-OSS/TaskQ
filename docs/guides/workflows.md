@@ -293,7 +293,7 @@ whose tx2 never ran (the crash window) is healed by the rederive arm's
 `failed_required` count — the fail_closed join is blocked-with-reason by
 the HEAL, never fired over the failed parent.
 
-**THE TERMINAL-FAILURE TRIGGER:** the peer-cascade fires only on TERMINAL failure — a
+**The terminal-failure trigger:** the peer-cascade fires only on TERMINAL failure — a
 child mid-ladder does not trigger it (a ladder retry emits no terminal, P3
 decision 7), so a fail-closed map with a long-ladder child keeps its peers
 running until exhaustion. BY DESIGN, not an oversight: over-rejecting
@@ -322,8 +322,7 @@ ledger/attempts — the join row's array is the bounded summary (the
 JSONB size-cap policy — see *The JSONB size cap / compaction policy*
 below).
 
-**THE CRASH CLASS IS THE COLLECT CONTRACT'S EDGE — know it before you
-rely on the absorption.** The fan-in above runs on the child's FAILED
+**The crash class is the collect contract's edge** — know it before you rely on the absorption. The fan-in above runs on the child's FAILED
 terminal (the ladder exhausted). A child killed MID-ATTEMPT (SIGKILL,
 OOM, a lost worker) reaches the FAILED-CLASS terminal `crashed` through
 the fleet's lease-reclaim sweep — and that crash-class terminal
@@ -815,7 +814,7 @@ own age alone), and each arm runs TWO passes (the flows-side doomed
 selection — the full-table-walk shape was rejected at production scale
 and replaced):
 
-* **THE FLOWS-SIDE PASS (every tick):** the TERMINAL-AGED ROOTS are
+* **The flows-side pass (every tick):** the TERMINAL-AGED ROOTS are
   selected FIRST from the JOBS side (`step_key='__flow__'` — the root
   identity, a terminal status, and the root's own `finished_at` past
   the period; served by `jobs_finished_at_idx`), then each selected
@@ -836,7 +835,7 @@ and replaced):
   one (an hourly re-warn cadence per table, never keyed to a
   deletion): fix the stamp or backfill it, the rows stay until they
   carry an honest age.
-* **THE ROOTLESS PASS (a coarser cadence — every 8th call):** the
+* **The rootless pass (a coarser cadence — every 8th call):** the
   orphan class — a row whose pointee is NOT a flow root at all (the
   root row absent, or a live NON-root job). It cannot be found from the
   flows side, so its statement is a PK-ordered walk that visits AT MOST
@@ -1401,9 +1400,8 @@ and PURE — that SPELLS the graph by dataflow:
   step (the barrier, §1's barrier section below).
   `map_source(source, {A: fn_a, B: fn_b})` is the same verb's dict
   form — one machinery, two spellings;
-  **THE ROUTE ATTACHES TO A WIRED SOURCE NODE** (the LedgerWatch F1
-  fix — the constraint stated where the verb is taught, not only in
-  the error): a route's source must be a node with a BODY — the route
+  **The route attaches to a wired source node** (the constraint stated
+  where the verb is taught, not only in the error): a route's source must be a node with a BODY — the route
   dispatches the source's own return. A map's derived join
   (`<source>.join`) declares no body (it is the default identity
   packer), so `route(enriched, arms)` over a map's collect is REFUSED
@@ -1413,7 +1411,7 @@ and PURE — that SPELLS the graph by dataflow:
   `route(enriched, arms)` (the pass-through's body returns its
   argument; the route's source is then the enriched collect, named).
 
-**THE SINGLE-VALUE DISPOSITION (stated, because the refusal names it)**:
+**The single-value disposition:**
 `route(source, arms)` is a MAP face — its source produces the
 ELEMENTS' list, and a SINGLE-VALUE (non-list) `Promise[A|B]` is refused
 at build (`route's source 'x' does not declare a list[...] return —
@@ -1477,7 +1475,7 @@ return build(step(enrich, chunks, key="enrich"))
 
 The barrier's semantics, stated exactly:
 
-* **THE ALL-MEMBERS JOIN** — the chunk fires ONCE, only when ALL the
+* **The all-members join** — the chunk fires ONCE, only when ALL the
   routed children have terminalized (the join's `deps_pending` count =
   the elements). The staggered arms (the text fast, the OCR slow)
   cannot make the chunk fire early or twice: the fire ledger
@@ -1488,12 +1486,12 @@ The barrier's semantics, stated exactly:
   `[]` forks zero children, the join fires immediately with the EMPTY
   list, and the run terminalizes SUCCEEDED — `result() == []` is the
   typed sum's honest value, never a wedge and never a lying `None`.
-* **THE DECODE AT THE BARRIER** — the chunk body's list param is the
+* **The decode at the barrier** — the chunk body's list param is the
   decode's target: the collected list re-validates into the DECLARED
   models (the typed sum — `list[ExtractedText | DeadLettered]` here);
   the body sees models with attribute access, never dicts. A foreign
   item in the sum dies LOUDLY in the decode.
-* **THE FAILURE FACES** — the route's `on_failure=` declares the join's
+* **The failure faces** — the route's `on_failure=` declares the join's
   incoming edges' policy (the propagation duality, at the route's fan-in):
   - `fail_closed` (the default): a child's terminal failure → the join
     blocks with `blocking_reason='failed_parent'` NAMING the failed
@@ -1514,7 +1512,7 @@ the DECLARED model; a body sees the type it declared, never a raw
 dict. `wf.validate()` refuses an unannotated body (E4 — the annotation
 IS the wiring).
 
-**THE UNION CONSUMER'S DISCRIMINATOR LAW (E16)**: a body
+**The union consumer's discriminator law:** a body
 param decoded as a UNION of models (the join's downstream reads
 `list[ImageResult | AudioResult]`) is decoded by the codec's
 left-to-right smart union — the FIRST member whose required fields the
@@ -1534,7 +1532,7 @@ true member. The fix either way: a `Literal` discriminator field on
 each member (`kind: Literal["image"]` / `Literal["audio"]`) — the
 discriminated union decodes by the tag, never by field-count luck.
 
-**THE TYPED EARLY-EXIT — `Exit[DoneT]`** (the None-end's
+**The typed early exit — `Exit[DoneT]`** (the None-end's
 sanctioned escape): a body returns `Exit(payload)` to TERMINAL-SUCCEED
 the node with a typed result NOW — the runner unwraps the sentinel, the
 node's ledger terminal records the exit, and every non-terminal
@@ -1546,7 +1544,7 @@ COMPLETE. A plain `T` return is the DATA result — sentinels appear only
 where the body's control flow says so; a body annotated `-> Exit[Report]`
 returning a bare value (or a bare `return`) is the checkers' MUST_ERROR.
 
-**THE MANUAL RESUME — `FlowRunner.retry_node(run_id, node_key)`** (the
+**The manual resume — `FlowRunner.retry_node(run_id, node_key)`** (the
 redispatch escalation — "the ladder then manual"): the operator's
 audited, CAS-guarded re-arm of a TERMINAL-FAILED node. The attempt
 ordinal CONTINUES (never resets — the ladder's own 'failed' count is
@@ -1641,7 +1639,7 @@ indistinguishable). The driver
 `drive(flow_id, until="held" | "terminal")` (the loop's own driver —
 loop; the bound `max_ticks` is the hang's fence).
 
-**THE DRIVE'S RETURN IS THE VERDICT — CHECK IT.** `drive` returns one
+**The drive's return is the verdict — check it.** `drive` returns one
 of three strings: `"terminal"` (the flow row reached
 `succeeded`/`failed`/`cancelled`), `"held"` (only under
 `until="held"` — a node waits on a human/deadline), or `"max_ticks"`
@@ -1692,10 +1690,10 @@ and neither covers the other's:**
 
 | the edge's question | WHO catches it | WHERE |
 | --- | --- | --- |
-| the handle flow: an unconsumed data handle passed to `build` as a residual (`Promise[Report]` in the `Promise[Never]` slot) | **THE CHECKER, at typing** | `build(...)` call — an error in the IDE and in CI (`reportArgumentType` / `invalid-argument-type`) |
-| the handle flow: a consumer that DECLARES the handle type (`Promise[Config]`) handed the wrong handle (`Promise[Report]`) — the contravariant-consumer rejection | **THE CHECKER, at typing** (live because `Promise` is covariant) | the handle-passing call site |
-| the handle flow: `gather`'s element type threaded to a typed join consumer (`Promise[list[Report]]` where `Promise[list[Config]]` is declared) | **THE CHECKER, at typing** | the join-consumer call site |
-| the promise-as-data mistake (a promise passed where the DECODED model / list is wanted — the direct unit-call form) | **THE CHECKER, at typing** (the corpus's `wf_api_negative_types.py`) | the unit-call site |
+| the handle flow: an unconsumed data handle passed to `build` as a residual (`Promise[Report]` in the `Promise[Never]` slot) | **The checker, at typing** | `build(...)` call — an error in the IDE and in CI (`reportArgumentType` / `invalid-argument-type`) |
+| the handle flow: a consumer that DECLARES the handle type (`Promise[Config]`) handed the wrong handle (`Promise[Report]`) — the contravariant-consumer rejection | **The checker, at typing** (live because `Promise` is covariant) | the handle-passing call site |
+| the handle flow: `gather`'s element type threaded to a typed join consumer (`Promise[list[Report]]` where `Promise[list[Config]]` is declared) | **The checker, at typing** | the join-consumer call site |
+| the promise-as-data mistake (a promise passed where the DECODED model / list is wanted — the direct unit-call form) | **The checker, at typing** (the corpus's `wf_api_negative_types.py`) | the unit-call site |
 | the DECODED-payload compat: a producer's body returns `Report`, a consumer's body declares `Config` | **`validate()`, at build** — `E5-incompatible-consumer` | `compiled.validate()` / worker boot |
 | the DECODED-payload hole: the consumer's param carries NO model annotation (`Any` / a plain dict — the duck-shaped hole) | **`validate()`, at build** — `E5-incompatible-consumer` | `compiled.validate()` / worker boot |
 | a promise nobody consumes, nobody sunk, nobody named terminal (not passed to `build` at all) | **`validate()`, at build** — `E2-produced-never-consumed` | `compiled.validate()` / worker boot |
@@ -1995,7 +1993,7 @@ FAILS CLOSE on it: the dangling pointer raises the typed
 record. It is NEVER a silent respawn: a respawn would run
 the child's side effects twice while the parent reads SUCCEEDED.
 
-**THE CASCADE WALKS THE ROWS.** The cancel cascade collects children
+**The cascade walks the rows.** The cancel cascade collects children
 from the ROWS' crash-safe `parent_flow_id` direction first — the
 receipts (`metadata.child_flows`) are the accelerator, the rows the
 law. A child created but never receipted (the crash between
@@ -2033,7 +2031,7 @@ CONTROL UNION:
 - `Done(payload)` — the loop stops; the payload is the loop's result.
 - `Refine(feedback)` — the carry threads into the next iteration.
 
-**THE CARRY IS FROZEN AT SPAWN** and advanced EXACTLY ONCE per
+**The carry is frozen at spawn** and advanced EXACTLY ONCE per
 iteration — in the ADVANCE STATEMENT, one atomic write shared with THE
 CAP GUARD (a refused advance IS the exhaustion). A carry advanced at
 hold/retry time is the optimistic-apply defect (double-apply /
@@ -2042,7 +2040,7 @@ reads the iteration's LEDGER row (the memo) — the body is not
 re-consulted mid-iteration without the at-least-once boundary being
 stated.
 
-**THE TWO WALLS ARE DIFFERENT**:
+**The two walls are different:**
 
 - the **iteration cap** (`max_iterations`) bounds TOTAL SPAWNS
   regardless of time — the only wall left when the budget is paused;
@@ -2065,7 +2063,7 @@ TRANSACTION (STRANDED-FLOW: an exhausted loop that never
 terminalized left the flow `running` forever — the worker ticks
 forever, the admin shows a live run; the pin exercises it).
 
-**THE EXHAUSTION POLICY IS READ — BY THE DRIVER AND THE SWEEP**:
+**The exhaustion policy is read by the driver and the sweep:**
 `on_exhausted="escalate"` enqueues the escalation
 through the SAME outbox the fired joins use — addressed to the
 workflow's REGISTERED escalation step (`loop.escalation`; the body is
@@ -2079,7 +2077,7 @@ escalation step's declared shape, never to the loop's argument order:
 the wiring's SHAPE decides, the declaration order decides nothing.)
 `on_exhausted="fail"` terminal-fails the flow and enqueues NOTHING.
 
-**THE CAP LETS THE FINAL ITERATION RUN**: the advance guard admits the advance TO the cap, so the
+**The cap lets the final iteration run:** the advance guard admits the advance TO the cap, so the
 metadata's counter REACHES `max_iterations` — the live driver exhausts
 at its top-of-loop cap check, and the crash window (a worker death
 after the final advance) leaves exactly that state on the running row
@@ -2087,7 +2085,7 @@ for the SWEEP's cap arm to own. The sweep's
 `iteration >= max_iterations` predicate is REACHABLE in production —
 never a hand-crafted state.
 
-**THE SEMANTICS DECISION, STATED ONCE — BY ESCAPE POINT**: infra fault
+**The semantics decision, by escape point:** infra fault
 ≠ body failure, and the classifier reads WHERE the error escaped, never
 merely its type. An exception the BODY raised is a BODY failure even
 when it wears a `ConnectionError` face — the loop's typed failure
@@ -2150,7 +2148,7 @@ every window with a real `pg_terminate_backend` and count: zero
 re-emitted children, zero lost children, the cursor == the last
 committed page.
 
-**THE TERMINAL-CRASH CLASS IS TERMINAL-FOR-REAL** (the no-zombie
+**The terminal-crash class is terminal-for-real** (the no-zombie
 promise's crashed-terminal wedge fix): a node row in `crashed`
 (budget-exhausted — the reclaim's crashed branch wrote it because
 nothing would ever revive it) or `abandoned` derives the FAILED-class
@@ -2310,7 +2308,7 @@ chain surface:
 | the follow-up job's invisible dependency | the chain's declared route (the fork's edge row) | the lineage is QUERYABLE: `trace_id` per record, `map_index` per record, `parent_id` per row — the ad-hoc pattern's children have no lineage and no completion semantics |
 | the payload re-marshalled into each child | the record rides the row's payload verbatim (the fork carries it) | the drill-down reads one record's whole chain by its trace |
 
-**THE LINEAGE LAW**: every row a source/chain writes carries
+**The lineage law:** every row a source/chain writes carries
 `flow_id` (the run), `trace_id` (the record), `map_index` (the record's
 index — the discriminator) and `parent_id` (the emitting row). The
 migration BUYS the lineage and the completion semantics and PAYS the
@@ -2340,7 +2338,7 @@ unions in value position carry no static payload information — the
 return type is the union and narrows with `isinstance`); the
 single-payload form is the one-member overload.
 
-**THE RESUME CONTRACT, stated as a feature**:
+**The resume contract:**
 the body re-executes **FROM THE TOP** on resume — there is NO
 determinism requirement on the body; pre-wait side effects are
 `ctx.substep`-ledgered and replay cheap. The delivered holds are the
@@ -2350,12 +2348,12 @@ operator never re-answers); a wait past the queue's end registers a NEW
 hold (a NEW epoch — the multi-hold: the same signal name can hold
 again, the chained gate works because the waits are sequential).
 
-**THE PAYLOAD RIDES THE ROW** : the human's answer IS
+**The payload rides the row:** the human's answer IS
 the row's payload; `ctx.signal(name)` reads it on resume (the read
 before delivery is the typed `SignalUnavailableError` — never a silent
 None).
 
-**THE REPLY HANDLE**: every hold's `id` (uuid7, time-ordered) is THE
+**The reply handle:** every hold's `id` (uuid7, time-ordered) is THE
 reference — `HitlClient.resolve(id, decision)` addresses ONE hold; the
 `(node, signal, epoch)` identity disambiguates MULTIPLE holds. The
 resolve is IDEMPOTENT (an already-resolved hold is the DEFINED no-op)
@@ -2393,10 +2391,10 @@ All four live on `wf_signals.status` (partial-unique over the
 UNRESOLVED holds only — `resolved_at IS NULL`); `resolved_at` is set
 by every non-`held` transition.
 
-**THE CONTEXT CONTRACT** (round-8): the hold carries the payload-model
+**The context contract:** the hold carries the payload-model
 schema (what a UI renders from), the author-supplied
 reason/tool/args, the provenance (run id, node key, gate name, epoch,
-created_at, the deadline). **THE REDACT LAW EXTENDS — BEFORE PERSIST**:
+created_at, the deadline). **The redact law extends before persist:**
 the context passes the chain-then-hook redact
 pipeline (the vetted masks + the hold surface's token-head pass + the
 workflow's own `redact=` hook, wired from the registered definition) IN
@@ -2405,13 +2403,13 @@ canary, so the default `HitlClient` (no hook handed, none wired) cannot
 leak it at list/get; the read-side chain pass is the belt over the
 persist-time law.
 
-**THE KNOB, NEVER THE TRUTH** (round-8): a hold's appearance is
+**The knob, never the truth:** a hold's appearance is
 NOTIFIABLE (`pg_notify` on the `taskq_wf_holds` channel — the estate's
 notify discipline); the notification carries THE POINTER (hold id + run
 id + event) — a lost knock costs latency, never correctness: the
 consumer converges by polling `HitlClient.list(run=…)`.
 
-**THE BROADCAST, TYPED**: the knob's legs are now three
+**The broadcast, typed:** the knob's legs are now three
 TRANSACTIONAL broadcast channels — `taskq_wf_hold_created` (the hold
 CREATED, inside the insert's own tx), `taskq_wf_hold_resolved` (inside
 the CAS-winning resolve/deliver tx, carrying `verdict_kind`: the
@@ -2441,7 +2439,7 @@ surface gained the `holds` topic: the same typed events (backfilled at
 subscribe) streamed to the browser over the same session re-check
 every other topic keeps. The resolve door is unchanged.
 
-**THE LISTENER'S OPERATIONAL LANDMINES** (each one real; the listener's
+**The listener's operational landmines** (each one real; the listener's
 docstring carries the same four):
 
 1. **PgBouncer**: transaction-pooling (the default `pool_mode =
@@ -2466,7 +2464,7 @@ docstring carries the same four):
    promise a precise 120 s: the expiry is a floor; the fail-close is
    the guarantee.
 
-**THE EXPIRY IS A VALUE, NOT AN EXCEPTION**: the
+**The expiry is a value, not an exception:** the
 wait's outcome is the CLOSED UNION of the declared models joined with
 `Expired` — the CHECKER FORCES the fail-close arm. From the REAL
 example (`examples/deep_research.py`):
@@ -2507,7 +2505,7 @@ wrong slot — and the wait site REFUSES the mis-aligned state with the
 named `LoopWaitShapeError`. A plain step's cursor is
 consumption-ordered; conditional waits are legal there.)
 
-**THE TIMERS**: the deadline is DB-CLOCK compared (the signal sweep's
+**The timers:** the deadline is DB-CLOCK compared (the signal sweep's
 expiry arm is the ONLY live timer on a held row); the expired hold →
 the DEFINED `abandoned` state (the resume's wait site returns the
 union's `Expired` member — the typed face, never a silent orphan);
@@ -2530,7 +2528,7 @@ LATER for v1 (the don't-pay law): the body-level escape — match the
 yourself — is the sanctioned composition until then, and it is exactly
 what the value-based face enables.
 
-**THE DELIVER BOUNDARY IS REAL**: a resolve
+**The deliver boundary is real:** a resolve
 validates the payload against the hold's DECLARED models — BY SHAPE,
 never by declaration order — BEFORE the CAS: a payload that fits NO
 model, or fits MORE than one without the gate's `discriminator=`, is
@@ -2539,12 +2537,12 @@ refusal is AUDITED and the operator sees WHY). The union wait narrows
 to the model the payload's shape fits — a lenient first member cannot
 swallow a strict second member's delivery.
 
-**THE AUDIT IS EXACTLY-ONCE**: the resolve's
+**The audit is exactly-once:** the resolve's
 audit row + the knock ride the CAS-WINNING transaction — two concurrent
 resolves → exactly ONE `hitl.resolve` audit row, ONE knock, ONE
 resolution; the loser writes nothing.
 
-**THE CANCEL CASCADE** (P3 rule 4): `FlowRunner.cancel_workflow(run_id,
+**The cancel cascade:** `FlowRunner.cancel_workflow(run_id,
 reason=…)` — ONE transaction (the flip is the linearization point), the
 held signals → `cancelled` in the same snapshot, a LATE operator
 deliver returns the typed `refused` (no zombie wake, no resume event),
@@ -2634,39 +2632,39 @@ claim=created outcome=terminal result=ticket=T-1 wake=remind by=timer late=True
 
 The machinery, and the laws each piece carries:
 
-- **THE ROW IS THE TRUTH (the hold's law, unmodified)**: the timer IS
+- **The row is the truth (the hold's law, unmodified):** the timer IS
   a `wf_signals` hold row under the reserved `__timer__` signal
   prefix. The held representation releases the worker's SLOT (no
   lease, no claim, no attempt burned while sleeping); a LOOP node's
   budget pauses while the timer stands — the wall is blind while the
   body waits on the clock, exactly as while it waits on a human.
-- **THE SWEEP'S TIMER ARM** (the expiry arm's inverted twin, wired
+- **The sweep's timer arm** (the expiry arm's inverted twin, wired
   beside it in the leader's signal sweep and in the dev-loop `tick`):
   every due timer hold resolves `'delivered'` — never `'abandoned'` —
   with the WAKE as the payload (`fired_by='timer'`, the timer's
   `key`, the `scheduled` and `fired_at` instants). The `'held' →
   'delivered'` CAS is the fence: a twice-fired timer is
   unrepresentable, and a cancelled flow's timer never wakes.
-- **THE DURABILITY IS THE DESIGN**: a worker DEATH mid-wait changes
+- **The durability is the design:** a worker DEATH mid-wait changes
   nothing — the hold row's expiry arms the reclaim, the successor's
   sweep fires the wake, the body resumes from the top (the
   re-execution doctrine: pre-timer side effects are
   `ctx.substep`-ledgered and replay). The pin drops the arming driver
   and lets a fresh runner's sweep complete the flow.
-- **THE AT-LEAST FACE** (the expiry's own precision law, restated):
+- **The at-least face** (the expiry's own precision law, restated):
   the fire lands at the FIRST sweep pass at-or-after the deadline —
   never early, never at a precise wall time. `TimerWake.lateness_s`
   (the `fired_at` − `scheduled` delta) is that honesty, on every
   wake. Pass a `float` (seconds; the DB clock owns the base) or a
   `datetime` (the absolute instant; naive means UTC — the DB never
   re-bases it).
-- **THE TIMER IS NOT A HUMAN HOLD**: `HitlClient.list()` never
+- **The timer is not a human hold:** `HitlClient.list()` never
   enumerates it (the reserved prefix is the split's mark — the
   display surfaces show it AS a timer), and the resolve boundary
   REFUSES any hand-delivered payload — a well-formed forgery of the
   wake's schema included. The clock is the only resolver this hold
   takes.
-- **THE INTERPLAY**: the cancel cascade kills the timer with the flow
+- **The interplay:** the cancel cascade kills the timer with the flow
   (it is an ordinary hold row — the same one-tx cascade); `Expired`
   and `TimerWake` are orthogonal in one flow (a human gate's
   fail-close beside a clock's wake fan in as two named outcomes); a
@@ -2675,7 +2673,7 @@ The machinery, and the laws each piece carries:
   queue's cursor — the ONE-wait-per-iteration shape law (W5) reads a
   conditional timer exactly as a conditional `wait_signal`.
 
-**THE NAIVE-DATETIME LAW** (the silent coercion, stated at the API
+**The naive-datetime law** (the silent coercion, stated at the API
 face): a naive `datetime` — no `tzinfo` — passed to `wait_until` is
 interpreted as UTC. The coercion is silent (`when.replace(tzinfo=UTC)`):
 no error, no local-zone reading — `17:00` naive means `17:00 UTC`, not
@@ -2694,7 +2692,7 @@ A workflow body reports its own progress: `await ctx.progress(75, "page
 at 1024), `data` (jsonb, capped at 8 KiB). All optional; call it as often
 as you like.
 
-**THE EMISSION IS BEST-EFFORT, AND THAT IS THE DESIGN** (decision e — the
+**The emission is best-effort, and that is the design** (the
 law: observability degrades FIRST, never correctness). The call updates
 an in-memory buffer latest-wins and arms a cadence flush (~20 writes/s at
 the 50 ms cadence — a 1000-emissions/s body coalesces to the same write
@@ -2706,7 +2704,7 @@ warned once (`progress-flush-lost`); a node whose every flush fails still
 terminalizes normally. A lost emission costs freshness; a blocked node
 costs correctness.
 
-**THE TWO CHANNELS** (decision d — both bounded by construction):
+**The two channels** (both bounded by construction):
 
 | channel | table | shape | bound |
 | --- | --- | --- | --- |
@@ -2719,7 +2717,7 @@ state channel keeps NO history**: "what did the body report at 14:32" is
 answerable only where the author streamed it (the stream) — the honest
 boundary, stated in the progress guide.
 
-**THE DECLARED SCHEMA** (the TypedGate-door pattern): `step(body, ...,
+**The declared schema:** `step(body, ...,
 progress_schema=Page)` declares the shape of the node's `data`
 emissions — a wrong-shaped emission is refused with
 `ProgressRefusedError` (raised INTO the body: an authoring error is the
@@ -2738,14 +2736,14 @@ fragmentation. The projection is additive best-effort writes at the
 claim/finalize seams: the finalize's own transactions are untouched (the
 zero-finalize-changes probe is a shipped pin).
 
-**THE PROGRESS-LIE FENCE** (decision b's display law): the node's STATUS
+**The progress-lie fence (the display law):** the node's STATUS
 derives from the LEDGER; the progress renders INSIDE the terminal state,
 never over it. A body that reports 99% "almost done" and then FAILS
 shows **failed with pct=99 inside** — never 99%-running. A crash window
 (the worker died mid-emission) leaves the display STALE — freshness
 only — and the terminal heals it. The progress row is ADVISORY, always.
 
-**THE AGGREGATION IS DERIVED AT READ** (decision c): a map's progress is
+**The aggregation is derived at read:** a map's progress is
 its children's grouped read (`"120/200 · 0 running · avg pct 62"` — one
 query, LEFT JOINed to the state channel); a fan-in's is the edge ledger.
 The user's aggregate of intermediate results WITHOUT a join node: declare
@@ -2756,7 +2754,7 @@ aggregation is OBSERVABILITY** — a join whose only reader is the display
 is the W2 validate warning (the join-for-progress anti-pattern: the DAG
 would block on a display question).
 
-**THE FACES** (decision f — every face a view over the same rows):
+**The faces** (every face a view over the same rows):
 
 - the SSE stream: `GET /api/flow/{flow_id}/progress/stream` on the admin
   router — a `display` frame first (ledger + state), `progress` frames in
@@ -2779,7 +2777,7 @@ would block on a display question).
   **per-child progress is NEVER a metric label series**; it lives in the
   rows (the map line / the display), read on demand.
 
-**THE VOCABULARY SHIMS** (the migration win, documented): the fleet's two
+**The vocabulary shims:** the fleet's two
 live SSE vocabularies are MAPPED, not converted — each is a pure function
 over the one stream's rows:
 
@@ -2797,7 +2795,7 @@ the storage CHECK).
 
 ## §6 — The in-flight versioning contract
 
-**THE DECISION — the registry-is-truth contract**: a REDEPLOYED
+**The decision — the registry-is-truth contract:** a REDEPLOYED
 definition is adopted by the in-flight runs at their NEXT NODE CLAIM.
 The compile's STRUCTURE is the create-time snapshot (the nodes, the
 edges, the wiring — a run's graph never morphs mid-flight); every BODY
@@ -2812,7 +2810,7 @@ adoption happened SILENTLY — a mid-flow deploy changed in-flight
 behavior with no contract text and no taught read. The contract names
 the behavior; the STAMPS record it.
 
-**THE STAMPS ARE THE OPERATOR'S READ**: every
+**The stamps are the operator's read:** every
 node claim writes `jobs.code_version` — the body's canonical content
 hash (the tors content hash over the named payload: module, qualname,
 source, and the decorator's explicit pin when given). WHICH code ran
@@ -2831,7 +2829,7 @@ ran. The hash is a RECORD, never a gate: a body the hash cannot read
 (a builtin, a partial) records as NULL — the loss is logged, the claim
 never fails on its own audit.
 
-**THE REMEDIATION** (the operator's tool when the adoption is NOT what
+**The remediation** (the operator's tool when the adoption is NOT what
 a run should continue with): the **cancel-then-restart path** —
 `FlowRunner.cancel_workflow(run_id)` (or the admin's cancel door),
 then re-run on the current code under a NEW run key (the run-key
@@ -2840,7 +2838,7 @@ cancelled run's). There is no per-run code pin in v1: a run mid-flight
 cannot be HELD on old code — the adoption is the contract, the
 cancel-restart is the escape.
 
-**THE EDGE CASES, NAMED** (each re-enters the NEW body through the
+**The edge cases** (each re-enters the NEW body through the
 same claim-time resolution — the pin covers the second):
 
 - **A run mid-LOOP**: the iteration's body re-resolves at the resume —
@@ -2857,7 +2855,7 @@ same claim-time resolution — the pin covers the second):
   served to a new body (the cache design's own law — the stale-truth
   hazard's structural kill).
 
-**THE SNAPSHOT-PER-RUN DESIGN — recorded, not built**: pinning each
+**The snapshot-per-run design:** pinning each
 run's code AT CREATE (the create stamps the definition snapshot, the
 run reads its own snapshot forever) is the LATER design — it re-derives
 the compile-time registry discipline and is recorded in
@@ -2866,7 +2864,7 @@ shipped. Until it lands, the registry-is-truth contract above is THE
 behavior — rely on the stamps to see it, and on cancel-restart to
 escape it.
 
-**THE WEDGE, NAMED** (the versioning wedge — know it before you
+**The versioning wedge** (know it before you
 rename): because the CURRENT registry is the only body source, a
 redeploy that RENAMES or REMOVES a node wedges every in-flight run
 sitting at it: the run's node row still exists (the create-time

@@ -1,4 +1,4 @@
-"""THE DEPS SEAM'S PINS (the DI capability — SAI migration blocker #1).
+"""The deps seam's pins (the DI capability — SAI migration blocker #1).
 
 The seam's law: bodies need dependencies WITHOUT reaching through ``ctx``
 or module globals. A ``Deps`` dataclass is declared PER APP and bound ONE
@@ -70,7 +70,7 @@ class Carry(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class EnrichDeps:
-    """THE APP'S DECLARED DEPS (the seam's shape): one instance, bound at
+    """The app's declared deps (the seam's shape): one instance, bound at
     the door — the demo's enrich-queue client stand-in."""
 
     marker: str = "bound-once"
@@ -216,7 +216,7 @@ async def test_hold_wake_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.P
     assert [deps, deps] == SEEN
 
 
-# ── the E12 refusals (the build-time recorded findings) ────────────────────────
+# ── the E12 refusals (the build-time refusals) ────────────────────────
 
 
 def test_e12_refuses_deps_declared_where_the_app_binds_none() -> None:

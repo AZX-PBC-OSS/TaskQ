@@ -405,8 +405,8 @@ def test_both_rule_files_carry_the_cron_skipped_slots_alert_at_warning() -> None
 
 def test_job_outcome_alerts_read_the_series_that_mean_what_they_say() -> None:
     """The abandoned pager must read the abandonment counter, never the
-    consumed-messages outcome (retries and snoozes used to be relabelled
-    "abandoned" there, so every retry paged critical); the retry-rate alert
+    consumed-messages outcome (retries and snoozes relabelled as
+    "abandoned" there page every retry critical); the retry-rate alert
     reads the retried share of attempt failures; and the terminal-failed
     alert is named for what it measures. All at their severities, in both
     files."""

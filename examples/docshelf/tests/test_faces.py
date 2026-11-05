@@ -155,7 +155,7 @@ async def test_progress_admin_success_faces(
             "digest_total_docs": digest.total_docs,
             "child_links_note": (
                 "the parent↔child link is the app's own rows "
-                "(the child edge is invisible to the graph view — friction F3)"
+                "(the child edge is invisible to the graph view)"
             ),
         },
     )

@@ -1,10 +1,8 @@
 # The debugging playbook: asyncio failures, test flakes, leaks, and hangs
 
 Maintainer-facing playbook for the failure classes this suite actually
-produces. Every section is a real incident from the week of 2026-09-14
-through 2026-09-21, named by commit, and every command and code snippet
-below was executed while writing this document: the output shapes are
-real, not idealized.
+produces. Every command and code snippet's output shape below is real,
+not idealized.
 
 Related docs: [sql-hotpath-followups.md](sql-hotpath-followups.md) (the
 same method applied to query plans), the
@@ -16,7 +14,7 @@ symptoms).
 
 ## 1. The method
 
-Every investigation this week followed the same chain. Keep the chain
+Every investigation follows the same chain. Keep the chain
 intact; each hop is evidence for the next.
 
 1. **Symptom**: a failure, a timeout, a warning, a red CI lane. Write
@@ -38,24 +36,23 @@ intact; each hop is evidence for the next.
    catch and show the gate goes red. A gate that cannot fail is
    decoration.
 
-Rules that decided arguments this week:
+Rules that decide arguments:
 
 - **Reruns are not evidence.** "It passed on retry" is a coin landing
-  heads, not a proof the coin is fair. The four lottery tests in
-  `f012a275` passed many runs between failures; the fix commit records
-  the honest metric, 10 of 10 runs, after the test stopped depending on
-  timing, and never before.
+  heads, not a proof the coin is fair. A lottery test passes many runs
+  between failures; the honest metric exists only after the test stops
+  depending on timing, and never before.
 - **"Environmental" requires proof by execution.** A claim that a
-  failure is runner noise means demonstrating the noise: the 300s hang
-  in `7607beb4` was called environmental until the hang-dump showed a
-  task parked on an await with no timer pending, which proved the
-  environment was innocent and the setup connection was unbounded.
+  failure is runner noise means demonstrating the noise: a 300s hang
+  was called environmental until the hang-dump showed a task parked on
+  an await with no timer pending, which proved the environment was
+  innocent and the setup connection was unbounded.
 - **Load lotteries are defects.** Any assertion whose outcome depends on
   co-tenant CPU, cache temperature, or xdist sibling scheduling is a
   bug in the test, whatever the product code is doing. Examples below:
-  the 1.61x/doubling growth flake (`f896d3ec`), the 3.294ms "sub-ms"
-  plan gate (`3d4cffca`), the 1ms statement timeout that raced its own
-  claim (`f012a275`).
+  a growth flake from a cache-contaminated ratio, a "sub-ms" plan gate
+  that failed at 3.294ms on a loaded runner, a 1ms statement timeout
+  that raced its own claim.
 
 ---
 
@@ -71,7 +68,7 @@ handler (`src/taskq/worker/shutdown.py`), the `/tasks` health endpoint,
 and the straggler logger. It also prints a raw stderr fallback so the
 bundle survives a broken logging pipeline.
 
-Executed shape (a demo driver creating three named tasks and two
+The shape (a demo driver creating three named tasks and two
 anonymous ones, parked on `Event.wait` and `Queue.get`):
 
 ```
@@ -96,7 +93,7 @@ qualifier), **where** (the file:line it is suspended at). The `sites`
 list is what you grep: a task parked at `asyncio/locks.py:213` is inside
 `Event.wait`; a task parked at a queue module line is inside `get`.
 
-### The incident
+### Worked example: the soak leak
 
 A lost-job soak test (`tests/test_rt_lost_job_soak.py`) bootstraps a
 full worker: leader loops, sweeps, cron, notify listener, consumers,
@@ -156,7 +153,7 @@ fd_event_list = self._selector.poll(timeout, max_ev)
 Failed: Timeout (>300.0s) from pytest-timeout.
 ```
 
-(above run at the 2s mark in a scratch demo; the shape is identical),
+(above: a scratch demo at the 2s mark; the shape is identical),
 it proves something precise: **the event loop had no timer pending.**
 `epoll(-1)`-shaped parks are what a selector does when its timeout is
 None, and the selector timeout is None when nothing on the loop needs
@@ -177,9 +174,9 @@ Two layers, both cheap to keep around:
    a hook point. Chain it, dump every live task with
    `task.get_stack()` / `task.print_stack()`, then let the original
    handler raise. The chain matters: a dump AFTER the timeout has
-   already unwound finds no running loop (executed and confirmed: a
-   post-hoc dump prints `<no running loop on this thread>`), so the
-   dump must run AT the hang instant. The executed source shape:
+   already unwound finds no running loop (a post-hoc dump prints
+   `<no running loop on this thread>`), so the
+   dump must run AT the hang instant. The source shape:
 
 ```python no-exec — not executed: fragment, names bound by an earlier fence
 @pytest.hookimpl(wrapper=True)
@@ -200,7 +197,7 @@ def pytest_runtest_call():
         signal.signal(signal.SIGALRM, original)
 ```
 
-Executed against a test hung on an unset `Event`:
+A test hung on an unset `Event`:
 
 ```
 === hang dump: pytest-timeout fired, live loop tasks ===
@@ -218,12 +215,12 @@ pending timers on the loop: 0
 ```
 
 That pairing (task parked, no timers) is the whole diagnosis. It is the
-tool the claim-epoch investigation (`59a47582`, the smallint ceiling
-fence) used to sort a real deadlock suspicion from an unbounded wait.
+tool that sorts a real deadlock suspicion from an unbounded wait - the
+claim-epoch fence's investigation used it for exactly that.
 
 ### Worked example: the unbounded setup connection
 
-Incident `7607beb4`: a CI hang in an OTel integration test, over 300s,
+A CI hang in an OTel integration test, over 300s,
 pytest-timeout fired, main thread in the selector with no timer
 pending.
 
@@ -243,8 +240,8 @@ pending.
   server now fails the test in seconds with a typed asyncpg
   `TimeoutError` naming the phase.
 
-Corollary incident, the other direction: `e49fdad6` raised the
-lost-job soak's pytest-timeout to 900 (the e2e family's existing value
+Corollary in the other direction: the lost-job soak's pytest-timeout is
+900 (the e2e family's existing value
 for the same wall-clock-bound tier) because the soak's OWN bounds (240
 paced rounds plus a quiescence cap near 4s per job) legitimately exceed
 300s on a starved runner. A timeout kill mid-asyncio leaves tasks
@@ -304,7 +301,7 @@ at two places in a causal chain:
 - **Symptom**: the loop is slow because something ELSE starved it, and
   the lag warning is merely where the sickness becomes visible.
 
-The symptom case was the week's isolate-test incident: recurring
+The symptom case: recurring
 `TimeoutError`s in the heartbeat isolate tests resolved to a leaked
 soak bootstrap (the ~40 `Event.wait`/`Queue.get` tasks of section 2)
 advancing on the same module-scoped loop. Every await in the isolate
@@ -351,19 +348,20 @@ the ratio is a lottery even when the code is honest:
   work plus every co-tenant interruption during it. Taking one round
   per size means the ratio of two contaminations.
 
-Incident `f896d3ec`: the NUL-scan pin timed a payload of LIVE escapes,
+A worked example: the NUL-scan pin timed a payload of LIVE escapes,
 which `_encoded_has_nul` answers at the first match (~0.2us regardless
 of size): a constant-work sample whose 8x growth ratio was pure runner
 noise. It flaked at 1.61x per doubling on a loaded CI runner, and,
 worse, a genuinely quadratic scan would have PASSED it. The same shape
-killed the count-query gate in `3d4cffca`: a hard "Total runtime < 1ms"
+killed a count-query gate: a hard "Total runtime < 1ms"
 EXPLAIN assertion failed at 3.294ms on a loaded runner while the plan
 itself was unchanged and correct.
 
 ### The fixes, in order of preference
 
 1. **Plan-shape pins instead of wall-clock gates** (best): if the
-   invariant is structural, assert the structure. `3d4cffca` pins the
+   invariant is structural, assert the structure. The count-query pin
+   asserts the
    EXPLAIN plan (Index and Index Only Scan on
    `jobs_actor_pending_idx`, never a Seq Scan) and merely RECORDS the
    execution time for the perf-evidence record. A plan cannot flake.
@@ -374,8 +372,8 @@ itself was unchanged and correct.
 3. **min-of-N rounds**: load only ever ADDS time, so the
    least-contaminated round is the closest estimate of the work's own
    cost, and a systematic shape regression raises even the best round.
-   The dispatch benchmark (`tests/perf/test_dispatch_benchmark.py`,
-   rewritten in `f012a275`) takes the best-round p50 over 5 independent
+   The dispatch benchmark (`tests/perf/test_dispatch_benchmark.py`)
+   takes the best-round p50 over 5 independent
    rounds against a 50ms gate; p99 is recorded, not gated.
 4. **The `load_sensitive` serial lane**: a gate that must compare
    wall-clock samples is load-fragile by nature even with min-of-N; a
@@ -384,10 +382,10 @@ itself was unchanged and correct.
    (`-m "not load_sensitive"` in `.github/workflows/ci.yaml`) and runs
    it once, serially; the marker is declared in `pyproject.toml`.
 
-### Executed: the gate and its mutation proof
+### The gate and its mutation proof
 
-The probe (shape of `f896d3ec`'s `tests/test_nul_scan_scaling.py` on
-its branch; run here against this tree): per input size, min-of-5
+The probe (the shape of `tests/test_nul_scan_scaling.py`; run here
+against this tree): per input size, min-of-5
 rounds of 20 scans, worst-shape payload (every match escaped-literal,
 no early return), 1000 versus 8000 matches, gate the 8x-input ratio at
 12x:
@@ -399,7 +397,7 @@ sim   :   100.86 us -> 2894.96 us, ratio 28.70x for 8x input  [gate 12x: FAIL]
 
 The `sim` row is the mutation proof: a memcpy-cheap quadratic
 simulator (an O(pos) copy per match) injected into the same harness
-goes red. The commit's own numbers: linear measures a stable 8.0 to
+goes red. The measured numbers: linear measures a stable 8.0 to
 8.4x; the quadratic sim measured 15.6x there and 16.73x on the red
 run. Gate the RAW ratio, not its per-doubling root: the cubic root
 compresses a 15.6x quadratic to 2.5x per doubling, under any sane
@@ -416,7 +414,7 @@ even under a true quadratic.
 The suite's contention tests do not hope for a scheduler coincidence;
 they build the interleaving. The standard instrument is a connection
 stand-in that intercepts statements by their SQL shape and parks the
-caller at an exact point. Executed file pointers:
+caller at an exact point. File pointers:
 
 - `tests/test_postgres_enqueue_max_pending_lock.py`:
   `_ContendedFakeConn` records every executed statement and models the
@@ -433,8 +431,8 @@ caller at an exact point. Executed file pointers:
       return await super().execute(sql, *params)
   ```
 
-- The lock-interleaving pins (`c3fe05d9`,
-  `tests/test_rt_heartbeat_renewal_cancelwhere_lock_order.py`,
+- The lock-interleaving pins
+  (`tests/test_rt_heartbeat_renewal_cancelwhere_lock_order.py`,
   `tests/test_rt_cancel_sweep2_lock_order.py`,
   `tests/test_batch_abort_flip_bounded.py`) run the same pattern
   against the real backends: hold one operation's row lock at a chosen
@@ -445,13 +443,13 @@ caller at an exact point. Executed file pointers:
   op's writes are visible in-transaction while the fence decision
   runs). They are different defects; a harness that can only build one
   of them silently halves the coverage.
-- `57b7903b` ("the ghost pins inject the retry deterministically, not
-  as a scheduler lottery") applies the same rule to retries: inject
+- The ghost pins inject the retry deterministically, not as a
+  scheduler lottery: the same rule applies to retries - inject
   the retry at the seam, do not arrange conditions and wait to see if
   the retry happens to occur.
 
 Injection at the connection seam beats a real tiny `statement_timeout`
-for the same reason `f012a275` documents: a real 1ms budget is itself
+for the reason the command-budget rule states: a real 1ms budget is itself
 a race. When the server's cancel lands after the claim statement
 committed, the round half-succeeds and the scenario's precondition
 dissolves. The `_FailingDispatcherConn` / `_FailingDispatcherPool`
@@ -471,7 +469,7 @@ proves the property.
 
 The house pattern replaces the lottery with a pin that the racy
 outcome is BOUNDED, using full-batch preconditions to make the
-interleaving certain. Executed example:
+interleaving certain. Example:
 `tests/test_rt_dispatch_fairness_attack.py::TestCrossActorStarvation`
 (actor A floods 500 jobs enqueued strictly before B's one job; repeated
 limit-10 dispatch rounds run sequentially):
@@ -531,8 +529,8 @@ is bounded, so the teardown cannot become the next leak.
 
 ### The leftover-task guard
 
-`_fail_on_leaked_asyncio_tasks` in `tests/conftest.py` (autouse,
-introduced in `aaa7d9a2`) is the class-level net:
+`_fail_on_leaked_asyncio_tasks` in `tests/conftest.py` (autouse) is the
+class-level net:
 
 - **What it checks**: a baseline snapshot of `asyncio.all_tasks(loop)`
   before the test body; after the body, any task in `after - before`
@@ -544,7 +542,7 @@ introduced in `aaa7d9a2`) is the class-level net:
   - task 'Task-2' still pending; coroutine: <coroutine object Event.wait at 0x...>
   ```
 
-  (executed against the real classifier, `_leaked_pending_task_report`).
+  (from the real classifier, `_leaked_pending_task_report`).
 - **Baseline diff, not an absolute check**: tasks already pending when
   the test started (a module-scoped fixture's long-lived worker) are
   inheritance, not leak. This keeps the guard quiet in legitimate
@@ -561,7 +559,7 @@ Blind spots, known and accepted:
 2. **xdist workers are separate processes**: the guard sees one
    module's loop per process, which is the unit that matters, but
    nothing reports cross-process residue (that class is covered by the
-   gauge-cache reset fixtures instead, `aaa7d9a2`).
+   gauge-cache reset fixtures instead).
 3. **Inherited tasks stay exempt by design**: if a module-scoped
    fixture leaks, the FIRST consumer test's baseline already contains
    the zombie, and the failure lands nowhere until the module ends.
@@ -582,8 +580,6 @@ second leak of the same shape still fails.
 
 ## 8. Tool inventory
 
-All commands executed while writing this page; output shapes are real.
-
 ### Failed lanes, fast
 
 ```
@@ -592,8 +588,8 @@ $ gh run view --job <job_id> --repo AZX-PBC-OSS/TaskQ --log-failed
 
 Job ids come from `gh run view <run_id> --json jobs`. The flag prints
 only the failing steps' logs, which turns a 20 minute CI log into the
-dozen lines that matter (executed against the coverage job of a real
-red run: the header, the plugin line, then the failure).
+dozen lines that matter: the header, the plugin line, then the
+failure.
 
 ### The runs-by-SHA matrix
 
@@ -609,7 +605,7 @@ completed	failure	...	Release Please	main	push	35656156054	4m49s	2026-09-21T21:1
 
 Red on the parent SHA and red on the child is pre-existing; green on
 the parent and red on the child is the child's regression. Use the
-FULL sha; the short form matches nothing (executed and confirmed).
+FULL sha; the short form matches nothing.
 
 ### Pre-merge verification
 

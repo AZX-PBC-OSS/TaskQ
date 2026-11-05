@@ -1027,10 +1027,10 @@ async def test_pkey_violation_strikes_only_the_colliding_row() -> None:
 # A strike persists only if the tick's failures UPDATE executes AND the
 # caller's transaction commits.  A TRANSIENT error from any LATER
 # statement of the tick (the successes UPDATE here) re-raises correctly -
-# zero strikes persist, the leader retries - but the strike spans used to
-# be opened (and exported) at strike time, inside _strike_plans: the
-# trace backend claimed schedule failures and auto-disables that the
-# rollback erased.  Trace says schedule X auto-disabled; the DB row says
+# zero strikes persist, the leader retries - and the strike spans are
+# opened (and exported) at COMMIT time, not at strike time inside
+# _strike_plans: a strike-time span claims schedule failures and
+# auto-disables that the rollback erases.  Trace says schedule X auto-disabled; the DB row says
 # enabled with count 0.  This pins the buffered emission: no failure
 # span, no auto-disable event, no metric delta, unless ALL of the tick's
 # SQL ran.

@@ -2238,8 +2238,8 @@ These invariants must remain true across all changes.
    (`tests/data/released_migrations.sha256`, enforced by
    `tests/test_migrations_released_frozen.py`) and are never edited, prose
    included. The violations already frozen into shipped files are
-   grandfathered; see `docs/design/migration-prose-decision.md` for the
-   enumeration and the remediation decision.
+   grandfathered; a prose audit's scope states that released migration
+   files are excluded, so it never re-flags them.
 
 8. **`BACKEND_PROTOCOL_VERSION` is checked at import time**: both
    `PostgresBackend` and `InMemoryBackend` assert the version constant at module

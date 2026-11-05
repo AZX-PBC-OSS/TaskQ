@@ -202,7 +202,7 @@ class EnrichClient:
 
     def fetch(self, doc_id: str) -> str | None:
         """The enrich leg's lookup (the corpus read the module global
-        used to own — now behind the client, injectable, mockable)."""
+        not the app's — the client owns it, injectable, mockable)."""
         return self._corpus.get(doc_id)
 
 

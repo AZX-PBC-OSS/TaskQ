@@ -56,8 +56,8 @@ class _ScriptedCall:
     """The drain's callable, scripted per invocation.
 
     Each entry is either an int to return or an exception to raise; a
-    callable entry receives the call index and returns the value (used to
-    flip shutdown mid-drain).
+    callable entry receives the call index and returns the value (flips
+    shutdown mid-drain).
     """
 
     def __init__(self, script: list[object]) -> None:

@@ -520,7 +520,7 @@ class TestBucketScalesAreHonest:
     def test_lock_expiring_soon_cliff_shape_quantiles_below_its_threshold(
         self, honesty: tuple[Exposition, dict[str, list[float]]]
     ) -> None:
-        """THE FOUND CLIFF (documented, not hidden): a HEALTHY
+        """The found cliff (documented, not hidden): a HEALTHY
         minimal-valid lease configuration - heartbeat_interval 5s with
         lock_lease 33s (the cascade floor for that cadence) - reads
         remaining TTL ~28s, every renewal's sample lands in the le="30"

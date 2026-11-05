@@ -463,8 +463,9 @@ async def test_concurrent_all_succeeded_tail_completes_the_batch(pg_dsn: str) ->
 # writer whose gate probe saw more open members than the tail bound never
 # touched the batches row, so its commit is sequenced against no attempt at
 # all. Two deterministic shapes left an all-terminal batch 'active' with no
-# attempt left to land (measured 5/5 and 3/3 on the pre-fix branch; origin/main
-# completes both, its unconditional reset queues every writer on the row):
+# attempt left to land (the burst measured 5/5 and the staggered shape 3/3
+# under the unordered tail gate; an unconditional reset queues every writer
+# on the row):
 #
 # - the burst: a batch whose members' terminal writes overlap enough that
 #   EVERY gate probe sees > _COMPLETE_TAIL_RECHECK_MAX_OPEN open (an 18-member

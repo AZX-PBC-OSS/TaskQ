@@ -304,11 +304,11 @@ def test_the_health_dataclass_carries_exactly_the_runbook_operands() -> None:
 def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
     """the gauge callbacks scrape on the
     OTel collection THREAD while the claim path records on the EVENT-
-    LOOP thread — the pre-fix stores had no lock, and the two walkers
+    LOOP thread — the two walkers
     raced inside the deque/dict: **287 RuntimeErrors in 3 s of hot
     load** ("deque mutated during iteration"), every raise killing the
     callback's observation batch — the alert's operand VANISHED exactly
-    when the queue was hottest. THE FIX: the read is ATOMIC (the
+    when the queue was hottest. THE CONTRACT: the read is ATOMIC (the
     stores' lock — the snapshot and the record each hold it for their
     whole walk). This pin hammers the record path on a writer thread
     while a scraper thread snapshots continuously for 3 s and rejects:
@@ -354,7 +354,7 @@ def test_the_hot_load_scrape_is_clean_for_three_seconds() -> None:
 
     # THE PRODUCTION SHAPE'S CONCURRENCY: several claim paths recording
     # (the loop + the fleet's rounds) AND several gauge callbacks
-    # scraping at once — the pre-fix race needed BOTH walkers live (the
+    # scraping at once — the race needs BOTH walkers live (the
     # rejected run: 287 RuntimeErrors in 3 s).
     threads = [threading.Thread(target=_record_hot, args=(i,)) for i in range(4)]
     threads += [threading.Thread(target=_scrape_hot) for _ in range(3)]

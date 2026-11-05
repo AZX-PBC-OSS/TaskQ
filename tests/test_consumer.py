@@ -578,7 +578,7 @@ async def test_rate_limit_denial_acquire_time_emits_span_and_log(
 
 
 class _StrictPayload(BaseModel):
-    """Payload that rejects empty dicts - used to trigger validation failure."""
+    """Payload that rejects empty dicts - triggers validation failure."""
 
     required_field: str
 

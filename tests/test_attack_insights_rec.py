@@ -109,7 +109,7 @@ async def test_idle_loop_reads_parked_through_the_real_watchdog_path() -> None:
 
 
 async def test_hot_call_soon_churn_reads_busy_through_the_real_watchdog_path() -> None:
-    """THE RED PROOF (red on the shape-only classifier): a loop saturated
+    """The red proof (red on the shape-only classifier): a loop saturated
     by ``call_soon`` churn is 100% busy scheduling callbacks, but its
     thread sits inside the ZERO-TIMEOUT select ``_run_once`` makes when
     ready callbacks are queued. Measured on the unguarded code: 657/658

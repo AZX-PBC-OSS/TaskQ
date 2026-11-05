@@ -569,7 +569,7 @@ async def test_unique_for_explicit_unfinished_states_do_not_dedupe_onto_a_succee
     explicit set were dropped from the preflight predicate - or the
     opt-out silently collapsed into the widened default - that work's
     second run would be silently swallowed for the whole window, with a
-    job handle that looks successful. (This pin previously asserted the
+    job handle that looks successful. (The pin asserts
     same no-dedup outcome under the DEFAULT set; the default widened to
     cover ``succeeded`` by deliberate decision, so the pin moved to the
     explicit set that preserves the behavior.)
@@ -663,7 +663,7 @@ def test_unique_states_default_covers_success_excludes_failures() -> None:
     work already happened, the precise condition the window exists to
     detect. ``failed``/``cancelled`` do not: they mean the work did NOT
     happen, so covering them would let one failure suppress the identity
-    for the rest of the window. (This pin previously asserted the narrower
+    for the rest of the window. (The pin asserts
     three-state literal; the default deliberately widened to cover
     success.)
     """

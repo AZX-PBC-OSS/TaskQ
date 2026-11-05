@@ -454,9 +454,9 @@ async def test_one_fast_transient_failure_is_one_miss_retried_promptly() -> None
     none does), and the recovery beat must land PROMPTLY - well inside
     the interval, not a full interval after the failure.
 
-    The pacing half is the regression that motivated the pin: the loop
-    used to sleep the FULL remaining interval after a tick that failed
-    instantly, so the recovery beat landed a whole interval late - at
+    The pacing half is the regression that motivated the pin: a loop that
+    sleeps the FULL remaining interval after a tick that failed
+    instantly lands the recovery beat a whole interval late - at
     twice the interval after the last good beat, the reclaim deadline
     the ops guidance calls safe at ``heartbeat_timeout = 2x interval``.
     A failed tick is not a beat: it stamps nothing, so the one-beat-per-
@@ -1171,9 +1171,9 @@ class _SlowSecondAcquirePool(FakePool):
 
 
 async def test_lock_ttl_sample_is_the_lease_minus_the_gap_between_renewals() -> None:
-    """The histogram used to record ``lock_lease`` on every tick - the
-    configured constant - so a heartbeat running late could never move
-    it. It must record the lease the previous renewal stamped minus the
+    """The histogram must never record ``lock_lease`` (the
+    configured constant) - a heartbeat running late could never move
+    that. It must record the lease the previous renewal stamped minus the
     time until this one landed: nothing on the first renewal (no reference
     yet), and a sample below the lease by at least the delay on a delayed
     tick."""

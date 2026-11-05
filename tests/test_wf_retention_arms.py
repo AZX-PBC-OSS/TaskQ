@@ -1,4 +1,4 @@
-"""THE FLOW-HISTORY RETENTION ARMS — the pins
+"""The flow-history retention arms — the pins
 (integration: real PG).
 
 Five workflow tables grew monotone-forever — no retention arm, no FK
@@ -516,7 +516,7 @@ async def test_live_hold_on_nonterminal_flow_survives_a_terminal_neighbors_reap(
 async def test_a_flow_whose_root_row_was_pruned_is_still_swept(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ORPHAN-ROOT LEG (the meta-audit's recorded finding): the jobs archive
+    """The orphan-root leg: the jobs archive
     and the hard prune DELETE old flow-root rows; an arm whose doomed
     predicate requires the root to EXIST-and-be-terminal can never match
     a rootless row — every pruned flow's wf history is unprunable
@@ -652,7 +652,7 @@ async def test_scale_pin_loaded_pass_drain_and_zero_doomed_steady_state(
     assert deleted <= batch, f"the loaded pass deleted {deleted} > batch {batch}"
     assert loaded_elapsed < settings.dispatcher_command_timeout, (
         f"the loaded pass took {loaded_elapsed:.2f}s — past the dispatcher "
-        "command timeout the leader's pool runs under (H-B1's recorded finding: "
+        "command timeout the leader's pool runs under (H-B1: "
         "the arm Times Out and PERMANENTLY stops pruning)"
     )
 
@@ -949,7 +949,7 @@ async def test_null_stamp_busy_shape_warning_not_starved(
     )
     warnings = [e for e in logs if e.get("event") == "wf-retention-null-finished-at"]
     assert warnings, (
-        f"the tripwire starved behind the batch (the busy shape's recorded finding: "
+        f"the tripwire starves behind the batch (the busy shape: "
         f"the NULL root never selected, the warning never fired): {logs}"
     )
     assert warnings[0]["table"] == "wf_edge"
@@ -1021,7 +1021,7 @@ def test_arms_batch_derives_from_the_prune_family_knob() -> None:
                     borrowed += 1
         assert knob_calls >= 1, (
             f"{name} does not take the prune family's own batch knob "
-            "(H-B2: the borrowed event_writer_batch_size is the recorded finding)"
+            "(H-B2: the borrowed event_writer_batch_size)"
         )
         assert borrowed == 0, f"{name} still borrows event_writer_batch_size (H-B2)"
         assert rootless_calls == 1, (
@@ -1037,7 +1037,7 @@ def test_outbox_and_step_cache_arms_derive_from_the_prune_family_knob() -> None:
     """PIN (j2) — the mirror of (j) for the two DERIVED-DATA retention
     arms: the delivered outbox's TTL arm and the step cache's
     expired-corpses arm borrowed ``event_writer_batch_size`` (100) the
-    same way the five flow-history arms did (the recorded finding class —
+    same way the five flow-history arms did (the same class —
     a monotone population drained 100 rows per pass). Their wiring is
     the prune family's own knob (``prune_batch_size``, the
     deletion-sweep family's batch both arms' docstrings already
@@ -1073,7 +1073,7 @@ def test_outbox_and_step_cache_arms_derive_from_the_prune_family_knob() -> None:
                     borrowed += 1
         assert knob_calls >= 1, (
             f"{name} does not take the prune family's own batch knob "
-            "(the borrowed event_writer_batch_size is H-B2's recorded finding class)"
+            "(the borrowed event_writer_batch_size is H-B2's class)"
         )
         assert borrowed == 0, f"{name} still borrows event_writer_batch_size (H-B2)"
 
@@ -1300,7 +1300,7 @@ async def test_rootless_walk_advances_past_a_live_pk_front(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, table: str
 ) -> None:
     """PIN (l) — R1's exact story: a 3,000-row live PK front, batch 1,000,
-    five passes. THE RED (the pre-fix walk): every pass re-visited the
+    five passes. THE RED (the re-visit walk): every pass re-visited the
     SAME first 1,000 rows — the probes answered 'live root', nothing
     deleted, the cursor nowhere — five passes, deleted=0, the 50 orphans
     above the front stranded forever. THE GREEN: pass 1 still deletes 0
@@ -1334,8 +1334,7 @@ async def test_rootless_walk_advances_past_a_live_pk_front(
         "them, answer 'live root', and move ON"
     )
     assert await _orphan_remaining(wf_conn, wf_schema, table, orphan_keys) == 0, (
-        f"{table}: the orphans above the front survived all five passes — "
-        "stranded forever (R1's recorded finding)"
+        f"{table}: the orphans above the front survived all five passes — stranded forever"
     )
     # THE WALK'S SCAN START ADVANCED: the cursor is set after pass 1 and
     # MOVES pass over pass; after pass 3 it IS the front's last key (the
@@ -1431,7 +1430,7 @@ def test_truncate_list_names_every_wf_table() -> None:
     the schema ships. THE RED: wf_node_stream was in neither the arms nor
     the list — a dead node's ring survived the reset, the last test's
     rows leaked into the next test's counts (and the production face:
-    nodes x 64 ring rows unbounded, R3's recorded finding)."""
+    nodes x 64 ring rows unbounded)."""
     from taskq.testing.pg import (
         _TRUNCATE_TABLES,  # pyright: ignore[reportPrivateUsage]  # Why: the pin IS about this list's completeness.
     )

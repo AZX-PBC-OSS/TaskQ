@@ -1,18 +1,16 @@
-"""THE CONTENT DOOR'S PINS — the content-verdict mismatch's recorded finding.
+"""The content door's pins: a live claim's capture content must agree
+with the claim's verdict.
 
-The head-stamp verifier's law checked the claims registry against HEAD
-(freshness + the supersession chain) but NEVER READ THE CAPTURE'S
-CONTENT. The rejected shape (the estate's REAL instances — a
-wf-battery capture and a deslop pin-packs capture, both stamped
-2026-10-11): a live capture whose own
+The head-stamp verifier checked the claims registry against HEAD
+(freshness + the supersession chain) but never read the capture's
+CONTENT. The rejected shape: a live capture whose own
 header records ``rc=1`` — the run FAILED, in the capture's own words —
 while the claim greens the stem. The verifier read the stamp's SHA, not
-the stamp's VERDICT: the fresher the lie, the greener the law.
+the stamp's verdict: the fresher the lie, the greener the law.
 
-THE COUNTEREXAMPLE (built below, one pin per shape): a FRESH live claim
-(head_sha = HEAD — the head-stamp law's own green) whose capture's
-content records failure. Three shapes, because the capture families lie
-three ways:
+The counterexample (built below, one pin per shape): a fresh live claim
+(head_sha = HEAD) whose capture's content records failure. Three
+shapes, because the capture families lie three ways:
 
 * the rc=1 STAMP (the run-scoped writer's own header records the rc);
 * the FORGED STAMP — the header says rc=0 but the pytest TAIL says
@@ -21,11 +19,11 @@ three ways:
 * the ``FAILED tests/...`` short-summary line with no ``failed`` count
   at all (the summary line suppressed, the failures still named).
 
-The pre-door verifier returned rc=0 on exactly this estate (the red
-receipt is the fix's own capture); the doored verifier REJECTS: the
-content-verdict mismatch, the file, the LINE.
+The pre-door verifier returned rc=0 on exactly this estate; the doored
+verifier REJECTS the content-verdict mismatch, naming the file and the
+LINE.
 
-And the HONESTY edges, pinned both ways:
+And the honesty edges, pinned both ways:
 
 * the honest families (the rc=0 stamp + the pytest green tail, the JSON
   band payload) stay GREEN — the door never over-rejects a truth;
@@ -145,7 +143,7 @@ def _e(stem: str, file: str, ts: str) -> dict[str, str]:
 
 
 def test_the_rc1_stamp_convicts(tmp_path: Path) -> None:
-    """THE COUNTEREXAMPLE (the estate's real instance): a FRESH live
+    """The counterexample (the estate's real instance): a FRESH live
     claim whose capture's own stamp records rc=1. The head-stamp law
     greened exactly this (the sha is fresh); the content door rejects
     the mismatch — named, with the file and the line."""
@@ -164,7 +162,7 @@ def test_the_rc1_stamp_convicts(tmp_path: Path) -> None:
 
 
 def test_the_forged_stamp_convicts(tmp_path: Path) -> None:
-    """THE FORGED STAMP: the header says rc=0, the pytest tail says
+    """The forged stamp: the header says rc=0, the pytest tail says
     ``1 failed, 75 passed``. The stamp's word and the body's count
     disagree — the tail is the run's last word. The door reads BOTH and
     rejects on the tail."""
@@ -180,7 +178,7 @@ def test_the_forged_stamp_convicts(tmp_path: Path) -> None:
 
 
 def test_the_failed_short_summary_convicts(tmp_path: Path) -> None:
-    """THE SUPPRESSED COUNT: no ``failed`` number in the summary line —
+    """The suppressed count: no ``failed`` number in the summary line —
     but the short-summary still names a FAILED test. The failures are
     named in the capture's own words; the door rejects."""
     runs = _estate(
@@ -194,9 +192,9 @@ def test_the_failed_short_summary_convicts(tmp_path: Path) -> None:
 
 
 def test_the_honest_green_family_stays_green(tmp_path: Path) -> None:
-    """THE CONTROL: rc=0 in the stamp + the green pytest tail — the
-    honest capture under an honest claim stays GREEN, no warning, no
-    recorded finding (the over-recorded finding would red every honest re-stamp)."""
+    """The control: rc=0 in the stamp + the green pytest tail — the
+    honest capture under an honest claim stays green, no warning, no
+    finding (an over-recorded finding would red every honest re-stamp)."""
     runs = _estate(
         tmp_path,
         [_e("wf-battery", "green-cap.txt", "t0")],
@@ -211,7 +209,7 @@ def test_the_honest_green_family_stays_green(tmp_path: Path) -> None:
 
 
 def test_the_json_band_family_stays_green(tmp_path: Path) -> None:
-    """THE JSON BAND FAMILY: the band payloads record MEASUREMENTS, not
+    """The jSON band family: the band payloads record MEASUREMENTS, not
     verdicts — the honest shape loads as JSON and greens, no unparsable
     warning (the door knows the estate's actual families)."""
     band = {
@@ -232,7 +230,7 @@ def test_the_json_band_family_stays_green(tmp_path: Path) -> None:
 
 
 def test_the_unparsable_capture_is_the_typed_warning(tmp_path: Path) -> None:
-    """THE HONESTY EDGE: a capture with NO verdict shape (the staged
+    """The honesty edge: a capture with NO verdict shape (the staged
     slot's declaration) is not silently passed — the verifier prints the
     TYPED WARNING naming the stem and the file, and greens (the slot is
     the drain's honest intermediate, not a lie). Silence is the defect
@@ -269,7 +267,7 @@ def test_the_unparsable_json_is_the_typed_warning(tmp_path: Path) -> None:
 
 
 def test_the_chain_terminal_content_door(tmp_path: Path) -> None:
-    """THE DOOR APPLIES WHERE THE CHAIN LANDS: a resolving supersession
+    """The door applies where the chain lands: a resolving supersession
     chain whose TERMINAL is fresh and on disk — but whose capture's
     content records failure. The chain fix greens the terminal's
     freshness; the content door rejects its words."""

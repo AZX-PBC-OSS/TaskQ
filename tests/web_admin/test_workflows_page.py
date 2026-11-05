@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE ADMIN WORKFLOW PAGE'S PINS: the run explorer's pages + the
+"""The admin workflow page's pins: the run explorer's pages + the
 SSE node_state stream + the typed actions, against a REAL run on a real
 migrated schema (the fastapi marker tier: server-rendered pytest, no
 browser — the DoD's primary lane; the browser-level probe replay is the
@@ -267,7 +267,7 @@ async def test_run_page_zero_holds_is_the_defined_state(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE STATES MATRIX (1): a run with NO holds renders the DEFINED
+    """The states matrix (1): a run with NO holds renders the DEFINED
     healthy-zero line — never a blank section that reads as a healthy
     zero (the #673 rule; the blank-region variant reds this pin). A
     resolved hold renders as a DECISION (the rows-alone audit), which is
@@ -301,7 +301,7 @@ async def test_run_page_unknown_run_is_a_404(
 async def test_runs_list_empty_schema_is_the_defined_empty_state(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """THE STATES MATRIX (2): the list page's empty schema renders the
+    """The states matrix (2): the list page's empty schema renders the
     honest line + the next step (never a blank table)."""
     app = _make_admin_app(module_pg_pool, module_pg_schema.schema_name)
     async with httpx.AsyncClient(
@@ -391,7 +391,7 @@ async def test_sse_reconnect_last_event_id_continues_the_cursor(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE REPLAY PIN: a reconnect with Last-Event-ID continues the
+    """The replay pin: a reconnect with Last-Event-ID continues the
     cursor (seq > cursor) and the frame carries the WHOLE state — the
     reconnect never loses it (the state-losing variant reds)."""
     schema = module_pg_schema.schema_name
@@ -410,7 +410,7 @@ async def test_sse_reconnect_last_event_id_continues_the_cursor(
 async def test_sse_unknown_run_is_a_404_at_subscribe(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """THE STATES MATRIX (3), Q7's fix superseding the empty-snapshot
+    """The states matrix (3), Q7's fix superseding the empty-snapshot
     pin: a stream for an UNKNOWN run id is a 404 AT SUBSCRIBE — the
     estate's own ``/sse/{topic}`` convention (an unknown topic is
     refused at subscribe; the empty-snapshot-forever stream was an
@@ -433,7 +433,7 @@ async def test_resolve_without_mounted_definitions_is_the_501_residual(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE NO-UNTYPED-DOOR PIN: a router mounted WITHOUT the workflow
+    """The no-untyped-door pin: a router mounted WITHOUT the workflow
     definitions answers 501 — the resolve refuses to deliver untyped."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_run(module_pg_pool, schema)
@@ -456,7 +456,7 @@ async def test_resolve_through_the_typed_door_delivers_and_audits(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE AUDIT PIN (G4): a Resolve with the mounted definitions
+    """The audit pin (G4): a Resolve with the mounted definitions
     delivers + writes the audit row; a WRONG payload is the named
     pydantic refusal and moves nothing."""
     schema = module_pg_schema.schema_name
@@ -511,7 +511,7 @@ async def test_resolve_through_the_typed_door_delivers_and_audits(
 async def test_node_panel_unknown_node_is_a_404(
     module_pg_pool: asyncpg.Pool, module_pg_schema: ModulePgSchema
 ) -> None:
-    """THE STATES MATRIX (4): the panel's unknown node is a 404 — the
+    """The states matrix (4): the panel's unknown node is a 404 — the
     JS renders it as the panel's error state (never a blank panel)."""
     app = _make_admin_app(module_pg_pool, module_pg_schema.schema_name)
     async with httpx.AsyncClient(
@@ -526,7 +526,7 @@ async def test_node_panel_addresses_map_children_by_step_and_map_index(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE MAP-INDEX ADDRESSING PIN (the README's observation made
+    """The map-index addressing pin (the README's observation made
     reachable): a map's children share one step key (``ingest.item``) —
     the panel addresses a CHILD by (step, ``map_index``). The demo's
     signature observation — ``watch doc-doomed's attempt go 1 → 2`` —
@@ -584,7 +584,7 @@ async def test_run_page_renders_the_audit_trail_after_a_resolve(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE AUDIT TRAIL VISIBLE PER OPERATOR ACTION (the G4 pin's page
+    """The audit trail visible per operator action (the G4 pin's page
     face): after a resolve, the run page renders the trail's ROW (the
     principal + the action + the reason); the empty trail renders the
     defined line first."""
@@ -709,7 +709,7 @@ async def test_panel_latency_band(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE LATENCY BAND (set from the measurement, pinned): the panel
+    """The latency band (set from the measurement, pinned): the panel
     route's full read ≤ 50 ms p95 on this stack (the
     measured p95 is 3.2 ms — 15x headroom; the file:
     .measurements/t11-latency-band.json)."""
@@ -755,7 +755,7 @@ def test_the_page_js_carries_the_keyboard_contract() -> None:
 async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
     module_pg_pool: Any, module_pg_schema: Any
 ) -> None:
-    """THE UNINSTALLED DEGRADE: a schema with ONLY the vanilla tables (a
+    """The uninstalled degrade: a schema with ONLY the vanilla tables (a
     pre-workflow migration state) renders the NOTICE (both pages), never
     a 500. THE THROWAWAY SCHEMA: the module's migrated schema is shared
     per module — the drop here would break the family; the fresh schema
@@ -796,7 +796,7 @@ async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
 async def test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped(
     module_pg_pool: Any, module_pg_schema: Any, demo_app_module: Any
 ) -> None:
-    """THE DEGRADE's real path: a run EXISTS (the root row) + the
+    """The degrade's real path: a run EXISTS (the root row) + the
     workflow tables dropped mid-flight — the fetch's edge read raises,
     the page renders the NOTICE (never a 500)."""
     import httpx as _httpx
@@ -862,7 +862,7 @@ async def test_node_retry_route_reopens_a_failed_node_and_audits(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE NODE RERUN PIN: the POST route rides the ENGINE'S OWN
+    """The node rerun pin: the POST route rides the ENGINE'S OWN
     manual-resume verb (``retry_workflow_node``) — the failed node
     re-pends (the CAS), the blocked downstream clears (the closure's
     reset), the terminal-FAILED flow re-opens, and the verb's
@@ -928,7 +928,7 @@ async def test_node_retry_refusals_land_the_named_banner(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE REFUSED RERUN IS A DEFINED STATE (the cancel refusal's own
+    """The refused rerun is A defined state (the cancel refusal's own
     contract): a live/unknown node (the CAS granted nothing) redirects
     with ``?error=rerun-not-applied``; a CANCELLED run (the verb's
     second-decision refusal) with ``?error=rerun-refused`` — each lands
@@ -981,7 +981,7 @@ async def test_rerun_routes_are_csrf_guarded_and_actions_gated(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE GUARDS' PIN (the resolve/cancel routes' own discipline): both
+    """The guards' pin (the resolve/cancel routes' own discipline): both
     rerun routes refuse a POST without the CSRF token (403), a POST
     with a mismatched token (403), and every POST on a deployment that
     disabled actions (403, the config message — declared BEFORE the
@@ -1023,7 +1023,7 @@ async def test_run_rerun_route_rearms_the_failed_nodes(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE RUN RERUN PIN: the POST route composes the ENGINE'S OWN
+    """The run rerun pin: the POST route composes the ENGINE'S OWN
     per-node resume verb over the run's terminal-FAILED step keys (the
     rows' census) — the failed node re-pends, the blocked downstream
     clears, the flow re-opens, the audit rows land. THE SCOPE, HONEST:
@@ -1098,7 +1098,7 @@ async def test_run_rerun_refuses_a_run_with_nothing_resumable(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE NOTHING-TO-DO ARM: a SUCCEEDED run has no failed node — the
+    """The nothing-to-do arm: a SUCCEEDED run has no failed node — the
     route refuses with the not-applied banner (the defined state), and
     moves nothing."""
     schema = module_pg_schema.schema_name
@@ -1144,7 +1144,7 @@ async def test_the_run_graph_boot_carries_every_node_and_edge(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE GRAPH VIEW PIN: the boot JSON's Mermaid text carries EVERY
+    """The graph view pin: the boot JSON's Mermaid text carries EVERY
     rendered node line and EVERY edge of the run's collapsed projection
     (the rows-alone emission), the page's server-rendered node table
     carries every rendered node key (the graph's second renderer — the
@@ -1199,7 +1199,7 @@ async def test_the_rerun_forms_render_on_the_failed_rows(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE RERUN AFFORDANCE'S PAGE FACE: the failed node's row carries
+    """The rerun affordance's page face: the failed node's row carries
     the retry form (native POST, the CSRF field, the confirm dialog),
     the succeeded rows carry none, and the run card carries the RUN
     rerun form — all riding {{ base_path }}."""
@@ -1238,7 +1238,7 @@ async def test_the_node_panel_exposes_the_wired_input_and_the_result(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE NODE I/O PIN: the panel's read carries the node's INPUT (the
+    """The node I/o pin: the panel's read carries the node's INPUT (the
     wired args off the row's payload — the entry input, the wiring's
     data args, the map child's item) and the OUTPUT (the decoded result
     envelope, unwrapped the read-side display's own way)."""
@@ -1271,7 +1271,7 @@ async def test_the_node_panel_masks_the_wired_input(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE REDACT LAW AT THE DISPLAY (the hold-context discipline's own
+    """The redact law at the display (the hold-context discipline's own
     pipeline): the wired args pass the engine's chain → token-head pass
     BEFORE the panel serves them — a canary credential in the wiring
     reads masked, never raw."""
@@ -1299,7 +1299,7 @@ async def test_the_node_panel_honors_the_capture_policies(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE CAPTURE DISCIPLINE'S PIN (two arms):
+    """The capture discipline's pin (two arms):
     * errors-only (the default): a failed node's capture — the engine's
       OWN redacted + truncated write — rides the panel AS WRITTEN;
     * ``none``: the policy captured NOTHING and the panel says so
@@ -1346,8 +1346,8 @@ async def test_the_node_panel_honors_the_capture_policies(
 
 
 def test_the_page_js_carries_the_base_path_and_rerun_laws() -> None:
-    """THE JS LAW' S SOURCE PIN: the page script builds every URL on the
-    boot's mounted prefix (the relative-URL 404 bug's recorded finding), asks
+    """The jS law' s source pin: the page script builds every URL on the
+    boot's mounted prefix (the relative-URL 404 bug), asks
     once before the rerun forms submit (form[data-confirm] →
     window.confirm), and escapes the row key before it touches a
     node-table selector (the poisoned-row defense)."""

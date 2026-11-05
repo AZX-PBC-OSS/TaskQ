@@ -1,4 +1,4 @@
-"""THE TYPE-PROBE GATE: every MUST_ERROR marker reds on BOTH pinned
+"""The type-probe gate: every MUST_ERROR marker reds on BOTH pinned
 checkers — asserting the EXPECTED RULE-IDS per marker, and failing on any
 error OUTSIDE the markers.
 
@@ -232,7 +232,7 @@ def _ty_errors(probe_rel: str) -> dict[int, set[str]]:
     proc = subprocess.run(
         # --config-file: the gate's OWN (empty) config — hermetic to the
         # box; without it ty's discovery adopts stray parent-directory
-        # ty.toml files (the 2026-10-27 recorded finding: a bisection leftover
+        # ty.toml files (a stale-tool-residue shape: a bisection leftover
         # in a scratch parent directory carrying a newer ty's
         # `return-type-inference` option crashed every probe on config
         # parse). The flag belongs to the CHECK subcommand.

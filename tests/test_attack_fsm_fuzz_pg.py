@@ -217,8 +217,7 @@ async def test_diff_fsm_serial_plans_mirror_pg(plan: list[Op], pg_dsn: str) -> N
 
     THE FUZZ IS THE DISCOVERY ENGINE, NOT THE PIN: an xfail(strict) on a
     fuzz draw is a lie — CI's runner draws different plans, never draws
-    the counterexample, and the strict marker XPASSes (the 2026-10-10 CI
-    recorded finding, three legs). The rejected counterexample lives in its
+    the counterexample, and the strict marker XPASSes. The rejected counterexample lives in its
     OWN deterministic replay below: test_the_convicted_reopen_plan."""
     mem_obs, pg_obs = await run_differential(_plan_scenario(plan), pg_dsn=pg_dsn)
     _assert_snapshot_invariants(mem_obs)
@@ -236,8 +235,8 @@ async def test_diff_fsm_serial_plans_mirror_pg(plan: list[Op], pg_dsn: str) -> N
 async def test_the_convicted_reopen_plan(pg_dsn: str) -> None:
     """The rejected counterexample, replayed DETERMINISTICALLY - now GREEN.
 
-    The 2026-10-10 recorded finding (the consolidator's fast tier, red receipted
-    .measurements/fsm-red/red-20261010-fsm-mirror.txt) held that this plan
+    The red-receipted counterexample
+    (.measurements/fsm-red/red-20261010-fsm-mirror.txt) held that this plan
     (enqueue, cancel_request, retry_job, cancel_request) "emits a
     state_change AFTER a terminal event".  The reads decided in the
     invariant's own favor: the retry-after-cancel path's re-pend is the

@@ -1,4 +1,4 @@
-"""THE CLI PINS: ``taskq flows`` — one question, one surface.
+"""The CLI pins: ``taskq flows`` — one question, one surface.
 
 The evidence: the three pins (taxonomy-drift, empty-snapshot,
 read-only) are collected with their REJECTED VARIANTS — each scenarios the
@@ -166,7 +166,7 @@ async def test_list_on_an_empty_schema_is_the_honest_zero(cli_settings: Any) -> 
 async def test_holds_on_a_terminal_run_is_the_healthy_zero(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """THE EMPTY-SNAPSHOT PIN: a run with NO pending holds renders the
+    """The empty-snapshot pin: a run with NO pending holds renders the
     defined healthy-zero state — the line SAYS the zero is state (a blank
     section that reads as zero-holds reds)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
@@ -240,7 +240,7 @@ async def test_resolve_replies_by_id_and_the_flow_completes(
 async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """THE TYPED DOOR: a wrong payload answers the named pydantic error,
+    """The typed door: a wrong payload answers the named pydantic error,
     exit 1, and the hold SURVIVES (nothing delivered)."""
     run_id = await _held_run(wf_pool, wf_schema)
     holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
@@ -260,7 +260,7 @@ async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
 async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
 ) -> None:
-    """THE MANUAL RESUME: the ladder-exhausted node re-pends, the run
+    """The manual resume: the ladder-exhausted node re-pends, the run
     completes after the operator's retry (§22.6's manual leg)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
@@ -511,7 +511,7 @@ def test_read_only_pin_the_read_verbs_have_no_write_path() -> None:
 
 
 def test_the_public_reexport_hitlclient() -> None:
-    """THE PUBLIC RE-EXPORT PIN (the stranger's finding): the guide's
+    """The public re-export pin (the stranger's finding): the guide's
     HITL surface is reachable from the PUBLIC namespace — the
     `from taskq.workflows import HitlClient` door + the __all__
     membership (a private-module import in the docs' own lines reds
@@ -541,7 +541,7 @@ def test_the_public_reexport_hitlclient() -> None:
 
 
 def test_the_docs_anchor_link_check() -> None:
-    """THE GUIDES' ANCHOR SWEEP (the §-renumbering's pin): EVERY
+    """The guides' anchor sweep (the §-renumbering's pin): EVERY
     cross-linked `.md#fragment` anchor in docs/ resolves against the
     target file's mkdocs-slugified headings — a renumbered section
     without its link reds this sweep."""

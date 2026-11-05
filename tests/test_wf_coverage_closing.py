@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""THE COVERAGE-CLOSING PINS (the estate floor — 90 branch per module
+"""The coverage-closing pins (the estate floor — 90 branch per module
 under taskq/workflows/): the ctx.step surface's branches (the
 idempotent opt-out, the step's own terminal on failure, the memoized
 replay), the capture policies (none | errors-only | all — the failing

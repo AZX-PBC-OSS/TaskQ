@@ -1,5 +1,5 @@
 # Why: the schema is a fixture-derived test identifier, not user input; every value is $-bound.
-"""THE HELD-DRIVE LIVELOCK'S PIN — a held loop's deadline arm never re-arms a null deadline.
+"""The held-drive livelock's pin — a held loop's deadline arm never re-arms a null deadline.
 
 A NO-DEADLINE hold is the LEGAL form (the W1 warning documents it), but
 `drive(until="held")` reads the held representation through
@@ -30,10 +30,10 @@ class Ingest(BaseModel):
 
 
 async def test_drive_until_held_sees_a_no_deadline_hold(wf_pool: object, wf_schema: str) -> None:
-    """THE LIVELock PIN, GREEN: the fix landed IN PHASE 4 (the held
+    """The lIVELock pin, green: the fix landed IN PHASE 4 (the held
     marker is the question — `metadata ? 'hold'` replaced
     `scheduled_at > now()` in the driver's held-count). The RED
-    evidence (the pre-fix spin, 126.82 s / 5000 ticks) is captured in
+    evidence (the spin, 126.82 s / 5000 ticks) is captured in
     ``.measurements/p4-attack-held-drive-null-deadline.md``; this test
     was strict-xfail until the fix flipped it — it stays a REGULAR pin
     so a regression re-reds the suite."""

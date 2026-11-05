@@ -849,7 +849,7 @@ async def batch_abort_worker(
     *,
     pool: asyncpg.Pool,
 ) -> None:
-    """Always fails - used to test batch abort policy."""
+    """Always fails - drives the batch abort policy's test."""
     await _record_effect(pool, ctx, "attempt", {"run_id": payload.run_id})
     raise RuntimeError("intentional failure for batch abort test")
 

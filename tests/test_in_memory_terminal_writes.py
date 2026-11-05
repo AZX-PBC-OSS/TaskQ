@@ -2204,7 +2204,8 @@ class TestGetExpiredResults:
     async def test_wait_returns_value_before_expiry_and_raises_after(self) -> None:
         """The downstream-facing contract: JobHandle.wait returns R before
         expiry and raises ResultUnavailable once the clock has passed it -
-        previously untestable in-memory because get never expired results."""
+        previously untestable in-memory: get never expired results until the
+        mirror carried the expiry."""
         clock = FakeClock(_START)
         backend = InMemoryBackend(clock=clock)
         client = JobsClient(backend)
@@ -2369,9 +2370,9 @@ class TestGetReturnsIsolatedRowCopies:
         return dispatched[0].id
 
     async def test_mutating_non_expired_read_leaves_stored_state_intact(self) -> None:
-        """The defect branch: a fresh (non-expired) read used to hand
-        back the live stored row, so mutating its dict fields rewrote
-        storage - the next read saw the injected keys."""
+        """The defect branch: a fresh (non-expired) read must never hand
+        back the live stored row — handing it back, mutating its dict fields
+        rewrites storage - the next read sees the injected keys."""
         backend = _make_backend()
         job_id = await self._enqueue_and_succeed(backend)
 

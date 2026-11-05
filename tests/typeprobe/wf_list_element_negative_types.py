@@ -5,7 +5,7 @@ Run:  uv run --no-sync python tests/typeprobe/_gate.py
       (the CI `type-probes` job's single step; the corpus is checked under
       THIS directory's own pyrightconfig.json — NOT the root pyproject)
 
-THE E5 PROBE (the engine-faces lane's recorded finding): the test wired a
+THE E5 PROBE: the test wires a
 ``list[Word]`` producer into a ``list[str]`` consumer — BUILD-TIME
 VALIDATION PASSED and the run died at RUNTIME with a pydantic
 ValidationError on every attempt. The typed wiring's law (the checkers +
@@ -73,7 +73,7 @@ def _str_join_consumer(p: Promise[list[str]]) -> object:
 
 
 def probe_list_element_handle_mismatch() -> None:
-    """THE ELEMENT MISMATCH, on the handle: ``Promise[list[Word]]``
+    """The element mismatch, on the handle: ``Promise[list[Word]]``
     is not ``Promise[list[str]]`` — the covariant promise + the invariant
     list make the MODEL's-list-into-a-SCALAR's-list wiring the checker's
     error on both pinned checkers. This is the checker half of the law:
@@ -105,7 +105,7 @@ def probe_matching_list_element_is_the_green_face() -> None:
 
 
 def probe_wiring_site_decoded_payload_is_the_validators_face() -> None:
-    """THE HONEST GAP — deliberately NOT an asserted probe: the scenario's
+    """The honest gap — deliberately NOT an asserted probe: the scenario's
     wiring site itself (the consumer body takes the DECODED
     ``list[str]``; the promise carries ``list[Word]``). The checkers do
     NOT flag this call — the verbs' args are erased (``*args: object``),

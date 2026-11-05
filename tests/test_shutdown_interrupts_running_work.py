@@ -566,7 +566,7 @@ async def _claim_as(
 async def test_a_deploy_never_hands_a_live_sync_actors_row_to_a_second_worker(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """THE sync-actor gate: a thread the cancel cannot reach is never
+    """The sync-actor gate: a thread the cancel cannot reach is never
     concurrently claimable.
 
     A sync actor runs in an executor thread; the deploy's ``task.cancel()``

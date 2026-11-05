@@ -7,8 +7,8 @@ queue capped at 12 by a fleet-wide ``ConcurrencyReservation``, chained
 two deep, two real worker subprocesses at ``TASKQ_MAX_CONCURRENCY``
 24/8, the reported topology):
 
-* A denied admission used to snooze at the acquire's lease-expiry hint
-  (``lock_lease``, 60s shipped): the hint prices the CRASH bound, never
+* A denied admission that snoozes at the acquire's lease-expiry hint
+  (``lock_lease``, 60s) prices the CRASH bound, never
   a live holder's completion, so every over-admitted claim parked in
   ``scheduled`` for a full lease while the slots it lost to freed within
   one body length. The consumer now re-probes the acquisition locally

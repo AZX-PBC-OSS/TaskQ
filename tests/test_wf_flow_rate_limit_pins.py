@@ -1,4 +1,4 @@
-"""THE QUEUE'S RATE LIMIT ON THE WORKFLOW PATH (the DI lane's blocker
+"""The queue's rate limit on the workflow path (the DI lane's blocker
 #2 fix): a workflow row's claim honors the SAME queue rate limits the
 vanilla actors honor — ONE mechanism, not a second one.
 
@@ -188,7 +188,7 @@ class _NoEnqueuer:
 async def test_the_deny_is_observable_and_names_the_bucket(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE DENY: the cap's ONE slot held, the gate denies with the
+    """The deny: the cap's ONE slot held, the gate denies with the
     queue-cap bucket's name, and the denial counter bumps (the
     observable). No claim, no attempt, no budget: the row parks."""
     pin_queue = _queue("deny")
@@ -221,7 +221,7 @@ async def test_the_deny_is_observable_and_names_the_bucket(
 
 
 async def test_the_cadence_one_slot_never_bursts(wf_schema: str, wf_pool: asyncpg.Pool) -> None:
-    """THE CADENCE: one slot; acquire → (deny) → release → acquire. The
+    """The cadence: one slot; acquire → (deny) → release → acquire. The
     release RE-OPENS the gate — a flow on a rate-limited queue fires at
     the limit's cadence, never a burst."""
     clock = FakeClock(_START)
@@ -292,7 +292,7 @@ async def test_the_dependency_failure_is_fail_closed(wf_schema: str, wf_pool: as
 async def test_the_door_releases_the_slot_while_the_flow_holds(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SLOT LAW (the holds'): the flow step that holds on a human
+    """The slot law (the holds'): the flow step that holds on a human
     gate gives the queue's capacity back — the slot is re-acquirable
     while the run waits — and the wake's re-execution acquires again
     cleanly."""

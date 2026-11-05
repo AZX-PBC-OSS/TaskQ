@@ -745,7 +745,7 @@ async def test_f_cli_5_job_show_bounds_db_sourced_error_class(
     row's text column carried an ANSI-carrying, multi-line, unbounded
     value straight into the line-oriented shell surface (the job-show
     seat's own `error_message` was already collapsed + bounded; the
-    class sibling rode bare). THE FIX: the seat's `error_class` line
+    class sibling rode bare). THE CONTRACT: the seat's `error_class` line
     rides the SAME `_bounded_line` law (the collapse + the 60-class
     bound) — the render is one bounded line, whatever the row carries."""
     compiled = sys.modules[MODULE_NAME].app.get("atkcli_fail_flow")  # type: ignore[attr-defined]

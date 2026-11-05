@@ -903,7 +903,7 @@ async def test_the_catch_up_cutoff_boundary_is_exact(
 async def test_mutation_pin_re_queueing_dropped_history_stays_red(
     metric_reader: InMemoryMetricReader,
 ) -> None:
-    """THE runaway mutation pin.
+    """The runaway mutation pin.
 
     The hazard the skip design exists to prevent is not the drop itself,
     it is the well-meaning 'fix': someone makes the tick replay the

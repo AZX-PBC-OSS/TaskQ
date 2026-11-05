@@ -1,29 +1,27 @@
-"""THE HOLD/MAP FIXES LANE'S PINS — the LedgerWatch adoption team's
-engine findings, fixed (F2, F3, F4, F6).
+"""The hold/map machinery's pins — the hold identity, the item ladder,
+the substep's pool boundary, the watchdog budgets.
 
-The evidence: each pin's REJECTED VARIANT was captured
-against the pre-fix tree (the wedge/theft repro, the lying ladder, the
-pool-boundary collapse, the warning storm's config) and recorded to the
-failure log sink; the pins assert the FIXED behavior — the rejected shape
-stays failing forever.
+Each pin's REJECTED VARIANT (the wedge/theft repro, the lying ladder,
+the pool-boundary collapse, the warning storm's config) is recorded to
+the failure log sink; the pins assert the shipped behavior.
 
-* FIX 1 (F2): the hold identity gains the map index — concurrent HITL
+* the hold identity carries the map index — concurrent HITL
   holds from map siblings are DISTINCT rows, addressed and resolved
   INDIVIDUALLY. The rejected variant: one hold row for two siblings
   (the held-representation contamination), the cross-sibling answer
   theft, the wedged ``running`` corpse.
-* FIX 2 (F3): the map item's ladder HONORS the stamped
+* the map item's ladder HONORS the stamped
   ``max_attempts`` — the always-fail probe dies AT 7. The rejected
   variant: the row stamped 7, the death at 3 (the lying middle).
-* FIX 3 (F4): the substep claim does NOT hold a pool connection
+* the substep claim does NOT hold a pool connection
   across the body — concurrent map children claim CONCURRENTLY. The
   rejected variant: the execution door rides the 4-conn dispatcher
-  pool and the substep held its connection across ``fn`` — the fan-out
-  collapsed to 4 in-flight (the A/B: 11.1 s -> 42.2 s at 300 x 0.5 s).
-* FIX 4 (F6): the boot-time typed refusal of ``warn_budget <=
+  pool and the substep holds its connection across ``fn`` — the fan-out
+  collapses to 4 in-flight (the A/B: 11.1 s -> 42.2 s at 300 x 0.5 s).
+* the boot-time typed refusal of ``warn_budget <=
   check_interval`` — the warning storm's config cannot boot. The
-  rejected variant: warn 0.4 / check 0.5 validated, then 295 warn+dump
-  pairs starved a heartbeat.
+  rejected variant: warn 0.4 / check 0.5 validates, then 295 warn+dump
+  pairs starve a heartbeat.
 """
 
 from __future__ import annotations
@@ -62,7 +60,7 @@ async def test_map_sibling_holds_are_addressable_and_resolvable_individually(
     resolve wakes exactly ITS OWN sibling; each sibling consumes ITS OWN
     answer; the join fires; the run completes.
 
-    THE REJECTED VARIANT (the pre-fix tree's observed faces): the
+    THE REJECTED VARIANT: the
     sibling's wait site found the OTHER sibling's held row (the
     held-representation read filtered by node_key only) — one hold row
     for two siblings, the second sibling wedged ``running`` forever (in
@@ -122,13 +120,13 @@ async def test_map_sibling_holds_are_addressable_and_resolvable_individually(
     assert indexes == [0, 1], indexes
     hitl_redlog.red(
         "holdmap-c1-map-sibling-holds",
-        "the pre-fix variant (one hold row for two siblings; the second "
+        "the variant (one hold row for two siblings; the second "
         "sibling wedged 'running' forever; a resolve woke one arbitrary "
         "sibling and the other stole the first's answer)",
         {
             "holds_listed": len(holds),
             "map_indexes": indexes,
-            "recorded finding": "the fixed tree lists BOTH siblings distinctly",
+            "recorded finding": "the shipped identity lists BOTH siblings distinctly",
         },
     )
 
@@ -232,12 +230,12 @@ async def test_map_item_ladder_honors_the_stamped_max_attempts(
     assert item is not None and item["status"] == "failed", item
     hitl_redlog.red(
         "holdmap-c2-item-ladder-ceiling",
-        "the pre-fix variant (the item's ladder capped at 3 regardless "
+        "the variant (the item's ladder capped at 3 regardless "
         "of the stamped max_attempts=7 — the row lied)",
         {
             "stamped": 7,
             "observed_attempts": len(failed),
-            "recorded finding": "the fixed ladder dies AT the stamped ceiling",
+            "recorded finding": "the shipped ladder dies AT the stamped ceiling",
         },
     )
 
@@ -338,7 +336,7 @@ async def test_the_substep_does_not_hold_the_pool_connection_across_the_body(
         assert ran_again["called"] is False  # ...never a re-execution
         hitl_redlog.red(
             "holdmap-c3-substep-conn-release",
-            "the pre-fix variant (the substep held its pool connection "
+            "the variant (the substep holds its pool connection "
             "across the body: the dispatcher pool's 4 conns throttled "
             "the fan-out — the A/B's 11.1 s → 42.2 s collapse)",
             {
@@ -346,7 +344,7 @@ async def test_the_substep_does_not_hold_the_pool_connection_across_the_body(
                 "bodies": 6,
                 "body_s": 0.3,
                 "observed_wall_s": round(wall, 2),
-                "recorded finding": "the fixed substep releases across the body",
+                "recorded finding": "the shipped substep releases across the body",
             },
         )
     finally:
@@ -378,7 +376,7 @@ def test_the_watchdog_refuses_a_warn_budget_below_the_check_interval(
         return WorkerSettings.load_from_dict(base)
 
     # THE REJECTED CONFIG (the team's mis-tuning, verbatim): passes the
-    # pre-fix lattice (warn 0.4 < budget 1.0; budget 1.0 > check 0.5),
+    # the storm lattice (warn 0.4 < budget 1.0; budget 1.0 > check 0.5),
     # then storms.
     with pytest.raises(Exception) as exc_info:
         _load(
@@ -394,13 +392,13 @@ def test_the_watchdog_refuses_a_warn_budget_below_the_check_interval(
     assert "Raise" in msg or "raise" in msg, msg
     hitl_redlog.red(
         "holdmap-c4-warn-below-check-refusal",
-        "the pre-fix variant (warn 0.4 < check 0.5 validated, then 295 "
+        "the variant (warn 0.4 < check 0.5 validated, then 295 "
         "warn+dump pairs starved the heartbeat)",
         {
             "check": 0.5,
             "warn": 0.4,
             "budget": 1.0,
-            "recorded finding": "the fixed lattice refuses the config at boot",
+            "recorded finding": "the shipped lattice refuses the config at boot",
         },
     )
 

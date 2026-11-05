@@ -2,8 +2,8 @@
 
 """Adversarial review: a claim landing inside isolate_self's join window.
 
-``isolate_self`` used to capture the re-pend's exclusion set once, before
-any await, then cancel its active entries and join them with a bound of
+``isolate_self`` captures the re-pend's exclusion set ONCE, before
+any await, then cancels its active entries and joins them with a bound of
 ``cancellation_grace_period + cleanup_grace_period + CLOSE_TIMEOUT_SECS``
 (45s at defaults). The producer and the consumer loops kept running for
 that whole window - ``shutdown`` is only set in the outermost ``finally``

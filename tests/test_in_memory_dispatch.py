@@ -263,7 +263,7 @@ class TestNoClockAdvanceReturns:
         ``run_until_drained`` returns immediately if nothing is
         dispatchable but a future-scheduled job exists.  The job stays
         in ``scheduled`` status.  This tests the "no FakeClock, return"
-        branch that was previously untested (review finding 4).
+        branch the review's finding 4 named.
         """
         from dataclasses import replace as _replace
 

@@ -1,4 +1,4 @@
-"""THE RUN-KEY SEAM'S PINS.
+"""The run-key seam's pins.
 
 The run-key seam's pins: the create path's replay and refusal
 contracts, stated as the caller meets them.

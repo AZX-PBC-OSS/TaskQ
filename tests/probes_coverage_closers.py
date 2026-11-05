@@ -1,5 +1,5 @@
 # ruff: noqa: S608, S603, ASYNC221, TID251, N817  # Why: the dash-named attack4-* module; the cold-process probes run a subprocess with fixed argv; the seeded ledger rows deliberately use uuid4 (a ledger row the arbiter did not mint); BM is the probe corpus's local shorthand.
-"""THE COVERAGE RESIDUALS (the split owner's gaps, closed by
+"""The coverage residuals (the split owner's gaps, closed by
 these probes' own tests — the pack adds tests, never source).
 
 The captured p4 report's missing-line lists
@@ -475,7 +475,7 @@ async def test_the_contexts_null_payload_skips_the_chain(
 async def test_the_context_redact_chain_then_hook(
     module_pg_pool: Any, module_pg_schema: ModulePgSchema, held_app: Any
 ) -> None:
-    """THE REDACT LAW's composition: the chain runs ALWAYS; a hooked
+    """The redact law's composition: the chain runs ALWAYS; a hooked
     client receives the CHAIN's output (the hook can only redact more —
     it never sees the raw canary)."""
     from taskq.workflows.api._hitl import HitlClient

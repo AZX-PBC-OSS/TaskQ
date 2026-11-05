@@ -6,9 +6,10 @@ a mechanism, not a style preference. The inventory:
 1. THE PERCENT MONSTER (NaN): the coalesce buffer's retire protocol keys
    on ``==`` equality between the pending state and the flushed snapshot,
    and ``nan != nan`` is True in Python. One ``ctx.progress(percent=nan)``
-   call used to enter the buffer, never retire, and keep the buffer dirty
-   FOREVER: the flush loop re-wrote the row every tick for the job's
-   remaining lifetime. Refused at the caller-supplied door now (finiteness
+   call must never enter the buffer: a NaN in the buffer never retires
+   (``nan != nan``) and keeps the buffer dirty
+   FOREVER — the flush loop re-writes the row every tick for the job's
+   remaining lifetime. Refused at the caller-supplied door (finiteness
    only, no range: a percent of 150.0 stays the actor's semantics).
 2. THE WIRE-DIVERGENCE MONSTERS (percent inf / str, step str, detail
    non-str): pydantic and orjson quietly rewrote these between the two
@@ -17,10 +18,10 @@ a mechanism, not a style preference. The inventory:
    the row. Type-confused inputs are refused at the door instead.
 3. THE NUL MONSTER (the #414 gate's missing rooms): the enqueue door
    refuses a NUL in payload/metadata/tags; the progress door did not. A
-   NUL in ``detail`` or ``data`` used to poison the buffer exactly like
-   the NaN percent: the flush's jsonb guard only SKIPPED the row, and the
-   loop re-logged the same permanent defect every tick forever, the actor
-   none the wiser. Refused at the door now (the flush guard stays as
+   NUL in ``detail`` or ``data`` would poison the buffer exactly like
+   the NaN percent: the flush's jsonb guard only SKIPS the row, and the
+   loop re-logs the same permanent defect every tick forever, the actor
+   none the wiser. Refused at the door (the flush guard stays as
    defense-in-depth for direct buffer writers).
 4. THE SIZE MONSTER (an unbounded detail): ``data`` had
    ``progress_data_max_bytes``; ``detail`` had nothing. A multi-megabyte
@@ -337,10 +338,11 @@ def test_queue_name_at_the_bound_is_accepted() -> None:
 
 
 def test_queue_name_past_the_bound_is_refused_with_a_bounded_message() -> None:
-    """A 100k-char queue name used to pass validation and fail the jobs
+    """A 100k-char queue name fails validation at the chokepoint - never
+    the jobs
     INSERT deep in btree index-item arithmetic (an incompressible name
     over ~2700 bytes: "index row size exceeds btree version 4 maximum").
-    Refused at the chokepoint now - and the rejection must not echo the
+    The rejection must not echo the
     whole monster back."""
     from taskq.backend._protocol import _validate_queue_name  # pyright: ignore[reportPrivateUsage]
 
@@ -473,7 +475,7 @@ async def test_flush_sql_advances_progress_seq_past_int4_max(
     assert archive_type == "bigint"
 
     # The overflow write itself, on a live row: the exact arithmetic the
-    # flush statement applies, at the boundary that used to raise 22003.
+    # flush statement applies, at the boundary that raises 22003 unguarded.
     await pg_conn.execute(
         f'INSERT INTO "{settings.schema_name}".jobs '  # noqa: S608  # Why: the schema name comes from the test's own settings fixture, the same f-string SQL shape every migration-backed test in this repo binds.
         "(id, actor, queue, payload, max_attempts, retry_kind) "

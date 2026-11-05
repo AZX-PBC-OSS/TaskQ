@@ -130,7 +130,7 @@ def probe_gather_element_type_mismatch() -> None:
 
 
 def probe_wiring_site_decoded_payload_is_the_validators_face() -> None:
-    """THE HONEST GAP — deliberately NOT an asserted probe: the wiring site
+    """The honest gap — deliberately NOT an asserted probe: the wiring site
     where the consumer body takes the DECODED payload (``Config``) and
     the promise carries ``Report``. The checker does NOT flag this call
     (the verbs' args are erased — bodies take decoded data, not handles,

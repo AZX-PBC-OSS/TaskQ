@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE TYPED ROUTE'S PINS — the route's total/refused contract at every
+"""The typed route's pins — the route's total/refused contract at every
 face these defects exercise: an arm's key, the route's fork, the join's
 union decode, and the wiring refusals. Each pin asserts the SAFE
 behavior; the pack's one green guard pins the behavior that is already
@@ -347,7 +347,7 @@ async def test_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
 
 
 async def arm_zero(ctx: object) -> ImageResult:
-    """THE ZERO-PARAM ARM: builds clean today (no rule walks map_arms'
+    """The zero-param arm: builds clean today (no rule walks map_arms'
     arity) and dies ``TypeError: arm_zero() takes 1 positional argument
     but 2 were given`` at the child — the ladder burning a wiring-time
     lie, observed live (error_class='TypeError', the run failed)."""
@@ -355,7 +355,7 @@ async def arm_zero(ctx: object) -> ImageResult:
 
 
 async def arm_two(ctx: object, item: ImageItem, extra: object) -> ImageResult:
-    """THE TWO-PARAM ARM: one param beyond the item — the same hole's
+    """The two-param arm: one param beyond the item — the same hole's
     other face (the runtime invokes arms as ``body(ctx, item)``; the
     extra param is the ladder's TypeError waiting)."""
     return ImageResult(doc_id=item.doc_id, ocr="z")
@@ -440,7 +440,7 @@ async def doc_source(ctx: StepContext) -> list[TextDoc | ImageDoc]:
 
 
 async def base_arm(ctx: object, item: DocBase) -> dict[str, object]:
-    """THE SUPERCLASS PARAM: admitted by E15's related-check today; at
+    """The superclass param: admitted by E15's related-check today; at
     runtime the codec validates the TextDoc element INTO DocBase —
     pydantic's extra='ignore' drops ``text`` and the arm receives the
     truncated shell (observed live: type 'DocBase', has_text False)."""
@@ -448,7 +448,7 @@ async def base_arm(ctx: object, item: DocBase) -> dict[str, object]:
 
 
 async def basemodel_arm(ctx: object, item: BaseModel) -> dict[str, object]:
-    """THE BARE-BaseModel PARAM: admitted today; dies raw
+    """The bare-BaseModel param: admitted today; dies raw
     ``PydanticUserError`` at the child (observed live:
     error_class='PydanticUserError')."""
     return {"doc_id": "?"}
@@ -636,7 +636,7 @@ class ArmApproval(BaseModel):
 
 
 async def waiting_image_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
-    """THE ARM-HELD WAIT: the route's child HOLDS on a human — invisible
+    """The arm-held wait: the route's child HOLDS on a human — invisible
     to every compile surface today (E14's walk skips map_arms)."""
     approval = await ctx.wait_signal(ArmApproval, timeout_s=30.0)
     return ImageResult(doc_id=item.doc_id, ocr=f"answered:{type(approval).__name__}")

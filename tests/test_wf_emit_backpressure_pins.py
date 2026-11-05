@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""THE EMIT BACKPRESSURE's pins — the emit cap's decision.
+"""The emit BACKPRESSURE's pins — the emit cap's decision.
 
 THE DECLARED HOME (the design law — one home): the max-in-flight bound
 is the RUN's admission control — how many non-terminal rows the run may
@@ -277,7 +277,7 @@ async def test_unbounded_emit_is_the_convicted_red(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """THE CAPTURED RED (DH9's obligation): the SAME fast source with the
+    """The captured red (DH9's obligation): the SAME fast source with the
     bound REMOVED (``max_in_flight=None`` — the explicit unbounded) blows
     the count the bounded pins hold: two pages back-to-back with no
     worker → 8 outstanding against the 6 the bounded variant never
@@ -405,7 +405,7 @@ async def test_max_in_flight_is_declared_at_the_workflow(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """THE DECLARED HOME, end to end: the workflow declares the bound ONCE
+    """The declared home, end to end: the workflow declares the bound ONCE
     (``@app.workflow(..., max_in_flight=…)``); the compile carries it; the
     runner hands it to every ``ctx.emit_batch``; the fast source's stalls
     ride the certified ladder (the loud refusal → the re-pend → the

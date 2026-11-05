@@ -645,7 +645,7 @@ class TestProgressFlushFailureIsCounted:
 
 
 def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
-    """THE CLASS PIN: ``contextlib.suppress(asyncio.CancelledError)`` is
+    """The class pin: ``contextlib.suppress(asyncio.CancelledError)`` is
     legal in exactly ONE shape — the REAPER (``task.cancel()`` then
     ``await reap_cancelled_child(task)``), whose helper suppresses only
     THE CHILD'S cancel and re-raises the reaper's own (the uncancel

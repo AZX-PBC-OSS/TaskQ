@@ -651,8 +651,8 @@ async def test_prune_folds_ghosts_and_archives_identically_on_both_engines(
     retried job's live row removed, no duplicate archive rows), no live
     terminal rows left, attempts archived with their jobs. The hypertable
     mode's widened uniqueness (id, finished_at) plus the archive write's
-    NOT EXISTS guard must deliver the re-archive semantics the vanilla
-    primary key used to enforce, in both directions (no wedge, no
+    NOT EXISTS guard deliver the re-archive semantics the vanilla
+    primary key enforces, in both directions (no wedge, no
     duplicates).
     """
     outcomes: dict[str, dict[str, Any]] = {}

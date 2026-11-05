@@ -1,4 +1,4 @@
-"""THE COVERAGE GATE'S BEHAVIORAL FACE (the de-slop round, fix 1's
+"""The coverage gate's behavioral face (the de-slop round, fix 1's
 residue): the scoped-coverage run EXECUTES the wf pin files — measured
 off the target's OWN command, never against a second hand list.
 
@@ -6,7 +6,7 @@ THE RECORDED FINDING THAT KILLED THE OLD GUARD: ``test_wf_coverage_gate_
 wiring.py`` sniffed STRUCTURE — it re-parsed the Makefile's test list
 and diffed it against the directory walk. Two hand lists (or a hand list
 vs a walk) drift by construction; a guard pinning one list to another is
-itself the coupling it polices. THE FIX: the Makefile's ``test-wf-cov``
+itself the coupling it polices. THE CONTRACT: the Makefile's ``test-wf-cov``
 list IS the walk now (``$(shell ls tests/test_wf_*.py)``) — a pin file
 that exists is wired, structurally, with nothing to assert.
 
@@ -47,7 +47,7 @@ def _measured_commands() -> list[list[str]]:
 
 
 def test_the_scoped_coverage_run_executes_the_pin_files() -> None:
-    """THE MEASURED RESIDUE: every pytest-shaped wf pin file on disk is
+    """The measured residue: every pytest-shaped wf pin file on disk is
     an ARGUMENT of the gate's measured pytest command — the coverage
     number counts their executions, structurally (the list is the walk:
     a new pin file is IN the run by construction, nothing to wire)."""

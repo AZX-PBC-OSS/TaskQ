@@ -1,9 +1,9 @@
-"""THE CRASHED-TERMINAL WEDGE + THE RUN-CREATION SEAM
+"""The crashed-terminal wedge + the run-creation seam
 (engine half).
 
-THE WEDGE'S FINDING PACK (the engine's most severe recorded defect; the
+THE WEDGE (the engine's most severe defect; the
 evidence lives in the probe schema's rows). The pins assert the SAFE
-behavior; each watched its own failure before the fix landed.
+behavior.
 
 THE WEDGE: a run whose nodes are
 ``{succeeded|failed, crashed}`` wedges ``running`` FOREVER. The chain:
@@ -25,7 +25,7 @@ THE WEDGE: a run whose nodes are
   always-on assertion (reported == reconstructed) stays GREEN on a
   dead run, and retention's liveness guard holds every row forever.
 
-The named verdict (the lane's semantics read off ``_status.py``'s own
+The named verdict (the semantics read off ``_status.py``'s own
 table): a budget-exhausted crashed node is an UNABSORBED, IRRECOVERABLE
 failure — the table's rule 2 (``counts_failed``) shape — so the wedge
 derives ``failed``, never ``running``, and never ``complete``
@@ -82,7 +82,7 @@ TERMINAL = ("succeeded", "failed", "cancelled", "crashed", "abandoned")
 
 
 async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
-    """THE WEDGE SHAPE, seeded in the post-reclaim state: the flow root
+    """The wedge shape, seeded in the post-reclaim state: the flow root
     ``running``; one node ``crashed`` at the budget ceiling
     (``attempt == max_attempts`` — the row the reclaim's ELSE arm
     writes, terminal at the jobs layer, revisited by no arm) with its

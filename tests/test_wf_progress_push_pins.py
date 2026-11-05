@@ -1,4 +1,4 @@
-"""THE PROGRESS PUSH PINS (the consumer-face lane's FIX 3 — the
+"""The progress push pins (the consumer-face lane's fix 3 — the
 deploy-matrix's PARTIAL): the SSE progress stream was 1s POLLING — every
 frame the poll's own round trip late. The fix rides the SAME
 LISTEN/NOTIFY transport the HITL broadcast landed (the pattern proven:
@@ -24,7 +24,7 @@ dedup):
   interval, never correctness — the seq-cursor read stays the source of
   truth).
 
-The rejected shape: the pins ran RED at the pre-fix head (no notify, no
+The rejected shape (the mutation red: no notify, no
 listener, no ``listener=`` param); the reds are captured in
 ``.measurements/cons-cure3-reds.json``.
 """
@@ -52,7 +52,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def cons3_redlog() -> RedLog:
-    """The red sink for the consumer-face lane's FIX 3 pins."""
+    """The red sink for the push pins."""
     log = RedLog("cons-cure3-reds.json")
     return log
 
@@ -81,7 +81,7 @@ async def test_the_flush_knocks_the_progress_channel(
     wf_sql: Any,
     module_pg_schema: Any,
 ) -> None:
-    """THE FLUSH'S NOTIFY: one emission → one cadence flush → ONE
+    """The flush's notify: one emission → one cadence flush → ONE
     ``pg_notify`` on ``taskq_wf_progress`` — the payload the POINTER
     only (schema/flow/node/seq), never the pct's sole copy."""
     from taskq.workflows._progress import PROGRESS_NOTIFY_CHANNEL
@@ -127,7 +127,7 @@ async def test_the_flush_knocks_the_progress_channel(
 async def test_the_auto_projection_knocks_the_same_channel(
     wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any, module_pg_schema: Any
 ) -> None:
-    """THE AUTO PROJECTION'S NOTIFY: the node start/terminal projections
+    """The auto projection's notify: the node start/terminal projections
     knock the SAME channel (the ring's every event class rides one
     transport)."""
     from taskq.workflows._progress import PROGRESS_NOTIFY_CHANNEL
@@ -172,7 +172,7 @@ async def test_the_listener_backfills_the_zero_window_and_dedups(
     wf_sql: Any,
     module_pg_schema: Any,
 ) -> None:
-    """THE ZERO-WINDOW CONSTRUCTION (the #316 pattern, generalized): the
+    """The zero-window construction (the #316 pattern, generalized): the
     emissions written BEFORE the listener starts are announced by the
     BACKFILL (source=backfill) — LISTEN first, THEN the snapshot; the
     backfill ends with ONE reconcile snapshot (the last_seqs the dedup
@@ -292,7 +292,7 @@ async def test_the_listener_fans_out_and_degrades_first(
     wf_sql: Any,
     module_pg_schema: Any,
 ) -> None:
-    """THE FAN-OUT, NOT A PARTITION (P7's law on the push face): two
+    """The fan-out, not A partition (P7's law on the push face): two
     subscribers each see EVERY event. THE COALESCE ORDER (the
     backpressure's law): the bounded queues drop the OLDEST — the writer
     never blocks, the newest survives, correctness never."""
@@ -411,7 +411,7 @@ async def test_the_listener_isolates_another_runs_events(
 async def test_the_sse_push_delivers_sub_poll_latency(
     cons3_redlog: RedLog, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any
 ) -> None:
-    """THE PUSH PRIMARY: with a listener wired, an emission committed
+    """The push primary: with a listener wired, an emission committed
     AFTER the stream started delivers its ``progress`` frame well under
     the poll interval (the poll's round trip is gone). The cursor
     advances; the frames stay the seq-cursor read's own (the read is the
@@ -477,7 +477,7 @@ async def test_the_sse_push_delivers_sub_poll_latency(
 async def test_the_poll_belt_still_carries_the_frames(
     wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: Any
 ) -> None:
-    """THE FALLBACK BELT: a SILENT listener (the knock never arrives —
+    """The fallback belt: a SILENT listener (the knock never arrives —
     the PgBouncer landmine's shape) degrades to the poll cadence, never
     to silence: the emission's frame still arrives within one poll
     interval. The push is the primary; the belt is the guarantee."""

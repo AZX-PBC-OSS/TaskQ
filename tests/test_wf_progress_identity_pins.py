@@ -1,11 +1,11 @@
-"""THE PROGRESS READ'S IDENTITY PINS (the consumer-face lane's FIX 1 —
-the verified "not useful" recorded finding): the display's every node entry
+"""The progress read's identity pins —
+the display identity contract): the display's every node entry
 carried the ROW UUID as the only identity — ``status``/``pct``/
 ``message``/``error_class`` with NO ``step_key``, NO ``map_index`` — so
 the cowork-UI holding a display could not say WHICH node any entry
 belonged to without an out-of-band join against the ledger.
 
-THE FIX'S SHAPE (the read face carries the node's identity):
+THE READ FACE (carries the node's identity):
 
 * every entry carries ``step_key`` + ``map_index`` — the ROW'S OWN
   fields, read off the LEDGER (the identity's authority); an entry the
@@ -18,7 +18,7 @@ THE FIX'S SHAPE (the read face carries the node's identity):
   ``map_index`` (``"fetch.item[3]"``) — keying bare would silently
   collapse N children into one entry (last-wins, the lie).
 
-The rejected shape: the pins ran RED at the pre-fix head (the identity keys
+The rejected shape (the mutation red): the identity keys
 absent → the assert fires; the keyed view absent → ImportError); the
 reds are captured in ``.measurements/cons-cure1-reds.json``.
 """
@@ -56,7 +56,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def cons_redlog() -> RedLog:
-    """The red sink for the consumer-face lane's FIX 1 pins."""
+    """The red sink for the identity pins."""
     log = RedLog("cons-cure1-reds.json")
     return log
 
@@ -113,7 +113,7 @@ async def _map_flow(
 async def test_every_display_entry_carries_the_rows_own_identity(
     cons_redlog: RedLog, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """THE IDENTITY: after the source forks, ``run_display``'s every
+    """The identity: after the source forks, ``run_display``'s every
     entry carries ``step_key`` + ``map_index`` — the LEDGER's own fields:
     the source step keyed ``fetch`` (``map_index`` None — not a map
     child), the children keyed ``fetch.item`` with their OWN
@@ -157,7 +157,7 @@ async def test_every_display_entry_carries_the_rows_own_identity(
 async def test_the_keyed_view_is_the_consumers_render_without_the_join(
     wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """THE KEYED VIEW: ``keyed_display(run_display(...))`` is the
+    """The keyed view: ``keyed_display(run_display(...))`` is the
     step_key'd dict — ``{"fetch": {...}, "fetch.item[0]": {...}}`` — the
     consumer's render keyed by the node's NAME, no out-of-band ledger
     join. Every entry is the SAME dict the uuid view holds (one display,
@@ -165,7 +165,7 @@ async def test_the_keyed_view_is_the_consumers_render_without_the_join(
     flow_id, runner = await _map_flow(wf_schema, wf_pool, children=2, name="keyed_map_flow")
     await runner.tick(flow_id)
     # The children emit: drive one child's claim+finalize so pct renders
-    # (the keyed entry's shape is the recorded finding's "ocr_node: {pct: …}").
+    # (the keyed entry's shape is "ocr_node: {pct: …}").
     await runner.drive(flow_id, until="terminal")
 
     disp = await run_display(wf_pool, wf_sql, flow_id)
@@ -189,7 +189,7 @@ async def test_the_keyed_view_is_the_consumers_render_without_the_join(
 
 
 async def test_keyed_view_omits_the_unnamed_and_keys_children_by_map_index() -> None:
-    """THE PURE FUNCTION'S OWN LAW: an entry with no step_key (a
+    """The pure function's own law: an entry with no step_key (a
     state-channel ghost the ledger has not landed) cannot be NAMED — it
     is omitted from the keyed view, still present in the uuid view; a
     named child keys ``step[map_index]``."""
@@ -233,7 +233,7 @@ async def test_keyed_view_omits_the_unnamed_and_keys_children_by_map_index() -> 
 
 
 async def test_the_ledger_wins_pass_stamps_the_identity_on_ghost_entries() -> None:
-    """THE LEDGER WINS (the fence's teeth, extended to the identity): a
+    """The ledger wins (the fence's teeth, extended to the identity): a
     ghost entry born from the state channel — the ledger row MISSED by
     the first pass — gets its status AND its step_key/map_index stamped
     when the ledger row exists; a display can never render a named lie."""

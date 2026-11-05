@@ -1,4 +1,4 @@
-"""THE DISPATCH FENCE SHIPS (P3 rule 4's SECOND leg, in the claim) —
+"""The dispatch fence ships (the claim path's second leg) —
 this file is the fence's kept-green receipt: the pin below HOLDS THE
 FENCE GREEN, and a red here is the fence's regression, not a finding.
 

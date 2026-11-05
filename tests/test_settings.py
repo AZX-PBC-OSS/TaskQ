@@ -102,10 +102,10 @@ def test_lock_lease_error_message_contains_fields() -> None:
 
 
 def test_lock_lease_at_old_invariant_edge_but_inside_cascade_refused() -> None:
-    """red pin: a config at the OLD invariant's edge is refused.
+    """red pin: a config at the invariant's edge is refused.
 
-    lock_lease == 4 * heartbeat_interval used to load (the old validator's
-    exact boundary), but a tick's commands can each burn up to
+    lock_lease == 4 * heartbeat_interval sits exactly at the validator's
+    boundary and must be refused: a tick's commands can each burn up to
     heartbeat_command_timeout, so the worst coherent cascade at these
     settings outlives the lease: the isolate decision would land on an
     already-lapsed lease. The refusal message names the term the old rule

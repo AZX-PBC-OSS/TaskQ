@@ -448,7 +448,7 @@ def test_property_unrelated_exception_shapes_compose_to_none(payload: object) ->
 
 
 def test_transient_policy_with_429_override_retries_past_max_attempts() -> None:
-    """THE trap this helper fixes: a declared transient policy burns its
+    """The trap this helper fixes: a declared transient policy burns its
     attempt budget on 429s (attempt >= max_attempts lands Fail). With the
     built-in classifier composed in, the same occurrence at the same
     attempt is an indefinite override, so the failure path still retries

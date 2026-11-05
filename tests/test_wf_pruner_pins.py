@@ -183,7 +183,7 @@ async def test_pin1_expiry_eats_children(
         flow2,
     )
     # Drain to empty: the unguarded sweep eats the guard-held rows too —
-    # the child2 row must fall (the recorded finding: the expiry applies mid-run).
+    # the child2 row must fall (the expiry applies mid-run).
     for _ in range(10):
         tag = await module_pg_pool.execute(unguarded, 500)
         if tag == "UPDATE 0":
@@ -199,8 +199,8 @@ async def test_pin1_expiry_eats_children(
 
 
 def wf_sql_unguarded_expiry(wf_sql: WorkflowSql) -> str:
-    """THE REJECTED SHAPE: the expiry arm WITHOUT the workflow-liveness
-    guard — the pre-fix shipped statement (the revert scenario's target)."""
+    """The rejected shape: the expiry arm WITHOUT the workflow-liveness
+    guard — the reverted statement (the revert scenario's target)."""
     from taskq.backend import _sweeps
 
     mutated = _sweeps._SWEEP_RESULT_TTL_SQL.replace(  # pyright: ignore[reportPrivateUsage]  # Why: the rejected variant is the SHIPPED statement minus its guard — the mutation is the scenario.

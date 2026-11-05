@@ -1,4 +1,4 @@
-"""THE PRUNER COUPLING AND THE BARRIER'S FAN-IN BOUND under
+"""The pruner coupling AND the barrier's fan-in bound under
 concurrency.
 
 1. the retention coupling EXPIRY COUPLING DIRECTION: the guard holds a child's result while

@@ -1,11 +1,7 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
-"""THE DEMO/EXAMPLES' PINS — the demo machinery's rejected defects.
+"""The demo/examples' pins — the demo machinery's contracts.
 
-The demo's own machinery was rejected on four recorded findings and the
-evidence law on a fifth; the ergonomics contract carries an inflated
-claim. Each pin asserts the SAFE behavior, red against the shipped tree,
-strict-xfail until the fix lands (the fix flips the pin to XPASS-
-strict — a red that tells you to remove the marker; the scenario is
+Each pin asserts the SAFE behavior (the scenario is
 test_wf_attack_cancel.py's face C).
 
 * the demo's drive loop is poisonable by a FOREIGN run:
@@ -260,7 +256,7 @@ _PROM_LINE_RE = re.compile(
 
 
 def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> None:
-    """THE EVIDENCE-LAW GUARD: every ``.prom`` artifact under
+    """The evidence-law guard: every ``.prom`` artifact under
     ``.measurements`` must parse as VALID Prometheus text exposition —
     the strict name grammar (the teeth: the illegal-dots name reds
     today) AND the official client parser's label grammar.
@@ -274,7 +270,7 @@ def test_every_prom_artifact_is_valid_prometheus_exposition(tmp_path: Path) -> N
     it is not — are the BELT, scanned when present, never the subject:
     in CI the estate does not ride the checkout, and the band writers'
     runtime-created registry must not mask the guard's own teeth (the
-    lost-subject red of run 38351644136's 3.14 leg)."""
+    lost-subject red the guard's own estate walk once produced)."""
     from tests import _evidence as _evidence
 
     violations: list[str] = []

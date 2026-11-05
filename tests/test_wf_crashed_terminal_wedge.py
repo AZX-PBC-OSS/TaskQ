@@ -1,6 +1,5 @@
-"""THE CRASHED-TERMINAL WEDGE — the wedge's
-most severe recorded finding: a run whose nodes = {succeeded|failed, crashed}
-WEDGED RUNNING FOREVER.
+"""The crashed-terminal wedge: a run whose
+nodes = {succeeded|failed, crashed} derives TERMINAL, never RUNNING.
 
 THE SEMANTICS DECISION (the design law, stated once here and in
 ``taskq.workflows._status``): a jobs row in status ``crashed`` is
@@ -22,7 +21,7 @@ terminal is the runbook's resumable-by-rerun. A corpse that reports
 leg's liveness predicates held it forever), holds retention (the prune
 touches terminal rows only), and greened G7 on a dead run.
 
-THE FIXES PINNED HERE:
+THE PINNED BEHAVIORS:
 * the derivation folds the terminal-crash class into the failed-class
   terminal (the corpse derives ``failed`` — never ``running``);
 * the maintenance leg's liveness predicates exclude the terminal-crash
@@ -33,9 +32,9 @@ THE FIXES PINNED HERE:
   one-pass heal itself and reds when the reported state still disagrees
   (the corpse-stays-green blind spot, closed).
 
-The rejected shape: the corpse pins ran RED against the pre-fix tree
-(reconstruction derived ``running``; the maintenance pass left the root
-``running``) — captured in ``.measurements/wedge-pin-reds.json``.
+The rejected shape (the mutation red, captured in
+``.measurements/wedge-pin-reds.json``): the reconstruction derives
+``running``; the maintenance pass leaves the root ``running``).
 """
 
 from __future__ import annotations
@@ -102,9 +101,9 @@ async def test_the_wedged_corpse_derives_terminal(
     wf_sql: WorkflowSql,
     wedge_redlog: RedLog,
 ) -> None:
-    """THE WEDGE'S DERIVATION FACE: {succeeded, crashed} derives
+    """The wedge's derivation face: {succeeded, crashed} derives
     ``failed`` — the terminal-crash class is the failed-class terminal,
-    never liveness. RED (the pre-fix tree): the corpse derived
+    never liveness. RED (the rejected shape): the corpse derives
     ``running`` — G7 green on a dead run, retention held forever."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     ok = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")
@@ -138,9 +137,9 @@ async def test_the_wedged_root_heals_on_one_sweep_pass(
     wf_sql: WorkflowSql,
     wedge_redlog: RedLog,
 ) -> None:
-    """THE EVIDENCE ROOTS' HEAL (the att_t20 corpses' fix): the wedged
+    """The evidence roots' heal (the att_t20 corpses' fix): the wedged
     root + one maintenance pass → the failed terminal, finished_at
-    stamped, retention eligible. RED (the pre-fix tree): the pass left
+    stamped, retention eligible. RED (the rejected shape): the pass leaves
     the root ``running`` forever."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     ok = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")
@@ -185,9 +184,9 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
     wf_sql: WorkflowSql,
     wedge_redlog: RedLog,
 ) -> None:
-    """THE G7 MUTATION-PIN (the mutation's proof): G7 stayed green ON THE
+    """The g7 mutation-pin (the mutation's proof): G7 stayed green ON THE
     CORPSE — the anti-drift assertion could not fail on a wedged run.
-    THE FIX'S TEETH: a live root whose rows reconstruct a TERMINAL
+    THE TEETH: a live root whose rows reconstruct a TERMINAL
     verdict contradicts the rows; the assertion runs the one-pass heal
     and REDS when the reported state still disagrees. The scenario disables
     the heal (the maintenance statement's no-op mutant — the wedging
@@ -238,7 +237,7 @@ async def test_the_reclaim_input_row_is_still_live(
     wf_schema: str,
     wf_sql: WorkflowSql,
 ) -> None:
-    """THE ASYMMETRY'S OTHER HALF (the user's ruling): a crashed WORKER's
+    """The asymmetry's other half (the user's ruling): a crashed WORKER's
     row is reclaim-eligible — the REAL crash recovery. The reclaim's input
     is the RUNNING row: a row whose holder died WITH budget remaining
     re-pends and the run stays live (the derivation's liveness reads
@@ -275,7 +274,7 @@ async def test_the_reclaim_input_row_is_still_live(
 
 
 def test_the_liveness_predicates_exclude_the_terminal_crash_class() -> None:
-    """THE ZOMBIE AUDIT'S FENCE (structural): the maintenance leg's
+    """The zombie audit's fence (structural): the maintenance leg's
     liveness sets spell the terminal-crash class OUT and the failed arm
     spells it IN — the same class re-derived against the state machine's
     totality table (crashed/abandoned: zero outbound transitions). A

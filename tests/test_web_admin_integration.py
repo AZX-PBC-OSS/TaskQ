@@ -125,11 +125,10 @@ def _make_backend(pool: asyncpg.Pool) -> PostgresBackend:
 
 # ── Shared PG (session-scoped, via tests/conftest.py's pg_dsn) ────────────
 #
-# This module previously booted its OWN session Postgres - under the shared-
-# container topology that would be a second long-lived Postgres for the run
-# (and under the old per-worker topology it already was a redundant extra).
-# The module-scoped pg_dsn fixture gives this file its own database on the
-# ONE shared container, which is strictly better isolation than the previous
+# This module shares the session Postgres (the module-scoped pg_dsn
+# fixture gives this file its own database on the
+# ONE shared container) - a second long-lived session Postgres for the run
+# would be strictly worse isolation for more containers.
 # same-container-same-database setup.
 
 
@@ -1165,8 +1164,8 @@ async def test_cancel_button_visibility(pool: asyncpg.Pool, conn: asyncpg.Connec
 #
 # tests/test_retry_job_source_states_parity.py already pins the backend
 # contract (Backend.retry_job accepts succeeded/abandoned) against both
-# PostgresBackend and InMemoryBackend directly. Nothing in this suite
-# previously drove a POST to /admin/jobs/{id}/retry against real Postgres
+# PostgresBackend and InMemoryBackend directly. No other test in this suite
+# drives a POST to /admin/jobs/{id}/retry against real Postgres
 # for ANY source state - not even the already-supported 'failed' case -
 # so the admin route's own precheck (job.status not in _TERMINAL_STATUSES)
 # and its delegation to backend.retry_job were only ever exercised through

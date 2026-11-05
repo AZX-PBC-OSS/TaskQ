@@ -172,9 +172,9 @@ def test_trip_exits_even_when_the_counter_and_log_sink_raise(
 ) -> None:
     """A raising metric add or a raising log write must not skip the exit.
 
-    The counter add and the critical log used to run BEFORE the
-    try/finally that guarantees os._exit. Either raising there killed the
-    watchdog task with no exit, and the tracked-exit gate lost its bound:
+    The counter add and the critical log run INSIDE the
+    try/finally that guarantees os._exit: either raising outside it kills the
+    watchdog task with no exit, and the tracked-exit gate loses its bound:
     a stuck actor thread would then hold the process open past the
     deadline a released row's hold modeled. Both now sit inside the try,
     and the pre-exit flushes are suppressed rather than trusted, so the

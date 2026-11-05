@@ -1,4 +1,4 @@
-"""THE ERGONOMICS-CONTRACT PINS (the authoring surface's paper cuts).
+"""The ergonomics-contract pins (the authoring surface's paper cuts).
 
 The BLOCKER/CRITICAL fixes landed with the typed API's flow API: these probes were
 captured RED against the pre-API tree (strict-xfail — the cut IS the red;
@@ -48,7 +48,7 @@ _BANNED_DOMAIN_TERMS: tuple[str, ...] = (
 
 
 def test_shipped_surfaces_carry_no_campaign_vocabulary() -> None:
-    """THE ABSTRACTION CONTRACT: grep the shipped surfaces for the
+    """The abstraction contract: grep the shipped surfaces for the
     campaign domain's terms — zero hits, the examples/docs/code live in
     the abstract doc_ingest domain."""
     repo = Path(__file__).resolve().parents[1]
@@ -144,7 +144,7 @@ async def _branch_b(ctx: StepContext, params: DocIngest) -> dict[str, int]:
 
 
 def test_bar_walk() -> None:
-    """THE BAR WALK (the API reference's 2): the authoring agent's original
+    """The bar walk (the API reference's 2): the authoring agent's original
     graph — the shapes the paper cuts were hit on — compiles with zero
     boilerplate: plain-type data, Promise wiring, a gather-join,
     sequencing, a consumed terminal, the input parameter on create_flow."""

@@ -903,8 +903,8 @@ async def test_make_dedicated_conn_factory_declares_setup_as_the_inheritable_ini
 
 # ---- Per-connection credential refresh ----
 #
-# The regression these cover: the factories used to resolve the credential
-# ONCE and hand asyncpg a fixed `password=` string. asyncpg reuses that string
+# The regression these cover: factories resolving the credential
+# ONCE and handing asyncpg a fixed `password=` string. asyncpg reuses that string
 # for every physical connection it opens later, so with a finite-lifetime token
 # (Entra ID, AWS IAM RDS) the pool works at deploy and then, roughly one token
 # lifetime later, every NEW physical connection fails to authenticate while the

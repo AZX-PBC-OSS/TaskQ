@@ -1,4 +1,4 @@
-"""THE ADMIN SURFACE'S EDGES' PINS — the hold surface's
+"""The admin surface's edges' pins — the hold surface's
 residues on the admin surface, each fixed and pinned:
 
 - THE WALK BUDGET'S UNIT: ``_bounded_io_projection``'s size budget
@@ -31,7 +31,7 @@ from taskq._json import dumps_str as _json_dumps_str
 
 
 def test_the_walk_budget_counts_the_served_size_key_heavy_doc() -> None:
-    """THE KEY-HEAVY DOC: 1,500 keys with trivial values — the served
+    """The key-heavy doc: 1,500 keys with trivial values — the served
     size is carried by the KEYS and the JSON structure, so a values-only
     budget never fired and the whole doc served past the panel's own
     cap (the note's number a lie by an order of magnitude). The budget
@@ -63,7 +63,7 @@ def test_the_walk_budget_counts_the_served_size_key_heavy_doc() -> None:
 
 
 def test_the_prune_marker_never_overwrites_a_legit_entry() -> None:
-    """THE MARKER'S COLLISION: a doc whose OWN entry's key equals the
+    """The marker's collision: a doc whose OWN entry's key equals the
     marker string keeps that entry — the dict walk's budget-out marker
     disambiguates with an ordinal suffix until unique (the masked-key
     collision law's own shape), never overwrites. Pre-fix red: the
@@ -94,7 +94,7 @@ def test_the_prune_marker_never_overwrites_a_legit_entry() -> None:
 
 
 def test_the_logout_csrf_403_names_the_reload_remedy() -> None:
-    """THE 403 LOOP'S OTHER CARRIER: the logout door's token refusal
+    """The 403 loop's other carrier: the logout door's token refusal
     names the SAME remedy the action doors' CSRF refusals carry — a
     stale page's only fix is a fresh one, so the 403 self-describes it
     instead of reading as a bug (submit → 403 → submit → 403, forever).

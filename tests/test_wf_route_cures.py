@@ -1,18 +1,17 @@
-"""THE ROUTE'S CURE PINS (the seven recorded findings' pack).
+"""The route's pins (the seven refusals' pack).
 
-The routing spine certified; seven live recorded findings + the estate red;
-this file carries the pins — each behavior was wrong before its fix and
-the pin watched it fail; every fix landed WITH its pin.
+The routing spine's refusal pins — the empty corpus, the fan-in
+bound's build seam, the arm arity, the E15 arm-param exactness.
 
-* **F1** — the empty-corpus wedge (``_runner.py``'s ``_route_fork``
+* the EMPTY-CORPUS WEDGE (``_runner.py``'s ``_route_fork``
   returns ``None`` for a legitimately-empty corpus: the join never
-  fires, the flow wedges or lies). The fix: the empty list IS the
+  fires, the flow wedges or lies). The contract: the empty list IS the
   typed sum's honest value — the join fires with ``[]``.
-* **F8** — the >1000 fan-in bound's build seam (the named constant +
+* the >1000 FAN-IN BOUND's BUILD SEAM (the named constant +
   the E-rule refusal AT BUILD; ``validate_fork``'s raise INTO the
   ladder's try).
-* **THE ARM ARITY** — E10/E12's walk extended to the ``map_arms``.
-* **E15'S "RELATED" DOOR** — the arm-param contract's exactness.
+* the ARM ARITY — E10/E12's walk extended to the ``map_arms``.
+* E15'S "RELATED" DOOR — the arm-param contract's exactness.
 """
 
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
@@ -209,7 +208,7 @@ async def two_param_arm(ctx: object, item: ImageItem, extra: object) -> ImageRes
 def test_the_arm_arity_convicts_at_build() -> None:
     """A zero-param / two-param arm is the BUILD refusal (E10/E12's walk
     over the map_arms) — never the raw mid-flow TypeError. The
-    zero-param arm is E10's recorded finding (0 ≠ the wired 1); the two-param
+    zero-param arm is E10's refusal (0 ≠ the wired 1); the two-param
     arm is the deps SHAPE, so E12 owns it (the app binds no deps)."""
 
     async def src(ctx: StepContext) -> list[ImageItem | AudioItem]:
@@ -445,7 +444,7 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
 
 async def _waiting_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
     """The arm-held HITL: the arm body WAITS on a signal with no declared
-    gate — the hold was COMPILE-invisible (the pre-fix E14 walk skipped
+    gate — the hold is COMPILE-invisible (an E14 walk that skips
     the arms)."""
     await ctx.wait_signal(
         (ImageResult,), timeout_s=30.0
@@ -486,7 +485,7 @@ def test_the_arm_held_hitl_is_compile_visible() -> None:
 def test_the_typod_arm_queue_warns_w2() -> None:
     """A RouteArm spelling a queue no actor declares (the typo) — the W2
     warning NAMES the arm's child key and the typo'd queue (the
-    pre-fix walk read node.queue only; the arm's children dispatched
+    node.queue-only walk: the arm's children dispatch
     onto a queue no worker may listen on, clean at build)."""
 
     async def src(ctx: StepContext) -> list[ImageItem | AudioItem]:
@@ -519,7 +518,7 @@ def test_the_typod_arm_queue_warns_w2() -> None:
 
 def test_the_mermaid_arms_render() -> None:
     """The route's arms render ON the source's label (the branches the
-    compile carries — the pre-fix render drew the route source as the
+    compile carries — a render that drew the route source as the
     plain rectangle, the route's branches invisible), and the
     fork-carrying node wears the map-source shape."""
 
@@ -548,7 +547,7 @@ def test_the_mermaid_arms_render() -> None:
 
 def test_the_double_attach_lie_is_fixed() -> None:
     """A map over a ROUTED source is the double-attach refusal whose text
-    names the ROUTE (the pre-fix check read map_item only — the map
+    names the ROUTE (a check that reads map_item only misses the map
     attached ON TOP silently, clobbering the route's placement fields;
     when it did refuse, the text said 'already carries a map' — a lie
     about the attachment it refused)."""
@@ -582,7 +581,7 @@ def test_the_double_attach_lie_is_fixed() -> None:
 def test_the_cannot_resolve_message_is_truthful() -> None:
     """A source whose return annotation the compile CANNOT RESOLVE (the
     function-scope model) refuses with the 'CANNOT RESOLVE' message —
-    the pre-fix text said 'does not declare', a lie about a body that
+    'does not declare' — a lie about a body that
     DID declare."""
 
     class Local(BaseModel):  # the function-scope model — the annotation cannot resolve

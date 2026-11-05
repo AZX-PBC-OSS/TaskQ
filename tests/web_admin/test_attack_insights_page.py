@@ -439,7 +439,7 @@ async def test_utilization_exactly_at_capacity_is_the_documented_balanced_edge(
 async def test_the_badge_keys_on_the_true_ratio_not_the_rounded_display(
     matrix: tuple[_Mounted, _Mounted],
 ) -> None:
-    """THE float-boundary pair: 1.001 and 0.999 both display "100%", but
+    """The float-boundary pair: 1.001 and 0.999 both display "100%", but
     only the true-ratio side over the high-water mark earns the badge.
     A verdict computed on the ROUNDED display would badge both."""
     edges, _ = matrix
@@ -594,7 +594,7 @@ async def test_a_slow_read_holds_the_slot_and_exhaustion_answers_503_not_a_hang(
 async def test_a_raising_fetcher_fails_loudly_never_a_healthy_looking_half_page(
     monkeypatch: pytest.MonkeyPatch, matrix: tuple[_Mounted, _Mounted]
 ) -> None:
-    """THE honest failure shape: a fetcher raising (a legacy schema's
+    """The honest failure shape: a fetcher raising (a legacy schema's
     archive table missing a column) must blow the request up — the
     operator gets an error, NEVER a 200 page where five sections render
     and the sixth silently vanished (a half-empty insights page reads as

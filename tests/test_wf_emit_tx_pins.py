@@ -1,4 +1,4 @@
-"""THE EMIT TRANSACTION'S PINS — the design's ONE new primitive (PROOF.md §6a).
+"""The emit transaction's pins — the design's ONE new primitive (PROOF.md §6a).
 
 The shipped fork inserts children ONLY inside the parent's terminal-mark
 tx1 (fork-at-finalize). A STREAMING source must emit children while
@@ -139,7 +139,7 @@ async def committed_children(conn: asyncpg.Connection, schema: str, source_id: J
 
 
 async def reclaim_and_promote(pool: asyncpg.Pool, wf_sql: WorkflowSql) -> int:
-    """THE REAL certified reclaim + promotion (unchanged): expired leases
+    """The real certified reclaim + promotion (unchanged): expired leases
     → the ladder's re-pend (the operator ceiling clamped to 10 ms — the
     row's own curve's band then floors at MIN_DEFERRAL_INTERVAL) → the
     promotion sweep matures the due rows pending."""
@@ -230,7 +230,7 @@ async def test_emit_tx_atomic_at_every_statement_window(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """THE KILL-STORM SCENARIO (the spike's table, windows #0-#2): a REAL
+    """The kill-storm scenario (the spike's table, windows #0-#2): a REAL
     server-side kill inside the emit tx — after the children (#1), after
     the edges (#2), after the cursor checkpoint but BEFORE the commit
     (#3, the window that pins the whole design) — must roll the WHOLE
@@ -327,7 +327,7 @@ async def test_emit_tx_zero_reemitted_zero_lost_across_pages(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """THE STORM'S MID-PAGE + BETWEEN-PAGES WINDOWS (the spike's #3-#7): a
+    """The storm's mid-page + between-pages windows (the spike's #3-#7): a
     kill AFTER a committed page (the backend dies between emit calls)
     loses NOTHING (the page is committed); the resume continues from the
     cursor — the next page's children land exactly once. The kill inside
@@ -422,7 +422,7 @@ async def test_emit_fenced_on_superseded_claim(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """THE CLAIM FENCE IS THE EMIT'S FENCE: the cursor checkpoint runs
+    """The claim fence is the emit's fence: the cursor checkpoint runs
     under the FULL dispatch fence (status='running' AND locked_by_worker
     AND attempt AND claim_epoch). A ZOMBIE source — its attempt
     superseded by the reclaim + re-claim — updates NOTHING: the emit tx
@@ -475,7 +475,7 @@ async def test_emit_map_index_discriminates_siblings(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """THE SPIKE'S REFUTED-CLAIM DISCIPLINE, PINNED (198 collisions
+    """The spike's refuted-claim discipline, pinned (198 collisions
     without it): two records' chain starts through ONE emit — same step
     key, DIFFERENT map_index — are TWO rows with TWO idempotency keys,
     and the step-ledger's arbiter gives them TWO independent claims. The

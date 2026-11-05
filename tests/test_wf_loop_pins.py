@@ -1,4 +1,4 @@
-"""THE LOOP PINS: the two walls, the carry, the ladder classes.
+"""The loop pins: the two walls, the carry, the ladder classes.
 
 The rejected shape: each pin's REJECTED VARIANT was run against the mutated guard
 (the mutation test — BUILD-PROTOCOL §2), the observed red captured to
@@ -47,7 +47,7 @@ from taskq.workflows._sweep import sweep_loop_budget
 
 
 class Counter(BaseModel):
-    """THE CARRY (the durable agent state, advanced exactly once per
+    """The carry (the durable agent state, advanced exactly once per
     iteration)."""
 
     acc: int = 0
@@ -284,7 +284,7 @@ async def test_paused_loop_invisible_to_the_budget_sweep(
 async def test_infra_fault_routes_to_reclaim_never_the_ladder(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SEMANTICS DECISION, stated once — the escape-point classifier's fix sharpened
+    """The semantics decision, stated once — the escape-point classifier's fix sharpened
     it: the classifier reads WHERE the error ESCAPED, never merely its
     type. A fault raised by the BODY is a BODY failure even when it
     wears a ConnectionError's face (the body cannot forge an infra
@@ -485,7 +485,7 @@ async def test_iteration_memo_is_the_one_tx_shape(
 async def test_consume_budget_dragon_red_forever(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
 ) -> None:
-    """THE DRAGON, not a bug: the CONSUME variant — the arm that READS
+    """The dragon, not a bug: the CONSUME variant — the arm that READS
     the budget (consumes it) instead of PAUSING — killed a held loop
     mid-hold and the operator's later approval was REFUSED (deliver →
     False): work silently lost, timer order nondeterministic (P3 1a-prime).
@@ -495,7 +495,7 @@ async def test_consume_budget_dragon_red_forever(
     # The scenario ran (the arm mutated, the paused row fired, the suite
     # failed, the guard restored); the dragon's red lives in the failure log
     # + the guide's warning. This pin documents the DRAGON's shape and
-    # keeps its recorded finding in the suite (a reader who removes the leg
+    # keeps its red receipt in the suite (a reader who removes the leg
     # and re-runs sees THIS file's paused-row pin red).
     loop_redlog.red(
         "pin1-consume-budget-dragon",
@@ -531,7 +531,7 @@ async def test_consume_budget_dragon_red_forever(
 async def test_carry_optimistic_apply_dragon_red_forever(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, loop_redlog: Any
 ) -> None:
-    """THE CARRY DRAGON, not a bug: the OPTIMISTIC APPLY — a carry
+    """The carry dragon, not a bug: the OPTIMISTIC APPLY — a carry
     advanced OUTSIDE the advance statement's own transaction (at the
     hold's release or the retry's re-arm: the 'advance it when we know
     it took' shape) — double-applies on the resume (the crash window's
@@ -593,7 +593,7 @@ async def test_carry_optimistic_apply_dragon_red_forever(
 async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE COMPOSITION'S OWN SUBJECT (the loop drive bound x the hold machinery): a loop iteration
+    """The composition's own subject (the loop drive bound x the hold machinery): a loop iteration
     that HOLDS — the loop node's budget PAUSES (the wall is blind), the
     operator's approval RESUMES (the pause lifts, the remaining is the
     on-wake read), the loop COMPLETES — zero budget_exhausted events,
@@ -691,9 +691,9 @@ async def test_hold_inside_a_loop_pauses_the_budget_and_completes(
 async def test_declared_carry_arrives_typed_at_iteration_zero(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE CARRY'S DECLARED TYPE IS THE CONTRACT: a loop declared
+    """The carry's declared type is the contract: a loop declared
     ``initial=Counter(...)`` hands the body a REAL ``Counter`` at iteration
-    0 — not the jsonb dict the init's dump produced. The pre-fix truth:
+    0 — not the jsonb dict the init's dump produced. The rejected shape:
     the typed carry NEVER reached the body (the init serialized it
     typeless; the pins' isinstance fallbacks masked the lie)."""
     seen: list[object] = []
@@ -720,11 +720,11 @@ async def test_declared_carry_arrives_typed_at_iteration_zero(
 async def test_carry_type_survives_a_kill_and_resume_mid_loop(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE TYPE SURVIVES THE CRASH BOUNDARY: a machinery kill mid-loop
+    """The type survives the crash boundary: a machinery kill mid-loop
     (the reclaim's crashed row + the re-pend) is resumed by a FRESH
     driver pass; the resumed body receives the declared type with the
     EXACT accumulated state — the accumulation is exact across resumes
-    (no reset). The pre-fix truth: the resumed carry arrived as the
+    (no reset). The rejected shape: the resumed carry arrived as the
     jsonb dict and the masked pins reset the count (observed [1, 1, 2, 3]
     for a 3-step count)."""
     from unittest.mock import patch
@@ -783,10 +783,10 @@ async def test_carry_type_survives_a_kill_and_resume_mid_loop(
 async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ADVANCE/EXHAUST FENCES: the loop's advance and exhaust carry
+    """The advance/exhaust fences: the loop's advance and exhaust carry
     the SAME claim-identity legs every other terminal write carries
     (worker + attempt + claim_epoch — the one-tx-finalize doctrine; the
-    unguarded statements were the hole's back door). The pre-fix
+    unguarded statements were the hole's back door). The rejected shape:
     truth: a zombie driver's exhaust killed a HEALTHY RECLAIMED loop and
     wrote its escalation row; a stale payload moved the counter
     backward.
@@ -908,11 +908,11 @@ async def test_zombie_advance_and_exhaust_are_refused_reclaim_advances_once(
 async def test_wrong_shape_body_is_named_loop_body_shape_error_never_fabricated(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE SHAPE ERROR NAMED: a body returning neither Done nor Refine is
+    """The shape error named: a body returning neither Done nor Refine is
     recorded as the TYPED shape error — the iteration's ledger terminal
     says ``failed`` / ``LoopBodyShapeError``, the loop node's diagnosis
     names it, the flow terminalizes. The replay honors the recorded
-    truth: the pre-fix ledger recorded a SUCCEEDED iteration and the
+    truth: the uncorrected ledger records a SUCCEEDED iteration and the
     memo replay re-threaded the raw return AS A REFINE — the ledger
     fabricated."""
     calls = {"n": 0}

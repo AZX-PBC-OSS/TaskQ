@@ -1,4 +1,4 @@
-"""THE CHILD FLOW'S JOIN PROBES — the closed union: ``handle.wait()`` returns
+"""The child flow's join probes — the closed union: ``handle.wait()`` returns
 ``ChildOutcome[M] | Expired`` (``ChildOk[M] | ChildFailed |
 ChildCancelled | Expired``), so the CHECKER forces the arms — the
 ``Decision | Expired`` pattern's sibling at the flow boundary.
@@ -29,7 +29,7 @@ class Params(BaseModel):
 
 
 async def probe_bare_unwrap_ignores_the_failed_arm(ctx: StepContext, params: Params) -> SubReport:
-    """THE BARE UNWRAP: the body reads the result straight off the
+    """The bare unwrap: the body reads the result straight off the
     outcome — but the outcome may be ``ChildFailed``/``ChildCancelled``/
     ``Expired`` (the child died, the cascade ran, the join's patience
     expired). The union's forcing: NONE of them carries ``result``; the
@@ -56,7 +56,7 @@ async def probe_match_ignores_the_fail_close_arms(
 
 
 async def probe_the_green_door(ctx: StepContext, params: Params) -> SubReport:
-    """THE GREEN DOOR (the shape the docs teach): EVERY arm handled —
+    """The green door (the shape the docs teach): EVERY arm handled —
     the ok arm returns the child's result, the fail-close arms decide.
     This function must stay CLEAN (the gate reds on any error outside
     the markers — a green-surface regression is a failure)."""

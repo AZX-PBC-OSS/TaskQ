@@ -488,7 +488,7 @@ _BASE_PATH_RE = re.compile(r'window\.TASKQ_BASE_PATH = "([^"]*)"')
 # "elapsed since started_at, measured against the database clock at render
 # time" (job_table.html) — through duration_fmt's compact arms, and the
 # fragment differentials red on a minute-tick straddling the two engines'
-# sequential fetches (run 36658651637: "226h 42m" vs "226h 41m"). The
+# sequential fetches ("226h 42m" vs "226h 41m"). The
 # paired forms are the _humantime cascade's shapes; bare "13m"/"45s" are
 # not stripped — no diffed surface renders them volatile.
 _VOLATILE_PROSE_RE = re.compile(
@@ -509,7 +509,7 @@ class TestTheVolatileProseStripStripsWholePhrases:
     module's TestTheVolatileStripStripsWholePhrases contract, mirrored
     here because this module's regex is its own copy (no absolute-stamp
     arm). The duration forms are the ones that re-flaked the differentials
-    (run 36658651637); an incomplete strip here is what let them
+    (the observed red); an incomplete strip here is what let them
     through."""
 
     @pytest.mark.parametrize(

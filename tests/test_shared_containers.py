@@ -1,7 +1,7 @@
 """Unit tests for the shared-container machinery in ``taskq.testing._shared_containers``.
 
 That module exists to keep ONE Postgres + ONE Dragonfly across all xdist workers
-of ONE pytest invocation (a ``-n 4`` run previously booted four of each, and the
+of ONE pytest invocation (a ``-n 4`` run without this boots four of each, and the
 contention was the measured cause of heavy PG tests tripping pytest-timeout
 intermittently). Its keep/remove and holder-registry decisions are pure file/OS
 state, so the whole contract is testable without Docker: the Docker I/O wrappers

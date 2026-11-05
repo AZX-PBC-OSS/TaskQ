@@ -1,9 +1,10 @@
 """``sweep_expired_results``: one call = one bounded, committed batch.
 
-The result-TTL sweep used to be an UNBOUNDED single UPDATE - one call
-nulled every expired result in the table inside one transaction, so its
-duration, lock-hold, and WAL volume scaled with whatever backlog of
-expired results had accumulated (a retention change expiring a fleet's
+The result-TTL sweep is one call = one bounded, committed batch - never
+an UNBOUNDED single UPDATE (one call nulling every expired result in the
+transaction scales its
+duration, lock-hold, and WAL volume with whatever backlog of
+expired results has accumulated: a retention change expiring a fleet's
 results at once is one multi-second transaction). The rewrite windows
 candidate ids in a MATERIALIZED CTE (``LIMIT $1``) and updates by id, so
 one call commits at most ``batch_size`` expirations and the sweep loop

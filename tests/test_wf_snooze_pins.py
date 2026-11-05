@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE WF SNOOZE/RETRY-AFTER PINS — the body's control-flow signals, .
+"""The wf snooze/retry-after pins — the body's control-flow signals, .
 
 THE RECORDED FINDING (the OCR-429 exhaustion): a workflow body raising the
 vanilla surface's typed control-flow signals —
@@ -335,7 +335,7 @@ async def test_snooze_defers_the_row_and_never_burns_the_budget(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE HEADLINE PIN (the OCR-429 recorded finding's fix): a body raising
+    """The headline pin (the OCR-429 contract): a body raising
     ``Snooze`` re-schedules the node at the delay — the attempt UNCHANGED
     (the claim's increment refunded), the run alive, the ledger row
     rested ``awaited`` (never a failed row), the result capture empty —
@@ -415,7 +415,7 @@ async def test_retry_after_consuming_keeps_the_attempt_increment(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE BURN PIN: ``RetryAfter(consume_budget=True)`` re-schedules at
+    """The burn pin: ``RetryAfter(consume_budget=True)`` re-schedules at
     the delay KEEPING the claim's increment — the next claim mints the
     NEXT attempt ordinal (a new ledger arbiter row), the counter does not
     read as a snooze."""
@@ -462,7 +462,7 @@ async def test_retry_after_consuming_past_max_attempts_terminals_max_attempts(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE BUDGET'S BOUND (the vanilla ``mark_retry_after_consume_true``'s
+    """The budget's bound (the vanilla ``mark_retry_after_consume_true``'s
     own ``max_attempts`` fence): a consuming retry past the budget is the
     terminal ``MaxAttemptsExceeded`` — the vanilla's own class + message —
     through the wf terminal door (the ledger's failed row, the node's
@@ -532,7 +532,7 @@ async def test_snoozing_past_max_attempts_never_exhausts(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE BUDGET LAW (the interaction's headline): a body snoozing FIVE
+    """The budget law (the interaction's headline): a body snoozing FIVE
     times against ``max_attempts=2`` NEVER exhausts — a snooze never
     increments the attempt — and the run completes."""
     schema = module_pg_schema.schema_name
@@ -568,7 +568,7 @@ async def test_non_signal_exception_still_burns_the_ladder(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE REGRESSION FENCE: a non-signal exception's ladder semantics are
+    """The regression fence: a non-signal exception's ladder semantics are
     byte-unchanged — the failed ledger row lands (the burn), the attempt
     walks, the ladder's backoff re-pends. The deferral disposition must
     never swallow the ladder's own face."""
@@ -605,7 +605,7 @@ async def test_snoozed_child_keeps_the_join_accounting(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE JOIN'S PENDING COUNTER: a snoozed step is still pending — the
+    """The join's pending counter: a snoozed step is still pending — the
     deferral writes NO decrement, NO fire; the join's ``deps_pending``
     accounting is UNCHANGED until the child's real terminal, then the join
     fires and the run completes."""
@@ -647,7 +647,7 @@ async def test_zero_delay_snooze_carries_the_deferral_floor(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE FLOOR (the vanilla ``mark_snoozed``'s own guard, mirrored): a
+    """The floor (the vanilla ``mark_snoozed``'s own guard, mirrored): a
     zero-delay snooze must not park the node at the head of the dispatch
     order — the non-consuming deferral lands at least
     ``MIN_DEFERRAL_INTERVAL`` out, status ``scheduled``."""
@@ -695,7 +695,7 @@ async def test_defer_fences_a_cancel_marked_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE CANCEL FENCE (the vanilla deferral's own law — 'an operator
+    """The cancel fence (the vanilla deferral's own law — 'an operator
     cancel in flight WINS over the deferral'): a node row carrying the wf
     cancel's own mark (``metadata.cancel_phase`` — the cancel cascade's
     cooperative stamp) never matches the deferral arm; the statement
@@ -782,7 +782,7 @@ async def test_defer_fences_a_zombie_attempt(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE CLAIM FENCE (the finalize's own CAS vocabulary): a deferral
+    """The claim fence (the finalize's own CAS vocabulary): a deferral
     presenting a stale attempt/epoch — a zombie's — matches NOTHING (the
     statement answers no verdict, the row untouched), and the runner's
     route records the attempt 'fenced' on the ledger (H1 — never a
@@ -859,7 +859,7 @@ async def test_defer_fences_a_vanilla_cancel_marked_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE VANILLA CANCEL'S COLUMN MARK: the admin job-page cancel
+    """The vanilla cancel's column mark: the admin job-page cancel
     (``cancel_running``'s own arm — ``cancel_requested_at = now,
     cancel_phase = 1`` on the RUNNING row) is a cancel in flight on the
     wf node row too — the deferral must fence it exactly like the wf's
@@ -948,7 +948,7 @@ async def test_the_exhausted_arm_also_fences_the_cancel_mark(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE EXHAUSTED ARM'S OWN FENCE (C1a): a consuming RetryAfter past
+    """The exhausted arm's own fence (C1a): a consuming RetryAfter past
     the budget on a row carrying the vanilla cancel's column mark answers
     the CANCEL's verdict — the cancel outranks the exhaustion (the arm
     order's law: the marked row never reads as a body failure)."""
@@ -997,7 +997,7 @@ async def test_the_deferral_resets_the_cancel_columns_for_the_later_claim(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE RESET'S OWN SHAPE (C1c — the vanilla arms' SET, mirrored): the
+    """The reset's own shape (C1c — the vanilla arms' SET, mirrored): the
     deferral's reschedule carries ``cancel_phase = 0 / cancel_requested_at
     = NULL`` — mark_snoozed's own reset — so a LATER clean claim reads a
     clean row: a stale cancel-request residue (a request stamped on the
@@ -1062,7 +1062,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE RE-MINT GUARD: the refund re-mints the ordinal — the
+    """The re-mint guard: the refund re-mints the ordinal — the
     arbiter re-use hands a LIVE winner the SAME ledger row a zombie once
     claimed. The zombie's by-id fence (the status='running' guard alone)
     would mark the WINNER's live attempt 'fenced' — the ledger lie. The
@@ -1188,7 +1188,7 @@ async def test_the_zombies_fence_cannot_mark_a_reminted_live_row(
 
 
 def test_the_signal_resolver_names_the_dispositions() -> None:
-    """THE NAMED DISPOSITIONS (the extensibility law): the resolver maps
+    """The named dispositions (the extensibility law): the resolver maps
     the two signals onto the named dispositions — a Snooze and a
     non-consuming RetryAfter are the snooze semantics; a consuming
     RetryAfter is the budget-bounded retry. The NEXT deferral verdict adds
@@ -1212,12 +1212,12 @@ async def test_loop_body_snooze_defers_the_iteration(
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE LOOP'S DEFERRAL: a loop ITERATION body raising Snooze
+    """The loop's deferral: a loop ITERATION body raising Snooze
     routes through the deferral disposition — the SAME NODE_DEFER_SQL arm
     the step bodies share: the loop node row re-schedules at the delay,
     the attempt REFUNDED (the ladder unburned), the iteration counters
     UNTOUCHED (the advance never ran — the loop resumes at THIS
-    iteration), the run alive. The pre-fix shape: the signal fell into
+    iteration), the run alive. The rejected shape: the signal falls into
     the loop's body-failure catch — the run terminalized on the FIRST
     signal (LoopBodyFailure, one invocation)."""
     schema = module_pg_schema.schema_name
@@ -1294,7 +1294,7 @@ async def test_loop_body_retry_after_consuming_past_budget_takes_the_body_failur
     module_pg_schema: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE LADDER STILL BOUNDS LOOPS (the bound face): a loop body
+    """The ladder still bounds loops (the bound face): a loop body
     exhausting the budget via ``RetryAfter(consume_budget=True)`` past
     ``max_attempts`` takes the LOOP'S BODY-FAILURE FACE — the named
     state, the node failed ``MaxAttemptsExceeded``, the flow terminal
@@ -1348,7 +1348,7 @@ async def test_the_loops_zombie_fence_cannot_mark_a_reminted_live_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE LOOP ROUTE'S RE-MINT GUARD (the re-review's required residual):
+    """The loop route's re-mint guard (the re-review's required residual):
     the threading the step route carries must reach the LOOP's route
     too — ``_execute_claimed`` → ``_run_loop_node`` → ``_defer_loop_step``
     → ``defer_row_law``. The reviewer's rig: the loop node claimed (the
@@ -1356,7 +1356,7 @@ async def test_the_loops_zombie_fence_cannot_mark_a_reminted_live_row(
     re-use hands a LIVE winner the SAME ledger row — then the zombie
     driver's deferral (its body's Snooze against a row it no longer
     holds). The fence must key the claim's OWN instant: the re-minted row
-    is the winner's — never 'fenced'. The pre-fix shape: the loop route
+    is the winner's — never 'fenced'. The rejected shape: the loop route
     got NO claim instant (the status-only fence) — the winner's live row
     went 'fenced'."""
     from taskq.workflows.ledger import claim_step_ledger
@@ -1442,7 +1442,7 @@ async def test_the_loops_deferral_fences_a_cancel_marked_row(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """THE LOOP ROUTE'S CANCEL-FENCED FACE (the re-review's quality bar):
+    """The loop route's cancel-fenced face (the re-review's quality bar):
     the loop's deferral fences the cancel mark on the vanilla COLUMN
     carrier too (the admin job-page cancel's own arm) and routes the
     loop's node through the wf terminal door 'cancelled' — the cancel's

@@ -1,4 +1,4 @@
-"""THE VALIDATE PINS: the checker-independent validator's mutation
+"""The validate pins: the checker-independent validator's mutation
 matrix. A valid graph pins CLEAN; ONE mutation at a time flips EXACTLY
 the intended rule and nothing else (§15.6's discipline) — the
 zero-false-positive budget is the pin, not an aspiration.
@@ -254,14 +254,13 @@ async def _duck_consumer(ctx: StepContext, words: str) -> dict[str, int]:
 
 
 def test_incompatible_list_element_mutation() -> None:
-    """E5's ELEMENT LAW (the E5 probe's recorded finding — the typed wiring's
+    """E5's ELEMENT LAW (the typed wiring's
     whole promise): a ``list[Word]`` producer wired into a
-    ``list[str]`` consumer passed BUILD-TIME VALIDATION and the run died
-    at RUNTIME with a pydantic ValidationError on every attempt — the
-    LIST level was checked (the bodyless-join arm), the ELEMENT level
-    was not. The law is absolute: a wiring that dies at runtime with a
-    type error is a BUILD-TIME recorded finding (the element compatibility is
-    the same totality discipline E1-E16 apply at the node level)."""
+    ``list[str]`` consumer is refused at BUILD — a wiring that would die
+    at RUNTIME with a pydantic ValidationError on every attempt (the
+    LIST level checked, the ELEMENT level not) must never validate. The
+    element compatibility is the same totality discipline E1-E16 apply
+    at the node level."""
     app = WorkflowApp()
 
     @app.workflow("list_elem")
@@ -305,7 +304,7 @@ def test_unrelated_list_element_models_mutation() -> None:
 def test_duck_list_element_is_the_skipped_face() -> None:
     """The zero-false-positive skip: ``list[Any]`` — the duck-shaped
     element consumes anything the codec delivers, unguessable, never a
-    recorded finding."""
+    refusal."""
     app = WorkflowApp()
 
     @app.workflow("list_elem_any")
@@ -348,7 +347,7 @@ def test_list_producer_into_single_model_param_mutation() -> None:
 def test_root_model_list_param_is_the_skipped_door() -> None:
     """The RootModel door: a consumer declaring
     ``RootModel[list[Word]]`` TAKES the list payload — the element law's
-    single-model recorded finding does not fire on it."""
+    single-model refusal does not fire on it."""
     app = WorkflowApp()
 
     @app.workflow("list_into_root")
@@ -362,7 +361,7 @@ def test_root_model_list_param_is_the_skipped_door() -> None:
 def test_list_producer_into_duck_param_is_the_skipped_face() -> None:
     """The duck-shaped param under a list producer (``str`` is no model,
     no list): unguessable — the zero-false-positive skip, never a
-    recorded finding."""
+    refusal."""
     app = WorkflowApp()
 
     @app.workflow("list_into_duck")
@@ -376,7 +375,7 @@ def test_list_producer_into_duck_param_is_the_skipped_face() -> None:
 def test_the_drills_runtime_death_is_real() -> None:
     """The runtime door the element law pre-empts: the codec's TypeAdapter
     reds the scenario's payload — the pydantic ValidationError the scenario hit
-    on every attempt. The recorded finding moves it to build; this pin holds
+    on every attempt. The build door pre-empts it; this pin holds
     the runtime's own red so the law's necessity is never arguable."""
     from pydantic import ValidationError
 

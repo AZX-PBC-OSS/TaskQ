@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE ADMIN SURFACE'S FIXES' PINS — the hold surface's recorded
-findings, each fixed and pinned (against the unfixed tree):
+"""The admin surface's pins — the retry/refusal faces, the I/O panel's
+display chain, the skip-rearm predicate:
 
 - R2-1 THE DEADLOCK'S NAME: the retry CLI (``flows retry``) and the
   admin retry routes caught only ``WorkflowRunError`` — a laggard

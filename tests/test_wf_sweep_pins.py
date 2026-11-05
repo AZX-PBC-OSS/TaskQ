@@ -38,7 +38,7 @@ from tests._wf_fixtures import (
 
 
 def _drop_flow_leg_sql(wf_sql: WorkflowSql, statement: str) -> str:
-    """THE REJECTED SHAPE: the fire WITHOUT the flow-status EXISTS leg —
+    """The rejected shape: the fire WITHOUT the flow-status EXISTS leg —
     the any-two-are-insufficient proof's missing leg. The mutation drops
     every ``AND EXISTS (…)``
     clause (balanced parens — the leg's body nests a subquery's own)."""
@@ -172,7 +172,7 @@ async def test_pin_2_dispatch_fence_refuses_post_cancel_claim(
     re-derivable, a claimed one is not un-runnable). The RED scenario is the
     fence dropped (recorded: ``.measurements/attack/B2-red-dispatch-fence.txt``
     — the shipped claim re-claims the dead flow's child); the attack file
-    ``tests/attack_wf_dispatch_fence.py`` keeps the same recorded finding on the
+    ``tests/attack_wf_dispatch_fence.py`` keeps the same contract on the
     REAL backend path (``dispatch_batch`` over ``clean_jobs_app``).
 
     The plan stays serviceable: the fence short-circuits on the step_key
@@ -467,7 +467,7 @@ def test_pin_21_sweep_arms_wired_into_the_maintenance_loop() -> None:
 
 
 def _drop_missing_parent_arm_sql(wf_sql: WorkflowSql) -> str:
-    """THE REJECTED SHAPE (the spike's): the rederive has NO missing-parent
+    """The rejected shape (the spike's): the rederive has NO missing-parent
     arm — the count of un-terminal parents reads a MISSING parent as
     counted-and-terminal, and the join whose parent is GONE fires silently
     (the 'record healthy, work wrong' class)."""
@@ -480,7 +480,7 @@ def _drop_missing_parent_arm_sql(wf_sql: WorkflowSql) -> str:
 
 
 def _drop_missing_parent_arm_fire_sql(wf_sql: WorkflowSql) -> str:
-    """The FIRE arm's twin of the same recorded finding: no missing-parent arm in
+    """The FIRE arm's twin of the same contract: no missing-parent arm in
     its counts either."""
     mutated = wf_sql.sweep_fire.replace(
         "count(*) FILTER (WHERE e.child_id IS NOT NULL AND p.id IS NULL) AS missing_parents,",
@@ -792,11 +792,11 @@ async def test_pin_17_empty_join_never_fires(
     assert (await node_state(wf_conn, wf_schema, j2))["deps_pending"] == 0
 
 
-# ── Pin 23: THE FLOW-STATUS LEG, PINNED BEHAVIORALLY (the stealth mutant) ─
+# ── Pin 23: the flow-status leg, pinned behaviorally (the stealth mutant) ─
 
 
 def _gut_flow_leg_predicate_sql(wf_sql: WorkflowSql) -> str:
-    """THE STEALTH MUTANT (the evidence-integrity round's rejected
+    """The stealth mutant (the rejected
     shape): the flow-status EXISTS leg is KEPT — every shape-scanning
     comparator still finds an ``AND EXISTS (…)`` clause — but the
     PREDICATE inside it is gutted to a tautology (``status = status``).
@@ -823,7 +823,7 @@ async def test_pin_23_the_fire_refuses_a_dead_flow_behaviorally_even_stealthily_
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """THE BEHAVIORAL PIN (the evidence-integrity round, fix 2): 'never
+    """The behavioral pin: 'never
     fire on a dead flow' is held by the OBSERVED OUTCOME — the fire's
     absence read back from the rows — never by the mutated SQL's shape.
 
@@ -886,7 +886,7 @@ async def test_pin_23_the_fire_refuses_a_dead_flow_behaviorally_even_stealthily_
     # 2. THE STEALTH MUTANT, on the SAME state plus a pristine twin —
     #    the mutant REDS the assertions above: the fire HAPPENS, in the
     #    same rows. (Both joins are firable on the dead flow; the
-    #    statement fires the set's head — the recorded finding is that A fire
+    #    statement fires the set's head — A fire
     #    row now exists where the shipped leg produced none.)
     twin = await seed_join(wf_conn, wf_schema, flow_id, step_key="twin", deps=1)
     await seed_edge(wf_conn, wf_schema, twin, parent, flow_id)
@@ -908,12 +908,12 @@ async def test_pin_23_the_fire_refuses_a_dead_flow_behaviorally_even_stealthily_
     )
     assert int(flow_fires) == 2, (
         f"the mutant's fires must be OBSERVABLE in the wf_join_fire rows "
-        f"(flow_fires={flow_fires}) — the recorded finding is the row, never the "
+        f"(flow_fires={flow_fires}) — the evidence is the row, never the "
         "mutated string"
     )
 
 
-# ── R2-2: THE UNREGISTERED NAME IS LOUD (the loudness asymmetry) ────────
+# ── the unregistered name is loud (the loudness asymmetry) ─────────────
 
 
 @pytest.mark.integration
@@ -924,9 +924,9 @@ async def test_pin_body_unavailable_the_unregistered_name_is_loud(
     wf_sql: WorkflowSql,
     engine_redlog: RedLog,
 ) -> None:
-    """R2-2 (the recertifier's MEDIUM): a flow root stamped with a workflow
+    """A flow root stamped with a workflow
     name NO process registers fires its join and delivers its consumers —
-    and the pre-fix record was SILENT (no exception, no warn, no stamp):
+    and the silent record shows NOTHING (no exception, no warn, no stamp):
     'the record looked healthy while the work was wrong'. The asymmetry
     doctrine says LOUD: the delivery CONTINUES (the consumers' contract —
     never a crash, never a wedged join) but the join row is stamped
@@ -980,7 +980,7 @@ async def test_pin_body_unavailable_the_unregistered_name_is_loud(
     state = await node_state(wf_conn, wf_schema, join_id)
     engine_redlog.red(
         "r2-2-body-unavailable",
-        "the silent fire (no stamp, no warn) — the pre-fix shipped shape",
+        "the silent fire (no stamp, no warn) — the rejected shape",
         {
             "blocking_reason": state["metadata"].get("blocking_reason"),
             "warn_emitted": any(e.get("event") == "sweep-join-body-unavailable" for e in logs),

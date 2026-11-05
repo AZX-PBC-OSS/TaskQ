@@ -398,9 +398,9 @@ async def test_atomicity_on_error(pg_conn: asyncpg.Connection, settings: TaskQSe
 
 # ── Column round-trip fidelity (positional-hazard regression) ──
 #
-# The archive INSERT used to be `INSERT INTO jobs_archive SELECT j.*, now(),
-# now() + $4` -- relying on `jobs` and `jobs_archive` sharing physical column
-# order. ALTER TABLE ADD COLUMN appends at the end of each table's own order
+# The archive INSERT must never be a positional `INSERT INTO jobs_archive
+# SELECT j.*, now(), now() + $4` -- that relies on `jobs` and `jobs_archive`
+# sharing physical column order. ALTER TABLE ADD COLUMN appends at the end of each table's own order
 # (e.g. idempotency_scope), silently breaking that assumption: the new column
 # landed in archived_at's position and the sweep failed with a type error.
 # The sweep now names every column explicitly on both sides

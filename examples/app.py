@@ -222,7 +222,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         yield
 
 
-# F6: the monitor's HEAD check against the trigger app's GET routes
+# The monitor's HEAD check against the trigger app's GET routes
 # (/, /rate-limits) must not 405. Set BEFORE the routes register.
 app = FastAPI(lifespan=lifespan)
 app.router.route_class = HeadForGetRoute
@@ -250,7 +250,7 @@ async def index(request: Request) -> Response:
                 "has_result": ref.result_ttl is not None,
                 # The demo progress toast subscribes to this actor's
                 # stream; the flag rides the CARD, never the response
-                # envelope (F3 keeps that {"job_id","url"} alone).
+                # envelope (the enqueue envelope stays {"job_id","url"}).
                 "has_progress": name == "file_processor",
                 "watch_queue_url": ("/taskq/queues/examples" if name == "batch_counter" else None),
             }
@@ -264,7 +264,7 @@ async def index(request: Request) -> Response:
 
 @app.post("/enqueue/{actor_name}")
 async def enqueue_actor(actor_name: str, request: Request) -> Response:
-    """Enqueue one job; the ONE success envelope (F3): ``201`` (or ``202``
+    """Enqueue one job; the ONE success envelope: ``201`` (or ``202``
     for a result-bearing actor's deferred result page) with ``{"job_id",
     "url"}`` — the job id and the page that watches it — for every
     trigger route. Every 4xx is JSON with the FastAPI ``{"detail": ...}``
@@ -338,7 +338,7 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
 
 # ── the workflow demo ─────────────────────────────────────────────
 #
-# The SAME envelope contract (the repo's F3 finding) — HONEST (the
+# The SAME envelope contract — HONEST (the
 # create-seam's cure): the workflow trigger answers 202 with the RUN id +
 # the run-watch url (the admin's workflow page — the graph view with the
 # live SSE). A run-key conflict with a LIVE run answers 202 WITH THE
@@ -469,7 +469,7 @@ async def get_result(job_id: UUID, request: Request) -> Response:
 
 
 def _validation_error_detail(exc: ValidationError) -> str:
-    """The compact one-line validation-error summary (F3).
+    """The compact one-line validation-error summary.
 
     Pydantic's str(exc) is a multi-line dump (header + one block per
     error) — unusable in a toast/log line and wildly longer than the

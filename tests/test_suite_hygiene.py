@@ -2,7 +2,7 @@
 
 These are plain (non-PG, non-container) regression tests that grep the
 ``tests/`` tree AND the published ``src/taskq/testing/`` package for
-anti-patterns which have previously caused cross-test and cross-worker
+anti-patterns which cause cross-test and cross-worker
 schema collisions under ``pytest-xdist``:
 
 - ``os.environ.get("PYTEST_XDIST_WORKER", ...)``-derived schema names give
@@ -1134,8 +1134,8 @@ async def test_call_window_leak_report_names_test_end_residue() -> None:
     the test's body finished is named - whether it is STILL pending by the
     guard's teardown check (the live diff's case) or finished during the
     teardown window (the shape the live diff cannot see: a worker bootstrap
-    left mid-drain at test end, reaped by an awaiting teardown fixture,
-    the exact shape run 35648058316's leak report demanded land on the
+    left mid-drain at test end, reaped by an awaiting teardown fixture —
+    exactly the shape the leak report must land on the
     leaking test).  An empty window reports nothing."""
     window_dead: list[asyncio.Task[object]] = []
     finished = asyncio.create_task(_hygiene_noop(), name="hygiene-window-finished")
@@ -1503,10 +1503,9 @@ async def test_soak_stage2_stays_silent_when_residue_honours_cancel() -> None:
 
 # ── xdist_group pins: the measured state-affinity map ──────────────────────
 #
-# The five chaos modules used to share ONE xdist_group ("chaos"), which held
-# all 15 of their tests for a single worker as a convoy under
-# --dist=loadgroup. Measured 2026-10-06 (the CI-runtime measurement): the
-# shared group cost the 5-module subset 62.1-72.6s of wall at -n 2 vs 46.1s
+# The five chaos modules share no single xdist_group: one shared group
+# holds all 15 of their tests for a single worker as a convoy under
+# --dist=loadgroup (measured: 62.1-72.6s of wall at -n 2 vs 46.1s
 # split per-module (41 passed both ways). The db-global mechanisms that
 # presumably motivated the shared group are all schema-qualified — the
 # advisory locks go through schema_lock_name(...) on per-test-unique schemas

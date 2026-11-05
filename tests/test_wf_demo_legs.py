@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; the scenario's dotdir is pytest's own tmp estate (a mktemp dir the fixture created), and the worker's env is the fixture's own.
-"""THE FOUR DEMONSTRATIONS (the evidence-matrix's phase-4 demo work
+"""The four demonstrations (the evidence-matrix's phase-4 demo work
 order): the capabilities the evidence matrix named UN-DEMOED, each with
 a RUNNABLE path + the captured output:
 
@@ -52,7 +52,7 @@ def demo_dotdir(tmp_path_factory: Any) -> Any:
     that exists on EVERY runner (the hardcoded scratch dotdir was
     the local dev loop's pre-created path and died on CI with a
     FileNotFoundError at the first spawn — the CI
-    recorded finding)."""
+    measured face)."""
     dotdir = tmp_path_factory.mktemp("wf-demo-legs")
     (dotdir / "empty-dotenv").mkdir()
     return dotdir
@@ -332,7 +332,7 @@ async def test_leg3_the_live_wf_gauge_scrape(
     is then process-global, and a provider another test installed FIRST
     strands it there forever (OTel's own law: real-provider meters never
     rebind — only the pre-provider proxy does). In a long CI session the
-    scrape then came back EMPTY (the CI's recorded finding). The
+    scrape then came back EMPTY. The
     subprocess wires the provider at its process start, BEFORE the first
     ``taskq.obs`` import — the shipped serve path's real boot order,
     order-immune by construction."""
@@ -473,13 +473,13 @@ def wf_app_fixture() -> Any:
 async def test_the_drive_loop_tolerates_a_foreign_run(
     module_pg_pool: Any, module_pg_schema: Any, wf_conn: Any
 ) -> None:
-    """THE POISON-LOOP PIN: a foreign workflow's run in the same schema
+    """The poison-loop pin: a foreign workflow's run in the same schema
     (the demo's OWN second workflow is exactly that, to the doc_ingest
     driver — and any other app's run can share the schema) must not
     poison the pass. THE OLD SHAPE: the driver built ONE doc_ingest
     runner for every row; the foreign run raised on its first foreign
     step key — ABORTING every pass — starved the runs behind it (no
-    ORDER BY), and spammed the same error every 0.5 s forever. THE FIX,
+    ORDER BY), and spammed the same error every 0.5 s forever. THE CONTRACT,
     pinned here: the pass derives from THIS app's registry (each run's
     runner is the run's OWN stamped workflow), a foreign name is
     tolerated LOUDLY-ONCE (the deduped warning, not a per-pass spam),
@@ -555,12 +555,12 @@ async def test_the_drive_loop_tolerates_a_foreign_run(
 async def test_the_drive_loop_stops_on_cancel_within_the_bound(
     module_pg_pool: Any, module_pg_schema: Any
 ) -> None:
-    """THE SWALLOWED-CANCEL PIN (measured): cancel → the loop STOPPED
+    """The swallowed-cancel pin (measured): cancel → the loop STOPPED
     within the bound. THE OLD SHAPE: the drive pass rode
     ``suppress(CancelledError)`` — a cancellation delivered mid-drive was
     SWALLOWED (a consumed cancellation is never delivered again), the
     loop slept on, and the loop measured ALIVE 12 s after the cancel,
-    still ticking. THE FIX: the pass re-raises the cancel and the
+    still ticking. THE CONTRACT: the pass re-raises the cancel and the
     lifespan's stop AWAITS the loop (bounded join). The cancel here
     lands DURING a drive pass — the swallow's own window."""
     import asyncio
@@ -601,7 +601,7 @@ async def test_the_drive_loop_stops_on_cancel_within_the_bound(
 
 
 def test_the_compose_workers_subscribe_to_the_demo_queues() -> None:
-    """THE COMPOSE SUBSCRIPTION PIN: the shipped stack's workers
+    """The compose subscription pin: the shipped stack's workers
     SUBSCRIBE to the demo's queues — per worker, per the placement (the
     heterogeneous placement is DEMONSTRATED by the stack, never
     decorative: a queue's node runs on ITS worker). The old stack

@@ -1,16 +1,9 @@
-"""THE HOLD MACHINERY'S PINS: held rows, the deliver CAS, the timers, the
-cancel cascade, the reply handle.
+"""The hold machinery's pins: held rows, the deliver CAS, the timers,
+the cancel cascade, the reply handle.
 
-The evidence: each pin's REJECTED VARIANT (the spike's
-dragons) is named in the docstring and — where the variant is a
-guard-flip — exercised with the red captured to
-``.measurements/t10-pin-reds.json``. The unfenced variants stay RED
-FOREVER (they are the dragons, not bugs).
-
-The provenance: P3's cancel matrix (spikes 1-2), the hitl-proof's four
-layers, the agent-loop spike's verdict M (the second multi-hold
-confirmation), the hold round requirements (the reply handle, the context
-contract, the pubsub convergence).
+Each pin asserts the shipped behavior and names the rejected variant in
+its body; where the variant is a guard-flip, the mutation's red is
+captured to ``.measurements/t10-pin-reds.json``.
 """
 
 from __future__ import annotations
@@ -412,15 +405,14 @@ async def test_hold_id_reply_handle_and_context_contract(
 async def test_hold_context_reason_is_none_after_delivery(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE FOLDED PIN (the docs lane's queued recorded finding — the
-    held-gated read's OTHER face): ``HoldContext.reason`` is the wait's
-    reason ONLY while the hold is held. Post-delivery the payload IS
-    the decision; the reason is gone with the held state it belonged
-    to — the read returns None, never the DECISION's own reason field
-    wearing the wait's clothes.
+    """``HoldContext.reason`` is the wait's reason ONLY while the hold
+    is held. Post-delivery the payload IS the decision; the reason is
+    gone with the held state it belonged to — the read returns None,
+    never the decision's own ``reason`` field wearing the wait's
+    clothes.
 
     The mutation probe: drop the ``status == 'held'`` guard in
-    ``HitlClient._context`` and this pin REDS — the decision's
+    ``HitlClient._context`` and this pin reds — the decision's
     ``reason`` field (a field this pin's gate deliberately declares)
     would ride the context as if it were the author's wait reason.
     The red's receipt: ``.measurements/docs-pin-reason-after-delivery.json``.

@@ -153,7 +153,7 @@ async def _run_get_through_dead_server(
 async def test_reads_get_release_is_bounded_against_a_silently_dead_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Repro on one previously-unbounded read site: ``_get``'s
+    """Repro on one unbounded read site: ``_get``'s
     release, sent into a server that never answers, must cost the shrunk
     bound: a typed, bounded outcome instead of parking the caller (and
     ``pool.close()``) forever. The unbounded shape this replaces waited
@@ -188,7 +188,7 @@ async def test_reads_get_release_is_bounded_against_a_silently_dead_server(
 async def test_schedules_delete_release_is_bounded_against_a_silently_dead_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The same bound on a second previously-unbounded family (schedule
+    """The same bound on a second unbounded family (schedule
     CRUD): ``delete_schedule``'s release must carry the bound, terminate
     the parked connection, and let the op's own outcome stand."""
     from taskq import connections as connections_mod

@@ -1,4 +1,4 @@
-"""THE DOCS-CURRENCY PINS — the docs estate's currency guards.
+"""The docs-currency pins — the docs estate's currency guards.
 
 Three pins held the SAFE behavior at their pinning (xfail-strict) and
 the doc fixes flipped them: the api-reference's wiring-verbs table
@@ -185,7 +185,7 @@ _NUMBER_WORDS = {
 
 
 def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
-    """THE DOCS-NUMBERS LAW at the table count: a sentence claiming "N
+    """The docs-numbers law at the table count: a sentence claiming "N
     ``wf_*`` tables" must be followed (in its own block, before the next
     heading) by a table listing exactly N ``wf_*`` rows — the rejected
     shape (the holdmap lane's runbook) says "five ``wf_*`` tables" and
@@ -195,7 +195,7 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
     AT THIS HEAD (6e2297fe8): NO such claim exists — the cited paragraph
     lives on the unmerged holdmap-fixes lane (the guide's §7 here carries
     no table-count sentence). This pin stands GREEN as the anti-rot
-    guard: the day the lane's paragraph lands with the mismatch, the pin
+    guard: the day the guide's paragraph lands with the mismatch, the pin
     reds. Zero matches is a lawful green (the law rejects claims, not
     absence); the §7 witness keeps the read honest."""
     assert _GUIDE.is_file(), "the workflows guide is missing"

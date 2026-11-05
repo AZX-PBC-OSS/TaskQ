@@ -1155,8 +1155,8 @@ def test_live_jobs_table_renders_running_for_on_running_rows(
     stub_pool: _StubPool,
 ) -> None:
     """A running row renders its live elapsed span in the Duration cell:
-    duration_ms is NULL while a job runs (no finished_at), and the dash
-    that used to render there hid exactly the rows an operator triaging
+    duration_ms is NULL while a job runs (no finished_at), so a dash
+    in that cell hides exactly the rows an operator triaging
     the running-longest view needs a number on."""
     running_row = _live_row(running_for_ms=65_000)
     finished_row = _live_row(status="succeeded", duration_ms=1200)

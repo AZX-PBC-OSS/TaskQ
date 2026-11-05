@@ -1,4 +1,4 @@
-"""THE PROGRESS FACES + THE FENCE PINS: the SSE replay, the aggregation, the
+"""The progress faces + the fence pins: the SSE replay, the aggregation, the
 progress-lie fence, the gauge's cardinality.
 
 The obligations: the chain, the fan-out
@@ -505,7 +505,7 @@ async def test_sunk_join_for_progress_warns_at_validate(
 async def test_http_face_streams_display_then_progress(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """THE HTTP FACE: the route is REGISTERED on the admin router (the
+    """The hTTP face: the route is REGISTERED on the admin router (the
     thin mapping — the import law's lazy import), and the WIRE SHAPE is
     the generator's, pinned here on the real pool: the ``display`` frame
     FIRST (ledger-derived), the ``progress`` frames in seq order with

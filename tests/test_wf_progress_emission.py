@@ -1,4 +1,4 @@
-"""THE PROGRESS EMISSION'S PINS: ``ctx.progress``, the coalesce, the
+"""The progress emission's pins: ``ctx.progress``, the coalesce, the
 asymmetry.
 
 The obligations: the chain, the fan-out,
@@ -61,7 +61,7 @@ async def test_the_chain_body_emission_lands_in_both_channels(
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """THE CHAIN, end-to-end on the built runner: a body's
+    """The chain, end-to-end on the built runner: a body's
     ``ctx.progress`` calls land in the STREAM ring (class='user') AND the
     STATE channel (latest-wins), and the engine's auto projections
     (started + terminal) interleave in the SAME seq space — ONE stream,
@@ -127,7 +127,7 @@ async def test_declared_schema_door_refuses_wrong_shape(
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """THE TYPED DOOR (decision a — the TypedGate-door pattern): a node
+    """The typed door (decision a — the TypedGate-door pattern): a node
     that declared ``progress_schema=Page`` refuses a wrong-shaped data
     emission with :class:`ProgressRefusedError` — raised INTO the body,
     which is the authoring error's place. The refusal ladders like any
@@ -203,7 +203,7 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
     wf_pool: asyncpg.Pool,
     progress_redlog: RedLog,
 ) -> None:
-    """THE CHATTY BODY on the BUILT op (the PoC's 10k-emission proof,
+    """The chatty body on the built op (the PoC's 10k-emission proof,
     re-proven): 10,000 emissions in a tight loop →
     * the flush count is the CADENCE's, not the emissions' (the coalesce
       holds; the storm shape — a write per emission — is the rejected
@@ -266,7 +266,7 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
 
 
 async def test_flush_failure_never_fails_the_body(wf_sql: Any, wf_schema: str) -> None:
-    """THE ASYMMETRY (decision e), unit-shaped: a flush that CANNOT write
+    """The asymmetry (decision e), unit-shaped: a flush that CANNOT write
     (the pool is broken) is counted — ``write_errors`` — and NEVER raised
     into the body; the first loss is WARNED (the loudness half — the
     PoC's adversarial review note: a systematically failing flush must not look
@@ -354,7 +354,7 @@ async def test_drop_counter_on_the_record(
 async def test_terminal_projection_lands_after_the_finalize(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE PROJECTION'S ORDER (the display-fence's substrate): the auto
+    """The projection's order (the display-fence's substrate): the auto
     TERMINAL event lands only AFTER the finalize applied (the ledger owns
     the state; the projection publishes it) — and a FAILING node's
     terminal carries the outcome, so the display can derive the failure

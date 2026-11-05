@@ -2,7 +2,7 @@
 fix): the Route literal's TWO faces are checker-gated.
 
 The type-tagged face's keys are the payload union's member TYPES — a
-raw STRING key (the enum face's habit, or the pre-fix author's guess)
+raw STRING key (the enum face's habit, or the untyped author's guess)
 is a checker error at the literal, and the declaration-time totality
 check would refuse it too; the probe holds the STATIC face. The green
 face: a route keyed by the union's member types passes UNMARKED (the
@@ -84,7 +84,7 @@ def probe_string_key_on_enum_refused() -> None:
 
 
 def probe_type_keyed_route_clean() -> None:
-    """THE GREEN FACE: the route keyed by the union's member types —
+    """The green face: the route keyed by the union's member types —
     the narrowed-arms declaration passes UNMARKED."""
     Chain(
         name="type-route-clean",

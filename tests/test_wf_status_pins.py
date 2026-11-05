@@ -220,7 +220,7 @@ async def test_reconstruction_two_sources_rows_only(
     # verdict a root flip would report.
     assert reconstructed == "cancelled"
 
-    # THE REVERT-PROOF SHAPE (the cache recorded finding): a root LIED to
+    # THE REVERT-PROOF SHAPE: a root LIED to
     # ('running') must disagree with the rows — the check's sensitivity
     # demonstrated on this very state (the G7 teeth-scenario runs the full
     # lie through the fixture).
@@ -427,14 +427,14 @@ async def test_maintenance_leg_finalizes_the_wedged_root(
     wf_sql: WorkflowSql,
     propagation_redlog: RedLog,
 ) -> None:
-    """THE CRASH-WINDOW ROOT WEDGE (the phase-2 attack's wedge): tx1 commits
+    """The crash-window root wedge (the phase-2 attack's wedge): tx1 commits
     the child's terminal FAILURE, tx2 (the cascade) never runs — the
     sweep's blocked_required heal stamps the join, but the maintenance
     leg's ``has_live`` counted the stamped join row LIVE forever (nothing
     dispatches it, nothing fires it, nothing will ever terminalize it), so
     the root wedged 'running': unbounded retention (the pruner's liveness
     guard holds every row) + the dead run re-scanned every sweep pass.
-    THE FIX PINNED: the maintenance leg derives the root's terminal state
+    THE PINNED CONTRACT: the maintenance leg derives the root's terminal state
     FROM THE ROWS — the same reconstruction the debug view uses — and
     FINALIZES the root in the same tx when the rows are terminal and the
     root row isn't (the named terminal state + the reason). One sweep pass
@@ -504,7 +504,7 @@ async def test_maintenance_leg_finalizes_the_wedged_root(
     # THE MUTATION TEST (live, on a FRESH wedged flow): the maintenance
     # leg WITHOUT the failed-root arm (the old gate's shape — the finalize
     # requires EVERY row terminal, and the stamped join row is
-    # terminalizable by nothing) — the shipped statement's recorded finding
+    # terminalizable by nothing) — the wedge
     # reproduces and the root NEVER finalizes.
     mutated = wf_sql.workflow_root_maintain.replace(
         "(pf.has_failed AND NOT COALESCE(pf.has_unresolved, false))",
@@ -524,7 +524,7 @@ async def test_maintenance_leg_finalizes_the_wedged_root(
     wedged = await node_state(wf_conn, wf_schema, flow2)
     assert wedged["status"] == "running", (
         f"the mutated predicate did NOT wedge the root ({wedged['status']!r}) — "
-        "the scenario's recorded finding is broken: the mutant must reproduce the wedge"
+        "the scenario's contract is broken: the mutant must reproduce the wedge"
     )
     # The SHIPPED statement finalizes the same shape (the control arm —
     # the scenario's comparator is honest both ways).
@@ -614,7 +614,7 @@ async def test_rollup_cost_gate_index_driven(
     scan and an index scan cost the same and the plan assert cannot fail.
     Here the measured run is ONE AMONG MANY on a fleet table (40 runs +
     a 60k-row vanilla population), the production shape — the seq-scan
-    shape (the pre-fix index: the raw-TEXT key the reads' uuid cast
+    shape (the raw-TEXT index: the key the reads' uuid cast
     broke, measured p50 21.2 ms for the rollup and 20.7 ms for the
     per-node read at this very shape —
     .measurements/fix2/index-before-text-index.txt) REDS the plan assert.
@@ -730,12 +730,11 @@ async def test_rollup_cost_gate_index_driven(
             "samples_ms": [round(s, 3) for s in samples],
             "recorded_band_ms": band_budget_ms,
             "argument": (
-                "the pin REWRITTEN for the fleet shape (the phase-2 "
-                "attack's H3b): the pre-rewrite shape measured a table "
+                "the pin REWRITTEN for the fleet shape: the flow-solo shape measured a table "
                 "containing ONLY the measured flow's rows — the "
                 "measured flow WAS the whole table, so the plan assert "
                 "could not fail on a seq scan. At the fleet shape the "
-                "pre-fix index (01.00.26_01's raw-TEXT key) served NO "
+                "raw-TEXT index (01.00.26_01's key) served NO "
                 "flow-scoped read: the rollup read p50 21.2 ms and the "
                 "per-node read 20.7 ms, BOTH Seq Scans, linear in the "
                 "fleet table (.measurements/fix2/index-before-text-"

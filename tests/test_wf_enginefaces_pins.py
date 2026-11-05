@@ -1,4 +1,4 @@
-"""THE ENGINE-FACES PINS — the recorded reported ENGINE
+"""The engine-faces pins — the recorded reported ENGINE
 findings, fenced (the engine lane's evidence).
 
 The 3am pins (``tests/test_wf_3am_pins.py``) fenced the CLI/explorer
@@ -244,7 +244,7 @@ def _run_flows_status(
 def test_the_node_face_rides_one_read_through_the_engine_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE ONE-READ LAW: the CLI's status face is fed by the ENGINE's
+    """The one-read law: the CLI's status face is fed by the ENGINE's
     WORKFLOW_NODES_SQL — the query selects the 3am columns (started_at,
     failed_parent, the lease face's lock_expires_at) at the SOURCE, and
     the CLI issues ONE jobs fetch for the node rows. The rejected
@@ -288,7 +288,7 @@ def test_failed_parent_rides_the_engine_query(
 
 
 def test_the_engine_query_names_the_3am_columns() -> None:
-    """THE SOURCE LAW: WORKFLOW_NODES_SQL — the node rollup every status
+    """The source law: WORKFLOW_NODES_SQL — the node rollup every status
     surface reads — selects the columns the faces need (started_at, the
     failed_parent stamp, the lease face's lock_expires_at). The CLI's
     supplement read existed BECAUSE the engine query didn't; the columns

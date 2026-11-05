@@ -1,4 +1,4 @@
-"""THE HOLD-STAMP WEDGE + THE OUTBOX TTL — the D2 soak's P1/P3 fixes'
+"""The hold-stamp wedge + the outbox TTL — the D2 soak's P1/P3 fixes'
 pins (integration: real PG, the real engine surfaces).
 
 The soak's evidence (REPORT-D2-soak): a SIGKILL during a HELD loop leaves
@@ -143,7 +143,7 @@ async def _plant_wedge(
 async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE DELIVERED PATH: the wedge (the signal delivered, the stamp
+    """The delivered path: the wedge (the signal delivered, the stamp
     standing) is reclaimed by the arm — the stamp cleared, the row
     re-claimed, the body's re-execution REPLAYS the delivered answer from
     the queue (the resume contract) — the run COMPLETES. The 20-wedge
@@ -179,7 +179,7 @@ async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
 async def test_expired_hold_stamp_is_cleared_and_the_run_lands_the_named_timeout(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE EXPIRED PATH: the hold the expiry arm ABANDONED (the stamp
+    """The expired path: the hold the expiry arm ABANDONED (the stamp
     survived — the expiry sweep's two-statement shape is one wedge door)
     is reclaimed: the stamp cleared, the body re-executes, the wait site
     raises the typed timeout face, and the ladder terminal-fails the node
@@ -206,7 +206,7 @@ async def test_expired_hold_stamp_is_cleared_and_the_run_lands_the_named_timeout
 async def test_absent_hold_stamp_is_cleared_and_a_fresh_hold_resumes(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE ABSENT-HOLD PATH: the stamp pointing at a hold row that no
+    """The absent-hold path: the stamp pointing at a hold row that no
     longer exists (a purge, a corruption) is a DEAD POINTER — cleared, the
     body re-executes, mints a FRESH hold (a NEW epoch — the multi-hold
     law), and a resolve on it completes the run."""
@@ -239,7 +239,7 @@ async def test_absent_hold_stamp_is_cleared_and_a_fresh_hold_resumes(
 async def test_live_hold_is_left_standing(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE HELD PATH (the hold is the truth): a stamp whose hold row is
+    """The held path (the hold is the truth): a stamp whose hold row is
     still 'held' is the LEGITIMATE held representation — the arm leaves
     it untouched, and the resume re-dispatches the run to completion."""
 
@@ -263,7 +263,7 @@ async def test_live_hold_is_left_standing(
 async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE 20-WEDGE REPRO (the soak's own receipt): twenty runs planted in
+    """The 20-wedge repro (the soak's own receipt): twenty runs planted in
     the exact wedged end state — mixed delivered (10) / abandoned (5) /
     absent hold (5) — and ONE reconcile pass leaves ZERO of them in the
     wedge; every run then reaches its named state (resumed-and-completed,

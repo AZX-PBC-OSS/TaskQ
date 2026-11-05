@@ -263,7 +263,7 @@ class TestTU10StatusIsPending:
 class TestTU11DuplicateKeyTypedError:
     """A duplicate idempotency key aborts the fast batch with the typed
     DuplicateIdempotencyKeyError - the same classification the PG COPY
-    path gives (protocol parity; previously both surfaced a raw
+    path gives (protocol parity; a raw
     asyncpg.UniqueViolationError)."""
 
     async def test_intra_batch_duplicate_raises_typed_error(self) -> None:
@@ -1132,7 +1132,7 @@ class TestTIScopeAttributionVerification:
         only one of them repeats inside the batch, and the batch's own
         contents say which: the refusal names the repeating pair exactly.
 
-        This pin previously asserted the degrade (both fields None on an
+        An earlier shape of this pin asserted the degrade (both fields None on an
         ambiguous rendering); exact in-batch attribution superseded it -
         the answer never came from the detail text, so the text's
         ambiguity no longer costs the operator the pair."""
@@ -1472,8 +1472,8 @@ class TestTIPastScheduledAtNormalized:
     verbatim and lets the server CASE decide the status - a past value
     lands ``pending`` and is immediately dispatchable.  "Immediate" is
     expressed as ``scheduled_at=None`` (the server stamps it); the COPY arm
-    used to normalize past values to the Python batch clock, a cross-domain
-    decision the post-COPY fixup UPDATE removed.
+    must never normalize past values to the Python batch clock (a cross-domain
+    decision the post-COPY fixup UPDATE has no part in).
     """
 
     async def test_past_scheduled_at_not_stored_stale(self, pg_dsn: str) -> None:

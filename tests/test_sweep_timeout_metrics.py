@@ -451,8 +451,8 @@ async def test_failing_gauge_sampler_publishes_no_success_stamp(
 # backlog tick: its failure must not cost the tick the fleet-wide samples,
 # so it can never reach the tick-level handler that counts under
 # "backlog_detection". Its two failure arms (the fetch raising, and rows
-# coming back with a shape the cache rebuild cannot read) used to log a
-# bare WARN and move on, and the fetch arm's empty fallback CLEARS the
+# coming back with a shape the cache rebuild cannot read) must not log a
+# bare WARN and move on, and the fetch arm's empty fallback never CLEARS the
 # per-actor series, which resolves TaskQQueueDepthHigh (its operand is the
 # oldest-pending age) at the exact moment the incident it alerts on is
 # killing the read, with no metric naming the loss. Both arms must count on
@@ -572,7 +572,7 @@ async def test_actor_backlog_read_failure_counts_and_clears_only_its_own_gauges(
     sweep_metric_reader: InMemoryMetricReader,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE pin: the per-actor backlog read fails while every fleet
+    """The pin: the per-actor backlog read fails while every fleet
     read in the same tick succeeds.
 
     What the failure must produce, all at once: the per-actor series go

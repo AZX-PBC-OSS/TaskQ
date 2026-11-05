@@ -125,7 +125,7 @@ def test_json_log_exception_renders_class_and_traceback_scrubbed() -> None:
 
 def test_foreign_stdlib_exc_info_log_line_renders() -> None:
     """A foreign stdlib record with a real ``exc_info`` tuple must render as a
-    JSON line (it was previously DROPPED by the orjson fallback TypeError),
+    JSON line (never DROPPED by the orjson fallback TypeError),
     with the exception scrubbed."""
     obs_mod.setup_logging(log_format="json")
     exc = _leaky_unique_violation()
@@ -271,7 +271,7 @@ def test_repr_flattened_pg_detail_is_scrubbed_in_json_logs() -> None:
 
 def test_exception_object_field_renders_scrubbed_not_dropped() -> None:
     """An exception object passed as a field value must render as the scrubbed
-    safe message - previously the raw object hit the orjson fallback TypeError
+    safe message - the raw object must never hit the orjson fallback TypeError
     and the whole log line was dropped."""
     obs_mod.setup_logging(log_format="json")
     canary = "tenant-77-ssn-987654321"

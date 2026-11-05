@@ -52,9 +52,9 @@ FLEET_TUNING: dict[str, str] = {
     "TASKQ_LEADER_LEASE": "4",
     # The watchdog, tuned ABOVE its own sampling cadence: a warn budget
     # below the check interval warns on every healthy beat, and each
-    # warn's task dump blocks the loop — a self-sustaining storm (the
-    # drill's finding F6; the values keep the invariants: warn < budget,
-    # budget > check, budget + heartbeat < lock lease).
+    # warn's task dump blocks the loop — a self-sustaining storm. The
+    # values keep the invariants: warn < budget,
+    # budget > check, budget + heartbeat < lock lease.
     "TASKQ_WATCHDOG_CHECK_INTERVAL": "1.0",
     "TASKQ_WATCHDOG_LOOP_LAG_WARN_BUDGET": "1.5",
     "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "2.0",

@@ -23,10 +23,10 @@ their declared contract:
 
 * **Delay floor.** A zero-delay non-consuming deferral (``Snooze(0)``,
   ``RetryAfter(0, consume_budget=False)``, a denial with
-  ``retry_after=0``) used to land the job ``pending`` at
+  ``retry_after=0``) must never land the job ``pending`` at
   ``clock_timestamp()`` - first in every dispatch round, instantly
   re-claimable: a claim/refund hot loop monopolising a worker slot. The
-  effective delay is now floored at
+  effective delay is floored at
   :data:`taskq.constants.MIN_DEFERRAL_INTERVAL` in both non-consuming
   arms. The twin's floor is pinned in ``tests/test_denial_observability.py``;
   the pin here is the PG side of the same contract.

@@ -1,4 +1,4 @@
-"""THE MAINTENANCE LEG'S CORE PINS: the maintenance leg's
+"""The maintenance leg's core pins: the maintenance leg's
 failed arm gates on live UNRESOLVED work.
 
 THE FINDING (observed live in the streaming router concept-proof spike, PROOF.md §6b):
@@ -12,7 +12,7 @@ children of a terminal flow are unclaimable) stranded them pending forever
 (independent applications) that is the wrong semantics: one bad
 application must not kill the other 199.
 
-THE FIX (one leg, no column, no index, no migration): the failed arm
+THE CONTRACT (one leg, no column, no index, no migration): the failed arm
 gates on live UNRESOLVED work —
 
     bool_or(status IN ('running','crashed','abandoned')
@@ -185,7 +185,7 @@ async def test_failed_arm_wedge_cure_stands(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """THE BLOCKED-STAMP EXCLUSION IS LOAD-BEARING: the wedge's
+    """The blocked-stamp exclusion is load-bearing: the wedge's
     fix must survive the fix — a resolved-blocked join row
     (``blocking_reason='failed_parent'`` stamped by the crash-window heal)
     must NOT hold a failing run. With the fix, a stamped pending row is

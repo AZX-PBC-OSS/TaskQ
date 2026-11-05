@@ -405,7 +405,7 @@ def test_stacktrace_is_redacted_under_except_star() -> None:
 
 
 # A per-file check that _dispatch_sql.py spells the call
-# `record_exception_safe(span, exc)` used to sit here. It is subsumed by
+# `record_exception_safe(span, exc)` is subsumed by
 # test_no_raw_record_exception_remains_anywhere below: that guard is repo-wide,
 # so a dispatch site reverting to `span.record_exception(exc)` fails there
 # whatever file it lives in, and the redaction behaviour itself is pinned by
@@ -1033,7 +1033,7 @@ def test_password_containing_regex_metacharacters_is_fully_masked(raw: str) -> N
     as a regex fragment -- a password that happens to contain characters with
     regex meaning (``.``, ``$``, ``(``, ``)``, ``+``, ``*``, ``[``, ``]``) is
     ordinary data to ``re.sub`` and must be masked whole, not partially matched
-    or used to corrupt the substitution."""
+    or corrupting the substitution."""
     safe = safe_exception_message(Exception(raw))
     assert "***" in safe
     for fragment in ("hun.ter2$", "a(b)c+d*e[f]"):
@@ -1172,9 +1172,9 @@ def test_detail_scrub_stays_bounded_on_a_rendered_exception_group() -> None:
     the budget is a real discrimination only on a quiet serial runner. The
     linear render+scrub of these groups measures ~0.3 ms locally, but the
     matrix lane's co-tenancy (two xdist workers plus their containers on a
-    4-core runner) descheduled the run's thread inside the measured window
-    and read 405 ms on healthy code (CI run 36815836388) -- the budget
-    measured the environment, not the matcher, and no budget that could
+    4-core runner) deschedules the run's thread inside the measured window
+    and reads hundreds of ms on healthy code -- the budget
+    then measures the environment, not the matcher, and no budget that could
     catch a super-linear matcher survives that deschedule. Red on demand:
     a per-call tracer park (the ``--cov`` cost class) lands the same
     observable deterministically -- 66 traced calls in the timed region,

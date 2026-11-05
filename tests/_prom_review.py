@@ -12,7 +12,7 @@ Three pieces the review suites need and no other test provides:
   transient-Postgres failure, and dump the exposition served by both real
   scrape paths (the ``/jobs/health/metrics`` bridge router and the
   ``TASKQ_METRICS_PORT`` pull listener).
-- :func:`run_promtool_rule_tests`: the honest alert-rule evaluator. Writes
+- :func:`run_promtool_rule_tests`: the alert-rule evaluator. Writes
   a ``promtool test rules`` unit-test file whose input series carry the
   metric names and label sets captured from the real probe's exposition,
   then evaluates the shipped rules.yaml inside the ``prom/prometheus``
@@ -60,14 +60,13 @@ def _free_tcp_port() -> int:
     allocates its own port.
 
     The bind-and-close reservation is itself a race under heavy xdist
-    fan-out (-n 8: eight workers' probes allocating near-simultaneously
-    — two workers' bind-close windows handed out the SAME port, one
-    probe's exporter bound it first, the other's boot died EADDRINUSE
-    and its port fetches refused). The fix is the deterministic
-    partition: each xdist worker's probes draw from ITS OWN range
-    (``gw<N>`` -> base + N * stride), so no two workers' probes can
-    collide regardless of timing; the bind-close still dodges the
-    host's unrelated listeners within the range."""
+    fan-out (two workers' bind-close windows can hand out the SAME
+    port; one probe's exporter binds it first, the other's boot dies
+    EADDRINUSE and its port fetches refuse). The deterministic
+    partition removes the race: each xdist worker's probes draw from
+    ITS OWN range (``gw<N>`` -> base + N * stride), so no two workers'
+    probes can collide regardless of timing; the bind-close still
+    dodges the host's unrelated listeners within the range."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
@@ -388,15 +387,11 @@ async def _scrape_port() -> str:
 
 
 async def _poll_fetch_port(port: int, *, deadline_s: float = 45.0) -> str:
-    """POLL, don't knock once: the worker's boot (interpreter start, PG
-    connect, the first election attempt) has outrun any fixed wait under
-    co-tenancy — the follower arm's own recorded finding (3.14 leg, run
-    36629891786: the lone connect got Errno 111 and the missing file
-    failed three otherwise-green tests as PROBE_TASK_FAILED). The
-    LIVE arm raced the SAME boot the same way (the -n 8 consolidated
-    proof: the worker's PG connects queued behind eight workers' storm,
-    the port unbound at the LIVE knock, the one-shot refused). The port
-    answers under the poll or the boot genuinely died."""
+    """Poll, don't knock once: the worker's boot (interpreter start, PG
+    connect, the first election attempt) can outrun any fixed wait under
+    co-tenancy — the lone connect gets Errno 111 and the missing file
+    fails otherwise-green tests as PROBE_TASK_FAILED. The port answers
+    under the poll or the boot genuinely died."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + deadline_s
     while True:

@@ -756,7 +756,7 @@ async def test_fleet_of_deadline_hits_keeps_capacity_and_slots() -> None:
 async def test_tx_rollback_waits_out_the_unwind_before_touching_the_conn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE INSTRUMENT, the transactional path's rollback x the unwind
+    """The instrument, the transactional path's rollback x the unwind
     race. A tx-path body whose ``finally`` awaits ON the
     transaction connection past an 80ms deadline: the deadline's marker
     reached the transaction ``__aexit__`` while the unwind's statement was
@@ -875,7 +875,7 @@ async def test_tx_hostile_finally_past_the_budget_still_ends_at_the_deadline() -
 async def test_tx_hostile_finally_holding_the_conn_past_the_budget_records_the_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """THE RESIDUAL: the hostile ``finally``
+    """The residual: the hostile ``finally``
     holds the SHARED transaction connection ITSELF -- a SHIELDED conn
     execute that outlives the deadline AND the exit-wait budget. At budget
     expiry the marker proceeds, the transaction ``__aexit__``'s ROLLBACK

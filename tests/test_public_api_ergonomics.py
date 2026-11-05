@@ -1,4 +1,4 @@
-"""Public-API ergonomics: pins where the surface's contract used to mislead.
+"""Public-API ergonomics: pins where the surface's contract can mislead.
 
 Every test here exists because a real user reading a docstring (or an error
 message) was promised something the code did not deliver, or was handed an
@@ -94,10 +94,10 @@ def _silent_pubsub() -> MagicMock:
 
 # ── TaskQ constructor: rejected combinations say so at construction ──────
 #
-# The class docstring used to claim reload_interval was "ignored" for
-# dsn=/pool= — the code rejects it with a ValueError. A user who believed
-# the docstring either hit an inexplicable crash or, worse, dropped the
-# parameter and silently never got rotation. These pins hold the TRUE
+# The class docstring must never claim reload_interval is "ignored" for
+# dsn=/pool= — the code rejects it with a ValueError. A user who believes
+# the docstring either hits an inexplicable crash or, worse, drops the
+# parameter and silently never gets rotation. These pins hold the TRUE
 # contract: rejected combinations raise, loudly, naming the remedy.
 
 

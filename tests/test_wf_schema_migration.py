@@ -39,7 +39,7 @@ _SEED_ROWS = 10_000
 
 
 def _write_measurement(name: str, payload: dict[str, object]) -> None:
-    """THE APPEND-ONLY CONVERSION: the band artifact is RUN-SCOPED (the
+    """The append-only conversion: the band artifact is RUN-SCOPED (the
     in-place rewrite is the torn-write race; the newest CITED wins)."""
     from tests._wf_fixtures import write_band_artifact
 
@@ -396,7 +396,7 @@ async def _shape_stats(conn: asyncpg.Connection, target: str, _rows: int) -> dic
 
 
 async def test_pin_1_row_width_residual(width_schemas: dict[str, str]) -> None:
-    """THE ROW-WIDTH PIN: heap-bytes/row delta ≤ 8 AND avg-tuple delta ≤ 8
+    """The row-width pin: heap-bytes/row delta ≤ 8 AND avg-tuple delta ≤ 8
     (the five NULL/0 columns must ride MAXALIGN padding — the measured
     residuals are +3.0 B tuple / 0.0 B heap; re-measured here, never
     assumed)."""
@@ -425,7 +425,7 @@ async def test_pin_1_row_width_residual(width_schemas: dict[str, str]) -> None:
 
 
 async def test_pin_1_red_drill_misaligned_padding(width_schemas: dict[str, str]) -> None:
-    """THE ROW-WIDTH PIN'S REVERT PROOF: a deliberately-misaligned padding
+    """The row-width pin's revert proof: a deliberately-misaligned padding
     fixture (three boolean columns — forced attribute headers) MUST blow
     the bound — the pin can fail. The RED output is the scenario's measurement
     file; the shipped shape above stays green."""
@@ -452,7 +452,7 @@ async def test_pin_1_red_drill_misaligned_padding(width_schemas: dict[str, str])
 
 
 async def test_pin_2_partial_index_exemption(width_schemas: dict[str, str]) -> None:
-    """THE PARTIAL-INDEX PIN: each workflow partial index ≤ 1% of a
+    """The partial-index pin: each workflow partial index ≤ 1% of a
     same-column FULL index (the measured truth: 0.5%, 194x). The volume
     lives in a CLONE of the jobs table (LIKE ... INCLUDING ALL -- the
     migration's exact index shapes) so the 100k-row bulk never pollutes

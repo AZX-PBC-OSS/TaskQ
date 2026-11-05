@@ -41,7 +41,7 @@ def _make_args(
 
 class TestFirstEnqueueWins:
     """When an idempotency key already exists, the second batch returns the
-    previously-inserted row data."""
+    the row already inserted."""
 
     async def test_second_batch_returns_original_row_with_existing_key(
         self, clean_jobs_app: JobsApp

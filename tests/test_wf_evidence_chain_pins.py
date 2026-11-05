@@ -1,4 +1,4 @@
-"""THE SUPERSESSION CHAIN'S PINS — the estate-fixes round, fix 1.
+"""The supersession chain's pins — the estate-fixes round, fix 1.
 
 The evidence-heads verifier's law read "the link must resolve": a live
 claim marked ``superseded_by`` was judged by the HEAD link's existence
@@ -12,13 +12,13 @@ THE COUNTEREXAMPLE (built below, one pin per shape): stem A's live
 claim is marked ``superseded_by`` a capture whose file EXISTS — the old
 law's whole check — while the chain's END is a history entry recorded
 on a stale head, or a ghost, or the chain never terminates at all. The
-pre-fix verifier returned rc=0 on exactly this estate (the green
+pre-door verifier returned rc=0 on exactly this estate (the green
 receipt is the fix's own capture); the fixed verifier walks the chain
 to its TERMINAL entry and applies the head-sha rule THERE.
 
 Each pin runs the verifier script as a subprocess against a synthetic
 runs-dir (the precedent: the script is the subject, its rc is
-the verdict) and asserts the recorded finding — and the CONTROL pin proves
+the verdict) and asserts the verdict — and the CONTROL pin proves
 the fix does not over-reject: an honest chain (resolving links, a
 fresh on-disk terminal) stays GREEN.
 """
@@ -89,9 +89,9 @@ HEAD = _head()
 
 
 def test_the_stale_terminal_one_hop_reds(tmp_path: Path) -> None:
-    """THE COUNTEREXAMPLE, one hop: A's live claim is superseded_by a
+    """The counterexample, one hop: A's live claim is superseded_by a
     capture whose file EXISTS (the old law's whole check), and the chain
-    lands on a history entry recorded on a STALE head. The pre-fix
+    lands on a history entry recorded on a STALE head. The pre-door
     verifier greened exactly this estate (rc=0 — the fix's green
     receipt); the fixed law rejects at the chain's END."""
     runs = _estate(
@@ -111,8 +111,8 @@ def test_the_stale_terminal_one_hop_reds(tmp_path: Path) -> None:
 
 
 def test_the_stale_terminal_two_hops_reds(tmp_path: Path) -> None:
-    """THE WALK IS TO THE END: A → mid (fresh-looking, superseded) →
-    terminal (stale). The recorded finding must name the chain's LAST entry —
+    """The walk is to the end: A → mid (fresh-looking, superseded) →
+    terminal (stale). The verdict must name the chain's LAST entry —
     a one-hop check would have stopped at the resolving first link."""
     runs = _estate(
         tmp_path,
@@ -150,7 +150,7 @@ def test_the_ghost_terminal_reds(tmp_path: Path) -> None:
 def test_the_cycling_chain_reds(tmp_path: Path) -> None:
     """NO TERMINAL, NO CLAIM: two live claims supersede each other — the
     chain re-enters itself and never terminates. A chain with no end has
-    no effective claim; the pre-fix law saw two resolving links (green)."""
+    no effective claim; a two-link law reads the chain green)."""
     runs = _estate(
         tmp_path,
         [
@@ -164,7 +164,7 @@ def test_the_cycling_chain_reds(tmp_path: Path) -> None:
 
 
 def test_the_dangling_chain_reds(tmp_path: Path) -> None:
-    """THE DANGLING CHAIN: the link's target file exists on disk but NO
+    """The dangling chain: the link's target file exists on disk but NO
     registry entry claims it — the chain exits the index and lands on a
     capture that does not exist to the verdict (the manifest is the
     estate's only index)."""
@@ -181,9 +181,9 @@ def test_the_dangling_chain_reds(tmp_path: Path) -> None:
 
 
 def test_the_honest_chain_stays_green(tmp_path: Path) -> None:
-    """THE CONTROL: a chain whose links resolve and whose TERMINAL is a
+    """The control: a chain whose links resolve and whose TERMINAL is a
     fresh, on-disk capture stays GREEN — the fix rejects the broken
-    chains, never the honest one (the over-recorded finding would break the
+    chains, never the honest one (an over-broad verdict would break the
     live estate at every re-point)."""
     runs = _estate(
         tmp_path,
@@ -197,11 +197,11 @@ def test_the_honest_chain_stays_green(tmp_path: Path) -> None:
 
 
 def test_the_stale_terminal_is_never_saved_by_its_stems_fresh_tail(tmp_path: Path) -> None:
-    """THE HOLE'S EDGE: the stale terminal's OWN stem carries a fresh
+    """The hole's edge: the stale terminal's OWN stem carries a fresh
     live claim — the old law saw the fresh tail and greened the estate
     while the CHAIN (pointing at the history entry behind it) proved
     nothing. The chain's walk indexes EVERY entry, history included:
-    the recorded finding stands."""
+    the verdict stands."""
     runs = _estate(
         tmp_path,
         [

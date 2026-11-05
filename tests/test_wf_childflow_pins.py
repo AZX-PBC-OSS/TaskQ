@@ -1,4 +1,4 @@
-"""THE CHILD FLOWS' PINS: the spawn→join happy path (the parent's
+"""The child flows' pins: the spawn→join happy path (the parent's
 body gets the child's typed result; the parent↔child links BOTH
 directions), the child-fail face (the parent's ``ChildFailed`` arm —
 never a silent swallow), the cancel cascade (the parent cancelled → the

@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
-"""THE DURABLE TIMER'S PINS — the timer hold's contract across the child
+"""The durable timer's pins — the timer hold's contract across the child
 flows and the versioning contract's redeploy faces: a hold's deadline is
 the row's truth, the wake is addressed, and the expiry arm fires once.
 Each pin asserts the SAFE behavior.
@@ -70,7 +70,7 @@ THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
 the pack's acceptance law — each marker left only when its fix landed,
 and the pin's assertion outlives the fix:
 
-* T1, T2, T3a — the markers are REMOVED WITH THE FIXES (the
+* T1, T2, T3a — green here (the
   timer-fixes lane's landed shapes: the E17 mint refusal, the broadcast
   + backfill prefix filters, the drain cascade — the pins were xpass-
   strict at the reconciliation ground; the receipt rows name the fix
@@ -173,7 +173,7 @@ async def _t6_renamed(ctx: StepContext, params: str) -> str:
 
 
 def _install_registry(name: str, bodies: dict[str, Any]) -> None:
-    """THE REDEPLOY SEAM (the versioning pins' honest simulation): in
+    """The redeploy seam (the versioning pins' honest simulation): in
     production a redeploy is a NEW PROCESS whose registry carries the new
     code — the module-level map simply holds the new definition. In-test
     the same map is replaced under the SAME workflow name (the registry IS
@@ -218,7 +218,7 @@ async def _collect(listener: HitlListener, seconds: float) -> list[Any]:
 async def test_wait_signal_refuses_a_timer_prefixed_model(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE RESERVED PREFIX IS THE MINT'S DOOR: a ``wait_signal`` payload
+    """The reserved prefix is the mint's door: a ``wait_signal`` payload
     model whose name carries ``__timer__`` is refused NAMING the rule —
     at the build/validate door, or at the wait site as a LOUD named
     terminal (never the trojan lifecycle: invisible, unanswerable,
@@ -360,7 +360,7 @@ async def test_the_broadcast_and_backfill_never_surface_timer_holds(
 async def test_t3a_the_timer_arm_drains_the_due_set_in_one_cascade(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE DRAIN LAW: one sweep call cascade loops (bounded per batch)
+    """The drain law: one sweep call cascade loops (bounded per batch)
     until the due-set EMPTIES — 1500 due timers all resolve 'delivered'
     within the cascade, in a handful of seconds (never
     backlog/batch-per-30s-tick arithmetic). The pin calls the natural
@@ -421,7 +421,7 @@ async def test_t3a_the_timer_arm_drains_the_due_set_in_one_cascade(
 
 
 def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
-    """THE DUE-SCAN'S INDEX (the static leg): the migrations carry an
+    """The due-scan's index (the static leg): the migrations carry an
     index covering the timer due-scan — ``expires_at`` on ``wf_signals``
     (the ``(status, expires_at)`` partial, the plain ``expires_at``, or
     the equivalent whose column list LEADS the scan's filter+sort)."""
@@ -429,7 +429,7 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
     statements: list[str] = []
     for path in sorted(migrations.glob("*.sql")):
         statements += re.findall(
-            # THE HONEST MATCHER (the reconciled flip — the recorded finding'sreceipt):
+            # THE HONEST MATCHER (the reconciled flip):
             # the shipped index is the PARTIAL index leading expires_at
             # with the timer predicate, written CREATE INDEX IF NOT
             # EXISTS — the original regex's `\w+` choked on the "IF NOT
@@ -454,7 +454,7 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
 
 
 def test_timer_rows_never_render_the_human_resolve_form() -> None:
-    """THE FALSE AFFORDANCE DIES AT THE TEMPLATE: render the run page
+    """The false affordance dies at the template: render the run page
     with ONE timer hold + ONE human hold (both 'held', actions on) — the
     HUMAN row keeps its resolve form (the affordance's guard), the TIMER
     row renders NONE (the clock is the only resolver; a form that can
@@ -463,7 +463,7 @@ def test_timer_rows_never_render_the_human_resolve_form() -> None:
     in the pin's docstring.
 
     THE HARNESS RIDES THE PRODUCTION ENRICHMENT (the reconciled flip —
-    the recorded finding'sreceipt): the fixed template branches on the ``is_timer``
+    the reconciled flip): the template branches on the ``is_timer``
     field the holds projection enriches (``web/admin/_wf_rows.py``'s
     ``_normalize_hold`` — the row's own truth, derived from the signal
     name), so the harness passes its hold rows through THE SAME
@@ -562,7 +562,7 @@ async def test_flows_status_surfaces_the_version_drift(
     wf_pool: asyncpg.Pool,
     cli_settings: Any,
 ) -> None:
-    """THE STAMPS MUST BE READ: a run whose node rows carry >1 distinct
+    """The stamps must be read: a run whose node rows carry >1 distinct
     ``code_version`` (the redeployed-mid-run shape — the versioning contract contract's
     own adoption) is FLAGGED on the operator's run view: ``taskq flows
     status <run>`` carries a drift line naming the versions' plurality.
@@ -624,7 +624,7 @@ async def test_flows_status_surfaces_the_version_drift(
 async def test_a_vanished_node_key_terminal_fails_loudly(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """THE LOUD LAW (the house's failure doctrine): a run whose PENDING
+    """The loud law (the house's failure doctrine): a run whose PENDING
     node's key vanished from the registry (the structural redeploy — the
     rename) terminal-FAILS with a NAMED error class — the run's own rows
     tell the operator the truth — NEVER an eternal zombie (a 'running'

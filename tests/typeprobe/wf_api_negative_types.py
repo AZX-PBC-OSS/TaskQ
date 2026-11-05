@@ -74,7 +74,7 @@ async def probe_promise_where_data_is_wanted() -> None:
 
 
 def probe_exit_bare_return() -> None:
-    """THE EXIT SENTINEL'S RETURN POSITION (the §17.1 sentinel's type
+    """The exit sentinel's return position (the §17.1 sentinel's type
     surface): a body whose annotation promises ``Exit[Report]`` that
     returns a BARE value is the checker error (the sentinel is the
     annotation's only valid return; a plain ``T`` return is the DATA
@@ -114,7 +114,7 @@ def probe_exit_bare_return_none() -> None:
 
 
 def _map_tail_exit_body() -> Callable[[Any, list[Report]], Awaitable[Exit[Report]]]:
-    """THE MAP-JOIN'S PROMISE-VS-DATA DOOR (the consumption contract's
+    """The map-join's promise-vs-data door (the consumption contract's
     type surface): the join's promise is WIRING — the direct unit-call
     form wants the COLLECTED DATA (the list), never the promise object.
     (The factory's return is ANNOTATED: ty infers an unannotated

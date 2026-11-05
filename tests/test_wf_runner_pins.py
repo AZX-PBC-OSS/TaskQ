@@ -1,4 +1,4 @@
-"""THE RUNNER PINS: the integration tier (the real PG lane). The
+"""The runner pins: the integration tier (the real PG lane). The
 API's compile lowers into the ENGINE's rows and drives through the
 engine's own finalize/sweep machinery — every pin here exercises the REAL
 path (create → drive → read), never a local re-implementation.
@@ -66,7 +66,7 @@ async def _double(ctx: StepContext, report: Report) -> dict[str, int]:
 
 
 async def _total(ctx: StepContext, a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
-    """THE JOIN'S USER BODY (cut #1's fix): receives the DECODED parent
+    """The join's user body: receives the DECODED parent
     results — its result cascades downstream."""
     return {"total": a["n"] + b["n"]}
 
@@ -334,7 +334,7 @@ async def test_dispatch_resolves_bodies_from_the_definition_registry(
     # THE REGISTRY IS THE TRUTH: the compile registered the bodies.
     definition = get_registry().get("d1_flow")
     assert "only" in definition.bodies
-    # The D1 recorded finding: resolve from an UNREGISTERED name → the KeyError
+    # The D1 contract: resolve from an UNREGISTERED name → the KeyError
     # (dispatch resolves by the ROOT's stamped workflow name — the
     # durable leg the sweep's healer uses).
     with pytest.raises(KeyError, match="not registered"):

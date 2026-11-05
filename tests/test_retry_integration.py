@@ -443,7 +443,7 @@ async def test_schedule_to_close_computed_server_side(
     own implicit transaction, so it is not subject to the transaction-start
     freezing that would matter in a multi-statement transaction).  Verifies
     PG-side ``clock_timestamp() + $::interval`` evaluation (the SQL actually
-    used to compute schedule_to_close), not Python-side.
+    computing schedule_to_close), not Python-side.
     """
     from pydantic import BaseModel
 

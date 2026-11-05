@@ -48,10 +48,10 @@ def test_rate_limiting_guide_upserts_rather_than_updates() -> None:
 
 def test_dispatch_sql_documents_the_toctou_for_max_concurrent() -> None:
     """The source documents this window for `max_concurrent` -- the one
-    operators actually tune. The doctrine moved with the count when the
-    fleet-wide running_per_actor CTE was replaced by the cap-gated
-    correlated count: the preamble that used to sit above the CTE
-    now lives in per_actor_capacity's residual expression, still ahead
+    operators actually tune. The doctrine lives with the count: the
+    fleet-wide running_per_actor CTE is replaced by the cap-gated
+    correlated count, and the preamble sits in per_actor_capacity's
+    residual expression, still ahead
     of the first place the count is read."""
     sql = (_SRC / "backend" / "_dispatch_sql.py").read_text()
     # The doctrine block lives in per_actor_capacity's body (it moved

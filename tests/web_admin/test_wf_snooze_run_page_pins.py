@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier; every value is $-bound.
-"""THE SNOOZED STEP'S ADMIN FACE — the run page answers "why is this step
+"""The snoozed step's admin face — the run page answers "why is this step
 sitting here".
 
 The wf snooze/RetryAfter disposition (``tests/test_wf_snooze_pins.py``)
@@ -128,7 +128,7 @@ async def test_run_page_renders_the_snoozed_state(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE USEFULNESS PIN: the run page's node table renders the snoozed
+    """The usefulness pin: the run page's node table renders the snoozed
     step's deferral line — the signal, the next fire time, the deferral
     count — so the operator knows WHY the step is sitting there; a step
     that never deferred renders no line."""
@@ -161,7 +161,7 @@ async def test_sse_frame_carries_the_deferral_label(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE LIVE PATCH'S DATA: the SSE snapshot's node entries carry the
+    """The live patch's data: the SSE snapshot's node entries carry the
     deferral label (the JS paints/clears the line from the frame — the
     label is the row's truth, never a stale decoration); the frame for a
     step that never deferred carries none."""
@@ -191,7 +191,7 @@ async def test_the_deferral_line_clears_when_the_step_moves_on(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE ROW'S TRUTH: past the delay the step re-claims and terminalizes
+    """The row's truth: past the delay the step re-claims and terminalizes
     — the deferral line is gone from the page (the label reads the row,
     and the row no longer sits)."""
     schema = module_pg_schema.schema_name
@@ -221,7 +221,7 @@ async def test_the_deferral_line_clears_when_the_step_moves_on(
 
 
 def test_the_deferral_label_bounds_a_hostile_signal_stamp() -> None:
-    """THE LABEL'S BOUND (C3 — H-C9's law at the deferral's face): the
+    """The label's bound (C3 — H-C9's law at the deferral's face): the
     stamp's ``signal`` is row-sourced free text (the jsonb boundary's
     other side) — a hostile 10KB signal renders TRUNCATED through the
     node panel's own ``_truncate_error_text`` limit, never a 10KB line
@@ -263,7 +263,7 @@ async def test_the_runs_list_exposes_a_pathologically_deferring_run(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """THE RUN-LEVEL VISIBILITY (C4): the runs LIST carries the deferral
+    """The run-level visibility (C4): the runs LIST carries the deferral
     state at the RUN level — a pathologically deferring run is visible
     from the inventory (the badge: the sitting nodes' count, the next
     fire, the deferral depth — the row's own aggregated truth), never
@@ -324,10 +324,10 @@ async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
     clean_pg_conn: Any,
     demo_app_module: Any,
 ) -> None:
-    """THE CAST'S BOUND (the re-review's required residual — the 500): a
+    """The cast's bound (the re-review's required residual — the 500): a
     hostile deferral stamp whose ``attempt`` overflows the int4 domain
     (an 11-digit write) must not kill the WHOLE Workflows list — the
-    pre-fix regex admitted it and the ``::int`` cast 500'd every render.
+    unterminated regex admits it and the ``::int`` cast 500s every render.
     The page renders; the hostile stamp is refused the badge (the CASE
     degrades it to NULL — the badge's law keeps its discriminator, the
     degrade is honest: an unverifiable stamp never reads as a live
@@ -335,7 +335,7 @@ async def test_the_runs_list_survives_an_overflow_shaped_deferral_stamp(
 
     schema = module_pg_schema.schema_name
     # THE HOSTILE RUN: a seeded root + a node row resting 'scheduled' on
-    # an overflow-shaped deferral stamp (the reviewer's exact write).
+    # an overflow-shaped deferral stamp (the exact hostile write).
     from tests._wf_fixtures import seed_flow, seed_running_node
 
     hostile_flow = await seed_flow(clean_pg_conn, schema, status="running")

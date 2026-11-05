@@ -2,8 +2,8 @@
 cancel in flight must survive the actor's own write attempts.
 
 The regression: a cancel that escalated to ``cancel_phase = 2`` in the
-same moment the actor raised an ordinary retryable exception used to
-survive the retry write, leaving ``cancel_phase`` and
+same moment the actor raises an ordinary retryable exception must not
+survive the retry write — surviving it leaves ``cancel_phase`` and
 ``cancel_requested_at`` on the row.  Retries reuse the SAME job row, so
 the next attempt was dispatched already at FORCED - the cancel
 controller's fast-advance then skipped straight past phase 2 without

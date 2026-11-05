@@ -1235,8 +1235,8 @@ def test_worker_main_leaves_the_host_signal_disposition_alone(
     """In-process ``worker_main`` must not mutate the host's SIGTERM
     disposition.
 
-    Why this pin exists: ``worker_main`` used to end with
-    ``signal.signal(SIGTERM, SIG_IGN)`` - correct for the entrypoints that
+    Why this pin exists: ``worker_main`` must end with a HANDLED
+    SIGTERM disposition - an ignored one is correct only for the entrypoints that
     ``sys.exit`` immediately, poison for every other caller. An ignored
     disposition is inherited by every process the host forks from then on
     (exec preserves "ignored", unlike handlers), and the proven failure is

@@ -516,7 +516,7 @@ async def test_cron_ledger_renders_counts_and_the_runaway_badge(
 
 
 async def test_healthy_fleet_renders_no_badges(matrix: tuple[_Mounted, _Mounted]) -> None:
-    """THE behavioral claim: the healthy fleet's page renders
+    """The behavioral claim: the healthy fleet's page renders
     NO verdict badge anywhere — no over-capacity, no unservable, no
     idle fleet, no runaway."""
     _, healthy = matrix

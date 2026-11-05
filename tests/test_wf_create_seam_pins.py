@@ -1,14 +1,14 @@
-"""THE CREATE-SEAM PINS (the migrations/run-creation front's recorded findings,
-fixed): the create's atomicity, the run-key claim's honesty, the
-root-marker dispatch fence, the nodeless-root reap belt, and the packaged
-one-call run.
+"""The create-seam pins: the create's atomicity, the run-key claim's
+honesty, the root-marker dispatch fence, the nodeless-root reap belt,
+and the packaged one-call run.
 
-THE RECORDED FINDINGS THE PINS HOLD RED FOREVER:
+THE CONTRACTS THE PINS HOLD:
 
-1. **THE CREATE ATOMICITY** — the pre-fix create was N+M+2 auto-committed
-   statements: the root insert COMMITTED ALONE and the static nodes +
-   ROOT_START rode a second acquire with no ``conn.transaction()``. The
-   kill window committed the ORPHAN ROOT (pending, ZERO nodes): a root
+1. **THE CREATE ATOMICITY** — the create is ONE
+   transaction (root + nodes + edges + ROOT_START; an N+M+2
+   auto-committed spelling whose root insert commits ALONE is the
+   defect). The
+   kill window would commit the ORPHAN ROOT (pending, ZERO nodes): a root
    ``WORKFLOW_ROOT_MAINTAIN_SQL`` cannot derive (its rollup INNER-JOINS
    the node rows — a nodeless root never derives, never terminalizes,
    never prunes), and one that SQUATS THE RUN KEY (the retry's arbiter
@@ -175,7 +175,7 @@ async def test_pin_kill_retry_completes_the_run(
     createseam_redlog: RedLog,
 ) -> None:
     """PIN 1b — THE RETRY COMPLETES: the legacy debris (a root committed
-    without its nodes — the pre-fix head's exact product, crafted here
+    without its nodes — the orphan root, crafted here
     through the shipped root claim) + the retry create_flow(run_key=…)
     → the nodes LAND, the root runs, the flow reaches terminal. The
     rejected retry was ``created=False → early return``: the census
@@ -456,7 +456,7 @@ async def test_pin_nodeless_root_reap_count_is_the_true_count(
     "count" (measured on this tree: ``265174781926550178777984214673248076994``)
     that rode ``taskq.sweep.rows``'s sample; a multi-row reap's magnitude
     was lost with it (one orphan reaped, two reported as one
-    128-bit-hash-fragment). THE FIX: the statement answers ``count(*)``
+    128-bit-hash-fragment). THE CONTRACT: the statement answers ``count(*)``
     (a bigint), the caller's cast is the pin's contract (the metric never
     samples a non-int), and the pin asserts the EXACT count — one orphan
     seeded, exactly 1 returned, never more, never a hash fragment."""
@@ -499,9 +499,9 @@ async def test_pin_packaged_run_one_call_end_to_end(
     ``taskq.workflows.run(flow, pool, schema, input=…, key=…)`` exists and
     works END TO END — the typed claim + the drive + the decoded result.
     The re-run against the terminal run answers the HONEST claim (the
-    demo's 409/202 distinction rides it). The phantom API the pre-fix
-    docs taught (``workflows.run(flow, input, key=…)``) did not exist at
-    all — this pin holds the REAL surface."""
+    demo's 409/202 distinction rides it). The phantom API spelling
+    (``workflows.run(flow, input, key=…)``) does not exist —
+    this pin holds the REAL surface."""
     import taskq.workflows as wf
 
     if not hasattr(wf, "run"):

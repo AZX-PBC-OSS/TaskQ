@@ -478,7 +478,7 @@ def test_worker_settings_log_format_rejects_invalid_value() -> None:
 
 def test_worker_settings_log_format_rejects_invalid_value_even_when_validate_disabled() -> None:
     # Regression: choices= is a built-in constraint that load_from_dict(..., validate=False)
-    # skips, so log_format previously accepted arbitrary strings under validate=False.
+    # skips, so an unvalidated log_format accepted arbitrary strings.
     # The validator hook runs regardless of validate=, closing the hole.
     from dotenvmodel import ConstraintViolationError
 
@@ -1088,8 +1088,8 @@ async def test_cancel_where_notify_failed_event_name_is_kebab(
     # Declared BackendSettings field, read directly by cancel_where now that
     # the protocol carries the event-writer knobs: supply it explicitly so
     # the Mock stands in for a real settings object instead of relying on
-    # Mock auto-attributes (whose child-Mock values no longer pass through
-    # an int() coercion that used to mask them).
+    # Mock auto-attributes (whose child-Mock values do not survive
+    # the int() coercion).
     mock_deps.settings.event_writer_batch_size = DEFAULT_EVENT_WRITER_BATCH_SIZE
     mock_deps.settings.event_writer_statement_timeout_ms = DEFAULT_EVENT_WRITER_STATEMENT_TIMEOUT_MS
     pool = Mock()

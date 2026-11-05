@@ -30,7 +30,7 @@ names/labels - or that fires on a healthy fleet - fails here.
 Marks: integration (testcontainers PG), otel ([prometheus] extra); the
 lock-contention family and the two promtool binding pins carry
 load_sensitive (their verdicts are emission-window-dependent — PR #698's
-recorded finding) and run in the serial load-sensitive lane.
+band) and run in the serial load-sensitive lane.
 """
 
 from __future__ import annotations
@@ -553,7 +553,7 @@ class TestWatchdogFamily:
 
 
 class TestFleetHandover:
-    # load_sensitive (PR #698's recorded finding — one root, four faces in this
+    # load_sensitive (one root, four faces in this
     # file): the contention counters record the LOSING side of a lock race
     # whose cycle the lease/tick machinery owns — the follower's election
     # against the leader's lease, the tick's try-lock against the held
@@ -1441,7 +1441,7 @@ def test_threshold_margins_fire_exactly_at_the_documented_line(
 # load_sensitive: the binding asserts require the contention series to be
 # among the REAL scrapes' emissions — the harness's literal "0+1x30"
 # contention feed presumes the event landed inside the probe's window
-# (PR #698's recorded finding: a slow runner's elections don't cycle in time).
+# (a slow runner's elections don't cycle in time).
 # Same family note as TestFleetHandover.
 @pytest.mark.load_sensitive
 def test_harness_series_are_bound_to_the_served_exposition(
@@ -1581,7 +1581,7 @@ def test_every_alert_rule_fires_on_real_names_and_labels(
 
 
 def test_every_runbook_alert_row_names_a_rule_shipped_in_both_files() -> None:
-    """THE RUNBOOK ↔ SHIPPED-ALERT CROSS-CHECK (the cross-check scenario,
+    """The runbook ↔ shipped-alert cross-check (the cross-check scenario,
     made mechanical): every ``## TaskQ…`` alert row in
     ``docs/guides/runbooks.md`` names an alert SHIPPED in BOTH
     ``contrib/prometheus/rules.yaml`` AND ``contrib/kubernetes/prometheus_rule.yaml``

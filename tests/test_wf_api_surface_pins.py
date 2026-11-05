@@ -1,4 +1,4 @@
-"""THE API-SURFACE PINS: the decorator's composition contract
+"""The api-surface pins: the decorator's composition contract
 (F3 — no second, invisible actor population), the channel/gate
 declaration doors, and the Mermaid emission's shape vocabulary (the
 golden's grammar).
@@ -50,7 +50,7 @@ def test_actor_projects_the_estate_carrier() -> None:
     the same shape the config sync + the guards + ``TASKQ_QUEUES_STRICT``
     consume, IN THE REAL PROJECTION'S ONE VOCABULARY (the — the
     ``ActorConfig`` field set, the ``workflow_actor`` metadata mark; the
-    pre-fix carrier's workflow-namespaced actor name and the
+    the workflow-namespaced actor name and the
     ``ActorRef``-shaped max_attempts/retry_kind fields were a second,
     divergent scheme). The capacity terms declared ride the row; the
     reservations do NOT (no field — the ensure-slots pass owns their
