@@ -81,7 +81,7 @@ _sweep_rows_counter = _meter.create_counter(
 )
 
 
-# Split so a timed-out sweep call can record its duration WITHOUT a row
+# Split so a timed-out sweep call can record its duration without a row
 # sample: the row count is bound by the awaited call the deadline aborted,
 # and a 0-row sample would be indistinguishable from a healthy empty sweep.
 
@@ -258,16 +258,16 @@ _QUERY_QUEUE_DEPTH_SQL_TEMPLATE = (
     "WHERE status IN ('pending', 'scheduled') GROUP BY queue"
 )
 
-#: Due-NOW depth per queue — the dispatch index's own population (pending
-#: AND scheduled_at <= statement_timestamp()): the work a worker could
+#: Due-now depth per queue — the dispatch index's own population (pending
+#: and scheduled_at <= statement_timestamp()): the work a worker could
 #: claim this instant. This is the depth numerator
 #: :func:`taskq.insights.fetch_queue_imbalance`'s ``utilization`` column
 #: divides by effective capacity, and the utilization gauge must divide
-#: the SAME population or the ratio's threshold semantics drift from the
+#: the same population or the ratio's threshold semantics drift from the
 #: SQL contract: a big future-armed wave inflates the pending+scheduled
 #: ``taskq.queue.depth`` gauge without any queue being starved.
-#: statement_timestamp() (STABLE), not clock_timestamp(), so the bound
-#: stays an Index Cond on jobs_dispatch_idx (queue, priority DESC,
+#: statement_timestamp() (stable), not clock_timestamp(), so the bound
+#: stays an Index Cond on jobs_dispatch_idx (queue, priority desc,
 #: scheduled_at) WHERE status = 'pending' — the same two-clock rule as
 #: every sibling sampler here.
 _QUERY_QUEUE_DUE_DEPTH_SQL_TEMPLATE = (
@@ -281,24 +281,24 @@ _QUERY_RESERVATION_SLOTS_SQL_TEMPLATE = (
 )
 
 #: Per-(queue, status) depth: the depth read's own GROUP BY extended with
-#: ``status`` — the JOINABLE status split. Sampled by the leader in the
+#: ``status`` — the joinable status split. Sampled by the leader in the
 #: same tick (and on the same connection) as the depth gauge, so the two
 #: describe one moment. Kept on a separate instrument
 #: (``taskq.queue.depth_by_status``) rather than relabeling
 #: ``taskq.queue.depth`` because the shipped alert set
-#: (``TaskQQueueUnserved``'s ``on(queue)`` join) and the cardinality
+#: (``TaskqqueueUnserved``'s ``on(queue)`` join) and the cardinality
 #: proofs pin the depth gauge's one-series-per-queue label set.
 #: statement_timestamp() vs clock_timestamp(): no time bound here (the
-#: two statuses ARE the population), matching the depth read above.
+#: two statuses are the population), matching the depth read above.
 _QUERY_QUEUE_DEPTH_BY_STATUS_SQL_TEMPLATE = (
     'SELECT queue, status, count(*) FROM "{schema}".jobs '
     "WHERE status IN ('pending', 'scheduled') GROUP BY queue, status"
 )
 
-#: The retry ladder's per-actor read: ONE grouped aggregate over the
-#: non-terminal population past its first attempt, producing BOTH haunt
+#: The retry ladder's per-actor read: one grouped aggregate over the
+#: non-terminal population past its first attempt, producing both haunt
 #: gauges' inputs — ``retrying`` (the population count) and
-#: ``min_headroom`` (MIN(max_attempts - attempt), how close the actor's
+#: ``min_headroom`` (min(max_attempts - attempt), how close the actor's
 #: worst live row is to its ceiling). The three live statuses are
 #: served by their per-status partial indexes (the same serving path
 #: the exact by_status counts use); ``attempt > 0`` is a post-scan
@@ -315,8 +315,8 @@ _QUERY_JOBS_RETRYING_SQL_TEMPLATE = (
     "GROUP BY actor"
 )
 
-#: Non-terminal jobs with a cancel in flight: the DURABLE cancel
-#: surface a scrape can see. cancel_phase is NOT NULL DEFAULT 0, and
+#: Non-terminal jobs with a cancel in flight: the durable cancel
+#: surface a scrape can see. cancel_phase is not NULL default 0, and
 #: only the cancel ladder's writes move it off 0, so the count is the
 #: number of rows the protocol owes a terminal write. The status bound
 #: keeps a hypothetical terminal row with a stale phase (none exists
@@ -329,13 +329,13 @@ _QUERY_CANCEL_PENDING_SQL_TEMPLATE = (
 )
 
 #: The workflow progress rollup: per (declared workflow, node state)
-#: node counts — ONE grouped read for the wf-progress gauge and the
+#: node counts — one grouped read for the wf-progress gauge and the
 #: admin's status panel alike (the query-count pin). Index-driven: the
 #: node rows ride jobs_wf_flow_nodes_idx (01.00.26_02 — the uuid-cast
 #: expression, the workflow-rows-only partial `metadata ? 'flow_id'`,
-#: which this WHERE names exactly: the read is O(the fleet's WORKFLOW
+#: which this WHERE names exactly: the read is O(the fleet's workflow
 #: rows), never a seq scan of the fleet table), each root a primary-key
-#: probe. The `_other_` collapse happens in the SAMPLER (it knows the
+#: probe. The `_other_` collapse happens in the sampler (it knows the
 #: registered names); the read groups by the run's own stamped name,
 #: unregistered or not.
 _QUERY_WF_PROGRESS_SQL_TEMPLATE = (
@@ -348,8 +348,8 @@ _QUERY_WF_PROGRESS_SQL_TEMPLATE = (
     "GROUP BY 1, 2"
 )
 
-#: The scheduled wave's horizon: MAX(scheduled_at) over the scheduled
-#: population minus now, in seconds. statement_timestamp() (STABLE) for
+#: The scheduled wave's horizon: max(scheduled_at) over the scheduled
+#: population minus now, in seconds. statement_timestamp() (stable) for
 #: the two-clock rule every sampler here follows; the measured
 #: difference itself stays on the server clock (one expression, one
 #: moment). NULL over an empty population — the caller expresses "no
@@ -393,22 +393,22 @@ _JOB_ATTEMPTS_COLUMNS: tuple[str, ...] = (
 _JOB_ATTEMPTS_COLUMNS_CSV = ", ".join(_JOB_ATTEMPTS_COLUMNS)
 _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS_COLUMNS)
 
-# Two clocks, one candidate window. The SELECTION bound is
-# statement_timestamp() (STABLE, the database's wall clock at this
-# statement's start): a VOLATILE clock_timestamp() comparison cannot be a
+# Two clocks, one candidate window. The selection bound is
+# statement_timestamp() (stable, the database's wall clock at this
+# statement's start): a volatile clock_timestamp() comparison cannot be a
 # btree index condition, so the candidate scan degrades to a post-scan
 # Filter that walks jobs_finished_at_idx's whole terminal population per
 # batch, measured on a 70k-terminal-row corpus (PG 18, EXPLAIN ANALYZE,
-# BUFFERS): 1,757 buffers / ~11 ms per drained-state call vs 2 buffers /
+# buffers): 1,757 buffers / ~11 ms per drained-state call vs 2 buffers /
 # ~0.05 ms when the stable bound is an Index Cond that terminates at the
 # range boundary (pinned, including the server-prepared form a
 # long-lived connection runs past five same-statement executions, by
-# tests/test_index_audit.py). The WRITE side, the archived_at/expire_at
+# tests/test_index_audit.py). The write side, the archived_at/expire_at
 # stamps in _ARCHIVE_CTE_SQL below, stays clock_timestamp(): the same
 # clock that wrote finished_at, so a skewed worker host cannot silently
 # extend or shorten retention, and the stamps cannot disagree with the
 # clock domain of the rows they annotate. With the window and the write
-# split into two statements, the selection bound is the CANDIDATE
+# split into two statements, the selection bound is the candidate
 # statement's statement_timestamp() (its statement start, before the
 # batch's rows are known), and the write statement re-verifies the age
 # against its own statement_timestamp() at lock time: a row dropped
@@ -417,14 +417,14 @@ _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS
 # retention cutoff); a stamp written is never older than the cutoff
 # the candidate window used.
 #
-# Why the candidate window is its OWN statement, and why it carries no
+# Why the candidate window is its own statement, and why it carries no
 # row locks: measured on the same corpus, any lock-bearing arm inside
 # the same statement (a FOR UPDATE on this window, or a lock-by-id CTE
 # joined beside it) pushes the statement's custom-plan cost estimate
 # past the generic plan's (the lock prices heap fetches, and the arm's
 # own join prices a whole-table scan against the batch's probe count).
 # Past five executions the plancache then flips the statement to the
-# GENERIC plan, and the generic form cannot prove the partial index's
+# generic plan, and the generic form cannot prove the partial index's
 # predicate for bound parameters: the candidate scan degrades into a
 # bitmap-plus-sort population walk (measured: the prepared pin fails
 # with LockRows atop the window). As its own statement the window's
@@ -447,30 +447,28 @@ _JOB_ATTEMPTS_COLUMNS_QUALIFIED_CSV = ", ".join(f"ja.{c}" for c in _JOB_ATTEMPTS
 # law binds taskq.workflows only, and backend is the engine's own layer).
 _TERMINAL_SQL_LITERAL = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
 
-# The BASE candidate predicate: terminal status + the retention age.
+# The base candidate predicate: terminal status + the retention age.
 _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL = (
     'SELECT id FROM "{schema}".jobs'
     ' WHERE status = $1::"{schema}".job_status'
     "   AND finished_at < statement_timestamp() - $2::interval"
 )
 
-# THE WORKFLOW-LIVENESS GUARD (the pruned-parent face): retention must not
-# prune a PARENT row of a NON-TERMINAL run -- the sweep's ledger recount
-# (the lock-first re-derive) reads parent rows as truth; a pruned parent
-# mid-run breaks the recount (the recount's count is corrupted by the
-# missing row). A row that is NO parent (no wf_edge row points at it)
-# prunes on the normal schedule, and a TERMINAL/CANCELLED run's rows
-# prune on the NORMAL schedule too (the guard is LIVENESS-scoped, not a
-# retention exemption -- the over-hold shape is its own
-# defect variant, the pin rides it). Index-backed: the guard's probe rides
-# wf_edge_parent_idx + the flow root's primary key, one bounded probe
-# per candidate. The rolling-deploy tolerance composes it AWAY (see
-# _compose_candidate_sql): a pre-workflow schema has no wf_edge table,
-# and a guard that cannot resolve is the prune's death -- the fallback is
-# the UNGUARDED predicate, which is semantically EXACT there (no
-# workflow tables = no liveness to protect); the fallback is logged once
-# per process (a stuck fallback would otherwise mute the guard silently;
-# a per-batch line would be noise during a deploy).
+# retention must not prune a parent row of a non-terminal run -- the sweep's
+# ledger recount (the lock-first re-derive) reads parent rows as truth; a
+# pruned parent mid-run breaks the recount (the recount's count is corrupted by
+# the missing row). A row that is no parent (no wf_edge row points at it)
+# prunes on the normal schedule, and a terminal/cancelled run's rows prune on
+# the normal schedule too (the guard is liveness-scoped, not a retention
+# exemption -- the over-hold shape is its own defect variant, the pin rides
+# it). Index-backed: the guard's probe rides wf_edge_parent_idx + the flow
+# root's primary key, one bounded probe per candidate. The rolling-deploy
+# tolerance composes it away (see _compose_candidate_sql): a pre-workflow
+# schema has no wf_edge table, and a guard that cannot resolve is the prune's
+# death -- the fallback is the unguarded predicate, which is semantically exact
+# there (no workflow tables = no liveness to protect); the fallback is logged
+# once per process (a stuck fallback would otherwise mute the guard silently; a
+# per-batch line would be noise during a deploy).
 _WORKFLOW_LIVENESS_GUARD_SQL = (
     "   AND NOT EXISTS ("
     '       SELECT 1 FROM "{schema}".wf_edge e'
@@ -524,9 +522,9 @@ def _unguarded_candidate_actor_sql(schema: str) -> str:
     )
 
 
-#: The composed candidate windows: the GUARDED predicate is the shipped
+#: The composed candidate windows: the guarded predicate is the shipped
 #: shape (the guard rides every candidate read — the prune and the
-#: per-actor variant compose the SAME guard).
+#: per-actor variant compose the same guard).
 _ARCHIVE_CANDIDATE_PREDICATE_SQL = (
     _ARCHIVE_CANDIDATE_PREDICATE_BASE_SQL + _WORKFLOW_LIVENESS_GUARD_SQL
 )
@@ -542,19 +540,19 @@ _ARCHIVE_CANDIDATE_ACTOR_SQL = (
 
 # The archive write: one statement per batch, fed the candidate ids the
 # candidate window (above) selected in the same transaction. The
-# MATERIALIZED fence keeps the lock arm from being inlined into the
+# materialized fence keeps the lock arm from being inlined into the
 # data-modifying statements that join it, the same contract every
 # windowed sweep in backend/_sweeps.py pins: without it the planner may
 # fold the lock scan into the INSERT/DELETE joins and lock rows beyond
 # the batch the candidate window selected.
 #
-# `locked` is THE lock-time re-read, and the ghost fence: the write
+# `locked` is the lock-time re-read, and the ghost fence: the write
 # statement takes the batch's row locks here, by primary key over the
 # id array (a pkey probe per candidate, bounded in every plan form,
 # custom and generic), and the scan's quals re-evaluate at lock time
 # (EvalPlanQual), against the row version the lock sees, not the
 # statement snapshot. Both candidate predicates are re-verified: the
-# terminal status, AND the retention age. The age re-check is what a
+# terminal status, and the retention age. The age re-check is what a
 # full retry-then-re-run cycle between the two statements needs: a
 # retried job that re-terminalizes in that gap is terminal again (the
 # status check alone would pass) but zero seconds old, and archiving
@@ -567,7 +565,7 @@ _ARCHIVE_CANDIDATE_ACTOR_SQL = (
 # tests/test_index_audit.py). A retry_job that committed between the
 # candidate window's snapshot and this lock makes the row live; the
 # status re-check fails and the row drops out here, before anything is
-# archived. A retry still in flight is skipped (SKIP LOCKED) and keeps
+# archived. A retry still in flight is skipped (skip locked) and keeps
 # its own commit. Without this arm, `moved`'s status re-check reads
 # the statement snapshot alone: a row archived while a retry left it
 # live is a ghost, and when the retried job re-terminalizes and
@@ -612,11 +610,11 @@ _ARCHIVE_CTE_SQL = (
     # semantics: on vanilla Postgres the same shape met the primary key
     # as a loud non-transient error that wedged every later batch, the
     # guard replaces the wedge with a fold (the existing archive row
-    # stands) in BOTH modes, so the prune converges identically and the
+    # stands) in both modes, so the prune converges identically and the
     # semantics are pinned by the same tests in both.
     #
     # Stated edge (pinned by tests/test_timescale_retention_interplay.py):
-    # this guard's witness is the archive ROW's existence, so "archived at
+    # this guard's witness is the archive row's existence, so "archived at
     # most once" holds only while that row lives. On the hypertable mode a
     # retention-policy chunk drop can remove the witness while vanilla
     # still holds the row (expire_at is always later than the
@@ -652,7 +650,7 @@ _ARCHIVE_CTE_SQL = (
     # prune watermark (migration 01.00.20_02) so the cascade deleter
     # advances the same bound the retention sweep does: a watch_reclaims
     # consumer resuming a cursor strictly below it has lost undelivered
-    # events to THIS statement, and the poll side fails visible on it.
+    # events to this statement, and the poll side fails visible on it.
     "  SELECT COALESCE(max(e.id), 0) AS max_id"
     '  FROM "{schema}".job_events e'
     "  WHERE e.job_id IN (SELECT id FROM verified)"
@@ -682,18 +680,18 @@ _ARCHIVE_CTE_SQL = (
 
 _DB_NOW_SQL = "SELECT clock_timestamp()"
 
-#: The workflow-era columns the LOOP-BUDGET round added (01.00.27 jobs,
-#: 01.00.31 the archive mirror): the columns the PRE-BUDGET schemas (the
+#: The workflow-era columns the loop-budget round added (01.00.27 jobs,
+#: 01.00.31 the archive mirror): the columns the pre-budget schemas (the
 #: rolling-deploy tolerance's own target, 01.00.24_01) do not carry.
 _BUDGET_ERA_JOBS_COLUMNS = frozenset({"budget_deadline", "budget_paused", "budget_remaining_ms"})
 _JOBS_PRE_BUDGET_COLUMNS = tuple(c for c in COPY_FROM_COLUMNS if c not in _BUDGET_ERA_JOBS_COLUMNS)
 
-#: The archive write's PRE-BUDGET variant (the rolling-deploy tolerance's
+#: The archive write's pre-budget variant (the rolling-deploy tolerance's
 #: write half): identical statement, the column lists minus the budget
 #: trio — a schema the budget round has not landed on cannot mirror
-#: columns it does not have, and the mirror's own law (name EXACTLY the
-#: columns BOTH sides carry) makes the variant the honest write there.
-#: The qualified list replaces FIRST (the ``j.`` prefixes make it
+#: columns it does not have, and the mirror's own law (name exactly the
+#: columns both sides carry) makes the variant the honest write there.
+#: The qualified list replaces first (the ``j.`` prefixes make it
 #: unambiguous), the plain list second.
 _ARCHIVE_CTE_PRE_BUDGET_SQL = _ARCHIVE_CTE_SQL.replace(
     _JOBS_COLUMNS_QUALIFIED_CSV,
@@ -704,7 +702,7 @@ _ARCHIVE_CTE_PRE_BUDGET_SQL = _ARCHIVE_CTE_SQL.replace(
 )
 
 
-# The expire_at bound is statement_timestamp() (STABLE) for the same
+# The expire_at bound is statement_timestamp() (stable) for the same
 # index-cond reason as the archive CTEs above: jobs_archive_expire_at_idx
 # serves the bound as an Index Cond instead of a post-scan Filter over
 # the whole archive population (measured on a 30k-row jobs_archive:
@@ -713,7 +711,7 @@ _ARCHIVE_CTE_PRE_BUDGET_SQL = _ARCHIVE_CTE_SQL.replace(
 # same-statement executions degrades worst, flipping to a generic plan
 # that walks the entire population under a Filter, pinned, with the
 # eligible-backlog state, by tests/test_index_audit.py). No write side
-# here: the CTE only selects and deletes. The MATERIALIZED fence on the
+# here: the CTE only selects and deletes. The materialized fence on the
 # LIMIT-ed window is the same essential anti-inlining pin as every
 # sibling sweep's.
 _EXPIRY_CTE_SQL = (
@@ -732,8 +730,8 @@ _EXPIRY_CTE_SQL = (
 # The retention-policy floor's conjunct (archive expiry variant): the
 # policy's clock is finished_at — the chunk alignment column — so the
 # floor bounds finished_at, while expire_at stays the row-precise
-# predicate INSIDE the window. Composed by anchored .replace (the
-# {name}-fragment mechanism _SWEEP_1_SQL uses, NOT str.format: the
+# predicate inside the window. Composed by anchored .replace (the
+# {name}-fragment mechanism _SWEEP_1_SQL uses, not str.format: the
 # no-floor rendering must stay byte-identical for every existing
 # .format(schema=...) caller — tests/test_index_audit.py,
 # tests/test_sweepaudit_bounded_writes.py, the benchmark — and an
@@ -747,7 +745,7 @@ def _compose_expiry_sql(schema: str, floor: datetime | None) -> str:
 
     *floor* is None on vanilla Postgres / policy-less hypertables:
     byte-identical to the bare constant. With a floor, the window gains
-    ``AND finished_at >= $2`` — rows older than the policy's own horizon
+    ``and finished_at >= $2`` — rows older than the policy's own horizon
     are chunk-dropped by the policy anyway, and re-deleting them row by
     row pays the chunk-fan-out tax for deletions that are not ours to
     make. The bound is a parameter (a timestamptz), an eligible btree
@@ -798,7 +796,7 @@ async def _run_prune_batch(
     Every aborted batch counts against *sizer* when given, and re-raises:
     a deadline-family abort (``QueryCanceledError`` from the server-side
     timeout, ``TimeoutError`` from a client-side one) counts as today,
-    and so does ANY other exception - the reduced tier is the safety net
+    and so does any other exception - the reduced tier is the safety net
     for the next unknown failure mode, so an archive
     UniqueViolation-class error must count toward the same failure
     threshold too, not leave the breaker unlatched while every retry
@@ -942,7 +940,7 @@ async def prune_terminal_jobs(
     # Anchored to the database clock, not this process's: the archive
     # predicate is server-side (statement_timestamp() - $2::interval in
     # _ARCHIVE_CTE_SQL), and the caller derives `prune_old_batches`'
-    # DELETE cutoff from `max(cutoffs.values())`, so these are NOT
+    # DELETE cutoff from `max(cutoffs.values())`, so these are not
     # display-only, and a Python `now` here would compare an app-clock
     # instant against DB-written `completed_at` values, pruning batches
     # early or late by the skew.
@@ -974,30 +972,25 @@ async def prune_terminal_jobs(
                     sizer=sizer,
                 )
             except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
-                # THE ROLLING-DEPLOY TOLERANCE (the liveness guard's edge): a
-                # schema the 01.00.24 round has not landed on yet has NO
-                # wf_edge table — the guard cannot resolve, and an
-                # untolerated miss is the prune's death (a
-                # non-transient error class fatal to the leader). The
-                # fallback is the UNGUARDED predicate, semantically EXACT
-                # there (no workflow tables = no liveness to protect);
-                # logged once per process, never per batch. THE FALLBACK
-                # IS PER BATCH: the unguarded statement rides a LOCAL (the
-                # pre-rewrite shape reassigned ``candidate_sql``, leaving
-                # the REST of the drain unguarded after a migration
-                # landed mid-prune — the next batch re-tries the guarded
-                # statement and resumes guarded).
-                #
-                # THE COLUMN HALF (the deploy matrix's battery finding):
-                # the budget round (01.00.27/31) added its trio to BOTH
-                # mirror sides — a schema the budget round has not landed
-                # on raises UndefinedColumnError from the WRITE (the
-                # mirror names columns the schema does not carry), the
-                # same fatal class at the same tolerance edge. The
-                # fallback's write is the PRE-BUDGET variant (the
-                # mirror's own law: name exactly the columns BOTH sides
-                # carry) — the tolerance survives its own round's
-                # successors, not only its own round.
+                # a schema the 01.00.24 round has not landed on yet has no
+                # wf_edge table — the guard cannot resolve, and an untolerated
+                # miss is the prune's death (a non-transient error class fatal
+                # to the leader). The fallback is the unguarded predicate,
+                # semantically exact there (no workflow tables = no liveness to
+                # protect); logged once per process, never per batch. the
+                # fallback is per batch: the unguarded statement rides a local
+                # (the pre-rewrite shape reassigned ``candidate_sql``, leaving
+                # the rest of the drain unguarded after a migration landed
+                # mid-prune — the next batch re-tries the guarded statement and
+                # resumes guarded). the column half (the deploy matrix's
+                # battery finding): the budget round (01.00.27/31) added its
+                # trio to both mirror sides — a schema the budget round has not
+                # landed on raises UndefinedColumnError from the write (the
+                # mirror names columns the schema does not carry), the same
+                # fatal class at the same tolerance edge. The fallback's write
+                # is the pre-budget variant (the mirror's own law: name exactly
+                # the columns both sides carry) — the tolerance survives its
+                # own round's successors, not only its own round.
                 _log_workflow_guard_fallback_once()
                 rows = await _run_prune_archive_batch(
                     conn,
@@ -1056,16 +1049,15 @@ async def prune_terminal_jobs(
                             sizer=sizer,
                         )
                     except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
-                        # THE SAME ROLLING-DEPLOY TOLERANCE, PER-ACTOR ARM:
-                        # the per-actor candidate composes the SAME
-                        # workflow-liveness guard (the pre-rewrite shape
-                        # had NO tolerance here — a pre-workflow schema
-                        # with actor_overrides configured was the leader's
-                        # death). Same per-batch fallback, same log-once;
-                        # the COLUMN half rides too (the budget round's
-                        # trio — the write's mirror names columns a
-                        # pre-budget schema does not carry), the fallback's
-                        # write is the PRE-BUDGET variant.
+                        # the per-actor candidate composes the same
+                        # workflow-liveness guard (the pre-rewrite shape had no
+                        # tolerance here — a pre-workflow schema with
+                        # actor_overrides configured was the leader's death).
+                        # Same per-batch fallback, same log-once; the column
+                        # half rides too (the budget round's trio — the write's
+                        # mirror names columns a pre-budget schema does not
+                        # carry), the fallback's write is the pre-budget
+                        # variant.
                         _log_workflow_guard_fallback_once()
                         rows = await _run_prune_archive_batch(
                             conn,
@@ -1132,11 +1124,11 @@ async def archive_expiry_sweep(
     The POLICY FLOOR (hypertable deployments only): when the connected
     server has a ``policy_retention`` job registered against
     ``jobs_archive`` (:func:`taskq.backend._retention_floor.retention_policy_floor`,
-    probed ONCE per run — before the batch loop, never per batch — and
+    probed once per run — before the batch loop, never per batch — and
     failing open to None on any probe error), rows older than the
-    policy's own ``drop_after`` horizon gain the ``AND finished_at >=
+    policy's own ``drop_after`` horizon gain the ``and finished_at >=
     $floor`` conjunct and are left to the policy, which drops them
-    whole-chunk silently. THE BOUNDARY, stated honestly: OLDER than the
+    whole-chunk silently. the BOUNDARY, stated honestly: OLDER than the
     floor, the POLICY owns deletion (silent, chunk-granular,
     watermark-blind — see the pinned boundary in
     ``tests/test_timescale_retention_interplay.py``); NEWER than it
@@ -1146,7 +1138,7 @@ async def archive_expiry_sweep(
     survives is still this sweep's work, and remains so). The floor's
     clock is the POLICY's clock
     (``finished_at``, the chunk alignment column) and the floor's value
-    is the policy's OWN horizon (parsed from the registered config, not
+    is the policy's own horizon (parsed from the registered config, not
     re-derived), so a policy registered with a different interval than
     the current setting still governs the aged end exactly. A row older
     than the floor inside a young chunk is dropped when the chunk itself
@@ -1168,7 +1160,7 @@ async def archive_expiry_sweep(
     # predicate's own clock domain, the sibling cutoffs above were
     # documented as display-only and then quietly grew a second consumer.
     expire_before: datetime = await conn.fetchval(_DB_NOW_SQL)
-    # ONE probe per sweep run, anchored to the clock domain the reported
+    # one probe per sweep run, anchored to the clock domain the reported
     # cutoff above already uses (the database's), never per batch.
     floor = await retention_policy_floor(
         conn, schema, "jobs_archive", "finished_at", now=expire_before

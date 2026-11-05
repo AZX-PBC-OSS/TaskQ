@@ -1,24 +1,24 @@
-"""The body's DURABLE TIMER — the hold whose RESOLVER IS THE
+"""The body's DURABLE TIMER — the hold whose RESOLVER IS the
 CLOCK: ``ctx.wait_until(when)`` mints a hold row whose deadline-pass is
-THE WAKE, never the fail-close. (The wake's replay/consume runs the
+the WAKE, never the fail-close. (The wake's replay/consume runs the
 wait machinery's PER-SITE cursor — the timer counts its own
 consumptions under its own key.)
 
-THE TIMER'S FACE INVERTS THE EXPIRY'S (the design law this module
+the TIMER'S FACE INVERTS the EXPIRY'S (the design law this module
 implements; the guide's §4b carries the same text): the HITL wait's
 deadline-pass (``wait_signal``'s ``timeout_s``) = the :class:`~taskq.
 workflows.api._ctx_wait.Expired` MEMBER — the fail-close arm the
-checker forces. THE TIMER'S deadline-pass = THE WAKE: the sweep's timer
-arm CAS's the hold ``'held' → 'delivered'`` with the CLOCK'S OWN
+checker forces. the TIMER'S deadline-pass = the WAKE: the sweep's timer
+arm CAS's the hold ``'held' → 'delivered'`` with the CLOCK'S own
 RECEIPT (the ``TimerWake`` payload — ``fired_by='timer'``, the
 scheduled vs the fired-at stamps), clears the node's held
 representation, and the body RESUMES — the timer's point is the
 CONTINUATION ("remind them tomorrow"), never the fail-close.
 
-THE ROW IS THE TRUTH (the hold's law, unmodified): the timer IS a
+The timer IS a
 ``wf_signals`` hold row (the reserved ``__timer__`` signal prefix
 names it); the held representation releases the worker's slot (the
-slot is NEVER parked — a wait costs no lease, no claim, no attempt);
+slot is never parked — a wait costs no lease, no claim, no attempt);
 a LOOP node's budget pauses while the timer stands (the same derived
 pause the human hold takes — the wall is blind while the body waits on
 the clock, exactly as while it waits on a human). A worker DEATH
@@ -26,16 +26,16 @@ mid-wait changes nothing: the row's expiry arms the reclaim, the
 successor's sweep fires it, the body resumes — the durability IS the
 design, not a repair.
 
-THE RESUME CONTRACT is the wait machinery's own (documented on
-``wait_signal``): the body re-executes FROM THE TOP on resume — make
+the RESUME CONTRACT is the wait machinery's own (documented on
+``wait_signal``): the body re-executes FROM the TOP on resume — make
 it idempotent; pre-timer side effects are ``ctx.substep``-ledgered and
 replay cheap. On the resume pass the wait site finds the DELIVERED
 timer row (the answer queue's replay/consume, the PER-SITE cursor —
 the same stale-payload dragon's kill sites) and RETURNS the typed
 :class:`TimerWake`.
 
-THE AT-LEAST FACE (the documented precision — the listener landmine 4's
-law, restated for the timer): the fire lands at the FIRST sweep pass
+the AT-LEAST FACE (the documented precision — the listener landmine 4's
+law, restated for the timer): the fire lands at the first sweep pass
 at-or-after the deadline (the DB clock's comparison), never at a
 precise instant — the wake's ``fired_at`` is at-or-after ``scheduled``
 by construction, and the delta is the receipt's own arithmetic
@@ -59,7 +59,7 @@ __all__ = ["CtxTimerOps", "TimerWake"]
 
 
 class TimerWake(BaseModel):
-    """THE TYPED WAKE (the clock's own receipt — the timer's return):
+    """
     the wake carries the timer's identity (``key`` — the caller's name
     or ``""`` for the anonymous timer), the SCHEDULED instant (the
     deadline the body asked for — the hold row's ``expires_at``, read
@@ -76,7 +76,7 @@ class TimerWake(BaseModel):
 
     @property
     def lateness_s(self) -> float:
-        """THE AT-LEAST FACE'S DELTA: ``fired_at - scheduled`` in
+        """``fired_at - scheduled`` in
         seconds — zero when the sweep's pass landed exactly on the
         deadline, positive by the sweep-interval + failover gap it
         actually cost. The docs' law ("never promise a precise
@@ -121,7 +121,7 @@ class CtxTimerOps(WaitHost):
 
     __slots__ = ()
 
-    # The runtime-info dict's DECLARATION (the mixin's typed face — the
+    # The runtime-info dict's declaration (the mixin's typed face — the
     # field lives on StepContext; the mixin's consume path records into it).
     _runtime: dict[str, int]
 
@@ -131,7 +131,7 @@ class CtxTimerOps(WaitHost):
         *,
         key: str | None = None,
     ) -> TimerWake:
-        """THE DURABLE TIMER: hold until the clock says *when* —
+        """Hold until the clock says *when* —
         ``await ctx.wait_until(when, key="remind")``. The body's node
         takes the HELD REPRESENTATION (the slot is released — no lease,
         no claim, no attempt burned; a LOOP node's budget pauses), the
@@ -139,11 +139,11 @@ class CtxTimerOps(WaitHost):
         ``__timer__`` signal prefix), and the SWEEP's timer arm fires
         the wake at the first pass at-or-after the deadline: the clock
         itself resolves the hold (``fired_by='timer'``) with its own
-        receipt, the node re-claims, and THE BODY RESUMES.
+        receipt, the node re-claims, and the BODY RESUMES.
 
-        THE INVERTED FACE (vs ``wait_signal``'s expiry): a deadline
-        pass here is THE WAKE, never the fail-close — the continuation
-        is the timer's point. There is NO ``Expired`` arm and no
+        INVERTED FACE ````(vs ``wait_signal``'s expiry): a deadline
+        pass here is the WAKE, never the fail-close — the continuation
+        is the timer's point. There is no ``Expired`` arm and no
         automatic re-arm: the hold fires exactly once, the wake is the
         consumed answer (a replay/retry re-consumes it from the answer
         queue — the operator's re-run never re-sleeps).
@@ -153,11 +153,11 @@ class CtxTimerOps(WaitHost):
         estate's clock doctrine; the row's ``expires_at`` is that
         clock's reading).
 
-        THE NAIVE-DATETIME LAW (read this before you pass a bare
+        the NAIVE-DATETIME LAW (read this before you pass a bare
         datetime): a NAIVE datetime — no ``tzinfo`` — is interpreted as
         UTC. The coercion is silent (``when.replace(tzinfo=UTC)``): no
         error, no local-zone reading — ``17:00`` naive means ``17:00
-        UTC``, NOT your server's 17:00. THE DB never re-bases the
+        UTC``, not your server's 17:00. the DB never re-bases the
         instant: the row's ``expires_at`` is exactly the coerced value,
         the wake fires at that UTC instant, and the wake's ``scheduled``
         stamp reads it back unchanged. Pass a tz-AWARE datetime
@@ -169,23 +169,23 @@ class CtxTimerOps(WaitHost):
         THIS site's own — the reserved name filters it — and the
         timer's cursor counts its own consumptions under its own
         per-site key, never a key shared with the body's signal waits:
-        a body may wait on the clock AND then on a human, and the
+        a body may wait on the clock and then on a human, and the
         human's delivered answer reaches ITS site). The LOOP kind keeps
-        the iteration counter as THE cursor — the loop's
-        ONE-wait-per-iteration shape law reads both the same way. A
+        the iteration counter as the cursor — the loop's
+        one-wait-per-iteration shape law reads both the same way. A
         key beginning with the reserved ``__timer__`` prefix is the
         typed E17 refusal (the reserved namespace is the clock's own —
         no caller names a timer inside it).
 
-        THE DURABILITY (the row's the truth): a worker death mid-wait
+        A worker death mid-wait
         is invisible to the timer — the hold row's expiry arms the
         successor's sweep, the wake fires, the body resumes (the
         re-execution doctrine: from the top; the pre-timer substeps
-        replay). THE CANCEL INTERPLAY: the flow's cancel cascades the
+        replay). the CANCEL INTERPLAY: the flow's cancel cascades the
         held timer row to ``cancelled`` — the hold dies with the flow,
         the wake never fires (the sweep arm only resolves 'held' rows).
 
-        THE TIMER IS NOT A HUMAN HOLD: ``HitlClient.list()`` never
+        ``HitlClient.list()`` never
         enumerates it (the reserved prefix), the expiry arm never
         abandons it, and the resolve boundary's strict schema fit
         refuses any hand-delivered payload — the clock is the only
@@ -199,8 +199,8 @@ class CtxTimerOps(WaitHost):
         )
 
         absolute, relative = normalize_timer_when(when)
-        # E17 — THE CALLER'S KEY (the timer hardening's fix 1): a key
-        # beginning with the reserved prefix would mint a DOUBLE-prefixed
+        # E17 — the caller's key (the timer hardening's fix 1): a key
+        # beginning with the reserved prefix would mint a double-prefixed
         # row (this method composes the prefix itself) whose wake's
         # key-strip mis-names it — the caller's key stays outside the
         # reserved namespace, the same typed refusal the human mint
@@ -209,7 +209,7 @@ class CtxTimerOps(WaitHost):
             refuse_reserved_timer_name(key, mint="ctx.wait_until")
         signal_name = TIMER_SIGNAL_PREFIX + (key or "")
 
-        # RESUME-NOT-RETRY's ledger face: THIS attempt's ledger row
+        # resume-not-retry's ledger face: this attempt's ledger row
         # records 'awaited' (never 'failed') — the timer's resume burns
         # no attempt, exactly as the human hold's does.
         if self._ledger_id is not None:
@@ -218,11 +218,11 @@ class CtxTimerOps(WaitHost):
 
         async with self._pool.acquire() as conn:
             # The cursor/kind read — the wait machinery's own shape (the
-            # answer queue is THIS SITE'S OWN — the timer's reserved
-            # name filters the queue; the loop's counter is the ADVANCE
-            # statement's own write). THE PER-SITE CURSOR (the per-site cursor fix
+            # answer queue is this site's own — the timer's reserved
+            # name filters the queue; the loop's counter is the advance
+            # statement's own write). the per-site cursor (the per-site cursor fix
             # — E13's discipline generalized to the plain kind): the
-            # timer counts ITS OWN consumptions under ITS OWN key, never
+            # timer counts its own consumptions under its own key, never
             # a per-attempt key shared with the body's signal sites —
             # the shared cursor let the timer's documented re-consume
             # inflate the counter past a signal site's own queue (the
@@ -265,10 +265,10 @@ class CtxTimerOps(WaitHost):
                 self._map_index,
             )
             if is_loop_kind and cursor > len(queue):
-                # THE E13 RULE, the timer's leg: the same uniform-wait
-                # law the human hold takes (the cursor is shared; a
-                # conditional TIMER in a loop strands answers exactly
-                # as a conditional signal-wait does).
+                # the E13 rule, the timer's leg: the same uniform-wait law the
+                # human hold takes (the cursor is shared; a conditional timer
+                # in a loop strands answers exactly as a conditional
+                # signal-wait does).
                 raise LoopWaitShapeError(
                     f"E13-uniform-loop-wait: this loop body's timer is CONDITIONAL "
                     f"(the iteration cursor {cursor} runs past the {len(queue)}-wake "
@@ -278,10 +278,9 @@ class CtxTimerOps(WaitHost):
                     "move the timer out of the loop"
                 )
             if cursor < len(queue):
-                # THE WAKE'S REPLAY/CONSUME: the delivered receipt IS
-                # the answer (the per-attempt cursor advances — the
-                # loop's counter is the ADVANCE statement's own write,
-                # never this one).
+                # the delivered receipt is the answer (the per-attempt cursor
+                # advances — the loop's counter is the advance statement's own
+                # write, never this one).
                 wake_row = queue[cursor]
                 payload = (
                     _json_loads(wake_row["payload"])
@@ -299,12 +298,12 @@ class CtxTimerOps(WaitHost):
                     )
                 self._runtime["hold_epoch"] = int(wake_row["hold_epoch"])
                 return TimerWake.model_validate(payload)
-            # PAST THE QUEUE: the standing timer hold is THIS wait's
+            # past the queue: the standing timer hold is this wait's
             # wait — the held row stands (idempotent re-hold, never a
-            # second registration of one wait). THE MAP INDEX FILTER
+            # second registration of one wait). the map INDEX filter
             # (the map-index identity fix, the timer's leg): a
-            # sibling's held row is NOT this sibling's — a plain
-            # step's NULL keeps exact via IS NOT DISTINCT FROM.
+            # sibling's held row is not this sibling's — a plain
+            # step's NULL keeps exact via is not DISTINCT FROM.
             held_row = await conn.fetchrow(
                 render_sql(
                     "SELECT id FROM {schema}.wf_signals "
@@ -320,13 +319,11 @@ class CtxTimerOps(WaitHost):
             )
             if held_row is not None:
                 raise NodeHeldError(hold_id=str(held_row["id"]), signal_names=(signal_name,))
-            # THE TIMER HOLDS ARE NEVER ABANDONED (the inverted face's
-            # other half): no 'abandoned' arm here — the expiry sweep
-            # excludes the reserved prefix by law, so a past-due timer
-            # is a due timer (the arm fires it), never a fail-close.
-            # A NEW HOLD: a NEW epoch (the count of this name's holds —
-            # THIS identity's: the map index filters, a sibling's epoch
-            # never gates this sibling's next hold).
+                # no 'abandoned' arm here — the expiry sweep excludes the reserved
+            # prefix by law, so a past-due timer is a due timer (the arm fires
+            # it), never a fail-close. A new hold: a new epoch (the count of
+            # this name's holds — this identity's: the map index filters, a
+            # sibling's epoch never gates this sibling's next hold).
             epoch = await conn.fetchval(
                 render_sql(
                     "SELECT COALESCE(MAX(hold_epoch), 0) + 1 FROM {schema}.wf_signals "

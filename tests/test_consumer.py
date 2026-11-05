@@ -214,7 +214,7 @@ async def test_transient_deadline_emits_lifecycle_scheduled(
     assert attrs is not None
 
 
-# ── indefinite-tier Retry does NOT emit taskq.indefinite_retry ────────
+# ── indefinite-tier Retry does not emit taskq.indefinite_retry ────────
 
 
 async def test_no_taskq_indefinite_retry_event(
@@ -585,7 +585,7 @@ class _StrictPayload(BaseModel):
 
 async def test_payload_validation_failure_skips_rate_limit_acquire() -> None:
     """For a direct caller (``validated_payload=None``), the consumer's own
-    ``validate_actor_payload`` call runs BEFORE rate-limit acquisition: a
+    ``validate_actor_payload`` call runs before rate-limit acquisition: a
     payload that cannot even validate must not acquire (and non-refundably
     burn) a rate-limit token. The ``PayloadValidationError`` propagates to
     the caller - the same escape contract as every other pre-actor failure
@@ -749,7 +749,7 @@ class _StrictTenantPayload(BaseModel):
 
 async def test_consumer_validates_payload_and_fails_non_retryable_for_direct_callers() -> None:
     """When ``validated_payload`` is ``None``, the consumer validates the raw
-    dict BEFORE acquiring rate limits. A ``PayloadValidationError``
+    dict before acquiring rate limits. A ``PayloadValidationError``
     propagates to the caller (non-retryable per the classifier) - without
     acquiring any rate-limit token, even for a keyed ref whose own
     ``payload_type`` would also reject the payload."""
@@ -908,12 +908,12 @@ async def test_consumer_cross_model_keyed_ref_honors_actor_model_defaults() -> N
     assert outcome == "succeeded"
     assert seen_tenants == ["unattributed"]
     assert len(backend.mark_succeeded_calls) == 1
-    # The keyed bucket materialized under the actor model's DEFAULTED value.
+    # The keyed bucket materialized under the actor model's defaulted value.
     assert reg.has_rate_limit("cross_per_tenant:unattributed")
 
 
 async def test_validated_payload_short_circuits_job_payload_validation() -> None:
-    """When ``validated_payload`` is provided, the consumer does NOT
+    """When ``validated_payload`` is provided, the consumer does not
     re-validate ``job.payload`` - a valid model alongside a dict that
     would fail validation succeeds, proving the short-circuit works."""
     rl_reg = _StubRateLimitRegistry()
@@ -921,7 +921,7 @@ async def test_validated_payload_short_circuits_job_payload_validation() -> None
     clk: Clock = FakeClock(_NOW)
     cfg = default_actor_config()
 
-    # job.payload is a dict that would FAIL validation against _StrictPayload
+    # job.payload is a dict that would fail validation against _StrictPayload
     # (missing required_field), but validated_payload is a valid model.
     job = make_job_row(payload={"wrong_field": "x"})
 
@@ -1415,7 +1415,7 @@ async def test_reservation_denied_terminal_failure_logs_error(
     assert kwargs["actor"] == job.actor
 
 
-# ── attempt span is child of CONSUMER span ────────────────────
+# ── attempt span is child of consumer span ────────────────────
 
 
 async def test_attempt_span_created_as_internal_child(
@@ -1848,8 +1848,8 @@ async def test_cancel_path_passes_progress_state_none() -> None:
 async def test_cancel_clean_buffer_consumes_one_past_base_seq() -> None:
     """Regression for findings-3 Critical: when the progress buffer is clean
     (post-flush, base_seq > 0, pending_seq_delta=0), the cancel path must
-    pass a consumed seq one past the buffer's head to mark_cancelled, NOT 0
-    and NOT the head itself (a seq-cursor consumer would dedupe the cancel
+    pass a consumed seq one past the buffer's head to mark_cancelled, not 0
+    and not the head itself (a seq-cursor consumer would dedupe the cancel
     event into the event before it)."""
     from unittest.mock import MagicMock
 
@@ -2120,7 +2120,7 @@ async def test_timeout_subclass_span_log_agree_on_terminal_path(
     assert attrs["error_class"] == "_SlowQueryTimeout"
 
 
-# ── Retry path: WARNING only, zero ERROR noise ────────────────────────
+# ── Retry path: warning only, zero error noise ────────────────────────
 
 
 async def test_generic_exception_retry_path_logs_warning_only(
@@ -2237,7 +2237,7 @@ async def test_timeout_retry_path_logs_warning_only(
     assert call["retry_delay"] is not None
 
 
-# ── Ownership mismatch: terminal write lost → NO job-failed ─────────────
+# ── Ownership mismatch: terminal write lost → no job-failed ─────────────
 
 
 class _OwnershipMismatchBackend(_FakeBackend):
@@ -2262,7 +2262,7 @@ async def test_generic_exception_terminal_ownership_mismatch_logs_no_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Terminal generic exception whose write loses the ownership race emits
-    NO job-failed ERROR - the job is not dead by our hand. The per-attempt
+    no job-failed ERROR - the job is not dead by our hand. The per-attempt
     job_exception diagnostic and the ownership-mismatch WARNING still fire."""
 
     async def actor(_job: object, _ctx: JobContext[BaseModel]) -> object:
@@ -2322,7 +2322,7 @@ async def test_generic_exception_terminal_ownership_mismatch_logs_no_error(
 async def test_timeout_terminal_ownership_mismatch_logs_no_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Terminal timeout whose write loses the ownership race emits NO
+    """Terminal timeout whose write loses the ownership race emits no
     job-failed ERROR - the job is not dead by our hand. The per-attempt
     job_timeout diagnostic and the ownership-mismatch WARNING still fire.
     The deadline is the MACHINERY's (a real start_to_close the actor runs

@@ -129,8 +129,8 @@ _STRANDED_REWARN_SECS: float = 3600.0
 #: loaded database drainable.
 _PRUNE_TIMEOUT_FRACTION: Final[float] = 0.8
 
-#: Intra-day retry backoff for a FAILED prune/archive-expiry attempt: 60 s
-#: doubling, capped at 30 min. The once-per-SUCCESSFUL-attempt-per-day
+#: Intra-day retry backoff for a failed prune/archive-expiry attempt: 60 s
+#: doubling, capped at 30 min. The once-per-successful-attempt-per-day
 #: guard is deliberate policy and stays, the retry fills only the
 #: failure half, so a prune that keeps failing under load retries within
 #: the day instead of waiting for tomorrow's cron fire, while a day that
@@ -154,11 +154,10 @@ _PRUNE_RETRY_BACKOFF_CAP_SECS: float = 1800.0
 #: but its steady-state cost still stays off the every-tick path, and
 #: the orphan class is rare by construction (the jobs prune deletes the
 #: root, the wf rows await) — it drains over passes.
-#: THE PHASES: the five arms' gates are OFFSET —
-#: ``turns % N == arm_index % N`` — because five counters in lockstep
-#: put all five walks + all five flows-side passes in ONE tick (the
-#: tick-8 spike measured under load); the offsets spread them, at most one
-#: rootless pass per tick.
+#: the five arms' gates are OFFSET — ``turns % N == arm_index % N`` — because
+#: five counters in lockstep put all five walks + all five flows-side passes in
+#: one tick (the tick-8 spike measured under load); the offsets spread them, at
+#: most one rootless pass per tick.
 _WF_ROOTLESS_PASS_EVERY: Final[int] = 8
 
 
@@ -250,7 +249,7 @@ def _sub_daily(cron_expr: str) -> bool:
     lines — the hot table grew unbounded under a policy that said 180 s).
     The fix decouples the two: a sub-daily schedule is a RETENTION
     POLICY (the thresholds live in the per-status retention fields), so
-    the arm checks EVERY tick and the latch does not gate it; a daily-or-
+    the arm checks every tick and the latch does not gate it; a daily-or-
     slower schedule keeps the once-per-day policy untouched.
 
     A croniter parse that fails (the loop's own fire computation raises
@@ -414,7 +413,7 @@ async def _drain_bounded(
 class _SweepSpec:
     """One leader sweep's wiring, the tick table's row.
 
-    The hand-unrolled blocks this table replaced differed ONLY in these
+    The hand-unrolled blocks this table replaced differed only in these
     fields (plus two structural booleans for the stale-batches sweep's
     drain-within-its-own-tolerance arm); everything around them — the
     try/except/finally skeleton, the metric sample discipline, the
@@ -451,7 +450,7 @@ class _SweepSpec:
     #: (every batch commits, so a stopped drain is a pause, not a
     #: rollback). Single-batch sweeps (retention) leave it False.
     drain: bool = False
-    #: stale-batches only: the drain runs INSIDE the tolerated call, so
+    #: stale-batches only: the drain runs inside the tolerated call, so
     #: the pre-migration tolerance covers the drain too.
     drain_in_try: bool = False
     #: The warning log omits the worker_id field (the stale-batches
@@ -494,7 +493,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     guard = UnexpectedLoopErrorGuard("leader.sweep")
     # The one-shot NotImplementedError warnings: sweeps 1/2 predate the
     # hasattr-gated maintenance sweeps, their absence on a backend is a
-    # warn-ONCE error (not a silent gate), so a backend that implements
+    # warn-once error (not a silent gate), so a backend that implements
     # neither logs it exactly once per process instead of every tick.
     unimplemented_warned: set[str] = set()
     # Loop-invariant sweep-1 arguments; hoisted so the drain closure below
@@ -593,12 +592,12 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             )
 
     async def wf_join_rederive_call() -> int:
-        # THE WORKFLOW HEALING ARMS — wired here, not in the
-        # backend: THE IMPORT LAW keeps every workflows import out
-        # of module scope outside the package (the arms live in
-        # taskq.workflows._sweep; this is their REGISTRATION), so each
-        # call imports lazily. The arms take the dispatcher pool and
-        # manage their own bounded transactions; each returns a count.
+        # the workflow healing arms — wired here, not in the backend: the
+        # import law keeps every workflows import out of module scope outside
+        # the package (the arms live in taskq.workflows._sweep; this is their
+        # registration), so each call imports lazily. The arms take the
+        # dispatcher pool and manage their own bounded transactions; each
+        # returns a count.
         from taskq.workflows._sweep import sweep_join_rederive
         from taskq.workflows.engine import render_workflow_sql
 
@@ -627,10 +626,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_child_join_wake_call() -> int:
-        # THE CHILD-JOIN WAKE ARM: the child flow's terminal is
-        # the join hold's resolver — the terminal child CAS-delivers the
-        # held join, the parent node resumes, the transport knocks.
-        # The lazy import keeps the import law.
+        # the child flow's terminal is the join hold's resolver — the terminal
+        # child CAS-delivers the held join, the parent node resumes, the
+        # transport knocks. The lazy import keeps the import law.
         from taskq.workflows.api._hitl import sweep_child_joins
         from taskq.workflows.engine import render_workflow_sql
 
@@ -640,13 +638,12 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_signal_sweep_call() -> int:
-        # THE SIGNAL SWEEP'S TWO ARMS: the expiry arm — the
-        # deadline is DB-CLOCK compared; the expired HUMAN hold → the
-        # DEFINED 'abandoned' state (never a silent orphan) — and the
-        # TIMER arm (the hold whose resolver is the clock): the
-        # due timer hold → RESOLVED 'delivered' with the clock's own
-        # wake record (the inverted face: the wake, never the
-        # fail-close). The lazy import keeps the import law.
+        # the expiry arm — the deadline is DB-CLOCK compared; the expired human
+        # hold → the defined 'abandoned' state (never a silent orphan) — and
+        # the timer arm (the hold whose resolver is the clock): the due timer
+        # hold → resolved 'delivered' with the clock's own wake record (the
+        # inverted face: the wake, never the fail-close). The lazy import keeps
+        # the import law.
         from taskq.workflows.api._hitl import sweep_due_timers, sweep_expired_signals
 
         expired = await sweep_expired_signals(
@@ -656,25 +653,22 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         fired = await sweep_due_timers(
             ctx.deps.dispatcher_pool,
             schema=ctx.deps.settings.schema_name,
-            # THE DRAIN: the leader's
-            # arm empties the due set per tick (batch-bounded per
-            # iteration) — the one-batch-per-pass face measured a
-            # ~50-minute worst-case tail at 10k due timers.
+            # the leader's arm empties the due set per tick (batch-bounded per
+            # iteration) — the one-batch-per-pass face measured a ~50-minute
+            # worst-case tail at 10k due timers.
             drain=True,
         )
         return expired + fired
 
     async def wf_hold_stamp_reconcile_call() -> int:
-        # THE HOLD-STAMP RECONCILE ARM (measured in the soak: the
-        # SIGKILL-during-a-held-loop wedge — a pending node whose
-        # metadata.hold stamp survived its hold's resolution is
-        # UNCLAIMABLE FOREVER under the claimable fence; the soak
-        # measured 20 runs wedged this way, undetected, unnamed). The
-        # arm's law: THE HOLD'S STATE DECIDES — still 'held' → the held
-        # representation stands (the resume re-dispatches);
-        # delivered/abandoned/cancelled/absent → the stamp cleared + the
-        # row re-claims (the body's re-execution lands the next named
-        # state). The lazy import keeps the import law.
+        # measured in the soak: the SIGKILL-during-a-held-loop wedge — a
+        # pending node whose metadata.hold stamp survived its hold's resolution
+        # is unclaimable forever under the claimable fence; the soak measured
+        # 20 runs wedged this way, undetected, unnamed. . The arm's law: the
+        # hold's state decides — still 'held' → the held representation stands
+        # (the resume re-dispatches); delivered/abandoned/cancelled/absent →
+        # the stamp cleared + the row re-claims (the body's re-execution lands
+        # the next named state). The lazy import keeps the import law.
         from taskq.workflows._sweep import sweep_hold_stamps
         from taskq.workflows.engine import render_workflow_sql
 
@@ -685,17 +679,16 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_outbox_retention_call() -> int:
-        # THE DELIVERED OUTBOX'S TTL ARM (delivered
-        # outbox rows retained forever — measured at 5.9k and growing,
-        # monotone, no pruner). The retention policy's own row: the delivered rows
-        # past the TTL delete, one bounded batch per pass; undelivered
-        # rows are the drain's. The period gate is the settings-level
-        # disable sentinel (timedelta(0) → the spec's period gate skips
-        # the arm — a brand-new deletion loop's safe misconfiguration is
-        # off). THE BATCH is the prune family's own knob
-        # (prune_batch_size: the borrowed
-        # event_writer_batch_size(100) drains a monotone population 100
-        # rows per pass). The lazy import keeps the import law.
+        # delivered outbox rows retained forever — measured at 5.9k and
+        # growing, monotone, no pruner. . The retention policy's own row: the
+        # delivered rows past the TTL delete, one bounded batch per pass;
+        # undelivered rows are the drain's. The period gate is the
+        # settings-level disable sentinel (timedelta(0) → the spec's period
+        # gate skips the arm — a brand-new deletion loop's safe
+        # misconfiguration is off). the batch is the prune family's own knob
+        # (prune_batch_size: the borrowed event_writer_batch_size(100) drains a
+        # monotone population 100 rows per pass). The lazy import keeps the
+        # import law.
         from taskq.workflows._sweep import prune_delivered_outbox
         from taskq.workflows.engine import render_workflow_sql
 
@@ -707,21 +700,19 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_step_cache_retention_call() -> int:
-        # THE STEP CACHE'S RETENTION ARM: the cross-run cache's
-        # EXPIRED rows pruned — the lookup's freshness leg already
-        # refuses them (a miss; the body re-runs and the store's CAS
-        # re-fills), this arm deletes the dead weight so the expired
-        # population never grows monotone-forever (the delivered-outbox
-        # arm's own defect class). The period gate is the
-        # settings-level disable sentinel (timedelta(0) → the spec's
-        # period gate skips the arm — a brand-new deletion loop's safe
-        # misconfiguration is off). UndefinedTableError rides the
-        # tolerance set (pre-migration tolerance, the rolling-deploy
-        # pattern): a rolling deploy runs this code against a schema
-        # whose wf_step_cache has not landed yet, which is a per-tick
-        # warn until migration 01.00.33 applies, not the arm's death.
-        # THE BATCH is the prune family's own knob (prune_batch_size,
-        # the outbox arm's mirror). The lazy import keeps the import law.
+        # the cross-run cache's expired rows pruned — the lookup's freshness
+        # leg already refuses them (a miss; the body re-runs and the store's
+        # CAS re-fills), this arm deletes the dead weight so the expired
+        # population never grows monotone-forever (the delivered-outbox arm's
+        # own defect class). The period gate is the settings-level disable
+        # sentinel (timedelta(0) → the spec's period gate skips the arm — a
+        # brand-new deletion loop's safe misconfiguration is off).
+        # UndefinedTableError rides the tolerance set (pre-migration tolerance,
+        # the rolling-deploy pattern): a rolling deploy runs this code against
+        # a schema whose wf_step_cache has not landed yet, which is a per-tick
+        # warn until migration 01.00.33 applies, not the arm's death. the batch
+        # is the prune family's own knob (prune_batch_size, the outbox arm's
+        # mirror). The lazy import keeps the import law.
         from taskq.workflows._sweep import prune_expired_step_cache
         from taskq.workflows.engine import render_workflow_sql
 
@@ -731,10 +722,10 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             batch_size=ctx.deps.settings.prune_batch_size,
         )
 
-    # THE ROOTLESS LEGS' GATES (the two-pass law): one per arm, the
-    # coarser cadence the orphan class rides (every Nth arm call — see
-    # _WF_ROOTLESS_PASS_EVERY), OFFSET per arm (the phase spreads the
-    # five walks across the ticks — never two in one tick).
+        # one per arm, the coarser cadence the orphan class rides (every Nth arm
+
+    # call — see _WF_ROOTLESS_PASS_EVERY), OFFSET per arm (the phase spreads
+    # the five walks across the ticks — never two in one tick).
     edge_rootless_gate = _wf_rootless_gate("wf_edge", 0)
     join_fire_rootless_gate = _wf_rootless_gate("wf_join_fire", 1)
     step_ledger_rootless_gate = _wf_rootless_gate("wf_step_ledger", 2)
@@ -742,31 +733,27 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     node_progress_rootless_gate = _wf_rootless_gate("wf_node_progress", 4)
 
     async def wf_edge_retention_call() -> int:
-        # THE EDGE LEDGER'S RETENTION ARM: the flow-history tables
-        # (wf_edge, wf_step_ledger, wf_join_fire,
+        # the flow-history tables (wf_edge, wf_step_ledger, wf_join_fire,
         # wf_signals, wf_node_progress + the stream's fold into the
-        # node_progress arm) grew monotone-forever — no retention arm,
-        # no FK for the job prune to cascade. THE TWO-PASS LAW:
-        # the flows-side pass selects the TERMINAL-AGED ROOTS
-        # first (a tiny jobs-side set via jobs_finished_at_idx) and
-        # deletes each selected flow's rows via the table's flow_id
-        # index — the zero-doomed steady state is O(terminal flows),
-        # never the full-table walk with 2 jobs-probes per row (that walk
-        # hit TimeoutError at 3M rows); the rootless leg (the
-        # orphan class: the pointee absent or not a flow root) rides the
-        # batch-bounded walk on the coarser cadence above, SEEKING
-        # strictly past its arm's persisted cursor (migration
-        # 01.00.36_01: a live PK front's rows are visited once and
-        # the walk moves past them; without the cursor it would re-read
-        # the same first batch forever, the orphans stranded). The period
-        # gate is the settings-level disable sentinel (timedelta(0) →
-        # the spec's period gate skips the arm), and the arms DEFAULT
-        # OFF — they prune the FLOW HISTORY, not derived data (the
-        # operator opts in; the upgrade deletes nothing by surprise).
-        # THE BATCH is the prune family's own knob (prune_batch_size:
-        # the borrowed event_writer_batch_size(100) would drain a
-        # 10M backlog in ~35 days per table). The lazy import keeps the
-        # import law.
+        # node_progress arm) grew monotone-forever — no retention arm, no FK
+        # for the job prune to cascade. the two-pass law: the flows-side pass
+        # selects the terminal-aged roots first (a tiny jobs-side set via
+        # jobs_finished_at_idx) and deletes each selected flow's rows via the
+        # table's flow_id index — the zero-doomed steady state is O(terminal
+        # flows), never the full-table walk with 2 jobs-probes per row (that
+        # walk hit TimeoutError at 3M rows); the rootless leg (the orphan
+        # class: the pointee absent or not a flow root) rides the batch-bounded
+        # walk on the coarser cadence above, seeking strictly past its arm's
+        # persisted cursor (migration 01.00.36_01: a live pk front's rows are
+        # visited once and the walk moves past them; without the cursor it
+        # would re-read the same first batch forever, the orphans stranded).
+        # The period gate is the settings-level disable sentinel (timedelta(0)
+        # → the spec's period gate skips the arm), and the arms default off —
+        # they prune the flow history, not derived data (the operator opts in;
+        # the upgrade deletes nothing by surprise). the batch is the prune
+        # family's own knob (prune_batch_size: the borrowed
+        # event_writer_batch_size(100) would drain a 10M backlog in ~35 days
+        # per table). The lazy import keeps the import law.
         from taskq.workflows._sweep import prune_wf_edge, prune_wf_edge_rootless
         from taskq.workflows.engine import render_workflow_sql
 
@@ -785,11 +772,10 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return deleted
 
     async def wf_join_fire_retention_call() -> int:
-        # THE FIRE LEDGER'S RETENTION ARM (the five flow-history arms):
-        # the exactly-once ledger is dead weight on a terminal flow (a
-        # terminal flow never re-fires). Two-pass law, prune-family
-        # batch knob, rootless cadence: see wf_edge_retention_call's
-        # note. The lazy import keeps the import law.
+        # the exactly-once ledger is dead weight on a terminal flow (a terminal
+        # flow never re-fires). Two-pass law, prune-family batch knob, rootless
+        # cadence: see wf_edge_retention_call's note. The lazy import keeps the
+        # import law.
         from taskq.workflows._sweep import prune_wf_join_fire, prune_wf_join_fire_rootless
         from taskq.workflows.engine import render_workflow_sql
 
@@ -809,11 +795,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return deleted
 
     async def wf_step_ledger_retention_call() -> int:
-        # THE STEP LEDGER'S RETENTION ARM (the five flow-history arms):
-        # one row per attempt — the hot table's fastest grower. Two-pass
-        # law, prune-family batch knob, rootless cadence: see
-        # wf_edge_retention_call's note. The lazy import keeps the
-        # import law.
+        # one row per attempt — the hot table's fastest grower. Two-pass law,
+        # prune-family batch knob, rootless cadence: see
+        # wf_edge_retention_call's note. The lazy import keeps the import law.
         from taskq.workflows._sweep import prune_wf_step_ledger, prune_wf_step_ledger_rootless
         from taskq.workflows.engine import render_workflow_sql
 
@@ -833,12 +817,10 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return deleted
 
     async def wf_signals_retention_call() -> int:
-        # THE SIGNAL LEDGER'S RETENTION ARM (the five flow-history
-        # arms): a terminal flow's HELD signals are exactly the
-        # abandoned-hold class — they delete with the flow; a LIVE
-        # flow's holds are never touched. Two-pass law, prune-family
-        # batch knob, rootless cadence: see wf_edge_retention_call's
-        # note. The lazy import keeps the import law.
+        # a terminal flow's held signals are exactly the abandoned-hold class —
+        # they delete with the flow; a live flow's holds are never touched.
+        # Two-pass law, prune-family batch knob, rootless cadence: see
+        # wf_edge_retention_call's note. The lazy import keeps the import law.
         from taskq.workflows._sweep import prune_wf_signals, prune_wf_signals_rootless
         from taskq.workflows.engine import render_workflow_sql
 
@@ -858,22 +840,19 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return deleted
 
     async def wf_node_progress_retention_call() -> int:
-        # THE PROGRESS STATE'S RETENTION ARM (the flow-history arms):
-        # the state channel outlives its flows forever; the flow is
-        # reached through the node's jobs row. Two-pass law (the
-        # flows-side join through the node rows; the node-gone /
-        # no-flow_id / non-root-pointee legs on the rootless cadence),
-        # prune-family batch knob: see wf_edge_retention_call's note.
-        # THE SIXTH TABLE'S FOLD (the documented call): the
-        # same arm's statement ALSO deletes the doomed flows'
-        # wf_node_stream rows (a dead node's ring — nodes x 64 — never
-        # had a pruner; the stream rows carry flow_id directly, its own
-        # LIMIT bounds the second delete), and the arm's rootless pass
-        # runs the stream's orphan walk off the stream's own cursor
-        # (wf_rootless_sweep_state). One pass, two batch-bounded
-        # deletes/walks — the family's one-batch-per-pass law's
-        # documented allowance. The lazy import keeps the import
-        # law.
+        # the state channel outlives its flows forever; the flow is reached
+        # through the node's jobs row. Two-pass law (the flows-side join
+        # through the node rows; the node-gone / no-flow_id / non-root-pointee
+        # legs on the rootless cadence), prune-family batch knob: see
+        # wf_edge_retention_call's note. the sixth TABLE'S fold (the documented
+        # call): the same arm's statement also deletes the doomed flows'
+        # wf_node_stream rows (a dead node's ring — nodes x 64 — never had a
+        # pruner; the stream rows carry flow_id directly, its own LIMIT bounds
+        # the second delete), and the arm's rootless pass runs the stream's
+        # orphan walk off the stream's own cursor (wf_rootless_sweep_state).
+        # One pass, two batch-bounded deletes/walks — the family's
+        # one-batch-per-pass law's documented allowance. The lazy import keeps
+        # the import law.
         from taskq.workflows._sweep import (
             prune_wf_node_progress,
             prune_wf_node_progress_rootless,
@@ -896,11 +875,10 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         return deleted
 
     async def wf_loop_budget_call() -> int:
-        # THE LOOP'S WALL ARM: the budget sweep — the budget wall +
-        # the iteration-cap wall, ONE arm, `AND NOT budget_paused` (the
-        # held-loop inertness); the exhaustion is the NAMED state and the
-        # flow terminalizes in the same tx. The lazy import keeps the
-        # import law.
+        # the budget sweep — the budget wall + the iteration-cap wall, one arm,
+        # `AND NOT budget_paused` (the held-loop inertness); the exhaustion is
+        # the named state and the flow terminalizes in the same tx. The lazy
+        # import keeps the import law.
         from taskq.workflows._sweep import sweep_loop_budget
         from taskq.workflows.engine import render_workflow_sql
 
@@ -919,12 +897,11 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_nodeless_root_reap_call() -> int:
-        # THE NODELESS-ROOT REAP (the create-seam's belt, the SECOND
-        # fence): a root row with zero node rows — the orphan shape a
-        # future statement-order regression could commit — past the
-        # grace is reaped 'failed' LOUDLY (the maintenance derivation
-        # can never develop it: its rollup INNER-JOINS the node rows).
-        # The lazy import keeps the import law.
+        # a root row with zero node rows — the orphan shape a future
+        # statement-order regression could commit — past the grace is reaped
+        # 'failed' loudly (the maintenance derivation can never develop it: its
+        # rollup inner-joins the node rows). The lazy import keeps the import
+        # law.
         from taskq.workflows._sweep import reap_nodeless_roots
         from taskq.workflows.engine import render_workflow_sql
 
@@ -934,10 +911,9 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
 
     async def wf_progress_ring_prune_call() -> int:
-        # THE PROGRESS RING'S PRUNE ARM: the STREAM channel's
-        # backstop — leaked rings (emissions that stopped before the
-        # append-trim could hold, any future writer bug's unpruned shape)
-        # are trimmed back to the ring bound, rank-based per node. The
+        # the stream channel's backstop — leaked rings (emissions that stopped
+        # before the append-trim could hold, any future writer bug's unpruned
+        # shape) are trimmed back to the ring bound, rank-based per node. The
         # lazy import keeps the import law.
         from taskq.workflows._sweep import sweep_progress_ring_prune
         from taskq.workflows.engine import render_workflow_sql
@@ -1012,8 +988,8 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("sweep_expired_results_tick"),
         ),
         _SweepSpec(
-            # Event retention: ONE committed batch per tick, deliberately
-            # NOT a _drain_bounded drain.  The design settles
+            # Event retention: one committed batch per tick, deliberately
+            # not a _drain_bounded drain.  The design settles
             # slow-and-constant: at the default 30 s sweep_interval and
             # 10 000-row batch that is ~333 deletions/s against the
             # measured ~200 events/s steady insert rate, so a 6.5 M-row
@@ -1033,12 +1009,12 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("job_events_retention_tick"),
         ),
         _SweepSpec(
-            # Fleet-wide keyed-row reclaim: ONE bounded, committed batch
-            # per table per tick, deliberately NOT a _drain_bounded
+            # Fleet-wide keyed-row reclaim: one bounded, committed batch
+            # per table per tick, deliberately not a _drain_bounded
             # drain, the same slow-and-constant discipline the
             # event-retention sweep settled.  This is the fleet half of
             # keyed reclamation: the per-worker eviction+drain below only
-            # ever names rows its OWN process materialised, so keyed
+            # ever names rows its own process materialised, so keyed
             # reservation_slots / rate_limit_buckets rows orphan when the
             # worker that created them dies (the residual the keyed-row
             # lifecycle exists to close).  The rows carry their own
@@ -1066,7 +1042,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         _SweepSpec(
             # Stale-worker cleanup: one bounded batch per call, drained
             # the same way.  The window bounds workers per call, which
-            # bounds the DDL ON DELETE fan-out (the job_attempts SET NULL
+            # bounds the DDL on DELETE fan-out (the job_attempts set NULL
             # rewrites) per transaction.
             name="stale_workers",
             call=stale_workers_call,
@@ -1077,14 +1053,14 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("cleanup_stale_workers_tick"),
         ),
         _SweepSpec(
-            # Stale-batch completion is a LEADER sweep
+            # Stale-batch completion is a leader sweep
             # (docs/guides/workers.md; docs/architecture.md
             # "``complete_stale_batches`` leader sweep"): batches whose
             # completion hook was lost (consumer crash between the
             # terminal write and complete_batch/abort_batch) stay
             # `active` forever without it, wait_for_batch can snooze
             # indefinitely and prune_old_batches only deletes completed
-            # rows.  Deliberately NOT nested under the keyed-registry
+            # rows.  Deliberately not nested under the keyed-registry
             # conditions below: those are process-local and, in the
             # default deployment, empty.
             # UndefinedTableError rides the tolerance set (pre-migration
@@ -1105,40 +1081,28 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             on_rows=_log_stale_batches_completed,
         ),
         _SweepSpec(
-            # THE WORKFLOW HEALING ARMS — the three sweep arms
-            # registered into the tick's table (the registration WAS the
-            # gap: the arms existed, nothing outside taskq.workflows called
-            # them). Gated on THIS backend's own workflow capability
-            # marker — the same hasattr seam every other sweep is admitted
-            # through, each capability its own marker (the arms never
-            # borrow another sweep's method name, so a backend that
-            # implements only the legacy maintenance surface — and every
-            # audit double standing in for it — keeps the arms off, and
-            # the legacy sweep loop's observable behavior is unchanged by
-            # their registration: the arms are pure appends); the lazy
-            # imports keep the import law (nothing outside the
-            # package imports taskq.workflows at module scope).
-            #
-            # * wf_join_rederive — the lock-first re-derive + fire: heals
-            #   the tx1→tx2 crash window (the parent terminalized, the
-            #   decrement/fire never ran) by reconciling the counter cache
-            #   from the edge ledger, firing the firable joins and running
-            #   their reducer bodies (at-least-once, tx-scoped, resolved
-            #   DURABLY from the registered definition — the flow root's
-            #   stamped workflow name — not from the finalizing process's
-            #   memory).
-            # * wf_outbox_drain — the delivery half: inserts the fired
-            #   joins' consumer rows idempotently (the composite arbiter)
-            #   and flips the undelivered flag in the same tx.
-            # * wf_phantom_reap — fences 'running' ledger rows on terminal
-            #   flows (the rows-alone reconstruction reconciles, pin 15)
-            #   and drops the terminal flows' reducer-cache entries (the
-            #   memo's bound).
-            #
-            # UndefinedTableError tolerance: a rolling deploy may run this
-            # code against a schema the 01.00.24 round has not landed on
-            # yet — a per-tick warn until the migration applies, never the
-            # deliberately-fatal streak (the keyed-row sweep's pattern).
+            # the workflow healing arms — the three sweep arms registered into
+            # the tick's table . Gated on this backend's own workflow
+            # capability marker — the same hasattr seam every other sweep is
+            # admitted through, each capability its own marker ; the lazy
+            # imports keep the import law (nothing outside the package imports
+            # taskq.workflows at module scope). * wf_join_rederive — the
+            # lock-first re-derive + fire: heals the tx1→tx2 crash window (the
+            # parent terminalized, the decrement/fire never ran) by reconciling
+            # the counter cache from the edge ledger, firing the firable joins
+            # and running their reducer bodies (at-least-once, tx-scoped,
+            # resolved durably from the registered definition — the flow root's
+            # stamped workflow name — not from the finalizing process's
+            # memory). * wf_outbox_drain — the delivery half: inserts the fired
+            # joins' consumer rows idempotently (the composite arbiter) and
+            # flips the undelivered flag in the same tx. * wf_phantom_reap —
+            # fences 'running' ledger rows on terminal flows (the rows-alone
+            # reconstruction reconciles, pin 15) and drops the terminal flows'
+            # reducer-cache entries (the memo's bound). UndefinedTableError
+            # tolerance: a rolling deploy may run this code against a schema
+            # the 01.00.24 round has not landed on yet — a per-tick warn until
+            # the migration applies, never the deliberately-fatal streak (the
+            # keyed-row sweep's pattern).
             name="wf_join_rederive",
             call=wf_join_rederive_call,
             warn_event="sweep-wf-join-rederive-failed",
@@ -1159,7 +1123,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_outbox_drain_tick"),
         ),
         _SweepSpec(
-            # wf_signal_sweep — THE HELD ROWS' TIMER: the expiry
+            # wf_signal_sweep — the held rows' timer: the expiry
             # arm (the only live timer on a held row; the DB-clock
             # comparison).
             name="wf_signal_sweep",
@@ -1172,7 +1136,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_signal_sweep_tick"),
         ),
         _SweepSpec(
-            # wf_child_join_wake — THE CHILD-JOIN WAKE: the child
+            # wf_child_join_wake — the child-join wake: the child
             # flow's terminal is the join hold's resolver; a lost resume
             # is the hold-stamp reconcile arm's belt.
             name="wf_child_join_wake",
@@ -1185,11 +1149,11 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_child_join_wake_tick"),
         ),
         _SweepSpec(
-            # wf_hold_stamp_reconcile — THE HOLD-STAMP RECONCILE (the
+            # wf_hold_stamp_reconcile — the hold-stamp reconcile (the
             # SIGKILL wedge's repair): the hold's state decides — still 'held' →
             # the held representation stands; delivered/abandoned/
             # cancelled/absent → the stamp cleared + the row re-claims.
-            # NOT a drain: the predicate self-consumes (a cleared row
+            # not a drain: the predicate self-consumes (a cleared row
             # loses the stamp), a second pass returns zero, and the
             # statement is batch-bounded by LIMIT.
             name="wf_hold_stamp_reconcile",
@@ -1202,7 +1166,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_hold_stamp_reconcile_tick"),
         ),
         _SweepSpec(
-            # wf_outbox_retention — THE DELIVERED OUTBOX'S TTL: delivered rows are narration; past the period
+            # wf_outbox_retention — the delivered outbox's TTL: delivered rows are narration; past the period
             # they delete (one bounded batch per pass, undelivered rows
             # never). The period gate is the settings-level disable
             # sentinel: timedelta(0) disables the arm — a brand-new
@@ -1219,11 +1183,11 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_outbox_retention_tick"),
         ),
         _SweepSpec(
-            # wf_loop_budget — THE LOOP'S WALLS: the budget wall +
+            # wf_loop_budget — the loop's walls: the budget wall +
             # the iteration-cap wall, one arm, `AND NOT budget_paused`
             # (the held-loop inertness — the budget is not consumed while
-            # a hold waits); the exhaustion is the NAMED state and the flow
-            # terminalizes in the same tx (STRANDED-FLOW). NOT a drain:
+            # a hold waits); the exhaustion is the named state and the flow
+            # terminalizes in the same tx (stranded-flow). not a drain:
             # the exhaustion is idempotent (a terminal loop row updates
             # nothing), a second pass returns zero.
             name="wf_loop_budget",
@@ -1236,7 +1200,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_loop_budget_tick"),
         ),
         _SweepSpec(
-            # ONE full-table-scoped pass per tick, deliberately NOT a
+            # one full-table-scoped pass per tick, deliberately not a
             # drain: the reap's UPDATE is statement-bounded by the
             # phantom population itself (every reaped row leaves the
             # predicate), so a second pass returns zero and a drain loop
@@ -1250,12 +1214,12 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_phantom_reap_tick"),
         ),
         _SweepSpec(
-            # wf_nodeless_root_reap — THE ORPHAN ROOT'S BELT (the
+            # wf_nodeless_root_reap — the orphan root's belt (the
             # create-seam's second fence): a nodeless flow root (pending
             # or running, past the grace — the create's atomicity makes
             # it unrepresentable on the shipped path; the belt reaps any
             # future statement-order regression's debris) reaped 'failed'
-            # LOUDLY. NOT a drain either: every reaped root leaves the
+            # loudly. not a drain either: every reaped root leaves the
             # predicate; the batch bound is the debris population's own
             # cap.
             name="wf_nodeless_root_reap",
@@ -1267,7 +1231,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_nodeless_root_reap_tick"),
         ),
         _SweepSpec(
-            # wf_progress_ring_prune — THE STREAM RING'S BACKSTOP:
+            # wf_progress_ring_prune — the stream ring's backstop:
             # leaked rings trimmed back to the bound, rank-based per
             # node. A drain: a leak deeper than one pass's owner batch
             # drains over passes (the PoC's 801-row leak pruned in one,
@@ -1282,11 +1246,11 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_progress_ring_prune_tick"),
         ),
         _SweepSpec(
-            # wf_step_cache_retention — THE CROSS-RUN STEP CACHE'S
-            # EXPIRY ARM: the in-DB TTL's corpses deleted — the
+            # wf_step_cache_retention — the cross-run step cache's
+            # expiry arm: the in-DB TTL's corpses deleted — the
             # lookup's freshness leg already refuses them (a miss; the
             # body re-runs and the store's CAS re-fills), this arm
-            # deletes the dead weight. NOT a drain (the retention
+            # deletes the dead weight. not a drain (the retention
             # family's one-batch-per-pass discipline). The period gate
             # is the zero-means-off sentinel.
             name="wf_step_cache_retention",
@@ -1299,20 +1263,20 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             dbg_tick=_dbg_tick("wf_step_cache_retention_tick"),
         ),
         _SweepSpec(
-            # wf_edge_retention — THE EDGE LEDGER'S FLOW-HISTORY ARM: the
+            # wf_edge_retention — the edge ledger's flow-history arm: the
             # five flow-history tables (wf_edge,
             # wf_step_ledger, wf_join_fire, wf_signals, wf_node_progress)
             # grew monotone-forever — no retention arm, no FK for the job
-            # prune to cascade. THE TWO-PASS LAW: the flows-side
-            # pass selects the TERMINAL-AGED ROOTS first (a tiny
+            # prune to cascade. the two-pass law: the flows-side
+            # pass selects the terminal-aged roots first (a tiny
             # jobs-side set) and deletes each selected flow's rows via
             # the flow_id indexes — O(terminal flows + batch), never the
             # full-table walk; the rootless leg (the pointee absent or
             # not a flow root) rides the batch-bounded walk on the
-            # coarser cadence _WF_ROOTLESS_PASS_EVERY gives. NOT a drain
+            # coarser cadence _WF_ROOTLESS_PASS_EVERY gives. not a drain
             # (the retention family's one-batch-per-pass discipline).
             # The period gate is the zero-means-off sentinel, and all
-            # five DEFAULT OFF — they prune the FLOW HISTORY, not
+            # five default off — they prune the flow history, not
             # derived data (the operator opts in; the upgrade deletes
             # nothing by surprise).
             name="wf_edge_retention",
@@ -1352,8 +1316,8 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         ),
         _SweepSpec(
             # wf_signals_retention — the signal ledger's flow-history
-            # arm (a terminal flow's HELD signals are exactly the
-            # abandoned-hold class; a LIVE flow's holds are never
+            # arm (a terminal flow's held signals are exactly the
+            # abandoned-hold class; a live flow's holds are never
             # touched). Same family discipline as wf_edge_retention's.
             name="wf_signals_retention",
             call=wf_signals_retention_call,
@@ -1396,7 +1360,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         clean = True
         start = time.monotonic()
         # Bound only by the awaited call; the deadline that aborts it also
-        # aborts the binding, so the failure path records duration WITHOUT
+        # aborts the binding, so the failure path records duration without
         # a row sample (a 0-row sample would be indistinguishable from a
         # healthy empty sweep).
         rows: int | None = None
@@ -1449,7 +1413,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         finally:
             # The sample discipline: duration always; rows and the success
             # stamp only when the awaited call returned, so a timed-out
-            # sweep records duration WITHOUT a row sample, and
+            # sweep records duration without a row sample, and
             # success-path-only instrumentation never hides a failure.
             _metric_duration(spec.name, start)
             if rows is not None:
@@ -1505,13 +1469,13 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 # MaintenanceLeader.run's TaskGroup and tears down the whole
                 # worker on the first hit.
                 guard.unexpected(exc)
-        # Keyed-primitive eviction is process-local bookkeeping, NOT
-        # leader-gated: every worker sweeps its OWN registry each tick (a
+        # Keyed-primitive eviction is process-local bookkeeping, not
+        # leader-gated: every worker sweeps its own registry each tick (a
         # non-leader's registry would otherwise receive no periodic
         # eviction). Always safe to call; with the singleton default this
         # is a no-op behavior change, N workers idempotently evict the
         # same shared registry (in a multi-process fleet each process has
-        # its OWN singleton copy, so every process, leader or not, sweeps
+        # its own singleton copy, so every process, leader or not, sweeps
         # its own copy periodically).
         # ctx.rate_limit_registry is None for direct SweepContext
         # constructions → fall back to the module singleton when None.
@@ -1566,7 +1530,7 @@ async def _sweep_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     worker_id=str(ctx.worker_id),
                     error=repr(exc),
                 )
-        # The evictions above drop registry ENTRIES only; the evicted
+        # The evictions above drop registry entries only; the evicted
         # buckets' reservation_slots rows are deleted by the drain, on
         # this same non-leader-gated path (the pending set is this
         # process's own evictions, and the keyed machinery only runs on
@@ -1663,7 +1627,7 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
     The zero-confirmation is what the terminal drain round is FOR, and it
     has a visible cost an operator must be able to explain:
     ``pg_advisory_unlock`` on a lock the session does not hold answers
-    False AND raises a server-side ``WARNING: you don't own a lock of type
+    False and raises a server-side ``WARNING: you don't own a lock of type
     ExclusiveLock`` — so every release whose drain reaches zero writes
     that one line to the PostgreSQL server log (asyncpg drops the notice;
     the server log is the surface it reaches). This is expected, once per
@@ -1714,7 +1678,7 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
             return
         if released is False:
             # The session holds nothing: the release is total. The server
-            # raises its benign "you don't own a lock" WARNING for this
+            # raises its benign "you don't own a lock" warning for this
             # exact round (see the docstring: the unavoidable cost of
             # confirming zero).
             return
@@ -1736,9 +1700,9 @@ async def _release_session_lock(conn: ConnLike, lock_name: str, *, kind: str) ->
 async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     """Retention prune: TWO lanes, one policy scaffold.
 
-    THE RETENTION-CHECK LANE (sub-daily schedules): a ``prune_cron_expr``
+    RETENTION-CHECK LANE (sub-daily schedules): a ``prune_cron_expr``
     that fires more than once per UTC day is a RETENTION POLICY, not a
-    daily appointment — the arm wakes EVERY leader tick
+    daily appointment — the arm wakes every leader tick
     (``sweep_interval``) with its own interval/threshold pair (the tick is
     the interval, the per-status retention fields are the threshold) and
     checks, so a 180 s retention is honored on a 180 s horizon, never
@@ -1750,13 +1714,13 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
     and the check is cheap when idle: the candidate statement returns
     nothing, no batch runs.
 
-    THE DAILY LANE (daily-or-slower schedules): the once-per-SUCCESSFUL-
+    DAILY LANE (daily-or-slower schedules): the once-per-SUCCESSFUL-
     prune-per-day guard (``last_pruned_date``) is deliberate policy: a
     day that pruned is done — and the latch's truth is SURFACED (the
     ``prune-skipped-day-latch`` event names every deferral; silence read
     as "nothing to prune" is the misleading operator signal).
 
-    The failure half of BOTH lanes retries with backoff (60 s doubling,
+    The failure half of both lanes retries with backoff (60 s doubling,
     capped) until success or the next scheduled fire, so a prune that
     keeps failing under load does not wait for tomorrow, see
     ``_PRUNE_RETRY_BACKOFF_INITIAL_SECS``.
@@ -1810,12 +1774,10 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         )
         it = cr.croniter(cron_expr, now_utc)
         next_fire: datetime = it.get_next(datetime).replace(tzinfo=UTC)
-        # THE RETENTION-CHECK LANE:
-        # a sub-daily schedule is a RETENTION POLICY, not a daily
-        # appointment — the arm checks every leader tick (the sweep
-        # interval, well under any sane sub-daily retention) instead of
-        # sleeping to the next cron fire. The day-latch below does not
-        # gate this lane.
+        # a sub-daily schedule is a retention policy, not a daily appointment —
+        # the arm checks every leader tick (the sweep interval, well under any
+        # sane sub-daily retention) instead of sleeping to the next cron fire.
+        # The day-latch below does not gate this lane.
         check_lane = _sub_daily(cron_expr)
 
         woke_for_retry = await _sleep_until_next_attempt(
@@ -1833,7 +1795,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             retry_backoff = None
 
         if not ctx.deps.leading():
-            # A wake that finds the pod leaderless is a MISSED fire, not a
+            # A wake that finds the pod leaderless is a missed fire, not a
             # done day: the loop top recomputes the next fire from the cron
             # expression, and for a daily cron that is tomorrow, so a
             # seconds-scale leadership flap spanning the fire second would
@@ -1852,11 +1814,11 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             continue
         today_utc = datetime.now(UTC).date()
         if not check_lane and last_pruned_date == today_utc:
-            # THE DAY-LATCH'S TRUTH, SURFACED: the deferral is a NAMED
-            # event, never silence (the soak's observation — the latch
-            # deferred every sub-daily fire for 80+ minutes with ZERO log
-            # lines, so silence read as "nothing to prune"). The record
-            # states WHEN the latch defers and WHAT it defers to.
+            # the deferral is a named event, never silence (the soak's
+            # observation — the latch deferred every sub-daily fire for 80+
+            # minutes with zero log lines, so silence read as "nothing to
+            # prune"). The record states when the latch defers and what it
+            # defers to.
             log.info(
                 "prune-skipped-day-latch",
                 kind="prune",
@@ -1908,7 +1870,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         sizer=prune_sizer,
                     )
                     if not ctx.deps.leading():
-                        # The drain was CUT, not exhausted: the gate
+                        # The drain was cut, not exhausted: the gate
                         # returned False on the demotion boundary (see
                         # _batch_drain_gate) with prunable rows left. Not
                         # a done day: the latch stays unstamped and the
@@ -1972,7 +1934,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                             log.warning("batch-prune-failed", kind="batch", error=repr(exc))
                 except Exception as exc:
                     # The failure half of the once-a-day policy: this
-                    # attempt did NOT prune, so the day is not marked and
+                    # attempt did not prune, so the day is not marked and
                     # the loop retries on the backoff ladder instead of
                     # sleeping to tomorrow's fire. Partially-drained
                     # batches are already committed; the retry resumes the
@@ -2015,7 +1977,7 @@ async def _prune_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
             )
         except Exception as exc:
             # Backstop (see _transient.py): the acquire and the lock probe
-            # above sit OUTSIDE the attempt body's broad failure half, so
+            # above sit outside the attempt body's broad failure half, so
             # before this arm a non-transient shape there (a revoked grant
             # on pg_try_advisory_lock, a partial-migration AttributeError)
             # escaped into the leader TaskGroup and tore down the whole
@@ -2062,9 +2024,8 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
         )
         it = cr.croniter(cron_expr, now_utc)
         next_fire: datetime = it.get_next(datetime).replace(tzinfo=UTC)
-        # THE RETENTION-CHECK LANE (the same sub-daily rule as
-        # _prune_loop): a sub-daily archive-expiry schedule checks every
-        # leader tick; the day-latch below does not gate this lane.
+        # a sub-daily archive-expiry schedule checks every leader tick; the
+        # day-latch below does not gate this lane.
         check_lane = _sub_daily(cron_expr)
 
         woke_for_retry = await _sleep_until_next_attempt(
@@ -2095,9 +2056,8 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             continue
         today_utc = datetime.now(UTC).date()
         if not check_lane and last_expiry_date == today_utc:
-            # THE DAY-LATCH'S TRUTH, SURFACED (the same named-deferral
-            # event as _prune_loop's): the record states WHEN the latch
-            # defers and WHAT it defers to — never silence.
+            # the record states when the latch defers and what it defers to —
+            # never silence.
             log.info(
                 "archive-expiry-skipped-day-latch",
                 kind="archive_expiry",
@@ -2212,7 +2172,7 @@ async def _archive_expiry_loop(ctx: SweepContext, shutdown: asyncio.Event) -> No
             guard.unexpected(exc)
 
 
-#: Live workers per subscribed queue. statement_timestamp() (STABLE) for
+#: Live workers per subscribed queue. statement_timestamp() (stable) for
 #: the liveness bound, the same two-clock rule as every sibling sampler: a
 #: volatile bound cannot be a btree index condition on workers_last_seen_idx.
 #: The window is the admin UI's own liveness setting
@@ -2302,7 +2262,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                     capacity_rows = await conn.fetch(capacity_sql)
                     due_rows = await conn.fetch(due_depth_sql)
                     by_status_rows = await conn.fetch(by_status_sql)
-                    # The DURABLE cancel surface: sampled in this same
+                    # The durable cancel surface: sampled in this same
                     # tick so a cancel's scrape trace moves on the same
                     # cadence (and the same leader authority) as the
                     # queue gauges it is read beside. An isolated read
@@ -2319,28 +2279,26 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                         _sampler_read_failed(
                             ctx, "cancel_pending", "cancel-pending-sampling-failed", exc
                         )
-                    # THE WORKFLOW PROGRESS ROLLUP: sampled at THIS
-                    # tick — the maintenance leader is the PG-rollup reader,
-                    # the admin's health/metrics surface the reading plane
-                    # (never a worker scrape, never the worker metrics
-                    # port). One grouped read (the same read class the
-                    # admin's status panel uses — one query per status
-                    # read), index-driven (jobs_wf_flow_nodes_idx,
-                    # 01.00.26_02 — the uuid-cast expression, the
-                    # workflow-rows-only partial). The DECLARED-WORKFLOW dimension: the
-                    # registered names keep their series; every other
-                    # workflow's runs collapse onto `_other_` (summed) —
-                    # never per-node labels (the cardinality doctrine).
-                    # The registry read is the arms' lazy-import pattern
-                    # (THE IMPORT LAW: nothing outside taskq.workflows
-                    # imports it at module scope).
+                        # sampled at this tick — the maintenance leader is the
+                    # PG-rollup reader, the admin's health/metrics surface the
+                    # reading plane (never a worker scrape, never the worker
+                    # metrics port). One grouped read (the same read class the
+                    # admin's status panel uses — one query per status read),
+                    # index-driven (jobs_wf_flow_nodes_idx, 01.00.26_02 — the
+                    # uuid-cast expression, the workflow-rows-only partial).
+                    # The declared-workflow dimension: the registered names
+                    # keep their series; every other workflow's runs collapse
+                    # onto `_other_` (summed) — never per-node labels (the
+                    # cardinality doctrine). The registry read is the arms'
+                    # lazy-import pattern (the import law: nothing outside
+                    # taskq.workflows imports it at module scope).
                     try:
                         from taskq.workflows.definitions import get_registry
 
                         wf_rows = await conn.fetch(
                             _QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=schema)
                         )
-                        registered = frozenset(get_registry()._workflows)  # pyright: ignore[reportPrivateUsage]  # Why: the sampler reads the SAME registry the definitions' import populated; the registry exposes membership via `in` — the names walk is the declared-workflow dimension's source.
+                        registered = frozenset(get_registry()._workflows)  # pyright: ignore[reportPrivateUsage]  # Why: the sampler reads the same registry the definitions' import populated; the registry exposes membership via `in` — the names walk is the declared-workflow dimension's source.
                         collapsed: dict[tuple[str, str], int] = {}
                         for row in wf_rows:
                             name = str(row["workflow"])
@@ -2366,7 +2324,7 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
                 # describes the same moment its due-depth and live-worker
                 # operands do — a join across ticks would mix a pre-burst
                 # depth with a post-scale capacity. The numerator is the
-                # DUE population (fetch_queue_imbalance's own `depth`
+                # due population (fetch_queue_imbalance's own `depth`
                 # definition), not the pending+scheduled population the
                 # depth gauge carries: a future-armed wave must not read
                 # as starvation.
@@ -2378,9 +2336,9 @@ async def _queue_depth_loop(ctx: SweepContext, shutdown: asyncio.Event) -> None:
         await _sleep_interruptible(shutdown, ctx.deps.settings.queue_depth_interval)
 
 
-#: Jobs-by-status sample for the backlog detectors: one row per LIVE status
+#: Jobs-by-status sample for the backlog detectors: one row per live status
 #: (``ACTIVE_STATUSES``, pending/scheduled/running, the statemachine's
-#: single source of truth for the live set), counted EXACTLY, and no
+#: single source of truth for the live set), counted exactly, and no
 #: terminal statuses at all.
 #:
 #: Why exact for the live set: the series feeds
@@ -2411,21 +2369,21 @@ _QUERY_JOBS_BY_STATUS_SQL_TEMPLATE = " UNION ALL ".join(
     f"WHERE status = '{status}' HAVING count(*) > 0"
     for status in sorted(ACTIVE_STATUSES)
 )
-# statement_timestamp() (STABLE), not clock_timestamp() (VOLATILE), for
+# statement_timestamp() (stable), not clock_timestamp() (volatile), for
 # the due bound, the same two-clock split as every sibling sampler: a
 # volatile comparison cannot be a btree index condition, so the bound
 # would degrade jobs_scheduled_wake_idx (partial on status='scheduled',
 # keyed on scheduled_at) from an Index Cond that terminates at the
 # boundary to a post-scan Filter walking the whole scheduled population ,
 # per worker, per interval, during the exact promotion-stall incident
-# this gauge exists to expose. The EXTRACT(...) age it feeds is a
+# this gauge exists to expose. The extract(...) age it feeds is a
 # measured value and stays clock_timestamp().
 _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
     "SELECT EXTRACT(EPOCH FROM (clock_timestamp() - MIN(scheduled_at)))::float8 "
     'FROM "{schema}".jobs '
     "WHERE status = 'scheduled' AND scheduled_at <= statement_timestamp()"
 )
-# statement_timestamp() (STABLE), not clock_timestamp() (VOLATILE), for the
+# statement_timestamp() (stable), not clock_timestamp() (volatile), for the
 # expiry bound, the same two-clock rule as the oldest-due bound above and the
 # reclaim sweep's own predicate (backend/_sweeps.py): a volatile comparison
 # cannot be a btree index condition, so the bound would degrade
@@ -2440,7 +2398,7 @@ _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
 # The cancel_phase = 0 carve-out: a row with a cancel in flight
 # (cancel_phase != 0: an operator asked to cancel, and the worker owns the
 # terminal write) is in the cancellation protocol's own window, where an
-# expired lease is EXPECTED, not a zombie: the reclaim sweep's lease arm
+# expired lease is expected, not a zombie: the reclaim sweep's lease arm
 # deliberately waits cancel_grace + cleanup_grace + 60 s past lease expiry
 # before it pre-empts one (backend/_sweeps.py's
 # `cancel_phase = 0 OR lock_expires_at < now - <grace ladder>`), so a merely
@@ -2449,20 +2407,20 @@ _QUERY_OLDEST_DUE_AGE_SQL_TEMPLATE = (
 # the alert's 5-minute `for`, the gauge stays non-zero for roughly grace +
 # 60 s plus a sweep interval and a sampling interval, and combined graces
 # from about four minutes up crossed the firing line on every cancel. The
-# filter keys on the PHASE, not on the sweep's grace ladder, so it stays
+# filter keys on the phase, not on the sweep's grace ladder, so it stays
 # correct whatever that ladder becomes, and a cancelling row that outlives
 # the whole ladder is not lost: reclaim takes it (to 'cancelled', the
 # caller's request honored) and the never-completing cancel has its own
 # pager in TaskQAbandonedJobs. The term rides as a post-scan Filter over
 # the expired-lease candidates the Index Cond already bounded, cancel_phase
-# is NOT NULL DEFAULT 0, and count(*) had to visit those rows anyway.
+# is not NULL default 0, and count(*) had to visit those rows anyway.
 _QUERY_RUNNING_LEASE_EXPIRED_SQL_TEMPLATE = (
     'SELECT count(*) FROM "{schema}".jobs '
     "WHERE status = 'running' AND lock_expires_at < statement_timestamp() "
     "AND cancel_phase = 0"
 )
 # Running jobs per actor, and the age of the oldest running attempt per
-# actor, from ONE grouped read so count and age never describe two moments.
+# actor, from one grouped read so count and age never describe two moments.
 # The running population is bounded by the fleet's total concurrency, never
 # by history, so an exact grouped read is cheap; jobs_running_lock_expires_idx
 # (partial on status='running') serves it. Per actor, not (actor, queue): a
@@ -2479,7 +2437,7 @@ _QUERY_RUNNING_BY_ACTOR_SQL_TEMPLATE = (
     "WHERE status = 'running' GROUP BY actor"
 )
 #: Per-pair sample cap for the actor-backlog sampler (rows read per
-#: (actor, queue) pair per tick). The sampler runs on EVERY worker every
+#: (actor, queue) pair per tick). The sampler runs on every worker every
 #: ``queue_depth_interval``, deliberately not leader-gated (see
 #: :func:`_backlog_detection_loop`), so its cost must be independent of
 #: the adopter's pending depth: an exact GROUP BY count is O(depth) with
@@ -2487,12 +2445,12 @@ _QUERY_RUNNING_BY_ACTOR_SQL_TEMPLATE = (
 #: 2668 buffers per worker per tick), which is the unbounded cost centre
 #: tests/test_backlog_detection_sampler_depth_bound.py forbids. 1000 is
 #: far above the per-pair depth any alert threshold keys on (the bundled
-#: depth alert fires on oldest-pending AGE, which the head sample carries
+#: depth alert fires on oldest-pending age, which the head sample carries
 #: exactly), and bounds one tick at (#pairs with pending work) x 1000 row
 #: visits, deployment-shaped, never depth-shaped.
 _ACTOR_BACKLOG_SAMPLE_CAP: Final[int] = 1000
 
-# Depth and oldest-pending age per (actor, queue), from ONE grouped
+# Depth and oldest-pending age per (actor, queue), from one grouped
 # aggregate so the two can never describe different moments: depth alone
 # is ambiguous (a deep queue that drains is healthy throughput) and age
 # alone cannot say how much is waiting.
@@ -2501,7 +2459,7 @@ _ACTOR_BACKLOG_SAMPLE_CAP: Final[int] = 1000
 #
 # * ``backlog_pairs`` enumerates the DISTINCT pending (actor, queue)
 #   pairs with a recursive loose index scan over jobs_actor_dispatch_idx
-#  , (actor, queue, priority DESC, scheduled_at, id) partial on
+#  , (actor, queue, priority desc, scheduled_at, id) partial on
 #   status='pending', one bounded seek per pair (the same geometry as
 #   the dispatch CTE's keys walks), so enumeration costs one visit per
 #   pair, never one per row, and no pair's depth is ever walked. Every
@@ -2509,7 +2467,7 @@ _ACTOR_BACKLOG_SAMPLE_CAP: Final[int] = 1000
 #   still shallow stays attributable (bounded enumeration does not
 #   trade away small backlogs for the bound).
 # * ``sampled`` reads each pair's first _ACTOR_BACKLOG_SAMPLE_CAP
-#   pending rows in the index's own (priority DESC, scheduled_at, id)
+#   pending rows in the index's own (priority desc, scheduled_at, id)
 #   order, an ordered index probe that stops at the cap, with no sort
 #   and no heap access (scheduled_at rides the index). The probe order
 #   is dispatch-head order: the rows a consumer would take first.
@@ -2527,7 +2485,7 @@ _ACTOR_BACKLOG_SAMPLE_CAP: Final[int] = 1000
 # the condition TaskQQueueDepthHigh fires on. scheduled_at, not
 # created_at, is the waiting-since clock for a pending row: it is when
 # the job became eligible, and it is the column the index already
-# carries. PENDING, not scheduled: the unconsumed-actor condition is
+# carries. pending, not scheduled: the unconsumed-actor condition is
 # rows no consumer takes, distinct from scheduled rows awaiting
 # promotion.
 _QUERY_ACTOR_BACKLOG_SQL_TEMPLATE = (
@@ -2572,7 +2530,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
     """Sample the backlog detectors (jobs-by-status, oldest due age,
     running-lease-expired, per-actor backlog) every ``queue_depth_interval``.
 
-    Why NOT leader-gated, unlike every sibling sampler here: a detector
+    Why not leader-gated, unlike every sibling sampler here: a detector
     hosted behind the leadership gate emits nothing under the very failure
     it exists to expose, another schema's worker holding the old-style
     lock, or any election loss, mutes every leader-gated sampler at once.
@@ -2631,7 +2589,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 # a haunt read that fails must not cost the tick the
                 # fleet-wide samples already taken, and the empty
                 # fallback clears the series rather than freezing it.
-                # Both gauges are built from ONE statement, so count and
+                # Both gauges are built from one statement, so count and
                 # headroom can never describe two moments.
                 try:
                     retrying_snapshot = [
@@ -2679,12 +2637,12 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
                 # metric plane, not only the log: clearing the series
                 # resolves TaskQQueueDepthHigh (its operand is the
                 # oldest-pending age) at the exact moment the incident it
-                # alerts on is killing the read, and a WARN line is not
+                # alerts on is killing the read, and a warn line is not
                 # alertable. The except below routes through
                 # _sampler_read_failed so the failure counts on
                 # taskq.maintenance_leader.sweep_timeouts under this
                 # sampler's own sweep_name (TaskQSweepTimeouts): the tick
-                # degrades visibly AND alertably, never silently.
+                # degrades visibly and alertably, never silently.
                 try:
                     actor_rows = await conn.fetch(actor_backlog_sql)
                 except Exception as exc:
@@ -2696,7 +2654,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             # update_scheduled_count_cache's docstring for why it exists
             # separately from the by-status gauge.
             update_scheduled_count_cache(status_counts.get("scheduled", 0))
-            # MIN(scheduled_at) over an empty set is NULL, nothing is due,
+            # min(scheduled_at) over an empty set is NULL, nothing is due,
             # which the gauge expresses as 0.0, not as a missing sample.
             update_oldest_due_age_cache(oldest_due if oldest_due is not None else 0.0)
             # count(*) never returns NULL; the None arm only tolerates a
@@ -2711,7 +2669,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             # Rebuilt whole from the snapshot: an actor whose retrying
             # rows all resolved (succeeded or gone terminal) vanishes
             # from both series instead of freezing at its last depth.
-            # Both caches are built before EITHER is written, the same
+            # Both caches are built before either is written, the same
             # mixed-state guard the per-actor backlog pair below pins.
             retrying_counts = {actor: count for actor, count, _headroom in retrying_snapshot}
             retry_headrooms = {
@@ -2721,7 +2679,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             update_jobs_retry_headroom_cache(retry_headrooms)
             # Rebuilt whole from the snapshot: an actor that finished its
             # last running job vanishes from both series instead of freezing.
-            # MIN(started_at) is NULL only when every running row of the
+            # min(started_at) is NULL only when every running row of the
             # actor has no started_at (a raced write); 0.0 says "no measured
             # age", never a missing sample.
             update_jobs_running_cache({actor: running for actor, running, _age in running_snapshot})
@@ -2742,7 +2700,7 @@ async def _backlog_detection_loop(ctx: SweepContext, shutdown: asyncio.Event) ->
             # vanished (actor, queue) pair vanishes from the series instead
             # of ageing forever at a stale value.
             #
-            # BOTH snapshots are built before EITHER cache is written: the
+            # both snapshots are built before either cache is written: the
             # comprehensions are plain locals, not call arguments. As
             # arguments, a row valid for depth but malformed for
             # oldest_age ran the first update and then raised in the second
@@ -2819,7 +2777,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     - **unserved queue**: dispatch probes only the queues in the
       dispatching worker's subscription (the candidates lateral's
       ``j2.queue = sq.queue_name`` annihilates every other pair), so a
-      row on a queue NO registered worker serves is invisible fleet-wide
+      row on a queue no registered worker serves is invisible fleet-wide
       while its actor_config row exists and no deadline can fail it.
       The queue tested is the one dispatch would actually route on, which
       for a re-pended row (``pending`` with ``started_at`` set) is its
@@ -2842,30 +2800,30 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     """
     # One scan over the pending/scheduled set, each row's strand
     # conditions computed once in the inner SELECTs and the outer WHERE
-    # admitting exactly the stranded rows. The per-condition FILTER
+    # admitting exactly the stranded rows. The per-condition filter
     # counts (and the queue names on the unserved condition) exist so
-    # each warning event can say WHICH condition held and, for the
+    # each warning event can say which condition held and, for the
     # unserved shape, on which queues, an operator who sees a
     # no-actor-config event and finds the actor_config row present
     # concludes the detector lies, which is the exact failure a
     # per-shape event prevents.
     # A re-pended row (assignment_routed) is not dispatched by its own
-    # queue label -- it routes by its actor's CURRENT stored assignment
+    # queue label -- it routes by its actor's current stored assignment
     # (the routing contract in taskq/backend/_dispatch_sql.py). Testing
     # such a row's label against `workers` asks the detector's question
     # about the wrong queue: the label can name a queue the fleet serves
     # while the row is only claimable by the assignment queue nobody
-    # runs. routing_queue IS dispatch's own discriminator, the
+    # runs. routing_queue is dispatch's own discriminator, the
     # assignment for a re-pended row, the row's own label otherwise, so
-    # the queue the unserved arm TESTS and the queue the event NAMES are
+    # the queue the unserved arm tests and the queue the event names are
     # one expression, never two that can drift.
     # The two shapes are mutually exclusive: with no config row there is
-    # no assignment to route by (the CASE yields NULL, and NULL = ANY(...)
+    # no assignment to route by (the case yields NULL, and NULL = any(...)
     # would report the row unserved no matter what the fleet serves), so
     # the unserved arm is evaluated only when the config row exists. A
     # config-missing row counts once, in the config category, naming a
     # queue for it would point the operator at a label dispatch never
-    # reads. "Serves" means a LIVE worker subscribes to the queue: a
+    # reads. "Serves" means a live worker subscribes to the queue: a
     # dead-but-unswept worker row would otherwise hide an unserved queue
     # for the whole stale-worker sweep window.
     _stranded_sql = """\
@@ -2915,7 +2873,7 @@ async def _stranded_jobs_loop(ctx: SweepContext, shutdown: asyncio.Event) -> Non
     """
 
     # actor -> (last warned count, monotonic timestamp of that warning).
-    # NOT a plain set: a set that is only ever added to means the first tick
+    # not a plain set: a set that is only ever added to means the first tick
     # logs once per actor and every later tick for the life of the process is
     # silent, so a condition that starts small and grows unboundedly looks
     # identical to one that resolved itself.
@@ -3063,7 +3021,7 @@ def _bucket_tokens_by_kind(
     ships) keep a named series. Keyed-materialised buckets
     (``base_name:key``, caller-controlled cardinality) are summed PER
     KIND onto one ``('_other_', kind)`` aggregate — the
-    ``taskq.ratelimit.reclaim_pending`` precedent: keyed values NEVER
+    ``taskq.ratelimit.reclaim_pending`` precedent: keyed values never
     become labels. The state's own remaining budget is
     ``tokens_remaining`` for a token bucket and ``remaining`` for a
     sliding window, the two fields the peek contract populates.

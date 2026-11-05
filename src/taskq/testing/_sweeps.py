@@ -235,7 +235,7 @@ async def _reclaim_expired_locks(
         # None-propagation for the arithmetic below).
         # A non-positive stored timeout is inert, mirroring the SQL's
         # `heartbeat_timeout > interval '0'`: enqueue validation refuses
-        # one but it is the only gate and the column carries no CHECK, so
+        # one but it is the only gate and the column carries no check, so
         # a direct write can leave a zero or negative interval behind,
         # and with one the deadline is already past the instant the row
         # is written, a healthy holder beating right now would be
@@ -265,7 +265,7 @@ async def _reclaim_expired_locks(
             and row.lock_expires_at >= now
             # The SQL's index range bound, stated as its own conjunct: a
             # beat not in the past is never holder silence, however the
-            # row-exact deadline arithmetic reads (a FUTURE-stamped beat
+            # row-exact deadline arithmetic reads (a future-stamped beat
             # plus a degenerate negative timeout, direct-SQL-reachable ,
             # makes the deadline alone admit a row the SQL provably never
             # reclaims). The None-guard is implied by heartbeat_deadline
@@ -285,17 +285,14 @@ async def _reclaim_expired_locks(
             delta = now - row.started_at
             duration_ms = int(delta.total_seconds() * 1000)
 
-        # THE STANDING-CLAIM FENCE (the twin of the batched INSERT's
-        # ``WHERE a.started_at IS NOT NULL``, see _SWEEP_1_ATTEMPTS_BATCH_SQL):
-        # a reclaimed running row with a NULL started_at carries no claim -
-        # the claim-loss reconcile's refund un-stamps the stamp as it refunds
-        # the increment - and records NO attempt row. A crashed row at the
-        # refunded number would permanentise an epoch the counter no longer
-        # carries; the next claim re-mints that number and the ledger closes
-        # the lineage with one more attempt row than the counter (the soak's
-        # reconciliation red). The state-change event below still lands: the
-        # reclaim happened and is audited; the execution the crashed row
-        # would assert never did.
+        # a reclaimed running row with a NULL started_at carries no claim - the
+        # claim-loss reconcile's refund un-stamps the stamp as it refunds the
+        # increment - and records no attempt row. A crashed row at the refunded
+        # number would permanentise an epoch the counter no longer carries; the
+        # next claim re-mints that number and the ledger closes the lineage
+        # with one more attempt row than the counter (the soak's reconciliation
+        # red). The state-change event below still lands: the reclaim happened
+        # and is audited; the execution the crashed row would assert never did.
         if row.started_at is not None:
             attempt_row = AttemptRow(
                 job_id=row.id,
@@ -326,12 +323,12 @@ async def _reclaim_expired_locks(
             await _write_attempt(self, attempt_row)
 
         # Operator intent outranks retry budget, mirroring _SWEEP_1_SQL's
-        # CASE ordering exactly (the PG statement evaluates the cancel
-        # arm FIRST): a cancel-in-flight row terminalises 'cancelled'
+        # case ordering exactly (the PG statement evaluates the cancel
+        # arm first): a cancel-in-flight row terminalises 'cancelled'
         # whatever its budget: the holder is the only writer that could
         # honour the request cooperatively, and this reclaim fired
         # because the holder broke its liveness promise. The cancel
-        # columns are PRESERVED on that arm as the audit trail of the
+        # columns are preserved on that arm as the audit trail of the
         # honoured request (the mark_cancelled/mark_abandoned doctrine);
         # the re-pend arm below reads phase 0 by construction (it fell
         # through the cancel arm), so its reset is a no-op kept as the
@@ -350,7 +347,7 @@ async def _reclaim_expired_locks(
                 # the contract source.
                 assignment_routed=True,
                 # cancel_phase/cancel_requested_at and the error fields
-                # are deliberately NOT in this replace: the cancel arm
+                # are deliberately not in this replace: the cancel arm
                 # keeps the audit columns (the honoured request's
                 # record) and stamps no error marker: no cancel-origin
                 # marker describes a worker that died mid-protocol, so
@@ -389,9 +386,9 @@ async def _reclaim_expired_locks(
             # the shared twin _compute_reclaim_backoff: same three-way raw
             # branch, same min(row cap, max_retry_backoff) effective
             # ceiling (the value the PG statement binds as its
-            # {max_backoff_seconds} parameter), and the SAME jitter
+            # {max_backoff_seconds} parameter), and the same jitter
             # fraction the SQL derives, a deterministic md5 of the row's
-            # own '<id>:<attempt>', never an RNG draw. A reclaim delay is
+            # own '<id>:<attempt>', never an rng draw. A reclaim delay is
             # computed by more than one path for the same row (the leader's
             # sweep, a partitioned worker's isolate_self, a replayed sweep,
             # this mirror), and every one must stamp the same instant ,
@@ -407,16 +404,16 @@ async def _reclaim_expired_locks(
             # release legally stamped (the release accepted base <= 0)
             # the same way an over-ceiling max_attempts row would; the
             # delay itself stays safe because the shared twin floors it
-            # at MIN_DEFERRAL_INTERVAL, matching the SQL's GREATEST.
+            # at MIN_DEFERRAL_INTERVAL, matching the SQL's greatest.
             row_policy = RetryPolicy.model_construct(
                 backoff=row.retry_backoff,
                 base=row.retry_base,
                 cap=row.retry_cap,
                 jitter=row.retry_jitter,
             )
-            # The raw stamped attempt goes in UNCLAMPED: the twin floors
+            # The raw stamped attempt goes in unclamped: the twin floors
             # the exponential arm's exponent itself (mirroring the SQL's
-            # GREATEST(j.attempt - 1, 0)) and hashes the raw attempt exactly
+            # greatest(j.attempt - 1, 0)) and hashes the raw attempt exactly
             # as j.attempt::text does, clamping here (the old
             # max(row.attempt, 1) for compute_backoff's attempt >= 1 guard)
             # would hash a different attempt than the SQL for a
@@ -467,8 +464,8 @@ async def _reclaim_expired_locks(
             # Crashed arm: no cancel in flight (the cancel arm above
             # took every phase-carrying row), no budget. The row
             # self-describes exactly as _SWEEP_1_SQL's crashed arm does.
-            # locked_by_worker/lock_expires_at are cleared on EVERY
-            # branch by _SWEEP_1_SQL's single SET clause list; the
+            # locked_by_worker/lock_expires_at are cleared on every
+            # branch by _SWEEP_1_SQL's single set clause list; the
             # twin must match or a terminal row keeps pointing at a
             # dead holder for every locked_by_worker-scoped reader.
             # assignment_routed is set on every arm for the same reason
@@ -484,7 +481,7 @@ async def _reclaim_expired_locks(
                 cancel_phase=CancelPhase.NONE,
                 cancel_requested_at=None,
                 assignment_routed=True,
-                # Twin of _SWEEP_1_SQL's crashed-arm SET: a crashed row
+                # Twin of _SWEEP_1_SQL's crashed-arm set: a crashed row
                 # self-describes (WorkerCrashed plus the deadline that
                 # fired, drawn from the same _ATTEMPT_MESSAGES map the
                 # attempt row uses: one map, no drift).

@@ -294,7 +294,7 @@ def test_history_null_sentinel_cursor_returns_200(
 def test_history_partial_cursor_missing_created_returns_400(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cursor carrying cursor_at/cursor_id but NOT cursor_created is partial.
+    """A cursor carrying cursor_at/cursor_id but not cursor_created is partial.
 
     The seam predicate compares all three keys of the walk's sort tuple; a
     two-key cursor cannot describe a page boundary (the missing created_at

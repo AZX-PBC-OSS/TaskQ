@@ -1,16 +1,16 @@
 """The workflow-aware pruner's pins — the retention/result-expiry
 coupling.
 
-THE COUPLING: result-expiry must not eat a map's children before the join
+Result-expiry must not eat a map's children before the join
 fires (EXPIRY-EATS-CHILDREN); retention must not prune a live run's
 parent rows (PRUNED-PARENT — the sweep's ledger recount reads parent rows
 as truth); the guards are WHERE-class conditions on the EXISTING arms
-(no new sweep process, §22.6 exclusivity preserved); the guards must NOT
+(no new sweep process, §22.6 exclusivity preserved); the guards must not
 over-hold (a terminal run prunes on the normal schedule); and the
 collect's FailureInfo JSONB is BOUNDED (UNBOUNDED-JSONB: the cap + the
 compaction — the full detail stays on the ledger).
 
-THE CLOCK MECHANISM, NAMED: the fixture SHORTENS
+The fixture SHORTENS
 ``result_expires_at`` on the rows (an UPDATE) — a FakeClock advance moves
 nothing the expiry sweep reads (the sweep's clock is the DATABASE's own
 ``statement_timestamp()``; the two-clock doctrine); advancing the DB
@@ -43,7 +43,7 @@ from tests._wf_fixtures import (
     seed_running_node,
 )
 
-# ── Pin 1: EXPIRY-EATS-CHILDREN ─────────────────────────────────────────
+# ── Pin 1: expiry-eats-children ─────────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -55,9 +55,9 @@ async def test_pin1_expiry_eats_children(
     propagation_redlog: RedLog,
 ) -> None:
     """A 1000-child map forced so its children's ``result_expires_at``
-    elapses BEFORE the join fires (the fixture SHORTENS the rows' expiry —
+    elapses before the join fires (the fixture SHORTENS the rows' expiry —
     the named clock mechanism): the reduce's batch read must see ALL 1000
-    results. THE UNGUARDED VARIANT (the expiry applies mid-run) reds with
+    results. the UNGUARDED VARIANT (the expiry applies mid-run) reds with
     the reduce reading NULLs/holes — the record showing a silent
     partial."""
 
@@ -96,9 +96,9 @@ async def test_pin1_expiry_eats_children(
     assert join_row is not None
     join_job_id = JobId(join_row["id"])
 
-    # The children "complete": terminal succeeded WITH results stored, the
-    # completion's own expiry stamp — then THE FIXTURE SHORTENS the
-    # children's result_expires_at INTO THE PAST (the named clock
+    # The children "complete": terminal succeeded with results stored, the
+    # completion's own expiry stamp — then the fixture shortens the
+    # children's result_expires_at INTO the past (the named clock
     # mechanism; a FakeClock advance moves nothing the sweep reads).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now(), "
@@ -108,8 +108,8 @@ async def test_pin1_expiry_eats_children(
         fork_parent,
     )
 
-    # THE SHIPPED EXPIRY SWEEP: the guard passes the children BY (their
-    # joins are un-fired) — the results survive.
+    # the guard passes the children by (their joins are un-fired) — the results
+    # survive.
     expired = await sweep_expired_results(module_pg_pool, schema=wf_schema)
     survivors = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs WHERE parent_id = $1 AND result IS NOT NULL',
@@ -127,16 +127,16 @@ async def test_pin1_expiry_eats_children(
         "their join is un-fired — the reduce reads holes"
     )
 
-    # The children terminalize THROUGH THE ENGINE (the decrements) — the
-    # join fires; the reduce's batch read sees ALL 1000 results.
-    # The children were flipped terminal ABOVE (the fixture's own
-    # update); their decrements never ran — the SWEEP's rederive is the
+    # The children terminalize through the engine (the decrements) — the
+    # join fires; the reduce's batch read sees all 1000 results.
+    # The children were flipped terminal above (the fixture's own
+    # update); their decrements never ran — the sweep's rederive is the
     # shipped healer for exactly that window (the crash-window heal).
     await sweep_join_rederive(module_pg_pool, wf_sql)
     assert await fire_count(wf_conn, wf_schema, join_job_id) == 1, (
         "the join fires once every child is terminal"
     )
-    # THE REDUCE'S BATCH READ: all 1000 results, never a NULL/hole.
+    # all 1000 results, never a NULL/hole.
     results = await wf_conn.fetch(
         f'SELECT result FROM "{wf_schema}".jobs '
         "WHERE parent_id = $1 AND map_index IS NOT NULL ORDER BY map_index",
@@ -147,8 +147,8 @@ async def test_pin1_expiry_eats_children(
         "the reduce must never read a hole: the expiry held until the join fired"
     )
 
-    # THE UNGUARDED VARIANT (the revert scenario, live): the expiry WITHOUT
-    # the guard eats the children — the survivors assert reds.
+    # the expiry without the guard eats the children — the survivors assert
+    # reds.
     unguarded = wf_sql_unguarded_expiry(wf_sql)
     flow2 = await seed_flow(wf_conn, wf_schema)
     join2 = new_uuid()
@@ -199,11 +199,11 @@ async def test_pin1_expiry_eats_children(
 
 
 def wf_sql_unguarded_expiry(wf_sql: WorkflowSql) -> str:
-    """The rejected shape: the expiry arm WITHOUT the workflow-liveness
+    """The rejected shape: the expiry arm without the workflow-liveness
     guard — the reverted statement (the revert scenario's target)."""
     from taskq.backend import _sweeps
 
-    mutated = _sweeps._SWEEP_RESULT_TTL_SQL.replace(  # pyright: ignore[reportPrivateUsage]  # Why: the rejected variant is the SHIPPED statement minus its guard — the mutation is the scenario.
+    mutated = _sweeps._SWEEP_RESULT_TTL_SQL.replace(  # pyright: ignore[reportPrivateUsage]  # Why: the rejected variant is the shipped statement minus its guard — the mutation is the scenario.
         """      AND NOT EXISTS (
           SELECT 1
           FROM "{schema}".wf_edge e
@@ -227,7 +227,7 @@ async def _claim(wf_conn: asyncpg.Connection, wf_schema: str, node_id: JobId) ->
     return worker
 
 
-# ── Pin 2 + 3: PRUNED-PARENT + the over-hold audit ──────────────────────
+# ── Pin 2 + 3: pruned-parent + the over-hold audit ──────────────────────
 
 
 @pytest.mark.integration
@@ -240,7 +240,7 @@ async def test_pin2_pruned_parent_of_a_live_run(
 ) -> None:
     """Retention pruning a parent row of a LIVE run mid-march: the guard
     PREVENTS the prune (the sweep's recount reads parent rows as truth; a
-    pruned parent mid-run corrupts the count). THE OVER-HOLD AUDIT (pin
+    pruned parent mid-run corrupts the count). the over-HOLD AUDIT (pin
     3): a TERMINAL run's rows prune on the NORMAL schedule — a guard that
     holds every workflow row forever reds this pin."""
     from datetime import timedelta
@@ -248,7 +248,7 @@ async def test_pin2_pruned_parent_of_a_live_run(
     from taskq.constants import DEFAULT_PRUNE_RETENTION
     from taskq.worker._leader_shared import prune_terminal_jobs
 
-    # ── the live run: a TERMINAL parent of a join-wait child.
+    # ── the live run: a terminal parent of a join-wait child.
     flow_id = await seed_flow(wf_conn, wf_schema)
     parent = await seed_running_node(wf_conn, wf_schema, flow_id)
     join_id = await seed_join(wf_conn, wf_schema, flow_id, deps=1)
@@ -288,8 +288,8 @@ async def test_pin2_pruned_parent_of_a_live_run(
         "recount reads parent rows as truth"
     )
 
-    # ── THE OVER-HOLD AUDIT (pin 3): the SAME parent, terminal RUN: the
-    # flow root terminal → the row prunes on the NORMAL schedule.
+    # ── the over-hold audit (pin 3): the same parent, terminal run: the
+    # flow root terminal → the row prunes on the normal schedule.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled' WHERE id = $1", flow_id
     )
@@ -310,7 +310,7 @@ async def test_pin2_pruned_parent_of_a_live_run(
     _ = DEFAULT_PRUNE_RETENTION
 
 
-# ── Pin 4: UNBOUNDED-JSONB (the cap + the compaction) ───────────────────
+# ── Pin 4: unbounded-jsonb (the cap + the compaction) ───────────────────
 
 
 @pytest.mark.integration
@@ -346,8 +346,8 @@ async def test_pin4_unbounded_jsonb_bounded_collect_row(
         )
 
     async with module_pg_pool.acquire() as conn:
-        # MANY fan-ins of a FAT item: the array crosses the cap — the row
-        # must land BOUNDED (the compaction), never unbounded.
+        # many fan-ins of a fat item: the array crosses the cap — the row
+        # must land bounded (the compaction), never unbounded.
         for _ in range(60):
             fanin_rows = await conn.fetch(
                 wf_sql.collect_fan_in,
@@ -400,7 +400,7 @@ async def test_pin4_unbounded_jsonb_bounded_collect_row(
     )
     assert failures.get("__truncated__", 0) >= 1
     assert "wf_step_ledger" in str(failures.get("detail_home", ""))
-    # THE RECORD NEVER LOSES IT: the full detail is still on the ledger.
+    # the full detail is still on the ledger.
     ledger_rows = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger WHERE job_id = $1',
         child,

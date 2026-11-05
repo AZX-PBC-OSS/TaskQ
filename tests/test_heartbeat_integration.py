@@ -92,11 +92,11 @@ async def _setup_fast(
 
     stack = AsyncExitStack()
     deps: WorkerDeps = await stack.enter_async_context(open_worker_deps(settings))
-    # The test's own DB traffic (setup DML, observation reads) rides a
-    # DEDICATED connection, never deps.heartbeat_pool: the heartbeat pool's
+    # The test's own DB traffic (setup dml, observation reads) rides a
+    # dedicated connection, never deps.heartbeat_pool: the heartbeat pool's
     # connections carry the tick's command budget (0.1s at the factory
     # defaults), and that budget is calibrated for the tick's own liveness
-    # statement sequence, not for arbitrary test DML. A setup INSERT that
+    # statement sequence, not for arbitrary test dml. A setup INSERT that
     # waits out a co-tenant's scheduling hiccup (a -n 4 runner's other
     # workers, coverage tracing, the containers' own PG) blew the 0.1s
     # budget and red the setup with a bare asyncpg TimeoutError - the
@@ -663,7 +663,7 @@ async def test_isolate_self_non_retryable_mirrors_sweep1(
 ) -> None:
     """isolate_self non_retryable + budget-remaining mirrors Sweep 1 exactly.
     For a non_retryable job with attempt < max_attempts: status='crashed',
-    finished_at IS NOT NULL, scheduled_at unchanged, AttemptRow written,
+    finished_at IS not NULL, scheduled_at unchanged, AttemptRow written,
     and the crashed arm self-describes on the JOB row too: the
     unguarded template leaves error_class/error_message NULL there while the
     sweep stamped its own, despite the branch-for-branch mirror claim."""
@@ -795,7 +795,7 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
     at 10s/3/2s:
 
     * a row with 65s of lease remaining (above the threshold) is left
-      entirely alone - its ``lock_expires_at`` AND ``last_heartbeat_at``
+      entirely alone - its ``lock_expires_at`` and ``last_heartbeat_at``
       keep their exact prior values, which is the point of the change: a
       healthy beat no longer pays a non-HOT update per running row;
     * a row with 50s remaining - inside the (30, 58] band that
@@ -928,7 +928,7 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
                 )
             }
             # The fresh row was not rewritten at all - byte-identical
-            # stamps, the non-HOT update it no longer pays.
+            # stamps, the non-hot update it no longer pays.
             assert rows[fresh_id]["lock_expires_at"] == before["lock_expires_at"]
             assert rows[fresh_id]["last_heartbeat_at"] == before["last_heartbeat_at"]
             # The renewed rows carry a live full lease and a fresh beat -
@@ -950,7 +950,7 @@ async def test_threshold_gated_renewal_selects_rows_by_remaining_lease(
         await stack.aclose()
 
 
-# ── Threshold-gated renewal: the LIVE loop's skip-then-renew arc ──────
+# ── Threshold-gated renewal: the live loop's skip-then-renew arc ──────
 
 
 async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
@@ -974,7 +974,7 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
     * the first beat must SKIP it - the observed stamp decays from the
       seed instead of jumping to a full fresh lease, which an
       unconditional per-beat renewal (the gate deleted) cannot produce;
-    * beats then decay the row past the threshold, and the FIRST beat at
+    * beats then decay the row past the threshold, and the first beat at
       or under it must RENEW - a fresh full lease stamped while the old
       one is still live (the lease never lapses mid-arc), which an
       over-aggressive gate (skip past expiry) cannot produce: the last
@@ -1043,13 +1043,13 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
                     continue
                 if first_stamp is None:
                     first_stamp = stamp
-                    # THE SKIP: the first observed stamp is at or under
-                    # the seed (byte-identical when the beat landed
-                    # within the same microsecond, decayed otherwise).
-                    # An unconditional per-beat renewal stamps
-                    # now + 30s - strictly ABOVE the 20s seed - on the
-                    # very first beat, so a first stamp at/under the seed
-                    # proves the first beat chose not to rewrite the row.
+                    # the first observed stamp is at or under the seed
+                    # (byte-identical when the beat landed within the same
+                    # microsecond, decayed otherwise). An unconditional
+                    # per-beat renewal stamps now + 30s - strictly above the
+                    # 20s seed - on the very first beat, so a first stamp
+                    # at/under the seed proves the first beat chose not to
+                    # rewrite the row.
                     assert stamp <= seeded, (
                         f"the first beat's stamp ({stamp}) is above the "
                         f"seeded lease ({seeded}): a row 5s above the renewal "
@@ -1059,10 +1059,9 @@ async def test_live_loop_skips_a_fresh_row_then_renews_it_on_decay(
                         "bound instead)"
                     )
                 elif last_stamp is not None and stamp > last_stamp:
-                    # THE RENEWAL: the gated arc only ever DECAYS between
-                    # renewals (the skip writes nothing), so the first
-                    # observed increase is the fresh full lease the
-                    # threshold-crossing beat stamped.
+                    # the gated arc only ever decays between renewals (the skip
+                    # writes nothing), so the first observed increase is the
+                    # fresh full lease the threshold-crossing beat stamped.
                     renewed_at = stamp
                     break
                 last_stamp = stamp

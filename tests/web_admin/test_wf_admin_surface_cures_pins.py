@@ -2,29 +2,29 @@
 """The admin surface's pins — the retry/refusal faces, the I/O panel's
 display chain, the skip-rearm predicate:
 
-- R2-1 THE DEADLOCK'S NAME: the retry CLI (``flows retry``) and the
+- R2-1 the DEADLOCK'S NAME: the retry CLI (``flows retry``) and the
   admin retry routes caught only ``WorkflowRunError`` — a laggard
   writer's deadlock landed a rich traceback (CLI) or a 500 wall (route).
-  The fix: BOTH faces catch the SAME named pair the cancel/resolve
+  The fix: both faces catch the same named pair the cancel/resolve
   verbs carry (``DeadlockDetectedError``/``SerializationError``) → the
   named refusal (the CLI) / the audited refusal row + the ``rerun-raced``
   banner (the route — the audited-refusal law).
-- R2-2 THE CAPTURE FACE'S DISPLAY MASK: the input/result faces re-run
+- R2-2 the CAPTURE FACE'S DISPLAY MASK: the input/result faces re-run
   ``_redact_io_doc`` at display; the capture face trusted the write. The
-  fix: the capture face runs the SAME display-time chain (a
+  fix: the capture face runs the same display-time chain (a
   pre-chain-release write's raw canary renders masked).
-- R2-3 THE BOUNDED WALK: the result face walked/dumped the ENTIRE doc
+- R2-3 the BOUNDED WALK: the result face walked/dumped the ENTIRE doc
   before the 10k display bound (a multi-MB row = a multi-MB walk per
   drill-down). The fix: ``_bounded_io_projection`` pre-trims the doc
-  (depth/node/char budgets) BEFORE the redaction walk, the served text
+  (depth/node/char budgets) before the redaction walk, the served text
   stays POST-redaction (the honesty law), and the named size arm rides
   the face (``walk_note``) — never a silent discard.
-- R2-4 THE SKIP-REARM'S PREDICATE: ``result ? 'skipped'`` was
+- R2-4 the SKIP-REARM'S PREDICATE: ``result ? 'skipped'`` was
   key-existence — a foreign writer's ``{"skipped": false}`` matched and
   had its result DELETED. The fix: the engine's own SKIPPED_RESULT
   containment (``result @> '{"skipped": true}'::jsonb``).
-- R2-5 THE NITS: (a) the dead ``ExitOps.retry_node`` parallel
-  implementation delegates to the ONE verb (the/the laws ride the
+- R2-5 the NITS: (a) the dead ``ExitOps.retry_node`` parallel
+  implementation delegates to the one verb (the/the laws ride the
   compiled face); (b) masked-key collisions disambiguate ``***[2]`` —
   no entry silently overwrites; (c) the rerun's audit row carries the
   ROWS count (the verb's returned row count summed) and the partial
@@ -114,8 +114,8 @@ def r2_app_module() -> Iterator[types.ModuleType]:
 
     @app_obj.workflow("r2_three_doomed_flow")
     def three_doomed_flow() -> Promise[object]:
-        # THREE PARALLEL doomed keys (the pin's own shape): the
-        # rerun composition's failed-key census, with the FIRST sorted
+        # three parallel doomed keys (the pin's own shape): the
+        # rerun composition's failed-key census, with the first sorted
         # key's rows scripted by the spy (the route sums the verb's
         # returned rows — that counting law is the pin's subject).
         src = step(_ok_body, IngestDoc(doc_id="d1"), key="src")
@@ -192,7 +192,7 @@ async def _seed_node_row(
         node_id,
         step_key,
         json.dumps({"flow_id": run_id}),
-        # THE RUN'S COHORT (the shipped shape — the CHECK's own law).
+        # the run's cohort (the shipped shape — the check's own law).
         run_id,
         status,
         json.dumps(result) if result is not None else None,
@@ -225,9 +225,9 @@ async def test_the_retry_cli_answers_the_deadlock_with_the_named_refusal(
     r2_app_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R2-1, THE CLI'S FACE: a laggard writer's deadlock (the verb
+    """R2-1, the CLI'S FACE: a laggard writer's deadlock (the verb
     raising the named pair) lands the NAMED refusal — exit 1, the race's
-    honest-loser copy with the remedy, NEVER a rich traceback. The red:
+    honest-loser copy with the remedy, never a rich traceback. The red:
     the retry CLI caught only ``WorkflowRunError`` — the deadlock
     surfaced as the exception face (the rich traceback the
     diagnostics-first law forbids)."""
@@ -266,9 +266,9 @@ async def test_the_retry_route_answers_the_deadlock_banner_not_a_500(
     r2_app_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R2-1, THE ROUTE'S FACE: the node-retry route catches the SAME
+    """R2-1, the ROUTE'S FACE: the node-retry route catches the same
     named pair — the audited refusal row + the ``rerun-raced`` banner —
-    NEVER a 500 wall. The red: the route caught nothing; the deadlock
+    never a 500 wall. The red: the route caught nothing; the deadlock
     propagated to a 500 (the operator's wall)."""
     import taskq.workflows as wf_pkg
 
@@ -301,7 +301,7 @@ async def test_the_retry_route_answers_the_deadlock_banner_not_a_500(
             "the operator lands on the race's named refusal with the remedy"
         )
 
-    # THE AUDITED REFUSAL (the law): the race's loser writes its row.
+    # the race's loser writes its row.
     refusal_row = await clean_pg_conn.fetchrow(
         f'SELECT detail FROM "{schema}".admin_audit '
         "WHERE action = 'workflow.retry_node' AND target_id = $1 "
@@ -321,7 +321,7 @@ async def test_the_run_rerun_route_catches_the_deadlock_pair_too(
     r2_app_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R2-1, THE COMPOSITION'S FACE: the run-rerun route composes the
+    """R2-1, the COMPOSITION'S FACE: the run-rerun route composes the
     same verb — its deadlock catches the same pair (the raced banner
     when nothing was granted yet; the partial banner + the audit row's
     refusal when some keys landed), never a 500 wall."""
@@ -334,8 +334,7 @@ async def test_the_run_rerun_route_catches_the_deadlock_pair_too(
 
     schema = module_pg_schema.schema_name
     run_id = await _seed_root_row(module_pg_pool, schema)
-    # THE FAILED KEY (the composition's census needs one): the spy's
-    # deadlock fires on the FIRST key's call.
+    # the spy's deadlock fires on the first key's call.
     await _seed_node_row(module_pg_pool, schema, run_id, step_key="mid", status="failed")
     app = _make_admin_app(module_pg_pool, schema)
     async with httpx.AsyncClient(
@@ -363,7 +362,7 @@ async def test_the_capture_face_masks_the_raw_canary_at_display(
     module_pg_schema: ModulePgSchema,
     r2_app_module: Any,
 ) -> None:
-    """R2-2: the capture face runs the SAME display-time chain the
+    """R2-2: the capture face runs the same display-time chain the
     input/result faces run. The red: the capture face trusted the write —
     a row written before the chain's release (or by any foreign hand)
     rendered its raw canary on the panel. The pin plays the pre-chain
@@ -399,7 +398,7 @@ async def test_the_capture_face_masks_the_raw_canary_at_display(
         f"canary byte rides the panel, got {dumped}"
     )
     assert "***" in dumped, "the masked form is what the operator reads"
-    # THE LABELS SURVIVE THE MASK (the chain masks the strings, not
+    # the labels survive the mask (the chain masks the strings, not
     # the attempt's identity).
     assert resp.json()["io"]["capture_attempt"] == 1
 
@@ -408,7 +407,7 @@ async def test_the_capture_face_masks_the_raw_canary_at_display(
 
 
 def test_the_walk_projection_bounds_a_multi_mb_doc() -> None:
-    """R2-3, THE PROJECTION'S OWN TEETH: a 2MB doc's projection walks a
+    """R2-3, the PROJECTION'S own TEETH: a 2MB doc's projection walks a
     BOUNDED node/char budget (the red: the result face walked and dumped
     the ENTIRE doc before the 10k display bound — a multi-MB walk per
     drill-down), and a pathological DEPTH cannot recurse the walk into
@@ -426,7 +425,7 @@ def test_the_walk_projection_bounds_a_multi_mb_doc() -> None:
     assert note is not None and "walk budget" in note, f"the trim is NAMED, never silent: {note!r}"
     assert "showing the first" in note, note
 
-    # THE DEPTH ARM: a 50k-deep doc cannot RecursionError the display.
+    # a 50k-deep doc cannot RecursionError the display.
     deep: object = "leaf"
     for _ in range(50_000):
         deep = [deep]
@@ -434,8 +433,7 @@ def test_the_walk_projection_bounds_a_multi_mb_doc() -> None:
     assert stats2["nodes"] <= _wf_actions._WALK_NODE_BUDGET
     assert note2 is not None, "the deep trim is named too"
 
-    # THE UNDER-BUDGET DOC: untouched, no note (the common case pays
-    # nothing and says nothing).
+    # untouched, no note (the common case pays nothing and says nothing).
     small_doc = {"small": "ok", "list": [1, 2, 3]}
     p3, note3, _s3 = _wf_actions._bounded_io_projection(small_doc)
     assert note3 is None
@@ -447,15 +445,15 @@ async def test_the_result_face_answers_bounded_with_the_named_arm(
     module_pg_schema: ModulePgSchema,
     r2_app_module: Any,
 ) -> None:
-    """R2-3, THE ENDPOINT'S FACE: a 2MB synthetic result row's drill-down
+    """R2-3, the ENDPOINT'S FACE: a 2MB synthetic result row's drill-down
     answers BOUNDED (the walk's budget bounds the work; the response
     never carries the multi-MB doc) WITH the named size arm riding the
     face — and the honesty law holds: the served text is still
     POST-redaction (a canary inside the kept band masks)."""
     schema = module_pg_schema.schema_name
-    # THE G7-CONSISTENT ROOT: the succeeded child's run derives
-    # 'complete' — the root reports it (a 'failed' root over these rows
-    # would red the always-on G7 check, correctly).
+    # the succeeded child's run derives 'complete' — the root reports it (a
+    # 'failed' root over these rows would red the always-on G7 check,
+    # correctly).
     run_id = await _seed_root_row(module_pg_pool, schema, status="succeeded")
     canary_head = "sk-canary-head-1234567890"
     await _seed_node_row(
@@ -487,8 +485,8 @@ async def test_the_result_face_answers_bounded_with_the_named_arm(
         "the cut is named at its own site too — a partial doc never reads as whole"
     )
     assert len(face["text"]) < 10_000, "the served text is bounded"
-    # THE HONESTY LAW: the served text stays POST-redaction — the
-    # canary inside the KEPT band is masked, never served raw.
+    # the served text stays post-redaction — the canary inside the kept band is
+    # masked, never served raw.
     assert "canary" not in face["text"], face["text"][:200]
     assert "***" in face["text"]
 
@@ -511,11 +509,11 @@ async def test_the_skip_rearm_predicate_is_the_true_skipped_true_shape(
     clean_pg_conn: asyncpg.Connection,
     r2_app_module: Any,
 ) -> None:
-    """R2-4: the re-arm's predicate is the engine's OWN SKIPPED_RESULT
+    """R2-4: the re-arm's predicate is the engine's own SKIPPED_RESULT
     contract — ``result @> '{\"skipped\": true}'::jsonb``. The red: bare
     KEY-EXISTENCE (``result ? 'skipped'``) matched a foreign writer's
     ``{\"skipped\": false}`` and DELETED its result. The pin: false/"no"
-    envelopes are NOT re-armed (their bytes survive untouched); the true
+    envelopes are not re-armed (their bytes survive untouched); the true
     envelope re-arms."""
     from taskq.backend._protocol import JobId
     from taskq.workflows import retry_workflow_node
@@ -533,8 +531,7 @@ async def test_the_skip_rearm_predicate_is_the_true_skipped_true_shape(
         f"got {tail_before['result']!r}"
     )
 
-    # THE FOREIGN WRITERS' ROWS: result CARRIES the key, but the shape is
-    # not the engine's true envelope.
+    # result carries the key, but the shape is not the engine's true envelope.
     false_id = await _seed_node_row(
         module_pg_pool,
         schema,
@@ -599,7 +596,7 @@ async def test_the_compiled_retry_face_delegates_to_the_verb(
     """R2-5a: the compiled face's ``retry_node`` DELEGATES to the one
     id-addressed verb (the parallel implementation was stale — it lacked
     the FOR-UPDATE serialization and the skip re-arm). The pin
-    proves the call-through (the SAME public seam the CLI/routes ride —
+    proves the call-through (the same public seam the CLI/routes ride —
     one name to patch) and the bool mapping of the verb's row count.
     Hermetic: the spy touches no rows."""
     import taskq.workflows as wf_pkg
@@ -614,7 +611,7 @@ async def test_the_compiled_retry_face_delegates_to_the_verb(
         seen["pool"] = args[0] if args else kwargs.get("pool")
         seen["flow_id"] = kwargs.get("flow_id")
         seen["node_key"] = kwargs.get("node_key")
-        return 2  # the verb's ROW count (a map key's grant)
+        return 2  # the verb's row count (a map key's grant)
 
     monkeypatch.setattr(wf_pkg, "retry_workflow_node", spy_verb)
     flow_id = new_uuid()
@@ -637,7 +634,7 @@ async def test_the_verb_returns_the_true_row_count_for_a_map_key(
     clean_pg_conn: asyncpg.Connection,
     r2_app_module: Any,
 ) -> None:
-    """R2-5c, THE VERB'S HALF: a map's failed children share one step
+    """R2-5c, the VERB'S HALF: a map's failed children share one step
     key — the verb returns the ROWS it re-armed (2 failed rows of the
     key → 2), not a grant bit (the red: the applied-count counted KEYS
     while rows moved unseen), and the verb's own audit row carries the
@@ -674,7 +671,7 @@ async def test_the_verb_returns_the_true_row_count_for_a_map_key(
     if isinstance(detail, str):
         detail = json.loads(detail)
     assert detail.get("rows_reopened") == 2, f"the row count is ON THE ROW: {detail}"
-    # BOTH rows re-armed (the CAS's write set is the key's failed rows).
+    # both rows re-armed (the CAS's write set is the key's failed rows).
     for row_id in (first, second):
         status = await module_pg_pool.fetchval(
             f'SELECT status FROM "{schema}".jobs WHERE id = $1', uuid.UUID(row_id)
@@ -689,7 +686,7 @@ async def test_the_rerun_audit_row_gains_the_rows_count_and_the_banner_says_rows
     r2_app_module: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R2-5c, THE ROUTE'S HALF: the rerun composition's audit row carries
+    """R2-5c, the ROUTE'S HALF: the rerun composition's audit row carries
     the ROWS count (the verb's returned row count summed) beside the key
     counts, and the partial banner copy says ROWS-WHERE-HONEST (a map
     key's grant moved several rows — "2 node rows re-opened across 1 of
@@ -709,7 +706,7 @@ async def test_the_rerun_audit_row_gains_the_rows_count_and_the_banner_says_rows
 
     async def grant_rows_then_refuse(*args: Any, **kwargs: Any) -> int:
         if kwargs.get("node_key") == "f1":
-            return 2  # the MAP KEY's row count (the verb's own returned shape)
+            return 2  # the map key's row count (the verb's own returned shape)
         raise WorkflowRunError("the mid-composition refusal")
 
     monkeypatch.setattr(wf_pkg, "retry_workflow_node", grant_rows_then_refuse)
@@ -829,8 +826,7 @@ async def test_the_csrf_mismatch_refusal_names_the_reload(
             f"403 loop's fix), got {detail!r}"
         )
 
-        # THE MISSING-COOKIE ARM (the loop's other door): a client with
-        # no cookie jar at all — the same remedy.
+        # a client with no cookie jar at all — the same remedy.
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",

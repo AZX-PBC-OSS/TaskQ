@@ -15,14 +15,14 @@ Drills (each writes PASS/FAIL receipts into ``.measurements/probe-dash/``):
                  pushes (a live stream on cycle 1, the durable progress
                  snapshot for the rest), and the terminal admin view.
 ``overlap``      a slow cycle is running; latecomers (the chain's own successor
-                 AND a manual trigger) PARK, never stack; an idle-time trigger
+                 and a manual trigger) PARK, never stack; an idle-time trigger
                  is admitted; a double-trigger of the singleton escalation
                  actor is refused with ``SingletonCollisionError``.
 ``cursor``       SIGKILL the worker mid-increment; the uncommitted attempt
                  vanishes, the chain recovers on the durable timer, the cursor
                  never rewinds, and nothing is digested twice.
 ``timer``        the approval window is a ``scheduled_at`` job: it sits HELD in
-                 ``scheduled`` across a worker death, fires NO EARLIER than its
+                 ``scheduled`` across a worker death, fires no EARLIER than its
                  scheduled instant, and — unapproved — runs the EXPIRED arm:
                  a durable escalation record plus the typed fail-close
                  (:class:`~examples.gaugefleet.actors.ApprovalWindowExpired`
@@ -158,7 +158,7 @@ class Harness:
     def __init__(self, dsn: str) -> None:
         # Per-run key namespace: every idempotency key embeds it, so re-running
         # the harness never dedups against a previous run's succeeded jobs.
-        # Why noqa TID251: this is a harness KEY fragment, not a TaskQ row id —
+        # Why noqa TID251: this is a harness key fragment, not a TaskQ row id —
         # B-tree locality is irrelevant.
         self.ns = f"r{os.getpid():x}-{uuid.uuid4().hex[:8]}"  # noqa: TID251
         self.dsn = dsn
@@ -173,7 +173,7 @@ class Harness:
         # - the grace cascade fits inside the lock lease:
         #   cancellation 5 + cleanup 2 = 7 < 15, and the event-loop watchdog
         #   budget 10 + heartbeat 2 = 12 < 15;
-        # - the LEADER lease bounds failover (configuration.md's
+        # - the leader lease bounds failover (configuration.md's
         #   TASKQ_LEADER_LEASE: another worker takes leadership once it
         #   lapses) — 15s so a restarted worker promotes scheduled jobs fast.
         self.env = dict(os.environ) | {
@@ -475,7 +475,7 @@ async def drill_multicycle(h: Harness, rec: Recorder) -> None:
         "(>=2 events, terminal at 100%)",
     )
 
-    # The terminal ADMIN VIEW: every cycle's tick, its status, its identity.
+    # The terminal admin view: every cycle's tick, its status, its identity.
     view = await h.jobs_view("gauge_refresh_tick")
     plan_keys = {f"gaugefleet-tick:{h.ns}:{MULTI + c}" for c in plan}
     cycle_view = [r for r in view if r.get("idempotency_key") in plan_keys]
@@ -567,7 +567,7 @@ async def drill_overlap(h: Harness, rec: Recorder) -> None:
     )
 
     # The singleton face on the escalation actor (which never self-enqueues):
-    # a second active-job enqueue is REFUSED with the typed error.
+    # a second active-job enqueue is refused with the typed error.
     breach = f"breach-{h.ns}-ov-singleton"
     await state.record_breach(h.db, breach, "ov-singleton", 999.0)
     await h.client.enqueue(
@@ -622,7 +622,7 @@ async def drill_cursor(h: Harness, rec: Recorder) -> None:
         "mid-kill: the killed attempt's receipt row does not exist (atomic commit)",
     )
 
-    # Restart: the chain's successor was scheduled BEFORE the kill (the clock
+    # Restart: the chain's successor was scheduled before the kill (the clock
     # held the door); after the stale-guard window the chain resumes and the
     # increment is processed exactly once.
     h.worker = Worker("restarted", h.env)
@@ -659,7 +659,7 @@ async def drill_cursor(h: Harness, rec: Recorder) -> None:
         f"the digest holds exactly {len(gauges)} rows — no reprocessing, no duplicates",
     )
 
-    # The cursor sits past every committed reading, so ANY re-attempt of the
+    # The cursor sits past every committed reading, so any re-attempt of the
     # killed job (the library's reclaim will eventually re-run it) resumes to
     # an empty increment: resume-not-restart.
     cursor_now = await state.read_cursor(h.db)

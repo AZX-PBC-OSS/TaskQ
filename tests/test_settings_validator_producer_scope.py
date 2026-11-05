@@ -47,15 +47,15 @@ async def test_settings_validator_does_not_check_producer_loop() -> None:
     # A config where the producer would fail the invariant if checked:
     # notify_enabled=False, poll_interval=1.0 (producer_period=1.0),
     # dispatcher_command_timeout=9.0, watchdog_stale_floor=10.0.
-    # Leader loops: budget=10, 9+1=10 >= 10 → FAILS.
-    # Producer: budget=10, 9+1=10 >= 10 → would also FAIL.
+    # Leader loops: budget=10, 9+1=10 >= 10 → fails.
+    # Producer: budget=10, 9+1=10 >= 10 → would also fail.
     # But we want to test the producer specifically. Use a config where
     # the leader passes but the producer would fail if checked:
     # timeout=8.0, notify_enabled=True, notify_poll_interval=1.0,
     # watchdog_stale_floor=9.0.
-    # Leader: budget=max(5, 9)=9, 8+1=9 >= 9 → FAILS.
+    # Leader: budget=max(5, 9)=9, 8+1=9 >= 9 → fails.
     # Hmm, both share the floor. The only way to test is to verify the
-    # error message does NOT mention "producer" when only the leader fails.
+    # error message does not mention "producer" when only the leader fails.
 
     # Use a config that fails the leader check:
     settings_dict = {

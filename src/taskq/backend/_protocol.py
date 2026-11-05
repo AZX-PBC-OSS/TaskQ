@@ -131,24 +131,24 @@ __all__ = [
 #     bytes exactly as the dict form is guarded.
 #     EnqueueArgs.scheduled_at is now optional, None means immediate
 #     and the backend's server stamps/decides it. A v2-era implementation
-#     fails LOUDLY on None ('>' not supported between NoneType and
+#     fails loudly on None ('>' not supported between NoneType and
 #     datetime at its scheduled_at > now checks) rather than silently
 #     misbehaving, so per the bump rule above this is a documented
 #     no-bump incompatibility.
 #     mark_failed_or_retry's next_scheduled_at (datetime | None) is
 #     replaced by retry_delay (timedelta | None), the backend derives
-#     scheduled_at, the scheduled/pending status, AND the
+#     scheduled_at, the scheduled/pending status, and the
 #     schedule_to_close deadline outcome from its own clock (single
 #     arbiter); a v2-era implementation binding a datetime into the
 #     interval slot fails loudly at the driver instead of silently
 #     misbehaving.
 #     list_jobs, every JobFilter.order_by now tie-breaks on `id` in the
-#     SAME direction as its primary column (`created_at DESC, id DESC`,
+#     same direction as its primary column (`created_at DESC, id DESC`,
 #     not `id ASC`) and accepts a cursor, whose shape is the ordering's
 #     own columns. A v2-era implementation still ordering `id ASC` pages
 #     silently wrongly against the new cursor, so this belongs in the
 #     same unreleased bump rather than being additive.
-#     The vestigial `now` parameters are REMOVED from
+#     The vestigial `now` parameters are removed from
 #     scheduled_to_pending / deadline_sweep / reclaim_expired_locks and
 #     the PostgresBackend.sweep_* statics, PG ignored them (the server
 #     clock is the arbiter); an implementation still declaring them fails
@@ -407,7 +407,7 @@ class JobSortField(Enum):
 
     ``CREATED_AT_DESC`` and ``FINISHED_AT_DESC`` serve "latest run by business
     key" queries: newest-created first and most-recently-finished first
-    (``NULLS LAST``) respectively.
+    (``NULLS last``) respectively.
 
     Every ordering pages with a cursor.  Each one orders ``id`` *with* its
     primary column rather than against it -- ``created_at DESC, id DESC``,
@@ -439,7 +439,7 @@ class CancelPhase(IntEnum):
 
     Values ``NONE``, ``COOPERATIVE``, and ``FORCED`` are persistable ,
     they map directly to the PG ``cancel_phase`` column whose check
-    constraint is ``BETWEEN 0 AND 2``. ``ABANDON_PENDING`` is an
+    constraint is ``BETWEEN 0 and 2``. ``ABANDON_PENDING`` is an
     in-process sentinel only: the cancel-poll loop sets it on
     ``_ActiveJob`` to mark a job as queued for post-transaction
     abandonment. It is never written to PG. Keeping it on the same
@@ -466,12 +466,12 @@ IdentityKey = NewType("IdentityKey", str)
 
 #: The two halves of the queue-name rule, kept as separate character classes
 #: so the pattern and the "which character lost?" diagnostic below are the
-#: SAME rule rather than two copies that can drift apart.
+#: same rule rather than two copies that can drift apart.
 _QUEUE_NAME_FIRST: Final = "[A-Za-z0-9_]"
 _QUEUE_NAME_REST: Final = "[A-Za-z0-9_.-]"
 
 #: Character bound for a queue name. ``jobs.queue`` is carried in btree
-#: indexes (``(queue, priority DESC, scheduled_at)`` and the two composite
+#: indexes (``(queue, priority desc, scheduled_at)`` and the two composite
 #: dispatch probes), and a btree index item caps at
 #: :data:`~taskq.constants.BTREE_MAX_ITEM_BYTES` (2704 bytes): an
 #: incompressible name past ~2700 bytes fails the jobs INSERT with an
@@ -502,10 +502,10 @@ _QUEUE_NAME_RE: Final[re.Pattern[str]] = re.compile(rf"\A{_QUEUE_NAME_FIRST}{_QU
 # The same separator ambiguity is why `taskq.ratelimit.refs` rejects a
 # keyed `base_name` that derives into this prefix. Keep ":" out.
 #
-# Why the FIRST character allows a digit, the leading-letter rule was
+# Why the first character allows a digit, the leading-letter rule was
 # copied from `_IDENT_RE` (taskq.constants), where it is essential
 # because a Postgres identifier genuinely cannot start with a digit and
-# `_IDENT_RE` guards names that are INTERPOLATED into SQL as identifiers.
+# `_IDENT_RE` guards names that are interpolated into SQL as identifiers.
 # A queue name is not an identifier: it is always bound as a `$n`
 # parameter (jobs.queue, workers.queues, queues.name), and it reaches
 # OTel only as a metric *dimension value* (`{"queue": queue}` in
@@ -600,7 +600,7 @@ def parse_outcome_branch(value: str) -> SqlOutcomeBranch:
 def parse_cancel_phase(value: int) -> CancelPhase:
     """Convert an untrusted ``int`` (from a PG row) into :class:`CancelPhase`.
 
-    The PG check constraint ``cancel_phase BETWEEN 0 AND 2`` ensures
+    The PG check constraint ``cancel_phase BETWEEN 0 and 2`` ensures
     only persistable values reach Python; we reject
     :attr:`CancelPhase.ABANDON_PENDING` (3) explicitly because that
     value is an in-process sentinel and must never appear in a row.
@@ -681,7 +681,7 @@ class EnqueueArgs:
     # The fan-out ledger: the enqueuing parent's job id, stamped
     # by the client layer from the ambient parent context (the sibling
     # contextvar to the tag-inheritance one, set at worker entry). A
-    # plain column in the schema, deliberately NO foreign key: an FK
+    # plain column in the schema, deliberately no foreign key: an FK
     # would key-share-lock the parent row per child insert and block a
     # retention purge of a parent while children pend. Dangling ids are
     # a defined, harmless state — the pending-children count never joins
@@ -709,7 +709,7 @@ class EnqueueArgs:
     def __post_init__(self) -> None:
         # Why the memos reset here: ``dataclasses.replace`` feeds every
         # current field value back through __init__, so a memo computed for
-        # the PREVIOUS payload or metadata would ride along onto the
+        # the previous payload or metadata would ride along onto the
         # replaced struct and re-bind a stale encoding. The memos are
         # call-time caches, so a replace drops them and the next jsonb
         # binding re-encodes from the live fields.
@@ -829,7 +829,7 @@ def cap_keyed_pairs(args_list: list[EnqueueArgs]) -> list[tuple[str, str, str]]:
     """The ``(actor, idempotency_scope, idempotency_key)`` triples the cap
     discount may need to look up in storage.
 
-    Only items that are BOTH capped and idempotency-keyed can have their
+    Only items that are both capped and idempotency-keyed can have their
     capacity discounted: an uncapped item is invisible to backpressure,
     and an item without a key always writes a fresh row (nothing to
     dedupe against). The pair is the ``(scope, str(key))`` shape the
@@ -925,7 +925,7 @@ def first_duplicate_idempotency_pair(
     aborts on, derived from the batch itself, never from driver text.
 
     A bulk insert with no ``ON CONFLICT`` arbiter (the COPY fast path)
-    aborts at the FIRST item whose pair the unique index already holds,
+    aborts at the first item whose pair the unique index already holds,
     and items are written in batch order, so the offending pair is the
     first one that repeats an earlier item or appears among
     *stored_pairs*. Postgres renders the violation's detail with raw,
@@ -1272,7 +1272,7 @@ class JobFilter:
     fails identically on both backends instead of surfacing as a PG
     enum-cast error or a silent empty result.
     The PG backend renders a single status as ``status = $n`` and a
-    sequence as ``status = ANY($n)``; the in-memory backend performs a
+    sequence as ``status = any($n)``; the in-memory backend performs a
     membership check in both cases.
 
     ``unfinished`` is a meta-filter that selects statuses by terminality,
@@ -1321,7 +1321,7 @@ class JobFilter:
     order_by: JobSortField | None = None
     # Deprecated constructor alias for `unfinished`, kept as a field
     # (not a property) because a frozen dataclass cannot alias an
-    # __init__ parameter. It holds the PRE-RENAME positional slot (10,
+    # __init__ parameter. It holds the pre-rename positional slot (10,
     # before created_before) so a positional call written before the
     # rename still binds its 10th argument to the terminality filter
     # and its 11th to created_before. Excluded from eq and repr: the
@@ -1341,7 +1341,7 @@ class JobFilter:
     created_before: datetime | None = None
     # True selects every non-terminal status (still running or pending);
     # False selects only terminal statuses. See the class docstring.
-    # Deliberately the LAST field, after created_before, rather than
+    # Deliberately the last field, after created_before, rather than
     # slotted into `active`'s old position: inserting it mid-list would
     # shift every later positional argument one slot left, so a
     # pre-rename positional call would hand a datetime to the alias and
@@ -2025,7 +2025,7 @@ class Backend(Protocol):
         """Enqueue a job using the supplied connection.
 
         The connection MUST already be in an open transaction managed by
-        the caller, this method does NOT issue BEGIN/COMMIT. The
+        the caller, this method does not issue BEGIN/COMMIT. The
         autonomous variant ``enqueue(args)`` acquires its own connection
         and opens a transaction internally.
         """
@@ -2147,7 +2147,7 @@ class Backend(Protocol):
         available so the success status update commits atomically with
         the actor's writes and sub-job INSERTs in the same transaction.
         The connection MUST already be in an open transaction; this
-        method does NOT open or close one. The autonomous variant
+        method does not open or close one. The autonomous variant
         ``mark_succeeded(...)`` acquires its own connection.
 
         ``result`` / ``result_bytes`` follow the same two-form contract as
@@ -2245,7 +2245,7 @@ class Backend(Protocol):
         :meth:`mark_succeeded`; it applies to all three arms, the two
         terminal deadline exits included.
 
-        A non-terminal snooze/denial writes NO ``job_attempts`` /
+        A non-terminal snooze/denial writes no ``job_attempts`` /
         ``job_events`` rows, it is admission control or a voluntary
         deferral, not an execution, and is counted on the job row
         (``snooze_count``, or ``rate_limit_blocked_count`` when *outcome*
@@ -2317,7 +2317,7 @@ class Backend(Protocol):
         """Release a running attempt this worker cannot finish because the
                process is going away.
 
-               The interruption releases a *started* attempt, so it does NOT
+               The interruption releases a *started* attempt, so it does not
                refund the claim's increment: the attempt did start executing, and
                refunding it would re-create the exact attempt epoch the
                interrupted handler still holds; that handler's later terminal
@@ -2458,7 +2458,7 @@ class Backend(Protocol):
         queued, there is nothing to put back, and re-pending would
         discard its place in the dispatch order.
 
-        The attempt counter is NOT reset: an idempotent admin operation
+        The attempt counter is not reset: an idempotent admin operation
         must not restart the counter, so a re-run job climbs to fresh
         attempt numbers and
         no ``job_attempts`` write can collide on a spent epoch's primary
@@ -2544,7 +2544,7 @@ class Backend(Protocol):
         Returns a dict mapping actor name to count.  Only actors with
         at least one pending or scheduled job appear in the result.
         Actors not in the result have a count of zero.  The ``actors``
-        list is used as an ``IN``/``ANY`` filter, pass all distinct actor
+        list is used as an ``IN``/``any`` filter, pass all distinct actor
         names from a batch to fetch all counts in one round-trip.
         """
         ...
@@ -2605,7 +2605,7 @@ class Backend(Protocol):
         """
         ...
 
-    # ── Schedule CRUD ────────────────────────────────────────────────────
+    # ── Schedule crud ────────────────────────────────────────────────────
     async def create_schedule(self, args: ScheduleCreateArgs) -> ScheduleRecord: ...
 
     async def list_schedules(

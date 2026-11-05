@@ -5,7 +5,7 @@ two ticks, on two real connections, both inside their own transactions,
 must never both fire the same schedule.  The pinning file
 (``tests/test_cron_tick_bounded.py``) exercises a contended tick in
 isolation - a second connection holds the lock first and the tick under
-test loses the probe.  What it does NOT pin is the handover race itself:
+test loses the probe.  What it does not pin is the handover race itself:
 a second tick STARTING while the first is mid-transaction, and two ticks
 free-running concurrently.  Those are the attacks here.
 
@@ -15,7 +15,7 @@ free-running concurrently.  Those are the attacks here.
   probe and fire nothing.  Then free-running pairs of concurrent ticks
   under ``asyncio.gather`` - whichever interleaving the event loop
   picks, every schedule fires exactly once.
-* ``TestTickStatementShape`` - the lock probe must be the tick's FIRST
+* ``TestTickStatementShape`` - the lock probe must be the tick's first
   statement (a rewrite that reads the due set before probing re-opens
   the window the lock exists to close), and an empty due set must cost
   exactly lock + clock + due SELECT - no actor fetch, no UPDATEs, no
@@ -23,7 +23,7 @@ free-running concurrently.  Those are the attacks here.
 * ``TestManualScheduleManagementMidTick`` - a schedule created and
   committed by another connection while a tick is inflight is not in
   the tick's due-set snapshot: not fired, not advanced; it fires on the
-  NEXT tick.  No lost write, no double-fire.
+  next tick.  No lost write, no double-fire.
 """
 
 from __future__ import annotations

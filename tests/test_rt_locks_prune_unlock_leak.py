@@ -6,7 +6,7 @@ The prune loop takes its session-level advisory lock with
 ``with contextlib.suppress(*TRANSIENT_PG_ERRORS): await conn.execute(
 "SELECT pg_advisory_unlock(...)")`` (``worker/_leader_sweeps.py``).
 ``QueryCanceledError`` (server-side 57014 cancel) and ``TimeoutError``
-(client-side command timeout) are BOTH in the transient set
+(client-side command timeout) are both in the transient set
 (``worker/_transient.py``), so a cancel landing mid-unlock is swallowed
 silently while the connection SURVIVES - the session keeps the lock, the
 conn returns to the pool, and every later prune attempt on any pod logs
@@ -43,7 +43,7 @@ pytestmark = pytest.mark.integration
 
 class _UnlockFailingConn:
     """Delegates everything to the wrapped real conn; raises *fail_with* on
-    the ``pg_advisory_unlock`` statement BEFORE it reaches PG - a cancel
+    the ``pg_advisory_unlock`` statement before it reaches PG - a cancel
     arriving mid-unlock - and records the failure plus lock attempts."""
 
     def __init__(self, conn: asyncpg.Connection, fail_with: type[BaseException]) -> None:

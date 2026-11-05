@@ -6,7 +6,7 @@ These require real Postgres (marked ``integration``) because the function
 executes hand-written SQL against the fully migrated schema - a fake
 connection would only prove the query string looks right, not that
 Postgres executes it correctly with enum casts, transactional rollback,
-and the ``NOT EXISTS`` subquery for queue purging.
+and the ``not EXISTS`` subquery for queue purging.
 """
 
 import asyncio
@@ -653,7 +653,7 @@ async def test_deregister_purge_queue_noop_when_queue_row_absent(
         [ActorConfig(actor="noqueue_actor", max_concurrent=5, queue="never_created")],
         schema=schema,
     )
-    # Deliberately do NOT create a queues row for "never_created".
+    # Deliberately do not create a queues row for "never_created".
 
     result = await deregister_actor(clean_pg_conn, "noqueue_actor", purge_queue=True, schema=schema)
 
@@ -749,11 +749,11 @@ async def test_concurrent_force_deregister_one_succeeds_one_raises(
 
         # Exactly-once cancellation, pinned on the audit trail rather than
         # the attribution counter: the job's event history must carry
-        # exactly ONE deregister-cancel state_change. The final row status
+        # exactly one deregister-cancel state_change. The final row status
         # above cannot distinguish a single cancel from a double (a second
         # cancel rewrites finished_at and leaves the same status, and its
         # count dies with the caller's ActorNotFoundError), so this is the
-        # assertion that bites: dropping the drain's EPQ re-check lets the
+        # assertion that bites: dropping the drain's epq re-check lets the
         # second caller's drain re-cancel a row whose snapshot predates the
         # first caller's commit, and exactly this assertion fails.
         import json
@@ -796,7 +796,7 @@ async def test_deregister_active_jobs_takes_precedence_over_schedules(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """When both active jobs AND enabled schedules exist, the jobs error is raised first."""
+    """When both active jobs and enabled schedules exist, the jobs error is raised first."""
     schema = module_pg_schema.schema_name
     await sync_actor_config(
         clean_pg_conn,

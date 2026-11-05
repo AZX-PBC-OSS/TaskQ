@@ -1,7 +1,7 @@
 """The fleet demo's workflow face (Act 8): the doc-ingest shape's
-SMALLEST leg — the source + ONE conditional chain + ONE hold resolved.
+SMALLEST leg — the source + one conditional chain + one hold resolved.
 
-* the SOURCE: the paged emit (each yield = ONE emit tx; the records ride
+* the SOURCE: the paged emit (each yield = one emit tx; the records ride
   the chain);
 * the CONDITIONAL: the screen step's typed outcome routes — READABLE →
   enrich, UNREADABLE → DONE (the router's totals are the fence);
@@ -51,7 +51,7 @@ REVIEW_GATE = GateDecl(name="ReviewDecision", payload_models=(ReviewDecision,), 
 _DOCS: dict[str, str] = {
     "doc-a": "the text of doc-a",
     "doc-b": "the text of doc-b",
-    "doc-unreadable": "",  # the UNREADABLE arm's record
+    "doc-unreadable": "",  # the unreadable arm's record
 }
 
 
@@ -76,8 +76,8 @@ async def screen_body(ctx: StepContext, doc_id: str) -> ScreenOutcome:
 
 
 async def enrich_body(ctx: StepContext, doc_id: str) -> EnrichOutcome:
-    """THE HOLD (the smallest leg's point): the typed review — the
-    workflow pauses here until the operator resolves. THE EXPIRY IS A
+    """The typed review — the
+    workflow pauses here until the operator resolves. the EXPIRY IS A
     VALUE: the expiry member is the typed stop."""
     outcome = await ctx.wait_signal(
         (ReviewDecision,), timeout_s=600.0, reason="the fleet demo's review hold"
@@ -115,7 +115,7 @@ def fleet_doc_ingest() -> Promise[object]:
 
 
 async def source_body(ctx: StepContext) -> None:
-    """The paged source: ONE yield = ONE emit tx (the chain's children +
+    """The paged source: one yield = one emit tx (the chain's children +
     the edges + the cursor checkpoint)."""
     from taskq.workflows.chain import chain_start
 

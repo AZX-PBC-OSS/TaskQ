@@ -298,7 +298,7 @@ async def test_denial_retry_wins_when_a_local_release_lands() -> None:
 
 async def test_denial_retry_exhausts_to_the_last_hint() -> None:
     """A bucket that never frees exhausts the budget and re-raises the
-    LAST denial: the caller's snooze path proceeds with the lease hint
+    last denial: the caller's snooze path proceeds with the lease hint
     exactly as before the retry existed (the churn doctrine's regime)."""
     from taskq.worker._consumer import _acquire_for_actor_with_denial_retry
 

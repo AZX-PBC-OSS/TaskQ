@@ -30,7 +30,7 @@ container is the deterministic shape this test needs: the DNS record stays,
 the established TCP connections blackhole (the peer's network stack is
 frozen: no RST, no reply), so every in-flight and next PG write hangs
 past the deadline and the trip is the only exit left. The orchestration
-sets ``shutdown_event`` BEFORE the bounded close, so the watchdog starts
+sets ``shutdown_event`` before the bounded close, so the watchdog starts
 counting during the hang. With ``termination_grace = 5.01`` and zero grace
 periods, the watchdog trips just after the deadline.
 
@@ -295,7 +295,7 @@ async def test_shutdown_hard_deadline_watchdog(
     # frozen network stack: established connections blackhole instead of
     # failing fast, so the shutdown provably cannot complete before the
     # watchdog's deadline). Stopping instead would let a runner whose
-    # resolver drops the container's DNS record fail every write fast,
+    # resolver drops the container's dns record fail every write fast,
     # finish the orchestration inside the budget, and exit 0: correct
     # behavior for a completed shutdown, and a coin flip this test must
     # not depend on.
@@ -374,7 +374,7 @@ def _reap_gate_worker_env(
         "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         "TASKQ_LOCK_LEASE": "8.0",
         "TASKQ_WATCHDOG_LOOP_LAG_BUDGET": "6.0",
-        # THE CHECK INTERVAL EXPLICIT (the holdmap-fixes lane's validation
+        # the check interval explicit (the holdmap-fixes lane's validation
         # fix: warn must be > check — the warning-storm lattice; 0.5
         # keeps the detector clear of its own cadence and the ladder
         # warn(1.0) < budget stays the tier-1-before-tier-2 shape)

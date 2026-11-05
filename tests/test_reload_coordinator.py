@@ -51,9 +51,9 @@ class _FakePool:
         self.name = name
         self.closed = False
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface - the coordinator's
-        # reload closes the OLD pool on a background drain task spawned
-        # strictly AFTER the swap, so awaiting this event is a bounded
+        # surface; the event is the wait surface - the coordinator's
+        # reload closes the old pool on a background drain task spawned
+        # strictly after the swap, so awaiting this event is a bounded
         # wait that cannot observe a half-applied reload (and never a
         # fixed sleep racing the drain under load).
         self.closed_event = asyncio.Event()
@@ -146,7 +146,7 @@ async def test_coordinator_reloads_on_event_and_clears_it() -> None:
         task = await _run_coordinator(deps, shutdown)
 
         deps.reload_event.set()
-        # The reload swaps deps.worker_pool and only THEN spawns the old
+        # The reload swaps deps.worker_pool and only then spawns the old
         # pool's background drain, so the old pool's closed event is a
         # bounded wait that cannot resume before the swap has landed.
         await wait_for(old_worker.closed_event, timeout=5.0)
@@ -272,8 +272,8 @@ async def test_coordinator_skips_reload_during_shutdown_orchestration(
         deps.shutdown_phase = ShutdownPhase.DRAINING
         task = await _run_coordinator(deps, shutdown)
         deps.reload_event.set()
-        # Poll-asserted, not a bare sleep: the contract is the DRAINING phase
-        # CONSUMES the reload event (clears it) without awaiting the reload.
+        # Poll-asserted, not a bare sleep: the contract is the draining phase
+        # consumes the reload event (clears it) without awaiting the reload.
         # 2.0 s = generous loop-turn slack for the coordinator to reach the
         # consume; the regression this pins (reload awaited during draining,
         # or the event retried forever) leaves it set, so the poll still
@@ -412,7 +412,7 @@ async def test_request_reload_sets_the_event() -> None:
         assert deps.reload_event.is_set()
 
 
-# ── DI LOOP-scope refresh ──────────────────────────────────────────────
+# ── di loop-scope refresh ──────────────────────────────────────────────
 
 
 async def _bootstrap_loop_scope_with_pool(pool: object) -> LoopScope:
@@ -444,8 +444,8 @@ async def test_coordinator_refreshes_di_pool_after_worker_reload() -> None:
         )
 
         deps.reload_event.set()
-        # The old pool's background drain is spawned strictly AFTER the
-        # worker-pool swap, and the DI cache refresh happens before the
+        # The old pool's background drain is spawned strictly after the
+        # worker-pool swap, and the di cache refresh happens before the
         # coordinator suspends again - so the old pool's closed event is a
         # bounded wait that cannot resume before both have landed.
         await wait_for(old_worker.closed_event, timeout=5.0)
@@ -471,7 +471,7 @@ async def test_coordinator_does_not_refresh_di_when_flag_off() -> None:
         )
 
         deps.reload_event.set()
-        # Same witness as the DI-refresh test: the old pool's drain runs
+        # Same witness as the di-refresh test: the old pool's drain runs
         # only after the swap, so its closed event is a bounded wait that
         # cannot resume before the swap has landed.
         await wait_for(old_worker.closed_event, timeout=5.0)

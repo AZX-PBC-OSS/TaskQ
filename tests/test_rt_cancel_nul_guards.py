@@ -42,7 +42,7 @@ from taskq._ids import new_uuid
 from taskq.backend._protocol import ErrorInfo, ScheduleUpdateArgs
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker._handlers import (
-    _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: the classification under pin IS this tuple; importing it is the assertion.
+    _TERMINAL_WRITE_INFRA_EXCEPTIONS,  # pyright: ignore[reportPrivateUsage]  # Why: the classification under pin is this tuple; importing it is the assertion.
 )
 from taskq.worker._transient import TRANSIENT_PG_ERRORS
 
@@ -106,12 +106,12 @@ def test_schedule_update_args_clean_text_still_constructs() -> None:
 
 # ── ErrorInfo: the guard's ValueError must classify as a bug ─────────────
 #
-# The guard exists so an unsanitized value fails LOUDLY.  This pins where
+# The guard exists so an unsanitized value fails loudly.  This pins where
 # that failure lands: a ValueError is outside both error-classification
 # sets, so a future raw constructor path surfaces as an unexpected error
 # (the loop guards' loud-then-fatal doctrine) instead of a transient
 # retry.  The contrast half is the evidence: the raw 22021 the guard
-# pre-empts is a PostgresError and would be transient-misread by BOTH
+# pre-empts is a PostgresError and would be transient-misread by both
 # sets - retrying forever, never failing the job.
 
 
@@ -148,7 +148,7 @@ def test_the_raw_22021_the_guard_pre_empts_would_be_infra_misread() -> None:
     """Evidence for why the guard must raise ValueError rather than let the
     bind fail: CharacterNotInRepertoireError is a PostgresError, and the
     terminal-write infra catch - the exact context ErrorInfo's text is
-    bound in - matches ANY PostgresError, so a raw 22021 leaves the job
+    bound in - matches any PostgresError, so a raw 22021 leaves the job
     running for lease reclaim instead of failing it (the strand cycle
     ErrorInfo's docstring documents).  The leader loops' transient set
     deliberately excludes data errors, so those loops already classify a

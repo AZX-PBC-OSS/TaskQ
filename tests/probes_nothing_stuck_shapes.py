@@ -2,16 +2,16 @@
 """the NOTHING-STUCK clause (the maintainer's addendum): the
 livelock / deadlock / lost-job probes over the phase-3/4 arms.
 
-(a) THE LIVELOCK: two nodes each waiting on the other's edge — the cycle
+(a) the LIVELOCK: two nodes each waiting on the other's edge — the cycle
     is the E1 validate refusal at build (pinned there); the RETRY-cycle
     shape (a body that re-pends forever) is terminated by the LADDER
     (the attempt ledger is the bound) — pinned here: a permanently-
     failing node TERMINATES (the bounded state machine exists).
-(b) THE DEADLOCK: the drive + the cancel + the drain + the sweep arms
+(b) the DEADLOCK: the drive + the cancel + the drain + the sweep arms
     run CONCURRENTLY on one flow (the lock orders walked by fire, not
     by reading) — bounded by the test's timeout; the run reaches a NAMED
     terminal.
-(c) THE LOST JOB: cancel/race in the NEW arms' windows — the cancel
+(c) the LOST JOB: cancel/race in the NEW arms' windows — the cancel
     landing WHILE the drain holds the spawn tx, the resolve racing the
     cancel — every job lands in a NAMED state, zero silent losses.
 
@@ -77,7 +77,7 @@ async def test_the_drive_the_cancel_and_the_drain_run_concurrently_no_deadlock(
     wf_pool: Any, wf_schema: str, wf_conn: Any
 ) -> None:
     """The drive loop + the cancel cascade + the outbox drain + the hold
-    resolve, all at once on ONE flow: the lock orders are walked by
+    resolve, all at once on one flow: the lock orders are walked by
     fire. The run reaches a NAMED terminal inside the bound (a deadlock
     is a hang — the timeout is the probe's teeth)."""
     from taskq.workflows import map_source
@@ -101,11 +101,10 @@ async def test_the_drive_the_cancel_and_the_drain_run_concurrently_no_deadlock(
     runner = FlowRunner(app.get("attack4_deadlock"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
 
-    # THE COOPERATIVE STOP (the probe's own no-hangs discipline): the
-    # driver is never CANCELLED mid-query (a cancellation landing in a
-    # DB op wedges the pool's close — the hang this probe originally
-    # caught); the cancel task SETS the stop and the driver exits
-    # between passes. The pytest timeout is the REAL hang's guard.
+    # the driver is never cancelled mid-query (a cancellation landing in a DB
+    # op wedges the pool's close — the hang this probe originally caught); the
+    # cancel task sets the stop and the driver exits between passes. The pytest
+    # timeout is the real hang's guard.
     stop = asyncio.Event()
 
     async def drive_until_stop() -> None:
@@ -126,7 +125,7 @@ async def test_the_drive_the_cancel_and_the_drain_run_concurrently_no_deadlock(
         )
         stop.set()
 
-    # THE BOUND: the concurrency ends + the run is NAMED-terminal.
+    # the concurrency ends + the run is named-terminal.
     await asyncio.wait_for(
         asyncio.gather(drive_until_stop(), cancel_sometime()),
         timeout=30,
@@ -176,7 +175,7 @@ async def test_the_resolve_racing_the_cancel_lands_in_a_named_state(
             principal="attack4",
         )
 
-    # THE RACE: the resolve and the cancel, concurrent, 50 rounds.
+    # the resolve and the cancel, concurrent, 50 rounds.
     for _ in range(50):
         results = await asyncio.gather(
             client.resolve(hold.hold_id, {"verdict": "approve", "note": ""}),
@@ -186,8 +185,8 @@ async def test_the_resolve_racing_the_cancel_lands_in_a_named_state(
         resolve_result = results[0]
         assert not isinstance(resolve_result, BaseException), resolve_result
         assert resolve_result.status in ("delivered", "no-op", "refused"), resolve_result
-        # THE ZOMBIE CHECK: the flow's row + the signals agree — a
-        # delivered hold NEVER wakes a cancelled node back to running.
+        # the flow's row + the signals agree — a delivered hold never wakes a
+        # cancelled node back to running.
         root = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
         )

@@ -2,7 +2,7 @@
 OTel export being enabled.
 
 ``maintenance_health`` reports "sweep batch size degraded" so orchestrators
-surfacing the health body see a latched reduced-tier worker WITHOUT a
+surfacing the health body see a latched reduced-tier worker without a
 Prometheus/OTel pipeline - that independence is the whole point of the
 health view. The emitter the production sweep path drives with the
 effective tier is ``record_sweep_batch_size`` (called from

@@ -96,7 +96,7 @@ class TestBase62Uniqueness:
         # 14 chars = 6 timestamp + 8 random (62^8 ≈ 2.2e14 suffix space) -
         # the length production call sites use. Shorter lengths (e.g. 10 =
         # only 62^4 ≈ 14.7M suffixes) have a ~3% birthday-collision chance
-        # at 1000 IDs/second and CANNOT guarantee uniqueness at this density.
+        # at 1000 IDs/second and cannot guarantee uniqueness at this density.
         ids = {new_base62(14, precision="second") for _ in range(1000)}
         assert len(ids) == 1000
 

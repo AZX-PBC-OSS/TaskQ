@@ -141,7 +141,7 @@ async def _serve(settings: WorkerSettings) -> None:
 
     async with DefaultAzureCredential() as cred:
         # One provider instance for both PG and Redis (EntraIdProvider implements
-        # both Protocols). The client uses a factory-built pool (fresh AAD
+        # both Protocols). The client uses a factory-built pool (fresh aad
         # token at construction) and a factory-built Redis client (auto-
         # rotating tokens on reconnect).
         provider = EntraIdProvider(cred)

@@ -257,7 +257,7 @@ async def test_opportunistic_eviction_reclaims_idle_capacity_on_cap_hit(
         ref, payload=_DefaultPayload(session_id="k3"), pg_pool=None, settings=settings
     )  # pyright: ignore[reportPrivateUsage]
 
-    # 4. Materialise a NEW key - would exceed the cap, but opportunistic
+    # 4. Materialise a new key - would exceed the cap, but opportunistic
     #    eviction reclaims the 2 stale entries first.
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
         ref, payload=_DefaultPayload(session_id="k4"), pg_pool=None, settings=settings
@@ -494,7 +494,7 @@ async def test_ensure_slots_failure_unwinds_materialization_for_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A transient ``ensure_slots`` failure during first materialization
-    must NOT poison the key: the half-registered entry is unwound so the
+    must not poison the key: the half-registered entry is unwound so the
     next acquisition re-materializes and RETRIES ``ensure_slots`` (which is
     idempotent). Without unwinding, the entry would be reused forever -
     acquire() finds no slot rows and denies, and every attempt re-stamps
@@ -571,7 +571,7 @@ async def test_keyed_cap_does_not_deny_static_colliding_reuse() -> None:
         )
     )
 
-    # Must NOT raise ReservationUnavailable despite the full cap.
+    # Must not raise ReservationUnavailable despite the full cap.
     name = await reg._resolve_reservation_name(  # pyright: ignore[reportPrivateUsage]
         ref, payload=_DefaultPayload(session_id="s1"), pg_pool=None, settings=settings
     )
@@ -586,7 +586,7 @@ async def test_keyed_cap_does_not_deny_static_colliding_reuse() -> None:
 async def test_colliding_concrete_names_same_config_share_primitive() -> None:
     """Two refs whose ``f"{base_name}:{key}"`` concrete names collide (one
     ref's base_name is a prefix of the other's, and ':' is an allowed key
-    character) resolve to the SAME registered primitive when their configs
+    character) resolve to the same registered primitive when their configs
     are identical - registration is idempotent, so they silently share one
     reservation.  This pins the documented collision behavior: bounded and
     safe (the shared cap still holds), if surprising."""
@@ -611,7 +611,7 @@ async def test_collision_guard_resets_after_idle_eviction(
 ) -> None:
     """Pins the guard's eviction boundary: the collision check fires only
     on LIVE tracked entries. Once the colliding entry is idle-evicted, a
-    different-config ref re-materializes its OWN config silently - eviction
+    different-config ref re-materializes its own config silently - eviction
     resets the guard (documented behavior, not a silent config flip of a
     live primitive)."""
     from importlib import import_module
@@ -667,7 +667,7 @@ async def test_statically_preregistered_reservation_is_never_keyed_evicted(
 ) -> None:
     """Reservation twin of the static-entry protection: a statically
     pre-registered reservation whose name matches a keyed ref's concrete
-    name is reused as-is and NOT stamped into the keyed tracking dict, so
+    name is reused as-is and not stamped into the keyed tracking dict, so
     the idle-eviction sweep can never evict it."""
     from importlib import import_module
 
@@ -702,7 +702,7 @@ async def test_statically_preregistered_reservation_is_never_keyed_evicted(
 async def test_value_error_during_keyed_resolution_rolls_back_earlier_reservation() -> None:
     """Regression for the ``except ReservationUnavailable`` → ``except
     Exception`` rollback fix: a ``ValueError`` from key validation (invalid
-    ``key_fn`` output) raised AFTER an earlier reservation was already
+    ``key_fn`` output) raised after an earlier reservation was already
     acquired must roll that reservation back - the old clause only caught
     ``ReservationUnavailable`` and leaked the slot until lease expiry."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
@@ -768,7 +768,7 @@ async def test_key_fn_exception_rolls_back_earlier_reservation() -> None:
 async def test_value_error_during_keyed_rate_limit_resolution_rolls_back_reservation() -> None:
     """Rate-limit twin: a ``ValueError`` from ``KeyedRateLimitRef`` key
     validation raised after a reservation was acquired rolls the
-    reservation back (reservations acquire BEFORE rate limits, so the
+    reservation back (reservations acquire before rate limits, so the
     leak window is the rate-limit resolution/acquire phase)."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
     reg = RateLimitRegistry()
@@ -955,7 +955,7 @@ async def test_leader_sweep_skips_eviction_when_no_keyed_reservations(
     shutdown = asyncio.Event()
     task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))
     # The positive tick witness, behind the house bounded wait: a tick
-    # PROVABLY ran before the not-called assert means anything.
+    # provably ran before the not-called assert means anything.
     await wait_for_condition(
         lambda: backend.reclaim_ticks >= 1,
         description="the sweep loop must run a tick before the skip assertion means anything",
@@ -1077,7 +1077,7 @@ async def test_leader_sweep_skips_eviction_when_no_keyed_rate_limits(
     shutdown = asyncio.Event()
     task = asyncio.create_task(sweeps_mod._sweep_loop(ctx, shutdown))
     # The positive tick witness, behind the house bounded wait: a tick
-    # PROVABLY ran before the not-called assert means anything.
+    # provably ran before the not-called assert means anything.
     await wait_for_condition(
         lambda: backend.reclaim_ticks >= 1,
         description="the sweep loop must run a tick before the skip assertion means anything",

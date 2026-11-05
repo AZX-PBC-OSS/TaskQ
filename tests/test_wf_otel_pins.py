@@ -1,6 +1,6 @@
 """The wf-otel pins — the workflow spans' contract.
 
-THE DEFECT (the consumers' report): the vanilla lifecycle emits spans at
+The vanilla lifecycle emits spans at
 every messaging point — ``enqueue {actor}`` (PRODUCER), ``process
 {actor}`` (CONSUMER), ``attempt.{N}`` (INTERNAL), ``dispatch`` (INTERNAL),
 ``cron fire`` (PRODUCER) — and the workflows package emitted ZERO: the
@@ -9,24 +9,24 @@ vanilla consumer path) and the dev drive never enters it, so a consumer
 running otel (an Azure Monitor backend, a ddtrace backend) sees
 its flows as silence.
 
-THE LAW (mirroring the vanilla exactly — no new otel machinery):
+LAW (mirroring the vanilla exactly — no new otel machinery)
 
-* the SAME ``safe_start_span`` at the wf lifecycle's own points; the
-  SAME no-op law (telemetry off → no spans, the flow runs, nothing
-  fails); the SAME scrubbed-error recording (``render_exception`` /
+* the same ``safe_start_span`` at the wf lifecycle's own points; the
+  same no-op law (telemetry off → no spans, the flow runs, nothing
+  fails); the same scrubbed-error recording (``render_exception`` /
   ``record_exception_text`` — exception text is scrubbed; the
   caller-supplied ATTRIBUTE values — ``taskq.run_key``, the workflow
   and step names — ride as-declared, the vanilla ``identity_key``'s
-  own posture); the SAME naming grammar (lowercase phrases — ``run
+  own posture); the same naming grammar (lowercase phrases — ``run
   {workflow}``, ``step {step_key}`` — beside the vanilla's ``process
-  {actor}``, ``cron fire``); the SAME ``taskq.*`` attribute namespace.
+  {actor}``, ``cron fire``); the same ``taskq.*`` attribute namespace.
 * the RUN span (``run {workflow}``): a ROOT (``new_root=True`` — the
   producer-link pattern), created at the flow's first claim (the
   run-key claim the packaged :func:`taskq.workflows.run` performs),
   ended at the run's terminal. Linked (not parented) to the ambient
   trace.
 * the STEP span (``step {step_key}``): the claim tail's attempt
-  (``_execute_claimed`` — the ONE shared tail both doors land in). The
+  (``_execute_claimed`` — the one shared tail both doors land in). The
   parent is the run span WHEN both execute in one process (the dev
   drive — otel's in-process context propagation, for free); on a fleet
   worker there is no run span in that process, so the step span is a
@@ -151,7 +151,7 @@ async def test_a_small_flow_emits_the_run_span_over_its_step_children(
         "one trace: the step rides the run's trace in-process"
     )
 
-    # THE HONEST BOUNDARY: no vanilla messaging span exists for the wf rows.
+    # no vanilla messaging span exists for the wf rows.
     names = [s.name for s in exporter.spans]
     assert not [
         n for n in names if n.startswith(("enqueue ", "process ", "dispatch", "attempt."))
@@ -197,7 +197,7 @@ async def test_the_run_span_carries_the_declared_attribute_contract(
     assert attrs.get("taskq.priority") == 5
     assert attrs.get("taskq.outcome") == "terminal"
 
-    # THE LIFECYCLE EVENTS (the vanilla consumer span's own grammar):
+    # the lifecycle events (the vanilla consumer span's own grammar):
     running = exporter.events_on("run otel-attrs-flow", "lifecycle.running")
     assert running, "the run's start is the root row's pending → running"
     running_attrs = running[0].attributes
@@ -325,8 +325,8 @@ async def test_a_failing_step_records_the_ladder_scrubbed(
     assert last_ladder_attrs is not None
     assert last_ladder_attrs.get("retried") is False, "the budget exhausted"
 
-    # THE REDACTION LAW: the exception event is the scrubbed render — the
-    # canary password is gone, the diagnostic class is kept.
+    # the exception event is the scrubbed render — the canary password is gone,
+    # the diagnostic class is kept.
     for span in (first, last):
         exc_events = [ev for ev in span.events if ev.name == "exception"]
         assert exc_events, [ev.name for ev in span.events]
@@ -424,7 +424,7 @@ async def test_an_exhausted_deferral_records_the_ladder_scrubbed(
     assert step_attrs.get("taskq.attempt") == 1
     assert step_attrs.get("taskq.outcome") == "laddered"
 
-    # THE BODY'S ASK, THEN THE BUDGET'S REFUSAL — both events on the
+    # the body's ask, then the budget's refusal — both events on the
     # span, the arm's own chronology.
     deferred = [ev for ev in step_span.events if ev.name == "wf.deferred"]
     assert deferred, [ev.name for ev in step_span.events]
@@ -435,8 +435,8 @@ async def test_an_exhausted_deferral_records_the_ladder_scrubbed(
     assert laddered_attrs.get("retried") is False, "the budget exhausted"
     assert laddered_attrs.get("error_class") == "RetryAfter"
 
-    # THE SCRUBBED RENDER: the exception event carries the body's REAL
-    # signal — the caught RetryAfter, never a fabricated object.
+    # the exception event carries the body's real signal — the caught
+    # RetryAfter, never a fabricated object.
     exc_events = [ev for ev in step_span.events if ev.name == "exception"]
     assert exc_events, [ev.name for ev in step_span.events]
     rendered = str(exc_events[0].attributes)
@@ -452,7 +452,7 @@ async def test_a_held_step_records_the_hold_event(
     """The hold (the hold machinery : a body at its gate — the step span's outcome is
     ``held``, the ``wf.held`` event names the hold id and the signals,
     the status stays UNSET; the run span (``until='held'``) records the
-    drive's stop and NO terminal lifecycle event (the run is not
+    drive's stop and no terminal lifecycle event (the run is not
     terminal — the envelope must not lie)."""
     _, exporter = setup_tracer(monkeypatch)
     app = WorkflowApp()

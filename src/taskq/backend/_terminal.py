@@ -10,7 +10,7 @@ thin wrappers that acquire the appropriate pool and delegate.
 One statement per terminal write
 ===============================
 
-Each ``mark_*`` write is ONE data-modifying-CTE statement
+Each ``mark_*`` write is one data-modifying-CTE statement
 (``sql.mark_*`` in ``_sql_templates.py``): the fenced ``jobs`` UPDATE,
 the ``job_attempts`` INSERT, and the ``job_events`` INSERT execute inside
 a single statement instead of three awaited round trips inside one
@@ -24,7 +24,7 @@ SQL statement, CTEs included, is atomic by itself, so the transaction
 context manager's two round trips bought nothing the statement doesn't
 already provide; the LOOP-scope ``mark_succeeded_with_conn`` path still
 runs inside the actor's transaction as before), removes four round trips
-per job with NO change to commit semantics: statement failure still
+per job with no change to commit semantics: statement failure still
 aborts the write whole, still classifies through
 ``_TERMINAL_WRITE_INFRA_EXCEPTIONS``, and still leaves the job
 ``running`` for lease-sweep reclaim (at-least-once).
@@ -32,9 +32,9 @@ aborts the write whole, still classifies through
 Invariants preserved verbatim from the three-statement form:
 
 * The UPDATE stays the single arbiter: its fencing WHERE (``status =
-  'running' AND locked_by_worker = $2``, two epochs deeper with the
-  attempt conjunct ``AND attempt = $k`` and the claim-epoch conjunct
-  ``AND claim_epoch = $m``, the handler's own claim view, threaded from
+  'running' and locked_by_worker = $2``, two epochs deeper with the
+  attempt conjunct ``and attempt = $k`` and the claim-epoch conjunct
+  ``and claim_epoch = $m``, the handler's own claim view, threaded from
   every call site, so a stale execution's write after a reclaim and
   redispatch no-ops exactly like a different worker's late write, at the
   attempt ceiling included; the invariant lives in
@@ -82,11 +82,11 @@ queueing it forever: the ``TimeoutError`` is the designed terminal-write
 infra failure (see ``worker/_handlers.py``), never a job outcome, the
 row stays ``running`` and lease expiry reclaims it. This is what keeps a
 cancel storm of concurrent consumer ``mark_cancelled`` writes from
-wedging both the writers AND any loop that shares the pool (the
+wedging both the writers and any loop that shares the pool (the
 heartbeat spiral pinned by
 ``tests/test_rt_locks_terminal_write_pool_starvation.py``).
 
-Deliberately NOT done here (the evaluated alternative): coalescing
+Deliberately not done here (the evaluated alternative): coalescing
 outcomes across jobs into one multi-row flusher.  Completion is the
 job's final act, the consumer ``await``s (under ``asyncio.shield``)
 its terminal write before reporting the outcome, so a returned
@@ -176,11 +176,11 @@ __all__ = [
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 #: Fallback bound (seconds) for a terminal write's pool checkout when the
-#: caller does not thread one in. Every terminal write is ONE fused
+#: caller does not thread one in. Every terminal write is one fused
 #: statement (the ~0.14 ms UPDATE the module docstring's e2e profile
 #: measured), so a checkout that cannot resolve in a quarter second is a
 #: wedged or closing pool, not a busy one, and the write's correct
-#: outcome there is the DESIGNED failure: the acquire's ``TimeoutError``
+#: outcome there is the designed failure: the acquire's ``TimeoutError``
 #: surfaces as terminal-write infra (``_TERMINAL_WRITE_INFRA_EXCEPTIONS``
 #: in worker/_handlers.py explicitly anticipates "timeout acquiring a
 #: pool connection"), the job row stays ``running``, and lock-lease
@@ -188,7 +188,7 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: (:class:`~taskq.backend.postgres.PostgresBackend`) thread
 #: ``dispatcher_command_timeout``, the operator knob the repo's other
 #: bounded acquires use, so this default binds only direct module-level
-#: callers, which otherwise had NO bound at all.
+#: callers, which otherwise had no bound at all.
 DEFAULT_TERMINAL_POOL_ACQUIRE_TIMEOUT_S: Final[float] = 0.25
 
 
@@ -320,7 +320,7 @@ async def _mark_succeeded_on_conn(
     attempt: int | None = None,
     claim_epoch: int | None = None,
 ) -> bool:
-    """Terminal success write: ONE statement (UPDATE + attempt + event).
+    """Terminal success write: one statement (UPDATE + attempt + event).
 
     The fused ``sql.mark_succeeded`` keeps the pool and LOOP-scope
     transactional paths byte-identical in semantics, see the module
@@ -342,7 +342,7 @@ async def _mark_succeeded_on_conn(
     ``claim_epoch`` value of the caller's own claim view (JobRow
     .claim_epoch). The attempt counter saturates at the smallint ceiling,
     where a reclaim plus a redispatch leaves the stale handler and the
-    live one holding the SAME (worker, attempt) pair, the stale write
+    live one holding the same (worker, attempt) pair, the stale write
     would otherwise win; the epoch always advances, so the stale write
     can only no-op. ``None`` binds NULL, which never satisfies the
     equality, the same cannot-prove-it doctrine *attempt* applies.
@@ -364,7 +364,7 @@ async def _mark_succeeded_on_conn(
         # once (orjson, the same options ``dumps_jsonb_str`` uses), reuse
         # the bytes instead of dumping a second time and re-encoding the
         # bound str a third time just to measure result_size_bytes.
-        # len(result_bytes) IS the stored byte length: the bound value is
+        # len(result_bytes) is the stored byte length: the bound value is
         # result_bytes.decode() and asyncpg encodes text parameters back to
         # the identical utf-8 bytes.  The NUL guard runs on the same bytes
         # via the byte-level scan (_encoded_has_nul), so the ValueError
@@ -394,9 +394,9 @@ async def _mark_succeeded_on_conn(
     else:
         serialized_result = jsonb_param(result)
         # tors.utf8_byte_len, not str.encode: the byte cap below needs a
-        # NUMBER, and the encode pays a full copy of the serialized result
+        # number, and the encode pays a full copy of the serialized result
         # to learn it - O(n) copy for an O(1) measurement on every
-        # successful job with a dict result (the measured ADOPT in
+        # successful job with a dict result (the measured adopt in
         # docs/design/tors-adoption-map.md: ~12x p50 single-thread,
         # ~6-9.5x contended at the real 64 KiB cap). Parity is pinned
         # byte-exact in tests/test_tors_byte_len_parity.py: same count, and the
@@ -451,10 +451,10 @@ async def _mark_succeeded(
 ) -> bool:
     # No explicit transaction: the fused statement is atomic by itself (a
     # single SQL statement, CTEs included, either completes entirely or
-    # not at all), and dropping the BEGIN/COMMIT pair removes two of the
+    # not at all), and dropping the begin/COMMIT pair removes two of the
     # four remaining per-job round trips.  It also shortens the fencing
     # row lock's hold from UPDATE..COMMIT to the statement's own duration.
-    # The LOOP-scope path (_mark_succeeded_on_conn via
+    # The loop-scope path (_mark_succeeded_on_conn via
     # mark_succeeded_with_conn) still runs inside the actor's transaction
     # exactly as before.
     async with pool.acquire(timeout=acquire_timeout) as conn:
@@ -591,7 +591,7 @@ async def _mark_retry(
         # Error text escaped at the bind for the same reason as
         # _mark_failed; the retry_delay is floored at
         # MIN_DEFERRAL_INTERVAL inside the statement (params CTE's
-        # GREATEST), the template-side twin of the in-memory
+        # greatest), the template-side twin of the in-memory
         # _mark_failed_or_retry floor.
         rec = await conn.fetchrow(
             sql.mark_retry,
@@ -838,7 +838,7 @@ async def _mark_snoozed(
         # A non-terminal snooze/denial writes no attempt/event rows and no
         # timestamps of its own, it increments the outcome-keyed counter
         # on the row (see _sql_templates.mark_snoozed).  The deadline
-        # arms are the statement's ONLY terminal exits (failed for a
+        # arms are the statement's only terminal exits (failed for a
         # clean row, cancelled for a phase-carrying one, the
         # cancel-first arm), and each writes its attempt row and
         # state_change event exactly like every other terminal

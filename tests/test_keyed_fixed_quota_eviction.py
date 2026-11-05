@@ -1,6 +1,6 @@
 """Fixed-quota keyed buckets: which backends idle eviction must hold.
 
-Unguarded, ``TokenBucket.holds_consumed_quota`` holds EVERY Postgres fixed-quota
+Unguarded, ``TokenBucket.holds_consumed_quota`` holds every Postgres fixed-quota
 keyed bucket, spent or not, so once a worker had seen
 ``max_keyed_rate_limits`` distinct keys, every NEW key raised
 ``ReservationUnavailable`` (routed by the consumer to the 429
@@ -269,7 +269,7 @@ class TestPgFixedQuotaEvictReacquire:
             assert float(state) == 3.0, "fixture broken: two of five tokens must be spent"
 
             # Evict the registry entry and run the row reclamation the
-            # sweep performs: the drain's DELETE must VETO on the spent
+            # sweep performs: the drain's DELETE must veto on the spent
             # row (the consumed-quota guard), so the state survives.
             _seed_idle(reg, bucket)
             assert reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0)) == 1
@@ -286,7 +286,7 @@ class TestPgFixedQuotaEvictReacquire:
                 "the consumed-quota veto (_no_consumed_quota_sql) must keep it"
             )
 
-            # Re-materialize the same key: the acquire path preseeds ON
+            # Re-materialize the same key: the acquire path preseeds on
             # CONFLICT DO NOTHING and resumes from the surviving row.
             resumed = await reg.acquire_for_actor(
                 rate_limits=[ref],

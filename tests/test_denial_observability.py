@@ -402,7 +402,7 @@ async def test_actor_deferral_is_unbounded_and_never_spends_budget() -> None:
     many cycles pass or how small the budget is.
 
     The budget is preserved by refunding the claim's attempt increment,
-    NOT by raising the ceiling: a transient job with ``max_attempts=1``
+    not by raising the ceiling: a transient job with ``max_attempts=1``
     and no close deadline, driven through many more deferral cycles than
     its budget, must still be rescheduled with ``attempt`` back at its
     pre-claim base and ``max_attempts`` untouched. A budget-gated deferral

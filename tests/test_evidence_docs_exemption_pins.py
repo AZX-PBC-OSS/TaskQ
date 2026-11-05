@@ -2,7 +2,7 @@
 stale a live claim's verdict.
 
 The claims verify the
-SOURCE + TEST tree — EXCEPT THE DOCS-DERIVED STEMS
+SOURCE + TEST tree — EXCEPT the DOCS-DERIVED STEMS
 (``_DOCS_SENSITIVE_STEM_PREFIXES``: ``mkdocs-strict*``, the
 ``docs-examples*`` and ``docs-lane*`` kinds), whose batteries READ the
 docs estate — mkdocs builds ``docs/`` strict, and the docs-example
@@ -14,14 +14,14 @@ set falls back to the NARROW one (the measurements estate +
 source + test tree cannot stalify a claim, and a path that can must
 never be exempt. The full set is therefore exactly: the measurements
 estate, ``.github/``, ``LEDGER.md``, ``docs/``, the root ``README*``
-family, the root ``*.md`` class, ``LICENSE``, ``.gitignore``. NEVER
+family, the root ``*.md`` class, ``LICENSE``, ``.gitignore``. never
 exempt: ``src/``, ``tests/``, ``pyproject.toml``, ``uv.lock``, the
 migrations, ``examples/`` (imported by the smoke tests — behavior),
 ``scripts/`` (the gates themselves), ``benchmarks/`` (the measurement
 pins read them).
 
-THE METHOD (the subprocess seam): the
-off-by-one rule's diff half is judged against the REPO'S OWN HEAD, and a
+The
+off-by-one rule's diff half is judged against the REPO'S own HEAD, and a
 script's ``REPO`` is its own home — so each pin builds a THROWAWAY GIT
 REPO in a tmp dir, copies the verifier into it BYTE-IDENTICAL (the copy
 judges the throwaway repo, never this checkout — the real tree is never
@@ -33,43 +33,43 @@ commits).
 
 The pin families:
 
-* THE DOCS-ONLY MERGE STAYS FRESH: a claim recorded on the
+* the DOCS-only MERGE STAYS FRESH: a claim recorded on the
   source-final base H; the commits since H carry ``LEDGER.md`` /
   ``docs/**`` / the root ``*.md`` / ``README*`` / ``LICENSE`` /
   ``.gitignore`` / ``.github`` (one member per leg) plus the
-  measurement commit itself. THE PIN: every member's
+  measurement commit itself. the PIN: every member's
   docs-only delta leaves the claim FRESH (rc=0) — the exemption set is
   real, member by member.
-* THE TEETH: the same two-step shape, but the merge's delta
+* the TEETH: the same two-step shape, but the merge's delta
   touches a BEHAVIORAL path — the claim is STALE, the verifier reds
   with its own named verdict. The teeth keep biting: the exemption
   set is wide, never wider than the non-behavioral paths.
-* ONE LAW, TWO FACES: the failure log guard's live/history scoping
+* one LAW, TWO FACES: the failure log guard's live/history scoping
   (``tests/_wf_fixtures.source_changes_since``) MIRRORS the verifier's
-  diff half. The faces must carry the SAME sets — the full exclusion
+  diff half. The faces must carry the same sets — the full exclusion
   set, the NARROW set the docs-derived stems fall back to, and the
   docs-sensitive prefix tuple — a drift is one law reading two ways
   (the CI verifier greens a docs-only merge the suite's guard reds, or
   the reverse).
-* THE EXEMPTION'S OWN EDGE:
+* the EXEMPTION'S own EDGE:
   the DOCS-DERIVED stems — ``mkdocs-strict*`` (mkdocs builds ``docs/``
   strict), ``docs-examples*`` (the docs-example tests'
   ``tests/_docs_examples.py::DOC_ROOTS = ("docs", "README.md")``
   EXECUTE the fences) and the ``docs-lane*`` kinds — have the docs
   estate among their BATTERY'S INPUTS, so for them a docs-only merge
   IS a source change: the exemption set falls back to the NARROW one
-  and the claim goes STALE (the exemption applies to EVERY stem
+  and the claim goes STALE (the exemption applies to every stem
   nowhere — the plain stems keep the full set).
-* THE PLAIN STEM KEEPS: the SAME docs-only merge
+* the PLAIN STEM KEEPS: the same docs-only merge
   against a PLAIN stem (no docs-sensitive prefix) stays FRESH — the
   fallback narrows the exemption for the docs-derived stems only,
   never for the estate.
-* THE MIXED DIFF: ONE commit touching BOTH ``docs/`` AND
+* the MIXED DIFF: one commit touching both ``docs/`` and
   ``src/`` — the exemption cannot launder a source change behind its
   docs half: the ``src/`` change stalifies the claim even though the
   same commit's ``docs/`` half is exempt (green at base — the teeth
   already read the whole diff — pinned so the mixed shape survives).
-* THE ANCHORING: the pathspec anchoring is
+* the ANCHORING: the pathspec anchoring is
   LAW, not prose — a nested ``*.md`` (``tests/receipt.md``),
   a nested ``README*`` (``src/taskq/README.md``) and nested ``docs/``
   subtrees (``src/taskq/docs/``, ``tests/docs/``) are all OUTSIDE the
@@ -83,7 +83,7 @@ import importlib.util
 import json
 import os
 import shutil
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script is the subject (the pin's own shape).
 import sys
 from pathlib import Path
 from typing import cast
@@ -114,7 +114,7 @@ def _git_env() -> dict[str, str]:
 
 
 def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; git resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+    return subprocess.run(  # noqa: S603  # Why: fixed argv, no shell; git resolves on the dev/CI path exactly as the repo's own scripts invoke it.
         ["git", *args],  # noqa: S607  # Why: as above — the fixed-argv git call.
         cwd=repo,
         capture_output=True,
@@ -205,7 +205,7 @@ def _run_verifier_copy(repo: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _verifier_law_constants() -> dict[str, object]:
-    """The verifier's OWN law constants, read by loading the script as a
+    """The verifier's own law constants, read by loading the script as a
     module (constants-only top level — no side effects). The subprocess
     pins above judge the script's BEHAVIOR; this reads its DATA — the
     law's two faces must carry the same sets."""
@@ -249,7 +249,7 @@ def test_a_docs_only_merge_of_one_member_does_not_stalify(
     tmp_path: Path, touched: str, content: str
 ) -> None:
     """Member by member: the claim is recorded on the
-    source-final base H; the commits since H change ONLY the member
+    source-final base H; the commits since H change only the member
     under pin plus the measurement estate (the docs
     edit and the capture land together). Every member is a path that
     CANNOT change what the capture verifies — the source + test tree is
@@ -326,9 +326,9 @@ def test_a_behavioral_change_since_the_claimed_head_still_stalifies(
 
 
 def test_the_in_suite_mirror_carries_the_verifiers_exclusion_set() -> None:
-    """ONE LAW, TWO FACES: the failure log guard's live/history
+    """one LAW, TWO FACES: the failure log guard's live/history
     scoping (``tests/_wf_fixtures.source_changes_since``) mirrors the
-    verifier's diff half. The faces must carry the SAME sets — the full
+    verifier's diff half. The faces must carry the same sets — the full
     exclusion set, the NARROW set the docs-derived stems fall back to,
     and the docs-sensitive prefix tuple — a drift is one law reading
     two ways: a claimed head one face calls fresh the other calls stale
@@ -405,7 +405,7 @@ def test_a_docs_only_merge_stalifies_a_docs_derived_stem(
 
 
 def test_the_same_docs_only_merge_keeps_a_plain_stem_fresh(tmp_path: Path) -> None:
-    """The SAME docs-only merge (``LEDGER.md`` + ``docs/`` together)
+    """The same docs-only merge (``LEDGER.md`` + ``docs/`` together)
     against a
     PLAIN stem — no docs-sensitive prefix, a battery that cannot read
     the docs estate — stays FRESH (rc=0). The per-stem fallback narrows
@@ -424,11 +424,11 @@ def test_the_same_docs_only_merge_keeps_a_plain_stem_fresh(tmp_path: Path) -> No
     )
 
 
-# ── the mixed diff — one commit touching docs/ AND src/ ────────────
+# ── the mixed diff — one commit touching docs/ and src/ ────────────
 
 
 def test_a_mixed_docs_and_src_merge_still_stalifies(tmp_path: Path) -> None:
-    """The mixed diff: ONE commit touching BOTH ``docs/`` and
+    """The mixed diff: one commit touching both ``docs/`` and
     ``src/``. The exemption cannot launder a source change behind its
     docs half: the walk judges the WHOLE diff, the ``docs/`` half is
     exempt and the ``src/`` half rejects — the claim is STALE. (Green
@@ -448,7 +448,7 @@ def test_a_mixed_docs_and_src_merge_still_stalifies(tmp_path: Path) -> None:
     )
 
 
-# ── the anchoring, pinned — nested md/README/docs still stalify ────
+# ── the anchoring, pinned — nested md/readme/docs still stalify ────
 
 
 @pytest.mark.parametrize(

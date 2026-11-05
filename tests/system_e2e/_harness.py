@@ -3,7 +3,7 @@
 This is the subprocess harness pattern from the conservation chaos suite
 (tests/test_rt_conservation_chaos.py's ``_spawn_consv_worker`` /
 ``_wait_for_socket`` pair), lifted into the system tier's shared module so
-every lifecycle scenario drives workers through ONE spawn surface: real
+every lifecycle scenario drives workers through one spawn surface: real
 OS processes running the real bootstrap, env-configured like a pod, with
 a health socket as the readiness signal.
 
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 _WORKER_ENTRY = "tests.system_e2e._worker_entry"
 
-#: Fleet constants: the SINGLE SOURCE the tier's scenarios import when a
+#: Fleet constants: the single source the tier's scenarios import when a
 #: bound must scale with the fleet's cadence (``test_rolling_release_fleet.py``'s
 #: drain/lease bounds, the reaping-window budget below). ``_BASE_ENV`` derives
 #: from these same names, so a scenario can never drift from the cadence its
@@ -90,10 +90,10 @@ def stale_worker_reap_window_s(
 #: The co-tenancy stretch between a fleet-progress bound's arithmetic and
 #: its observation on a shared runner (dd4572ff's stall band, the same
 #: measured runner weather test_cancel_storm's storm deadline derives
-#: from). A bound that budgets PROGRESS — a settle, a reclaim sweep, a
+#: from). A bound that budgets progress — a settle, a reclaim sweep, a
 #: re-pickup after a requeue — multiplies its derived arithmetic by this,
 #: so a loaded runner stretches the bound instead of voiding the
-#: scenario; a bound that catches a LEAK keeps its bite either way, the
+#: scenario; a bound that catches a leak keeps its bite either way, the
 #: failure mode is "never", and no finite stretch tolerates it.
 TIER_LOAD_STRETCH = 2.0
 
@@ -132,12 +132,12 @@ def scoped_dsn(pg_dsn: str, schema: str) -> str:
 class WorkerProc(NamedTuple):
     """A spawned worker subprocess plus the readiness socket it was given.
 
-    ``log_path``: when the spawn was given a ``log_sink``, the file BOTH
+    ``log_path``: when the spawn was given a ``log_sink``, the file both
     streams write to - the diagnostic surface a partitioned worker's own
     failure record needs, and the reason partition scenarios use the sink
     at all: a worker whose PG path is cut logs every failed tick, and a
     64KB PIPE nobody drains fills in seconds, blocking the worker's
-    logging write - a WEDGE THE HARNESS ITSELF would manufacture, exactly
+    logging write - a WEDGE the HARNESS ITSELF would manufacture, exactly
     the "hang" the partition contracts say must not happen."""
 
     proc: subprocess.Popen[bytes]
@@ -175,7 +175,7 @@ def spawn_worker(
     pipe, and an undrained 64K pipe can never block a chatty worker
     mid-write.
 
-    ``log_sink``: a file path to redirect BOTH streams into. Scenarios
+    ``log_sink``: a file path to redirect both streams into. Scenarios
     whose workers log continuously (chaos windows, failing heartbeats)
     MUST pass one: the default PIPE pair is sized for short-lived
     readiness-spawned workers, and a full pipe blocks the child's first

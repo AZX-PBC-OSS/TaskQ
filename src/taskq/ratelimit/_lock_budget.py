@@ -30,7 +30,7 @@ def _resolve(
 
     An explicit *override* wins so a caller can bound a single acquire
     more tightly than the deployment-wide knob. Otherwise the operator's
-    settings value governs, read WITHOUT a fallback: the field is declared
+    settings value governs, read without a fallback: the field is declared
     on WorkerSettings and that declaration is pinned by the settings
     contract tests, so a settings object lacking it is a wiring bug. The
     resulting AttributeError surfaces that bug at the acquire, a silent

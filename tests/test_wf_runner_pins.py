@@ -111,10 +111,10 @@ async def test_create_flow_carries_input_and_drives(
 
     runner = FlowRunner(app.get("input_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow(input={"doc_id": "d1"})).flow_id
-    # THE INPUT IS ON THE ROW (cut #7: never a closure).
+    # the input is on the row (cut #7: never a closure).
     raw = await wf_conn.fetchval(
         f'SELECT payload FROM "{wf_schema}".jobs WHERE id = $1',
-        flow_id,  # Why: the schema identifier is the FIXTURE's own (module_pg_schema) — the estate's test-SQL precedent.
+        flow_id,  # Why: the schema identifier is the fixture's own (module_pg_schema) — the estate's test-SQL precedent.
     )
     assert raw is not None and "wf_input" in raw
     assert await runner.drive(flow_id) == "terminal"
@@ -140,7 +140,7 @@ async def test_join_user_body_cascades_downstream(
     runner = FlowRunner(app.get("cascade_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
-    # The cascade: tail saw the REDUCER's output (the decoded totals).
+    # The cascade: tail saw the reducer's output (the decoded totals).
     assert await runner.result(flow_id) == {"total": 8}
 
 
@@ -148,20 +148,20 @@ async def test_sequenced_maps_depth3_one_flow(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """Cut #2's fix (the BLOCKER): sequencing — a map whose source is a
-    step's promise, in ONE flow (the spike needed three flows + glue)."""
+    step's promise, in one flow (the spike needed three flows + glue)."""
     app = WorkflowApp()
 
     @app.workflow("seq_flow")
     def seq_flow() -> Promise[object]:
         source = step(_items_source, Ingest(doc_id="d1"), key="src")
-        mapped = map_source(source, _per_item)  # THE MAP: per-item fresh jobs
+        mapped = map_source(source, _per_item)  # the map: per-item fresh jobs
         del mapped
         return build(step(_map_tail, source, key="tail"))
 
     runner = FlowRunner(app.get("seq_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
-    # the map's children exist as ROWS with map_index (the fork's
+    # the map's children exist as rows with map_index (the fork's
     # per-item identity — the ledger keys them separately).
     row = await wf_conn.fetchrow(
         f'SELECT count(*), array_agg(map_index ORDER BY map_index) FROM "{wf_schema}".jobs '
@@ -194,7 +194,7 @@ async def test_skip_predicate_decided_at_dispatch(
                 guarded,
                 pick,
                 key="guarded",
-                # THE DISPATCH-TIME PREDICATE: reads the sibling's result.
+                # reads the sibling's result.
                 skip=lambda state: (
                     (state["results"].get("pick") or {}).get("pick")  # pyright: ignore[reportUnknownArgumentType, reportAttributeAccessIssue]  # Why: the predicate receives the runner's state dict — the walk's shape is the runner's contract.
                     == "skip_me"
@@ -211,7 +211,7 @@ async def test_skip_predicate_decided_at_dispatch(
         flow_id,
     )
     assert row is not None
-    assert row["status"] == "succeeded"  # the v1 skip semantics: succeed WITH the record
+    assert row["status"] == "succeeded"  # the v1 skip semantics: succeed with the record
     assert "skipped" in (row["result"] or "")
 
 
@@ -219,7 +219,7 @@ async def test_retry_classifier_routes_by_kind(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """Cut #12's fix: the retry knob routes by kind — a ``permanent``
-    body failure takes NO ladder (one terminal, immediately)."""
+    body failure takes no ladder (one terminal, immediately)."""
     app = WorkflowApp()
 
     async def always_fails(ctx: StepContext, params: Ingest) -> dict[str, int]:
@@ -251,7 +251,7 @@ async def test_retry_classifier_routes_by_kind(
     )
     assert row is not None
     assert row["status"] == "failed"
-    # PERMANENT → the ladder never ran: exactly ONE attempt.
+    # permanent → the ladder never ran: exactly one attempt.
     assert attempts == 1 and row["attempt"] == 1
 
 
@@ -259,7 +259,7 @@ async def test_transient_ladder_emits_no_terminal_until_exhaustion(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """P3 rule 7 through the public API: the transient ladder's attempt
-    failures emit NO terminal — the node re-pends until max_attempts."""
+    failures emit no terminal — the node re-pends until max_attempts."""
     app = WorkflowApp()
 
     async def always_fails_transient(ctx: StepContext, params: Ingest) -> dict[str, int]:
@@ -278,7 +278,7 @@ async def test_transient_ladder_emits_no_terminal_until_exhaustion(
         "WHERE flow_id = $1 AND step_key = 'lad' ORDER BY attempt",
         flow_id,
     )
-    # THREE attempts, all 'failed' ledger rows (the ladder's shape:
+    # three attempts, all 'failed' ledger rows (the ladder's shape:
     # attempt failures ≠ node failure — no terminal until exhaustion).
     assert [r["status"] for r in statuses] == ["failed", "failed", "failed"]
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
@@ -318,7 +318,7 @@ async def test_dispatch_resolves_bodies_from_the_definition_registry(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """D1's dispatch wiring (the pin the earlier round deferred): the
-    runner resolves EVERY body from the REGISTERED DEFINITION — a
+    runner resolves every body from the REGISTERED DEFINITION — a
     definition unregistered from the registry is unrunnable (loud), and
     a per-call body map cannot exist."""
     from taskq.workflows.definitions import get_registry
@@ -331,11 +331,11 @@ async def test_dispatch_resolves_bodies_from_the_definition_registry(
 
     runner = FlowRunner(app.get("d1_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # THE REGISTRY IS THE TRUTH: the compile registered the bodies.
+    # the compile registered the bodies.
     definition = get_registry().get("d1_flow")
     assert "only" in definition.bodies
-    # The D1 contract: resolve from an UNREGISTERED name → the KeyError
-    # (dispatch resolves by the ROOT's stamped workflow name — the
+    # The D1 contract: resolve from an unregistered name → the KeyError
+    # (dispatch resolves by the root's stamped workflow name — the
     # durable leg the sweep's healer uses).
     with pytest.raises(KeyError, match="not registered"):
         get_registry().body("never-declared", "only")
@@ -372,7 +372,7 @@ async def test_map_children_ledger_identity_and_max_attempts(
         flow_id,
     )
     # The flaky item (Item(n=2)) sits at map_index 1 — it laddered
-    # (2 attempts); the others succeeded first try — PER-CHILD identity
+    # (2 attempts); the others succeeded first try — per-child identity
     # (the ledger-PK attack's shape, through the API).
     child1 = [(r["attempt"], r["status"]) for r in ledger if r["map_index"] == 1]
     assert child1 == [(1, "failed"), (2, "succeeded")]
@@ -401,13 +401,13 @@ async def test_mermaid_golden_byte_stable(
     # Re-compile: byte-identical.
     assert app.get("golden_flow").mermaid() == golden
     # The diagram-lies property: every node/edge of the compiled graph is
-    # IN the emission.
+    # in the emission.
     for key in compiled.node_keys():
         assert f"{key}[" in golden or f"{key}{{" in golden or f"{key}([(" in golden
     for key in compiled.node_keys():
         for parent in compiled.parents_of(key):
             assert f"{parent} -->" in golden
-    # The golden is RECORDED (the corpus is append-only).
+    # The golden is recorded (the corpus is append-only).
     MEASUREMENTS.mkdir(exist_ok=True)
     (MEASUREMENTS / "t09-mermaid-golden.mmd").write_text(golden)
 
@@ -422,17 +422,17 @@ async def test_drive_until_held_bound(
 
     @app.workflow("bound_flow")
     def bound_flow() -> Promise[object]:
-        # A HELD row: the join-wait representation with a future
+        # A held row: the join-wait representation with a future
         # scheduled_at — the driver's "held" arm returns, the loop stops.
         a = step(_prepare, Ingest(doc_id="d1"), key="a")
         return build(a)
 
     runner = FlowRunner(app.get("bound_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # THE BOUND: max_ticks=2 ends the drive — never a hang (the cap is
-    # the pin; a driver that spins forever is the defect with no stack).
+    # max_ticks=2 ends the drive — never a hang (the cap is the pin; a driver
+    # that spins forever is the defect with no stack).
     verdict = await runner.drive(flow_id, until="held", max_ticks=2, tick=0.0)
     assert verdict in ("held", "terminal", "max_ticks")
-    # The bound is the DRIVER's property, not the run's: the drive
-    # RETURNED (never a hang) and the run continues by its own rules.
+    # The bound is the driver's property, not the run's: the drive
+    # returned (never a hang) and the run continues by its own rules.
     _ = JobId  # the runner's ids (the import is the runner's contract)

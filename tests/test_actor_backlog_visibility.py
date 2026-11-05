@@ -14,7 +14,7 @@ distinguish "one actor on this queue is never consumed" from "this queue
 is busy": the shared queue's depth looks like ordinary load, and the
 fleet-wide oldest-due-age gauge is about promotion (scheduled to
 pending), not about pending work no consumer takes. Backlog depth and
-oldest-pending-age must therefore be attributable at BOTH queue and
+oldest-pending-age must therefore be attributable at both queue and
 actor granularity in the series the bridge emits. The alert-rule half of
 that contract lives beside the other rule-file drift pins; these pins
 are about the series those rules have to read.

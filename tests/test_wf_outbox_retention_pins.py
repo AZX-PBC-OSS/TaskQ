@@ -4,7 +4,7 @@ real PG).
 The soak's evidence (REPORT-D2-soak): the delivered ``wf_outbox``
 population grew monotonically forever — 5.9k at close, no pruner touched
 it. These pins hold the fix: delivered rows past the TTL delete (the
-retention policy's own row), undelivered rows are NEVER touched (a
+retention policy's own row), undelivered rows are never touched (a
 deleted undelivered row is a lost delivery — the drain owns those), and
 ``timedelta(0)`` is the disable sentinel (the deletion-sweep family's
 zero-means-off), while the DEFAULT keeps the TTL alive — the policy's

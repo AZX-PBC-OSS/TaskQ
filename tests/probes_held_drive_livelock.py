@@ -1,7 +1,7 @@
 # Why: the schema is a fixture-derived test identifier, not user input; every value is $-bound.
 """The held-drive livelock's pin — a held loop's deadline arm never re-arms a null deadline.
 
-A NO-DEADLINE hold is the LEGAL form (the W1 warning documents it), but
+A no-DEADLINE hold is the LEGAL form (the W1 warning documents it), but
 `drive(until="held")` reads the held representation through
 `scheduled_at > now()` — NULL for a NULL deadline — and never sees the
 hold: it spins max_ticks (5000 full dispatch polls, ~126 s measured).
@@ -49,7 +49,7 @@ async def test_drive_until_held_sees_a_no_deadline_hold(wf_pool: object, wf_sche
 
     runner = FlowRunner(app.get("attack4_held_no_deadline"), wf_pool, wf_schema)  # type: ignore[arg-type]
     flow_id = (await runner.create_flow()).flow_id
-    # The drive is BOUNDED (its own max_ticks pin) — the livelock class
-    # this pin rejects is the WRONG ANSWER, not a hang.
+    # The drive is bounded (its own max_ticks pin) — the livelock class
+    # this pin rejects is the wrong answer, not a hang.
     outcome = await runner.drive(flow_id, until="held", max_ticks=50)
     assert outcome == "held", f"the driver said {outcome!r} for a held run"

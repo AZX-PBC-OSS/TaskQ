@@ -1,4 +1,4 @@
-"""THE ROUTE DRILL — the typed route branches by class and ONLY the
+"""the ROUTE DRILL — the typed route branches by class and only the
 class's arm runs: every contract document's element runs the summary
 arm, every invoice's the ledger arm, every unknown's the quarantine
 arm — receipts per class, read from the route's child rows."""
@@ -29,7 +29,7 @@ def _class_of(doc_id: str) -> str:
 
 
 def _corpus(n_per_class: int) -> list[DocPayload]:
-    """Documents chosen so EVERY class is present (the drill's corpus)."""
+    """Documents chosen so every class is present (the drill's corpus)."""
     docs: list[DocPayload] = []
     counts = {"contract": 0, "invoice": 0, "unknown": 0}
     i = 0
@@ -44,7 +44,7 @@ def _corpus(n_per_class: int) -> list[DocPayload]:
 
 
 _ARM_BY_CLASS = {
-    # The arm child's step key names the arm by its ELEMENT TYPE
+    # The arm child's step key names the arm by its element type
     # (`classify.item:<module.qualname of the union member>`).
     "contract": "ContractDoc",
     "invoice": "InvoiceDoc",
@@ -69,7 +69,7 @@ async def test_route_drill_each_class_runs_only_its_arm(
     status = await await_terminal(pool, schema, flow_id, timeout_s=240)
     assert status == "succeeded"
 
-    # The route's children: the arm's NAME is the child row's step key;
+    # The route's children: the arm's name is the child row's step key;
     # the element rides the fork's wf_item wrapper.
     rows = await pool.fetch(
         # the interpolated value is the app's settings-validated schema

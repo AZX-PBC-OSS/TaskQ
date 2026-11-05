@@ -1,5 +1,5 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, every value is $-bound.
-"""Upgrade-path attack: the hypertable flag cycle with WORK IN THE MIDDLE.
+"""Upgrade-path attack: the hypertable flag cycle with WORK IN the MIDDLE.
 
 The pinned flag shapes (``tests/test_timescaledb_hypertables.py``) cover
 conversion, re-enable convergence, and both engines' prune agreement.
@@ -7,8 +7,8 @@ The shape production actually walks when an operator flips the flag
 mid-life has work landing between the flips:
 
     flag ON → jobs archived (real prunes into hypertable chunks)
-    → flag OFF → more prunes (the vanilla statements now run against
-      tables that are STILL hypertables, the conversion is forward-only)
+    → flag off → more prunes (the vanilla statements now run against
+      tables that are still hypertables, the conversion is forward-only)
     → a re-pended ghost whose archive row already exists (the fold guard
       under the off phase) → flag ON again.
 
@@ -115,7 +115,7 @@ async def test_flag_flip_cycle_with_work_in_the_middle(
     await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
     await apply_pending(conn, schema=schema)
 
-    # ── Phase 1: flag ON, convert, archive real jobs ──
+    # ── Phase 1: flag on, convert, archive real jobs ──
     on = await enable_hypertables(
         conn, schema=schema, settings=_settings(flip_dsn, schema, hypertables=True)
     )
@@ -135,7 +135,7 @@ async def test_flag_flip_cycle_with_work_in_the_middle(
         "each phase-1 job's attempt must ride into the hypertable archive"
     )
 
-    # ── Phase 2: flag OFF. The conversion is forward-only: the tables are
+    # ── Phase 2: flag off. The conversion is forward-only: the tables are
     # still hypertables, and the vanilla prune statements must keep
     # landing on them.
     for _ in range(3):
@@ -153,9 +153,9 @@ async def test_flag_flip_cycle_with_work_in_the_middle(
     )
     assert await _counts(conn, schema, "job_attempts_archive") == 7
 
-    # ── Phase 3 (still OFF): the fold guard against chunk residue. A
-    # re-pended job whose id ALREADY holds an archive row re-enters the
-    # prune; the guard must FOLD it (the standing archive row wins, the
+    # ── Phase 3 (still off): the fold guard against chunk residue. A
+    # re-pended job whose id already holds an archive row re-enters the
+    # prune; the guard must fold it (the standing archive row wins, the
     # live row is removed) instead of wedging on uniqueness.
     ghost = await _seed_terminal_job(conn, schema)
     await conn.execute(
@@ -199,7 +199,7 @@ async def test_flag_flip_cycle_with_work_in_the_middle(
         "every archived attempt's parent archive row must exist after the cycle"
     )
 
-    # ── Phase 4: flag ON again. Already-hypertable tables must skip
+    # ── Phase 4: flag on again. Already-hypertable tables must skip
     # conversion, policies must not duplicate, and the schema keeps
     # serving.
     again = await enable_hypertables(

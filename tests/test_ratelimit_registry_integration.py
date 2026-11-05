@@ -1,7 +1,7 @@
-"""Integration tests for AND-composition against real PG + Redis backends.
+"""Integration tests for and-composition against real PG + Redis backends.
 
 through These verify the
-full AND-composition acquire_for_actor / release_for_actor lifecycle
+full and-composition acquire_for_actor / release_for_actor lifecycle
 against real Postgres (reservation slots) and Redis (token bucket,
 sliding window) via testcontainers.
 """
@@ -31,7 +31,7 @@ def _unique_name() -> str:
     return f"test_{new_base62()}"
 
 
-# ── Full AND-composition against real backends ──────────────────────
+# ── Full and-composition against real backends ──────────────────────
 
 
 async def test_full_and_composition(
@@ -39,7 +39,7 @@ async def test_full_and_composition(
     module_pg_pool: asyncpg.Pool,
     redis_url: str,
 ) -> None:
-    """Full AND-composition against real backends. Register TokenBucket
+    """Full and-composition against real backends. Register TokenBucket
     (Redis), SlidingWindow (Redis), ConcurrencyReservation (PG).
     acquire_for_actor acquires all three. All succeed; reservation_slot_ids
     is a single-element list; actor body runs; release_for_actor releases the
@@ -122,7 +122,7 @@ async def test_rate_limit_denial_in_composition(
 ) -> None:
     """Rate limit denial in composition. Exhaust TokenBucket.
     acquire_for_actor with reservation + exhausted TokenBucket + SlidingWindow.
-    TokenBucket fails; SlidingWindow NOT acquired; reservation released;
+    TokenBucket fails; SlidingWindow not acquired; reservation released;
     ReservationUnavailable raised with correct retry_after."""
     schema = module_pg_schema.schema_name
     redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
@@ -251,7 +251,7 @@ async def test_cancellation_mid_actor(
 ) -> None:
     """Cancellation mid-actor. Acquire all resources. Force timeout.
     finally calls release_for_actor; reservation slot released; rate-limit
-    tokens NOT refunded (actor ran briefly)."""
+    tokens not refunded (actor ran briefly)."""
     schema = module_pg_schema.schema_name
     redis_client = redis_async.from_url(redis_url, decode_responses=False, socket_timeout=None)
     settings = WorkerSettings.load_from_dict(

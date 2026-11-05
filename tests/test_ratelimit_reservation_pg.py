@@ -77,7 +77,7 @@ async def _get_held_worker(
     return row["held_by_worker_id"]
 
 
-# ── SKIP LOCKED under contention ──────────────────────────────────
+# ── skip locked under contention ──────────────────────────────────
 
 
 async def test_skip_locked_contention(
@@ -411,9 +411,9 @@ async def test_sync_slots_deletes_expired_lease_excess_rows(
     """sync_slots() treats an excess row with an EXPIRED lease as free and
     deletes it - regression for over-admission during shrink.
 
-    The acquire CTE's free condition is ``job_id IS NULL OR
+    The acquire CTE's free condition is ``job_id IS NULL or
     lease_expires_at < now()``. If sync_slots instead treated every
-    ``job_id IS NOT NULL`` row as held, a dead worker's leaked rows would
+    ``job_id IS not NULL`` row as held, a dead worker's leaked rows would
     survive a shrink and remain acquirable - the old larger cap would keep
     being honored indefinitely. 4 rows (2 excess held by a dead worker
     with expired leases) → shrink to 2 → both excess rows deleted, nothing

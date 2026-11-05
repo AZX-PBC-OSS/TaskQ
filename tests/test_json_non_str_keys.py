@@ -185,7 +185,7 @@ def test_pydantic_dict_field_rejects_int_keys() -> None:
 # ── mirror value normalization: PG's jsonb read-back shapes ────────────
 #
 # The rejection contracts above pin what both backends refuse; these pin
-# what they READ BACK. PG persists every caller dict through jsonb (the
+# what they read back. PG persists every caller dict through jsonb (the
 # orjson text at bind time, loads at read), so a value whose orjson
 # encoding differs from the Python object comes back morphed - NaN and
 # Infinity as null, UUIDs as their string form, tuples as arrays. The

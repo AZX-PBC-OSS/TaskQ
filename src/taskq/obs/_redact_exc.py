@@ -53,7 +53,7 @@ sake. Dropping them leaves an operator with a constraint name and nothing else.
 
 The DETAIL drop is switchable off by :func:`set_exception_redaction_enabled`
 (``TASKQ_EXCEPTION_REDACTION_ENABLED=false``) for advanced debugging, and the
-worker warns loudly at startup when it is. The URI credential mask is NOT
+worker warns loudly at startup when it is. The URI credential mask is not
 switchable: no debugging case justifies shipping a password to a telemetry
 vendor.
 
@@ -97,12 +97,12 @@ __all__ = [
     "set_exception_redaction_enabled",
 ]
 
-#: Postgres DETAIL lines. Row values live there; the primary message above
-#: them is a static template, and HINT/CONTEXT below them are structural --
+#: Postgres detail lines. Row values live there; the primary message above
+#: them is a static template, and hint/context below them are structural --
 #: this pattern deliberately does not match either.
 #:
-#: Matched LINE-WISE, not to end-of-string. A chained traceback renders several
-#: exception messages, so a greedy DOTALL match starting at the first DETAIL
+#: Matched line-wise, not to end-of-string. A chained traceback renders several
+#: exception messages, so a greedy dotall match starting at the first detail
 #: would delete every outer frame after it -- destroying the diagnostic while
 #: appearing to work on a single-exception test.
 #:
@@ -110,28 +110,28 @@ __all__ = [
 #: ``ExceptionGroup`` rendering, which indents every line of a sub-exception
 #: with a repeated ``| `` (or, on a group's own header/separator lines,
 #: ``+``) marker -- one added layer per level of nesting -- before the
-#: exception's own text. Without it, a DETAIL line inside a grouped or
+#: exception's own text. Without it, a detail line inside a grouped or
 #: ``except*``-caught sub-exception reads
-#: ``    | DETAIL:  Key (...)=(...) already exists.`` and the anchor on a
+#: ``    | detail:  Key (...)=(...) already exists.`` and the anchor on a
 #: bare ``^[ \t]*`` never reaches past the marker, so the row value ships to
 #: the span/log unredacted. The prefix is still consumed only when it is
-#: immediately followed by ``DETAIL:`` -- a header line such as
-#: ``  | ExceptionGroup: ...`` does not itself start with ``DETAIL:`` and so
+#: immediately followed by ``detail:`` -- a header line such as
+#: ``  | ExceptionGroup: ...`` does not itself start with ``detail:`` and so
 #: is not touched.
 #:
-#: Why ONE character class and not the marker-shaped
+#: Why one character class and not the marker-shaped
 #: ``(?:[ \t]*[|+][ \t]*)*`` it replaced: the two accept exactly the same
 #: prefixes (every prefix they match is a run of spaces, tabs and ``|``/``+``
 #: -- a marker run is N zero-whitespace repetitions, the whitespace around
 #: each marker rides a repetition's ``[ \t]*`` arms or the trailing one),
 #: but the class matches in a single pass. The nested form put a quantifier
 #: (``[ \t]*``) inside another quantifier (the marker group's ``*``), so a
-#: long marker run with no ``DETAIL:`` after it could be partitioned across
+#: long marker run with no ``detail:`` after it could be partitioned across
 #: the repetitions in exponentially many ways and the engine tried them all:
 #: ~60 ms of scrub at 20 markers, ~4x that per marker pair added, seconds by
 #: the mid-20s and effectively unbounded beyond -- on a pass that runs
 #: synchronously on the event loop (the failed-attempt scrub, behind the
-#: ``"DETAIL:" in text`` prefilter, so one DETAIL line anywhere in the text
+#: ``"detail:" in text`` prefilter, so one detail line anywhere in the text
 #: plus one marker-heavy line is enough). A poison job whose message echoes
 #: that shape stalls every heartbeat with it until the watchdog dumps the
 #: worker (5 s) and then kills it (30 s), deterministically, on every retry.
@@ -142,7 +142,7 @@ __all__ = [
 _PG_DETAIL_RE = re.compile(r"^[ \t|+]*DETAIL:.*$", re.MULTILINE)
 
 #: Companion to :data:`_PG_DETAIL_RE` for ``repr()``-flattened text.
-#: ``repr(exc)`` renders the newline before DETAIL as the two
+#: ``repr(exc)`` renders the newline before detail as the two
 #: literal characters ``\n``, which the line-anchored pattern above cannot
 #: see, and ``error=repr(exc)`` is a majority log idiom. Consumes from the
 #: escaped newline up to (not including) the next escaped newline, or up to
@@ -153,9 +153,9 @@ _PG_DETAIL_RE = re.compile(r"^[ \t|+]*DETAIL:.*$", re.MULTILINE)
 #: at end-of-line, so they keep a repr's trailing closers when present
 #: without ever stopping the scrub early and leaving row values behind.
 #: The closers leg ends in ``[ \t]*``, same-line trailing whitespace only,
-#: deliberately NOT ``\s*``: ``\s`` crosses newlines, so a DETAIL value
-#: carrying a quote, closers and a (CR/)LF boundary could satisfy the leg
-#: by peering PAST the line end: on CR-bearing text it really does, and
+#: deliberately not ``\s*``: ``\s`` crosses newlines, so a detail value
+#: carrying a quote, closers and a (cr/)lf boundary could satisfy the leg
+#: by peering past the line end: on cr-bearing text it really does, and
 #: the scrub then stopped at the mid-value quote and kept what the
 #: no-closers control scrubbed. A terminator that cannot cross a line
 #: boundary fails closed there instead: the closers ride the scrub (more
@@ -165,17 +165,17 @@ _PG_DETAIL_RE = re.compile(r"^[ \t|+]*DETAIL:.*$", re.MULTILINE)
 #:
 #: The ``[ \t|+]*`` after the escaped newline is the same marker class
 #: :data:`_PG_DETAIL_RE` carries, for the same reason: the repr channel
-#: sees marker-prefixed DETAIL text too: an exception message that embeds
-#: a rendered ``ExceptionGroup`` traceback (or any echoed ``| | DETAIL:``
+#: sees marker-prefixed detail text too: an exception message that embeds
+#: a rendered ``ExceptionGroup`` traceback (or any echoed ``| | detail:``
 #: text) reprs with the markers inline after the escaped newline, and an
 #: anchor without the class shipped the row value verbatim on exactly the
 #: poison-message vector the marker class was added for.
 #:
-#: The final bare ``$`` leg is fail-closed: a DETAIL whose tail matches
-#: NEITHER safe delimiter (an unterminated repr, or one embedded mid-line
+#: The final bare ``$`` leg is fail-closed: a detail whose tail matches
+#: neither safe delimiter (an unterminated repr, or one embedded mid-line
 #: with more text after it) is scrubbed through end of line rather than
 #: shipped: a delimiter miss must delete more text, never less of the
-#: secret. ``MULTILINE`` makes ``$`` match per real line, so a repr line
+#: secret. ``multiline`` makes ``$`` match per real line, so a repr line
 #: embedded in a rendered traceback (real newlines around it) is scrubbed
 #: too. Optional escaped ``\r`` covers the CRLF boundary shape.
 _PG_DETAIL_ESCAPED_RE = re.compile(
@@ -185,8 +185,8 @@ _PG_DETAIL_ESCAPED_RE = re.compile(
 
 #: userinfo in a URI. Group 1 is the scheme+user, group 2 the password.
 #:
-#: The username class is ``*``, not ``+``: an EMPTY username is a real shape ,
-#: ``postgresql://:SECRET@host/db`` is what a DSN renders when only a
+#: The username class is ``*``, not ``+``: an empty username is a real shape ,
+#: ``postgresql://:secret@host/db`` is what a DSN renders when only a
 #: password is set, and ``+`` skipped it entirely, shipping the password
 #: verbatim. With ``*`` group 1 is the bare scheme prefix, so the masked
 #: form still reads ``scheme://:***@host``.
@@ -203,7 +203,7 @@ _URI_CRED_RE = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@]*):([^\s@]+)@")
 #: derived matcher makes the next spelling a one-word edit here.
 _CRED_PARAM_NAMES = ("password", "passphrase", "passwd", "pwd", "sslpassword")
 
-#: password-family credentials in a connection string, in BOTH spellings that
+#: password-family credentials in a connection string, in both spellings that
 #: carry one. Group 1 is the delimiter plus the parameter name, kept verbatim
 #: so the masked form still names which setting carried the credential, and
 #: group 2 is the value.
@@ -212,10 +212,10 @@ _CRED_PARAM_NAMES = ("password", "passphrase", "passwd", "pwd", "sslpassword")
 #: and the libpq keyword/value conninfo form (``host=db … password=…``), which
 #: carries neither ``://`` nor ``?`` and so slipped past a query-only matcher.
 #: The keyword form's delimiter is a boundary, expressed as a lookbehind for
-#: anything that could be the tail of a LONGER parameter name, so ``cpwd=`` is
+#: anything that could be the tail of a longer parameter name, so ``cpwd=`` is
 #: not mistaken for ``pwd=``.
 #:
-#: ``IGNORECASE``: libpq parameter names are case-insensitive, and psql, ORMs
+#: ``ignorecase``: libpq parameter names are case-insensitive, and psql, ORMs
 #: and operator-typed DSNs echo back whatever casing was written, so a matcher
 #: keyed to one exact spelling ships the value verbatim in every other.
 #:
@@ -223,7 +223,7 @@ _CRED_PARAM_NAMES = ("password", "passphrase", "passwd", "pwd", "sslpassword")
 #: and honours the ``\'`` and ``\\`` escapes, so the quote run must be
 #: consumed whole or the tail of the secret rides along after the ``***`` ,
 #: or an unquoted token. The unquoted class stops only at whitespace and
-#: ``&`` (the next parameter). It deliberately does NOT stop at ``@``: a
+#: ``&`` (the next parameter). It deliberately does not stop at ``@``: a
 #: password may legally contain an unencoded ``@``, and a matcher that
 #: treats it as a boundary leaves the tail of the secret riding along after
 #: the ``***``.
@@ -245,7 +245,7 @@ _URI_PARAM_CRED_RE = re.compile(
 #: a line boundary must not be able to peer past one.
 #:
 #: The optional ``["'\\]`` runs around the colon and the scheme word admit the
-#: QUOTED header spellings a response body or a repr()d dict renders: JSON
+#: quoted header spellings a response body or a repr()d dict renders: JSON
 #: (``"Authorization": "Bearer ..."``, the ``\"``-escaped form included) and
 #: Python repr (``{'Authorization': 'Bearer ...'}``). The classes only match
 #: runs of quotes, backslashes and blanks, so they cannot jump over the
@@ -267,8 +267,8 @@ _BEARER_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 
-#: A Bearer-scheme token WITHOUT the ``Authorization:`` header name around
-#: it -- the raw header VALUE (``request.headers["authorization"]`` renders
+#: A Bearer-scheme token without the ``Authorization:`` header name around
+#: it -- the raw header value (``request.headers["authorization"]`` renders
 #: ``Bearer <token>``, the header name is the dict key, not the value), which
 #: is the most natural "return the credential" mistake a dependency can make
 #: and which the header-keyed mask above cannot see. The same gap swallowed
@@ -276,7 +276,7 @@ _BEARER_TOKEN_RE = re.compile(
 #: scheme; ``Basic``, whose value is base64 user:password) and the quoted
 #: JSON renderings of a Token-scheme header.
 #:
-#: So this pass claims the scheme word BARE: ``bearer|token|basic`` followed
+#: So this pass claims the scheme word bare: ``bearer|token|basic`` followed
 #: by whitespace and a value. Two guards keep prose intact -- the common
 #: nouns "token"/"basic" appear in honest text ("token revocation service",
 #: "basic authentication reviewer"), unlike the header-keyed pass, whose
@@ -284,16 +284,16 @@ _BEARER_TOKEN_RE = re.compile(
 #:
 #: * a length floor of 16 on the value, mirroring :data:`_JWT_RE`'s floor
 #:   and its rationale (``bearer bond``, ``token bucket`` ride);
-#: * the value must carry a DIGIT. Every realistic credential alphabet --
+#: * the value must carry a digit. Every realistic credential alphabet --
 #:   hex, base64, base64url, JWT -- carries digits; English prose does not.
 #:   This is what lets the common-noun scheme words into the pattern at all
 #:   ("token rate-limiting-algorithm" survives, a lowercase-letter value
 #:   rides -- a stated limit, the same fail-open-for-prose trade the
 #:   too-generic-name exclusions make).
 #:
-#: Runs AFTER the header-keyed pass (which claims the framed value first;
-#: its ``***`` output is 3 chars and cannot re-match here) and BEFORE the
-#: OAuth-name and JWT passes, so a bare scheme word claims its value before
+#: Runs after the header-keyed pass (which claims the framed value first;
+#: its ``***`` output is 3 chars and cannot re-match here) and before the
+#: oauth-name and JWT passes, so a bare scheme word claims its value before
 #: the shape-generic masks see it. Group 1 keeps the scheme verbatim so the
 #: masked form still reads ``Bearer ***`` -- the non-secret frame survives,
 #: which is what the audit subject's redact-and-log binding leans on.
@@ -315,13 +315,13 @@ def _bare_scheme_repl(match: re.Match[str]) -> str:
     return match.group(0)
 
 
-#: OAuth token parameter names whose value is credential material by
-#: RFC 6749, whatever the token's shape: an OPAQUE access token (no dot
+#: oauth token parameter names whose value is credential material by
+#: RFC 6749, whatever the token's shape: an opaque access token (no dot
 #: structure) is invisible to the JWT mask below, and a response body or
 #: form body quoting one under its own name is the same disclosure as a
 #: JWT under ``Authorization: Bearer``. Both the RFC 6749 snake_case
 #: spellings and the camelCase ones caches and SDKs render are listed;
-#: ``IGNORECASE`` makes the casing itself irrelevant, both spellings exist
+#: ``ignorecase`` makes the casing itself irrelevant, both spellings exist
 #: because the separator differs (``_`` vs nothing).
 #:
 #: Kept to the token family: names like ``token`` or ``key`` alone are too
@@ -341,7 +341,7 @@ _OAUTH_TOKEN_NAMES = (
 #: ``\"``-escaped form a repr()d JSON string renders), a bare-colon
 #: key/value dump (``access_token: ...``), or form/query encoding
 #: (``access_token=...``). A quote is matched as backslash-then-quote or a
-#: bare quote -- written as an ALTERNATION of quantifier-free arms and not
+#: bare quote -- written as an alternation of quantifier-free arms and not
 #: ``\\?["']`` because a ``?`` whose body carries another repeat is the
 #: nested-quantifier shape
 #: ``test_no_nested_quantifier_regexes_in_taskq_obs`` bans; ``[ \t]``, not
@@ -349,13 +349,13 @@ _OAUTH_TOKEN_NAMES = (
 #: the same reason :data:`_BEARER_TOKEN_RE` documents.
 _OAUTH_TOKEN_QUOTE = r"(?:\\[\"']|[\"'])"  # noqa: S105  # Why: a regex quote-class snippet, not a secret; the bandit rule keys on the quote characters.
 
-#: The masked shape for an OAuth token value. Group 1 keeps the name and
+#: The masked shape for an oauth token value. Group 1 keeps the name and
 #: its delimiter verbatim (as :data:`_URI_PARAM_CRED_RE` does), group 2 is
 #: the value: a quoted string consumed whole, or an unquoted token. The
 #: unquoted class stops at whitespace, ``&``/``;`` (the next form
 #: parameter) and ``,`` -- the delimiters a rendered query string or body
 #: can carry -- so masking ``access_token=`` never eats the neighbouring
-#: ``expires_in=3600``. ``IGNORECASE``: the casing is whatever the sender
+#: ``expires_in=3600``. ``ignorecase``: the casing is whatever the sender
 #: emitted.
 _OAUTH_TOKEN_RE = re.compile(
     r"((?:[?&]|(?<![A-Za-z0-9_]))(?:"
@@ -377,21 +377,21 @@ _OAUTH_TOKEN_RE = re.compile(
 _OAUTH_TOKEN_TRIGGERS = tuple(name.lower() for name in _OAUTH_TOKEN_NAMES)
 
 #: A JWT-shaped token: three base64url segments separated by two dots. This is
-#: deliberately CONSERVATIVE, a stated trade-off rather than a parsed JWT:
+#: deliberately conservative, a stated trade-off rather than a parsed JWT:
 #:
 #: * each segment must be 16+ chars. Real Entra ID / access-token segments are
-#:   far longer (a JOSE header alone is ~36), while the dotted three-segment
+#:   far longer (a jose header alone is ~36), while the dotted three-segment
 #:   strings that appear legitimately -- semvers, dotted ids, filenames -- are
 #:   short in at least one segment. The floor is what keeps ``abc.def.ghi``
 #:   and ``1.2.3`` intact; the cost is a hypothetical short JWT (an ``alg:
 #:   none`` token) shipping verbatim. Un-masking a token that short loses
 #:   nothing real; mangling a short id costs a diagnostic.
-#: * the charset is base64url only (``A-Za-z0-9_-``), so ``:``, ``/``, ``@``,
+#: * the charset is base64url only (``a-za-z0-9_-``), so ``:``, ``/``, ``@``,
 #:   ``?``, ``=`` -- the punctuation a URI or a path is built from -- can never
 #:   sit inside a match.
 #: * exactly two dots, all three segments, word-bounded: a plain base64 blob
 #:   with no dots is not token-shaped and is left alone.
-#: * KNOWN OVER-MATCH, accepted and recorded: a string with three base64url
+#: * known over-match, accepted and recorded: a string with three base64url
 #:   segments of 16+ each is masked whatever it means, and a hostname whose
 #:   three labels are all that long (``performance-metrics.
 #:   analytics-dashboard.corporate-domain``) is such a string -- it goes to
@@ -399,44 +399,44 @@ _OAUTH_TOKEN_TRIGGERS = tuple(name.lower() for name in _OAUTH_TOKEN_NAMES)
 #:   the mask is fail-closed (a shape this JWT-like is deleted, the
 #:   diagnostic loses a hostname rather than a vendor gaining a token), the
 #:   16+ floor cannot be raised without letting a real short-segment JWT
-#:   (an ``alg: HS256`` JOSE header is 20 chars) through, and no regex can
+#:   (an ``alg: HS256`` jose header is 20 chars) through, and no regex can
 #:   tell a JWT from such a hostname without decoding it.
 #:   ``test_three_long_label_hostname_is_masked_and_that_is_documented``
 #:   records the decision.
 #:
-#: Written FLAT -- three separate ``{16,}`` repeats, no quantifier inside a
+#: Written flat -- three separate ``{16,}`` repeats, no quantifier inside a
 #: quantifier -- because :func:`test_no_nested_quantifier_regexes_in_taskq_obs`
 #: bans the nested shape a ``(?:\.{seg}){2,}`` spelling would compile to, and
 #: the flat form matches the same strings.
 _JWT_RE = re.compile(r"\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b")
 
-#: AWS presigned-URL signature parameters: the ``X-Amz-Signature`` query
+#: aws presigned-URL signature parameters: the ``x-amz-Signature`` query
 #: parameter of a SigV4 presigned URL, the ``Signature`` spelling CloudFront
 #: signed URLs use, and the shorter ``sig=``. The value -- hex for SigV4,
-#: base64url for CloudFront's RSA signature -- is credential material
+#: base64url for CloudFront's rsa signature -- is credential material
 #: exactly like a password, and the password-family name list below
 #: deliberately does not carry ``sig``/``signature`` (too generic a name to
-#: redact in non-AWS text), so this needs its own pattern. Group 1 keeps the
+#: redact in non-aws text), so this needs its own pattern. Group 1 keeps the
 #: parameter name verbatim, as :data:`_URI_PARAM_CRED_RE` does, so the
 #: masked form still names which parameter carried it.
 #:
 #: The value class is the URL-safe token alphabet plus ``%`` (lowercase hex
 #: per the SigV4 spec, but case-variant in the wild, and a value that was
-#: percent-encoded must not leave its ``%XX`` tail riding after the mask --
+#: percent-encoded must not leave its ``%xx`` tail riding after the mask --
 #: a delimiter miss deletes more, never less). It stops at whitespace,
 #: ``&`` and ``,``/``;`` like the other parameter-value classes.
-#: ``IGNORECASE``: the parameter casing is whatever the signer emitted.
+#: ``ignorecase``: the parameter casing is whatever the signer emitted.
 _SECRET_HEAD_TRIGGERS: Final[tuple[str, ...]] = (
-    # A NECESSARY condition for tors.scrub_secrets to match at all: every
-    # family it models is anchored on a literal head (AWS access keys,
-    # Slack/Stripe tokens, GitHub token heads, the PEM block header), so a
+    # A necessary condition for tors.scrub_secrets to match at all: every
+    # family it models is anchored on a literal head (aws access keys,
+    # Slack/Stripe tokens, GitHub token heads, the pem block header), so a
     # field carrying none of these substrings cannot be changed by the
     # pass and skips it. Mirrors the per-pattern prefilter discipline the
-    # regex passes below run on. MUST track tors's rule set: the
+    # regex passes below run on. must track tors's rule set: the
     # differential pin in tests/test_tors_scrub_secrets_composition.py
     # reds if a family's head goes missing from this list.
-    "AKIA",  # AWS access key id
-    "ASIA",  # AWS temporary/assumed-role key id
+    "AKIA",  # aws access key id
+    "ASIA",  # aws temporary/assumed-role key id
     "xoxb",  # Slack bot token
     "xoxa",  # Slack workspace/app token
     "xoxp",  # Slack user token
@@ -445,12 +445,12 @@ _SECRET_HEAD_TRIGGERS: Final[tuple[str, ...]] = (
     "sk_test_",  # Stripe test secret key
     "pk_live_",  # Stripe live publishable key
     "ghp_",  # GitHub personal access token
-    "gho_",  # GitHub OAuth token
+    "gho_",  # GitHub oauth token
     "ghu_",  # GitHub user-to-server token
     "ghs_",  # GitHub server-to-server token
     "ghr_",  # GitHub refresh token
-    "github_pat_",  # GitHub fine-grained PAT
-    "-----BEGIN",  # PEM private-key block
+    "github_pat_",  # GitHub fine-grained pat
+    "-----BEGIN",  # pem private-key block
 )
 
 _AWS_SIG_RE = re.compile(
@@ -475,7 +475,7 @@ _DEFAULT_MAX_MESSAGE_CHARS = 2000
 
 _max_message_chars: int = _DEFAULT_MAX_MESSAGE_CHARS
 
-#: Whether DETAIL lines are dropped. Default True: the safe behaviour is what
+#: Whether detail lines are dropped. Default True: the safe behaviour is what
 #: an operator gets by doing nothing. Set False by worker startup from
 #: ``TASKQ_EXCEPTION_REDACTION_ENABLED``.
 _redaction_enabled: bool = True
@@ -489,9 +489,9 @@ def set_exception_redaction_enabled(enabled: bool) -> None:
     instead of importing ``settings`` (which would be a circular import from
     the modules that depend on ``obs``).
 
-    Passing ``False`` disables the DETAIL drop on BOTH the span and the log
+    Passing ``False`` disables the DETAIL drop on both the span and the log
     channel -- they share :func:`_scrub_text`, so the toggle cannot be applied
-    to one and not the other. It does NOT disable the URI credential mask.
+    to one and not the other. It does not disable the URI credential mask.
     """
     global _redaction_enabled
     _redaction_enabled = enabled
@@ -510,7 +510,7 @@ def _scrub_text(text: str) -> str:
        ``bearer``/``token``/``basic`` -- quoted renderings
        (``"Authorization": "Bearer ..."``, ``{'Authorization': '...'}``, the
        escaped-quote form) included -- by :data:`_BEARER_TOKEN_RE`.
-    1b. A bare scheme word with NO header name around it -- the raw header
+    1b. A bare scheme word with no header name around it -- the raw header
        VALUE (``Bearer <token>``, what ``request.headers["authorization"]``
        renders) and the scheme words the header pass's frame cannot see --
        by :data:`_BEARER_SCHEME_RE`, behind the same prefilter. The value
@@ -539,7 +539,7 @@ def _scrub_text(text: str) -> str:
        query-string and libpq keyword/value alike, in any casing, by
        :data:`_URI_PARAM_CRED_RE`. The order is what makes a DSN carrying
        both at once safe (``scheme://user:SECRET@host/db?password=OTHER``):
-       the userinfo mask runs first and claims the password up to the FIRST
+       the userinfo mask runs first and claims the password up to the first
        ``@``, so an RFC 3986-shaped DSN leaves the parameter mask a string whose
        only ``@`` is the one the userinfo mask wrote ``***`` in front of. The
        boundary really is the first ``@``, not the RFC 3986 userinfo end: a
@@ -579,13 +579,13 @@ def _scrub_text(text: str) -> str:
       str-level necessary condition does not exist: "a dot with 16 word
       chars beside it" already requires a scan that costs what the pass
       costs. ``test_clean_error_line_runs_no_regex`` pins the strict
-      claim this docstring makes: on trigger-free text NO regex runs.
+      claim this docstring makes: on trigger-free text no regex runs.
     * ``_AWS_SIG_RE`` requires ``sig=`` or ``signature=`` (the latter
       covers ``x-amz-signature=``, which contains it).
     * ``_URI_CRED_RE`` requires a ``scheme://`` separator.
     * ``_URI_PARAM_CRED_RE`` requires a password-family parameter name
       followed by ``=``, compared case-insensitively to match the pattern ,
-      and deliberately NOT ``://``: bare ``host/db?password=…`` and libpq
+      and deliberately not ``://``: bare ``host/db?password=…`` and libpq
       ``host=db … password=…`` text must stay masked, so the guard is on the
       parameter names, not a scheme.
 
@@ -602,20 +602,20 @@ def _scrub_text(text: str) -> str:
     lowered = text.lower()
     if any(trigger in text for trigger in _SECRET_HEAD_TRIGGERS):
         # The tors secrets pre-pass: the token families TaskQ's own masks
-        # do not model (AWS access keys, Slack/Stripe tokens, GitHub
-        # tokens, PEM private-key blocks), one GIL-released Rust pass,
+        # do not model (aws access keys, Slack/Stripe tokens, GitHub
+        # tokens, pem private-key blocks), one GIL-released Rust pass,
         # gated on the heads prefilter - the same necessary-condition
         # discipline every regex pass below runs - so a clean field pays
         # a substring scan, not the pass. The heads check runs on the
-        # ORIGINAL text, not the lowered copy: the heads are
-        # case-sensitive grammar literals (AKIA, ghp_, -----BEGIN), and a
+        # original text, not the lowered copy: the heads are
+        # case-sensitive grammar literals (akia, ghp_, -----begin), and a
         # lowered check could never arm them. The output's correlation
         # token (<head>~<12-hex-digest>) carries no secret material and
         # contains no trigger the passes below can re-match, so the
-        # composition is order-safe. It CANNOT REPLACE the chain, and
+        # composition is order-safe. It cannot replace the chain, and
         # does not: the measured differential
         # (docs/design/tors-adoption-map.md) shows tors has no rule for
-        # the DSN userinfo/password, bearer-JWT, OAuth-name, and
+        # the DSN userinfo/password, bearer-JWT, oauth-name, and
         # PG-DETAIL shapes - those are why every pass below runs after
         # it, unchanged.
         text = scrub_secrets(text)
@@ -700,7 +700,7 @@ class ScrubbedText(str):
     def nul_escaped(self) -> "ScrubbedText":
         """The same text with NUL codepoints rewritten to the visible ``\\x00``.
 
-        Scrubbing must run BEFORE the escape, never after: the credential
+        Scrubbing must run before the escape, never after: the credential
         mask's keyword boundary is a lookbehind for a non-word character, and
         the escape's trailing ``0`` satisfies it in the wrong direction, so
         ``\\x00password=…`` escaped first ships the password. The escape
@@ -775,7 +775,7 @@ def render_exception(exc: BaseException) -> ExceptionText:
     raw_stacktrace = safe_traceback_text(exc)
     return ExceptionText(
         # Why _safe_type_attr, not the raw attribute: the qualname, unlike
-        # the name, CAN carry a lone surrogate (CPython locks type names to
+        # the name, can carry a lone surrogate (cpython locks type names to
         # UTF-8 but accepts any string in __qualname__), a metaclass can
         # raise on the access itself, and the render is the one conversion
         # every sink of the exception's identity shares.
@@ -799,7 +799,7 @@ def safe_exception_message(exc: BaseException) -> str:
 
     The ``str()`` is guarded: the exception is uncontrolled input (an actor
     raises it), and an exception whose own ``__str__`` raises would otherwise
-    convert HERE, inside the handler that was classifying it, into an uncaught
+    convert here, inside the handler that was classifying it, into an uncaught
     ``TypeError`` that escapes the classification entirely. The fallback
     mirrors CPython's own traceback rendering for the same condition
     ("<exception str() failed>"), so sinks stay consistent.
@@ -831,7 +831,7 @@ def safe_str(exc: BaseException) -> str:
     """
     try:
         return str(exc)
-    # Why BaseException: CPython's traceback._safe_string idiom - a hostile
+    # Why BaseException: cpython's traceback._safe_string idiom - a hostile
     # __str__ may raise any BaseException subclass, and this helper is a
     # pure string render, never an await point, so a swallowed
     # CancelledError cannot strand anything.
@@ -1015,11 +1015,11 @@ def record_exception_safe(span: "Span", exc: BaseException) -> None:
     add_exception_event(span, render_exception(exc))
 
 
-#: Event-dict field names that conventionally carry exception MESSAGE text on
+#: Event-dict field names that conventionally carry exception message text on
 #: the log channel. Derived from the log sites in ``src/taskq`` that render
 #: exception text into a field (``error=…``, ``error_message=…``, the
 #: terminal-write log's ``job_error_message``/``infra_error_message`` …) ,
-#: NOT an automatically exhaustive set: when a new log field is introduced
+#: not an automatically exhaustive set: when a new log field is introduced
 #: whose value is rendered exception text (``str(exc)``/``repr(exc)``/
 #: ``traceback.format_exception``), its name must be added here or the JSON
 #: channel ships it unredacted. ``test_log_fields_carrying_exception_text_…``
@@ -1032,7 +1032,7 @@ EXCEPTION_MESSAGE_FIELDS = frozenset(
     {"error", "error_message", "exc", "job_error_message", "infra_error_message"}
 )
 
-#: Event-dict field names that conventionally carry rendered TRACEBACK text ,
+#: Event-dict field names that conventionally carry rendered traceback text ,
 #: scrubbed line-wise like :func:`render_exception`, without the message-length
 #: bound, so the traceback stays diagnostic. Same derivation and guard
 #: contract as :data:`EXCEPTION_MESSAGE_FIELDS`.

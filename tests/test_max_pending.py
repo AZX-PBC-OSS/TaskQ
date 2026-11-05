@@ -184,7 +184,7 @@ async def test_unique_for_dedup_runs_before_max_pending() -> None:
     assert row_a1.id != row_b.id
 
 
-# ── fields and LSP ─────────────────────────────────────────────
+# ── fields and lsp ─────────────────────────────────────────────
 
 
 async def test_exception_fields_and_lsp_compat() -> None:
@@ -246,7 +246,7 @@ async def test_count_after_job_completion_frees_capacity() -> None:
 async def test_singleton_fires_before_max_pending() -> None:
     """singleton fires before max_pending. Actor singleton=True,
     max_pending=10; first enqueue (singleton blocks); second raises
-    SingletonCollisionError, NOT MaxPendingExceededError."""
+    SingletonCollisionError, not MaxPendingExceededError."""
     backend = _make_backend()
 
     await backend.enqueue(_max_pending_args(max_pending=10, metadata={"singleton": True}))
@@ -255,11 +255,11 @@ async def test_singleton_fires_before_max_pending() -> None:
         await backend.enqueue(_max_pending_args(max_pending=10, metadata={"singleton": True}))
 
 
-# ── idempotency_key does NOT bypass max_pending ────────────────
+# ── idempotency_key does not bypass max_pending ────────────────
 
 
 async def test_idempotency_key_does_not_bypass_max_pending() -> None:
-    """idempotency_key does NOT bypass max_pending. Actor with
+    """idempotency_key does not bypass max_pending. Actor with
     max_pending=1, no unique_for. Enqueue with idempotency_key='k1'
     (count=1). Re-enqueue with same key raises MaxPendingExceededError -
     the count check (step 4) fires before the idempotency-key INSERT

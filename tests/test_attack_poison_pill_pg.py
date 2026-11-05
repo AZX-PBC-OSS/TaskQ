@@ -5,7 +5,7 @@ The twin tier (tests/test_attack_poison_pill.py) pins the lifecycle on
 the in-memory backend. This file re-runs the same poison against real
 Postgres, because two things only exist there:
 
-* the terminal write is ONE fused data-modifying-CTE statement (the
+* the terminal write is one fused data-modifying-CTE statement (the
   fenced ``jobs`` UPDATE, the ``job_attempts`` INSERT and the
   ``job_events`` INSERT in a single statement), so a connection death
   mid-commit aborts the write WHOLE - no attempt row, no event, the row
@@ -228,7 +228,7 @@ async def test_pg_poison_walks_the_row_to_crashed_through_the_real_sweep(
 
     # ── the split-brain forge, before the first sweep: an event row
     # claiming success while the row says running. The sweep must read
-    # the ROW.
+    # the row.
     async with app.deps.worker_pool.acquire() as conn:
         await conn.execute(
             f'INSERT INTO "{schema}".job_events (job_id, kind, detail) '

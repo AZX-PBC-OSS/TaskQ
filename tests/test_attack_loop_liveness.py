@@ -10,7 +10,7 @@ asserting only what an operator or client observes:
    (``taskq.worker.loop_unexpected_errors_total``) fires exactly once per
    tolerated occurrence, labelled by loop.
 2. Metric truth - an operator watching the public metrics surface sees a
-   round's pool wait in ``taskq.dispatch.pool_acquire_duration`` and NOT
+   round's pool wait in ``taskq.dispatch.pool_acquire_duration`` and not
    in ``taskq.dispatch.duration``; SQL latency only in the latter;
    ``taskq.dispatch.failures`` names the failing stage's error class.
 3. Cancel/shutdown interleaving - a cancelled round is a shutdown, not a
@@ -18,7 +18,7 @@ asserting only what an operator or client observes:
    silent, and the pool keeps serving (a leaked checkout would hang the
    follow-up rounds these tests run).
 4. Pool differential - a dispatch round and a plain ``async with`` on the
-   SAME pool must be indistinguishable to their caller: same exception
+   same pool must be indistinguishable to their caller: same exception
    (same object), same success, and the same pool health afterwards -
    proven against a REAL asyncpg.Pool (``max_size=1``, so a single leaked
    checkout hangs the follow-up round and the test times out).
@@ -67,12 +67,12 @@ _LOOP_LABEL = "worker.producer"
 _UNEXPECTED_COUNTER = "taskq.worker.loop_unexpected_errors_total"
 _OLD_UNEXPECTED_NAME = "taskq.worker.leader_loop_unexpected_errors_total"
 
-# The real-pool differential's Postgres. By default it rides the SAME
+# The real-pool differential's Postgres. By default it rides the same
 # testcontainers chain every green real-PG tier uses (the conftest
 # ``pg_dsn`` fixture), so the lane runs wherever the rest of the real-PG
 # suite runs - CI included. ``TASKQ_ATTACK_PG_DSN`` overrides that with an
 # explicit DSN (a dedicated hand-run Postgres); an unreachable override
-# SKIPS, naming the variable, instead of erroring. The original wiring
+# skips, naming the variable, instead of erroring. The original wiring
 # read only this override with a hard-coded 127.0.0.1:45432 default -
 # nothing in CI (or this repo's fixtures) ever served that port, so the
 # differential skipped on every CI run since it was written.
@@ -87,7 +87,7 @@ _PG_DSN_ENV = "TASKQ_ATTACK_PG_DSN"
 _DIFFERENTIAL_LANE: dict[str, str] = {"state": "not-started"}
 # Per-process unique: the real_pg_pool fixture is module-scoped and xdist
 # may split this module's tests across workers, each instantiating the
-# fixture; a shared hard-coded name makes one worker's DROP ... CASCADE
+# fixture; a shared hard-coded name makes one worker's drop ... CASCADE
 # teardown (and setup) remove the schema another worker's pool is using
 # (InvalidSchemaNameError under -n, intermittently). Same convention as
 # test_worker_bootstrap.py's twb_{new_base62()} label.
@@ -95,7 +95,7 @@ _PG_SCHEMA = f"liveness_{new_base62().lower()}"
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Shared drive harness: the REAL producer loop over a scripted backend.
+# Shared drive harness: the real producer loop over a scripted backend.
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -217,7 +217,7 @@ async def _run_producer(
     or the clean-exit marker. ``hook``, given, replaces ``asyncio.sleep``
     (the round clock seam) inside the loop's task; ``task_out``, given,
     receives the loop's task so a test can cancel it mid-flight. The
-    round-cap stop check ALWAYS runs (even under a hook) so a hook that
+    round-cap stop check always runs (even under a hook) so a hook that
     swallows rounds cannot park the loop forever; pass ``stop_event`` to
     share it with the hook.
     """
@@ -241,7 +241,7 @@ async def _run_producer(
         await real_sleep(0)
         return result
 
-    # Patch where the name is LOOKED UP - run.py's own ``asyncio`` binding -
+    # Patch where the name is looked up - run.py's own ``asyncio`` binding -
     # so the fake never lands on the process-global asyncio module (the old
     # spelling ``setattr(run_mod.asyncio, ...)`` patched the global module:
     # every coroutine in the process resolved the fake during the window).
@@ -368,7 +368,7 @@ async def test_interleaved_orders_raise_at_exactly_the_nth_non_transient(
         ("N,N,N", "NNN", 3, 3),
         ("T,N,T,N,N", "TNTNN", 5, 3),
         ("N,T,T,N,T,N", "NTTNTN", 6, 3),
-        ("N,N,T,N,N", "NNTNN", 4, 3),  # a transient between faults must NOT reset
+        ("N,N,T,N,N", "NNTNN", 4, 3),  # a transient between faults must not reset
         ("T,T,N,N,N", "TTNNN", 5, 3),
         ("N,T,N,T,N", "NTNTN", 5, 3),
     ]
@@ -405,7 +405,7 @@ async def test_interleaved_orders_raise_at_exactly_the_nth_non_transient(
 async def test_budget_never_fires_on_all_transient_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rotation of EVERY transient class, round after round, must never
+    """A rotation of every transient class, round after round, must never
     fire: the worker survives them all, the counter silent."""
     _patch_budget(monkeypatch, 2)
     reader = _patch_counter(monkeypatch)
@@ -544,7 +544,7 @@ class _RealDispatchBackend:
 async def test_budget_is_stage_blind_resolve_and_claim_and_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A permanent fault raised from ANY stage of the real dispatch round
+    """A permanent fault raised from any stage of the real dispatch round
     (resolve, claim, probe) must tear the worker down at the same budget
     with the ORIGINAL object; no stage may escape classification."""
     _patch_budget(monkeypatch, 2)
@@ -772,9 +772,9 @@ async def test_cancelled_acquires_no_double_record(monkeypatch: pytest.MonkeyPat
 async def test_renamed_counter_one_series_no_cross_attribution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The renamed backstop counter: unexpected errors forced from BOTH a
+    """The renamed backstop counter: unexpected errors forced from both a
     leader maintenance loop's guard and the REAL producer loop must land
-    on ONE series (the new name), correctly labelled per loop, and the
+    on one series (the new name), correctly labelled per loop, and the
     old ``leader_loop_unexpected_errors_total`` name must not exist."""
     reader = _patch_counter(monkeypatch)
     _patch_budget(monkeypatch, 3)
@@ -973,7 +973,7 @@ async def test_cancel_during_round_propagates_no_unexpected_count(
 ) -> None:
     """A cancellation landing while the round is parked inside the backend
     ends the worker task as CANCELLED (a shutdown, not a crash) and must
-    NOT be counted as an unexpected error: the alert surface stays
+    not be counted as an unexpected error: the alert surface stays
     silent."""
     _patch_counter(monkeypatch)
     _patch_budget(monkeypatch, 5)
@@ -1018,7 +1018,7 @@ async def test_cancel_during_round_propagates_no_unexpected_count(
 
 # ─────────────────────────────────────────────────────────────────────────
 # 4. Caller-observable differential: a dispatch round and a plain
-#    `async with` on the SAME pool must look identical to their caller.
+#    `async with` on the same pool must look identical to their caller.
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -1061,7 +1061,7 @@ async def _explicit_dispatch(pool: _TrackingPool) -> list[Any]:
 async def test_round_failure_reaches_the_caller_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A body failure mid-round reaches the caller as the SAME exception
+    """A body failure mid-round reaches the caller as the same exception
     OBJECT from both forms - no wrapping, no replacement, no swallowing."""
     setup_meter(monkeypatch)
     err = ValueError("the body's permanent fault")
@@ -1133,7 +1133,7 @@ async def test_acquire_failure_reaches_the_caller_and_pool_serves(
 async def test_terminate_arm_error_reaches_the_caller_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The terminate arm (InternalClientError): the caller sees the SAME
+    """The terminate arm (InternalClientError): the caller sees the same
     error object the statement raised, from both forms."""
     setup_meter(monkeypatch)
     err = asyncpg.exceptions.InternalClientError("cannot switch to state 12")
@@ -1194,7 +1194,7 @@ async def test_body_cancellation_reaches_the_caller(
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 5. The same differential against a REAL asyncpg.Pool: max_size=1 makes a
+# 5. The same differential against a real asyncpg.Pool: max_size=1 makes a
 #    single leaked checkout observable as a hung follow-up round.
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -1219,7 +1219,7 @@ async def real_pg_pool(real_pg_dsn: str) -> Any:
 
     max_size=1 is the sharpest leak detector available: any checkout the
     round fails to release hangs every follow-up round and the test
-    times out. Skips ONLY when an explicit ``TASKQ_ATTACK_PG_DSN``
+    times out. Skips only when an explicit ``TASKQ_ATTACK_PG_DSN``
     override is unreachable (the message names the variable); a failure
     of the suite's own ``pg_dsn`` chain is an ERROR, not a skip - the
     chain's Docker-less case skips upstream in ``pg_container``, and

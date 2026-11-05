@@ -1,6 +1,6 @@
 """Bundled migrations applied STEPWISE onto a POPULATED database.
 
-Owner requirement: every bundled migration - present AND future - must run
+Owner requirement: every bundled migration - present and future - must run
 cleanly as an end user against a database that already holds data. The
 stepwise test below applies migrations one at a time (``max_steps=1``) and
 seeds a full slice of realistic rows after each step, so migration N+1
@@ -21,7 +21,7 @@ Two tiers live here:
   on a fully-migrated populated DB is a safe no-op).
 
 Runtime budget: the module must stay under ~45s (CI runs ``pytest -n 2``).
-Tune ONLY via the ``SEED_*`` volume knobs below - halve ``SEED_JOBS``
+Tune only via the ``SEED_*`` volume knobs below - halve ``SEED_JOBS``
 first, trim ``SEED_EVENTS_PER_JOB`` second.
 """
 
@@ -56,8 +56,8 @@ from taskq.worker.deps import open_worker_deps
 pytestmark = pytest.mark.integration
 
 # ── Volume knobs ──────────────────────────────────────────────────────────
-# Tunable in ONE place. SEED_JOBS is per slice; across the full stepwise run
-# ~10k ACTIVE-status rows land in the hot partial indexes (dispatch /
+# Tunable in one place. SEED_JOBS is per slice; across the full stepwise run
+# ~10k active-status rows land in the hot partial indexes (dispatch /
 # scheduled-wake / running-lock), which is the volume that matters for
 # index-building migrations. Keep SEED_JOBS a multiple of 100: the status
 # wheel below then yields the declared distribution exactly.
@@ -85,7 +85,7 @@ _TERMINAL_STATUSES = frozenset(_TERMINAL_ORDER)
 _ACTIVE_STATUSES = frozenset({"pending", "scheduled", "running"})
 
 # Flat 100-slot wheel: ``i % 100`` indexes into it, so per-slice counts are
-# EXACT whenever SEED_JOBS is a multiple of 100.
+# exact whenever SEED_JOBS is a multiple of 100.
 _STATUS_WHEEL: tuple[str, ...] = tuple(
     status for status, weight in _STATUS_MIX for _ in range(weight)
 )
@@ -104,7 +104,7 @@ def _uuid5(name: str) -> uuid.UUID:
 
 def _payload(i: int) -> dict[str, object]:
     if i % 10 == 0:
-        # ~2KB payload every 10th row: COPY, GIN jsonb indexing, and the
+        # ~2KB payload every 10th row: COPY, gin jsonb indexing, and the
         # idempotency index build must handle more than toy documents.
         return {"job": i, "kind": "large", "blob": "x" * 2048}
     return {"job": i, "kind": "small"}
@@ -119,7 +119,7 @@ def _result(i: int) -> dict[str, object]:
 
 
 # Attempt outcome for a terminal job status; active jobs are given an
-# earlier FAILED attempt (they were retried and are still in flight).
+# earlier failed attempt (they were retried and are still in flight).
 _ATTEMPT_OUTCOME = {
     "succeeded": "succeeded",
     "failed": "failed",
@@ -165,7 +165,7 @@ def _job_row(
 
     metadata: dict[str, object] = {"seed": True}
     if terminal and i % 97 == 0:
-        # Singleton metadata is legal ONLY on terminal rows (the partial
+        # Singleton metadata is legal only on terminal rows (the partial
         # unique index covers active statuses); the generator never puts it
         # on active rows - pinned by test_seed_data_is_deterministic.
         metadata["singleton"] = True
@@ -177,17 +177,17 @@ def _job_row(
         "id": row_id,
         "actor": ("actor_a", "actor_b", "actor_c", "test_actor")[i % 4],
         "queue": "default",
-        # 01.00.24's workflow columns: the seeder's rows are VANILLA rows
-        # (no workflow graph) -- the columns' DEFAULT/NULL shapes, stated
+        # 01.00.24's workflow columns: the seeder's rows are vanilla rows
+        # (no workflow graph) -- the columns' default/NULL shapes, stated
         # explicitly so the runtime column intersection never KeyErrors.
-        # (parent_id's VALUE is seeded below — the fan-out ledger's
+        # (parent_id's value is seeded below — the fan-out ledger's
         # deterministic pointer, the one column both rounds share.)
         "deps_pending": 0,
         "map_index": None,
         "step_key": None,
         "code_version": None,
         # 01.00.27's loop-budget columns (mirrored onto jobs_archive by
-        # 01.00.31): the seeder's rows are VANILLA rows -- the DEFAULT/NULL
+        # 01.00.31): the seeder's rows are vanilla rows -- the default/NULL
         # shapes, stated explicitly so the runtime intersection never
         # KeyErrors.
         "budget_deadline": None,
@@ -291,7 +291,7 @@ def _generate_slice(slice_id: int, *, now: datetime) -> _SliceSeed:
     for i in range(SEED_JOBS):
         status = _STATUS_WHEEL[i % 100]
         created_at = base + job_step * i
-        # Counter-based keys are globally unique ACROSS slices: the legacy
+        # Counter-based keys are globally unique across slices: the legacy
         # single-column jobs_idempotency_key_uniq index enforces global
         # uniqueness until 01.00.03_01:post drops it.
         key = f"idem-{slice_id * SEED_JOBS + i:05d}" if i % 5 == 0 else None
@@ -479,8 +479,8 @@ def _generate_slice(slice_id: int, *, now: datetime) -> _SliceSeed:
 
 
 # ── Column supersets ─────────────────────────────────────────────────────
-# Canonical ORDERED supersets of every column any schema version knows, in
-# COPY order. For `jobs` that superset IS the library's own COPY_FROM_COLUMNS
+# Canonical ordered supersets of every column any schema version knows, in
+# COPY order. For `jobs` that superset is the library's own COPY_FROM_COLUMNS
 # (single source of truth for the COPY path; pinned to the live table by
 # tests/test_migrations.py::test_copy_from_columns_match_jobs_table_exactly).
 
@@ -574,7 +574,7 @@ async def _seed_slice(
     The runtime column intersection (live ``information_schema.columns`` ∩
     canonical superset) is deliberate: when a future migration adds a
     column, the seeder adapts and keeps loading; when a future migration
-    adds a NOT NULL-without-default column the seeder FAILS - and that
+    adds a not NULL-without-default column the seeder FAILS - and that
     failure is the CI alarm, because the harness's job is precisely to
     surface migrations that cannot run against a populated database.
 
@@ -655,9 +655,9 @@ async def _assert_table_counts(
 
 
 # ── Migration-specific checks ─────────────────────────────────────────────
-# Generic per-step invariants (runner order, no INVALID indexes, ledger
-# use_transaction) apply to EVERY discovered key - unknown keys get ONLY
-# those, so future migrations (including future CIC index rebuilds)
+# Generic per-step invariants (runner order, no invalid indexes, ledger
+# use_transaction) apply to every discovered key - unknown keys get only
+# those, so future migrations (including future cic index rebuilds)
 # automatically join this harness the day they land. Entries below are for
 # migrations whose populated-DB effect deserves a sharper assertion.
 
@@ -730,7 +730,7 @@ def test_seed_data_is_deterministic() -> None:
     assert [r["idempotency_key"] for r in first.jobs] == [r["idempotency_key"] for r in second.jobs]
     assert first == second
 
-    # Idempotency keys must be globally unique ACROSS slices - the old
+    # Idempotency keys must be globally unique across slices - the old
     # single-column unique index spans every seeded generation until the
     # :post migration drops it.
     keys = [
@@ -765,7 +765,7 @@ def test_bundled_migrations_apply_stepwise_onto_populated_database(
 ) -> None:
     """Apply every bundled migration one step at a time onto populated data.
 
-    Each iteration: apply exactly ONE migration → generic invariants →
+    Each iteration: apply exactly one migration → generic invariants →
     migration-specific checks → seed the next slice → assert cumulative
     counts. After the loop: data round-trips, index spot-checks, a
     functional smoke through the real backend API, and the end-user CLI
@@ -843,7 +843,7 @@ def test_bundled_migrations_apply_stepwise_onto_populated_database(
             assert archived["status"] == "succeeded"
             assert loads(archived["result"]) == _result(0)
 
-            # Index spot-checks: the hot dispatch index is VALID, and the
+            # Index spot-checks: the hot dispatch index is valid, and the
             # lock_expired reclaim partial index (built by 01.00.02_01 over
             # seeded events) exists.
             assert await _index_validity(conn, schema, "jobs_dispatch_idx") is True
@@ -854,7 +854,7 @@ def test_bundled_migrations_apply_stepwise_onto_populated_database(
     async def _real_api_smoke() -> None:
         """End-state functional smoke through the REAL public API.
 
-        The real API is used ONLY here, against the final schema: the
+        The real API is used only here, against the final schema: the
         current enqueue SQL inserts ``idempotency_scope``, which raises
         UndefinedColumnError against pre-``01.00.03_01:pre`` schemas, and
         ``job_events`` has no public append API at all - intermediate
@@ -947,7 +947,7 @@ async def test_assignment_routed_backfill_marks_exactly_the_repend_population(
     split, 01.00.12_07) paints exactly the rows the old started_at-proxy
     arm was serving: nothing more, nothing less.
 
-    The proxy probed ``pending`` rows with ``started_at IS NOT NULL``, and a
+    The proxy probed ``pending`` rows with ``started_at IS not NULL``, and a
     re-pended row still sleeping off a deferral (``scheduled`` with
     ``started_at`` set - a snooze, a retry-after, or a reclaim with budget
     left) joined that probe the moment the promotion sweep flipped it to

@@ -150,7 +150,7 @@ def test_complete_stale_batches_sql_refuses_a_non_identifier_schema() -> None:
 async def test_a_cancelled_batch_counts_against_the_sizer_and_raises() -> None:
     """The server cancelling the batch statement (statement_timeout) is the
     breaker's control signal: the batch machinery must feed it to the
-    sizer AND re-raise, so the caller's failure path retries at the
+    sizer and re-raise, so the caller's failure path retries at the
     latched reduced tier while everything committed before stays."""
     sizer = _RecordingSizer()
     conn = _ScriptedConn(fail_other_fetches_with=asyncpg.QueryCanceledError("statement_timeout"))
@@ -176,7 +176,7 @@ async def test_a_cancelled_batch_counts_against_the_sizer_and_raises() -> None:
 async def test_a_cancelled_archive_write_counts_against_the_sizer_and_raises() -> None:
     """Same contract on the archive variant: the write statement's deadline
     abort is the breaker's signal too (the candidate window and the
-    archive write are two statements of ONE batch)."""
+    archive write are two statements of one batch)."""
 
     class _WriteCancels(_ScriptedConn):
         async def fetch(self, sql: str, *args: object) -> Sequence[dict[str, Any]]:
@@ -264,7 +264,7 @@ async def test_a_full_batch_loops_for_another() -> None:
     assert result.by_status == {"failed": size}
 
 
-# ── The breaker arms on ANY repeated batch failure ───────────────────────
+# ── The breaker arms on any repeated batch failure ───────────────────────
 #
 # The reduced tier is the safety net for the next unknown prune failure
 # mode, so the sizer must hear about every batch failure, not only the
@@ -408,7 +408,7 @@ async def test_a_non_deadline_batch_failure_counts_against_the_sizer_and_raises(
 async def test_a_non_deadline_archive_write_failure_counts_against_the_sizer() -> None:
     """Same contract on the archive variant, failing the write arm: the
     candidate window answers, the lock-bearing write raises, and that
-    abort is the breaker's signal too (the two statements are ONE batch)."""
+    abort is the breaker's signal too (the two statements are one batch)."""
 
     sizer = _RecordingSizer()
     conn = _WriteViolatesNTimes(fail_times=3)

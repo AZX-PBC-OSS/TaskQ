@@ -5,7 +5,7 @@ VALID_TRANSITIONS plus the Sweep 1 bypass entries (running→pending and
 running→crashed via reclaim_expired_locks), run the transition on both
 backends and assert the oracle tuple matches.
 
-The isolate_self bypass paths are NOT included - they are exercised via
+The isolate_self bypass paths are not included - they are exercised via
 in test_state_transitions_pg.py (the isolate_self
 function operates on a fresh asyncpg connection, not through the Backend
 protocol, so it cannot be parametrized via backend_pair).

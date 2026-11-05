@@ -1,10 +1,10 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""The adversarial-review pins: the idempotency key is ONE outcome no matter how the world fails.
+"""The adversarial-review pins: the idempotency key is one outcome no matter how the world fails.
 
 Scenario 1 - enqueue-with-key across every failure point between client and
 row. The documented dedup channel for a caller's retry is the idempotency key
 (``taskq/connections.py``: "idempotency keys remain the dedup channel for the
-retry the caller chooses"). The retry is a no-op returning the SAME job id:
+retry the caller chooses"). The retry is a no-op returning the same job id:
 
 * a fresh client call (new job id, same key) after the first row COMMITTED
   dedupes to the committed row,
@@ -15,7 +15,7 @@ retry the caller chooses"). The retry is a no-op returning the SAME job id:
 Scenario 2 - one error shape per collision class, the detection path
 invisible to the client. A singleton collision caught by the Layer-1
 preflight SELECT and one caught by the Layer-2 ``jobs_singleton_uniq``
-UniqueViolationError catch (the race path) raise the SAME exception class -
+UniqueViolationError catch (the race path) raise the same exception class -
 ``detection_path`` exists only in the log stream, never on the error - so a
 caller's ``except`` branch cannot branch on how the collision was detected.
 Same property for a cross-actor idempotency hit: the sequential path (the
@@ -66,12 +66,12 @@ async def _drop_schema(pg_dsn: str, schema: str) -> None:
         await cleanup.close()
 
 
-# ── Scenario 1: the retry is a no-op returning the SAME job id ───────────
+# ── Scenario 1: the retry is a no-op returning the same job id ───────────
 
 
 async def test_client_retry_new_id_same_key_returns_same_job_id(pg_dsn: str) -> None:
     """A client retry after an ambiguous first outcome (the row committed but
-    the ack was lost) issues a FRESH job id with the SAME idempotency key.
+    the ack was lost) issues a FRESH job id with the same idempotency key.
     The committed row must come back: same id, no second row."""
     stack, deps, backend, schema = await _fresh_backend(pg_dsn)
     key = IdempotencyKey(f"rt-key-{new_base62()}")
@@ -161,7 +161,7 @@ def _singleton_args(actor: str) -> EnqueueArgs:
 
 
 async def test_singleton_collision_same_error_shape_both_detection_paths(pg_dsn: str) -> None:
-    """Layer-1 preflight and Layer-2 unique-violation catch raise the SAME
+    """Layer-1 preflight and Layer-2 unique-violation catch raise the same
     exception class with no detection_path attribute: a caller's except
     branch cannot tell how the collision was detected."""
     stack, _deps, backend, schema = await _fresh_backend(pg_dsn)

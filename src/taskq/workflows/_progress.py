@@ -1,7 +1,7 @@
 """The workflow progress emission surface: ``ctx.progress`` — the
 emission op, the client-side coalesce, and the auto-class projection.
 
-DECISION (a) — THE EMISSION OP: typed + bounded. ``pct`` is an int in
+DECISION (a) — the EMISSION OP: typed + bounded. ``pct`` is an int in
 0..100 or None (validated — a wrong shape is the TYPED refusal,
 :class:`ProgressRefusedError`, never a silent coercion); ``message`` is
 chars-capped (the ErrorInfo chars discipline); ``data`` is jsonb, capped
@@ -10,16 +10,16 @@ silent), optionally validated against the node's DECLARED payload schema
 (the TypedGate-door pattern — the declaration is what makes a separate UI
 render the emission, the context-contract law applied to progress).
 
-DECISION (d) — THE PERSISTENCE the flush serves: the STATE channel (the
+DECISION (d) — the PERSISTENCE the flush serves: the STATE channel (the
 latest-wins upsert, one row per (node, channel) forever) + the STREAM
 channel (the bounded per-node ring, drop-oldest with the dropped counter
-ON THE RECORD).
+ON the RECORD).
 
-DECISION (e) — THE ASYMMETRY, the law of this module: **observability
-degrades FIRST, never correctness.** Emissions land latest-wins in an
-in-memory buffer; ONE flush task drains it at the cadence bound (~20
+DECISION (e) — the ASYMMETRY, the law of this module: **observability
+degrades first, never correctness.** Emissions land latest-wins in an
+in-memory buffer; one flush task drains it at the cadence bound (~20
 deltas/s at the 50 ms cadence); the flush is BEST-EFFORT — its failures
-are counted and logged, never raised into the body; the buffer NEVER
+are counted and logged, never raised into the body; the buffer never
 touches the finalize path (``aclose`` runs before the node's finalize
 tx1, bounded by a timeout, and swallows its own failures). A lost
 emission costs FRESHNESS; a blocked node costs CORRECTNESS. The
@@ -27,9 +27,9 @@ occurrence counter makes the coalescing HONEST: the state row's
 ``occurrences`` counts every emission that coalesced into it, so the
 record always shows both the delivered state and the emission rate.
 
-DECISION (b) — THE AUTO PROJECTION: the engine's node-start/terminal
-events project into the SAME stream with ``class='auto'`` — ONE seq
-space, ONE class discriminator, the closed kind vocabulary the closed-vocabulary fence;
+DECISION (b) — the AUTO PROJECTION: the engine's node-start/terminal
+events project into the same stream with ``class='auto'`` — one seq
+space, one class discriminator, the closed kind vocabulary the closed-vocabulary fence;
 the storage domain's CHECK constraints are its teeth). The projection is
 ADDITIVE writes at the claim/finalize seams (the runner's), never inside
 the finalize's transactions — :func:`finalize_node` is unchanged (the
@@ -71,11 +71,11 @@ __all__ = [
     "validate_emission",
 ]
 
-# ── THE CLOSED VOCABULARY (decision b — the closed-vocabulary fence) ─────────────────────
+# ── the closed vocabulary (decision b — the closed-vocabulary fence) ─────────────────────
 
-#: The user class: emissions the BODY made (``ctx.progress``).
+#: The user class: emissions the body made (``ctx.progress``).
 CLASS_USER: Final[str] = "user"
-#: The auto class: the ENGINE's projection (the node's claim/terminal
+#: The auto class: the engine's projection (the node's claim/terminal
 #: seams — additive writes, never second-guessing the ledger, which owns
 #: the state).
 CLASS_AUTO: Final[str] = "auto"
@@ -88,34 +88,32 @@ KIND_NODE_STARTED: Final[str] = "wf.node.started"
 KIND_NODE_TERMINAL: Final[str] = "wf.node.terminal"
 
 #: The closure itself: every kind the stream may carry, validated at emit
-#: AND enforced by the storage domain's CHECK (01.00.29). A third
+#: and enforced by the storage domain's check (01.00.29). A third
 #: vocabulary cannot sprout — the fleet's SSE-fragmentation fossil is
 #: structurally closed here.
 KIND_VOCABULARY: Final[frozenset[str]] = frozenset(
     {KIND_PROGRESS, KIND_NODE_STARTED, KIND_NODE_TERMINAL}
 )
 
-#: The STATE channel's row for a node's stream counters (the dropped
+#: The state channel's row for a node's stream counters (the dropped
 #: counter's home — the honest emitted-vs-delivered pair).
 STREAM_CHANNEL: Final[str] = "__stream__"
 
-#: THE PROGRESS PUSH'S CHANNEL (the push-primary surface — the
-#: SAME transport the HITL broadcast landed): ONE global channel; the
-#: SCHEMA RIDES THE PAYLOAD (pg_notify is per-database and the
-#: schema-per-module estate shares one database — the listener filters
-#: by the payload's ``schema`` field, P8's law). The payload is THE
-#: POINTER ONLY — schema, flow, node, seq; the ROW is the truth, never
-#: the knock (the redact law holds at the knock; a consumer that misses
-#: every knock still converges by the seq-cursor read).
+#: one global channel; the SCHEMA rides the payload (pg_notify is per-database
+#: and the schema-per-module estate shares one database — the listener filters
+#: by the payload's ``schema`` field, P8's law). The payload is the pointer
+#: only — schema, flow, node, seq; the row is the truth, never the knock (the
+#: redact law holds at the knock; a consumer that misses every knock still
+#: converges by the seq-cursor read).
 PROGRESS_NOTIFY_CHANNEL: Final[str] = "taskq_wf_progress"
 
 
 async def knock_progress(
     conn: ConnLike, *, schema: str, flow_id: JobId, node_id: JobId, seq: int
 ) -> None:
-    """ONE ``pg_notify`` on the WRITE'S OWN CONNECTION (the HITL
+    """one ``pg_notify`` on the WRITE'S own CONNECTION (the HITL
     broadcast's leg discipline): the knock rides the same connection the
-    write used, AFTER the write's statements — the pointer (schema,
+    write used, after the write's statements — the pointer (schema,
     flow, node, seq) only. A knock failure is a FRESHNESS loss, never a
     correctness one — the callers count it with the write's own
     best-effort accounting (the asymmetry's law: observability degrades
@@ -126,7 +124,7 @@ async def knock_progress(
     await conn.execute("SELECT pg_notify($1, $2)", PROGRESS_NOTIFY_CHANNEL, payload)
 
 
-# ── THE BOUNDS (decision a + e) ──────────────────────────────────────────
+# ── the bounds (decision a + e) ──────────────────────────────────────────
 
 #: The stream ring's per-node bound (decision d; the retention owns the
 #: bounds — the sweep arm prunes leaked rings back to it).
@@ -139,12 +137,12 @@ MESSAGE_MAX: Final[int] = 1024
 #: own 500-char rule — the projection carries no traceback).
 MESSAGE_TERMINAL_MAX: Final[int] = 500
 #: The emission op's data cap (the truncation cap shape — the tors call shape:
-#: truncate WITH the marker, never silently).
+#: truncate with the marker, never silently).
 DATA_MAX_BYTES: Final[int] = 8 * 1024
 
-#: The flush-loss log (the asymmetry's LOUDNESS half — the PoC's
+#: The flush-loss log (the asymmetry's loudness half — the PoC's
 #: a systematically failing flush is invisible unless the
-#: record stays loud). The FIRST loss warns (a body whose flushes all
+#: record stays loud). The first loss warns (a body whose flushes all
 #: fail must not look healthy in the logs); subsequent losses ride the
 #: emitter's counted record (``write_errors``) at debug.
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -154,7 +152,7 @@ class ProgressRefusedError(TypeError):
     """A wrong-shaped emission — the TYPED REFUSAL (decision a's door).
 
     Raised for a ``pct`` that is not an int in 0..100, or ``data`` that
-    violates the node's declared payload schema. NEVER raised for
+    violates the node's declared payload schema. never raised for
     infrastructure failures — those are the flush's counted, logged
     best-effort path (the asymmetry: the refusal is an AUTHORING error
     the body must see; a lost write is an observability degradation it
@@ -176,8 +174,8 @@ def validate_emission(
     context-contract law). A declaration the data violates is a typed
     refusal, never a silent pass.
 
-    THE VALIDATED DUMP IS THE RECORD: the return carries the VALIDATED
-    MODEL'S OWN dump
+    The return carries the VALIDATED
+    MODEL'S own dump
     (``model_dump(mode="json")`` — the jsonb-shaped projection), never
     the pre-validation dict. The rejected hole: the model_validate ran
     (lax — pydantic coerces) and its answer was THROWN AWAY, the raw
@@ -211,9 +209,8 @@ def validate_emission(
                 raise ProgressRefusedError(
                     f"data violates the node's declared progress schema: {exc}"
                 ) from exc
-            # THE VALIDATED DUMP (never the pre-validation dict — see the
-            # docstring): the coercion the declared schema performed IS
-            # the record.
+            # never the pre-validation dict — see the docstring. the coercion
+            # the declared schema performed is the record.
             dumped = model.model_dump(mode="json")
             data = cast("dict[str, Any]", dumped)
         data = _cap_data(data)
@@ -221,7 +218,7 @@ def validate_emission(
 
 
 def _cap_data(data: dict[str, Any]) -> dict[str, Any]:
-    """the truncation cap shape: oversize data truncated WITH THE MARKER (never
+    """the truncation cap shape: oversize data truncated WITH the MARKER (never
     silently — the reader must know it read a truncation)."""
     raw = _json_dumps(data)
     if len(raw) <= DATA_MAX_BYTES:
@@ -233,16 +230,16 @@ class ProgressEmitter:
     """One node attempt's emission buffer — the client-side coalesce
     (the coalesce fence) + the honest counters.
 
-    THE COALESCE: emissions land LATEST-WINS in the buffer; ONE flush
+    Emissions land LATEST-WINS in the buffer; one flush
     task drains it at the cadence bound. The occurrence counter makes the
     coalescing honest — the STATE row counts every emission that
     coalesced into it, so the record shows both the delivered state and
     the emission rate.
 
-    THE ASYMMETRY (decision e): :meth:`progress` never awaits the
+    ASYMMETRY (decision e): :meth:`progress` never awaits the
     network; the flush task is best-effort — failures are counted
     (``write_errors``) and logged, never raised into the body;
-    :meth:`aclose` is bounded and swallowing (it runs BEFORE the node's
+    :meth:`aclose` is bounded and swallowing (it runs before the node's
     finalize — the buffer never touches the finalize path). A body whose
     every flush fails still terminalizes normally: the emission is
     best-effort, proven by pin.
@@ -268,9 +265,9 @@ class ProgressEmitter:
         self._cadence_s = cadence_s
         self._schema_decl = schema_decl
         self._enabled = enabled
-        # THE HONEST COUNTERS: the body's emission calls; the STATE
-        # writes; the STREAM appends; the ring's drop-oldest casualties;
-        # the flush failures (best-effort, never raised).
+        # the body's emission calls; the state writes; the stream appends; the
+        # ring's drop-oldest casualties; the flush failures (best-effort, never
+        # raised).
         self.emitted = 0
         self.flushes = 0
         self.appended = 0
@@ -295,8 +292,8 @@ class ProgressEmitter:
         data: dict[str, Any] | None,
     ) -> None:
         """The validated path (``ctx.progress``'s delegate): the typed
-        gate runs FIRST (a wrong shape is :class:`ProgressRefusedError`,
-        raised INTO the body — an authoring error is the body's problem),
+        gate runs first (a wrong shape is :class:`ProgressRefusedError`,
+        raised into the body — an authoring error is the body's problem),
         then the buffer takes it latest-wins and the cadence flush is
         armed. Never awaits the network."""
         pct_v, message_v, data_v = validate_emission(pct, message, data, self._schema_decl)
@@ -320,14 +317,14 @@ class ProgressEmitter:
         gate."""
         self.emitted += 1
         if not self._enabled:
-            return  # counted, written NOWHERE (the best-effort asymmetry)
+            return  # counted, written nowhere (the best-effort asymmetry)
         self._pending = {"pct": pct, "message": message, "data": data}
         self._pending_n += 1
         if self._flush_task is None or self._flush_task.done():
             self._flush_task = asyncio.create_task(self._flush_at_cadence())
 
     async def _flush_at_cadence(self) -> None:
-        """THE COALESCE: hold the cadence, write the latest, let the
+        """Hold the cadence, write the latest, let the
         emissions that arrived during the hold ride along (the occurrence
         counter counts them)."""
         await asyncio.sleep(self._cadence_s)
@@ -371,7 +368,7 @@ class ProgressEmitter:
                     seq,
                 )
                 # The stream's own counters row (channel=STREAM_CHANNEL) —
-                # the dropped counter ON THE RECORD (the honest
+                # the dropped counter on the record (the honest
                 # emitted-vs-delivered pair, the coalesce fence).
                 await conn.execute(
                     self._wsql.progress_state_upsert,
@@ -384,9 +381,9 @@ class ProgressEmitter:
                     dropped,
                     seq,
                 )
-                # THE PUSH'S KNOCK (the ctx-input fix): the write's own connection —
-                # the pointer only. A knock failure is a freshness loss;
-                # it counts with the flush's own best-effort accounting.
+                # the write's own connection — the pointer only. A knock
+                # failure is a freshness loss; it counts with the flush's own
+                # best-effort accounting.
                 await knock_progress(
                     conn,
                     schema=self._wsql.schema,
@@ -398,10 +395,9 @@ class ProgressEmitter:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            # THE ASYMMETRY: never the body's problem — counted on the
-            # record (the flush_lost surface) and swallowed. The FIRST
-            # loss warns (the loudness half); the rest ride the counted
-            # record at debug.
+            # never the body's problem — counted on the record (the flush_lost
+            # surface) and swallowed. The first loss warns (the loudness half);
+            # the rest ride the counted record at debug.
             self.write_errors += 1
             if self.write_errors == 1:
                 logger.warning(
@@ -425,7 +421,7 @@ class ProgressEmitter:
     async def aclose(self) -> None:
         """The attempt's last flush — BEST-EFFORT and BOUNDED: never
         raises, never outlives its timeout, never blocks the finalize
-        (the caller runs this BEFORE the finalize tx1, never inside
+        (the caller runs this before the finalize tx1, never inside
         it)."""
         if self._flush_task is not None and not self._flush_task.done():
             try:
@@ -469,18 +465,18 @@ async def project_auto_event(
     ring_bound: int = PROGRESS_RING_BOUND,
 ) -> int:
     """The engine's node-start/terminal PROJECTION (decision b): the same
-    stream, the ``class='auto'`` discriminator, the ONE seq space. The
+    stream, the ``class='auto'`` discriminator, the one seq space. The
     kind is validated against the closed vocabulary (the closed-vocabulary fence — no
     third vocabulary can sprout; the storage CHECK is the backstop).
 
     Best-effort by the caller's contract (the runner's seams wrap this —
     a failed projection is a logged freshness loss, never a node
-    failure). Returns the appended seq. THE DROP COUNT IS ON THE RECORD
+    failure). Returns the appended seq. the DROP COUNT IS ON the RECORD
     (the receipt discipline, the fence's own): the append's returned
     drop count lands in
     the node's STREAM-channel counters row in the same statement group
     — an auto-class trim that vanished uncounted would be the
-    honest-pair's lie (appended == retained + dropped, BOTH classes)."""
+    honest-pair's lie (appended == retained + dropped, both classes)."""
     if kind not in KIND_VOCABULARY:
         raise ValueError(
             f"kind {kind!r} is outside the closed vocabulary "
@@ -500,10 +496,8 @@ async def project_auto_event(
         assert row is not None  # the statement always returns its row
         seq = int(row["seq"])
         dropped = int(row["dropped"])
-        # THE COUNTERS ROW (the receipt discipline — never a silent
-        # discard of the trim's casualties): the same STREAM_CHANNEL
-        # counters row the user class's flush writes, occurrences 1 per
-        # projection. Unconditional — the row IS the record.
+        # the same STREAM_CHANNEL counters row the user class's flush writes,
+        # occurrences 1 per projection. Unconditional — the row is the record.
         await conn.execute(
             wsql.progress_state_upsert,
             node_id,
@@ -515,7 +509,7 @@ async def project_auto_event(
             dropped,
             seq,
         )
-        # THE PUSH'S KNOCK (the ctx-input fix): the same channel the user flush
-        # knocks — the ring's every event class rides one transport.
+        # the same channel the user flush knocks — the ring's every event class
+        # rides one transport.
         await knock_progress(conn, schema=wsql.schema, flow_id=flow_id, node_id=node_id, seq=seq)
     return seq

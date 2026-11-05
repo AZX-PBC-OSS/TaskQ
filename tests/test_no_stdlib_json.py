@@ -24,7 +24,7 @@ _PACKAGE_ROOT = pathlib.Path(taskq.__file__).parent
 
 # The one sanctioned boundary: this module wraps orjson and is the only
 # place stdlib ``json`` may appear (its docstring names the rule, and
-# orjson's JSONDecodeError subclasses json's).
+# orjson's jsondecodeError subclasses json's).
 _SANCTIONED = _PACKAGE_ROOT / "_json.py"
 
 

@@ -40,7 +40,7 @@ the verdict).
 from __future__ import annotations
 
 import json
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script is the subject (the pin's own shape).
 import sys
 from pathlib import Path
 
@@ -49,7 +49,7 @@ _VERIFIER = _REPO / "scripts" / "verify_evidence_heads.py"
 
 
 def _head() -> str:
-    return subprocess.run(  # Why: fixed argv, no shell; git resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+    return subprocess.run(  # Why: fixed argv, no shell; git resolves on the dev/CI path exactly as the repo's own scripts invoke it.
         ["git", "rev-parse", "HEAD"],  # noqa: S607  # Why: as above — the fixed-argv git call.
         cwd=_REPO,
         capture_output=True,
@@ -60,9 +60,9 @@ def _head() -> str:
 
 HEAD = _head()
 
-#: The wf-battery capture's REAL shape (the rejected instance's own
+#: The wf-battery capture's real shape (the rejected instance's own
 #: words): the run-scoped stamp with the rc, then the pytest tail. The
-#: stamp says rc=1 — the battery FAILED in its own header.
+#: stamp says rc=1 — the battery failed in its own header.
 _RC1_CAPTURE = """\
 # wf-battery at head {head} — rc=1 — captured 2026-10-11T04:30:01Z
 bringing up nodes...
@@ -75,10 +75,10 @@ FAILED tests/test_wf_run_view_pins.py::test_13_the_head_stamp_law_greens_on_the_
 1 failed, 603 passed, 1 warning in 80.24s (0:01:20)
 """
 
-#: The FORGED STAMP: the header claims rc=0, the body's pytest tail
+#: The forged stamp: the header claims rc=0, the body's pytest tail
 #: records the failure count — the two verdict lines disagree, the tail
-#: is the run's actual last word. (The count is the ONLY failure shape
-#: here: this pin isolates the tail-count parse from the FAILED-line
+#: is the run's actual last word. (The count is the only failure shape
+#: here: this pin isolates the tail-count parse from the failed-line
 #: shape, which gets its own pin below.)
 _FORGED_STAMP_CAPTURE = """\
 # deslop-pin-packs at head {head} — rc=0 — captured 2026-10-11T04:29:47Z
@@ -89,8 +89,8 @@ E   AssertionError: the head-stamp verifier reds on the committed estate
 1 failed, 75 passed in 7.41s
 """
 
-#: The SUPPRESSED-COUNT shape: no ``failed`` count in the summary line,
-#: but the short-summary still names the FAILED test — the quiet tail.
+#: The suppressed-count shape: no ``failed`` count in the summary line,
+#: but the short-summary still names the failed test — the quiet tail.
 _FAILED_LINE_CAPTURE = """\
 # lint-format at head {head} — rc=0 — captured 2026-10-11T04:28:38Z
 All checks passed!
@@ -107,7 +107,7 @@ bringing up nodes...
 604 passed, 1 warning in 80.24s (0:01:20)
 """
 
-#: The staged-slot declaration (the drain's honest intermediate): NO
+#: The staged-slot declaration (the drain's honest intermediate): no
 #: verdict shape at all — neither rc= nor a passed/failed summary.
 _SLOT_CAPTURE = """\
 # wf-battery-the pack's slot staged at head {head} — the green run's output fills this file in place (the estate-fixes drain's own shape); no verdict recorded yet
@@ -164,7 +164,7 @@ def test_the_rc1_stamp_convicts(tmp_path: Path) -> None:
 def test_the_forged_stamp_convicts(tmp_path: Path) -> None:
     """The forged stamp: the header says rc=0, the pytest tail says
     ``1 failed, 75 passed``. The stamp's word and the body's count
-    disagree — the tail is the run's last word. The door reads BOTH and
+    disagree — the tail is the run's last word. The door reads both and
     rejects on the tail."""
     runs = _estate(
         tmp_path,
@@ -230,7 +230,7 @@ def test_the_json_band_family_stays_green(tmp_path: Path) -> None:
 
 
 def test_the_unparsable_capture_is_the_typed_warning(tmp_path: Path) -> None:
-    """The honesty edge: a capture with NO verdict shape (the staged
+    """The honesty edge: a capture with no verdict shape (the staged
     slot's declaration) is not silently passed — the verifier prints the
     TYPED WARNING naming the stem and the file, and greens (the slot is
     the drain's honest intermediate, not a lie). Silence is the defect

@@ -1,4 +1,4 @@
-"""THE CRASH DRILLS — SIGKILL a real worker three ways; the restart
+"""the CRASH DRILLS — SIGKILL a real worker three ways; the restart
 resumes; nothing is lost; nothing is duplicated; the cursor never
 rewinds. (The ledger's at-least-once boundary is the engine's own:
 exactly-once for DB-local effects, at-least-once body execution — the
@@ -75,7 +75,7 @@ async def test_crash_mid_extraction_fanout(
     flow_id = flow_id_pages[0]
     worker = await workers.spawn_ready(pool, tag="crash1", max_concurrency=8)
 
-    # Kill MID-FAN-OUT: extraction children claimed and running.
+    # Kill mid-fan-out: extraction children claimed and running.
     await _run_until(pool, schema, flow_id, "ingest.item", 5)
     worker.kill9()
 
@@ -89,9 +89,9 @@ async def test_crash_mid_extraction_fanout(
     assert sorted(everything) == sorted(d.doc_id for d in docs), "lost or doubled documents"
     assert len(set(everything)) == len(docs)
 
-    # NOTHING LOST: one succeeded node row per DOCUMENT (the map's
+    # NOTHING lost: one succeeded node row per document (the map's
     # per-item identity — the map partitions by document); the digest's
-    # chunk total matches the corpus's DETERMINISTIC chunk count; and
+    # chunk total matches the corpus's deterministic chunk count; and
     # every chunk's extraction succeeded exactly once (the ledger).
     rows = await pool.fetchval(
         f'SELECT count(*) FROM "{schema}".jobs '  # noqa: S608  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
@@ -111,9 +111,9 @@ async def test_crash_mid_extraction_fanout(
     assert double_success == [], f"chunks extracted MORE THAN ONCE: {double_success[:5]}"
     assert all(v.get("success", 0) >= 1 for v in mine.values()), "a ledger'd chunk never succeeded"
 
-    # THE AT-LEAST-ONCE BOUNDARY, HONEST: a chunk whose success write
-    # was interrupted by the kill re-executes — the ledger may carry
-    # multiple 'success' rows for it. Counted and reported, never hidden.
+    # a chunk whose success write was interrupted by the kill re-executes — the
+    # ledger may carry multiple 'success' rows for it. Counted and reported,
+    # never hidden.
     re_successes = sum(1 for per in summary.values() if per.get("success", 0) > 1)
 
     run_receipt(
@@ -157,7 +157,7 @@ async def test_crash_mid_child_join(
     flow_id = flow_id_pages[0]
     worker = await workers.spawn_ready(pool, tag="crash2", max_concurrency=2)
 
-    # Kill MID-JOIN: the parent's run-children node is waiting on a hold.
+    # Kill mid-join: the parent's run-children node is waiting on a hold.
     await _run_until(pool, schema, flow_id, "run_children", 1)
     signals = await pool.fetchval(
         f'SELECT count(*) FROM "{schema}".wf_signals WHERE workflow_id = $1',  # noqa: S608  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.

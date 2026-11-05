@@ -182,7 +182,7 @@ class SingletonCollisionError(BackpressureError):
     when available. It is ``None`` when the blocking job has no
     ``schedule_to_close`` set, or when raised from the Layer 2 catch path.
 
-    The ``heartbeat_interval * 4`` fallback is intentionally NOT
+    The ``heartbeat_interval * 4`` fallback is intentionally not
     implemented, ``retry_after`` is computed from ``schedule_to_close`` only.
     Callers who need a poll cadence when ``retry_after is None`` should poll on
     their own schedule (research.md Gap 1, resolution path (a)). Reason:
@@ -237,7 +237,7 @@ class MaxPendingLockTimeoutError(BackpressureError):
     ``timeout_ms`` is the budget that expired. ``pending`` is 0 and
     ``max_pending`` is ``None`` -- no count was taken.
 
-    Deliberately NOT a subclass of :class:`MaxPendingExceededError`: that
+    Deliberately not a subclass of :class:`MaxPendingExceededError`: that
     class means "the cap is full" and carries the observed count; a lock
     timeout means "too contended to check" and conflating the two would
     mislead handlers that react to a full queue (e.g. by logging the
@@ -271,12 +271,12 @@ class UniqueForLockTimeoutError(TaskQError):
     determined in time: the contention scope is a single logical
     entity's identity (a same-key stampede, or a black-holed holder the
     server has not yet reaped), nothing about capacity is wrong, and the
-    correct response is to RETRY THE SAME ENQUEUE, by then the winner's
+    correct response is to RETRY the same ENQUEUE, by then the winner's
     row is typically committed and the preflight returns it as a dedup
     hit, which is the very outcome the wait existed to produce.
-    Deliberately NOT a :class:`BackpressureError` so handlers that react
+    Deliberately not a :class:`BackpressureError` so handlers that react
     to backpressure by shedding load or logging queue counts cannot
-    misreact, and deliberately NOT recorded against the
+    misreact, and deliberately not recorded against the
     ``taskq.backpressure.errors`` counter (identity-key contention is
     not a capacity signal; the ``unique-for-lock-timeout`` log event
     carries the observability instead).
@@ -323,9 +323,9 @@ class IdempotencyKeyLockTimeoutError(TaskQError):
     :class:`UniqueForLockTimeoutError`'s exact situation and therefore
     takes its treatment: retry the same enqueue, once the holder's
     transaction resolves, the retry either dedupes against the committed
-    token or inserts fresh. Deliberately NOT a
+    token or inserts fresh. Deliberately not a
     :class:`BackpressureError` (nothing about capacity is wrong) and
-    deliberately NOT recorded against ``taskq.backpressure.errors``;
+    deliberately not recorded against ``taskq.backpressure.errors``;
     the ``idempotency-lock-timeout`` log event carries the
     observability instead.
 
@@ -415,7 +415,7 @@ class BatchMaxPendingExceededError(BackpressureError):
     :meth:`~taskq.backend._protocol.Backend.enqueue_batch_fast` (and every
     client path riding them) when one or more actors' items exceed their
     effective ``max_pending``: the within-cap actors' items are inserted
-    FIRST, then this error raises naming the refusals, the bulk-tier
+    first, then this error raises naming the refusals, the bulk-tier
     sibling of :class:`PartialBatchError`, which is the house shape for
     partial batch admission (succeeded count + failed indices + typed
     per-failure exceptions).
@@ -448,7 +448,7 @@ class BatchMaxPendingExceededError(BackpressureError):
     single transaction keeps the legacy all-or-nothing contract and
     raises plain :class:`MaxPendingExceededError` with nothing committed.
 
-    Deliberately NOT a :class:`MaxPendingExceededError` subclass: handlers
+    Deliberately not a :class:`MaxPendingExceededError` subclass: handlers
     written for the pre-partition contract assume that a raised
     ``MaxPendingExceededError`` left nothing enqueued. Under this error
     part of the batch IS stored, a blind whole-batch retry would
@@ -555,7 +555,7 @@ class CorruptJobDataError(TaskQError):
 
     - Text that is not valid JSON at all (a hand-corrupted row, schema
       drift to ``text``, an interop writer), through
-      :func:`taskq.backend._records.jsonb_to_dict` OR its user-content
+      :func:`taskq.backend._records.jsonb_to_dict` or its user-content
       sibling :func:`taskq.backend._records.jsonb_to_value`.
     - Valid JSON whose body is not the object the row contract declares
       (a list or scalar in a dict-typed field, e.g. a row written by a
@@ -564,7 +564,7 @@ class CorruptJobDataError(TaskQError):
       owns and indexes into (``metadata``, ``progress_state``, the
       rate-limit ``state``, ``detail``). The USER-CONTENT columns
       (``result``, ``payload``) hold the actor's data and declare no
-      shape, so they decode through :func:`jsonb_to_value` with ONLY the
+      shape, so they decode through :func:`jsonb_to_value` with only the
       malformed-text guard: a valid list or scalar round-trips.
 
     The raw driver/JSON errors (``orjson.JSONDecodeError``, a
@@ -715,7 +715,7 @@ class ReservationUnavailable(TaskQError):
     When the upstream ``RateLimitDecision.retry_after`` is ``None``, callers
     MUST substitute ``DEFAULT_RESERVATION_BACKOFF``. When it is
     ``timedelta(0)`` (allowed decisions) callers MUST pass it through
-    unchanged, do NOT use a truthiness coalesce
+    unchanged, do not use a truthiness coalesce
     (``x or DEFAULT_RESERVATION_BACKOFF``) because ``timedelta(0)`` is falsy
     and would be wrongly replaced.
     """
@@ -750,7 +750,7 @@ class RateLimitDependencyUnavailable(RuntimeError):
     misattributed to the job as a failure (a retry attempt burnt and a
     wiring gap persisted as the job's ``error_class``).
 
-    Deliberately NOT a :class:`TaskQError`: subclassing
+    Deliberately not a :class:`TaskQError`: subclassing
     :class:`RuntimeError` keeps the historical contract every existing
     caller and wording pin relies on, the ``except RuntimeError`` /
     ``pytest.raises(RuntimeError, match="pg_pool not injected...")`` pins
@@ -1020,7 +1020,7 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
 
     Between applying ``01.00.03_01_pre_idempotency_scope.sql`` and its
     ``post`` counterpart (the rolling-deploy window every worker's schema
-    passes through), BOTH the old global ``jobs_idempotency_key_uniq``
+    passes through), both the old global ``jobs_idempotency_key_uniq``
     index (on ``idempotency_key`` alone) and the new composite
     ``jobs_idempotency_scope_key_uniq`` index (on ``(idempotency_scope,
     idempotency_key)``) exist simultaneously, this is deliberate, see the
@@ -1035,7 +1035,7 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
     global index, which is not covered by that ``ON CONFLICT`` target.
     PostgreSQL raises ``UniqueViolationError`` for a conflict against a
     non-arbiter unique index unconditionally, the library deliberately
-    does NOT catch that and silently fall back to a different scope's row,
+    does not catch that and silently fall back to a different scope's row,
     because doing so would return the *wrong* job for the scope the caller
     actually asked for, silently, which is a worse failure mode than a
     loud, explicit error for a purely transitional migration-window
@@ -1105,7 +1105,7 @@ class ScopedIdempotencyMigrationPendingError(TaskQError):
 class DuplicateIdempotencyKeyError(TaskQError):
     """``enqueue_batch_fast`` aborted: an item's
     ``(idempotency_scope, idempotency_key)`` pair is already enqueued by the
-    SAME actor. A pair spanning two actors raises
+    same actor. A pair spanning two actors raises
     :class:`IdempotencyKeyActorMismatchError` instead, the same refusal the
     single and batch tiers apply.
 
@@ -1191,7 +1191,7 @@ class SubEnqueueError(TaskQError):
 class BatchAbortedError(TaskQError):
     """A batch was aborted because consecutive failures exceeded the threshold.
 
-    Running jobs are NOT cancelled by the abort, only pending and
+    Running jobs are not cancelled by the abort, only pending and
     scheduled jobs are cancelled.  Running jobs continue to completion.
     This matches the post-terminal-write hook design: the hook runs after
     the terminal write, so a job that was dispatched before the abort
@@ -1303,12 +1303,12 @@ class UnknownQueueError(TaskQError):
     check (``ActorCapacityCache.maybe_warn_unserved_queue`` — the same
     zero-I/O TTL-snapshot verdict every enqueue arm already consults)
     becomes HARD: a queue no registered actor's assignment routes to
-    raises HERE, before any backend write, instead of storing an
+    raises here, before any backend write, instead of storing an
     orphaned row on a queue no worker claims. Silent data non-delivery
     is the worst failure class a queueing library has, and a
     one-character typo is enough to cause it.
 
-    Two raising sites, one class, both naming the offending queue AND
+    Two raising sites, one class, both naming the offending queue and
     the set it was judged against (the unserved-queue note's quality
     bar: the fix is obvious from the message alone):
 
@@ -1317,7 +1317,7 @@ class UnknownQueueError(TaskQError):
       fleet-wide DB truth the client can read without actor
       registration — the split-deployment constraint) and, when the
       process's settings carry one, its own declared set
-      (``TASKQ_QUEUES``). A refusal requires the queue to miss BOTH:
+      (``TASKQ_QUEUES``). A refusal requires the queue to miss both:
       an env-declared but snapshot-absent queue is a new queue
       mid-deploy and is allowed through the registration lag; an EMPTY
       snapshot (no worker ever started, the first deploy) carries zero
@@ -1372,7 +1372,7 @@ class UnknownQueueError(TaskQError):
                 else ""
             )
             # The asymmetry doctrine's two-source statement, in the
-            # message itself: the verdict refused only because BOTH
+            # message itself: the verdict refused only because both
             # sources missed, and the message says which two, including
             # the web-without-env corner (no declared set -> the snapshot
             # was the only source -> the deploy order is the operator's
@@ -1401,7 +1401,7 @@ class UnknownQueueError(TaskQError):
                 f"dynamic queue, or disable TASKQ_QUEUES_STRICT."
             )
         else:
-            # The worker-boot branch pluralizes with the SAME noun/verb the
+            # The worker-boot branch pluralizes with the same noun/verb the
             # submit branch computes: the boot gate refuses every unrouted
             # queue in one raise, so the message must read right at both
             # lengths.
@@ -1421,12 +1421,12 @@ class UnknownQueueError(TaskQError):
 class SignalTimeoutError(TaskQError):
     """A held signal's deadline passed under ``on_timeout="fail"`` — the
     dedicated typed failure (the glossary shape: the
-    ``Signal`` prefix, the :class:`TaskQError` base; NOT
+    ``Signal`` prefix, the :class:`TaskQError` base; not
     ``TaskQSignalTimeout``, which would break the exceptions glossary's
     one-prefix rule). The named state's ledger record: the hold row's
     ``abandoned`` + the node's typed failure — never a silent orphan.
 
-    THE MACHINERY NEVER RAISES THIS (the amendment — the expiry is a
+    the MACHINERY never RAISES THIS (the amendment — the expiry is a
     VALUE): the wait site RETURNS the closed union's ``Expired`` member
     and the body MATCHES the fail-close arm; a body that WANTS the
     failure raises THIS exception ITSELF off the member (the escalation
@@ -1448,7 +1448,7 @@ class SignalAbandonedError(TaskQError):
 class SignalPayloadError(TaskQError):
     """A delivered payload validated against NONE of the wait's declared
     models (the typed door's runtime boundary — the unknown-field refusal):
-    the refusal happens BEFORE the deliver CAS consumes the hold, so the
+    the refusal happens before the deliver CAS consumes the hold, so the
     hold SURVIVES and the operator sees WHY. Never a silent drop into the
     body's re-validation (that shape consumes the payload, then
     the body's laddering ``ValidationError`` kills the flow).
@@ -1469,7 +1469,7 @@ class SignalPayloadAmbiguousError(SignalPayloadError):
 
 
 class ReservedTimerNamespaceError(TaskQError):
-    """E17 — THE RESERVED TIMER NAMESPACE (the timer hardening's fix
+    """E17 — the RESERVED TIMER NAMESPACE (the timer hardening's fix
     1): a HAND-facing mint named its hold inside the durable timer's
     reserved ``__timer__`` signal prefix — a payload model named
     ``__timer__Approval``, or a ``wait_until`` key beginning with the

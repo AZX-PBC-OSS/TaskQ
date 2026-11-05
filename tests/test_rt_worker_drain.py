@@ -4,12 +4,12 @@ The drain's contract, per its docstring and the bounded-sweep design: up
 to ``sweep_drain_batches - 1`` further committed batches after the parent
 call, the bound READ FROM SETTINGS (not hardcoded), liveness ticked
 between batches so the watchdog cannot age the loop out mid-drain,
-cooperative shutdown AND mid-drain demotion between batches (the gate
+cooperative shutdown and mid-drain demotion between batches (the gate
 re-consults ``deps.leading()`` per batch - a leader whose role ended
 stops at the same batch boundary shutdown uses, the split-brain guard
 for a process that resumed after its lease was taken over), and per-call
 telemetry - a mid-drain abort keeps the already-committed batches' row
-samples and records the failed call as a timeout, NOT as zero rows.
+samples and records the failed call as a timeout, not as zero rows.
 """
 
 from __future__ import annotations
@@ -290,7 +290,7 @@ async def test_mid_drain_connection_loss_records_no_timeout(
 ) -> None:
     """A NON-deadline transient mid-drain (connection loss) ends the drain
     unclean with the committed rows intact - and the timeout counter must
-    NOT increment: it counts deadline-aborted batches, not dead sockets."""
+    not increment: it counts deadline-aborted batches, not dead sockets."""
     ctx, _ = _drain_ctx(sweep_drain_batches=8)
     clean, call = await _drain(
         ctx,

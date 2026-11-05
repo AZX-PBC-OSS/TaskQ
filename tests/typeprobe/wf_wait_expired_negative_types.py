@@ -3,10 +3,10 @@ returns the TYPED UNION (the declared decision models joined with the
 house ``Expired`` member), so the CHECKER forces the fail-close arm.
 
 Each ``MUST_ERROR(rules...)`` marker names a wrong-shape body that must
-RED on BOTH pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
+RED on both pinned checkers (pyright 1.1.414, ty 0.0.85) with a rule-id
 from the marker's DECLARED set.
 
-THE RECEIPT (the amendment's own): the bare-unwrap marker ran
+The bare-unwrap marker ran
 against the PRE-UNION tree — ``wait_signal`` returned ``Any``, the
 checker was SILENT on the exact shape that hangs an operator (a body
 reading the decision off an outcome that may be the expiry); the
@@ -43,13 +43,13 @@ async def probe_bare_unwrap_ignores_expired(ctx: StepContext, params: Params) ->
     _ = params
     outcome = await ctx.wait_signal((Approval,), timeout_s=30.0)
     return Approval(
-        verdict=outcome.verdict  # MUST_ERROR(reportAttributeAccessIssue, unresolved-attribute): the outcome is Approval | Expired — Expired carries no verdict; the fail-close arm is FORCED
+        verdict=outcome.verdict  # MUST_ERROR(reportAttributeAccessIssue, unresolved-attribute): the outcome is Approval | Expired — Expired carries no verdict; the fail-close arm is forced
     )
 
 
 async def probe_match_ignores_expired(
     ctx: StepContext, params: Params
-) -> Approval:  # MUST_ERROR(reportReturnType, invalid-return-type): the match below ignores the Expired arm — the fall-through implicitly returns None against the declared Approval (the marker rides the DEF line: the checker reports the fall-through at the signature's return annotation; the fail-close arm is not optional — the body's own signature enforces it)
+) -> Approval:  # MUST_ERROR(reportReturnType, invalid-return-type): the match below ignores the Expired arm — the fall-through implicitly returns None against the declared Approval (the marker rides the def line: the checker reports the fall-through at the signature's return annotation; the fail-close arm is not optional — the body's own signature enforces it)
     """The match that ignores the arm: only the decision case is
     handled — the Expired arm falls through and the body IMPLICITLY
     returns None against the declared return type."""
@@ -63,7 +63,7 @@ async def probe_match_ignores_expired(
 
 
 async def probe_the_green_door(ctx: StepContext, params: Params) -> Approval:
-    """The green door (the shape the docs teach): BOTH arms handled —
+    """The green door (the shape the docs teach): both arms handled —
     the decision arm continues, the expiry arm is the fail-close. This
     function must stay CLEAN (the gate reds on any error outside the
     markers — a green-surface regression is a failure)."""
@@ -73,19 +73,19 @@ async def probe_the_green_door(ctx: StepContext, params: Params) -> Approval:
         case Approval() as approval:
             return approval
         case Expired():
-            # THE FAIL-CLOSE ARM — the closed union's second member,
-            # named: the shape the docs teach.
+            # the fail-close arm — the closed union's second member, named: the
+            # shape the docs teach.
             return Approval(verdict="finished-with-what-you-have")
         case _ as other:
-            # THE TOTALITY BELT: ty's narrowing does not see the closed
-            # union's totality through the class patterns alone — the
-            # guard is the belt that keeps THIS door clean on both
-            # checkers (unreachable when the union is closed).
+            # ty's narrowing does not see the closed union's totality through
+            # the class patterns alone — the guard is the belt that keeps this
+            # door clean on both checkers (unreachable when the union is
+            # closed).
             raise AssertionError(f"unreachable: the union is closed, got {other!r}")
 
 
-# ── the child flows's TIMER PROBES — the durable timer's typed wake ─────────────────
-# ``ctx.wait_until`` returns the TYPED ``TimerWake`` (never a union, never
+# ── the child flows's timer probes — the durable timer's typed wake ─────────────────
+# ``ctx.wait_until`` returns the typed ``TimerWake`` (never a union, never
 # Any): the wake's fields (key/scheduled/fired_at) narrow, a wrong
 # ``when`` argument reds, and a body reading a foreign attribute off the
 # wake reds — the clock's receipt is a typed value the checker sees.
@@ -115,7 +115,7 @@ async def probe_timer_when_must_be_temporal(
 
 async def probe_timer_wake_bare_unwrap(
     ctx: StepContext, params: Params
-) -> str:  # MUST_ERROR(reportAttributeAccessIssue, unresolved-attribute): the wake carries NO decision fields — a body reading a human gate's verdict off the clock's receipt reds
+) -> str:  # MUST_ERROR(reportAttributeAccessIssue, unresolved-attribute): the wake carries no decision fields — a body reading a human gate's verdict off the clock's receipt reds
     """The wake is not A decision: a body that treats the timer's
     receipt as a human gate's answer (reading a `verdict` off it) reds
     — the timer's face has no fail-close to borrow fields from."""

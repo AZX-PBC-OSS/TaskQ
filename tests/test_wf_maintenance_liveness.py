@@ -1,10 +1,10 @@
 """The maintenance leg's core pins: the maintenance leg's
 failed arm gates on live UNRESOLVED work.
 
-THE FINDING (observed live in the streaming router concept-proof spike, PROOF.md §6b):
+FINDING (observed live in the streaming router concept-proof spike, PROOF.md §6b)
 the shipped ``WORKFLOW_ROOT_MAINTAIN_SQL`` failed arm gated on
-``has_active`` = running/crashed/abandoned ONLY — pending/scheduled
-siblings did NOT hold a failing run. A streaming source's FIRST chain
+``has_active`` = running/crashed/abandoned only — pending/scheduled
+siblings did not hold a failing run. A streaming source's first chain
 failure flipped the root ``failed`` at the next sweep pass while the other
 chains were still pending, and the certified dispatch fence (workflow
 children of a terminal flow are unclaimable) stranded them pending forever
@@ -12,12 +12,12 @@ children of a terminal flow are unclaimable) stranded them pending forever
 (independent applications) that is the wrong semantics: one bad
 application must not kill the other 199.
 
-THE CONTRACT (one leg, no column, no index, no migration): the failed arm
+CONTRACT (one leg, no column, no index, no migration): the failed arm
 gates on live UNRESOLVED work —
 
     bool_or(status IN ('running','crashed','abandoned')
-            OR (status IN ('pending','scheduled')
-                AND NOT (metadata ? 'blocking_reason')))
+            or (status IN ('pending','scheduled')
+                and not (metadata ? 'blocking_reason')))
 
 The blocked-stamp exclusion is exactly what keeps the phase-2 the wedge
 fixed: a resolved-blocked join row (``blocking_reason`` stamped) is
@@ -96,7 +96,7 @@ async def run_maintenance(conn: asyncpg.Connection, wf_sql: WorkflowSql) -> int:
     return int(rows or 0)
 
 
-# ── THE 149-STRANDED-CHAINS SCENARIO ─────────
+# ── the 149-stranded-chains scenario ─────────
 
 
 @pytest.mark.integration
@@ -106,14 +106,14 @@ async def test_failed_arm_waits_for_live_siblings(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """ONE failed chain + 149 pending siblings: the failed arm must NOT
+    """one failed chain + 149 pending siblings: the failed arm must not
     finalize the root while live UNRESOLVED work is on the floor.
 
     RED (the shipped leg, the spike's observation): the root flipped
     ``failed`` at the first maintenance pass while the 149 siblings were
     pending — and the certified dispatch fence then made them unclaimable
     FOREVER (the 149-stranded-chains wedge). GREEN (the fix): the root
-    WAITS; the siblings terminalize; the root terminals THEN — every
+    WAITS; the siblings terminalize; the root terminals then — every
     chain's outcome on the record."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     siblings = [
@@ -122,7 +122,7 @@ async def test_failed_arm_waits_for_live_siblings(
         )
         for i in range(149)
     ]
-    # THE ONE FAILURE: a non-absorbed failed chain (no absorbing edge).
+    # a non-absorbed failed chain (no absorbing edge).
     doomed = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="enrich")
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now(), "
@@ -130,7 +130,7 @@ async def test_failed_arm_waits_for_live_siblings(
         doomed,
     )
 
-    # ONE maintenance pass with the siblings live: the root must WAIT.
+    # one maintenance pass with the siblings live: the root must wait.
     await run_maintenance(wf_conn, wf_sql)
     root = await root_row(wf_conn, wf_schema, flow_id)
     redlog.red(
@@ -150,19 +150,18 @@ async def test_failed_arm_waits_for_live_siblings(
     )
     assert root["finished_at"] is None, "a live run has no finish stamp"
 
-    # THE DISPATCH-FENCE CONSEQUENCE (the wedge's tooth, on the record):
-    # a terminal flow's children are unclaimable — the shipped leg's flip
-    # would have stranded all 149. (The root did NOT flip, so the
-    # siblings must still be claimable-shaped: pending, dispatchable.)
+    # a terminal flow's children are unclaimable — the shipped leg's flip would
+    # have stranded all 149. (The root did not flip, so the siblings must still
+    # be claimable-shaped: pending, dispatchable.)
     still_pending = await wf_conn.fetchval(
         f"SELECT count(*) FROM \"{wf_schema}\".jobs WHERE id = ANY($1) AND status = 'pending'",
         siblings,
     )
     assert int(still_pending or 0) == 149, "the live siblings must be untouched"
 
-    # THE DRAIN: the siblings terminalize (149 succeed past the one
-    # failure), THEN the root terminals — 'failed' (the non-absorbed
-    # failure outranks the completed siblings), with the terminals in.
+    # the siblings terminalize (149 succeed past the one failure), then the
+    # root terminals — 'failed' (the non-absorbed failure outranks the
+    # completed siblings), with the terminals in.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() "
         "WHERE id = ANY($1)",
@@ -188,7 +187,7 @@ async def test_failed_arm_wedge_cure_stands(
     """The blocked-stamp exclusion is load-bearing: the wedge's
     fix must survive the fix — a resolved-blocked join row
     (``blocking_reason='failed_parent'`` stamped by the crash-window heal)
-    must NOT hold a failing run. With the fix, a stamped pending row is
+    must not hold a failing run. With the fix, a stamped pending row is
     not 'unresolved work' — the root terminals 'failed' in the same pass
     the shipped leg did."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -198,8 +197,8 @@ async def test_failed_arm_wedge_cure_stands(
     await seed_edge(wf_conn, wf_schema, join_id, failed_child, flow_id)
     await seed_edge(wf_conn, wf_schema, join_id, peer, flow_id)
 
-    # THE CRASH WINDOW: tx1's fenced terminal FAILURE lands, tx2 never
-    # runs; the sweep's blocked_required heal stamps the join.
+    # tx1's fenced terminal failure lands, tx2 never runs; the sweep's
+    # blocked_required heal stamps the join.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now(), "
         "error_class = 'ValueError' WHERE id = $1",

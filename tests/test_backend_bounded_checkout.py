@@ -4,11 +4,11 @@ The enqueue and bulk-cancel paths run their statements inside
 ``_RetryGuard.checkout``: the acquire is the pool's own
 backpressure, but the RELEASE carries
 ``taskq.connections._POOL_RELEASE_RESET_TIMEOUT_SECS`` and never raises,
-because asyncpg's context-manager release passes NO timeout (the holder
+because asyncpg's context-manager release passes no timeout (the holder
 falls back to the acquire timeout, which is ``None`` for an unbounded
 acquire) and a server that dies silently (no FATAL, no FIN: a
 frozen/black-holed endpoint) parks that release's reset forever, wedging
-the caller's task AND ``pool.close()``.
+the caller's task and ``pool.close()``.
 
 Every read, schedule, and batch path still used the bare
 ``async with pool.acquire()``, the identical unbounded-release hang
@@ -54,9 +54,9 @@ class _ParkedConn:
 
 
 class _AcquireContext:
-    """asyncpg's ``PoolAcquireContext`` in miniature: BOTH awaitable and
+    """asyncpg's ``PoolAcquireContext`` in miniature: both awaitable and
     async context manager. The context manager's ``__aexit__`` is the
-    unbounded shape these sites shipped with: it releases with NO timeout,
+    unbounded shape these sites shipped with: it releases with no timeout,
     which is what parks the reset against a silently-dead server."""
 
     def __init__(self, pool: _DeadServerPool) -> None:
@@ -78,7 +78,7 @@ class _AcquireContext:
 
     async def __aexit__(self, *exc: object) -> None:
         assert self._conn is not None
-        # asyncpg's context release: pool.release(conn) with NO timeout;
+        # asyncpg's context release: pool.release(conn) with no timeout;
         # the holder falls back to the acquire timeout (None: unbounded).
         await self._pool.release(self._conn)
 
@@ -88,7 +88,7 @@ class _DeadServerPool:
        answers (no FATAL, no FIN: a frozen/black-holed endpoint), the shape
        the release bound exists for. Models asyncpg's
        ``PoolConnectionHolder.release`` at source level: the reset is awaited
-       UNDER the budget; on expiry the connection is TERMINATED and the
+       under the budget; on expiry the connection is TERMINATED and the
        timeout re-raised (asyncpg's timeout handler does exactly this),
        freeing the holder either way; with no budget it parks forever:
     the unbounded hang shape."""

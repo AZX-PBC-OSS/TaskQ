@@ -91,8 +91,8 @@ async def _wait(ctx: Any, params: Ingest) -> str:
 
 
 async def _explode_once(ctx: Any, params: Ingest) -> str:
-    # THE OPERATOR-FIXED FAILURE: the first attempt fails, the retry (the
-    # manual resume) succeeds — the world changed between them.
+    # the first attempt fails, the retry (the manual resume) succeeds — the
+    # world changed between them.
     if ctx.attempt < 2:
         raise RuntimeError("the enricher is down")
     return "ok"
@@ -166,7 +166,7 @@ async def test_list_on_an_empty_schema_is_the_honest_zero(cli_settings: Any) -> 
 async def test_holds_on_a_terminal_run_is_the_healthy_zero(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
-    """The empty-snapshot pin: a run with NO pending holds renders the
+    """The empty-snapshot pin: a run with no pending holds renders the
     defined healthy-zero state — the line SAYS the zero is state (a blank
     section that reads as zero-holds reds)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
@@ -194,7 +194,7 @@ async def test_status_reports_the_blocked_run_and_the_remedy(
     assert "HELD" in out
     assert "signal 'Approval'" in out
     assert "remedy: taskq flows resolve" in out
-    # THE EVIDENCE-SOURCE RULE: every number names its source.
+    # every number names its source.
     assert "(source:" in out
 
 
@@ -221,7 +221,7 @@ async def test_resolve_replies_by_id_and_the_flow_completes(
     assert result.exit_code == 0, result.output
     assert "delivered" in result.output
 
-    # THE AUDIT (G4): "who approved this" is a ROW — principal + reason.
+    # "who approved this" is a row — principal + reason.
     audit = await wf_conn.fetchrow(
         f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
         "WHERE action = 'hitl.resolve'",
@@ -252,7 +252,7 @@ async def test_resolve_refuses_a_wrong_payload_with_the_named_error(
     )
     assert result.exit_code == 1
     assert "pydantic refused the payload" in plain_cli_output(result.output)
-    # THE HOLD SURVIVES: the refused delivery moved nothing.
+    # the refused delivery moved nothing.
     after = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
     assert "holds: 1 pending" in plain_cli_output(after.output)
 
@@ -279,7 +279,7 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     assert retried.exit_code == 0, retried.output
     assert "re-opened" in retried.output
 
-    # THE AUDIT (G4): the manual resume is a row.
+    # the manual resume is a row.
     audit = await wf_conn.fetchrow(
         f'SELECT principal_subject, action, reason FROM "{wf_schema}".admin_audit '
         "WHERE action = 'workflow.retry_node'",
@@ -287,7 +287,7 @@ async def test_retry_reopens_the_failed_closure_and_the_run_completes(
     assert audit is not None
     assert audit["principal_subject"].startswith("cli:")
 
-    # The run RESUMES: the drive reaches terminal (the second attempt passes).
+    # The run resumes: the drive reaches terminal (the second attempt passes).
     outcome = await flow_runner.drive(flow_id)
     assert outcome == "terminal"
 
@@ -296,16 +296,16 @@ async def test_retry_not_applied_copy_drops_the_impossible_cause_and_names_the_r
     cli_settings: Any, wf_pool: Any, wf_schema: str, wf_conn: Any, demo_app_module: Any
 ) -> None:
     """H-C9's copy honesty, the CLI's face: the not-applied remedy names
-    only causes the CAS can actually hit — the attempt ceiling is NOT
+    only causes the CAS can actually hit — the attempt ceiling is not
     one (the ordinal continues; no ceiling is consulted) — and the
     ROOT-KEY law is on the record (the run's root is not a node; H-C1's
     verb-level guard)."""
     compiled = sys.modules[MODULE_NAME].app.get("cli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
     flow_id = (await flow_runner.create_flow()).flow_id
-    await flow_runner.drive(flow_id)  # the run is terminal-FAILED at 'doomed'
+    await flow_runner.drive(flow_id)  # the run is terminal-failed at 'doomed'
 
-    # An UNKNOWN node key: the CAS matches nothing → the not-applied arm.
+    # An unknown node key: the CAS matches nothing → the not-applied arm.
     unknown = await to_thread(runner.invoke, app, ["flows", "retry", str(flow_id), "no-such-node"])
     assert unknown.exit_code == 1, unknown.output
     copy = plain_cli_output(unknown.output)
@@ -315,7 +315,7 @@ async def test_retry_not_applied_copy_drops_the_impossible_cause_and_names_the_r
     )
     assert "live" in copy and "unknown" in copy, copy
 
-    # The RUN'S OWN ROOT key: refused by the verb-level guard's CAS leg —
+    # The run's own root key: refused by the verb-level guard's CAS leg —
     # the copy names the root-key law and the fix.
     root = await to_thread(runner.invoke, app, ["flows", "retry", str(flow_id), "__flow__"])
     assert root.exit_code == 1, root.output
@@ -385,12 +385,12 @@ def test_stuck_lines_name_the_remedy_and_the_source() -> None:
     )
     assert any("failed_parent" in line for line in blocked)
 
-    # A LIVE row is not a finding.
+    # A live row is not a finding.
     assert stuck_lines(FlowNodeRow(step_key="ok", status="running"), "r-1") == []
 
 
 def test_stuck_lines_name_the_undeadlined_hold() -> None:
-    """The W1 subject: a hold with NO deadline says so (a workflow that
+    """The W1 subject: a hold with no deadline says so (a workflow that
     waits forever on a human is a support ticket — the operator SEES it)."""
     row = FlowNodeRow(
         step_key="review",
@@ -448,7 +448,7 @@ def test_derive_flow_status_is_the_shared_derivation() -> None:
 
 
 def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
-    """The CLI's reported vocabulary is THE derivation's — adding a
+    """The CLI's reported vocabulary is the derivation's — adding a
     status in the derivation without the G7 root mapping (or the
     statemachine's vocabulary drifting from the node statuses the CLI
     counts) reds: the pin enumerates the sets against each other."""
@@ -459,9 +459,8 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
     from tests._wf_fixtures import G7_DERIVED_TO_ROOT
 
     derived = set(typing.get_args(WorkflowStatus))
-    # THE DERIVED SET IS EXACTLY THE G7 MAPPING'S KEYS (a new derived
-    # status without a root-row mapping row = the drift). The rejected
-    # variant: drop one mapping row → this assert reds.
+    # a new derived status without a root-row mapping row = the drift. . The
+    # rejected variant: drop one mapping row → this assert reds.
     if derived != set(G7_DERIVED_TO_ROOT):
         engine_redlog.red(
             "taxonomy-drift",
@@ -470,7 +469,7 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
         )
         engine_redlog.flush()
         pytest.fail(f"taxonomy drift: {sorted(derived ^ set(G7_DERIVED_TO_ROOT))}")
-    # The NODE statuses the CLI counts are the statemachine's own
+    # The node statuses the CLI counts are the statemachine's own
     # vocabulary (the CLI never invents a status name; 'skipped' is the
     # workflow-side representation the derivation reads).
     node_vocab = {
@@ -495,7 +494,7 @@ def test_taxonomy_drift_pin(engine_redlog: RedLog) -> None:
 
 
 def test_read_only_pin_the_read_verbs_have_no_write_path() -> None:
-    """`status`/`list`/`holds` must have NO write statement in their
+    """`status`/`list`/`holds` must have no write statement in their
     surface: the pin walks the read fetchers' source and reds on any
     mutation keyword (the doctor's read-side-only contract)."""
     import inspect
@@ -521,8 +520,8 @@ def test_the_public_reexport_hitlclient() -> None:
     assert wf_public.HitlClient is not None
     assert "HitlClient" in wf_public.__all__
     assert "DeliveryResult" in wf_public.__all__
-    # THE DOCS' IMPORT SWEEP: the shipped docs never teach the private
-    # module path (the re-export's own point).
+    # the shipped docs never teach the private module path (the re-export's own
+    # point).
     import subprocess
     from pathlib import Path
 
@@ -541,7 +540,7 @@ def test_the_public_reexport_hitlclient() -> None:
 
 
 def test_the_docs_anchor_link_check() -> None:
-    """The guides' anchor sweep (the §-renumbering's pin): EVERY
+    """The guides' anchor sweep (the §-renumbering's pin): every
     cross-linked `.md#fragment` anchor in docs/ resolves against the
     target file's mkdocs-slugified headings — a renumbered section
     without its link reds this sweep."""

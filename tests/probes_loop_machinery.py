@@ -44,12 +44,12 @@ async def _runner_of(
     return FlowRunner(app.get(name), wf_pool, wf_schema)
 
 
-# ── A3-L1: the DRIVER's exhaustion never enqueues the escalation ────────
+# ── A3-L1: the driver's exhaustion never enqueues the escalation ────────
 # The docs (guides §9): "`on_exhausted="escalate"` writes the escalation
-# enqueue through the SAME outbox the fired joins use." The sweep's arm
-# writes it (_sweep.py) — but the DRIVER's own arms (the advance guard's
+# enqueue through the same outbox the fired joins use." The sweep's arm
+# writes it (_sweep.py) — but the driver's own arms (the advance guard's
 # refusal, the body failure) call _exhaust_loop, which never touches the
-# outbox. A LIVE worker's loop (the common path) exhausts WITHOUT the
+# outbox. A live worker's loop (the common path) exhausts without the
 # escalation the policy promised.
 
 
@@ -86,7 +86,7 @@ async def test_a3_driver_exhaustion_never_enqueues_the_escalation(
 
 # ── A3-L2: the "fail" policy escalates anyway ───────────────────────────
 # ExhaustionPolicy = Literal["escalate", "fail"] — but NOTHING reads
-# spec.on_exhausted. The sweep's arm writes the escalation row for BOTH
+# spec.on_exhausted. The sweep's arm writes the escalation row for both
 # policies: a loop whose author said "just fail" still pages an operator
 # actor.
 
@@ -105,7 +105,7 @@ async def test_a3_fail_policy_escalates_anyway(
 
     runner = await _runner_of(app, "a3_fail_policy_flow", wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # The SWEEP-driven exhaustion path: orphan the loop past its cap the
+    # The sweep-driven exhaustion path: orphan the loop past its cap the
     # way the shipped pin does (the driver would exhaust it otherwise).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running', "
@@ -130,12 +130,12 @@ async def test_a3_fail_policy_escalates_anyway(
 
 
 # ── A3-L3: the body-controlled infra classifier — a poison body escapes
-#    BOTH walls forever ─────────────────────────────────────────────────
-# _is_infra_fault treats ANY ConnectionError from the BODY as reclaim-
-# eligible: the node re-pends (0.05 s) with NO ladder burn and NO wall.
+#    both walls forever ─────────────────────────────────────────────────
+# _is_infra_fault treats any ConnectionError from the body as reclaim-
+# eligible: the node re-pends (0.05 s) with no ladder burn and no wall.
 # A body that deterministically raises ConnectionError never terminalizes
 # — unbounded crashed ledger rows, the flow wedged 'running' forever
-# (the exact STRANDED-FLOW shape the named-exhaustion law exists for).
+# (the exact stranded-flow shape the named-exhaustion law exists for).
 
 
 async def test_a3_poison_body_escapes_both_walls(
@@ -155,7 +155,7 @@ async def test_a3_poison_body_escapes_both_walls(
 
     runner = await _runner_of(app, "a3_poison_flow", wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # The bound drive: if the machinery had ANY bound, the flow would go
+    # The bound drive: if the machinery had any bound, the flow would go
     # terminal within the ticks.
     await runner.drive(flow_id, max_ticks=60)
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
@@ -172,7 +172,7 @@ async def test_a3_poison_body_escapes_both_walls(
     )
 
 
-# ── A3-L4: the answer-queue cursor through a RETRY (the confirming
+# ── A3-L4: the answer-queue cursor through a retry (the confirming
 #    probe — the wrong-answer replay dragon's cousin) ────────────────────
 
 
@@ -181,7 +181,7 @@ async def test_a3_cursor_replay_through_a_retry(
 ) -> None:
     """The docs' answer-queue doctrine (the runner's cursor): a RETRY
     replays the answers — the operator never re-answers; the replay
-    takes the SAME queue head (never the wrong one)."""
+    takes the same queue head (never the wrong one)."""
     seen: list[str] = []
     fail_once = {"n": 0}
 
@@ -202,7 +202,7 @@ async def test_a3_cursor_replay_through_a_retry(
 
     runner = await _runner_of(app, "a3_cursor_flow", wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # Drive to the hold, deliver ONE answer, then the body fails once.
+    # Drive to the hold, deliver one answer, then the body fails once.
     await runner.drive(flow_id, until="held")
     from taskq.workflows.api._hitl import HitlClient
 
@@ -210,9 +210,9 @@ async def test_a3_cursor_replay_through_a_retry(
     holds = await client.list(run=flow_id)
     assert len(holds) == 1
     await client.resolve(holds[0].hold_id, {"verdict": "approve"})
-    # The body consumes the answer, then raises → retry → the SAME
+    # The body consumes the answer, then raises → retry → the same
     # answer must replay (the cursor is per-attempt; the retry starts
-    # from the queue's HEAD).
+    # from the queue's head).
     await runner.drive(flow_id)
     result = await runner.result(flow_id)
     assert result == {"doc_id": "approve"}, f"the flow's result drifted: {result}"
@@ -220,7 +220,7 @@ async def test_a3_cursor_replay_through_a_retry(
         f"the retry did NOT replay the answer queue exactly: {seen} — "
         "the wrong-answer replay (the memo dragon's cousin)"
     )
-    # And the operator answered ONCE (no second hold was registered).
+    # And the operator answered once (no second hold was registered).
     signals = await wf_conn.fetch(
         f'SELECT status, hold_epoch FROM "{wf_schema}".wf_signals WHERE workflow_id = $1 '
         "ORDER BY hold_epoch",
@@ -232,14 +232,14 @@ async def test_a3_cursor_replay_through_a_retry(
     )
 
 
-# ── A3-L5: the mixed-run ladder question — infra kill DURING a body
+# ── A3-L5: the mixed-run ladder question — infra kill during a body
 #    failure (the ledger's two writers, one window) ──────────────────────
 
 
 async def test_a3_mixed_run_body_failure_then_infra_never_double_burns(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """A body failure exhausts (named state); the SAME node's later
+    """A body failure exhausts (named state); the same node's later
     claim (if any raced) must never double-write the exhaustion or
     resurrect the flow."""
     fail = {"n": 0}
@@ -266,7 +266,7 @@ async def test_a3_mixed_run_body_failure_then_infra_never_double_burns(
     assert root == "failed" and node is not None and node["error_class"] == "LoopBodyFailure", (
         f"the mixed run's terminal state drifted: root={root}, node={node}"
     )
-    # IDEMPOTENCE: a second drive (the racing sweep's shadow) must not
+    # idempotence: a second drive (the racing sweep's shadow) must not
     # resurrect or double-terminalize.
     from taskq.workflows._sweep import sweep_loop_budget
 
@@ -276,7 +276,7 @@ async def test_a3_mixed_run_body_failure_then_infra_never_double_burns(
     assert root2 == "failed", f"the terminal flow MOVED after the sweep: {root!r} → {root2!r}"
 
 
-# ── A3-L6: the cap wall's spawn count under the MEMO replay (crash
+# ── A3-L6: the cap wall's spawn count under the memo replay (crash
 #    recovery must not overshoot the cap) ────────────────────────────────
 
 

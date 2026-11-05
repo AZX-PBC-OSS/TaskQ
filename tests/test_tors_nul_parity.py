@@ -4,7 +4,7 @@
 write. tors is a first-party core dependency (same org, AZX PBC), so the
 scan IS ``tors.contains_unescaped`` -- one code path, no probe, no pure
 fallback. It must answer exactly one question -- is there a ``\\u0000``
-byte run here whose immediately-preceding backslash run has EVEN length --
+byte run here whose immediately-preceding backslash run has even length --
 because the verdict decides whether a job's terminal write raises
 ``NUL_JSONB_ERROR`` or binds to jsonb.
 
@@ -21,7 +21,7 @@ The shape algebra, so the expectations below are checkable: payload bytes
 ``k`` backslashes followed by ``u0000`` contain exactly one needle match
 (the k-th backslash), and the run immediately before it is ``k - 1`` --
 so an ODD number of backslashes is a live NUL escape (JSON: ``\\u0000``)
-and an EVEN number is the literal text ``u0000`` behind escaped
+and an even number is the literal text ``u0000`` behind escaped
 backslashes, which jsonb accepts. The escaped-literal worst shape
 (``tests/test_nul_scan_scaling.py``'s corpus) is the even case, ``k = 2``.
 """
@@ -39,7 +39,7 @@ from taskq._json import (
     dumps_str,
 )
 
-# The oracle: the escape-parity rule re-derived from the CONTRACT (an
+# The oracle: the escape-parity rule re-derived from the contract (an
 # occurrence is live iff the maximal backslash run immediately before it is
 # even), written differently from both implementations -- a backward scan
 # over an index list rather than a forward find loop. Sharing no code with
@@ -85,7 +85,7 @@ def _escape_literals(n: int) -> bytes:
         # live at the very end and the very start of the payload
         (b'"terminal\\u0000"', True),
         (b'"\\u0000terminal"', True),
-        # live at offset 0 of the WHOLE payload (no preceding byte at all:
+        # live at offset 0 of the whole payload (no preceding byte at all:
         # an empty run, 0 is even)
         (b'\\u0000"', True),
         # dense: every byte run is a live escape

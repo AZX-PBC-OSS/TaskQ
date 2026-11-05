@@ -1,11 +1,11 @@
-"""The compound-failure stories: two dependencies failing in ONE scenario.
+"""The compound-failure stories: two dependencies failing in one scenario.
 
-Every prior scenario in this tier cuts ONE wire at a time. Real incidents
+Every prior scenario in this tier cuts one wire at a time. Real incidents
 do not queue: the broker outage lands while the database wire is already
 degraded, the admin's pool is exhausted by the same storm that took the
 broker, the operator's cancel lands while a job sits out a Retry-After
 reprieve. This module runs those compounds on the real containers and the
-real worker subprocesses, and pins what each surface owes when BOTH
+real worker subprocesses, and pins what each surface owes when both
 failures are live:
 
 1. PG degraded (a blackhole on the worker's whole PG wire) WHILE the
@@ -18,7 +18,7 @@ failures are live:
 3. the operator's cancel DURING a hint-wait - a job sitting out a
    Retry-After reprieve (the limiter's denial arm re-pended it with a
    future ``scheduled_at``) is terminalised promptly, the cancel wins
-   BEFORE the reprieve expires (the durable receipt: ``finished_at`` is
+   before the reprieve expires (the durable receipt: ``finished_at`` is
    stamped earlier than the hint it never waited out), and no zombie
    waits out the hint to run the work the operator cancelled.
 
@@ -87,8 +87,8 @@ _CLAIM_CYCLE_S = SWEEP_INTERVAL_S + _POLL_FLOOR_S
 
 #: One token per twenty seconds (the slow bucket the cancel-during-a-
 #: hint-wait scenario drains against): a denial's Retry-After hint
-#: prices the NEXT token, so the second and third concurrent enqueue are
-#: re-pended ~20s and ~40s out - a DEEP reprieve the scenario can sit
+#: prices the next token, so the second and third concurrent enqueue are
+#: re-pended ~20s and ~40s out - a deep reprieve the scenario can sit
 #: inside (the fast bucket's ~2s hint re-claims before an operator can
 #: act).
 _REFILL_PACE_S = 20.0
@@ -101,7 +101,7 @@ _CANCEL_LAND_BOUND_S = (HEARTBEAT_INTERVAL_S * 3 + CANCELLATION_GRACE_S) * TIER_
 
 #: The web admin's own checkout budget (TASKQ_ADMIN_ACQUIRE_TIMEOUT, set
 #: by the scenario below) plus the slack a starved runner's observation
-#: gets - the 503 must land near the BUDGET, never hang to the wire.
+#: gets - the 503 must land near the budget, never hang to the wire.
 _ADMIN_ACQUIRE_TIMEOUT_S = 1.0
 _ADMIN_503_SLACK_S = _ADMIN_ACQUIRE_TIMEOUT_S + 2.0
 
@@ -195,7 +195,7 @@ def _admin_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TASKQ_ADMIN_ACQUIRE_TIMEOUT", str(_ADMIN_ACQUIRE_TIMEOUT_S))
 
 
-# ══ 1. PG degraded WHILE the broker is down ══════════════════════════════
+# ══ 1. PG degraded while the broker is down ══════════════════════════════
 
 
 @pytest.mark.timeout(300)
@@ -216,7 +216,7 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
     surviving is not luck), the jobs enqueued inside the window land in a
     consistent durable state (pending rows, nothing running on a dead
     wire, the broker's outage real from an independent probe), and when
-    BOTH dependencies return the recovery is clean - the backlog
+    both dependencies return the recovery is clean - the backlog
     completes, the conservation counter balances, the effects ledger
     reconciles, and the worker's own row is still heartbeating.
     """
@@ -227,10 +227,10 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
     redis_url = redis_url_for(killable_redis_container)
 
     # The worker's compound-rideout arithmetic (the blackhole cell's
-    # derivation, sized for THIS window): with command_timeout >= 0.75 *
+    # derivation, sized for this window): with command_timeout >= 0.75 *
     # interval the two failed-cycle shapes coincide at one interval per
     # cycle, the settings default F=3 puts the isolate decision at the
-    # 4th consecutive failure, so the cascade's FASTEST legal span is
+    # 4th consecutive failure, so the cascade's fastest legal span is
     # (F+1) * interval = 24s. A 20s window sits strictly inside it: a
     # worker that died mid-window would be a defect, not weather. The
     # lease carries the settings' post_load floor
@@ -260,7 +260,7 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
             redis_url=redis_url,
             tag="compound-a",
             extra_env={
-                # scoped BEFORE proxied (the blackhole cell's measured
+                # scoped before proxied (the blackhole cell's measured
                 # ordering): the application_name stamp survives the swap.
                 "TASKQ_PG_DSN": proxied_dsn(scoped_dsn(pg_dsn, schema), proxy),
                 "TASKQ_HEARTBEAT_INTERVAL": str(_interval_s),
@@ -274,7 +274,7 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
         assert worker.proc.poll() is None
         await _wait_registered(conn, schema, worker.proc.pid)
 
-        # Premise receipt: the fleet serves BEFORE either failure arms.
+        # Premise receipt: the fleet serves before either failure arms.
         premise = await sys_client.enqueue(sys_fast, SysPayload(sleep=0.05), tags=[_TAG])
         await _poll(
             lambda: _job_succeeded(conn, schema, premise.job_id),
@@ -282,7 +282,7 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
             "the premise job completed before the compound window",
         )
 
-        # ══ The compound window: BOTH dependencies fail together ═════
+        # ══ The compound window: both dependencies fail together ═════
         # The broker: every command in the window stalls past its
         # timeout and drops. The wire: the worker's PG packets are
         # accepted and never delivered - existing connections included.
@@ -290,7 +290,7 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
         pause_deadline = time.monotonic() + 20.0
         await proxy.blackhole()
 
-        # The broker's outage is real for EVERY speaker: an independent
+        # The broker's outage is real for every speaker: an independent
         # pre-pause probe client cannot even answer a ping inside the
         # window (bounded by its own socket budget plus slack - honest
         # failure, never a hang).
@@ -312,7 +312,7 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
         ]
         inside_ids = [str(h.job_id) for h in inside_jobs]
 
-        # Mid-window consistency: the rows are HONEST - pending (no
+        # Mid-window consistency: the rows are honest - pending (no
         # claim can cross a blackholed wire), nothing of this tag
         # running on a dead holder, and the worker process alive.
         await asyncio.sleep(2.0)
@@ -350,7 +350,7 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
             "dependencies dark): the cascade arithmetic says it must"
         )
 
-        # ══ The recovery: BOTH dependencies return ═══════════════════
+        # ══ The recovery: both dependencies return ═══════════════════
         await proxy.clear()
         # The pause's admin connection is inside the paused population
         # too: wait the window out, then lift defensively (the
@@ -367,7 +367,7 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
                 "the in-window backlog completed after both dependencies returned",
             )
 
-        # The worker is STILL the same process, and its row is STILL
+        # The worker is still the same process, and its row is still
         # heartbeating (the stale-worker reaping window outlasts the
         # window by arithmetic: interval * (F+3) = 36s > the staleness a
         # 20s window can produce).
@@ -410,7 +410,7 @@ async def test_pg_degraded_while_redis_down_worker_survives_and_recovers_clean(
         await delete_tagged(conn, schema, _TAG)
 
 
-# ══ 2. Pool exhaustion DURING a broker outage ════════════════════════════
+# ══ 2. Pool exhaustion during a broker outage ════════════════════════════
 
 
 @pytest.mark.timeout(300)
@@ -428,7 +428,7 @@ async def test_pool_exhaustion_during_broker_outage_answers_503_and_worker_serve
     compound - a page whose checkout cannot arrive answers 503 with
     ``Retry-After`` within the acquire budget (never hangs, never 500s) -
     and the worker, whose pools are its own, keeps claiming and
-    terminating work through BOTH failures; when the broker returns and
+    terminating work through both failures; when the broker returns and
     the pool's connection is released, the same page answers 200 again.
     """
     schema = module_pg_schema.schema_name
@@ -460,8 +460,8 @@ async def test_pool_exhaustion_during_broker_outage_answers_503_and_worker_serve
             "the premise job completed before the compound window",
         )
 
-        # The embedded admin on a ONE-connection pool: the holder below
-        # IS the exhaustion (every checkout the routes attempt finds an
+        # The embedded admin on a one-connection pool: the holder below
+        # is the exhaustion (every checkout the routes attempt finds an
         # empty pool, exactly the BoundedPool docstring's "all held"
         # shape - the same fact a wedged Postgres or a stream-hogging
         # page produces on the wire).
@@ -488,10 +488,10 @@ async def test_pool_exhaustion_during_broker_outage_answers_503_and_worker_serve
             with contextlib.suppress(Exception):
                 await probe.aclose()
 
-        # THE 503 CONTRACT: with the pool exhausted AND the broker down,
-        # the admin page's bounded checkout answers 503 + Retry-After
-        # within the budget - a checkout that cannot arrive is a clean,
-        # fast refusal naming the knob, not a hang on a dead store.
+                # with the pool exhausted and the broker down, the admin page's bounded
+        # checkout answers 503 + Retry-After within the budget - a checkout
+        # that cannot arrive is a clean, fast refusal naming the knob, not a
+        # hang on a dead store.
         target = premise.job_id
         started = time.monotonic()
         page = await client.get(f"/embed/jobs/{target}")
@@ -508,16 +508,15 @@ async def test_pool_exhaustion_during_broker_outage_answers_503_and_worker_serve
             f"the 503 lost its Retry-After header: {dict(page.headers)}"
         )
 
-        # THE WORKER UNDER BOTH FAILURES: its pools are its own - the
-        # admin's exhaustion does not couple into dispatch, and the
-        # broker's pause does not couple into the PG terminal write.
-        # Work enqueued inside the window completes inside the bound the
-        # outage's own arithmetic prices: the worker's broker round
-        # trips ride redis-py's socket budgets and the resilience retry
-        # ladder (3 attempts x 2s + 1s of backoffs, the partition
-        # family's derivation) BEFORE falling back to the poll cadence -
-        # so the bound is the ladder + one claim cycle + the poll floor,
-        # stretched. A worker that wedged (never served) reds here.
+        # its pools are its own - the admin's exhaustion does not couple into
+        # dispatch, and the broker's pause does not couple into the PG terminal
+        # write. Work enqueued inside the window completes inside the bound the
+        # outage's own arithmetic prices: the worker's broker round trips ride
+        # redis-py's socket budgets and the resilience retry ladder (3 attempts
+        # x 2s + 1s of backoffs, the partition family's derivation) before
+        # falling back to the poll cadence - so the bound is the ladder + one
+        # claim cycle + the poll floor, stretched. A worker that wedged (never
+        # served) reds here.
         inside_jobs = [
             await sys_client.enqueue(sys_fast, SysPayload(sleep=0.05), tags=[_TAG])
             for _ in range(2)
@@ -568,7 +567,7 @@ async def test_pool_exhaustion_during_broker_outage_answers_503_and_worker_serve
         await delete_tagged(conn, schema, _TAG)
 
 
-# ══ 3. The operator's cancel DURING a hint-wait ══════════════════════════
+# ══ 3. The operator's cancel during a hint-wait ══════════════════════════
 
 
 @pytest.mark.timeout(300)
@@ -601,7 +600,7 @@ async def test_operator_cancel_wins_promptly_during_a_retry_after_reprieve(
         # One worker (a zombie would have a claimant to ride the hint
         # with); its cancel-poll rides the heartbeat. The limiter is
         # PG-backed (the operational-loop family's bucket), so no broker
-        # is in this story - the hint-wait is a DURABLE state.
+        # is in this story - the hint-wait is a durable state.
         worker = spawn_worker(pg_dsn, schema, tag="compound-c")
         wait_worker_ready(worker)
         await _wait_registered(conn, schema, worker.proc.pid)
@@ -609,8 +608,8 @@ async def test_operator_cancel_wins_promptly_during_a_retry_after_reprieve(
         # A deep reprieve: the slow bucket refills one token per twenty
         # seconds, so the second and third jobs' denial hints price ~20s
         # and ~40s out - far past the cancel's prompt bound, so
-        # "cancelled" can only mean the cancel WON, not that the hint
-        # expired first. (The fast bucket's hint prices only the NEXT
+        # "cancelled" can only mean the cancel won, not that the hint
+        # expired first. (The fast bucket's hint prices only the next
         # token - ~2s - and re-claims before an operator can act; the
         # deep reprieve needs the slow refill - the
         # _REFILL_PACE_S bucket at the top of this module.)
@@ -672,10 +671,10 @@ async def test_operator_cancel_wins_promptly_during_a_retry_after_reprieve(
             f"the admin cancel did not land: {resp.status_code} {resp.text[:300]}"
         )
 
-        # PROMPT: the row terminalises 'cancelled' inside the derived
+        # prompt: the row terminalises 'cancelled' inside the derived
         # cancel bound - one heartbeat's observation + the terminal
         # write, stretched. (The hint it is sitting out is 5+ seconds
-        # longer than this bound: landing here means the cancel WON.)
+        # longer than this bound: landing here means the cancel won.)
         async def _cancelled() -> bool:
             row = await conn.fetchval(
                 f'SELECT status::text FROM "{schema}".jobs WHERE id = $1::uuid',
@@ -685,9 +684,9 @@ async def test_operator_cancel_wins_promptly_during_a_retry_after_reprieve(
 
         await _poll(_cancelled, _CANCEL_LAND_BOUND_S, "the reprieved job reached cancelled")
 
-        # THE NO-ZOMBIE RECEIPT (durable, on the DB's own clocks): the
-        # finished stamp precedes the hint the row never waited out; the
-        # body never ran; the event carries the operator's reason.
+        # durable, on the DB's own clocks. the finished stamp precedes the hint
+        # the row never waited out; the body never ran; the event carries the
+        # operator's reason.
         row = await conn.fetchrow(
             f"""
             SELECT status::text AS status, finished_at, scheduled_at,
@@ -728,7 +727,7 @@ async def test_operator_cancel_wins_promptly_during_a_retry_after_reprieve(
         # The cohort around the cancel still drains: eleven succeed
         # through the bucket (the deepest hint the ledger recorded, plus
         # one claim cycle, stretched - the bucket's own arithmetic), the
-        # cancelled row STAYS cancelled, and nothing else was
+        # cancelled row stays cancelled, and nothing else was
         # manufactured.
         deepest = await conn.fetchval(
             f"""
@@ -740,7 +739,7 @@ async def test_operator_cancel_wins_promptly_during_a_retry_after_reprieve(
         assert deepest is not None
         now_ts = await conn.fetchval("SELECT statement_timestamp()")
         # The drain bound prices the bucket's own arithmetic: the deepest
-        # remaining hint, PLUS one full refill period (a re-denial costs
+        # remaining hint, plus one full refill period (a re-denial costs
         # the cohort one token's wait - the refill is the bucket's own
         # 1-per-_REFILL_PACE_S pace the actor's comment derives), plus
         # one claim cycle, all stretched, plus the poll floor.

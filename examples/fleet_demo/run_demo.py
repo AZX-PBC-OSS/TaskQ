@@ -314,7 +314,7 @@ def act4_cron_budget(log_path: Path) -> None:
     print(f"  digest 'cron fired' events during the crawl: {len(crawl)}")
     import json
 
-    # The listing shows at most SIX lines; a longer crawl says so (the
+    # The listing shows at most six lines; a longer crawl says so (the
     # stranger test's cosmetic finding: the count said 7, the listing
     # showed 6, nothing named the difference).
     for line in crawl[:6]:
@@ -456,8 +456,8 @@ async def _get_pool() -> Any:
 
 
 def act8_workflow() -> None:
-    """ACT 8 — THE WORKFLOW (the doc_ingest shape's smallest leg): the
-    source + ONE conditional chain + ONE hold resolved — the fleet's own
+    """ACT 8 — the WORKFLOW (the doc_ingest shape's smallest leg): the
+    source + one conditional chain + one hold resolved — the fleet's own
     worker executes it (the intercept's door)."""
     _banner("ACT 8 — the workflow: the doc-ingest shape's smallest leg")
 

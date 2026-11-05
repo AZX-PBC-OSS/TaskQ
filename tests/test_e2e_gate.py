@@ -48,7 +48,7 @@ def test_e2e_dir_not_collected_without_opt_in() -> None:
     proc = _collect("tests/e2e")
     assert proc.returncode == 5, proc.stdout[-2000:]
     assert "tests/e2e/" not in proc.stdout
-    # The deselect backstop must REPORT what it strips (pytest_deselected):
+    # The deselect backstop must report what it strips (pytest_deselected):
     # without the hook call the summary carries no deselected count, hiding
     # the stripped tier from xdist/coverage and the -ra summary.
     match = re.search(r"(\d+) deselected", proc.stdout)

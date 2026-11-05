@@ -60,7 +60,7 @@ async def test_open_worker_deps_full_lifecycle(pg_dsn: str) -> None:
     assert deps.worker_pool.is_closing()
 
 
-# ── LIFO teardown on partial failure ───────────────────────────────
+# ── lifo teardown on partial failure ───────────────────────────────
 
 
 async def test_lifo_teardown_on_leader_conn_failure(
@@ -292,7 +292,7 @@ async def test_pg_unavailable_raises_within_timeout(pg_dsn: str) -> None:
                 pass
 
 
-# ── Partial-open LIFO teardown against real PG ─────────────────────
+# ── Partial-open lifo teardown against real PG ─────────────────────
 
 
 async def test_partial_open_lifo_teardown_with_pg_failure(
@@ -381,7 +381,7 @@ async def test_keepalive_setsockopt_fires_on_dedicated_conns(pg_dsn: str) -> Non
 
 
 @pytest.fixture
-def disposable_pg_container() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest injects this fixture; pyright does not track fixture DI.
+def disposable_pg_container() -> Iterator[PostgresContainer]:  # pyright: ignore[reportUnusedFunction]  # Why: pytest injects this fixture; pyright does not track fixture di.
     """A throwaway PG container for the ALTER USER test.
 
     ``ALTER USER ... PASSWORD`` mutates CLUSTER-WIDE auth state: run against
@@ -429,7 +429,7 @@ async def test_pool_startup_log_redacts_credentials(
     assert dsn_host(sentinel_dsn_for_check) == "db.test.invalid"
     assert sentinel not in dsn_host(sentinel_dsn_for_check)
 
-    # Connect using the existing creds, ALTER USER to the sentinel, then
+    # Connect using the existing creds, alter user to the sentinel, then
     # verify open_worker_deps opens successfully with the sentinel password.
     # Restore afterward.
     # docker-py connection-url resolution is a blocking HTTP call - off the loop.

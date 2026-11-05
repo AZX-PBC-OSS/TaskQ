@@ -184,7 +184,7 @@ def test_aad_credential_protocol_matches_sync_and_async() -> None:
 
 async def test_default_credential_constructs_aio_default_azure_credential() -> None:
     """_default_credential must reach azure.identity.aio - a plain
-    ``import azure.identity`` does NOT pull in the ``aio`` subpackage,
+    ``import azure.identity`` does not pull in the ``aio`` subpackage,
     so the import must be explicit."""
     cred = _default_credential()
     try:
@@ -194,7 +194,7 @@ async def test_default_credential_constructs_aio_default_azure_credential() -> N
 
 
 async def test_pg_provider_reuses_one_default_credential_across_calls() -> None:
-    """With credential=None the provider must create ONE default credential
+    """With credential=None the provider must create one default credential
     and reuse it - per-call construction leaks unclosed aiohttp sessions
     and cold-caches every token fetch."""
     fake = _FakeAsyncCredential(token="cached-tok")

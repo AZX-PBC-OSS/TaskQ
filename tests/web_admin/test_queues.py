@@ -548,7 +548,7 @@ def test_queue_live_workers_read_matches_the_leader_sampler_shape() -> None:
 #
 # The overview GROUP BY ran with no LIMIT (unbounded under high queue-label
 # cardinality) while the page double-fetched: the full-page meta refresh
-# AND the htmx poll both fired, because only jobs set suppress_refresh.
+# and the htmx poll both fired, because only jobs set suppress_refresh.
 
 
 def test_queue_overview_sql_caps_its_rows() -> None:
@@ -565,7 +565,7 @@ def test_queue_overview_sql_caps_its_rows() -> None:
 def test_queue_overview_page_uses_exactly_one_refresh_transport_per_mode(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """The queues page never runs BOTH refresh transports at once (that
+    """The queues page never runs both refresh transports at once (that
     double-fetch was #337's complaint), and polling mode keeps its no-JS
     liveness (test_web_admin_integration pins the meta refresh there):
     POLLING mode renders the meta refresh and no htmx poll; REALTIME mode
@@ -704,7 +704,7 @@ def test_queue_overview_no_truncation_notice_under_the_cap(
 def test_queue_overview_rejects_unknown_filter_params(
     monkeypatch: pytest.MonkeyPatch, make_app: Callable[..., Any]
 ) -> None:
-    """The overview declares no filters, so ANY query param is undeclared:
+    """The overview declares no filters, so any query param is undeclared:
     FastAPI would drop it and 200-unfiltered; the page 400s instead."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     client = make_app()

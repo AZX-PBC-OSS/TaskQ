@@ -1,11 +1,11 @@
-"""The claims registry (the measurement estate's ONE index) — the
+"""The claims registry (the measurement estate's one index) — the
 run-scoped captures' manifest, ``.measurements/runs/CLAIMS.json``.
 
 The manifest rule: every capture the head-stamp verifier judges is
-REGISTERED HERE — one JSON array of ``{stem, file, head_sha,
+REGISTERED here — one JSON array of ``{stem, file, head_sha,
 captured_at}`` entries in append order — and the machinery (the writers
 below, ``scripts/check_wf_coverage.py``, and the verifier
-``scripts/verify_evidence_heads.py``) reads THE MANIFEST, never the
+``scripts/verify_evidence_heads.py``) reads the MANIFEST, never the
 filenames. Grouping the estate by PARSING each filename's run-scoped
 tail (the ``_stem`` / ``_run_order`` heuristics) would enforce a
 name-format rule on the humans' own files. A name is for HUMANS; the
@@ -76,7 +76,7 @@ def _write(data: dict[str, object]) -> None:
 
 
 def record_claim(stem: str, file: str, head_sha: str, captured_at: str | None = None) -> None:
-    """Append ONE claim entry (atomic under the registry lock): the
+    """Append one claim entry (atomic under the registry lock): the
     capture's evidence-kind *stem*, its filename under ``runs/``, the
     head the capture was measured on, and the wall-clock instant."""
     entry = {

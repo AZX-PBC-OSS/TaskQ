@@ -78,8 +78,8 @@ async def _setup(
 
     stack = AsyncExitStack()
     deps: WorkerDeps = await stack.enter_async_context(open_worker_deps(settings))
-    # The test's own DB traffic (setup DML, observation reads, the sweep
-    # polls) rides a DEDICATED connection, never deps.heartbeat_pool: the
+    # The test's own DB traffic (setup dml, observation reads, the sweep
+    # polls) rides a dedicated connection, never deps.heartbeat_pool: the
     # heartbeat pool's connections carry the tick's command budget
     # (heartbeat_command_timeout = 0.1s here), a budget calibrated for the
     # tick's own liveness statement sequence, not for arbitrary test
@@ -156,7 +156,7 @@ async def test_tc1_kill_pg_mid_tick(pg_dsn: str) -> None:
     PostgresConnectionError on the jobs UPDATE (2nd execute call).
     Assert PostgresConnectionError is raised inside the loop
     (caught by), deps.heartbeat_failures == 1,
-    and lock_expires_at was NOT advanced (transaction rolled back).
+    and lock_expires_at was not advanced (transaction rolled back).
     """
     stack, deps, schema, obs_conn = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="20")
     try:
@@ -321,12 +321,11 @@ async def test_tc3_pool_exhaustion(pg_dsn: str) -> None:
                 name="heartbeat-tc3-exhausted",
             )
 
-            # THE FAILURE'S OWN ARRIVAL (poll-with-deadline): the
-            # exhausted pool's acquire fails the tick inside its own
-            # interval bound; the poll reads the counter the loop
-            # writes, never a blind sleep racing the tick.
+            # poll-with-deadline. the exhausted pool's acquire fails the tick
+            # inside its own interval bound; the poll reads the counter the
+            # loop writes, never a blind sleep racing the tick.
             deadline = time.monotonic() + 10.0
-            while (  # noqa: ASYNC110  # Why: the bounded poll IS the seam — the counter is a plain int the loop writes, no event to await.
+            while (  # noqa: ASYNC110  # Why: the bounded poll is the seam — the counter is a plain int the loop writes, no event to await.
                 time.monotonic() < deadline and deps.heartbeat_failures < 1
             ):
                 await asyncio.sleep(0.05)
@@ -340,7 +339,7 @@ async def test_tc3_pool_exhaustion(pg_dsn: str) -> None:
 
         finally:
             # Release all held connections. The release-time reset is
-            # the POOL's own hygiene (the connection's fate at test end
+            # the pool's own hygiene (the connection's fate at test end
             # is not this pin's subject): a reset whose budget a
             # contended database burns times the release out, and the
             # release's failure says nothing about the failure
@@ -496,7 +495,7 @@ async def test_tc6_oserror_on_execute(pg_dsn: str) -> None:
     """OSError during SQL execute increments failure counter.
 
     Injects OSError on the 2nd execute (jobs UPDATE). Asserts heartbeat_failures
-    >= 1 and lock_expires_at was NOT advanced (transaction rolled back).
+    >= 1 and lock_expires_at was not advanced (transaction rolled back).
     """
     stack, deps, schema, obs_conn = await _setup(pg_dsn, MAX_HEARTBEAT_FAILURES="20")
     try:
@@ -578,7 +577,7 @@ class _StallingAcquireCtx:
 
 
 class _SustainedContentionPool:
-    """Stalls EVERY acquire past the caller's timeout: a sustained
+    """Stalls every acquire past the caller's timeout: a sustained
     inability to reach the database, not a one-tick blip.
 
     Each tick's ``acquire(timeout=interval)`` burns its full allowance
@@ -684,7 +683,7 @@ async def test_single_transient_tick_failure_at_documented_sizing_keeps_the_job(
             seed_heartbeat_at: datetime = row["last_heartbeat_at"]
 
         real_pool = deps.heartbeat_pool
-        # One FAST conn-level blip on the first loop tick after the seed
+        # One fast conn-level blip on the first loop tick after the seed
         # beat, then the healthy pool serves: the pool never stalls, so
         # no later acquire can chain a timeout.
         deps.heartbeat_pool = _OneShotBlipPool(real_pool)  # type: ignore[assignment] # Why: chaos pool substitution, see _FailingPool pattern above.
@@ -751,7 +750,7 @@ async def test_single_transient_tick_failure_at_documented_sizing_keeps_the_job(
             f"blip."
         )
         # The injection was one-shot and the pool stayed healthy: at most
-        # ONE tick ever failed. Under the old stall injection a loaded
+        # one tick ever failed. Under the old stall injection a loaded
         # runner chained real acquire timeouts here (consecutive_failures
         # = 1,2,3) - that chain is the sustained-contention scenario the
         # boundary test below pins, not this one.
@@ -868,7 +867,7 @@ async def test_one_fast_transient_failure_at_documented_sizing_keeps_the_job(
     pg_dsn: str,
 ) -> None:
     """The behavior pin for the failed-tick pacing contract: at the
-    documented ``heartbeat_timeout = 2x heartbeat_interval`` sizing, ONE
+    documented ``heartbeat_timeout = 2x heartbeat_interval`` sizing, one
     fast transient tick failure must not cost the worker its job, the
     recovery beat must land well inside the 2x floor, and the ledger
     must not treat the blip as the start of a cascade.
@@ -920,7 +919,7 @@ async def test_one_fast_transient_failure_at_documented_sizing_keeps_the_job(
         deps.heartbeat_pool = _BlipThenLoadedPool(  # type: ignore[assignment] # Why: chaos pool substitution, see the _FailingPool / _OneShotStallingPool patterns above.
             real_pool,
             # Bounded, and under half the interval: enough that the
-            # unguarded recovery beat (which only STARTS at ≈2x interval)
+            # unguarded recovery beat (which only starts at ≈2x interval)
             # commits clearly past the deadline, while the paced
             # recovery beat (which starts at ≈1.25x interval) still
             # commits clearly inside it.
@@ -1000,7 +999,7 @@ async def test_sustained_acquire_timeouts_across_ticks_gets_reclaimed(
     This is the deterministic shape of what a loaded CI runner once
     produced by accident (consecutive_failures=1,2,3, each a real
     acquire timeout) and what the one-blip test above is careful to
-    NEVER inject: sustained inability to reach the DB is exactly the
+    never inject: sustained inability to reach the DB is exactly the
     scenario the reclaim exists for - the worker may be dead, hung, or
     partitioned, and letting a live-but-partitioned worker's lease be
     handed back is the operator-correct semantics. The boundary is
@@ -1045,7 +1044,7 @@ async def test_sustained_acquire_timeouts_across_ticks_gets_reclaimed(
             )
 
         real_pool = deps.heartbeat_pool
-        # EVERY acquire stalls far past the loop's own
+        # every acquire stalls far past the loop's own
         # acquire(timeout=interval) bound: the worker cannot reach the DB
         # on any tick, while the sweep (polling on the test's dedicated
         # connection, off the wrapped pool) can - the partitioned-worker

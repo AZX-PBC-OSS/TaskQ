@@ -6,21 +6,21 @@ module attacks each claim where the original pass stopped:
 1. the refresh-transport matrix, EXHAUSTIVE: every served page (the pass
    pinned 8 pages in "real-time mode" through a monkeypatch that FastAPI's
    ``Depends`` never reads, so those realtime cells were vacuous; the jobs
-   page, queue detail, and batch detail had NO pin in either mode) - each
+   page, queue detail, and batch detail had no pin in either mode) - each
    cell pinned to its EXACT transport, forced through the real seam
    (``_factory.get_realtime_mode``, the function ``get_realtime_ctx``
    looks up at call time);
-2. inline event handlers: the pass fixed ONE handler (the rate-limits
+2. inline event handlers: the pass fixed one handler (the rate-limits
    bucket reset) - a whole-repo render scan finds the others (the job
    detail page's cancel/retry confirms interpolate ``job.id`` into inline
    ``onclick`` JS strings, the same attribute-entity-decodes-before-JS
    class the pass itself named);
 3. the tojson edges: the ``</script>`` break-out and the entity
-   round-trip, evaluated under Node - and the ONE config string the pass
+   round-trip, evaluated under Node - and the one config string the pass
    missed (``window.TASKQ_BASE_PATH`` is still HTML-escaped inside a
    script context);
 4. the cap's uniformity: one LIMIT value across every capped surface, and
-   a truncation notice on EVERY capped render that says so;
+   a truncation notice on every capped render that says so;
 5. the offline pin: every page's script graph must be LOCAL (the pass
    moved Alpine off its CDN and left lucide on unpkg - the air-gapped
    deployment the Alpine move names renders every icon as an empty
@@ -106,8 +106,8 @@ def _make_client(pool: Any, *, base_path: str = "") -> TestClient:
 # The earlier matrix had holes: the 8 no-transport pages were
 # pinned in "real-time mode" via _force_realtime, which setattr's a module
 # attribute FastAPI's Depends-captured callable never reads - those cells
-# rendered in POLLING mode and the pin held trivially. /jobs and the two
-# detail pages (queue, batch) had no served-page pin in ANY mode. Every
+# rendered in polling mode and the pin held trivially. /jobs and the two
+# detail pages (queue, batch) had no served-page pin in any mode. Every
 # cell here is pinned to its exact transport, with the mode forced through
 # the seam the dependency chain actually calls.
 
@@ -255,7 +255,7 @@ def test_degraded_mode_refreshes_like_polling(
 def test_no_page_serves_an_inline_event_handler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """EVERY rendered page, probed with hostile stored data (a bucket name
+    """every rendered page, probed with hostile stored data (a bucket name
     carrying the JS-string breakout the rate-limits fix removed), must ship
     zero inline ``on*=`` handlers. The fix removed the bucket reset's
     handler; the job detail page's cancel and retry confirms still
@@ -428,7 +428,7 @@ def test_taskq_base_path_is_script_encoded(
 
 
 def test_every_capped_surface_shares_one_cap() -> None:
-    """The five capped read-only SQLs must share ONE limit value - a cap
+    """The five capped read-only SQLs must share one limit value - a cap
     that drifted per page is a cap nobody can state in review."""
     from taskq.web.admin.ops import (
         _HELD_SLOTS_PAGE_SIZE,
@@ -657,7 +657,7 @@ def test_prefix_walk_covers_every_url_bearing_attribute(
         for url in url_attrs.findall(response.text):
             if url.startswith(("http://", "https://")):
                 continue
-            # every local URL must be ABSOLUTE from the root (a relative
+            # every local URL must be absolute from the root (a relative
             # "static/x" resolves against the page URL, which differs per
             # route - the ./static edge that passes a unit test and breaks
             # a deployment)
@@ -676,7 +676,7 @@ def test_prefix_walk_covers_every_url_bearing_attribute(
 #
 # Three pins over the re-attack's own fixes, found while attacking them:
 # the base-path literal was pinned for the ampersand prefix only (the
-# ``</script>`` break-out and the EMPTY root-deployment prefix were not),
+# ``</script>`` break-out and the empty root-deployment prefix were not),
 # and the vendored lucide file had no integrity pin at all - a silently
 # corrupted vendor is the air-gap failure the move was made to prevent,
 # discovered only when the icons never render.

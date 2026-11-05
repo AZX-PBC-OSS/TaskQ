@@ -2,7 +2,7 @@
 
 The probes, each an independent test (RED = a finding):
 
-1. THE CRASH-WINDOW ROOT WEDGE: the fail_closed child's tx1 committed,
+1. the CRASH-WINDOW ROOT WEDGE: the fail_closed child's tx1 committed,
    tx2 (the cascade) never ran — the sweep's blocked_required heal
    stamps the join, but WHAT flips the flow root? The maintenance leg's
    ``has_live`` counts every pending row INCLUDING the blocked join row
@@ -10,32 +10,32 @@ The probes, each an independent test (RED = a finding):
    a blocked join row). Probe: after the heal, with ALL peers terminal,
    is the root failed — or wedged 'running' forever?
 
-2. THE CRASH-WINDOW PEERS: the direct cascade peer-cancels the still-
+2. the CRASH-WINDOW PEERS: the direct cascade peer-cancels the still-
    non-terminal peers; the sweep heal (the same window, the crash ate
-   the cascade) does NOT — do the peers of a healed fail_closed run keep
+   the cascade) does not — do the peers of a healed fail_closed run keep
    running forever on a dead flow?
 
-3. MAYBE DOES NOT CASCADE (the absorbed-failure clause, the failed-parent propagation's gate): a
-   maybe child's terminal failure must NOT kill peers / fail the flow.
+3. MAYBE DOES not CASCADE (the absorbed-failure clause, the failed-parent propagation's gate): a
+   maybe child's terminal failure must not kill peers / fail the flow.
    Certification evidence (expected GREEN).
 
-4. THE CASCADE RACING A NORMAL FINALIZE: a peer's own finalize tx2 runs
+4. the CASCADE RACING A NORMAL FINALIZE: a peer's own finalize tx2 runs
    concurrently with the cascade (two pools, asyncio.gather). The fence
    set (terminal-mark CAS + the rowcount gate + the flow-status legs)
-   must leave ONE consistent verdict per row: no fire over a failed
+   must leave one consistent verdict per row: no fire over a failed
    parent, no cancelled-succeeded hybrid, no lost record.
 
-5. THE CASCADE RACING ANOTHER CASCADE: two children of two OVERLAPPING
+5. the CASCADE RACING ANOTHER CASCADE: two children of two OVERLAPPING
    joins fail concurrently (shared peer set). Both cascades must land;
    no lost peer-cancel, no double-flow-flip anomaly, both joins named.
 
-6. THE MIXED-POLICY NODE: one node feeds a fail_closed join AND a
+6. the MIXED-POLICY NODE: one node feeds a fail_closed join and a
    collect join; the node terminal-fails. The cascade legitimately runs
    (fail_closed leg) — but the collect leg's decrement is refused by the
-   flow-alive guard (the cascade flipped the flow IN THE SAME TX), so
+   flow-alive guard (the cascade flipped the flow IN the same TX), so
    the collect join hangs join-wait with the failure item on it; and the
    rollup's EXISTS-based ``absorbed`` flag marks the node absorbed — the
-   derivation then can NEVER say 'failed' for a run that failed closed.
+   derivation then can never say 'failed' for a run that failed closed.
 """
 
 from __future__ import annotations
@@ -90,9 +90,9 @@ async def test_attack_crash_window_fail_closed_root_and_peers(
     wf_sql: WorkflowSql,
 ) -> None:
     """The crash window: the child's tx1 marked it failed, the cascade
-    (tx2) never ran. The sweep heal stamps the join. THE ROOT: the
+    (tx2) never ran. The sweep heal stamps the join. the ROOT: the
     §17.2 cascade's flip is also lost — the maintenance leg must heal
-    it. PREDICTION UNDER ATTACK: has_live counts the blocked join row
+    it. PREDICTION under ATTACK: has_live counts the blocked join row
     (pending forever) — the root wedges 'running'; and the peers keep
     running on the dead flow."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -102,8 +102,8 @@ async def test_attack_crash_window_fail_closed_root_and_peers(
     await _seed_edge_named(wf_conn, wf_schema, join_id, failed_child, flow_id, "fail_closed")
     await _seed_edge_named(wf_conn, wf_schema, join_id, peer, flow_id, "fail_closed")
 
-    # THE CRASH WINDOW: tx1's fenced terminal FAILURE lands, tx2 (the
-    # cascade) never runs — the direct DB write, the exact tx1 shape.
+    # tx1's fenced terminal failure lands, tx2 (the cascade) never runs — the
+    # direct DB write, the exact tx1 shape.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'failed', finished_at = now(), "
         "error_class = 'ValueError' WHERE id = $1",
@@ -116,14 +116,14 @@ async def test_attack_crash_window_fail_closed_root_and_peers(
     join_state = await node_state(wf_conn, wf_schema, join_id)
     assert join_state["metadata"].get("blocking_reason") == "failed_parent"
 
-    # THE PEERS: the direct cascade peer-cancels them; the heal's tx —
-    # does anything cancel this still-running peer of the dead run?
+    # the direct cascade peer-cancels them; the heal's tx — does anything
+    # cancel this still-running peer of the dead run?
     peer_state = await node_state(wf_conn, wf_schema, peer)
 
-    # THE ROOT: every OTHER node is terminal except the blocked join row
-    # and the running peer. Terminalize the peer the way its own worker
-    # would (its work completes) and re-run the heal — the maintenance
-    # leg's one window to flip the root.
+    # every other node is terminal except the blocked join row and the running
+    # peer. Terminalize the peer the way its own worker would (its work
+    # completes) and re-run the heal — the maintenance leg's one window to flip
+    # the root.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'succeeded', finished_at = now() WHERE id = $1",
         peer,
@@ -134,7 +134,7 @@ async def test_attack_crash_window_fail_closed_root_and_peers(
     join_state2 = await node_state(wf_conn, wf_schema, join_id)
     reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
 
-    # The G7 mapping: derived 'failed' ⇒ the root row must BE 'failed'.
+    # The G7 mapping: derived 'failed' ⇒ the root row must be 'failed'.
     print(
         json.dumps(
             {
@@ -159,7 +159,7 @@ async def test_attack_crash_window_fail_closed_root_and_peers(
     )
 
 
-# ── Probe 3: maybe does NOT cascade (the absorbed-failure clause) ───────
+# ── Probe 3: maybe does not cascade (the absorbed-failure clause) ───────
 
 
 @pytest.mark.integration
@@ -278,7 +278,7 @@ async def test_attack_cascade_racing_a_normal_finalize(
         )
         assert peer_row is not None
         status = peer_row["status"]
-        # ONE verdict: the CAS set either won (succeeded) or lost to the
+        # one verdict: the CAS set either won (succeeded) or lost to the
         # cascade (cancelled). A running row = both writes lost = a wedge.
         assert status in ("succeeded", "cancelled"), (
             f"the racing finalize left the peer {status!r} — neither the "
@@ -293,7 +293,7 @@ async def test_attack_cascade_racing_a_normal_finalize(
         _ = results
 
 
-# ── Probe 5: the cascade racing ANOTHER cascade (overlapping peers) ─────
+# ── Probe 5: the cascade racing another cascade (overlapping peers) ─────
 
 
 @pytest.mark.integration
@@ -303,7 +303,7 @@ async def test_attack_two_cascades_overlapping_peer_sets(
     wf_schema: str,
     wf_sql: WorkflowSql,
 ) -> None:
-    """Two failing children sharing a peer (child P is the peer of BOTH
+    """Two failing children sharing a peer (child P is the peer of both
     failing nodes' joins... here: two joins, each fail_closed, one node
     common). Both cascades run concurrently: both joins named, the common
     peer cancelled exactly once, the flow failed."""
@@ -362,7 +362,7 @@ async def test_attack_two_cascades_overlapping_peer_sets(
     assert root["status"] == "failed"
 
 
-# ── Probe 6: the MIXED-POLICY node (fail_closed + collect consumers) ────
+# ── Probe 6: the mixed-policy node (fail_closed + collect consumers) ────
 
 
 @pytest.mark.integration
@@ -373,7 +373,7 @@ async def test_attack_mixed_policy_node_the_collect_join_hangs(
     wf_sql: WorkflowSql,
 ) -> None:
     """Node X feeds joinA (fail_closed) and joinB (collect). X fails:
-    the cascade blocks A and fails the flow IN THE SAME TX — then the
+    the cascade blocks A and fails the flow IN the same TX — then the
     collect leg's decrement reads the flow-alive guard and refuses, so
     joinB never resolves; the sweep then RECONCILES joinB's counter to 0
     (its failed_required is 0 — the edge says collect) leaving a
@@ -410,8 +410,8 @@ async def test_attack_mixed_policy_node_the_collect_join_hangs(
     b_state = await node_state(wf_conn, wf_schema, join_b)
     fires_b = await fire_count(wf_conn, wf_schema, join_b)
 
-    # THE SWEEP's next pass: what does the record look like after the
-    # healer runs?
+    # the sweep's next pass: what does the record look like after the healer
+    # runs?
     await sweep_join_rederive(module_pg_pool, wf_sql)
     b_after = await node_state(wf_conn, wf_schema, join_b)
     fires_b_after = await fire_count(wf_conn, wf_schema, join_b)
@@ -436,9 +436,9 @@ async def test_attack_mixed_policy_node_the_collect_join_hangs(
         )
     )
 
-    # THE RECORD MUST NOT SHOW A HANGING JOIN: joinB resolved some way —
-    # fired, or blocked-with-reason. A pending join-wait row (or a
-    # reconciled-to-0 never-fired claimable row) is the rejected shape.
+    # joinB resolved some way — fired, or blocked-with-reason. A pending
+    # join-wait row (or a reconciled-to-0 never-fired claimable row) is the
+    # rejected shape.
     resolved = fires_b_after == 1 or b_after["metadata"].get("blocking_reason") in (
         "failed_parent",
         "orphan_parent",

@@ -1,6 +1,6 @@
 # ruff: noqa: S608  # Why: every f-string SQL below interpolates only this test's own fixture-validated schema identifier; every value is $-bound.
 
-"""ATTACK tests for the fence doctrine AS ONE SYSTEM on the terminal-write
+"""ATTACK tests for the fence doctrine AS one SYSTEM on the terminal-write
 surface (integration attack, hunt/fence-integration).
 
 Prior hunts fixed the pieces on this surface: the claim-epoch fence on all
@@ -16,7 +16,7 @@ attacks the SEAMS — the same statements carrying every fix at once:
    arm that fired, the origin reported on all three read surfaces
    (``list_jobs``/``get_attempts``/``get_events``), the epoch/cancel
    columns' end state, and the counters — with twin and PG required to
-   agree on every cell AND both required to match the doctrine oracle;
+   agree on every cell and both required to match the doctrine oracle;
 2. the triple race: cancel stamp + epoch bump (re-dispatch) + terminal
    write in flight simultaneously, looped with alternating head starts,
    asserting no phantom cancel survives a fenced write, no stale-epoch
@@ -24,7 +24,7 @@ attacks the SEAMS — the same statements carrying every fix at once:
    whose attempts history matches the events;
 3. the deny-then-terminal path: denial churn that mints no rows, then the
    terminal deadline arm with ``denial_reason`` persisted, exact counters,
-   and the typed branch raise AFTER terminalisation when the arm label is
+   and the typed branch raise after terminalisation when the arm label is
    mutated (the disclosed contract, re-verified post-integration);
 4. the misuse battery: stale epoch, armed cancel, retry after cancel,
    cancel after terminal — each through public surfaces, each ending in
@@ -148,7 +148,7 @@ def oracle(stmt: str, phase: int, evidence: str, deadline: str) -> dict[str, Any
 
     if stmt == "mark_retry":
         if phase != 0:
-            # The cancel fence: a phase-carrying row matches NO arm, the
+            # The cancel fence: a phase-carrying row matches no arm, the
             # write no-ops through WorkerOwnershipMismatch, the row stays
             # running carrying its phase.
             return {"ret": "mismatch", **running}
@@ -157,7 +157,7 @@ def oracle(stmt: str, phase: int, evidence: str, deadline: str) -> dict[str, Any
                 "ret": ("failed", _DE),
                 "status": "failed",
                 "origin": _DE,
-                # A TERMINAL arm keeps the cancel columns: they are the
+                # A terminal arm keeps the cancel columns: they are the
                 # audit trail of why the row ended.
                 "phase_kept": True,
                 "attempt": 1,
@@ -264,7 +264,7 @@ def oracle(stmt: str, phase: int, evidence: str, deadline: str) -> dict[str, Any
                 "interrupt": 0,
             }
         if consume:
-            # A consuming RetryAfter IS an execution: the attempt stands
+            # A consuming RetryAfter is an execution: the attempt stands
             # and writes its snoozed rows.
             return {
                 "ret": "scheduled",
@@ -293,7 +293,7 @@ def oracle(stmt: str, phase: int, evidence: str, deadline: str) -> dict[str, Any
 
     if stmt == "mark_interrupted":
         if phase != 0:
-            # The fence BOTH arms carry: an operator cancel in flight wins,
+            # The fence both arms carry: an operator cancel in flight wins,
             # even past a lapsed deadline (mark_retry/mark_snoozed route
             # the past-deadline shape to a cancelled arm; the interrupt
             # has no cancelled arm of its own, the cancel ladder owns it).
@@ -312,7 +312,7 @@ def oracle(stmt: str, phase: int, evidence: str, deadline: str) -> dict[str, Any
                 "denial": 0,
                 "interrupt": 0,
             }
-        # hold=0 releases the row PENDING immediately; the attempt did
+        # hold=0 releases the row pending immediately; the attempt did
         # start, so no refund and no attempt row — the interrupt counter
         # and one reason='interrupted' event carry it.
         return {
@@ -499,7 +499,7 @@ def _expected_cell(
     stmt: str, phase: int, evidence: str, deadline: str, *, seed_events: int, seed_attempts: int
 ) -> dict[str, Any]:
     exp = oracle(stmt, phase, evidence, deadline)
-    # The event projection is ABSOLUTE (every event of the job): the seed
+    # The event projection is absolute (every event of the job): the seed
     # event(s) first (PG's seeded running row carries one pending→running
     # state_change; the twin's dispatched row carries none), then the
     # deltas this cell's write minted.
@@ -654,9 +654,9 @@ class TestTripleRace:
             async def _stamp(job_id: JobId = job_id, i: int = i) -> None:
                 stamp_ok = await backend.write_cancel_request(job_id, "triple-race")
                 if not stamp_ok:
-                    # A False is legal ONLY when the row is already terminal
+                    # A False is legal only when the row is already terminal
                     # (the cancel had nothing left to do). A non-terminal row
-                    # that refused the stamp ATE the operator's request: no
+                    # that refused the stamp ate the operator's request: no
                     # phase on the row, no event, no later ladder pass will
                     # ever see it — the cancel vanished.
                     diag = await _list_row(backend, job_id)
@@ -722,7 +722,7 @@ class TestTripleRace:
                 f"RED iteration {i}: {len(terminal_events)} terminal events"
             )
             # No phantom cancel, no laundering: a row that left running
-            # behind the retry must NOT carry the operator's cancel
+            # behind the retry must not carry the operator's cancel
             # columns, and a phase-carrying row must still be running.
             if row.status in ("scheduled", "pending"):
                 assert row.cancel_phase == 0 and row.cancel_requested_at is None, (
@@ -748,7 +748,7 @@ class TestTripleRace:
                     "stale-epoch write terminalised a live row"
                 )
             if row.status == "cancelled" and row.attempt == 2:
-                # Pre-ladder, the ONLY writer that can cancel is the fused
+                # Pre-ladder, the only writer that can cancel is the fused
                 # pending/scheduled arm (the re-queued row's direct cancel,
                 # at the epoch the row really carries); its origin is
                 # never-ran. Anything else at the bumped epoch is a stale
@@ -758,7 +758,7 @@ class TestTripleRace:
                     f"{row.error_class!r} — a stale write terminalised a live row"
                 )
             # Close the ladder: a surviving phase-carrying row is
-            # terminalised by the cancel write at the CURRENT epoch.
+            # terminalised by the cancel write at the current epoch.
             if row.status == "running":
                 assert (
                     await backend.mark_cancelled(job_id, worker_id, attempt=2, claim_epoch=2)
@@ -843,7 +843,7 @@ class TestTripleRace:
 
 class TestDenyThenTerminal:
     """Denial churn mints no rows; the terminal deadline arm carries the
-    denial_reason and exact counters; a mutated arm label raises AFTER
+    denial_reason and exact counters; a mutated arm label raises after
     terminalisation with the row coherent."""
 
     async def test_denial_churn_then_deadline_terminal(self, clean_jobs_app: "JobsApp") -> None:
@@ -941,7 +941,7 @@ class TestDenyThenTerminal:
     ) -> None:
         """The disclosed drift contract, post-integration: the typed
         branch union is closed, an arm label renamed out of step with its
-        reader raises AFTER the statement terminalised the row, and the
+        reader raises after the statement terminalised the row, and the
         row itself is coherent (the drift is in the report, not the state)."""
         deps = clean_jobs_app.deps
         backend = clean_jobs_app.backend
@@ -973,7 +973,7 @@ class TestDenyThenTerminal:
             )
         monkeypatch.undo()
 
-        # The row terminalised BEFORE the raise and is coherent on all
+        # The row terminalised before the raise and is coherent on all
         # three read surfaces.
         row = await _list_row(backend, job_id)
         assert row.status == "failed"
@@ -1004,7 +1004,7 @@ class TestMisuseBattery:
 
         # (a) stale epoch + armed cancel: the re-dispatch bumped the row,
         # the stale handler's write must not land, and the ladder's own
-        # cancel at the CURRENT epoch terminalises truthfully.
+        # cancel at the current epoch terminalises truthfully.
         async with deps.worker_pool.acquire() as conn:
             worker_id, job_id = await setup_running_job(
                 conn, schema, attempt=1, cancel_phase=1, cancel_requested_at=datetime.now(UTC)

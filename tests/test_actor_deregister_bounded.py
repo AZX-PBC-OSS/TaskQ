@@ -12,10 +12,10 @@ whole duration and inserts one ``job_events`` row per job - precisely the
 way to silently miss a reclaim event.
 
 The contract these tests encode: a force deregistration still cancels
-EVERY pending/scheduled job for the actor and still reports
+every pending/scheduled job for the actor and still reports
 ``jobs_cancelled`` for all of them - but the cancel drains as bounded
 committed batches (``batch_size`` driving rows per transaction), each
-batch writing its ``state_change`` events as ONE batched ``unnest`` INSERT
+batch writing its ``state_change`` events as one batched ``unnest`` INSERT
 inside the same transaction as its driving UPDATE.
 """
 
@@ -43,7 +43,7 @@ pytestmark = pytest.mark.integration
 # Large enough that an unbounded implementation is unambiguously unbounded,
 # small enough to seed and deregister quickly.  Mixed pending/scheduled so
 # the per-row from_state assertion proves the batched event INSERT carries
-# each row's REAL prior status, not one shared detail.
+# each row's real prior status, not one shared detail.
 _PENDING = 150
 _SCHEDULED = 100
 _BACKLOG = _PENDING + _SCHEDULED
@@ -255,7 +255,7 @@ async def test_force_deregister_drains_backlog_in_bounded_batches(
     )
 
     # Audit trail: exactly one state_change per job, each carrying its row's
-    # REAL prior status and the deregistration reason.
+    # real prior status and the deregistration reason.
     events = await clean_pg_conn.fetch(
         f'SELECT job_id, kind, detail FROM "{schema}".job_events'  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() above.
     )

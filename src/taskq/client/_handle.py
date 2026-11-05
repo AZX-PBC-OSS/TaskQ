@@ -443,10 +443,10 @@ class JobHandle[R: BaseModel | None]:
             # Native replay for a fresh consumer: a non-terminal row that
             # carries content — progress has moved (progress_seq > 0), or
             # the status moved past the row the handle was constructed
-            # with — is yielded as the FIRST event, the same "the row as
+            # with — is yielded as the first event, the same "the row as
             # it stands when the stream is opened" contract TaskQ.stream
             # documents. Without it a re-attach after a transport cut
-            # starved until the actor's NEXT publish, minutes on a slow
+            # starved until the actor's next publish, minutes on a slow
             # actor. A seq-0 row unchanged from the handle's row yields
             # nothing: the consumer already holds that state, and a
             # phantom first event would double-deliver it. Overlap with
@@ -465,7 +465,7 @@ class JobHandle[R: BaseModel | None]:
                 yield self._row_to_progress_event(
                     current, status_changed=current.status != self._row.status
                 )
-            # aclosing: closed FROM UPSTREAM on every exit that is not the
+            # aclosing: closed FROM upstream on every exit that is not the
             # transport's own exhaustion - a consumer's ``break`` on the
             # terminal event closes it via GeneratorExit inside the
             # consumer's aclosing, never by draining to StopAsyncIteration.
@@ -556,7 +556,7 @@ class JobHandle[R: BaseModel | None]:
             last_status = cast("JobStatus", event.status)
             return event
 
-        # aclosing: closed FROM UPSTREAM on every exit that is not the
+        # aclosing: closed FROM upstream on every exit that is not the
         # transport's own exhaustion (progress_stream's GeneratorExit); a
         # bare ``async for`` would abandon redis_event_stream suspended
         # mid-iteration, deferring the pubsub unsubscribe/close to the GC's
@@ -581,7 +581,7 @@ class JobHandle[R: BaseModel | None]:
         def row_to_event(row: JobRow, status_changed: bool) -> ProgressEvent:
             return self._row_to_progress_event(row, status_changed)
 
-        # aclosing: closed FROM UPSTREAM on every exit that is not the
+        # aclosing: closed FROM upstream on every exit that is not the
         # transport's own exhaustion (progress_stream's GeneratorExit); a
         # bare ``async for`` would abandon pg_poll_event_stream suspended
         # mid-iteration for the GC's asyncgen finalizer to close later -

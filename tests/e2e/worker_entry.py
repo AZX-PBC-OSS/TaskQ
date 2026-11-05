@@ -1,8 +1,8 @@
-"""Worker container entrypoint - imported ONLY inside the container.
+"""Worker container entrypoint - imported only inside the container.
 
 The image sets PYTHONPATH=/app, so the e2e package is imported here via
 absolute ``e2e.`` imports (mirrors ``examples/worker.py``). Migrations are
-NOT run here: the e2e conftest migrates the module schema before the
+not run here: the e2e conftest migrates the module schema before the
 container starts (``TASKQ_MIGRATE_ON_START=false``).
 """
 

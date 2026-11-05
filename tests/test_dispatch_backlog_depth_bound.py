@@ -6,8 +6,8 @@ lateral's ``LIMIT``, and ``per_actor_capacity``'s idle-actor EXISTS
 prefilter - bound the strict-FIFO candidate *scan*. Two shapes in the
 same CTE still do backlog-proportional row work per dispatch round:
 
-* the round-robin candidates lateral computes ``ROW_NUMBER() OVER
-  (PARTITION BY COALESCE(fairness_key, '__null__') ...)`` over EVERY due
+* the round-robin candidates lateral computes ``ROW_NUMBER() over
+  (PARTITION BY COALESCE(fairness_key, '__null__') ...)`` over every due
   pending row of the (actor, queue) pair before the outer
   ``w2.fairness_rank <= residual * oversample`` filter can drop them - a
   window function cannot short-circuit, and the lateral carries no

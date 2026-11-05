@@ -519,7 +519,7 @@ def test_build_where_with_tags() -> None:
 
 def test_parse_job_statuses_dedupes_preserving_order() -> None:
     """A repeated status filter value is redundant, not an error - the
-    closed set has 8 members, so duplicates only bloat the ANY() array
+    closed set has 8 members, so duplicates only bloat the any() array
     bind."""
     from taskq.web.admin._constants import parse_job_statuses
 
@@ -768,7 +768,7 @@ def test_build_paginated_sql_prev_direction_reverses_order() -> None:
         order="desc",
     )
     assert "SELECT * FROM (" in sql
-    assert "ASC" in sql  # reversed from DESC
+    assert "ASC" in sql  # reversed from desc
 
 
 def test_build_paginated_sql_prev_direction_without_a_cursor_is_the_first_page() -> None:
@@ -1000,7 +1000,7 @@ def test_pagination_links_keep_the_filter_state(stub_pool: _StubPool) -> None:
 def test_pagination_links_survive_an_empty_cursor_value(stub_pool: _StubPool) -> None:
     """A NULL sort value is an empty ``cursor_at``, not a dropped link.
 
-    ``finished_at DESC NULLS LAST`` ends in the unfinished rows, so the
+    ``finished_at DESC NULLS last`` ends in the unfinished rows, so the
     seam between two of them carries no value - only the id.
     """
     links = _page_links(
@@ -1209,7 +1209,7 @@ def test_started_at_is_a_sortable_column_on_both_tabs() -> None:
 
 
 def test_started_at_sort_pages_by_keyset() -> None:
-    """sort=started_at builds a timestamptz cursor clause and NULLS LAST."""
+    """sort=started_at builds a timestamptz cursor clause and NULLS last."""
     from taskq.web.admin.jobs import _SORTABLE_LIVE, _build_paginated_sql
 
     sql, params = _build_paginated_sql(
@@ -1248,7 +1248,7 @@ def test_started_at_sort_header_links_to_the_column(stub_pool: _StubPool) -> Non
 # Issue #337: the detail route's archive arm renders events from the
 # ledger read -- ``job_events`` is the one place the timeline lives (there
 # is no job_events_archive), so the arm must read it exactly as the live
-# arm does. The production-reachable state for an archived job is an EMPTY
+# arm does. The production-reachable state for an archived job is an empty
 # ledger (the archive sweep's DELETE FROM jobs cascades job_events away),
 # so the template's empty case says the history was removed at archive;
 # these pins vouch for the arm's read-and-render contract itself: whatever
@@ -1378,7 +1378,7 @@ def test_archived_job_detail_renders_the_events_the_ledger_holds(
     )
     assert "state_change" in html
     assert "progress" in html
-    # The events read binds THIS job's id: the archive arm must read the
+    # The events read binds this job's id: the archive arm must read the
     # same per-job ledger the live arm reads.
     assert any("job_events" in q for q in conn.fetched_queries), (
         "the archive arm never queried job_events"

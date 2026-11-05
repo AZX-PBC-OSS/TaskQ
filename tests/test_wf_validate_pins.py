@@ -1,5 +1,5 @@
 """The validate pins: the checker-independent validator's mutation
-matrix. A valid graph pins CLEAN; ONE mutation at a time flips EXACTLY
+matrix. A valid graph pins CLEAN; one mutation at a time flips EXACTLY
 the intended rule and nothing else (§15.6's discipline) — the
 zero-false-positive budget is the pin, not an aspiration.
 
@@ -29,7 +29,7 @@ from taskq.workflows.api._app import CompiledWorkflow
 from taskq.workflows.api._validate import WorkflowValidationError
 from tests._wf_fixtures import runtime_refusal_builder
 
-# ── the clean corpus (the SHARED graph — one mutation per pin) ──────────
+# ── the clean corpus (the shared graph — one mutation per pin) ──────────
 
 
 class Ingest(BaseModel):
@@ -63,8 +63,8 @@ def _clean_app() -> tuple[WorkflowApp, str]:
 
 
 def _compiled(name: str, app: WorkflowApp) -> CompiledWorkflow:
-    # The PROBE SEAM (app._compile): the door (app.get) validates — the
-    # mutation pins' subject IS the invalid graph's diagnostics, so the
+    # The probe seam (app._compile): the door (app.get) validates — the
+    # mutation pins' subject is the invalid graph's diagnostics, so the
     # probes compile without the door's raise.
     return app._compile(name)
 
@@ -75,7 +75,7 @@ def _rules(compiled: CompiledWorkflow) -> set[str]:
     return {d.rule for d in _run_rules(compiled)}
 
 
-# ── the mutation matrix: ONE mutation → EXACTLY one rule ────────────────
+# ── the mutation matrix: one mutation → exactly one rule ────────────────
 
 
 def test_clean_graph_validates_clean() -> None:
@@ -117,7 +117,7 @@ def test_cycle_mutation_flips_only_acyclicity() -> None:
         return build(b)
 
     compiled = _compiled("cyclic", app)
-    # THE MUTATION: the back-edge — 'a' consumes 'b' (the wiring's cycle).
+    # the back-edge — 'a' consumes 'b' (the wiring's cycle).
     node = compiled.nodes["a"]
     node.parents = (*node.parents, "b")
     rules = _rules(compiled)
@@ -164,7 +164,7 @@ def test_unannotated_step_mutation() -> None:
     """E4: the return annotation IS the wiring — an unannotated body
     reds."""
 
-    async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingTypeStubs, reportMissingParameterType, reportUnknownParameterType, reportReturnType]  # Why: THE PROBE — the unannotated body is the mutation under test; the root pyproject's tests relaxation would mute it.
+    async def unannotated(ctx: StepContext, params: Ingest):  # pyright: ignore[reportMissingTypeStubs, reportMissingParameterType, reportUnknownParameterType, reportReturnType]  # Why: the probe — the unannotated body is the mutation under test; the root pyproject's tests relaxation would mute it.
         return params
 
     app = WorkflowApp()
@@ -410,7 +410,7 @@ def test_eternal_wait_is_a_warning_never_a_refusal() -> None:
     from taskq.workflows.api._graph import GateDecl
 
     async def gated_body(ctx: StepContext, params: Ingest) -> object:
-        # E14's law: the declared gate's body WAITS on it (a declared
+        # E14's law: the declared gate's body waits on it (a declared
         # seat with no waiter is the E14 build refusal, not W1's subject).
         return await ctx.wait_signal((Report,), timeout_s=None)
 
@@ -429,14 +429,14 @@ def test_eternal_wait_is_a_warning_never_a_refusal() -> None:
     rules = _rules(_compiled("eternal", app))
     assert rules == {"W1-eternal-wait"}, rules
     compiled = _compiled("eternal", app)
-    compiled.validate()  # the WARNING does not refuse — the report passes
+    compiled.validate()  # the warning does not refuse — the report passes
 
 
-# ── the error REPORT is one-pass (tsc-style): every rule's verdict ──────
+# ── the error report is one-pass (tsc-style): every rule's verdict ──────
 
 
 def test_error_report_names_every_error() -> None:
-    """The report carries EVERY error, not the first alone."""
+    """The report carries every error, not the first alone."""
     app = WorkflowApp()
 
     def multi_error() -> None:
@@ -472,7 +472,7 @@ def test_differing_redefinition_refused() -> None:
         return build(step(shadow_body, Ingest(doc_id="d"), key="produce"))
 
     app2.get("shadow")
-    # A differing re-registration through the RAW registry:
+    # A differing re-registration through the raw registry:
     from taskq.workflows.definitions import DuplicateWorkflowError, WorkflowDef, get_registry
 
     with pytest.raises(DuplicateWorkflowError):

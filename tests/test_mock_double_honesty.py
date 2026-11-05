@@ -116,9 +116,9 @@ _SELF_ASSIGN_RE = re.compile(r"self\.([A-Za-z_][A-Za-z0-9_]*)\s*=")
 def _honest_attributes(cls: type) -> frozenset[str]:
     """Every attribute name *cls* genuinely presents on an instance.
 
-    ``dir(cls)`` covers class-level names but NOT dataclass fields without
-    defaults (no class attribute is created), NOT slotted instance
-    storage, and NOT names bound in ``__init__`` (where
+    ``dir(cls)`` covers class-level names but not dataclass fields without
+    defaults (no class attribute is created), not slotted instance
+    storage, and not names bound in ``__init__`` (where
     ``asyncio.subprocess.Process.pid`` lives). Each source is consulted
     separately; the union is the honest set.
     """

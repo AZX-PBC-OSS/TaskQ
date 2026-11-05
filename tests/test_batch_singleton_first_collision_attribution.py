@@ -1,4 +1,4 @@
-"""Two distinct singleton actors colliding in one batch name the FIRST
+"""Two distinct singleton actors colliding in one batch name the first
 collision in batch order - deterministically, on both backends, on both
 bulk tiers.
 
@@ -68,7 +68,7 @@ async def _run_batch_and_record(
             await side.backend.enqueue_batch(items)
         side.record("batch", "admitted-all")
     except SingletonCollisionError as exc:
-        # The typed refusal's whole contract here: WHICH actor it names.
+        # The typed refusal's whole contract here: which actor it names.
         side.record("batch", f"refused:{exc.actor}")
     stored: list[str] = []
     for token, args in zip(tokens, items, strict=True):

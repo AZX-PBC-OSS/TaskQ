@@ -16,13 +16,11 @@ import signal
 import sys
 from typing import Any
 
-# THE WORKFLOW DEFINITIONS ride the worker's process (the demo's cohorts'
-# subscription is only real if the worker can RESOLVE the bodies): the
-# import registers the app (the boot projection's cohort read) and
-# populates the D1 registry the fleet-claimed execution door resolves
-# step bodies from. Without it, a queue-routed claim of a workflow node
-# is a foreign step key.
-import examples.workflows  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the import IS the registration (D1 + the cohorts' projection); nothing here calls it — a queue-routed claim must resolve its body.
+# the workflow definitions ride the worker's process: the import registers the
+# app (the boot projection's cohort read) and populates the D1 registry the
+# fleet-claimed execution door resolves step bodies from. Without it, a
+# queue-routed claim of a workflow node is a foreign step key.
+import examples.workflows  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the import is the registration (D1 + the cohorts' projection); nothing here calls it — a queue-routed claim must resolve its body.
 from examples.actors import (
     batch_counter,
     batch_finalizer,
@@ -76,7 +74,7 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     # batch actors
     "batch_counter": batch_counter,
     "batch_finalizer": batch_finalizer,
-    # DI actors
+    # di actors
     "fetch": fetch_actor,
     "db_lookup": db_lookup_actor,
     # advanced actors
@@ -103,13 +101,13 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
 }
 
 # The workgroup supervisor and the `taskq worker` CLI spawn plain
-# `taskq worker` subprocesses, which build no DI registry —
+# `taskq worker` subprocesses, which build no di registry —
 # build_registry() below runs only in this module's __main__ path. Actors
-# that declare a DI dependency (fetch, db_lookup, send_digest_email) would
+# that declare a di dependency (fetch, db_lookup, send_digest_email) would
 # fail bootstrap validation with MissingProvider, so the subprocess-facing
 # registry excludes them. (batch_finalizer's `db: asyncpg.Pool` is fine:
 # the worker auto-registers its own pool when no provider is declared.)
-# Serve the DI actors through this module's __main__ worker instead.
+# Serve the di actors through this module's __main__ worker instead.
 CLI_ACTORS: dict[str, ActorRef[Any, Any]] = {
     name: ref
     for name, ref in ACTORS.items()

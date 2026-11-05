@@ -7,7 +7,7 @@ re-pended/released.
 Hypothesis (verified against the current tree): ``di_consumer_loop`` races
 ``local_queue.get()`` against ``shutdown_event.wait()`` with FIRST_COMPLETED
 (src/taskq/worker/run.py:551-554). When the producer's put and
-``shutdown_event.set()`` resolve in the same loop turn, BOTH waiters are done;
+``shutdown_event.set()`` resolve in the same loop turn, both waiters are done;
 the ``if shut_wait in _done: return`` arm (run.py:559-560) fires and the TAKEN
 job is discarded - it has already left the queue, no consumer runs it, no
 terminal write or release is issued; recovery only via lock-lease expiry.
@@ -81,7 +81,7 @@ class _DepsStub:
             }
         )
         self.drain_failures = 0
-        # The consumer loops read the DRAINING signal off deps; the real
+        # The consumer loops read the draining signal off deps; the real
         # WorkerDeps always carries it. Unset here: these tests exercise
         # the shutdown_event-only both-done turn.
         self.producer_stop_event = asyncio.Event()
@@ -138,7 +138,7 @@ async def test_di_consumer_loop_does_not_drop_job_taken_on_shutdown_race(
     # Why the spy: it observes "the taken job was routed to execution" -
     # di_consumer_loop calls the run-module global dispatch_one_job, so a
     # module-attr monkeypatch is the execution observable without building
-    # the full DI stack.
+    # the full di stack.
     monkeypatch.setattr(run_module, "dispatch_one_job", _spy_dispatch)
 
     local_queue: asyncio.Queue[JobRow] = asyncio.Queue(maxsize=1)
@@ -163,7 +163,7 @@ async def test_di_consumer_loop_does_not_drop_job_taken_on_shutdown_race(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     # The race: the producer's put and the shutdown signal resolve in the
-    # SAME loop turn, before the consumer observes either.
+    # same loop turn, before the consumer observes either.
     local_queue.put_nowait(job)
     shutdown_event.set()
     await loop_task

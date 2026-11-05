@@ -16,35 +16,35 @@ the numbers, every one captured in ``.measurements/``:
 
 The structural suspects were each probed and cleared:
 
-- THE SCHEDULING MATH: the wait anchors to ``tick_start`` —
+- the SCHEDULING MATH: the wait anchors to ``tick_start`` —
   ``remaining = interval - (monotonic() - tick_start)`` — the FOLLOW form
   (each beat's anchor is the last tick's start). A beat can never
   accumulate drift: an overrun tick waits zero and re-enters, and the
   follow-form is the SAFE one for a lease model — a blocked beat never
   produces a compensating double-fire. The no-drift law is pinned below
-  by injecting ONE sync block on the loop and asserting the next beat
-  returns to ~interval: the block shows up as ONE long delta, never a
+  by injecting one sync block on the loop and asserting the next beat
+  returns to ~interval: the block shows up as one long delta, never a
   run of shifted ones.
-- THE SYNC-PG-CALL SUSPECT: every statement in the tick path is an
+- the SYNC-PG-CALL SUSPECT: every statement in the tick path is an
   ``await`` (BEGIN, the liveness write, the gated renewal, the
   reservation-lease write, the probes, the hook, COMMIT, the post-tx
   drain) — no sync round trip exists on the loop to block it.
-- THE EXPORTER SUSPECT: the OTel wiring goes through the SDK's
+- the EXPORTER SUSPECT: the OTel wiring goes through the SDK's
   ``_initialize_components`` — batch processors, off-loop threads.
-- THE CO-TENANCY SUSPECT: the bare-timer probe beside a real battery and
+- the CO-TENANCY SUSPECT: the bare-timer probe beside a real battery and
   under a full-core CPU storm stays within 4ms — the scheduler absorbs
   the co-tenancy; it does not reach an asyncio timer's fire time.
 
-THE INSTRUMENT: the HB records' deltas are tapped at
+The HB records' deltas are tapped at
 ``record_lock_expires_in_seconds`` — called exactly once per successful
 tick after the first (the same samples the lock-expiry alert reads), so
 its call times ARE the heartbeat's beat times. The deltas' distribution
 answers bimodal/alternating directly.
 
-THE BOUND: the measured envelope's worst beat across all five regimes is
+The measured envelope's worst beat across all five regimes is
 1.01x interval; the pin's bound is 1.2x — 20% headroom over the WORST
 measured beat under load, still 5.8x below the reported 7x pathology.
-THE ALTERNATING CHECK: a beat past the bound OUTSIDE the pinned block's
+A beat past the bound OUTSIDE the pinned block's
 window would be the reported pathology's signature; the raw deltas ride
 the failure message, so a red names the distribution, not just the
 count. The pin carries the load_sensitive marker: its subject is a
@@ -71,7 +71,7 @@ _INTERVAL = 0.25
 _RUN_SECS = 4.0
 #: The cadence bound: 1.2x interval (see the module docstring's sizing).
 _CADENCE_BOUND_FRACTION = 1.2
-#: The injected block: ONE second of sync work ON the loop (the GIL-held
+#: The injected block: one second of sync work on the loop (the GIL-held
 #: model) — unmistakable at a 0.25s interval, small in the pin's wall clock.
 _INJECTED_BLOCK_SECS = 1.0
 
@@ -83,11 +83,11 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
 
     Two assertions over the same beat record:
 
-    1. THE BOUND: every inter-beat delta outside the injected block's
+    1. the BOUND: every inter-beat delta outside the injected block's
        window is within 1.2x the interval — red on the 7x-late pathology,
        with the raw deltas in the failure message (the distribution, not
        just the count).
-    2. NO DRIFT ACCUMULATION: the beat immediately after the block-widened
+    2. no DRIFT ACCUMULATION: the beat immediately after the block-widened
        gap is back inside the bound. The follow-form anchor guarantees
        it; a scheduler that accumulated drift (next-fire anchored to the
        WRONG instant, or a catch-up burst) would show a run of shifted
@@ -96,7 +96,7 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
     schema = module_pg_schema.schema_name
 
     hb_beat_times: list[float] = []
-    real_record = hb_mod.record_lock_expires_in_seconds  # pyright: ignore[reportPrivateImportUsage]  # Why: the tap patches the heartbeat module's own binding of the obs instrument - the call site's name, the seam the HB deltas flow through.
+    real_record = hb_mod.record_lock_expires_in_seconds  # pyright: ignore[reportPrivateImportUsage]  # Why: the tap patches the heartbeat module's own binding of the obs instrument - the call site's name, the seam the hb deltas flow through.
 
     def _tap(worker_id: str, remaining: float) -> None:
         hb_beat_times.append(time.monotonic())
@@ -118,7 +118,7 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
                 "TASKQ_SCHEMA_NAME": schema,
                 "TASKQ_HEARTBEAT_INTERVAL": str(_INTERVAL),
                 "TASKQ_LOCK_LEASE": "60",
-                # The loop-lag watchdog is the FIX's tripwire, not this
+                # The loop-lag watchdog is the fix's tripwire, not this
                 # pin's instrument: its budgets stay at their defaults in
                 # production. Here the injected block would trip a tight
                 # tier-2 into a force exit mid-measurement, and a tier-1
@@ -134,12 +134,12 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
             with contextlib.suppress(asyncio.CancelledError):
                 await _main(settings, actor_registry={"cadence_probe_actor": cadence_probe_actor})
 
-        # The block's window, in wall clock, recorded BY the blocker.
+        # The block's window, in wall clock, recorded by the blocker.
         block_window: list[float] = []
 
         async def _probe_loop() -> None:
-            # The block lands mid-run: ONE second of sync work in THIS
-            # coroutine body — ON the loop, in the loop's own thread. That
+            # The block lands mid-run: one second of sync work in this
+            # coroutine body — on the loop, in the loop's own thread. That
             # is the GIL-held model: the loop cannot schedule anything
             # (the heartbeat's timer included) until the block releases.
             await asyncio.sleep(_RUN_SECS / 2)
@@ -167,7 +167,7 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
         f"deltas: {deltas}"
     )
 
-    # A delta is BLOCK-OWNED when the beat it spans overlaps the block's
+    # A delta is block-owned when the beat it spans overlaps the block's
     # recorded window (the tap time pair brackets it).
     block_start = block_window[0] - _INTERVAL if block_window else float("inf")
     block_end = block_window[-1] + 0.25 if block_window else float("-inf")
@@ -187,9 +187,8 @@ async def test_heartbeat_cadence_holds_the_bound_and_does_not_drift(
         f"7x-late-alternating class. Raw deltas (x interval): "
         f"{[round(d / _INTERVAL, 2) for d in deltas]}"
     )
-    # THE NO-DRIFT LAW: the beat immediately after the block-widened gap
-    # is back inside the bound (the anchor followed the tick, the schedule
-    # did not stay shifted).
+    # the beat immediately after the block-widened gap is back inside the bound
+    # (the anchor followed the tick, the schedule did not stay shifted).
     if late:
         last_late_idx = max(i for i, _ in late)
         if last_late_idx + 1 < len(deltas):

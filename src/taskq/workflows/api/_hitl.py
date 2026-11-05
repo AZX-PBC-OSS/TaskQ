@@ -1,16 +1,16 @@
 """The HITL runtime: the hold rows, the deliver CAS, the expiry
-arm, the client surface — HUMAN-IN-THE-LOOP AS ROWS.
+arm, the client surface — HUMAN-IN-the-LOOP AS ROWS.
 
-THE ROW IS THE TRUTH; THE KNOB IS A POINTER: the hold's appearance is
+The hold's appearance is
 NOTIFIABLE (the estate's pg_notify — the same channel discipline as the
-cancel wake), but the notification carries THE POINTER only (hold id +
-run id + gate) — NEVER the sole copy of anything: a lost notification
+cancel wake), but the notification carries the POINTER only (hold id +
+run id + gate) — never the sole copy of anything: a lost notification
 costs latency, never correctness (the consumer converges by polling
 ``client.hitl.list()`` — the SSE seq-cursor doctrine).
 
-THE DELIVER CAS (the fence): validate → the row's
+Validate → the row's
 ``'held' → 'delivered'`` CAS → the node's held-representation cleared →
-the resume. Send twice = no-op: two concurrent delivers → exactly ONE
+the resume. Send twice = no-op: two concurrent delivers → exactly one
 ``delivered`` result, exactly one resume. A deliver that validates but
 cannot resume (a cancelled flow, a stale epoch) = the TYPED
 ``DeliveryResult(status="refused", ...)`` the deliverer SEES — never a
@@ -18,7 +18,7 @@ silent drop (the smuggled
 ``Approval.model_construct(verdict=42)`` is refused at the boundary with
 the named error, the hold SURVIVES, the worker never crashes).
 
-RESUME-NOT-RETRY: a hold's resume consumes NO
+RESUME-not-RETRY: a hold's resume consumes no
 ladder attempts — the ledger distinguishes ``awaited`` from ``failed``;
 the ladder counts ``failed`` only (the pinned matrix:
 ``awaited → failed → failed`` ENTERS the ladder; ``awaited →
@@ -26,9 +26,9 @@ succeeded`` never touches it). The shared-counter variant — the claim
 incrementing the ladder on every claim, so 2 holds + max_attempts=3 =
 terminal failure with ZERO retries — is pin 7's RED forever.
 
-THE REDACT LAW EXTENDS TO THE CONTEXT (the composition's order —
-chain then hook): the hold's context passes the SAME redact chain
-BEFORE it reaches any enumeration/pubsub surface — a canary secret in
+the REDACT LAW EXTENDS TO the CONTEXT (the composition's order —
+chain then hook): the hold's context passes the same redact chain
+before it reaches any enumeration/pubsub surface — a canary secret in
 tool args must no more reach the client list than the capture row.
 """
 
@@ -84,43 +84,37 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 #: the row is the truth, a missed message converges by polling).
 HOLD_CHANNEL = "taskq_wf_holds"
 
-#: THE BROADCAST CHANNELS (global names, the SCHEMA RIDES THE
-#: PAYLOAD: pg_notify is per-database and the schema-per-module estate
-#: shares one database across many schemas, so per-schema channel names
-#: would buy nothing; the listener filters by the payload's schema).
-#: These are the TYPED legs (the listener's events decode them); the
-#: legacy :data:`HOLD_CHANNEL` knob above keeps its pinned pointer shape.
-#: The create leg's name is ``taskq_wf_hold_created`` (the hostile
-#: the first cut's ``taskq_wf_hold`` sat ONE LETTER
-#: from the legacy ``taskq_wf_holds`` knob — an ops typo's recipe; the
-#: rename is additive, the lane unreleased).
+#: global names, the SCHEMA rides the payload: pg_notify is per-database and
+#: the schema-per-module estate shares one database across many schemas, so
+#: per-schema channel names would buy nothing; the listener filters by the
+#: payload's schema. . These are the typed legs ; the legacy:
+#: data:`HOLD_CHANNEL` knob above keeps its pinned pointer shape. The create
+#: leg's name is ``taskq_wf_hold_created`` (the hostile the first cut's
+#: ``taskq_wf_hold`` sat one letter from the legacy ``taskq_wf_holds`` knob —
+#: an ops typo's recipe; the rename is additive, the lane unreleased).
 HOLD_CREATED_CHANNEL = "taskq_wf_hold_created"
 HOLD_RESOLVED_CHANNEL = "taskq_wf_hold_resolved"
 HOLD_EXPIRED_CHANNEL = "taskq_wf_hold_expired"
 
-#: THE NOTIFY PAYLOAD'S SIZE CAP (the pointer-law creep protector —
-#: P9): PostgreSQL refuses a ``pg_notify`` payload at 8000 bytes, and a
-#: knock refused MID-TX rolls the caller's whole transaction back with
-#: it (the create leg dies inside register_hold's tx). The pointer
-#: payloads are SMALL by law; this cap is the named seam where the
-#: creep dies LOUDLY — before the wire, with the law in the message —
-#: instead of PG's opaque server error after it.
+#: PostgreSQL refuses a ``pg_notify`` payload at 8000 bytes, and a knock
+#: refused mid-tx rolls the caller's whole transaction back with it (the create
+#: leg dies inside register_hold's tx). The pointer payloads are small by law;
+#: this cap is the named seam where the creep dies loudly — before the wire,
+#: with the law in the message — instead of PG's opaque server error after it.
 NOTIFY_PAYLOAD_MAX_BYTES = 8000
 
 #: The hold row's status vocabulary (the statemachine's totality for the
 #: signal rows).
 SignalStatus = Literal["held", "delivered", "cancelled", "abandoned"]
 
-#: THE DURABLE TIMER'S RESERVED SIGNAL PREFIX: a ``wait_until``
-#: hold is an ORDINARY hold row whose ``signal_name`` carries this
-#: prefix — the row IS the truth (the same three-row held
-#: representation, the same cancel cascade, the same answer queue),
-#: and the prefix is the ONLY thing that distinguishes the clock's
-#: hold from a human's. The faces that read holds split on it BY LAW:
-#: the expiry arm NEVER abandons a timer hold (the timer's deadline
-#: pass is THE WAKE — the inverted face), the HITL enumeration never
-#: lists one (a timer is not a human's decision), and the display
-#: surfaces (the run explorer, the CLI's holds panel) show it AS a
+#: a ``wait_until`` hold is an ordinary hold row whose ``signal_name`` carries
+#: this prefix — the row is the truth (the same three-row held representation,
+#: the same cancel cascade, the same answer queue), and the prefix is the only
+#: thing that distinguishes the clock's hold from a human's. The faces that
+#: read holds split on it by law: the expiry arm never abandons a timer hold
+#: (the timer's deadline pass is the wake — the inverted face), the hitl
+#: enumeration never lists one (a timer is not a human's decision), and the
+#: display surfaces (the run explorer, the CLI's holds panel) show it as a
 #: timer — the reserved prefix is the record's own voice.
 TIMER_SIGNAL_PREFIX = "__timer__"
 
@@ -130,13 +124,13 @@ TIMER_SIGNAL_PREFIX = "__timer__"
 TIMER_WAKE_SCHEMA_NAME = "TimerWake"
 
 
-# ── THE SIGNAL MODEL CATALOG (the typed door's runtime registry) ────────
-# The deliver path's boundary validates the payload against the WAIT
-# SITE's declared models (the unknown-field refusal's fix) — but the wait site is
+# ── the signal model catalog (the typed door's runtime registry) ────────
+# The deliver path's boundary validates the payload against the wait
+# site's declared models (the unknown-field refusal's fix) — but the wait site is
 # body code: the classes exist only where the body ran. The catalog is
 # the same D1 discipline the reducer memo uses: the process that ran the
 # wait site registers the models (every process in the fleet carries the
-# same definitions, so a resolve in THIS process validates); a cold
+# same definitions, so a resolve in this process validates); a cold
 # process falls back to the hold row's own ``payload_schema`` (the
 # models' JSON schemas — durable, read by :func:`_fits_by_schema`).
 
@@ -156,7 +150,7 @@ def register_signal_models(
 ) -> None:
     """The wait site's declared models enter the catalog (keyed by the
     workflow + node + signal identity — the hold row's own coordinates).
-    Idempotent: a re-run of the same wait site re-registers the SAME
+    Idempotent: a re-run of the same wait site re-registers the same
     models (the re-execution doctrine)."""
     _signal_models[(workflow_name, node_key, signal_name)] = (models, discriminator)
 
@@ -175,7 +169,7 @@ def resolve_signal_models(
 
 
 def _model_fits(model: type[BaseModel], payload: dict[str, object]) -> bool:
-    """Does *payload* fit ONE declared model, STRICTLY (by SHAPE, never
+    """Does *payload* fit one declared model, STRICTLY (by SHAPE, never
     by declaration order — the unknown-field refusal's rule): no unknown-field
     coercion (a key the model does not declare fails the fit — the
     all-optional ``Lenient`` door cannot swallow a strict member's
@@ -195,7 +189,7 @@ def _model_fits(model: type[BaseModel], payload: dict[str, object]) -> bool:
 
 
 def _fits_by_schema(payload: object, schema: object) -> bool:
-    """The COLD-PROCESS fallback fit: the payload against ONE model's
+    """The COLD-PROCESS fallback fit: the payload against one model's
     JSON schema (the durable ``payload_schema``). A conservative
     structural check — required fields present, unknown fields refused,
     primitive types checked; a schema the check cannot read (nested
@@ -209,12 +203,12 @@ def _fits_by_schema(payload: object, schema: object) -> bool:
     if not isinstance(properties, dict):
         return True
     # The Any-contract walk (the estate's house shape): every branch
-    # asserts the runtime shape it consumes; each USE of an Unknown
+    # asserts the runtime shape it consumes; each use of an Unknown
     # member carries the targeted ignore with the Why.
     properties_doc = cast("dict[str, object]", properties)
     payload_doc = cast("dict[str, object]", payload)
     if any(key not in properties_doc for key in payload_doc):
-        return False  # STRICT: no unknown-field coercion
+        return False  # strict: no unknown-field coercion
     required = schema.get("required", [])  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]  # Why: the same jsonb walk.
     if isinstance(required, list):
         required_doc = cast("list[object]", required)
@@ -245,10 +239,10 @@ def resolve_payload_fit(
     payload: object,
     discriminator: Callable[[dict[str, object]], type[BaseModel]] | None = None,
 ) -> type[BaseModel]:
-    """THE BY-SHAPE RESOLUTION (the hostile-payload class): the payload is
+    """The payload is
     validated against EACH declared model (strict —
     :func:`_model_fits`); the models that fit are the candidates.
-    EXACTLY ONE must fit — it is returned. ZERO fits → the typed
+    EXACTLY one must fit — it is returned. ZERO fits → the typed
     :class:`taskq.exceptions.SignalPayloadError`; MORE than one → the
     typed :class:`taskq.exceptions.SignalPayloadAmbiguousError` UNLESS
     the gate declared an explicit *discriminator* (its pick must be one
@@ -352,11 +346,10 @@ WHERE id = $1
 RETURNING id
 """
 
-# THE HELD NODE'S ADDRESS (the resume leg): the hold id the
-# register stamped into the node's metadata — ONE hold, ONE node. The
-# pre-fix lookup matched `metadata ? 'hold'` alone, which EVERY
-# holding sibling satisfied: a resolve woke an arbitrary one (the map
-# siblings' shared step key made the match ambiguous).
+# the hold id the register stamped into the node's metadata — one hold, one
+# node. The pre-fix lookup matched `metadata ? 'hold'` alone, which every
+# holding sibling satisfied: a resolve woke an arbitrary one (the map siblings'
+# shared step key made the match ambiguous).
 _HELD_NODE_BY_HOLD_SQL = """\
 SELECT id FROM {schema}.jobs WHERE step_key = $1 \
 AND (metadata->>'flow_id')::uuid = $2 \
@@ -430,16 +423,16 @@ def _render(template: str, schema: str) -> str:
 
 
 async def _broadcast(conn: ConnLike, channel: str, payload: dict[str, object]) -> None:
-    """THE BROADCAST LEG: ONE ``pg_notify`` executed on the
-    CALLER'S connection, INSIDE the caller's transaction — the leg is
+    """One ``pg_notify`` executed on the
+    CALLER'S connection, inside the caller's transaction — the leg is
     transactional by construction: PG delivers a NOTIFY only when its
     transaction COMMITS, so a rolled-back hold-create (or a losing
     resolve CAS) is SILENT (a rolled-back hold-create delivers nothing; a
     rolled-back RESOLVE the same). The payload carries the schema (the channels are
     global — the listener filters by it) and the POINTER only, never
-    the sole copy of anything (the row is the truth). THE SIZE CAP
+    the sole copy of anything (the row is the truth). the SIZE CAP
     (P9): a payload at/over :data:`NOTIFY_PAYLOAD_MAX_BYTES` is refused
-    HERE — loudly, before the wire: PG's own refusal would land
+    here — loudly, before the wire: PG's own refusal would land
     mid-tx and roll the caller's transaction back with an opaque
     server error; the pointer law's creep dies at this seam instead."""
     text = dumps_jsonb_str(payload)
@@ -468,7 +461,7 @@ def starts_with_timer(signal_name: str) -> bool:
 
 
 def refuse_reserved_timer_name(name: str, *, mint: str) -> None:
-    """E17 — THE RESERVED NAMESPACE AT THE MINT (the timer hardening's
+    """E17 — the RESERVED NAMESPACE AT the MINT (the timer hardening's
     fix 1): a HAND-facing mint may not name a hold inside the durable
     timer's reserved ``__timer__`` prefix. A payload model named
     ``__timer__Approval`` (or a ``wait_until`` key beginning with the
@@ -501,9 +494,9 @@ def refuse_reserved_timer_name(name: str, *, mint: str) -> None:
 
 
 async def mark_awaited(conn: ConnLike, schema: str, ledger_id: JobId) -> None:
-    """RESUME-NOT-RETRY's ledger face: the CURRENT attempt's ledger row
-    records ``awaited`` — the hold's resume consumes NO ladder attempts
-    (the ladder counts ``failed`` only). The claim's OWN row is the
+    """RESUME-not-RETRY's ledger face: the CURRENT attempt's ledger row
+    records ``awaited`` — the hold's resume consumes no ladder attempts
+    (the ladder counts ``failed`` only). The claim's own row is the
     record (an INSERT here would collide with the claim's arbiter key —
     the UniqueViolation the pins reject)."""
     await conn.execute(_render(_HOLD_AWAITED_LEDGER_SQL, schema), ledger_id)
@@ -526,14 +519,14 @@ async def register_hold(
     expires_at: datetime | None = None,
     map_index: int | None = None,
 ) -> JobId:
-    """Register ONE hold: a NEW epoch mints a NEW row (multi-hold — the
+    """Register one hold: a NEW epoch mints a NEW row (multi-hold — the
     same signal name can hold again; the stale-payload dragon dies
     here); the node takes the HELD REPRESENTATION (``pending`` +
     ``scheduled_at`` = deadline + the signal row as truth — the worker
     releases, no slot held); a LOOP node's budget PAUSES (the wall is
     blind while the loop waits on a human).
 
-    THE IDENTITY CARRIES THE MAP INDEX (the LedgerWatch F2 fix): the
+    The
     unresolved-uniqueness arbiter is
     ``(workflow_id, node_key, signal_name, COALESCE(map_index, -1),
     hold_epoch)`` — MAP SIBLINGS of one source hold CONCURRENTLY as
@@ -541,19 +534,19 @@ async def register_hold(
     moderation/approval pipeline shape — is the machinery's own shape,
     never a workaround). A plain step's hold carries ``map_index=None``
     and keeps the pre-fix identity exactly. The resume addresses the
-    hold's OWN node by the hold id stamped into that node's metadata —
+    hold's own node by the hold id stamped into that node's metadata —
     one hold, one node, one resume; a resolve can never wake a
     sibling.
 
-    THE CONTEXT RIDES THE INSERT'S OWN TRANSACTION (the crash-window fix
+    the CONTEXT RIDES the INSERT'S own TRANSACTION (the crash-window fix
     — the crash-window's closure): reason/tool/args pass the redact
     pipeline (chain → the token-head pass → the workflow's hook,
-    :func:`redact_hold_context`) and land in the SAME tx as the hold's
+    :func:`redact_hold_context`) and land in the same tx as the hold's
     insert — no second statement after the commit, no context-less hold,
-    and the row never carries a canary (REDACT-BEFORE-PERSIST extended
+    and the row never carries a canary (REDACT-before-PERSIST extended
     to the hold row).
 
-    THE LOOP'S BUDGET PAUSE IS DERIVED, NEVER ARGUED (the accept-and-
+    the LOOP'S BUDGET PAUSE IS DERIVED, never ARGUED (the accept-and-
     ignore hunt's fix): register_hold once took ``is_loop_node=`` — the
     caller's belief — and the INSERT ignored it: the pause rode the SQL's
     own marker (``metadata @> '{"kind": "loop"}'``), the row's KIND
@@ -562,14 +555,14 @@ async def register_hold(
     param is GONE — the row's own kind marker is the only voice, and the
     held-loop pause's pins exercise the behavior on the row's kind.
 
-    THE CONTRACT IS MANDATORY (the untyped-door class,
+    the CONTRACT IS MANDATORY (the untyped-door class,
     the mint's half): ``payload_schema`` must carry at least one declared
-    model — a contract-less hold is the audit hole (ANY payload delivers
+    model — a contract-less hold is the audit hole (any payload delivers
     to it from a fresh process), so the mint REFUSES one. The boundary
     additionally refuses any legacy row that predates the law (the
     migration backfilled those to the explicit no-contract marker).
 
-    THE DEADLINE'S TWO FACES: *timeout_s* is the RELATIVE arm —
+    *timeout_s* is the RELATIVE arm —
     the DB clock's now plus the seconds (the law: the wait site's
     value arms the sweep); *expires_at* is the ABSOLUTE arm — the
     instant rides through UNCHANGED, the DB clock never re-bases it
@@ -584,9 +577,9 @@ async def register_hold(
         )
     hold_id = JobId(new_uuid())
     deadline = await _deadline_expr(conn, timeout_s, expires_at=expires_at)
-    # THE CONTEXT, REDACTED BEFORE PERSIST: the masked dict is the
-    # insert's payload (a mask that broke the JSON shape degrades to the
-    # masked TEXT record — the operator still reads a scrubbed row).
+    # the masked dict is the insert's payload (a mask that broke the JSON shape
+    # degrades to the masked text record — the operator still reads a scrubbed
+    # row).
     payload_doc: dict[str, object] = {}
     if context is not None and any(value is not None for value in context.values()):
         masked = redact_hold_context(
@@ -613,30 +606,27 @@ async def register_hold(
             call_id,
             dumps_jsonb_str(
                 payload_doc
-            ),  # the payload arrives at DELIVER (deliver-no-drop); the CONTEXT is redacted here
+            ),  # the payload arrives at deliver (deliver-no-drop); the context is redacted here
             dumps_jsonb_str(payload_schema) if payload_schema else None,
             deadline,
         )
-        # THE HELD REPRESENTATION + the held marker (the claimable
-        # query's exclusion — the worker RELEASES the slot).
+        # the held representation + the held marker (the claimable
+        # query's exclusion — the worker releases the slot).
         await conn.execute(
             _render(_HOLD_HOLD_NODE_SQL, schema),
             node_id,
             dumps_jsonb_str({"hold": str(hold_id), "held_signal": signal_name}),
             deadline,
         )
-        # THE BROADCAST, CREATE LEG (TRANSACTIONAL: the NOTIFY
-        # rides THIS tx, so a rolled-back hold-create is silent; the
-        # payload carries the schema + the pointer, never the payload).
-        # THE TIMER'S EXCLUSION (the timer hardening's fix 2 — the
-        # reserved prefix's ONE mechanism, applied at this face too):
-        # this leg is the APPROVAL broadcast — a timer hold is NOT an
-        # approval, and announcing one here surfaced the clock's hold as
-        # a pending human decision on every SSE/cowork-UI consumer. The
-        # timer's faces that WANT the mint's news announce it themselves
-        # (the wake's RESOLVED leg fires at the deadline); the pending
-        # surfaces (the listener's backfill, HitlClient.list) split on
-        # the SAME prefix.
+        # transactional: the NOTIFY rides this tx, so a rolled-back hold-create
+        # is silent; the payload carries the schema + the pointer, never the
+        # payload. . the timer's exclusion: this leg is the approval broadcast
+        # — a timer hold is not an approval, and announcing one here surfaced
+        # the clock's hold as a pending human decision on every SSE/cowork-UI
+        # consumer. The timer's faces that want the mint's news announce it
+        # themselves (the wake's resolved leg fires at the deadline); the
+        # pending surfaces (the listener's backfill, HitlClient.list) split on
+        # the same prefix.
         if not starts_with_timer(signal_name):
             await _broadcast(
                 conn,
@@ -690,7 +680,7 @@ async def register_timer_hold(
     payload_schema: dict[str, object],
     map_index: int | None = None,
 ) -> JobId:
-    """The TIMER hold's mint: the SAME hold machinery as the human
+    """The TIMER hold's mint: the same hold machinery as the human
     hold (``register_hold`` — the held representation, the create
     broadcast, the redact-free context), with exactly one deadline face
     given: *absolute* (the body's datetime — it rides through
@@ -700,7 +690,7 @@ async def register_timer_hold(
     it back — the receipt and the row cannot disagree). The hold
     identity carries the MAP INDEX (the map-index fix, the
     merge-order ruling's timer leg): a timer inside a map item mints
-    EACH sibling its OWN row — the clock never collides across
+    EACH sibling its own row — the clock never collides across
     siblings."""
     if (absolute is None) == (relative is None):
         raise TypeError(
@@ -754,9 +744,9 @@ async def _boundary_verdict(
     hold_id: JobId,
     payload: object,
 ) -> tuple[str | None, str | None]:
-    """THE RUNTIME PAYLOAD BOUNDARY (the unknown-field refusal's fix): the hold's
+    """The hold's
     DECLARED models validate the payload — BY SHAPE, never by
-    declaration order — BEFORE anything consumes the hold. Returns the
+    declaration order — before anything consumes the hold. Returns the
     pair (the refusal's REASON — a typed-face string naming WHY — when
     the payload must be refused, ``None`` when it may pass; and the
     FITTED MODEL'S NAME — the verdict's declared kind, the broadcast
@@ -773,11 +763,10 @@ async def _boundary_verdict(
         row = await conn.fetchrow(_render(_HOLD_FOR_BOUNDARY_SQL, schema), hold_id)
         if row is None or row["status"] != "held":
             return None, None  # the CAS owns the stale/cancelled arm's refusal
-        # THE TIMER'S REFUSAL (the clock is the only resolver): a
-        # hold under the reserved prefix is the CLOCK's — no hand
-        # delivers to it, whatever the payload's shape (a well-formed
-        # forgery of the wake's schema included). The hold SURVIVES the
-        # refusal; the sweep's timer arm fires the real wake.
+            # a hold under the reserved prefix is the clock's — no hand delivers to
+        # it, whatever the payload's shape (a well-formed forgery of the wake's
+        # schema included). The hold survives the refusal; the sweep's timer
+        # arm fires the real wake.
         if row["signal_name"] and starts_with_timer(row["signal_name"]):
             return (
                 "this hold is a DURABLE TIMER (the reserved __timer__ "
@@ -796,19 +785,19 @@ async def _boundary_verdict(
         except (SignalPayloadError, SignalPayloadAmbiguousError) as exc:
             return str(exc), None
         return None, fitted.__name__
-    # THE COLD-PROCESS FALLBACK: the durable payload_schema's structural
-    # fit (per declared model, by shape; exactly one must fit).
+        # the durable payload_schema's structural fit (per declared model, by
+    # shape; exactly one must fit).
     schema_ref = row["payload_schema"]
     schema_doc = _json_loads(schema_ref) if isinstance(schema_ref, str) else schema_ref
     if not isinstance(schema_doc, dict) or not schema_doc:
-        # THE SCHEMA-LESS HOLD REFUSES (the untyped-hold refusal): a hold with NO declared contract is the audit hole — ANY
-        # payload would deliver on THE audit-sensitive action, and the
-        # door's teeth would depend on which process asks. There is no
-        # honest delivery for an undeclared hold: the LOUD typed refusal,
-        # the hold SURVIVES; the operator re-runs the flow on the current
-        # code (the wait site mints a declared hold — payload_schema is
-        # mandatory at hold time, the migration backfilled the legacy
-        # rows to the explicit no-contract marker this arm refuses).
+        # a hold with no declared contract is the audit hole — any payload
+        # would deliver on the audit-sensitive action, and the door's teeth
+        # would depend on which process asks. There is no honest delivery for
+        # an undeclared hold: the loud typed refusal, the hold survives; the
+        # operator re-runs the flow on the current code (the wait site mints a
+        # declared hold — payload_schema is mandatory at hold time, the
+        # migration backfilled the legacy rows to the explicit no-contract
+        # marker this arm refuses).
         return (
             "the hold carries NO declared payload schema — the contract the "
             "typed door validates against does not exist on this row (a "
@@ -849,12 +838,12 @@ async def deliver_payload(
     payload: dict[str, object],
     payload_json: str,
 ) -> DeliveryResult:
-    """THE DELIVER CAS: validate (the typed door's RUNTIME boundary —
+    """Validate (the typed door's RUNTIME boundary —
     the payload validates against the hold's declared models BY SHAPE
     before anything consumes the hold; a bad payload is the TYPED
     ``refused`` and the hold SURVIVES) → the row's
     ``'held' → 'delivered'`` CAS → the node's resume. Exactly-once:
-    two concurrent delivers → ONE ``delivered``, one resume. A deliver
+    two concurrent delivers → one ``delivered``, one resume. A deliver
     that cannot resume = the TYPED ``refused`` (the hold SURVIVES on the
     stale arm) — never a silent drop."""
     refusal, verdict_kind = await _boundary_verdict(
@@ -877,8 +866,8 @@ async def deliver_payload(
                 status="refused",
                 reason=f"hold {hold_id} is {already!r} — the deliver CAS refused",
             )
-        # THE KNOB (in the same tx): pg_notify — the pointer, never the
-        # sole copy (the row is the truth; a missed knock costs latency).
+            # in the same tx. pg_notify — the pointer, never the sole copy (the row
+        # is the truth; a missed knock costs latency).
         await conn.execute(
             "SELECT pg_notify($1, $2)",
             HOLD_CHANNEL,
@@ -886,7 +875,7 @@ async def deliver_payload(
                 {"hold_id": str(hold_id), "run_id": str(workflow_id), "event": "delivered"}
             ),
         )
-        # THE BROADCAST, RESOLVED LEG (the same tx, transactional;
+        # the broadcast, resolved leg (the same tx, transactional;
         # verdict_kind is the payload model the typed door validated
         # against — the verdict's declared kind, never the payload).
         await _broadcast(
@@ -901,21 +890,18 @@ async def deliver_payload(
         )
         resumed = None
         if cas["node_key"]:
-            # THE WAKE ADDRESSES THE HOLD'S OWN NODE (the F2 fix —
-            # the resume-addressing face, the same stamp both lanes
-            # carry): the node's ``metadata->>'hold'`` IS the resolved
-            # hold's id (register_hold stamps it in the hold-mint's own
-            # tx), so the wake resolves by the STAMP — one hold, one
-            # node, one resume. The pre-fix read matched step_key + flow
-            # + ``metadata ? 'hold'`` — no addressing leg for the map
-            # siblings (one step_key, distinct signals): a middle
-            # sibling's resolve woke the arbitrary first-matching row (a
-            # sibling that was never answered re-ran; the answered node's
-            # delivered payload stayed unconsumable). The stamp is unique
-            # per hold by construction (the hold id is minted per
+            # the node's ``metadata->>'hold'`` IS the resolved hold's id
+            # (register_hold stamps it in the hold-mint's own tx), so the wake
+            # resolves by the STAMP — one hold, one node, one resume. The
+            # pre-fix read matched step_key + flow + ``metadata ? 'hold'`` — no
+            # addressing leg for the map siblings (one step_key, distinct
+            # signals): a middle sibling's resolve woke the arbitrary
+            # first-matching row (a sibling that was never answered re-ran; the
+            # answered node's delivered payload stayed unconsumable). The stamp
+            # is unique per hold by construction (the hold id is minted per
             # register_hold), so no ORDER BY lottery is left to win; the
-            # step_key leg stays as the CHEAPEST index discriminator (the
-            # stamp alone would scan the flow's every job).
+            # step_key leg stays as the CHEAPEST index discriminator (the stamp
+            # alone would scan the flow's every job).
             node_id = await conn.fetchval(
                 _render(_HELD_NODE_BY_HOLD_SQL, schema),
                 cas["node_key"],
@@ -926,7 +912,7 @@ async def deliver_payload(
                 resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, schema), node_id)
         if resumed is None:
             # The CAS won but the node is gone (a cancelled flow killed
-            # the held representation): the ROW is the truth — the
+            # the held representation): the row is the truth — the
             # delivered row stands, the resume is refused.
             return delivery_refused("the held node is not resumable (the flow died)")
         logger.info(
@@ -982,14 +968,11 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
             # wait site's resume finds the row 'abandoned' → the typed
             # error (the re-execution doctrine: the body re-runs from
             # the top; pre-wait side effects are ctx.step-ledgered).
-            # THE WAKE ADDRESSES THE HOLD'S OWN NODE (the law at the
-            # expiry seat — the same stamp addressing deliver_payload's
-            # wake carries): the node's ``metadata->>'hold'`` IS this
-            # hold's id, so the resolve matches the EXPIRED hold's own
-            # node — a map sibling's expiry can never wake a sibling
-            # that was never timed out (the pre-fix read matched
-            # step_key + flow + hold-marker: the arbitrary first-match
-            # won, a live sibling re-ran with the Expired verdict).
+            # the node's ``metadata->>'hold'`` is this hold's id, so the
+            # resolve matches the expired hold's own node — a map sibling's
+            # expiry can never wake a sibling that was never timed out (the
+            # pre-fix read matched step_key + flow + hold-marker: the arbitrary
+            # first-match won, a live sibling re-ran with the Expired verdict).
             node_id = await conn.fetchval(
                 _render(_HELD_NODE_BY_HOLD_SQL, schema),
                 row["node_key"],
@@ -998,11 +981,10 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
             )
             if node_id is not None:
                 await conn.execute(_render(_DELIVER_RESUME_SQL, schema), node_id)
-            # THE BROADCAST, EXPIRED LEG: the sweep's CAS UPDATE
-            # committed the moment the autocommit statement returned —
-            # the notify rides AFTER it, never before (a notify for a
-            # row that did not land is the rejected order). The leg is
-            # BLIND TO NOTHING: a LOOP-kind hold (budget-paused) expires
+                # the sweep's CAS UPDATE committed the moment the autocommit
+            # statement returned — the notify rides after it, never before (a
+            # notify for a row that did not land is the rejected order). The
+            # leg is blind to NOTHING: a loop-kind hold (budget-paused) expires
             # through this same arm and its event delivers.
             await _broadcast(
                 conn,
@@ -1018,16 +1000,15 @@ async def sweep_expired_signals(pool: asyncpg.Pool, *, schema: str, batch_size: 
     return len(rows)
 
 
-# THE SWEEP'S TIMER ARM: the deadline's pass → the hold RESOLVED
-# by the clock — 'delivered', never 'abandoned' (the inverted face). The
-# fire is ONE CAS statement (the same fence shape the deliver CAS keeps:
-# only 'held' rows resolve, so a cancelled flow's timer never wakes, and
-# a twice-fired timer is unrepresentable). The wake's payload is THE
-# CLOCK'S OWN RECEIPT, built statement-side: fired_by='timer', the
-# timer's key (the reserved prefix stripped), the scheduled instant (the
-# row's own expires_at) and the fired-at instant (ONE clock_timestamp()
-# for the whole pass — the resolved_at column and the payload stamp are
-# the same instant, the record cannot disagree with itself).
+# the deadline's pass → the hold resolved by the clock — 'delivered', never
+# 'abandoned' (the inverted face). The fire is one CAS statement (the same
+# fence shape the deliver CAS keeps: only 'held' rows resolve, so a cancelled
+# flow's timer never wakes, and a twice-fired timer is unrepresentable). The
+# wake's payload is the clock's own receipt, built statement-side:
+# fired_by='timer', the timer's key (the reserved prefix stripped), the
+# scheduled instant (the row's own expires_at) and the fired-at instant (one
+# clock_timestamp() for the whole pass — the resolved_at column and the payload
+# stamp are the same instant, the record cannot disagree with itself).
 _TIMER_FIRE_SQL = """\
 WITH fired_ts AS (SELECT clock_timestamp() AS ts),
 due AS (
@@ -1066,10 +1047,10 @@ async def sweep_due_timers(
     drain: bool = False,
     max_batches: int = 1000,
 ) -> int:
-    """THE SWEEP'S TIMER ARM — the expiry arm's inverted twin:
+    """SWEEP'S TIMER ARM — the expiry arm's inverted twin
     every DUE timer hold (the reserved ``__timer__`` prefix, the DB
     clock's comparison) resolves 'delivered' — never 'abandoned' —
-    with the CLOCK'S OWN RECEIPT as the payload (``fired_by='timer'``,
+    with the CLOCK'S own RECEIPT as the payload (``fired_by='timer'``,
     the scheduled vs the fired-at stamps; :class:`~taskq.workflows.
     api._ctx_timer.TimerWake` re-validates it at the wait site). The
     node's held representation clears and the row re-claims (the same
@@ -1077,19 +1058,19 @@ async def sweep_due_timers(
     and the wait site RETURNS the wake — the continuation is the
     timer's point.
 
-    THE AT-LEAST FACE: the deadline fires at the FIRST sweep pass
+    The deadline fires at the first sweep pass
     at-or-after it — never early (the ``<=`` comparison is the whole
     gate), never at a precise wall time (the sweep interval + a
     leader failover's gap ride the wake's ``fired_at``; the delta is
-    the receipt's own arithmetic). THE DURABILITY: the arm reads ROWS,
+    the receipt's own arithmetic). the DURABILITY: the arm reads ROWS,
     not processes — the worker that armed the timer may be dead (a
     SIGKILL mid-wait); the successor's sweep fires the wake exactly
-    the same (the row's expiry arms the reclaim). THE EXACTLY-ONCE:
+    the same (the row's expiry arms the reclaim). the EXACTLY-once:
     the 'held' → 'delivered' CAS is the fence — a row resolved here
     can never resolve again, by the arm or by a hand.
 
-    THE DRAIN (the timer drain's fix — the 10k-timer tail): the
-    pre-fix arm fired ONE bounded batch per pass, so a backlog of *N*
+    The
+    pre-fix arm fired one bounded batch per pass, so a backlog of *N*
     due timers needed ``ceil(N / batch_size)`` passes — at the 30 s
     sweep cadence and batch 100, 10k due timers measured a ~50-minute
     worst-case tail (the measured tail). ``drain=True`` — the LEADER
@@ -1103,7 +1084,7 @@ async def sweep_due_timers(
     itself): 1000 batches x batch 100 = 100k fires per tick, measured
     far past the recorded failure's 10k shape. The due-scan is INDEX-LED by the
     timer's own partial index (``wf_signals_timer_due_idx`` —
-    ``(expires_at, id) WHERE status = 'held' AND starts_with(signal_name,
+    ``(expires_at, id) WHERE status = 'held' and starts_with(signal_name,
     '__timer__')``): no seq scan, no sort.
 
     Returns the fired count (the drained total)."""
@@ -1119,7 +1100,7 @@ async def sweep_due_timers(
                 # TimerWake (the re-execution doctrine: the body re-runs
                 # from the top; pre-timer side effects are ctx.substep-
                 # ledgered). The same shape the expiry arm keeps — the
-                # faces differ ONLY in the row's resolution state.
+                # faces differ only in the row's resolution state.
                 node_id = await conn.fetchval(
                     _render(
                         "SELECT id FROM {schema}.jobs WHERE step_key = $1 "
@@ -1131,11 +1112,11 @@ async def sweep_due_timers(
                 )
                 if node_id is not None:
                     await conn.execute(_render(_DELIVER_RESUME_SQL, schema), node_id)
-                # THE BROADCAST, RESOLVED LEG (the channels — the timer's
-                # wake is a RESOLUTION by the clock: the same transactional
+                # the broadcast, resolved leg (the channels — the timer's
+                # wake is a resolution by the clock: the same transactional
                 # discipline does not apply here — the fire statement
                 # committed the moment it returned, autocommit — so the
-                # notify rides AFTER it, the expiry arm's own order).
+                # notify rides after it, the expiry arm's own order).
                 await _broadcast(
                     conn,
                     HOLD_RESOLVED_CHANNEL,
@@ -1164,12 +1145,11 @@ async def sweep_due_timers(
 # ── the child-join wake (the child's terminal is the hold's resolver) ─
 
 #: The join hold's signal-name prefix (the arm's query keys on it; the
-#: payload contract is the child's declared result model). ONE home: the
+#: payload contract is the child's declared result model). one home: the
 #: join site (``workflows/_childflow.py``) imports it.
 CHILD_JOIN_SIGNAL_PREFIX = "__child__:"
 
-#: THE BROADCAST'S CHANNEL (the transport's own discipline): the
-#: child's terminal wake — ONE knock per delivered join hold, the
+#: the child's terminal wake — one knock per delivered join hold, the
 #: pointer-only payload (the row is the truth).
 CHILD_TERMINAL_CHANNEL = "taskq_wf_child_terminal"
 
@@ -1200,7 +1180,7 @@ RETURNING s.id, s.workflow_id, s.node_key, s.signal_name, v.child_id, v.child_st
 
 
 async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size: int = 100) -> int:
-    """THE CHILD-JOIN WAKE ARM (the sweep's resolver half + its
+    """the CHILD-JOIN WAKE ARM (the sweep's resolver half + its
     reaper half): every held join whose child flow is TERMINAL (or whose
     child's root row is GONE — the fail-close face) is CAS-delivered,
     its parent node resumed, and the transport knocks
@@ -1230,8 +1210,8 @@ async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size
             )
             if node_id is not None:
                 await conn.execute(_render(_DELIVER_RESUME_SQL, wsql.schema), node_id)
-            # THE BROADCAST (the pointer law): the knock rides AFTER the
-            # CAS committed (the rejected order's fix).
+                # the knock rides after the CAS committed (the rejected order's
+            # fix).
             await _broadcast(
                 conn,
                 CHILD_TERMINAL_CHANNEL,
@@ -1247,17 +1227,17 @@ async def sweep_child_joins(pool: asyncpg.Pool, wsql: WorkflowSql, *, batch_size
     return len(rows)
 
 
-# ── the client surface (the programmatic HITL consumer) ─────────────────
+# ── the client surface (the programmatic hitl consumer) ─────────────────
 
 
 @dataclass(frozen=True, slots=True)
 class HoldContext:
-    """THE HOLD CONTEXT CONTRACT (enough for a
+    """the HOLD CONTEXT CONTRACT (enough for a
     SEPARATE UI to render a useful request): the payload + the
     author-supplied reason/tool/args + the provenance (run id, node
     key, gate name, epoch, created_at, the deadline) + the
-    payload-schema reference. THE REDACT LAW EXTENDS: the context passes
-    the redact chain BEFORE it reaches this surface (a canary in tool
+    payload-schema reference. the REDACT LAW EXTENDS: the context passes
+    the redact chain before it reaches this surface (a canary in tool
     args reaches NEITHER the list NOR the knock)."""
 
     hold_id: str
@@ -1265,7 +1245,7 @@ class HoldContext:
     node_key: str
     signal_name: str
     hold_epoch: int
-    #: The map item's index (the map-index face): a MAP SIBLING's hold
+    #: The map item's index (the map-index face): a map sibling's hold
     #: carries its item index — the operator's UI addresses the item it
     #: renders; a plain step's hold carries ``None``.
     map_index: int | None
@@ -1292,7 +1272,7 @@ class HitlClient:
         schema: str,
         redact: Any = None,
     ) -> None:
-        """The read face's constructor — ONE schema convention (the
+        """The read face's constructor — one schema convention (the
         teardown round's fix): POSITIONAL, the majority the siblings
         carry (``FlowRunner(compiled, pool, schema)``,
         ``run(flow, pool, schema)``). The class is unreleased — the
@@ -1306,7 +1286,7 @@ class HitlClient:
     async def list(
         self, run: JobId | str | None = None, *, flow_id: JobId | str | None = None
     ) -> list[HoldContext]:
-        """The pending holds for ONE run — a run with MULTIPLE
+        """The pending holds for one run — a run with MULTIPLE
         concurrent holds lists ALL of them distinctly; the multi-
         workflow property: the filter is BY RUN, resolves never cross.
         Map siblings included: two map items of one
@@ -1363,7 +1343,7 @@ class HitlClient:
         boundary — BY SHAPE, before the CAS: a bad
         payload is the TYPED ``refused``, the hold SURVIVES, nothing is
         consumed, and the refusal is AUDITED (the operator sees WHY).
-        The transition + THE AUDIT + THE KNOCK share ONE transaction
+        The transition + the AUDIT + the KNOCK share one transaction
         whose linearization point is the DELIVER CAS ITSELF (a
         guard-tx ordered before the CAS would write
         both under concurrency): the loser matches no rows and writes NOTHING — 0
@@ -1371,8 +1351,8 @@ class HitlClient:
         already-resolved hold is the DEFINED no-op (the idempotence
         pin).
 
-        THE CHILD-JOIN REFUSAL (the honest face): a
-        CHILD-JOIN hold (signal ``__child__:…``) is NOT operator-
+        A
+        CHILD-JOIN hold (signal ``__child__:…``) is not operator-
         resolvable — its resolver is the CHILD'S TERMINAL (the wake
         arm's own CAS). The pre-fix face DELIVERED on a matching
         payload, the parent's body re-executed, the live child
@@ -1381,13 +1361,13 @@ class HitlClient:
         SURVIVES."""
         from taskq.audit import record_admin_action
 
-        # EVERY leg speaks the canonical id (the held-row read, the
+        # every leg speaks the canonical id (the held-row read, the
         # resume lookup, the CAS, the audit pointer, the broadcasts) —
         # a non-canonical spelling must resolve the hold, never
         # consume-then-refuse it.
         hold_id = _as_hold_id(hold_id)
 
-        # THE CHILD-JOIN REFUSAL (before the boundary — nothing about a
+        # the child-join refusal (before the boundary — nothing about a
         # child-join hold is operator-consumable).
         async with self._pool.acquire() as conn:
             join_refusal = await _child_join_refusal(conn, self._schema, _as_hold_id(hold_id))
@@ -1405,7 +1385,7 @@ class HitlClient:
                 )
             return delivery_refused(join_refusal)
 
-        # THE BOUNDARY (before the CAS — nothing consumed on a refusal).
+        # the boundary (before the CAS — nothing consumed on a refusal).
         refusal, verdict_kind = await _boundary_verdict(
             self._pool, schema=self._schema, hold_id=_as_hold_id(hold_id), payload=decision
         )
@@ -1422,21 +1402,18 @@ class HitlClient:
                     detail={"refused": refusal},
                 )
             return delivery_refused(refusal)
-        # THE RESOLVE TX: the CAS is the transition's only grant; the
-        # audit + the knock ride the WINNING tx (exactly-once).
-        #
-        # THE NODE PRE-LOCK (the deadlock fix — the resolve/cancel
-        # race pin's finding at true concurrency): the cancel tx
-        # takes jobs (the root flip, then the nodes) → wf_signals (the
-        # held signals); this tx took wf_signals (the CAS) → jobs (the
-        # resume) — the opposite order, and the two verbs' overlap
-        # deadlocked (the pin landed in DeadlockDetectedError, an
-        # UNNAMED state — the exact dragon it hunts). The node's job
-        # row is locked FIRST, FOR UPDATE — a lock the loser holds
-        # without writing (the loser's law is intact: it matches no
-        # rows and writes NOTHING) — and the CAS stays the
-        # linearization point. Both verbs now take jobs → wf_signals;
-        # there is no opposite pair left.
+            # the CAS is the transition's only grant; the audit + the knock ride
+        # the WINNING tx (exactly-once). THE NODE PRE-LOCK (the deadlock fix —
+        # the resolve/cancel race pin's finding at true concurrency): the
+        # cancel tx takes jobs (the root flip, then the nodes) → wf_signals
+        # (the held signals); this tx took wf_signals (the CAS) → jobs (the
+        # resume) — the opposite order, and the two verbs' overlap deadlocked
+        # (the pin landed in DeadlockDetectedError, an UNNAMED state — the
+        # exact dragon it hunts). The node's job row is locked FIRST, FOR
+        # UPDATE — a lock the loser holds without writing (the loser's law is
+        # intact: it matches no rows and writes NOTHING) — and the CAS stays
+        # the linearization point. Both verbs now take jobs → wf_signals; there
+        # is no opposite pair left.
         async with self._pool.acquire() as conn, conn.transaction():
             held = await conn.fetchrow(
                 _render(
@@ -1479,7 +1456,7 @@ class HitlClient:
                     status="no-op" if already == "delivered" else "refused",
                     reason=f"hold {hold_id} is {already!r}",
                 )
-            # THE AUDIT ROW (the caller owns the tx — the same-tx
+            # the audit row (the caller owns the tx — the same-tx
             # guarantee, now exactly-once with the transition).
             await record_admin_action(
                 conn,
@@ -1491,7 +1468,7 @@ class HitlClient:
                 reason=reason,
                 detail={"run_id": str(cas["workflow_id"]), "signal": cas["signal_name"]},
             )
-            # THE KNOB (the same tx — the pointer, never the truth).
+            # the knob (the same tx — the pointer, never the truth).
             await conn.execute(
                 "SELECT pg_notify($1, $2)",
                 HOLD_CHANNEL,
@@ -1503,7 +1480,7 @@ class HitlClient:
                     }
                 ),
             )
-            # THE BROADCAST, RESOLVED LEG (the CAS-WINNING tx;
+            # the broadcast, resolved leg (the CAS-WINNING tx;
             # the loser matched no rows and knocks NOTHING).
             await _broadcast(
                 conn,
@@ -1524,7 +1501,7 @@ class HitlClient:
                 resumed = await conn.fetchval(_render(_DELIVER_RESUME_SQL, self._schema), node_id)
             if resumed is None:
                 # The CAS won but the node is gone (a cancelled flow
-                # killed the held representation): the ROW is the truth
+                # killed the held representation): the row is the truth
                 # — the delivered row stands, the resume is refused.
                 return delivery_refused("the held node is not resumable (the flow died)")
             logger.info(
@@ -1536,9 +1513,9 @@ class HitlClient:
             return DeliveryResult(status="delivered")
 
     def _context(self, row: Any) -> HoldContext:
-        """The row → the context (decoded ONCE — law; the
+        """The row → the context (decoded once — law; the
         REDACT LAW: the payload passes the chain before anything
-        leaves). THE DEFAULT IS THE CHAIN (the belt the attack probes check): a
+        leaves). the DEFAULT IS the CHAIN (the belt the attack probes check): a
         client constructed with no hook still runs the vetted chain +
         the hold-context token pass over the payload — a canary never
         reaches the enumeration surface verbatim even on a row written
@@ -1552,18 +1529,17 @@ class HitlClient:
             else row["payload_schema"]
         )
         if payload is not None and isinstance(payload, dict):
-            # THE CHAIN RUNS ALWAYS (the vetted masks + the hold
+            # the chain runs always (the vetted masks + the hold
             # surface's token pass); the client's hook POST-COMPOSES on
             # the chain's output — it can only redact more.
             payload_doc = cast("dict[str, object]", payload)  # pyright: ignore[reportUnknownVariableType]  # Why: the row's jsonb — the isinstance guard above is the runtime shape check.
             chained = redact_hold_context(payload_doc)
             payload = chained if self._redact is None else self._redact(chained)
-        # THE HELD ROW'S CONTEXT IS THE REASON'S HOME: pre-delivery the
-        # payload IS the redacted context doc (reason/tool/args —
-        # register_hold wrote it); the contract's reason field reads it
-        # instead of lying None (the web demo's ROW read
-        # renders this). Post-delivery the payload is the decision; the
-        # reason is gone with the held state it belonged to.
+            # pre-delivery the payload is the redacted context doc
+        # (reason/tool/args — register_hold wrote it); the contract's reason
+        # field reads it instead of lying None (the web demo's row read renders
+        # this). Post-delivery the payload is the decision; the reason is gone
+        # with the held state it belonged to.
         reason: str | None = None
         if row["status"] == "held" and isinstance(payload, dict):
             raw_reason = payload.get("reason")  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]  # Why: the row's jsonb walk — the isinstance guard below is the runtime shape check (the Any-contract walk's boundary).
@@ -1589,7 +1565,7 @@ class HitlClient:
 async def cancel_run_signals(conn: ConnLike, *, schema: str, workflow_id: JobId) -> int:
     """The CANCEL CASCADE's signal leg: the run's held signals →
     ``cancelled`` (the same one-tx cancel — THIS leg runs on the CALLER'S
-    CONNECTION, inside the caller's transaction: the statement is ONE
+    CONNECTION, inside the caller's transaction: the statement is one
     UPDATE, so composing with it costs nothing and the torn state is
     IMPOSSIBLE by construction — the torn-cancel defect (a leg riding a
     SECOND pool connection in autocommit, where an outer rollback left

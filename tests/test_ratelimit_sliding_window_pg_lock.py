@@ -158,7 +158,7 @@ class _ContendedFakeConn:
 
 
 class _BlackHoleFakeConn(_ContendedFakeConn):
-    """Contended tier whose blocking acquire NEVER returns (network black
+    """Contended tier whose blocking acquire never returns (network black
     hole: the server is unreachable, the statement never completes) - only
     the client-side wait_for backstop can bound this."""
 
@@ -224,10 +224,10 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert decision.request_id == str(request_id)
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         # Two-tier shape: one try-lock, then the savepoint tier. Only the
-        # SET ran - the timeout raised before any restore, and the
+        # set ran - the timeout raised before any restore, and the
         # savepoint ROLLBACK undoes the set itself.
         assert conn.try_lock_calls == 1
-        # One savepoint from the acquire's OWN transaction wrapper, one
+        # One savepoint from the acquire's own transaction wrapper, one
         # from the contended tier inside it.
         assert conn.savepoint_opens == 2
         assert conn.blocking_lock_calls == 1
@@ -260,7 +260,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
     async def test_settings_lock_timeout_is_honored_by_default_call_shape(self) -> None:
         """The settings object is the only budget wire under the
         production call shape: ``SlidingWindow.acquire`` calls
-        ``_acquire_pg_log(self, pg_pool, settings, request_id)`` with NO
+        ``_acquire_pg_log(self, pg_pool, settings, request_id)`` with no
         ``lock_timeout_ms`` kwarg, so the operator-configured budget on
         ``WorkerSettings.sliding_window_lock_timeout_ms`` must govern the
         server-side ``lock_timeout`` GUC and the denial's retry hint -
@@ -322,11 +322,11 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert decision.retry_after == timedelta(0)
         assert conn.try_lock_calls == 1
         assert conn.blocking_lock_calls == 1
-        # One savepoint from the acquire's OWN transaction wrapper, one
+        # One savepoint from the acquire's own transaction wrapper, one
         # from the contended tier inside it.
         assert conn.savepoint_opens == 2
         # Granted path: the budget was set, then restored to the prior
-        # value BEFORE the savepoint RELEASE.
+        # value before the savepoint release.
         assert conn.set_config_values == ["1000ms", "0"]
         # The fused statement is the whole locked critical section: the
         # prune DELETE and the admission INSERT both live in it.
@@ -335,7 +335,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
 
     async def test_fast_path_uncontended_is_single_try_lock_statement(self) -> None:
         """Happy-path round-trip parity: an uncontended acquire issues
-        exactly ONE advisory-lock statement (the try-lock) and never
+        exactly one advisory-lock statement (the try-lock) and never
         touches the savepoint/GUC machinery - identical to the pre-bounded
         statement count, so the bound costs the common case nothing."""
         sw = _sw("sw_lock_unit_fast")
@@ -350,7 +350,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert decision.allowed is True
         assert conn.try_lock_calls == 1
         assert conn.blocking_lock_calls == 0
-        # Only the acquire's OWN transaction wrapper opened - the
+        # Only the acquire's own transaction wrapper opened - the
         # contended tier never ran.
         assert conn.savepoint_opens == 1
         assert conn.set_config_values == []
@@ -379,7 +379,7 @@ class TestSlidingWindowLockBoundedWaitUnit:
         assert decision.allowed is True
         assert conn.try_lock_calls == 1
         assert conn.blocking_lock_calls == 1
-        # Only the acquire's OWN transaction wrapper opened - indefinite
+        # Only the acquire's own transaction wrapper opened - indefinite
         # mode adds no savepoint of its own.
         assert conn.savepoint_opens == 1, "indefinite mode must not open a savepoint"
         assert conn.set_config_values == [], "indefinite mode must not touch the GUC"
@@ -441,7 +441,7 @@ class TestSlidingWindowLockBoundedWait:
             async with holder.transaction():
                 await holder.execute(_HOLD_LOCK_SQL, lock_key)
                 start = time.monotonic()
-                # Nested, not comma-joined: asyncio.timeout is an async CM.
+                # Nested, not comma-joined: asyncio.timeout is an async cm.
                 # An unbounded acquire would trip the 3 s deadline and
                 # TimeoutError would escape.
                 async with asyncio.timeout(3.0):
@@ -580,11 +580,11 @@ class TestSlidingWindowLockBoundedWait:
                 )
                 await hold_a
                 # The GUC reads back as the session default inside the
-                # SAME transaction (restore happened before RELEASE).
+                # same transaction (restore happened before release).
                 current = await conn.fetchval("SELECT current_setting('lock_timeout')")
                 assert current == "0", f"stale lock_timeout leaked: {current!r}"
 
-                # Second acquire in the SAME transaction, on a key held
+                # Second acquire in the same transaction, on a key held
                 # for 300 ms > first_budget_ms: with the stale 200 ms
                 # bound this would raise 55P03 at ~200 ms; restored, it
                 # succeeds at ~300 ms.

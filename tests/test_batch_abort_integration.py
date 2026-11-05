@@ -314,11 +314,11 @@ class TestBatchAbortProperty:
 
 
 class TestAbortWinsOverComplete:
-    """When the last failure hits the threshold AND remaining==0, the
+    """When the last failure hits the threshold and remaining==0, the
     batch is aborted, not complete.
 
     This is a race-condition test: the last job's failure increments
-    consecutive_failures to the threshold AND the non-terminal count
+    consecutive_failures to the threshold and the non-terminal count
     drops to 0 simultaneously. The abort path must win over the
     complete path.
     """
@@ -350,7 +350,7 @@ class TestAbortWinsOverComplete:
         await backend.increment_batch_failures(bid)
         assert backend._batches[bid].consecutive_failures == 2
 
-        # The 3rd failure: count=3 >= threshold=3 AND remaining==0.
+        # The 3rd failure: count=3 >= threshold=3 and remaining==0.
         job = make_job_row(status="failed")
         job = replace(job, metadata={"batch_id": str(bid)})
 
@@ -521,7 +521,7 @@ class TestApplyBatchTerminalOutcome:
             finalizer_job_id=None,
             originating_actor=None,
         )
-        # Pre-set some failures to verify they are NOT reset.
+        # Pre-set some failures to verify they are not reset.
         await backend.increment_batch_failures(bid)
         assert backend._batches[bid].consecutive_failures == 1
 

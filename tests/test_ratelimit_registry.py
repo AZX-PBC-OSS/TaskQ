@@ -377,7 +377,7 @@ class _FakeAcquireCtx:
 
 class _FakePool:
     """Pool double for the typed-boundary arm: the schema validation must
-    raise BEFORE any statement reaches the connection, so this double
+    raise before any statement reaches the connection, so this double
     answers nothing and no SQL ever flows through it."""
 
     def __init__(self) -> None:

@@ -56,12 +56,12 @@ N_ACTORS = 8
 
 # ── the actors (module level: the decorator registers real ActorRefs) ──
 
-import asyncpg  # noqa: E402  # Why: the --slot-pool shape's LOOP-scope factory annotation must resolve at get_type_hints time.
+import asyncpg  # noqa: E402  # Why: the --slot-pool shape's loop-scope factory annotation must resolve at get_type_hints time.
 from pydantic import BaseModel  # noqa: E402
 
 from taskq import actor  # noqa: E402
 from taskq._ids import (  # noqa: E402
-    new_job_id,  # Why: scratch benchmark rows, PK locality is not the variable under test.
+    new_job_id,  # Why: scratch benchmark rows, pk locality is not the variable under test.
 )
 
 
@@ -212,7 +212,7 @@ def run_worker(
     )
     di_registry = None
     if slot_pool:
-        # The production transactional-consume shape: a LOOP-scope
+        # The production transactional-consume shape: a loop-scope
         # asyncpg.Connection registration is what activates the worker's
         # per-slot transaction pool (bootstrap's _maybe_open_slot_pool),
         # so each job dispatches on its own connection/transaction.
@@ -264,7 +264,7 @@ async def _migrate(dsn: str, schema: str) -> None:
 
 
 async def client_enqueue(dsn: str, schema: str, jobs: int) -> dict:
-    """Continuous enqueue at the backend layer: EnqueueArgs carry NO batch
+    """Continuous enqueue at the backend layer: EnqueueArgs carry no batch
     metadata, so the worker drains the common non-batch path (the shape
     the hot path is tuned for). Batches of 100 keep the client's own
     overhead off the worker's critical path."""

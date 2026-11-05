@@ -16,7 +16,7 @@ FAILED. Every recovery path must then treat the durable row as the truth:
 * the reclaim sweep's re-pend predicates filter ``status = 'running'``,
   so a terminal zombie row is never re-pended -- the work never re-runs;
 * the enqueue's fresh-connection retry collides with the committed
-  INSERT and must resolve to the SAME job id: with an idempotency key the
+  INSERT and must resolve to the same job id: with an idempotency key the
   (scope, key) arbiter dedupes the re-run; without one the id itself is
   the identity and the jobs-pkey collision is the existence proof, read
   back by id (``_read_back_landed_enqueue``);
@@ -208,7 +208,7 @@ class _ZombieProxy:
                             break
                         total = int.from_bytes(buf[0:4], "big")
                         code = int.from_bytes(buf[4:8], "big")
-                        if code in (80877103, 80877102):  # SSLRequest / GSSENC
+                        if code in (80877103, 80877102):  # SSLRequest / gssenc
                             if len(buf) < total:
                                 break
                             server_writer.write(buf[:total])
@@ -249,7 +249,7 @@ class _ZombieProxy:
                         and state.victim_stmt is None
                     ):
                         # The Parse payload is stmt-name\0query-text\0...: the
-                        # victim's prepared statement NAME, so its own Bind
+                        # victim's prepared statement name, so its own Bind
                         # can be identified below (asyncpg's first use of a
                         # statement whose param types the server must infer
                         # interleaves its own introspection round trips --
@@ -267,7 +267,7 @@ class _ZombieProxy:
                         and not state.hold
                         and payload.split(b"\x00", 2)[1] == state.victim_stmt
                     ):
-                        # The victim statement's OWN Bind: Bind/Execute/Sync
+                        # The victim statement's own Bind: Bind/Execute/Sync
                         # ride one packet, so the statement -- and its
                         # autocommit COMMIT -- is processed server-side as
                         # soon as these bytes fly. Hold every response from
@@ -330,7 +330,7 @@ class _ZombieProxy:
             # (the loop-shutdown residue guard fails on any pending task).
             await asyncio.gather(*tasks, return_exceptions=True)
             server_writer.close()
-            # The client side MUST close with the relay: asyncpg's
+            # The client side must close with the relay: asyncpg's
             # Connection.close sends Terminate and then waits for the
             # connection-lost signal - the EOF arriving from the server
             # through this proxy. Leaving client_writer open after the
@@ -359,7 +359,7 @@ def _dsn_parts(dsn: str) -> tuple[str, int, str, str, str]:
 
 async def _zombie_pool(proxy_dsn: str) -> asyncpg.Pool:
     # The connect timeout bounds pool establishment against a starved
-    # shared PG; deliberately NO command timeout - the pool's whole job is
+    # shared PG; deliberately no command timeout - the pool's whole job is
     # the zombie manufacture, whose swallowed-response hang is the point.
     return await asyncpg.create_pool(proxy_dsn, min_size=1, max_size=1, timeout=10.0)
 
@@ -507,14 +507,14 @@ async def test_mark_succeeded_zombie_commit_lands_worker_sees_death(
                 claim_epoch=1,
             )
 
-        # The zombie: the write does NOT return -- its response is swallowed
+        # The zombie: the write does not return -- its response is swallowed
         # while the commit lands. The kill comes only after the durable row
         # is proven, so the worker's error is genuinely the lost ack of a
-        # COMMITTED write.
+        # committed write.
         dying_task = asyncio.create_task(_dying_write())
         await proxy.wait_sync_forwarded()
 
-        # Injection self-check: the commit IS durable server-side.
+        # Injection self-check: the commit is durable server-side.
         await _wait_status(pg_dsn, schema, job_id, "succeeded")
 
         await proxy.kill_zombie()
@@ -647,7 +647,7 @@ async def test_enqueue_zombie_no_key_retry_returns_same_job_id(pg_dsn: str) -> N
     retry's own re-run (the wrapper's second arm, the shape its docstring
     names: a driver-internal state error at the write's acknowledgement,
     before mark_wrote) collides with the committed row on jobs_pkey and must
-    read it back and return the SAME job id, never a raw violation for work
+    read it back and return the same job id, never a raw violation for work
     that succeeded."""
     schema = f"tqr_{new_base62()}".lower()
     proxy = _ZombieProxy(*_dsn_parts(pg_dsn))
@@ -676,7 +676,7 @@ async def test_enqueue_zombie_no_key_retry_returns_same_job_id(pg_dsn: str) -> N
         )
         assert count == 1, f"the zombie enqueue left {count} rows for id {args.id}"
 
-        # Contract 2: the wrapper's own re-run (attempt 2 of ONE _enqueue
+        # Contract 2: the wrapper's own re-run (attempt 2 of one _enqueue
         # call) hits the committed row and recovers it by id. Attempt 1 dies
         # at the write's acknowledgement with the driver-internal state
         # error (the parked-protocol shape _with_fresh_connection_retry's
@@ -780,7 +780,7 @@ async def test_claim_zombie_late_write_fenced_by_restamped_epoch(pg_dsn: str) ->
         args = make_enqueue_args(max_attempts=3)
         await _enqueue(deps.worker_pool, sql, schema, SystemClock(), args)
 
-        # The zombie claim: commits, its ack is DELAYED (the worker does not
+        # The zombie claim: commits, its ack is delayed (the worker does not
         # learn of the claim until we release it).
         proxy.arm_delayed(_CLAIM_MARKER)
         zombie_pool = await _zombie_pool(proxy_dsn)
@@ -799,7 +799,7 @@ async def test_claim_zombie_late_write_fenced_by_restamped_epoch(pg_dsn: str) ->
         )
         await proxy.wait_sync_forwarded()
 
-        # The claim IS durable (injection self-check).
+        # The claim is durable (injection self-check).
         row = await _job_state(pg_dsn, schema, args.id)
         assert row is not None and row["status"] == "running", (
             "the zombie claim must commit before the ack is held"
@@ -819,7 +819,7 @@ async def test_claim_zombie_late_write_fenced_by_restamped_epoch(pg_dsn: str) ->
             assert reclaimed == 1
             row = await _job_state(pg_dsn, schema, args.id)
             assert row is not None and row["status"] == "pending"
-            # Make the re-pended row claimable NOW (the re-pend's own retry
+            # Make the re-pended row claimable now (the re-pend's own retry
             # curve may schedule it into the future; the curve is not this
             # pin's subject).
             await admin.execute(
@@ -839,9 +839,9 @@ async def test_claim_zombie_late_write_fenced_by_restamped_epoch(pg_dsn: str) ->
         live_attempt = live_rows[0].attempt
         assert live_claim_epoch > zombie_claim_epoch
 
-        # NOW the delayed ack reaches the zombie worker: its claim view
+        # now the delayed ack reaches the zombie worker: its claim view
         # (attempt, claim_epoch as claimed) arrives, and it proceeds to its
-        # terminal write LATE -- after the reclaim and re-claim.
+        # terminal write late -- after the reclaim and re-claim.
         await proxy.release_delayed_ack()
         claimed_rows = await asyncio.wait_for(claim_task, timeout=_ARM_TIMEOUT_S)
         assert len(claimed_rows) == 1 and claimed_rows[0].id == args.id
@@ -869,7 +869,7 @@ async def test_claim_zombie_late_write_fenced_by_restamped_epoch(pg_dsn: str) ->
             f'SELECT count(*) FROM "{schema}".job_attempts WHERE job_id = $1',
             args.id,
         )
-        # Exactly ONE attempt row stands, and it is the RECLAIM SWEEP's own
+        # Exactly one attempt row stands, and it is the reclaim sweep's own
         # crashed-attempt record (the sweep writes one per reclaim) -- never
         # a 'succeeded' row from the zombie's late-arriving write.
         assert attempts == 1, f"expected only the sweep's crashed-attempt row, found {attempts}"
@@ -882,9 +882,9 @@ async def test_claim_zombie_late_write_fenced_by_restamped_epoch(pg_dsn: str) ->
         assert outcomes == 0, f"the fenced-out late write recorded a succeeded attempt ({outcomes})"
         assert live_attempt > zombie_attempt
 
-        # The epoch conjunct IN ISOLATION (the attempt-saturation corner the
-        # claim epoch exists for): a write from the CURRENT holder
-        # presenting the row's CURRENT attempt with the STALE epoch -- the
+        # The epoch conjunct in ISOLATION (the attempt-saturation corner the
+        # claim epoch exists for): a write from the current holder
+        # presenting the row's current attempt with the stale epoch -- the
         # shape a claim-clamped attempt number repeats at the smallint
         # ceiling (same worker, same attempt) while the epoch always
         # advances -- must fence out on the epoch alone.
@@ -979,7 +979,7 @@ async def test_tx_commit_zombie_whole_tx_lands_nothing_double_writes(
         )
         await proxy.wait_sync_forwarded()
 
-        # The whole tx IS durable (injection self-check).
+        # The whole tx is durable (injection self-check).
         row = await _wait_status(pg_dsn, schema, job.id, "succeeded")
         await proxy.kill_zombie()
 

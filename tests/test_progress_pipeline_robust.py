@@ -7,12 +7,12 @@ and pins the invariant that survived (or the defect that did not):
    late ctx.progress) — the delta must be applied exactly once, never
    double-applied, never driven negative by a racing retire;
 2. flush failure paths — a failed statement or pool acquire must leave the
-   buffer whole (delta and state intact, gate reopened) so the NEXT flush
+   buffer whole (delta and state intact, gate reopened) so the next flush
    or the terminal write's absolute SET carries everything;
 3. seq monotonicity — the wire contract underpinning taskq.web.progress's
    ``seq <= last_emitted_seq`` dedup: no two events may repeat a seq, and
    the terminal event's seq must strictly exceed every progress seq the
-   buffer published (the SSE generator discards stale seqs BEFORE the
+   buffer published (the SSE generator discards stale seqs before the
    terminal check, so a stale terminal seq would hang the stream open);
 4. the jsonb NUL guard on the flush path — a poisoned buffer must not
    poison its batch siblings nor wedge the flush_in_flight gate;
@@ -231,7 +231,7 @@ async def test_tick_suspension_immediate_flush_skips_and_late_call_survives(
     await tick
 
     # The tick applied its snapshot delta=3 exactly once; the retire adopted
-    # the row's merged seq (8) and kept ONLY the late call's delta standing.
+    # the row's merged seq (8) and kept only the late call's delta standing.
     assert sim.statements == [{"job_ids": [_JOB_ID], "deltas": [3]}]
     assert buf.base_seq == 8
     assert buf.pending_seq_delta == 1
@@ -293,7 +293,7 @@ async def test_failed_statement_leaves_buffer_whole_and_next_flush_applies_full_
     """Regression: a flush statement failing mid-buffer (connection reset,
     statement timeout) must not consume, corrupt, or drop the buffer's
     delta — the failure is the tick's alone, the buffer stays dirty with
-    its delta and pending state intact, and the NEXT successful flush
+    its delta and pending state intact, and the next successful flush
     applies the FULL accumulated delta in one statement. A flush that
     partially retired on failure would strand seqs the terminal write
     never carries."""
@@ -329,7 +329,7 @@ async def test_failed_statement_leaves_buffer_whole_and_next_flush_applies_full_
     assert buf.pending_state == {"step": 1}
     assert buf.flush_in_flight is False, "a failed statement wedged the flush gate"
 
-    # Recovery: the next flush applies the FULL delta, once.
+    # Recovery: the next flush applies the full delta, once.
     conn.fetch.side_effect = sim._fetch
     await _flush_dirty_set(pool, schema_name, _WORKER_ID, buffers, [(_JOB_ID, buf)])
     assert sim.statements == [{"job_ids": [_JOB_ID], "deltas": [3]}]
@@ -398,7 +398,7 @@ async def test_published_wire_seqs_strictly_increasing_and_unique_through_gate(
 
     await ctx.progress(step=1)  # type: ignore[attr-defined]
     await ctx.progress(step=2)  # type: ignore[attr-defined]
-    await _drain_publish_tasks(cast("set[asyncio.Task[None]]", ctx._pending_publish_tasks))  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]  # Why: the test-wired task set IS the drain handle.
+    await _drain_publish_tasks(cast("set[asyncio.Task[None]]", ctx._pending_publish_tasks))  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]  # Why: the test-wired task set is the drain handle.
     assert published == [1, 2]
 
     # A state-change consumption stacks on the head; the next progress call
@@ -414,7 +414,7 @@ async def test_published_wire_seqs_strictly_increasing_and_unique_through_gate(
 async def test_latched_trailing_call_publishes_after_in_flight_round_trip(schema_name: str) -> None:
     """Regression: a progress call landing while a publish round trip is in
     flight latches on the buffer; the in-flight task must drain the latch
-    AFTER its own event (strictly increasing wire seqs, no lost trailing
+    after its own event (strictly increasing wire seqs, no lost trailing
     call) and release the gate exactly once — a double release or a lost
     latch here is the lost-final-event defect the gate exists to prevent."""
     redis, published = _recording_redis()
@@ -448,7 +448,7 @@ async def test_latched_trailing_call_publishes_after_in_flight_round_trip(schema
 
 async def test_terminal_override_seq_exceeds_every_published_progress_seq(schema_name: str) -> None:
     """Regression: taskq.web.progress's SSE generator discards events with
-    ``seq <= last_emitted_seq`` BEFORE it checks ``terminal`` — a terminal
+    ``seq <= last_emitted_seq`` before it checks ``terminal`` — a terminal
     state-change event carrying a seq at or below any already-emitted
     progress seq would be silently dropped and the stream would never
     emit ``done``. The pin: through a suspended tick flush, a late
@@ -490,7 +490,7 @@ async def test_fenced_out_flush_drops_only_the_stale_buffer_never_the_new_epoch(
 ) -> None:
     """Regression: a flush whose row the fencing gate rejects (the job was
     re-claimed and redispatched to a later attempt on this worker) must
-    drop ONLY the stale epoch's buffer — an identity-blind pop took the
+    drop only the stale epoch's buffer — an identity-blind pop took the
     live attempt's buffer with it, deseeding the live attempt's progress
     and rewinding its seq allocation to a stale base."""
     stale = _ProgressBuffer(job_id=_JOB_ID, base_seq=5, attempt=1)
@@ -565,7 +565,7 @@ async def test_nul_poisoned_immediate_flush_contained_and_gate_reopened(schema_n
     """Regression: the single-row (immediate/crash-flush) path hitting the
     NUL guard while rendering the state document must contain the
     ValueError to that one buffer — logged, buffer left dirty — and must
-    NOT leave the flush_in_flight gate shut (a wedged gate would make
+    not leave the flush_in_flight gate shut (a wedged gate would make
     every later immediate flush silently skip the buffer for the rest of
     its lifetime, stranding its delta)."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
@@ -613,7 +613,7 @@ async def test_rejected_progress_call_never_consumes_seq_nor_mutates_buffer(
     schema_name: str,
 ) -> None:
     """Regression: every rejection gate (finiteness, types, size caps, NUL)
-    must fire BEFORE the buffer mutation — a gate that consumed the seq
+    must fire before the buffer mutation — a gate that consumed the seq
     first would punch a permanent hole in the wire order (or, worse, a
     partially-mutated pending_state would flush a value the actor was
     told was refused). After any rejection, the buffer's delta, state,
@@ -641,7 +641,7 @@ async def test_flush_failure_backlog_never_corrupts_the_accumulated_state(schema
     """Regression (backpressure shape): a persistently failing flush (an
     outage) with an actor still calling progress must accumulate cleanly —
     the delta grows, the fixed-key state doc merges last-writer-wins, and
-    ONE successful flush at the end of the outage applies the ENTIRE
+    one successful flush at the end of the outage applies the ENTIRE
     accumulated delta in a single statement with the latest value of
     every field. No partial state, no lost seq, no unbounded per-tick
     statement churn."""

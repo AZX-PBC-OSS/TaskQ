@@ -1,4 +1,4 @@
-# ruff: noqa: S608, S102  # Why: the schema is a fixture-derived test identifier and the doc fence IS the under-test artifact (exec'd — the docs lane's own pattern, test_doc_ingest_example.py).
+# ruff: noqa: S608, S102  # Why: the schema is a fixture-derived test identifier and the doc fence is the under-test artifact (exec'd — the docs lane's own pattern, test_doc_ingest_example.py).
 """DOC-TRUTH PINS — the doc-ingest fence (docs/examples/
 doc-ingest.md) is CODE THAT RUNS, and its OUTPUT claims are pinned where
 they are executable (each pin drove its own fence).
@@ -10,13 +10,13 @@ flips the pin to XPASS-strict — remove the marker WITH the fix):
 * (c) ``create_flow(input=…)`` is ACCEPTED but IGNORED — the ingest
   step's params are baked into the wiring (``IngestBatch(doc_ids=
   sorted(_DOC_SOURCE))``), so the run row's input never reaches the
-  body. THE PIN: a one-doc input fans a one-doc map.
+  body. the PIN: a one-doc input fans a one-doc map.
 * (d) the terminal ``PublishReport`` hardcodes ``dead_lettered=[]`` /
   ``failed=[]`` while the doc claims "the failures ride the report,
-  named". THE PIN: a dead-lettered doc is NAMED in the terminal report
+  named". the PIN: a dead-lettered doc is NAMED in the terminal report
   and never rides the published list.
 * (e) the published list DOUBLE-COUNTS every doc (the barrier's gather
-  concatenates [summaries + entities]). THE PIN: each doc is named once.
+  concatenates [summaries + entities]). the PIN: each doc is named once.
 
 The fourth, (b) — the fence's ``drive(until="terminal")`` spins ~166 s
 PAST the hold, the ``max_ticks`` verdict silently discarded — pins as a
@@ -45,7 +45,7 @@ FENCE_PATH = "docs/examples/doc-ingest.md"
 def example_fence() -> str:
     """The fence's code, renamed off the demo's registry key (the same
     accommodation test_doc_ingest_example.py documents: the D1 registry
-    is ONE GLOBAL keyed by workflow name; the wiring, the bodies, the
+    is one GLOBAL keyed by workflow name; the wiring, the bodies, the
     graph run VERBATIM)."""
     examples = [e for e in iter_examples() if e.path == FENCE_PATH]
     assert examples, f"the fence at {FENCE_PATH} is not discovered by the docs lane"
@@ -56,7 +56,7 @@ def example_fence() -> str:
 
 @pytest.fixture(scope="module")
 def example_ns(example_fence: str) -> dict[str, Any]:
-    """The fence's ONE exec per process (the D1 body registry is exact —
+    """The fence's one exec per process (the D1 body registry is exact —
     a second exec mints new function objects and is the refused shadow)."""
     code = example_fence.replace("main_task = asyncio.run(main())", "")
     ns: dict[str, Any] = {"__name__": "doc_ingest_truth_example"}
@@ -119,7 +119,7 @@ async def test_the_run_input_is_honored(
     example_ns: dict[str, Any],
 ) -> None:
     """The run's input is the run row's data (cut #7): a one-doc
-    ``IngestBatch`` must fan a ONE-DOC map. Today the hardcoded corpus
+    ``IngestBatch`` must fan a one-DOC map. Today the hardcoded corpus
     runs and the input is silently dropped."""
     from taskq.workflows import FlowRunner
 
@@ -156,9 +156,9 @@ async def test_the_terminal_report_names_the_failures(
     ``PublishReport`` must NAME it — in ``dead_lettered`` or ``failed`` —
     and must never list it as published."""
     source = example_ns["_DOC_SOURCE"]
-    # Compile BEFORE the pop: get() re-runs the build function, so the
-    # wiring bakes the FULL corpus into the ingest params here; the pop
-    # then makes doc-011 UNREADABLE at body-run time (enrich_item's
+    # Compile before the pop: get() re-runs the build function, so the
+    # wiring bakes the full corpus into the ingest params here; the pop
+    # then makes doc-011 unreadable at body-run time (enrich_item's
     # _DOC_SOURCE.get miss → the Unreadable arm) while the baked list —
     # and the input — still fan it.
     compiled = example_ns["app"].get("doc_ingest_truth")
@@ -188,8 +188,8 @@ async def test_the_published_list_names_each_doc_once(
     wf_pool: asyncpg.Pool,
     example_ns: dict[str, Any],
 ) -> None:
-    """The collect's claim — the fan-in is ONE collect: the terminal
-    report's ``published`` names each doc EXACTLY ONCE (no gather
+    """The collect's claim — the fan-in is one collect: the terminal
+    report's ``published`` names each doc EXACTLY once (no gather
     concatenation leaks into the typed verdict)."""
     report = await _drive_to_terminal_report(
         example_ns,

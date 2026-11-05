@@ -11,10 +11,9 @@ recorded result rather than re-executing. The node's own finalize records
 the ledger terminal (riding tx1 — the ledger-terminal-atomic rule);
 ``ctx.substep``'s claim is the attempt's grant of work.
 
-THE CONNECTION IS NEVER HELD ACROSS THE BODY (the LedgerWatch F4 fix):
-the claim and the terminal write are ~1 ms statements, each on its OWN
-acquisition — the body runs with NO pool connection held. The pre-fix
-shape held ONE connection from the claim to the terminal, so the
+the claim and the terminal write are ~1 ms statements, each on its own
+acquisition — the body runs with no pool connection held. The pre-fix
+shape held one connection from the claim to the terminal, so the
 execution door's pool (the dispatcher pool, 4 connections at the
 shipped default) throttled every concurrent map child to the conn
 count: the team's A/B measured a 300-child fan-out collapse from 32
@@ -22,7 +21,7 @@ in-flight to 4 (10.1 s → 27.1 s at their profile; 11.1 s → 42.2 s at
 0.5 s/call on this tree). The claim's exactly-once law never needed the
 held connection: the claim arbiter
 (``wf_step_ledger_claim_uniq``) linearizes the grant, and the terminal
-keys the claim's OWN row id — the strongest write key there is.
+keys the claim's own row id — the strongest write key there is.
 """
 
 from __future__ import annotations
@@ -86,9 +85,8 @@ class WorkflowSteps:
         if not idempotent:
             return await fn(*args, **kwargs)
 
-        # THE CLAIM'S OWN ACQUISITION (the F4 fix, leg 1): the memoized
-        # read + the claim are ~1 ms statements; the connection releases
-        # the moment they land — the body runs UNWIRED.
+        # the memoized read + the claim are ~1 ms statements; the connection
+        # releases the moment they land — the body runs unwired.
         async with self._pool.acquire() as conn:
             memo = await memoized_step_result(
                 conn,
@@ -120,13 +118,12 @@ class WorkflowSteps:
                 name, claim, "failed", None, type(exc).__name__, str(exc)[:500]
             )
             raise
-        # THE STEP'S OWN TERMINAL (the re-execution doctrine's cheap side):
-        # the memoized replay reads TERMINAL rows — a claim left 'running'
-        # would re-execute on every resume (the defect the runner pins
-        # reject: pre-wait side effects replay cheap, or not at all). The
-        # FAILURE path records too: a raising step's claim terminalizes
-        # 'failed' (the ladder's ledger shape), then the exception
-        # propagates to the node's own failure handling.
+        # the memoized replay reads terminal rows — a claim left 'running'
+        # would re-execute on every resume (the defect the runner pins reject:
+        # pre-wait side effects replay cheap, or not at all). The failure path
+        # records too: a raising step's claim terminalizes 'failed' (the
+        # ladder's ledger shape), then the exception propagates to the node's
+        # own failure handling.
         await self._record_terminal(name, claim, "succeeded", result, None, None)
         return result
 
@@ -147,10 +144,10 @@ class WorkflowSteps:
         error_class: str | None,
         error_message: str | None,
     ) -> None:
-        """The step ledger's terminal write on ITS OWN acquisition (the
+        """The step ledger's terminal write on ITS own acquisition (the
         the LedgerWatch F4 fix, leg 2: the terminal never rides a connection held from
         the claim). Two keyings, the claim's own contract: the claim's
-        OWN row id (the strongest key) when the claim returned it; the
+        own row id (the strongest key) when the claim returned it; the
         arbiter tuple otherwise (the pre-fix fallback, kept for a
         claim shape that carries no id)."""
         if claim.ledger_id is not None:

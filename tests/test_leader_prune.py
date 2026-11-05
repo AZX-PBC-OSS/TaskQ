@@ -406,7 +406,7 @@ async def test_atomicity_on_error(pg_conn: asyncpg.Connection, settings: TaskQSe
 # landed in archived_at's position and the sweep failed with a type error.
 # The sweep now names every column explicitly on both sides
 # (_JOBS_COLUMNS_CSV in _leader_shared.py). These tests lock the mapping in:
-# EVERY mirrored column must round-trip byte-for-byte, and the two
+# every mirrored column must round-trip byte-for-byte, and the two
 # archive-only trailing columns must be real timestamps. On the unguarded SQL
 # the first test fails outright (text → timestamptz type error).
 
@@ -470,7 +470,7 @@ async def _fetch_single(
 async def test_archive_move_preserves_every_mirrored_column(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """Seed a terminal job with a distinctive value in EVERY mirrored
+    """Seed a terminal job with a distinctive value in every mirrored
     column (including a non-default idempotency_scope) and assert the
     archived row is byte-for-byte identical in every one of them."""
     await _apply(pg_conn, settings)
@@ -1236,7 +1236,7 @@ async def _prune_with_retry_in_flight(
     retry_tx = retry_conn.transaction()
     await retry_tx.start()
     # fetchrow, exactly as the backend's retry_job reads it: the
-    # statement's row presence IS the retry's success signal (the
+    # statement's row presence is the retry's success signal (the
     # execute tag is always "SELECT 1").
     retried = await retry_conn.fetchrow(retry_sql, jid)
     assert retried is not None, "fixture broken: the retry did not match the seeded row"
@@ -1277,7 +1277,7 @@ async def test_prune_never_deletes_a_row_a_concurrent_retry_retried(
     ``retry_job`` flipped the row back to pending (its caller already
     told the operator the retry landed), and the delete arm's lock-time
     re-check met the version the retry had committed - the row stayed
-    live AND archived: a ghost that wedges every later prune batch on
+    live and archived: a ghost that wedges every later prune batch on
     the archive's primary key once the retried job re-terminalizes and
     re-enters the window.
 
@@ -1291,7 +1291,7 @@ async def test_prune_never_deletes_a_row_a_concurrent_retry_retried(
     own commit. The interleaving is fixed by
     :func:`_prune_with_retry_in_flight`, and the invariants asserted
     here are: the retry's UPDATE matched the row, so after the prune the
-    row is still live and claimable, the archive holds NO row for it,
+    row is still live and claimable, the archive holds no row for it,
     and the prune reports no deletion.
 
     The retry runs as the raw rendered statement ``retry_job`` issues,
@@ -1466,7 +1466,7 @@ async def test_prune_write_statement_rechecks_retention_age_at_lock_time(
     The interleaving the two race pins above cannot produce: their
     re-terminalize stamps the row back into the past, but a real re-run
     stamps ``finished_at = clock_timestamp()`` (mark_succeeded /
-    mark_failed). When the retry AND the re-run both commit in the gap
+    mark_failed). When the retry and the re-run both commit in the gap
     between the prune's two statements, the row is terminal again (the
     status re-check passes) but zero seconds old. The lock-time
     re-check must verify every candidate predicate, not just the
@@ -1559,7 +1559,7 @@ async def test_prune_write_statement_rechecks_retention_age_at_lock_time(
 #
 # The fake arms tests/test_leader.py once kept for these two contracts are
 # deleted (the mock auditor's subtraction): the entry points' schema
-# validation and the batch statement-timeout's capture/restore ride the REAL
+# validation and the batch statement-timeout's capture/restore ride the real
 # connection here, where the probe is the real server, not a scripted
 # catalog.
 
@@ -1568,7 +1568,7 @@ async def test_prune_rejects_a_non_identifier_schema_before_any_sql(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
     """prune_terminal_jobs validates the schema identifier at its typed
-    boundary: a non-identifier schema raises ValueError BEFORE a single
+    boundary: a non-identifier schema raises ValueError before a single
     statement runs - no interpolation ever sees the value."""
     with pytest.raises(ValueError, match="invalid schema"):
         await prune_terminal_jobs(

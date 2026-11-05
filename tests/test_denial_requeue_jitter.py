@@ -7,7 +7,7 @@ the same hint; slot denials reported the same constant), so the herd
 re-attempts in lockstep - each cycle costing claim + acquire + snooze per
 job. The failure-backoff path already applies multiplicative-symmetric
 jitter (``compute_backoff``); the denial requeue takes the same
-treatment, sourced from the SAME knob (``RetryPolicy.jitter``), so an
+treatment, sourced from the same knob (``RetryPolicy.jitter``), so an
 actor that has already chosen a jitter policy for failures gets it for
 denial requeues too - and the deterministic suites, which construct
 policies with ``jitter=0.0``, stay deterministic (``uniform(1, 1) == 1``).
@@ -106,7 +106,7 @@ async def _field_denial(
 
 
 async def test_same_round_denials_get_desynchronized_retry_after() -> None:
-    """N denials fielded with the SAME ``retry_after`` (the mass-denial
+    """N denials fielded with the same ``retry_after`` (the mass-denial
     shape: one round, one token deficit) must not requeue at N identical
     delays - the actor's jitter policy spreads them inside its symmetric
     band, exactly as ``compute_backoff`` spreads failure retries.

@@ -1,5 +1,5 @@
 """The dispatch fence ships (the claim path's second leg) —
-this file is the fence's kept-green receipt: the pin below HOLDS THE
+this file is the fence's kept-green receipt: the pin below HOLDS the
 FENCE GREEN, and a red here is the fence's regression, not a finding.
 
 P3 rule 4 (the dispatch-claim band : "Cancel = one transaction — the flow flip is the
@@ -12,9 +12,9 @@ flow is claim-refused; the escalation exemption and the
 execution-capability gate ride the same leg), rendered into every
 dispatch claim.
 
-THE KEPT-GREEN LAW: ``dispatch_batch`` over the real claim path must
-NOT return a pending workflow child whose flow row is terminal. The
-seeded cancelled flow's child stays fenced OUT — for as long as the
+``dispatch_batch`` over the real claim path must
+not return a pending workflow child whose flow row is terminal. The
+seeded cancelled flow's child stays fenced out — for as long as the
 shipped claim keeps its word.
 """
 
@@ -35,7 +35,7 @@ async def test_attack_dispatch_claims_workflow_child_of_cancelled_flow(
     clean_jobs_app: object,
     module_pg_schema: object,
 ) -> None:
-    app = clean_jobs_app  # JobsApp(deps, backend) — the REAL PostgresBackend
+    app = clean_jobs_app  # JobsApp(deps, backend) — the real PostgresBackend
     backend = app.backend  # pyright: ignore[reportAttributeAccessIssue]
     schema = module_pg_schema.schema_name  # pyright: ignore[reportAttributeAccessIssue]
     dsn = module_pg_schema.pg_dsn  # pyright: ignore[reportAttributeAccessIssue]
@@ -59,7 +59,7 @@ async def test_attack_dispatch_claims_workflow_child_of_cancelled_flow(
         await conn.close()
 
     # The real claim path (the estate's dispatcher, deps_pending = 0 gate
-    # included): the cancelled flow's child must be fenced OUT.
+    # included): the cancelled flow's child must be fenced out.
     dispatched = await backend.dispatch_batch(
         new_uuid(),
         ["default"],

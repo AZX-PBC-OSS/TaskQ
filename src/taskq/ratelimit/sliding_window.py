@@ -479,10 +479,10 @@ class SlidingWindow:
         # Why decision.backend and not self._backend: with backend="redis" and
         # rate_limit_pg_fallback_enabled (the default), an acquire during a
         # Redis outage falls through to Postgres and records the admission
-        # THERE. The decision says which store actually holds it; the
+        # there. The decision says which store actually holds it; the
         # primitive's configuration only says where it prefers to go.
         # Dispatching on the latter left the Postgres window permanently
-        # holding an admission that was released, and, for GCRA, whose
+        # holding an admission that was released, and, for gcra, whose
         # previous_state differs per backend, raised KeyError out of the
         # release path outright. Kept identical to TokenBucket.refund, which
         # dispatches the same way for the same reason.

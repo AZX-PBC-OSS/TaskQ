@@ -83,7 +83,7 @@ async def _held_flow(
     return flow_id, runner, JobId(node_id)
 
 
-# ── pins 1-2: THE LATE-DELIVER + DOUBLE-SEND (the CAS's teeth) ──────────
+# ── pins 1-2: the late-deliver + double-send (the CAS's teeth) ──────────
 
 
 async def test_late_deliver_after_cancel_is_refused_no_zombie_wake(
@@ -99,7 +99,7 @@ async def test_late_deliver_after_cancel_is_refused_no_zombie_wake(
     flow_id, _runner, node_id = await _held_flow(
         wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="late_deliver_flow"
     )
-    # THE CANCEL.
+    # the cancel.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".wf_signals SET status = 'cancelled', "
         "resolved_at = clock_timestamp() WHERE workflow_id = $1",
@@ -120,7 +120,7 @@ async def test_late_deliver_after_cancel_is_refused_no_zombie_wake(
         payload_json=json.dumps({"verdict": "approve"}),
     )
     assert result.status == "refused", result
-    # NO ZOMBIE WAKE: the node stays dead.
+    # no zombie wake: the node stays dead.
     node_status = await wf_conn.fetchval(
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', node_id
     )
@@ -138,7 +138,7 @@ async def test_late_deliver_after_cancel_is_refused_no_zombie_wake(
 async def test_double_send_is_a_defined_no_op_one_resume(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Pin 2: two concurrent delivers → exactly ONE 'delivered' result,
+    """Pin 2: two concurrent delivers → exactly one 'delivered' result,
     exactly one resume (the 'held' → 'delivered' CAS is the fence)."""
 
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
@@ -168,7 +168,7 @@ async def test_double_send_is_a_defined_no_op_one_resume(
     assert {r.status for r in results} <= {"delivered", "no-op"}
 
 
-# ── pin 7: RESUME-NOT-RETRY (the shared-counter dragon, red forever) ────
+# ── pin 7: resume-not-retry (the shared-counter dragon, red forever) ────
 
 
 async def test_resume_does_not_burn_the_retry_ladder(
@@ -182,10 +182,8 @@ async def test_resume_does_not_burn_the_retry_ladder(
     failures = {"n": 0}
 
     async def hold_twice_then_fail(ctx: StepContext, params: Ingest) -> Any:
-        # THE CHAINED SHAPE, DOCTRINE-CONFORMANT (the two sites are
-        # unconditional — the answers replay per attempt; the operator
-        # never re-answers): after both gates, the body fails ONCE (the
-        # ladder) then succeeds — the holds never touched the ladder.
+        # after both gates, the body fails once (the ladder) then succeeds —
+        # the holds never touched the ladder.
         first = await ctx.wait_signal(Approval, timeout_s=120.0)
         second = await ctx.wait_signal(Approval, timeout_s=120.0)
         assert isinstance(first, Approval) and isinstance(second, Approval), (
@@ -213,8 +211,8 @@ async def test_resume_does_not_burn_the_retry_ladder(
 
     runner = FlowRunner(app.get("resume_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # Drive: hold → deliver → hold → deliver → fail → RETRY (the ladder
-    # is ALIVE) → succeed.
+    # Drive: hold → deliver → hold → deliver → fail → retry (the ladder
+    # is alive) → succeed.
     for _ in range(6):
         await runner.drive(flow_id, until="held", max_ticks=50)
         # deliver the pending hold (the operator's click)
@@ -240,8 +238,8 @@ async def test_resume_does_not_burn_the_retry_ladder(
         flow_id,
     )
     statuses = [r["status"] for r in ledger]
-    # THE PROVEN MATRIX: awaited → awaited → failed → succeeded — the
-    # holds NEVER consumed the ladder (the retries EXIST after holds).
+    # awaited → awaited → failed → succeeded — the holds never consumed the
+    # ladder (the retries exist after holds).
     assert statuses.count("awaited") == 2, statuses
     assert statuses.count("failed") == 1, statuses
     assert statuses[-1] == "succeeded", statuses
@@ -254,24 +252,23 @@ async def test_resume_does_not_burn_the_retry_ladder(
     )
 
 
-# ── pin 9: MULTI-HOLD (the epoch) + the stale-payload dragon ────────────
+# ── pin 9: multi-hold (the epoch) + the stale-payload dragon ────────────
 
 
 async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """Pin 9 (cut #3b; the spike's verdict M): a second hold on the SAME
+    """Pin 9 (cut #3b; the spike's verdict M): a second hold on the same
     signal name (a new epoch) re-holds CLEANLY (the (flow,name) PK
     variant UniqueViolations — and wedges the run — that variant is red
     forever); the stale payload (the wait site answering a call it never
     made) is refused by the epoch + call_id."""
 
     async def hold_twice(ctx: StepContext, params: Ingest) -> Any:
-        # THE CHAINED SHAPE, DOCTRINE-CONFORMANT: the two wait sites are
-        # UNCONDITIONAL (the same sequence re-runs from the top on every
-        # resume; each attempt's cursor consumes the delivered answers in
-        # epoch order); the SECOND site's hold is a NEW EPOCH on the SAME
-        # signal name — the multi-hold.
+        # the two wait sites are unconditional (the same sequence re-runs from
+        # the top on every resume; each attempt's cursor consumes the delivered
+        # answers in epoch order); the second site's hold is a new epoch on the
+        # same signal name — the multi-hold.
         first = await ctx.wait_signal(Approval, timeout_s=120.0)
         second = await ctx.wait_signal(Approval, timeout_s=120.0)
         assert isinstance(first, Approval) and isinstance(second, Approval), (
@@ -294,7 +291,7 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
 
     runner = FlowRunner(app.get("multihold_flow"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # HOLD 1.
+    # hold 1.
     await runner.drive(flow_id, until="held")
     rows = await wf_conn.fetch(
         f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals '
@@ -302,8 +299,8 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
         flow_id,
     )
     assert len(rows) == 1 and rows[0]["hold_epoch"] == 1 and rows[0]["status"] == "held"
-    # DELIVER → the resume re-executes → HOLD 2 (a NEW epoch, the same
-    # name — the (flow,name) PK variant would UniqueViolation HERE and
+    # deliver → the resume re-executes → hold 2 (a new epoch, the same
+    # name — the (flow,name) PK variant would UniqueViolation here and
     # wedge the iteration).
     await deliver_payload(
         wf_pool,
@@ -321,7 +318,7 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
     )
     assert len(rows2) == 2, "the second hold did not register (multi-hold broken)"
     assert rows2[1]["hold_epoch"] == 2 and rows2[1]["status"] == "held"
-    # THE LADDER NEVER SAW ANY OF IT (the holds are not failures).
+    # the ladder never saw any of it (the holds are not failures).
     failed = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger '
         "WHERE flow_id = $1 AND status = 'failed'",
@@ -330,7 +327,7 @@ async def test_second_hold_new_epoch_clean_and_stale_payload_refused(
     assert failed == 0
 
 
-# ── pins 10-12: THE REPLY HANDLE + THE CONTEXT + THE CONVERGENCE ────────
+# ── pins 10-12: the reply handle + the context + the convergence ────────
 
 
 async def test_hold_id_reply_handle_and_context_contract(
@@ -340,7 +337,7 @@ async def test_hold_id_reply_handle_and_context_contract(
     time-ordered, the id appears in the row and the client's surface);
     the context contract carries the payload + the schema reference +
     the provenance; the resolve is IDEMPOTENT (already-resolved = the
-    DEFINED no-op); THE REDACT LAW EXTENDS — a canary in the wait
+    DEFINED no-op); the REDACT LAW EXTENDS — a canary in the wait
     context reaches NEITHER the list NOR... the list."""
 
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
@@ -364,10 +361,10 @@ async def test_hold_id_reply_handle_and_context_contract(
     holds = await client.list(run=flow_id)
     assert len(holds) == 1
     hold = holds[0]
-    # THE ID IS THE REPLY HANDLE (uuid7 — time-ordered, NOT random).
+    # the ID is the reply handle (uuid7 — time-ordered, not random).
     parsed = uuid_module.UUID(hold.hold_id)
     assert parsed.version == 7, parsed
-    # THE CONTEXT CONTRACT: the schema reference + the provenance.
+    # the schema reference + the provenance.
     assert hold.payload_schema is not None
     assert "Approval" in hold.payload_schema
     assert (
@@ -375,9 +372,9 @@ async def test_hold_id_reply_handle_and_context_contract(
     )  # the tuple form's joined spelling — the canonical row name
     assert hold.node_key == "review"
     assert hold.status == "held"
-    # THE REDACT LAW EXTENDS (pin 11): the canary secret in the wait
-    # context must not reach the ENUMERATION surface — the client's
-    # redact hook (the chain-then-hook composition) scrubs it.
+    # pin 11. the canary secret in the wait context must not reach the
+    # enumeration surface — the client's redact hook (the chain-then-hook
+    # composition) scrubs it.
     client_redacted = HitlClient(
         wf_pool,
         schema=wf_schema,
@@ -391,7 +388,7 @@ async def test_hold_id_reply_handle_and_context_contract(
     assert all("sk-canary-never-leak" not in str(h.payload) for h in holds_redacted), (
         "the canary reached the enumeration surface — the redact law is violated"
     )
-    # THE RESOLVE (by id) + THE IDEMPOTENCE (the defined no-op).
+    # the resolve (by id) + the idempotence (the defined no-op).
     first = await client.resolve(
         hold.hold_id, {"verdict": "approve"}, reason="the operator's click", principal="op-1"
     )
@@ -405,7 +402,7 @@ async def test_hold_id_reply_handle_and_context_contract(
 async def test_hold_context_reason_is_none_after_delivery(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """``HoldContext.reason`` is the wait's reason ONLY while the hold
+    """``HoldContext.reason`` is the wait's reason only while the hold
     is held. Post-delivery the payload IS the decision; the reason is
     gone with the held state it belonged to — the read returns None,
     never the decision's own ``reason`` field wearing the wait's
@@ -440,20 +437,20 @@ async def test_hold_context_reason_is_none_after_delivery(
         gates=(GateDecl(name="Decision", payload_models=(Decision,), timeout_s=120.0),),
     )
     client = HitlClient(wf_pool, schema=wf_schema)
-    # PRE-delivery: the reason reads the held row's context doc.
+    # pre-delivery: the reason reads the held row's context doc.
     holds = await client.list(run=flow_id)
     assert len(holds) == 1 and holds[0].reason == "the author's wait reason", holds
-    # THE DELIVERY: the decision's payload carries a homonymous
-    # ``reason`` field — the unguarded read would surface IT.
+    # the decision's payload carries a homonymous ``reason`` field — the
+    # unguarded read would surface it.
     first = await client.resolve(
         holds[0].hold_id,
         {"verdict": "approve", "reason": "the decision's own reason"},
         principal="op-1",
     )
     assert first.status == "delivered", first
-    # THE PIN: post-delivery the context's reason is None — the wait's
-    # reason is gone with the held state it belonged to; the decision's
-    # reason is the payload's business, never the context's.
+    # post-delivery the context's reason is None — the wait's reason is gone
+    # with the held state it belonged to; the decision's reason is the
+    # payload's business, never the context's.
     after = await client.get(holds[0].hold_id)
     assert after is not None and after.status == "delivered", after
     assert after.reason is None, f"the delivered hold's context leaked a reason: {after.reason!r}"
@@ -465,10 +462,10 @@ async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
     wf_pool: asyncpg.Pool,
     module_pg_schema: Any,
 ) -> None:
-    """Pin 12 : the knock carries THE POINTER (hold id + run id
-    + event) — NEVER the sole copy of the payload; a consumer that
+    """Pin 12 : the knock carries the POINTER (hold id + run id
+    + event) — never the sole copy of the payload; a consumer that
     MISSES the knock still converges by polling ``client.hitl.list()``
-    (the row is the truth). THE PIN ACTUALLY LISTENS (the vacuous-audit's
+    (the row is the truth). the PIN ACTUALLY LISTENS (the vacuous-audit's
     fix — the shipped pin assigned ``_ = HOLD_CHANNEL`` and pinned
     nothing): a raw pg_notify consumer on the MODULE's database
     (pg_notify is per-database — the env DSN's db is not the module's)
@@ -483,7 +480,7 @@ async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
     client = HitlClient(wf_pool, schema=wf_schema)
     holds_before = await client.list(run=flow_id)
     assert len(holds_before) == 1
-    # THE LISTENER: a raw pg_notify consumer on the module's database.
+    # a raw pg_notify consumer on the module's database.
     import asyncpg as _asyncpg
 
     knocks: list[str] = []
@@ -491,12 +488,12 @@ async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
     await listen_conn.add_listener(
         HOLD_CHANNEL, lambda *a: knocks.append(str(a[3]) if len(a) > 3 else str(a))
     )
-    # THE RESOLVE fires the knock (in the CAS-winning tx — exactly once).
+    # the resolve fires the knock (in the CAS-winning tx — exactly once).
     await client.resolve(holds_before[0].hold_id, {"verdict": "approve"})
     await asyncio.sleep(0.2)
     await listen_conn.close()
     assert knocks, "the knock never fired — the knob is dead (latency, not correctness)"
-    # THE POINTER-ONLY LAW: hold_id + run_id + event, NEVER the payload.
+    # hold_id + run_id + event, never the payload.
     import json as _json
 
     knock = _json.loads(knocks[0])
@@ -506,8 +503,8 @@ async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
     assert "approve" not in knocks[0], (
         f"THE KNOCK CARRIED THE PAYLOAD — the pointer-only law is broken: {knocks[0]}"
     )
-    # THE CONVERGENCE: a consumer that misses the knock polls the LIST —
-    # the resolution is visible by rows alone.
+    # a consumer that misses the knock polls the list — the resolution is
+    # visible by rows alone.
     async with wf_pool.acquire() as conn:
         status = await conn.fetchval(
             f'SELECT status FROM "{wf_schema}".wf_signals WHERE id = $1',
@@ -516,21 +513,21 @@ async def test_pubsub_knock_is_a_pointer_and_the_consumer_converges(
     assert status == "delivered"
 
 
-# ── pin 13: SIGNAL-TIMEOUT-DB-CLOCK + the expiry arm ────────────────────
+# ── pin 13: signal-timeout-db-clock + the expiry arm ────────────────────
 
 
 async def test_signal_timeout_fires_on_db_clock(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """Pin 13 (G6): the expiry arm compares PG's clock — the expired
-    hold → the DEFINED 'abandoned' state; AND THE TYPED TIMEOUT FACE IS
+    hold → the DEFINED 'abandoned' state; and the TYPED TIMEOUT FACE IS
     REAL (the vacuous-audit's fix — the shipped pin's docstring claimed
-    the face it never exercised). THE EXPIRY'S AMENDMENT: the face is a VALUE —
+    the face it never exercised). the EXPIRY'S AMENDMENT: the face is a VALUE —
     the wait returns the ``Expired`` MEMBER (the closed union's second
     arm; the checker forces the fail-close); the body that wants the
     FAILURE raises :class:`taskq.exceptions.SignalTimeoutError` ITSELF
     off the member (the escalation ladder's own use) — the node
-    terminal-fails through the ladder, and NO new epoch is ever minted
+    terminal-fails through the ladder, and no new epoch is ever minted
     — hold → expire → re-hold → ∞ is the rejected dragon, kept failing by
     the attack probe."""
     from taskq.exceptions import SignalTimeoutError
@@ -542,8 +539,7 @@ async def test_signal_timeout_fires_on_db_clock(
             case Approval() as approval:
                 return approval
             case Expired():
-                # THE BODY'S CONVERSION (the failure-wanting body): the
-                # expiry member is the typed face; the raise is ITS OWN.
+                # the expiry member is the typed face; the raise is its own.
                 raise SignalTimeoutError(
                     "the hold expired — this body treats the expiry as the failure"
                 )
@@ -551,7 +547,7 @@ async def test_signal_timeout_fires_on_db_clock(
     flow_id, runner, _node = await _held_flow(
         wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="timeout_flow"
     )
-    # THE DEADLINE PASSES (DB time).
+    # the deadline passes (DB time).
     await asyncio.sleep(1.1)
     abandoned = await sweep_expired_signals(wf_pool, schema=wf_schema)
     assert abandoned == 1
@@ -559,9 +555,9 @@ async def test_signal_timeout_fires_on_db_clock(
         f'SELECT status FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
     )
     assert status == "abandoned"
-    # THE FACE: the resume's wait site RETURNS the Expired member; the
-    # body's own conversion raises it into the ladder (the ladder burns
-    # through its attempts), the node terminal-fails, the flow with it.
+    # the resume's wait site returns the Expired member; the body's own
+    # conversion raises it into the ladder (the ladder burns through its
+    # attempts), the node terminal-fails, the flow with it.
     await runner.drive(flow_id, max_ticks=40)
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "failed", (
@@ -607,7 +603,7 @@ async def test_cancel_workflow_one_transaction_idempotent(
     assert sig_status == "cancelled"
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     assert root == "cancelled"
-    # THE AUDIT IS A ROW.
+    # the audit is A row.
     audit = await wf_conn.fetchval(
         f"SELECT count(*) FROM \"{wf_schema}\".admin_audit WHERE action = 'workflow.cancel' "
         "AND target_id = $1",
@@ -618,7 +614,7 @@ async def test_cancel_workflow_one_transaction_idempotent(
     )
 
 
-# Why load_sensitive: the assertion IS the pin — elapsed < 500 ms is the
+# Why load_sensitive: the assertion is the pin — elapsed < 500 ms is the
 # hold→resume band itself, and CI's parallel lanes are exactly the load
 # the band cannot survive (the perf-bands file is the precedent: a
 # wall-clock band's home is the serial lane).
@@ -651,19 +647,18 @@ async def test_hold_to_resume_latency_band(
     )
     elapsed_ms = (time.perf_counter() - start) * 1000
     assert result.status == "delivered", f"the deliver refused: {result.reason}"
-    # THE BAND: the deliver CAS + the resume are two statements in one tx
-    # — single-digit milliseconds at the pin shape (the band from THIS
-    # run's measurement, recorded).
+    # the deliver CAS + the resume are two statements in one tx — single-digit
+    # milliseconds at the pin shape (the band from this run's measurement,
+    # recorded).
     from tests._wf_fixtures import MEASUREMENTS
 
     MEASUREMENTS.mkdir(exist_ok=True)
-    # THE PRESERVATION LAW (the RedLog's own): the band's evidence sink
-    # is APPEND-ONLY and RUN-SCOPED (one JSONL record per run) — the
-    # shipped write_text rewrote the whole file per run, so a partial
-    # run falsified the recorded number with only its own subset.
+    # the band's evidence sink is append-only and run-scoped (one jsonl record
+    # per run) — the shipped write_text rewrote the whole file per run, so a
+    # partial run falsified the recorded number with only its own subset.
     record = json.dumps(
         {
-            "run": f"{uuid_module.uuid4().hex[:8]}",  # noqa: TID251  # Why: the band record's run token is deliberately NOT a persisted id — no B-tree, no ordering; randomness is the point (attribution only).
+            "run": f"{uuid_module.uuid4().hex[:8]}",  # noqa: TID251  # Why: the band record's run token is deliberately not a persisted id — no B-tree, no ordering; randomness is the point (attribution only).
             "hold_to_resume_ms": round(elapsed_ms, 3),
             "band_ms": 50,
         }
@@ -680,7 +675,7 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
 ) -> None:
     """The alias doctrine — every alias pair REFUSES a disagreement,
     naming both spellings and values — covers the last alias pair too:
-    ``list(run=X, flow_id=Y)`` with disagreeing ids raises naming BOTH
+    ``list(run=X, flow_id=Y)`` with disagreeing ids raises naming both
     values instead of silently preferring one spelling; the same id in
     the two accepted TYPES (the claim's JobId and its string form) is
     AGREEMENT, never a refusal."""
@@ -703,9 +698,9 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
     holds = await client.list(run=flow_id, flow_id=str(flow_id))
     assert len(holds) == 1, holds
 
-    # A non-documented spelling of the SAME id (braced) also agrees and
+    # A non-documented spelling of the same id (braced) also agrees and
     # resolves — the bound id is the canonical form, so the query never
-    # sees the wrapper. Pinned on BOTH the both-given path and each
+    # sees the wrapper. Pinned on both the both-given path and each
     # sole-spelling path (a canonicalizer that only ran when both
     # spellings were given would leave the sole call binding raw).
     braced = "{" + str(flow_id).upper() + "}"
@@ -713,16 +708,16 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
     assert len(await client.list(run=braced)) == 1
     assert len(await client.list(flow_id=braced)) == 1
 
-    # The GET door binds the canonical form too: the braced UPPER
+    # The get door binds the canonical form too: the braced upper
     # spelling of the hold's id resolves to the same hold, and a
     # well-formed id with no hold answers the honest None.
     got = await client.get("{" + str(holds[0].hold_id).upper() + "}")
     assert got is not None and got.hold_id == holds[0].hold_id
-    # And a well-formed id with NO hold answers the honest None (the
+    # And a well-formed id with no hold answers the honest None (the
     # get door's contract for every accepted spelling).
     assert await client.get(str(new_uuid())) is None
 
-    # The DISAGREEMENT: the refusal names both spellings AND both
+    # The disagreement: the refusal names both spellings and both
     # values (the operator reads what collided, not just which kwargs).
     other_run = new_uuid()
     with pytest.raises(ValueError) as refused:
@@ -732,7 +727,7 @@ async def test_list_refuses_disagreeing_run_and_flow_id(
     assert str(flow_id) in message and str(other_run) in message, message
 
     # And a spelling that does not even parse as the id lands in the
-    # SAME named refusal — the spelling names and both values, never a
+    # same named refusal — the spelling names and both values, never a
     # naked UUID error.
     with pytest.raises(ValueError) as malformed:
         await client.list(run=flow_id, flow_id="not-this-run")
@@ -748,7 +743,7 @@ async def test_resolve_delivers_through_a_non_canonical_id_spelling(
     wf_schema: str,
     wf_pool: asyncpg.Pool,
 ) -> None:
-    """The resolve door's EVERY leg speaks the id's canonical form: a
+    """The resolve door's every leg speaks the id's canonical form: a
     hold resolved through a braced UPPER spelling (the same hold the
     JobId names) is DELIVERED — the node resumes, the hold is not
     consumed-then-refused — and the audit row and the broadcast carry
@@ -777,7 +772,7 @@ async def test_resolve_delivers_through_a_non_canonical_id_spelling(
     )
     after = await client.get(holds[0].hold_id)
     assert after is not None and after.status == "delivered", after
-    # The AUDIT POINTER speaks the canonical form: the operator's strict
+    # The audit pointer speaks the canonical form: the operator's strict
     # target_id query finds the braced call's row.
     pointer = await wf_conn.fetchrow(
         f'SELECT target_id FROM "{wf_schema}".admin_audit '

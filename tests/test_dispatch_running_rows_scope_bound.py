@@ -6,15 +6,15 @@ running population grows - unrelated actors' rows this round never
 admits, plus (in the capped shape) the polled actor's own running rows.
 The unguarded statement paid this axis on every round through the
 ``running_per_actor`` CTE: referenced three times, so materialized once
-per round, scanning and aggregating EVERY running row in the fleet
+per round, scanning and aggregating every running row in the fleet
 (``SELECT actor, count(*) FROM jobs WHERE status='running' GROUP BY
 actor``) whether or not any actor declared ``max_concurrent`` - the
 cost rode every claim round at O(fleet running rows).
 
 The shipped statement precomputes the running count per capped actor
-ONCE per round in the ``capped_running`` CTE (the #283 fix): its driver
+once per round in the ``capped_running`` CTE (the #283 fix): its driver
 is the round's own live-actor population, its count subplan is gated on
-``ac.max_concurrent IS NOT NULL`` inside a CASE, and all three former
+``ac.max_concurrent IS not NULL`` inside a CASE, and all three former
 count sites (both capacity CTEs' residuals and
 ``eligible_candidates``' post-lock re-check) read the precomputed value,
 so the count subplan is evaluated only for actors that declared a cap,
@@ -93,9 +93,9 @@ _RUNNING_RATIO_BOUND = 3
 # O(oversample x cap^2) the correlated per-claimed-row recount paid
 # (measured 28/648/2550/10100 running-index rows at these caps on the
 # pre-CTE shape, work/cap^2 ~1.0). The precomputed capped_running CTE
-# evaluates the count ONCE per capped live actor per round: the actor's
+# evaluates the count once per capped live actor per round: the actor's
 # own running-row scan, ~cap/2 rows at the sweep's own_running=cap // 2
-# seeding - so a LINEAR bound (work <= cap) is the pin, and the
+# seeding - so a linear bound (work <= cap) is the pin, and the
 # cap=100/cap=5 ratio stays under the linear 25x with headroom while
 # the quadratic shape's 360x fails it.
 _CAPS = (5, 25, 50, 100)
@@ -138,7 +138,7 @@ async def _seed(
     actor's own cap is applied to its actor_config row so the caller can
     exercise the gated count's taken branch (a capped actor with its own
     running rows) beside the untaken one. ``own_running`` seeds that
-    many of the polled actor's OWN running rows (0 by default; the
+    many of the polled actor's own running rows (0 by default; the
     capped-count test inserts its own two rows so it can hold them under
     the worker id it asserts against). Returns the worker id the
     running rows are locked to.
@@ -327,7 +327,7 @@ async def test_uncapped_round_ignores_the_fleet_running_population(
 async def test_capped_round_pays_only_its_own_running_rows(
     pg_dsn: str, running_schema: str, variant: str, sql: str
 ) -> None:
-    """A capped actor's round counts its OWN running rows (the gate's
+    """A capped actor's round counts its own running rows (the gate's
     taken branch) and still never the fleet's.
 
     The polled actor declares ``max_concurrent`` and holds two of its
@@ -406,7 +406,7 @@ async def test_capped_count_work_is_flat_in_cap(
     O(oversample x cap^2) running-index rows per round - measured
     28/648/2550/10100 rows at caps 5/25/50/100 (work/cap^2 ~1.0,
     crossover against the fleet-wide CTE at cap~30, the issue's red).
-    The precomputed capped_running CTE evaluates the count ONCE per
+    The precomputed capped_running CTE evaluates the count once per
     capped live actor: the sweep seeds the polled actor with half its
     cap as own running rows, so the per-round count work is ~cap/2 -
     every cap's work must stay under a LINEAR bound, and the cap=100 to

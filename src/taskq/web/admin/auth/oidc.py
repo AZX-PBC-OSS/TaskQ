@@ -117,7 +117,7 @@ class _OIDCMetadataCache:
             self._entries.pop(issuer, None)
             raise
         if entry is not None:
-            # Fresh discovery, JWKS not yet fetched this window: fill it in
+            # Fresh discovery, jwks not yet fetched this window: fill it in
             # without resetting the entry's expiry.
             entry.jwks = jwks
         return jwks
@@ -283,8 +283,8 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
         cookie_path=base_path or "/",
     )
     login_path = f"{base_path}/login"
-    # Scoped to the callback route alone, like the SAML correlation cookie is
-    # scoped to the ACS path: the state cookie carries the PKCE verifier and
+    # Scoped to the callback route alone, like the saml correlation cookie is
+    # scoped to the acs path: the state cookie carries the pkce verifier and
     # the nonce, is consumed by exactly one route, and should be offered on
     # exactly one.
     callback_path = f"{base_path}/callback"
@@ -306,7 +306,7 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
             state = secrets.token_urlsafe(32)
             nonce = secrets.token_urlsafe(32)
             meta = await metadata_cache.get_discovery(config.issuer, _fetch_discovery)
-            async with AsyncOAuth2Client(  # pyright: ignore[reportGeneralTypeIssues]  # Why: authlib ships no stubs; AsyncOAuth2Client subclasses httpx2.AsyncClient but pyright cannot see __aenter__/__aexit__ across the untyped MRO.
+            async with AsyncOAuth2Client(  # pyright: ignore[reportGeneralTypeIssues]  # Why: authlib ships no stubs; AsyncOAuth2Client subclasses httpx2.AsyncClient but pyright cannot see __aenter__/__aexit__ across the untyped mro.
                 client_id=config.client_id,
                 scope=config.scope,
                 redirect_uri=config.redirect_uri,
@@ -319,7 +319,7 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
                     nonce=nonce,
                 )
             response = RedirectResponse(url=auth_url, status_code=302)
-            # state + PKCE bind the authorization code to this browser; the
+            # state + pkce bind the authorization code to this browser; the
             # nonce binds the ID token, the credential the session is minted
             # from, so it rides the same signed cookie the callback compares
             # the ID token's nonce claim against.
@@ -388,7 +388,7 @@ def create_oidc_auth(config: OIDCAuthConfig, *, base_path: str = "") -> AuthBund
             if not isinstance(id_token_str, str) or not id_token_str:
                 raise ValueError("missing id_token")
 
-            key_set = KeySet.import_key_set(jwks)  # pyright: ignore[reportArgumentType]  # Why: joserfc's KeySetSerialization is structurally the JSON dict the JWKS endpoint returned; the response is not typed as such.
+            key_set = KeySet.import_key_set(jwks)  # pyright: ignore[reportArgumentType]  # Why: joserfc's KeySetSerialization is structurally the JSON dict the jwks endpoint returned; the response is not typed as such.
             token_obj = jwt.decode(id_token_str, key_set)
             options: dict[str, dict[str, object]] = {
                 "iss": {"essential": True, "value": config.issuer},

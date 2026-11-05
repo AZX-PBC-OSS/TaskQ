@@ -7,7 +7,7 @@ These pins exist so the fix can never rot silently: the attack lives
 here, green against the fence, and any re-introduction of a second
 connection — or a new leg that fails after the signal write — reds.
 
-The law this file pins (the hold machinery/P3 rule 4, verbatim): cancel is ONE
+The law this file pins (the hold machinery/P3 rule 4, verbatim): cancel is one
 transaction — the flow flip is the linearization point; the nodes, the
 held signals, and the audit row commit together or not at all.
 
@@ -85,7 +85,7 @@ _AUDIT_COUNT_SQL = 'SELECT count(*) FROM "{schema}".admin_audit WHERE target_id 
 
 
 async def _cancel_state(conn: asyncpg.Connection, schema: str, flow_id: JobId) -> dict[str, Any]:
-    # The queries are module CONSTANTS + .format (the estate's own shape —
+    # The queries are module constants + .format (the estate's own shape —
     # taskq.audit's _INSERT_SQL): the schema identifier is the fixture's
     # validated name, every value a bound parameter.
     return {
@@ -98,9 +98,9 @@ async def _cancel_state(conn: asyncpg.Connection, schema: str, flow_id: JobId) -
 async def test_cancel_rolls_back_whole_when_a_late_leg_fails(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """FACE A — the poisoned late leg: the audit write raises AFTER the
-    signal leg ran. The cancel must roll back WHOLE: root NOT cancelled,
-    signal NOT cancelled, no audit row. The rejected shape (the signal
+    """FACE A — the poisoned late leg: the audit write raises after the
+    signal leg ran. The cancel must roll back WHOLE: root not cancelled,
+    signal not cancelled, no audit row. The rejected shape (the signal
     leg on a second autocommit connection) leaves root='running' with
     signal='cancelled' — the torn state this pin rejects forever."""
     import taskq.web.admin._audit as audit_mod
@@ -150,11 +150,11 @@ async def test_cancel_on_a_one_connection_pool_completes_atomically(
 def test_the_cancel_path_never_imports_the_admin_package() -> None:
     """FACE C — the import law: the workflows engine is core-deps-only;
     no module under ``taskq/workflows/`` may import ``taskq.web.admin``
-    at ANY scope (module-level OR function-local). AST-walked, both
+    at any scope (module-level or function-local). AST-walked, both
     scopes — the function-local lazy import is exactly where the
     rejected seam lived.
 
-    THE XFAIL IS GONE: the strict marker turned
+    The strict marker turned
     XPASS the moment the fix landed (the audit seam moved to the
     deps-free :mod:`taskq.audit`; the compat shim
     ``taskq.web.admin._audit`` re-exports it and the engine never
@@ -169,7 +169,7 @@ def test_the_cancel_path_never_imports_the_admin_package() -> None:
     for path in sorted(pkg.rglob("*.py")):
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
-            # (target, lineno) captured INSIDE the narrowed branches: the
+            # (target, lineno) captured inside the narrowed branches: the
             # walk's bare ast.AST carries no lineno (pyright's gate).
             target: str | None = None
             lineno = 0
@@ -196,9 +196,9 @@ async def test_the_canonical_module_attr_patch_lands_exactly_one_row(
     global — the rebind made the comparison never match: the body routed
     to the shim's attr (the original), whose body's global lookup saw
     the SPY again — unbounded recursion, the whole cancel poisoned on
-    the five same-tx engine sites. THE LAW: exactly ONE row lands."""
+    the five same-tx engine sites. the LAW: exactly one row lands."""
     import taskq.audit as audit_core
-    import taskq.web.admin._audit as audit_mod  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the IMPORT IS the effect — the shim must be LOADED (the fastapi install's state) for the seam's routing to have a live surface to route through.
+    import taskq.web.admin._audit as audit_mod  # noqa: F401  # pyright: ignore[reportUnusedImport]  # Why: the import is the effect — the shim must be loaded (the fastapi install's state) for the seam's routing to have a live surface to route through.
 
     flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_tooth_canonical")
 
@@ -226,13 +226,13 @@ async def test_the_canonical_module_attr_patch_lands_exactly_one_row(
 async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """TOOTH T2 — the delegating wrapper ON THE SHIM's attr (the
+    """TOOTH T2 — the delegating wrapper ON the SHIM's attr (the
     adversarial review's 1c): the plausible host instrumentation rebinds
     ``taskq.web.admin._audit.record_admin_action`` with a pass-through
     that calls the canonical body. The seam that routes to the
     wrapper, the wrapper called the canonical, the canonical's resolver
-    saw the shim's attr (still the wrapper) and routed AGAIN — unbounded
-    recursion. THE LAW: exactly ONE row lands."""
+    saw the shim's attr (still the wrapper) and routed again — unbounded
+    recursion. the LAW: exactly one row lands."""
     import taskq.web.admin._audit as audit_mod
 
     flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_tooth_shim")
@@ -258,7 +258,7 @@ async def test_the_delegating_shim_wrapper_lands_exactly_one_row(
     )
 
 
-# ── THE AUDIT SEAM'S BOUNDS (finding 10 — the reason + the NUL) ──────────
+# ── the audit seam's bounds (finding 10 — the reason + the NUL) ──────────
 
 
 async def test_the_nul_reason_does_not_roll_back_the_cancel(
@@ -268,8 +268,8 @@ async def test_the_nul_reason_does_not_roll_back_the_cancel(
     reason rode the text bind RAW, and asyncpg refuses a NUL byte in a
     text bind — the audit leg raised inside the cancel's own transaction,
     and the WHOLE cancel rolled back (the same-tx guarantee turned a
-    poisoned free-text field into a failed mutation). THE CONTRACT: the NUL
-    is sanitized AT THE WRITE (the leaf's shape pin — it rides as the
+    poisoned free-text field into a failed mutation). the CONTRACT: the NUL
+    is sanitized AT the WRITE (the leaf's shape pin — it rides as the
     ``\\x00`` ESCAPE), the poison is inert, and the cancel lands with its
     audit row."""
     flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_nul_reason")
@@ -298,9 +298,9 @@ async def test_the_audit_reason_is_bounded_at_the_leaf(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The audit seam's length bound (the finding's face B):
-    ``admin_audit`` is the NEVER-PRUNED table, and an unbounded reason
+    ``admin_audit`` is the never-PRUNED table, and an unbounded reason
     was unbounded retention per row (a 100k-char reason landed verbatim).
-    THE CONTRACT: the truncate-to-bounds law at the leaf — the row records
+    The truncate-to-bounds law at the leaf — the row records
     what arrived, CAPPED (the cancel form's own maxlength the module
     docstring already names)."""
     flow_id, runner = await _held_flow(wf_pool, wf_schema, "attack_audit_long_reason")
@@ -332,11 +332,10 @@ async def test_the_run_feed_survives_a_direct_db_poisoned_row(
     from taskq.web.admin._wf_rows import fetch_run_view
 
     flow_id, _runner = await _held_flow(wf_pool, wf_schema, "attack_audit_poison_row")
-    # THE DIRECT-DB POISON: no taskq writer ran here — another driver's
-    # row. (asyncpg itself refuses a raw NUL in ANY text or jsonb bind —
-    # the poison a foreign driver CAN land: the ANSI escape + the C0
-    # controls in the reason text, the \u0001 escape inside the detail
-    # jsonb.)
+    # no taskq writer ran here — another driver's row. (asyncpg itself refuses
+    # a raw NUL in any text or jsonb bind — the poison a foreign driver can
+    # land: the ansi escape + the C0 controls in the reason text, the \u0001
+    # escape inside the detail jsonb.)
     poisoned_reason = "bad\x1b[31mreason\x02with controls"
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".admin_audit '  # noqa: S608  # Why: the schema identifier is the fixture's validated name; every value is $n-bound.
@@ -349,14 +348,14 @@ async def test_the_run_feed_survives_a_direct_db_poisoned_row(
         poisoned_reason,
         json_mod.dumps({"note": "esc\u0001inside jsonb", "run_id": str(flow_id)}),
     )
-    # THE RUN PAGE'S AUDIT READ survives the poisoned row.
+    # the run page's audit read survives the poisoned row.
     from taskq.web.admin.workflows import _RUN_EVENTS_SQL
 
     rows = await wf_conn.fetch(
         _RUN_EVENTS_SQL.format(schema=wf_schema), str(flow_id), f"{flow_id}:%"
     )
     assert any(r["reason"] == poisoned_reason for r in rows), "the poisoned row did not read back"
-    # THE RUN VIEW (the SSE frame's body) survives — derive + frame it.
+    # the run view (the SSE frame's body) survives — derive + frame it.
     view = await fetch_run_view(wf_conn, wf_schema, flow_id)
     assert view is not None
     frame = _frame(1, {"run_id": str(flow_id), "status": str(view.derive())})

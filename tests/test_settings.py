@@ -48,7 +48,7 @@ def _cascade_floor(heartbeat_interval: float) -> float:
     """The shipped cascade floor at the defaults (F=3, command_timeout=2).
 
     Mirrors the validator's own math: the last good beat's tail plus the
-    (F+1) enforced failed cycles (acquire + ONE budget, the sequence and
+    (F+1) enforced failed cycles (acquire + one budget, the sequence and
     its teardown sharing it).
     """
     return max(heartbeat_interval, 2.0) + (3 + 1) * (heartbeat_interval + 2.0)
@@ -64,7 +64,7 @@ def test_lock_lease_too_small_raises() -> None:
         cycles; the isolate decision lands on the (max_heartbeat_failures
         + 1)-th consecutive failed beat, and each failed beat's cycle is
         the pool acquire (bounded by heartbeat_interval) plus the tick's
-        ONE command budget, shared by the command sequence AND its
+        one command budget, shared by the command sequence and its
         teardown (an unguarded teardown's close burns a second full
         budget and the observed cascade ran past the old floor).
     """
@@ -95,7 +95,7 @@ def test_lock_lease_error_message_contains_fields() -> None:
     msg = str(exc_info.value)
     assert "lock_lease" in msg
     assert "heartbeat_interval" in msg
-    # The command-timeout term must be NAMED: the validator's point
+    # The command-timeout term must be named: the validator's point
     # is that the bare 4x-heartbeat rule ignored it.
     assert "heartbeat_command_timeout" in msg
     assert "58" in msg  # max(10, 2) + 4 * (10 + 2) at the defaults
@@ -189,7 +189,7 @@ def test_lag_budget_plus_heartbeat_must_fit_lease() -> None:
 
 
 def test_lag_lease_error_message_names_both_knobs() -> None:
-    """The error names watchdog_loop_lag_budget AND lock_lease so operators
+    """The error names watchdog_loop_lag_budget and lock_lease so operators
     know both knobs to adjust, and explains the live-reclaim semantics."""
     with pytest.raises(ValidationError) as exc_info:
         _load(
@@ -247,11 +247,10 @@ def test_lag_budget_at_or_below_check_interval_raises() -> None:
     (measured: budget 1.0 against the 1.0s default check interval killed
     an idle worker on its first armed poll).
     """
-    # THE LATTICE'S SHAPE (the warn-vs-check refusal included): with
-    # budget <= check the warn budget cannot fit BETWEEN check and
-    # budget, so the budget-vs-check violation never fires alone — the
-    # load collects BOTH refusals and raises the aggregate. The match
-    # is against the aggregate's text; the budget error is in it.
+    # with budget <= check the warn budget cannot fit between check and budget,
+    # so the budget-vs-check violation never fires alone — the load collects
+    # both refusals and raises the aggregate. The match is against the
+    # aggregate's text; the budget error is in it.
     with pytest.raises(MultipleValidationErrors, match=r"watchdog_loop_lag_budget.*must be >"):
         _load(
             TASKQ_LOCK_LEASE="60.0",
@@ -608,7 +607,7 @@ def test_rate_limit_pg_fallback_enabled_false_via_env(monkeypatch: pytest.Monkey
 def test_cancellation_grace_plus_cleanup_exceeds_lock_lease_raises() -> None:
     """cancellation_grace_period + cleanup_grace_period >= lock_lease raises ValidationError."""
     # Use lock_lease=60.0, heartbeat_interval=10.0 (valid for).
-    # Set termination_grace_period high enough that the check does NOT
+    # Set termination_grace_period high enough that the check does not
     # fire first (termination check: 40+20 < termination-5; use 120 => 60 < 115 ✓).
     # Then set cancellation+cleanup >= lock_lease to trigger the check.
     with pytest.raises(ValidationError, match="must be < lock_lease"):
@@ -670,7 +669,7 @@ def test_lock_lease_invariant_universality(lock_lease: float, heartbeat_interval
     : at the defaults (max_heartbeat_failures 3, heartbeat_command_timeout
         2) the floor is max(heartbeat_interval, 2) + 4 * (heartbeat_interval
         + 2), strictly above the old 4 * heartbeat_interval rule - the
-        command timeouts AND the last good beat's tail are the terms it
+        command timeouts and the last good beat's tail are the terms it
         ignored.
 
         Picks generous cancellation/cleanup grace values that always satisfy the
@@ -1404,7 +1403,7 @@ def test_unsatisfiable_budget_errors_against_budget_fields() -> None:
 
 def test_producer_loop_not_checked_by_validator() -> None:
     """The invariant covers only the period-1 leader loops (scheduled_wake,
-    cron), NOT the producer: the producer's dispatch_batch is a
+    cron), not the producer: the producer's dispatch_batch is a
     multi-statement transaction not wrapped in asyncio.timeout, so the
     timeout + period model does not hold. A config that would fail the
     producer check if it were checked (but passes the leader check) must
@@ -1434,7 +1433,7 @@ def test_producer_loop_budget_passes_when_timeout_fits() -> None:
     assert s.dispatcher_command_timeout == 1.0
 
 
-# ── OIDC/SAML sub-config singletons (dotenvmodel cached()) ──────────────
+# ── OIDC/saml sub-config singletons (dotenvmodel cached()) ──────────────
 
 
 def test_oidc_property_returns_cached_singleton() -> None:
@@ -1621,7 +1620,7 @@ def test_notify_reconnect_backoff_initial_negative_raises() -> None:
         _load(TASKQ_NOTIFY_RECONNECT_BACKOFF_INITIAL="-0.01")
 
 
-# ── prune_schedule_utc HH:MM validation ──────────────────────────────
+# ── prune_schedule_utc hh:mm validation ──────────────────────────────
 
 
 def test_prune_schedule_utc_valid_via_dict() -> None:
@@ -1660,7 +1659,7 @@ def test_prune_schedule_utc_out_of_range_minutes_raises() -> None:
         _load(TASKQ_PRUNE_SCHEDULE_UTC="12:60")
 
 
-# ── archive_expiry_schedule_utc HH:MM validation ─────────────────────
+# ── archive_expiry_schedule_utc hh:mm validation ─────────────────────
 
 
 def test_archive_expiry_schedule_utc_valid_via_dict() -> None:
@@ -1724,14 +1723,14 @@ def test_archive_expiry_cron_expr_invalid_raises() -> None:
 
 
 def test_suite_ignores_developer_dotfiles(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A ``.env`` in the working directory is NOT read by ``load()``.
+    """A ``.env`` in the working directory is not read by ``load()``.
 
     Behavior proof for the session-scoped ``_no_developer_dotfiles`` fixture
     (``tests/conftest.py``): it points ``DOTENV_DIR`` at an empty directory so
     a developer's gitignored ``.env`` (which ``.env.example`` tells them to
     create, with a real-looking ``TASKQ_PG_DSN``) can never override
     monkeypatched test env vars and redirect destructive SQL at a dev
-    database. If this test fails, that fixture is broken and EVERY
+    database. If this test fails, that fixture is broken and every
     ``.load()``-based test is suspect on a machine with a dotfile.
     """
     dotenv_dir = os.environ.get("DOTENV_DIR")
@@ -1740,7 +1739,7 @@ def test_suite_ignores_developer_dotfiles(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert dotenv_path.is_dir(), "DOTENV_DIR must exist (dotenvmodel raises otherwise)"
     assert not list(dotenv_path.iterdir()), "DOTENV_DIR must be empty"
 
-    # A dotfile in the CWD that WOULD set heartbeat_interval if read (no env
+    # A dotfile in the cwd that would set heartbeat_interval if read (no env
     # var is set for it below, so precedence/override doesn't enter into it -
     # only whether the cascade reads this directory at all).
     (tmp_path / ".env").write_text("TASKQ_HEARTBEAT_INTERVAL=123\n")
@@ -2094,14 +2093,14 @@ def test_saml_settings_repr_masks_private_key_and_session_secret() -> None:
     r = repr(s)
     assert "sp-key-DO-NOT-PRINT" not in r
     assert "saml-session-secret-DO-NOT-PRINT" not in r
-    # idp_x509_cert is the IdP's PUBLIC certificate (it verifies the IdP's
-    # signature; possessing it grants nothing) - deliberately NOT masked.
+    # idp_x509_cert is the IdP's public certificate (it verifies the IdP's
+    # signature; possessing it grants nothing) - deliberately not masked.
     assert "-----BEGIN CERTIFICATE-----idp-public" in r
     assert "https://sp.example.com/metadata" in r
     assert "session_secret=SecretStr('**********')" in r
 
 
-# ── SAML allow_cookieless_fallback: dotenvmodel bool coercion, fail-loud ───
+# ── saml allow_cookieless_fallback: dotenvmodel bool coercion, fail-loud ───
 
 
 @pytest.mark.parametrize("raw", ["true", "1", "yes", "on", "TRUE", "On"])
@@ -2339,7 +2338,7 @@ def test_release_park_remedy_arithmetic_boundaries_agree(
     cap_binds = s.release_park_lease_cap < s.release_park_budget_bound
     assert cap_binds == (s.lock_lease < boundary)
 
-    # 2. Conservation: the remedy's raise-to number IS the boundary.
+    # 2. Conservation: the remedy's raise-to number is the boundary.
     remedy_raise_to = (
         s.release_park_budget_bound + s.heartbeat_interval + TERMINAL_WRITE_BUDGET_SECS
     )

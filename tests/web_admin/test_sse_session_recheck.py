@@ -189,7 +189,7 @@ def _make_admin_app() -> tuple[FastAPI, dict[str, bool]]:
         _ = request
         return auth_state["session_valid"]
 
-    _dependency.session_verifier = _verifier  # pyright: ignore[reportFunctionMemberAccess]  # Why: the re-check the SSO dependency exposes; create_auth_dependency attaches the same attribute.
+    _dependency.session_verifier = _verifier  # pyright: ignore[reportFunctionMemberAccess]  # Why: the re-check the sso dependency exposes; create_auth_dependency attaches the same attribute.
 
     bundle = create_router(
         _StubPool(),  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub pool, as the rest of the web_admin suite.
@@ -205,7 +205,7 @@ def _make_admin_app() -> tuple[FastAPI, dict[str, bool]]:
 async def test_admin_sse_stream_opened_before_revocation_ends_after_recheck(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A /sse/{topic} stream opened BEFORE session invalidation must not
+    """A /sse/{topic} stream opened before session invalidation must not
     outlive it: it ends at the next re-check tick and releases the slot."""
     monkeypatch.setattr(_sse_mod, "_KEEPALIVE_INTERVAL", _TICK)
     app, auth_state = _make_admin_app()

@@ -311,7 +311,7 @@ class TestDispatchBatchAcquireIsBounded:
         """Against a pool that never yields a connection, dispatch_batch
         completes with TimeoutError instead of blocking forever.
 
-        The discriminator is deliberately NOT "a TimeoutError was raised".
+        The discriminator is deliberately not "a TimeoutError was raised".
         An unbounded acquire hanging inside an outer `wait_for` guard also
         raises TimeoutError, so `pytest.raises(TimeoutError)` around a
         guarded call passes either way - it cannot fail, which is the

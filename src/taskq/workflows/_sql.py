@@ -6,16 +6,16 @@ Workflow SQL lives as named statement constants — the
 f-strings at call sites. The constants live in their concern's module
 (``_sql_finalize`` / ``_sql_sweep`` / ``_sql_ledger``); THIS module is the
 bundle: :meth:`WorkflowSql.build` renders every constant for one validated
-schema (the schema identifier is the ONLY interpolated value — validated
+schema (the schema identifier is the only interpolated value — validated
 via ``taskq.constants.require_schema``; every caller-controlled value uses
 asyncpg ``$N`` positional parameter binding).
 
-THE JSONB LANDMINE (the fanout proof's, HIGH — the rule's test
+the JSONB LANDMINE (the fanout proof's, HIGH — the rule's test
 lives in the engine pins): asyncpg parses ``$N`` as a parameter placeholder
-EVEN INSIDE a quoted JSONB literal. An f-string that renders
+even inside a quoted JSONB literal. An f-string that renders
 ``'{"peer":$3}'::jsonb`` fails with ``invalid input syntax for type json``
 on every attempt. The rule: parameterize all JSON (``$3::jsonb`` with a
-dict param), NEVER interpolate into a JSONB literal. The literal jsonb
+dict param), never interpolate into a JSONB literal. The literal jsonb
 shapes here interpolate nothing.
 
 Multi-row writes (fork fan-out, sweep fires, drain consumers) bind PARALLEL
@@ -128,19 +128,19 @@ TERMINAL_SQL_SET: Final[str] = "('succeeded','failed','cancelled','crashed','aba
 #: carried on the row's metadata jsonb, never a new ENUM).
 BLOCKING_REASON_JOIN: Final[str] = "join"
 BLOCKING_REASON_ORPHAN_PARENT: Final[str] = "orphan_parent"
-#: The fail-closed block: a join whose parent TERMINAL-failed — the
-#: joined node's side of the counter is RESOLVED by this stamp (the
+#: The fail-closed block: a join whose parent terminal-failed — the
+#: joined node's side of the counter is resolved by this stamp (the
 #: rederive locks 'join' rows only); metadata.failed_parent names it.
 BLOCKING_REASON_FAILED_PARENT: Final[str] = "failed_parent"
 #: The loudness stamp: a fired join whose reducer body resolved
-#: NOWHERE — the consumers' delivery continues (the delivery contract),
+#: nowhere — the consumers' delivery continues (the delivery contract),
 #: but the record names the defect instead of looking healthy.
 BLOCKING_REASON_BODY_UNAVAILABLE: Final[str] = "body_unavailable"
 #: The flow-fenced join: a never-fired join row
-#: whose resolution the FLOW'S OWN DEATH fenced — the fire's flow-status
+#: whose resolution the flow's own death fenced — the fire's flow-status
 #: leg refuses a terminal flow, so the join can never fire again. The
 #: sweep's flow-fenced arm stamps it (the blocked-with-reason terminal
-#: state); a join with a FAILED parent is stamped 'failed_parent' (the
+#: state); a join with a failed parent is stamped 'failed_parent' (the
 #: failure is the cause) — this name is for the join whose parents all
 #: terminalized fine and whose fire the flow's death fenced anyway.
 BLOCKING_REASON_FLOW_DEAD: Final[str] = "flow_dead"

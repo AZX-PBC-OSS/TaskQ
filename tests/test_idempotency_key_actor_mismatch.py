@@ -78,7 +78,7 @@ async def test_cross_actor_hit_in_a_batch_refuses_the_whole_batch(
 async def test_cross_actor_pair_inside_one_batch_refuses_atomically(
     backend_pair: Backend,
 ) -> None:
-    """Two items of ONE enqueue_batch call sharing a pair across actors.
+    """Two items of one enqueue_batch call sharing a pair across actors.
 
     The bulk tier is one INSERT in one transaction: the second item's pair
     conflicts inside the statement, the dedup resolution resolves it to the

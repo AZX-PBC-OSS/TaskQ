@@ -56,7 +56,7 @@ async def _rewind_bucket_ts(pool: asyncpg.Pool, schema: str, name: str, seconds:
         )
 
 
-# ── PG fallback activation - WARNING log + ordering ────────────
+# ── PG fallback activation - warning log + ordering ────────────
 
 
 @pytest.mark.redis
@@ -84,10 +84,10 @@ async def test_pg_fallback_activation(
         backend="redis",
     )
 
-    # Seed the PG row with a SERVER-domain ts one hour INTO THE FUTURE,
-    # so the fallback acquire measures EXACTLY zero elapsed refill: the
+    # Seed the PG row with a server-domain ts one hour INTO the future,
+    # so the fallback acquire measures exactly zero elapsed refill: the
     # conflict arm's refill math clamps negative elapsed to zero
-    # (``GREATEST(statement_timestamp() - ts, 0)``), so the seeded
+    # (``greatest(statement_timestamp() - ts, 0)``), so the seeded
     # ``tokens: 0`` survives however much wall clock the starved stretch
     # between this seed and the acquire below burns. A ts at seed time
     # was the old shape, and it raced its own 1 s refill window: at
@@ -302,10 +302,10 @@ async def test_pg_refund_fixed_quota_recovers(
 #
 # The fused acquire stamps a transient `granted` boolean into the state
 # document so the decision can ride the row home through RETURNING; every
-# reader reads NAMED keys only, so the key is inert, but a future reader
+# reader reads named keys only, so the key is inert, but a future reader
 # that iterates the key set would silently inherit that assumption. This
 # pin makes the assumption loud: acquire -> the key set is the canonical
-# set PLUS `granted`; refund -> exactly the canonical set (the refund
+# set plus `granted`; refund -> exactly the canonical set (the refund
 # rewrites the document through `_state_payload`, dropping the transient).
 
 

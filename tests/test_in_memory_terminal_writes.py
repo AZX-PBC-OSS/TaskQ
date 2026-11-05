@@ -226,7 +226,7 @@ class TestOwnershipMismatch:
         assert exc_info.value.job_id == job_id
         assert exc_info.value.expected == wid
         # The succeeded row cleared its lock holder (PG's mark_succeeded
-        # SET clause), so the diagnostic reads actual=None - exactly the
+        # set clause), so the diagnostic reads actual=None - exactly the
         # owner PG's _select_owner would report for a terminal row.
         assert exc_info.value.actual is None
 
@@ -551,7 +551,7 @@ def _bump_to_attempt(backend: InMemoryBackend, job_id: JobId, attempt: int) -> N
     """Move a running, worker-owned row to a later attempt epoch.
 
     The same-worker reclaim/redispatch shape: the row stays ``running``
-    and owned by the SAME worker, but the attempt epoch advanced (sweep
+    and owned by the same worker, but the attempt epoch advanced (sweep
     re-pended it, dispatch re-claimed it at attempt + 1). A handler
     suspended since the earlier epoch must not be able to terminalise
     the new one.
@@ -570,9 +570,9 @@ def _bump_to_attempt(backend: InMemoryBackend, job_id: JobId, attempt: int) -> N
 class TestAttemptEpochFencing:
     """A terminal write fenced on the attempt epoch no-ops a stale attempt.
 
-    The worker fence (``status='running' AND locked_by_worker=$n``) cannot
+    The worker fence (``status='running' and locked_by_worker=$n``) cannot
     distinguish attempt N's stale handler from attempt N+1's live one on
-    the SAME worker after a reclaim/redispatch; the attempt conjunct is
+    the same worker after a reclaim/redispatch; the attempt conjunct is
     the second, deeper fence. A write that fences on the current attempt
     epoch (``attempt == $attempt``) guards against a stale handler's
     terminal write landing on a row it no longer owns after the same worker
@@ -594,7 +594,7 @@ class TestAttemptEpochFencing:
         assert row.status == "running" and row.attempt == 2
 
     async def test_mark_succeeded_without_attempt_no_ops(self) -> None:
-        """A write that cannot present ANY attempt epoch must not land.
+        """A write that cannot present any attempt epoch must not land.
 
         This is the adversarial review pin's exact shape
         (``mark_succeeded(job_id, worker_id, None)``): a caller with no
@@ -1884,7 +1884,7 @@ class TestMarkSucceededResultExpiryFallback:
 
     async def test_cleared_stored_ttl_falls_back_to_literal_at_completion(self) -> None:
         """The reported bug: stored result_ttl cleared to NULL, job sat in
-        the queue longer than its TTL - the result must NOT complete
+        the queue longer than its TTL - the result must not complete
         already expired. The worker's fallback literal is applied from
         the completion timestamp, so the result outlives the sweep."""
         clock = FakeClock(_START)
@@ -1960,7 +1960,7 @@ class TestMarkSucceededResultExpiryFallback:
 
         # The pinned expiry is already 40s in the past at completion, so
         # the public get() read reports the post-sweep view (result gone -
-        # pinned by TestGetExpiredResults below). This test pins the WRITE:
+        # pinned by TestGetExpiredResults below). This test pins the write:
         # what mark_succeeded kept in storage, read directly.
         stored = backend._jobs[job_id]  # type: ignore[reportPrivateUsage]  # Why: test-only private access to pin the stored write; the public get() path now applies read-side result expiry
         assert stored.result_expires_at == _START + ttl
@@ -2244,10 +2244,10 @@ class TestGetExpiredResults:
 
     async def test_none_result_with_passed_ttl_keeps_stale_expiry_on_reads(self) -> None:
         """Ported from the superseded sweep-based suite: a row whose result
-        is already ``None`` but whose TTL has passed must NOT have its
+        is already ``None`` but whose TTL has passed must not have its
         stale ``result_expires_at`` cleared by a read - the predicate's
         ``result is not None`` half, pinning that expiry alone never
-        matches (PG's ``AND result IS NOT NULL``)."""
+        matches (PG's ``and result IS not NULL``)."""
         clock = FakeClock(_START)
         backend = InMemoryBackend(clock=clock)
         backend.register_stub(

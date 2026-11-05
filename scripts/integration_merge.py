@@ -146,7 +146,7 @@ def prepare_branch(name: str, base: str, dry_run: bool = False) -> None:
 
 def try_merge(pr: PR, verify: bool = False) -> MergeResult:
     """Attempt to merge a single PR into the current branch."""
-    # Fetch the PR head ref
+    # Fetch the pr head ref
     ref = f"pull/{pr.number}/head"
     try:
         git("fetch", "origin", f"{ref}:{pr.head}")
@@ -261,7 +261,7 @@ def main() -> int:
     print(f"\nPreparing integration branch '{args.name}' from '{args.base}'...")
     prepare_branch(args.name, args.base)
 
-    # 5. Merge each PR
+    # 5. Merge each pr
     results: list[MergeResult] = []
     for i, pr in enumerate(prs, 1):
         print(f"\n[{i}/{len(prs)}] Merging #{pr.number}: {pr.title}")

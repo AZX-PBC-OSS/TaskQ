@@ -1,6 +1,6 @@
 """The sweep-arm statement constants: the lock-first re-derive, the sweep's fire arm, the outbox drain, the phantom-ledger reaper.
 
-The schema identifier is the ONLY interpolated value (validated at
+The schema identifier is the only interpolated value (validated at
 WorkflowSql.build); every caller-controlled value uses ``$N`` parameter
 binding. See _sql.py for the bundle and the JSONB-landmine rule.
 """
@@ -12,16 +12,16 @@ from taskq._sql_render import render as shared_render
 # The sweep's lock-first re-derive — one batched statement. The fanout
 # shape beats the per-join round-trip variant on measure: 14.9 ms @ 200
 # joins vs the unscoped seq-scan 83.7 ms @ 75k
-# (``.measurements/runs/sweep-cost-scale-curve-*.json``). Lock FIRST (FOR
-# UPDATE SKIP LOCKED the join-wait children), then count un-terminal
-# parents from the edge ledger INSIDE the same transaction. In-flight
+# (``.measurements/runs/sweep-cost-scale-curve-*.json``). Lock first (for
+# UPDATE skip locked the join-wait children), then count un-terminal
+# parents from the edge ledger inside the same transaction. In-flight
 # decrements are skipped this pass (the healthy worker wins); committed
 # decrements are visible to the count. Stale writes impossible by
 # construction: there is no snapshot-derived counter write — the
 # reconcile UPDATE re-evaluates `deps_pending <> unterminal` under the
 # child's own row lock.
 #
-# Missing parents (a MISNAMED-CHILD edge) never fire silently: the blocked
+# Missing parents (a misnamed-child edge) never fire silently: the blocked
 # arm stamps metadata.blocking_reason='orphan_parent' (the blocked-with-
 # reason state, §17.2's chains render from it) and the firable arm excludes
 # them — the record must never look healthy while the work is wrong.
@@ -197,15 +197,15 @@ SELECT
 """
 
 
-# The sweep's fire arm: SET-BASED (never one round trip per join — the
-# crime), computing the firable set ITSELF inside the caller's
+# The sweep's fire arm: set-based (never one round trip per join — the
+# crime), computing the firable set itself inside the caller's
 # still-open transaction (the rederive statement's row locks are held by
 # the same connection, so the re-derivation is deterministic). Fire ids are
-# minted APP-SIDE (uuid7 via the seam, never DB-side generation) as a bound
+# minted app-side (uuid7 via the seam, never DB-side generation) as a bound
 # array, matched by the firable row's ordinal — a row beyond the minted
 # pool (a parent terminalized between the count and this statement, whose
 # tx2 blocks on the held child lock) stays firable next pass, never NULL-id
-# fired. The flow-status leg rides INSIDE the fire statement (pin 5): a
+# fired. The flow-status leg rides inside the fire statement (pin 5): a
 # flow that cancelled refuses here, in the sweep's own fire statement.
 SWEEP_FIRE_SQL = """\
 WITH locked AS (
@@ -334,22 +334,22 @@ FOR UPDATE OF o SKIP LOCKED
 """
 
 
-# The outbox drain's consumer insert: IDEMPOTENT on the consumer step key —
+# The outbox drain's consumer insert: idempotent on the consumer step key —
 # the composite (idempotency_scope, idempotency_key) arbiter
 # (jobs_idempotency_scope_key_uniq, 01.00.03) is the dedup authority. A crash
 # between fire-commit and consumer-insert re-drains; the arbiter makes the
-# retry a no-op (pin 20: the drain completes the dispatch EXACTLY ONCE).
-# priority is the RUN's stamped override the drain's fetch resolved (the
+# retry a no-op (pin 20: the drain completes the dispatch exactly once).
+# priority is the run's stamped override the drain's fetch resolved (the
 # wf-priority fix — the loop escalation's consumer materializes at the
 # run's priority; the fleet door's own arithmetic, mirrored in the fetch's
 # SQL): resolved by OUTBOX_FETCH_UNDELIVERED_SQL, COALESCEd to the column
 # default's own value (0 — the pre-fix byte-identical row).
-# start_to_close is the CONSUMER'S DECLARED DEADLINE (the wf
+# start_to_close is the consumer's declared deadline (the wf
 # start_to_close fix): the fire's bindings carry the downstream node's
 # own resolution (the join row's metadata `consumers` array, serialized
-# as SECONDS — the jsonb wire form); the unset case binds NULL
+# as seconds — the jsonb wire form); the unset case binds NULL
 # (pre-fix identical).
-# fairness_key is the consumer row's DISPATCH COHORT (the wf fairness
+# fairness_key is the consumer row's dispatch cohort (the wf fairness
 # stamp): the run's flow_id, the same birth stamp every claimable wf
 # row of the run carries.
 OUTBOX_DRAIN_CONSUMERS_SQL = """\
@@ -381,7 +381,7 @@ RETURNING id
 
 # The body-unavailable stamp: the fire arm
 # delivers a fired join's consumers even when no reducer body resolves —
-# at-least-once delivery is the contract — but the RECORD must not look
+# at-least-once delivery is the contract — but the record must not look
 # healthy while the work was wrong. Keyed single join row; the stamp rides
 # the fire's own transaction (a rolled-back pass rolls it back with it).
 JOIN_BODY_UNAVAILABLE_SQL = """\
@@ -421,17 +421,17 @@ RETURNING l.id, l.flow_id
 # fence: any nodeless root that could ever exist — a future statement-
 # order regression's debris, a hand-crafted row — is reaped 'failed' with
 # the loud error class once it is past the grace. The shapes reaped: a
-# root (step_key '__flow__') with ZERO node rows in 'pending' or
+# root (step_key '__flow__') with zero node rows in 'pending' or
 # 'running' — the maintenance derivation can never develop either (its
-# rollup INNER-JOINS the node rows: a nodeless root never derives, never
+# rollup inner-joins the node rows: a nodeless root never derives, never
 # terminalizes, never prunes — unbounded retention + a run key squatted
 # forever). The grace ($1) keeps an in-flight
 # create of a buggy future shape from being reaped mid-flight; the clock is
-# PG's own, the batch bounded ($2, SKIP LOCKED).
+# PG's own, the batch bounded ($2, skip locked).
 # The event leg rides the same statement (a terminal transition an
-# events reader cannot see never happened). The reap is the DEFINED
+# events reader cannot see never happened). The reap is the defined
 # verdict, not a heal: the run's key stays with the reaped run — the
-# caller's re-run is a NEW key (the typed claim surface states the
+# caller's re-run is a new key (the typed claim surface states the
 # existing-terminal verdict loudly).
 NODELESS_ROOT_REAP_SQL = """\
 WITH orphans AS (
@@ -480,22 +480,22 @@ SELECT count(*) FROM reaped
 
 # The hold-stamp wedge (measured in the soak): a non-terminal node row
 # carrying the held representation's stamp (``metadata.hold`` — the
-# claimable fence ``AND NOT metadata ? 'hold'`` excludes it from every
-# claim) whose HOLD ROW is no longer 'held' is UNCLAIMABLE FOREVER — the
-# SIGKILL-during-a-held-loop end state the soak measured TWENTY of (the
+# claimable fence ``and not metadata ? 'hold'`` excludes it from every
+# claim) whose hold row is no longer 'held' is unclaimable forever — the
+# SIGKILL-during-a-held-loop end state the soak measured twenty of (the
 # rows sat pending, stamped, deps_pending 0, their signals delivered,
 # hours unclaimed; nothing detected them and no stranded-row reason named
 # them). The hold's state decides:
 #
-# * still 'held'  → the row is the legitimate HELD REPRESENTATION (the
+# * still 'held'  → the row is the legitimate held representation (the
 #   hold is the truth — the resume re-dispatches): the arm leaves it.
-# * delivered / abandoned / cancelled / ABSENT → the stamp is a DEAD
-#   POINTER: cleared (the same clear the resume writes —
+# * delivered / abandoned / cancelled / absent → the stamp is a dead
+#   pointer: cleared (the same clear the resume writes —
 #   ``metadata - 'hold' - 'held_signal'``, the loop's budget pause
 #   released with it), the row re-claims (``scheduled_at = now()``). The
-#   body's re-execution owns the next NAMED state from there: a delivered
+#   body's re-execution owns the next named state from there: a delivered
 #   hold's answer replays from the queue (the resume contract), an
-#   abandoned one RETURNS the union's Expired member at the wait site
+#   abandoned one returns the union's Expired member at the wait site
 #   (the fail-close arm the checker forces — the body that wants the
 #   failure raises SignalTimeoutError itself off the member), an absent
 #   one re-asks. NOTHING wedges: every path lands in a named state.
@@ -534,10 +534,10 @@ RETURNING j.id, (sig.id IS NULL) AS hold_absent
 # wf_join_fire is the exactly-once ledger, and the soak measured the
 # delivered population growing monotonically forever (5.9k at close, no
 # pruner touched it). Delivered rows past
-# the TTL delete, one bounded committed batch per pass; UNDELIVERED rows
+# the TTL delete, one bounded committed batch per pass; undelivered rows
 # are never touched here (the drain owns them — deleting an undelivered
 # row would lose the delivery it exists to make). The period is the
-# sweep-family's zero-means-OFF sentinel (settings level): a brand-new
+# sweep-family's zero-means-off sentinel (settings level): a brand-new
 # deletion loop's safe misconfiguration is off.
 OUTBOX_RETENTION_SQL = """\
 WITH doomed AS (
@@ -578,28 +578,28 @@ RETURNING o.content_address
 # Six tables grow monotone-forever with no retention arm and no FK for
 # the job prune to cascade: wf_edge, wf_step_ledger, wf_join_fire,
 # wf_signals, wf_node_progress, wf_node_stream. The outbox/step-cache
-# arms prune DERIVED data (a deleted outbox row's narration is already
+# arms prune derived data (a deleted outbox row's narration is already
 # delivered; a deleted cache row re-fills); these prune the flow history
 # itself.
 #
 # Two passes. Selecting doomed rows out of each wf table instead — every
 # row's predicate probing the jobs side twice (terminal-EXISTS + rootless
-# NOT-EXISTS), with wf_edge, having no clock of its own, evaluating the
-# probe for EVERY row — walks the whole table in the zero-doomed
+# not-exists), with wf_edge, having no clock of its own, evaluating the
+# probe for every row — walks the whole table in the zero-doomed
 # steady state, 2 jobs-probes per row: TimeoutError at 3M rows, the arms
 # permanently stopped pruning at exactly the scale they exist for.
 # Selection starts on the flows side:
 #
 # * The flows-side pass (every call): the terminal-aged roots are
-#   selected FIRST — a tiny jobs-side set served by jobs_finished_at_idx
+#   selected first — a tiny jobs-side set served by jobs_finished_at_idx
 #   (status, finished_at): ``step_key = '__flow__'`` (the root identity),
 #   a terminal status, and
 #   the root's own ``finished_at`` past the period. Each selected flow's
 #   rows then delete through the table's flow_id index (the delete joins
 #   the table's flow column), row-LIMITed to the batch. The floor is
 #   O(terminal flows + batch) — never O(table). The node_progress arm's
-#   pass carries TWO batch-bounded deletes in one statement (the
-#   stream fold): its own table's rows AND the doomed flows'
+#   pass carries two batch-bounded deletes in one statement (the
+#   stream fold): its own table's rows and the doomed flows'
 #   ``wf_node_stream`` rows — the stream channel (a dead node's ring,
 #   nodes x 64 rows unbounded) has the same doomed-flow identity, its
 #   rows carry the flow_id column directly, and wf_node_stream_flow_seq_idx
@@ -609,55 +609,55 @@ RETURNING o.content_address
 #   O(terminal flows + 2x batch)).
 # * The rootless pass (a separate, coarser-cadence statement — the
 #   leader wiring runs it every Nth call): the orphan class — the row's
-#   pointee is NOT a flow root at all (absent, or a live non-root job) —
+#   pointee is not a flow root at all (absent, or a live non-root job) —
 #   cannot be found from the flows side, so its statement is
-#   a PK-ordered walk that visits AT MOST the batch (the LIMIT bounds
+#   a PK-ordered walk that visits at most the batch (the LIMIT bounds
 #   the scan, not the result)
 #   and probes each visited row's pointee once. The walk advances as the
 #   table's aged front drains (the flows-side pass deletes the
 #   terminal-aged flows' rows ahead of it).
 #
-# The rootless walk needs a persisted cursor: ``ORDER BY pk LIMIT batch``
-# re-visits the SAME first batch every pass when that batch's probes all
+# The rootless walk needs a persisted cursor: ``ORDER BY PK LIMIT batch``
+# re-visits the same first batch every pass when that batch's probes all
 # answer "live root" — a 3,000-row live front, batch 1,000, five passes,
 # deleted=0, the orphans beyond the front stranded forever. The watermark
 # precedent (``job_events_prune_state``, 01.00.20_02): a persisted cursor
 # row per arm (``wf_rootless_sweep_state``, 01.00.36_01) that the walk
-# SEEKS STRICTLY PAST — the cursor rides the last VISITED row (visited,
-# not deleted: a live front's rows ARE the advance), and it advances in
-# the SAME statement/transaction as the deletes (the watermark rule:
+# seeks strictly past — the cursor rides the last visited row (visited,
+# not deleted: a live front's rows are the advance), and it advances in
+# the same statement/transaction as the deletes (the watermark rule:
 # never lag what is already gone, never claim what is not — a crashed
 # pass rolls the cursor back with its deletes and re-walks them). When
-# the walk finds NOTHING above its cursor it REWINDS the cursor to the
+# the walk finds NOTHING above its cursor it rewinds the cursor to the
 # start (the wraparound: a row whose root died after the walk had
 # passed is re-probed on the next sweep; one empty pass per full sweep,
 # the batch still bounding every pass). The seek's fresh-cursor face is
 # a COALESCE to the below-everything sentinel (the nil uuid / seq 0 /
-# the empty channel) — not an ``OR cursor IS NULL`` leg, which would
+# the empty channel) — not an ``or cursor is NULL`` leg, which would
 # cost the walk its PK index.
 #
 # Age clocks, one per leg: the flows-side pass ages by
-# the ROOT's ``finished_at`` — the flow's terminalization stamp, the
+# the root's ``finished_at`` — the flow's terminalization stamp, the
 # latest clock any of the flow's rows can carry (a row written before
-# the flow terminalized is older than the stamp: the root's age SUBSUMES
+# the flow terminalized is older than the stamp: the root's age subsumes
 # the row clocks, and one selection serves all the arms). The rootless
-# pass ages by the ROW's own clock where the table has one
+# pass ages by the row's own clock where the table has one
 # (created_at/fired_at/updated_at/emitted_at — a rootless row cannot
-# ride a root's stamp); wf_edge has NO timestamp column at all (checked:
+# ride a root's stamp); wf_edge has no timestamp column at all (checked:
 # 01.00.24_02 + 01.00.25_01 — child/parent/flow_id/failure_policy), so
-# its rootless class deletes on sight: the pointee's absence IS the age
+# its rootless class deletes on sight: the pointee's absence is the age
 # proof (a committed edge's root can only be absent by deletion).
 #
 # The NULL-stamp leg is conservative:
-# a terminal root whose ``finished_at`` was never stamped is SKIPPED —
-# NEVER doomed. Selecting it anyway is degenerate BOTH ways: [idle] a
+# a terminal root whose ``finished_at`` was never stamped is skipped —
+# never doomed. Selecting it anyway is degenerate both ways: [idle] a
 # seconds-old flow's entire history deleted under a 30-day period
 # because its stamp never landed (the delete eager, the period
 # meaningless); [busy] the ``ORDER BY finished_at NULLS LAST`` tail puts
 # the NULL-stamped roots past the LIMIT — never selected, never
 # deleted, and the tripwire (keyed on deletion) never fires. So the
 # delete is never eager — no history is removed that has no age — and
-# the tripwire is always live: the flows-side statements OBSERVE the
+# the tripwire is always live: the flows-side statements observe the
 # class (a ``null_observed`` count over the same jobs_finished_at_idx
 # face — the NULLs sit contiguous per status; the observation is not the
 # selection and cannot starve behind
@@ -667,7 +667,7 @@ RETURNING o.content_address
 #
 # Clock vocabulary: every comparison here is
 # ``statement_timestamp()`` — the prune family's own selection-bound
-# clock (STABLE: the bound is fixed at the statement's start; a VOLATILE
+# clock (stable: the bound is fixed at the statement's start; a volatile
 # ``clock_timestamp()`` bound cannot be a btree index condition —
 # test_index_audit.py documents the two-clock split).
 # One face across all the family's statements.
@@ -677,11 +677,11 @@ RETURNING o.content_address
 #
 # * wf_edge keys rows by (child_id, parent_id) with a flow_id column;
 # * wf_join_fire's creation clock is ``fired_at`` (its own name for
-#   created_at, DEFAULT clock_timestamp());
+#   created_at, default clock_timestamp());
 # * wf_step_ledger / wf_signals carry ``created_at`` (wf_signals names
 #   its flow column ``workflow_id``);
 # * wf_node_progress carries ``updated_at`` (the upsert's latest-wins
-#   stamp) and NO flow column — the flow is reached through the NODE's
+#   stamp) and no flow column — the flow is reached through the node's
 #   jobs row (metadata.flow_id), the flow-nodes expression index
 #   (01.00.26_02) serving the probe;
 # * wf_node_stream carries ``emitted_at``, the flow_id column directly
@@ -691,11 +691,11 @@ RETURNING o.content_address
 #   rootless pass's second batch-bounded walk.
 #
 # The step ledger's per-row statuses ('running'/'succeeded'/'failed'/
-# 'fenced'/'awaited') need NO guard here: a terminal flow's 'running'
+# 'fenced'/'awaited') need no guard here: a terminal flow's 'running'
 # ledger row is the phantom class the reap arm fences first, and
 # deleting it outright reconstructs the same (the row is gone, not
 # lying — the flow stays reconstructible from rows alone). A terminal
-# flow's HELD signals are exactly the abandoned-hold class — they
+# flow's held signals are exactly the abandoned-hold class — they
 # delete with the flow (nothing will ever deliver them: the wait site
 # is terminal).
 EDGE_RETENTION_SQL = """\
@@ -1388,10 +1388,10 @@ def render_rootless_retention_sql(template: str, schema: str) -> str:
 
     The flows-side statements ride the :class:`WorkflowSql` bundle's own
     fields (the bundle renders them in ``build``); the rootless
-    statements render HERE rather than growing the bundle, so the
+    statements render here rather than growing the bundle, so the
     two-pass law lives entirely in this module. The substitution is the
     shared render's (the validated schema, the doubled braces
-    un-doubled) — the schema identifier stays the ONLY interpolated
+    un-doubled) — the schema identifier stays the only interpolated
     value, ``$N`` binding for everything a caller controls. The
     rootless statements carry no ``{terminal}`` token (the root
     identity is a step-key check, never a status list), so no import of

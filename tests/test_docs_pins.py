@@ -6,7 +6,7 @@ carries the `route` + `chain_source` rows; the guide's fan-in section
 NAMES `FanInBoundExceededError` beside its remedy; the guide's route
 teaching states the single-value disposition — the assertions stand as
 the permanent green pins. The cited text
-(the holdmap fix's runbook paragraph) does NOT exist in this tree — it
+(the holdmap fix's runbook paragraph) does not exist in this tree — it
 lives on the unmerged ``feat/taskqflow-holdmap-fixes`` lane — so that
 pin stands GREEN as the anti-rot guard: the docs-numbers law it asserts
 rejects the text the day the lane lands with the mismatch (the 11
@@ -19,24 +19,24 @@ The findings:
 * the api-reference's wiring-verbs table
   (``docs/api-reference/workflows.md``, "The wiring verbs") omits
   ``route`` — a top-level export (``taskq.workflows.__all__``), the typed route
-  typed-route verb whose own section the guide teaches. THE PIN (static):
+  typed-route verb whose own section the guide teaches. the PIN (static):
   every public verb in ``taskq.workflows.__all__`` that is a wiring verb
   (a function homed in the graph-DSL wiring layer) appears as a table row
   (walk ``__all__`` vs the table; ``route`` must be present).
 * ``FanInBoundExceededError`` exists in src
   (``workflows/definitions.py``) but nowhere in ``docs/`` — the fan-in
   bound's section teaches the bound and the child-driven escape but never
-  NAMES the error class the operator meets. THE PIN: the guide's fan-in
+  NAMES the error class the operator meets. the PIN: the guide's fan-in
   bound section names the error class with its remedy.
 * the single-value ``Promise[A|B]`` disposition is unstated:
   ``route()`` is documented only as the per-element (list-source) map
   face; the build refusal for a non-list source ("the route is a MAP
   face") and the single-value alternative (the chain step's in-body
-  ``Route``) are nowhere named. THE PIN: the guide's route/conditional
+  ``Route``) are nowhere named. the PIN: the guide's route/conditional
   section names the single-value disposition explicitly.
-* (the holdmap lane's runbook text, NOT at this tree): "served
+* (the holdmap lane's runbook text, not at this tree): "served
   by five ``wf_*`` tables" while listing six ``wf_*`` tables + ``jobs``.
-  THE PIN (the docs-numbers pattern, a GREEN guard here): every
+  Every
   count-and-list claim of the form "N ``wf_*`` tables" in the docs
   matches the adjacent table's actual ``wf_*`` row count.
 """
@@ -51,7 +51,7 @@ _REPO = Path(__file__).resolve().parents[1]
 _GUIDE = _REPO / "docs" / "guides" / "workflows.md"
 _API_REF = _REPO / "docs" / "api-reference" / "workflows.md"
 
-#: The graph-DSL wiring layer — the modules whose PUBLIC functions are the
+#: The graph-dsl wiring layer — the modules whose public functions are the
 #: flow-definition verbs (the api-reference table's own scope: the verbs
 #: called inside the ``@app.workflow`` builder). The runtime faces
 #: (``run``, ``cancel_workflow_run``, ``retry_workflow_node`` — homed in
@@ -144,7 +144,7 @@ def test_docs3_the_single_value_route_disposition_is_named() -> None:
         "(the section exists at the pinned head)"
     )
     # The disposition, stated: a passage naming the single-value (non-list)
-    # case AND its disposition (the chain/in-body Route, or route()'s own
+    # case and its disposition (the chain/in-body Route, or route()'s own
     # refusal of the shape).
     disposition = re.search(
         r"(single[- ]value|non-list|not a list|list source)[^\n]{0,240}?"
@@ -162,7 +162,7 @@ def test_docs3_the_single_value_route_disposition_is_named() -> None:
     )
 
 
-# ── the docs-numbers count-vs-list law (the GREEN guard) ───────
+# ── the docs-numbers count-vs-list law (the green guard) ───────
 
 #: The count claim's shape: "five `wf_*` tables" — a number word (or digit)
 #: immediately scoping the workflow-table family.
@@ -192,7 +192,7 @@ def test_docs4_a_wf_table_count_claim_matches_its_list() -> None:
     lists SIX (``wf_edge``/``wf_step_ledger``/``wf_signals``/``wf_outbox``
     /``wf_join_fire``/``wf_node_progress``) beside ``jobs``.
 
-    AT THIS HEAD (6e2297fe8): NO such claim exists — the cited paragraph
+    AT THIS HEAD (6e2297fe8): no such claim exists — the cited paragraph
     lives on the unmerged holdmap-fixes lane (the guide's §7 here carries
     no table-count sentence). This pin stands GREEN as the anti-rot
     guard: the day the guide's paragraph lands with the mismatch, the pin

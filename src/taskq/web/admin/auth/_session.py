@@ -50,7 +50,7 @@ _LOGOUT_CSRF_PURPOSE: bytes = b"taskq-logout-csrf:"
 # Armed by the auth dependency on every authenticated request and read by the
 # Jinja global of the same name in the admin chrome: the base template renders
 # the Sign out control only when a token is present, which is exactly when a
-# live SSO session is. A ContextVar rather than a per-route context key so a
+# live sso session is. A ContextVar rather than a per-route context key so a
 # new page route cannot forget it - one forgotten key is one page whose Sign
 # out button silently posts without a token.
 _sso_logout_token: ContextVar[str] = ContextVar("taskq-sso-logout-token", default="")
@@ -107,7 +107,7 @@ async def require_logout_csrf(request: Request, session_manager: "SessionManager
         )
 
 
-def _logout_route(  # pyright: ignore[reportUnusedFunction]  # Why: registered by both SSO factories (saml.py, oidc.py) via their router decorators — the same checker-invisible registration the previous per-factory handlers carried.
+def _logout_route(  # pyright: ignore[reportUnusedFunction]  # Why: registered by both sso factories (saml.py, oidc.py) via their router decorators — the same checker-invisible registration the previous per-factory handlers carried.
     session_manager: "SessionManager",
     base_path: str,
 ) -> Callable[[Request], Awaitable[Response]]:
@@ -240,7 +240,7 @@ class SessionManager:
         """Verify signature + expiry; return claims or ``None`` on any failure."""
         from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
-        # Rotation-aware: a live SSE stream's re-check  runs THIS method
+        # Rotation-aware: a live SSE stream's re-check  runs this method
         # on the manager object it captured at router construction. If the
         # operator rotated the secret by assigning ``manager.secret``, the
         # serializer built at construction still holds the old key, and the

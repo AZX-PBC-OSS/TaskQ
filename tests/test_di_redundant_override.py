@@ -2,8 +2,8 @@
 
 Scenarios:
   - Redundant override at validate() emits dual signal
-  - Non-redundant override does NOT emit
-  - Override that differs from registered default does NOT emit
+  - Non-redundant override does not emit
+  - Override that differs from registered default does not emit
   - Multiple overrides on one actor emit per parameter
   - Two actors with the same redundant override emit per actor
   - Idempotency: validate() called twice emits only once
@@ -120,7 +120,7 @@ def test_redundant_override_warning_points_at_validate_caller() -> None:
     )
 
 
-# ── Non-redundant override does NOT emit ──────────────────────────
+# ── Non-redundant override does not emit ──────────────────────────
 
 
 def test_non_redundant_override_no_emit() -> None:
@@ -140,7 +140,7 @@ def test_non_redundant_override_no_emit() -> None:
     assert len(lifecycle_warnings) == 0
 
 
-# ── Override that differs from registered default does NOT emit ────
+# ── Override that differs from registered default does not emit ────
 
 
 def test_different_override_no_emit() -> None:
@@ -331,7 +331,7 @@ def test_redundant_override_seen_memo_removed() -> None:
     assert not hasattr(_solver, "_redundant_override_seen")
 
 
-# ── redundant Annotated[Clock, Scope.PROCESS] emits both signals ──
+# ── redundant Annotated[Clock, Scope.process] emits both signals ──
 
 
 def test_redundant_clock_override_emits_both_signals() -> None:

@@ -648,7 +648,7 @@ async def test_infra_failed_release_write_propagates_the_cancellation_not_the_er
     raise so the cancellation propagates.
     """
     # Zero the retry backoff so the four attempts fit the unit lane; the
-    # retry MACHINERY is not under test here, only the arm's routing.
+    # retry machinery is not under test here, only the arm's routing.
     monkeypatch.setattr(
         _handlers_mod, "_TERMINAL_WRITE_BACKOFF", (timedelta(0), timedelta(0), timedelta(0))
     )

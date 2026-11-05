@@ -33,7 +33,7 @@ What each test pins, and the defect class each would catch:
    re-pends must wake the fleet once, not 200 times.
 3. ``test_mass_election_single_winner_fence_holds`` - the LEADER mass
    election: with the lease row lapsed by the jump, N workers electing
-   concurrently must produce exactly ONE winner, and an immediate
+   concurrently must produce exactly one winner, and an immediate
    re-election by a loser must keep losing against the fresh lease (the
    losers' retries ride the heartbeat tick; no takeover ping-pong).
 4. ``test_deadline_herd_batches_stay_bounded_and_ledger_conserved`` -
@@ -96,28 +96,28 @@ _STATEMENT_TIMEOUT_MS = 1750
 
 # The prune family's defaults.
 _PRUNE_BATCH = 10_000
-# Why 30 s: the per-statement budget is this pin's HANG GUARD, not its
+# Why 30 s: the per-statement budget is this pin's hang guard, not its
 # discriminative tooth - and the distinction is measured, not stylistic.
 # On a 4-core pinned rig (PG 18 container co-pinned to the same cores) a
 # bounded 10k-row batch costs ~0.4 s and one population-wide 100k write
-# ~4 s: a 10x warm gap, NOT the 100x a glance suggests. CI's congestion
+# ~4 s: a 10x warm gap, not the 100x a glance suggests. CI's congestion
 # tail then multiplies statement work without bound: the archive write
 # (the drain's biggest statement) cancels at whatever budget is set -
-# 4 s, 30 s, 120 s across the CI legs - always cancelling AT the budget.
+# 4 s, 30 s, 120 s across the CI legs - always cancelling at the budget.
 # A statement that dies at whatever bound is
-# set is not slow, it is BLOCKED: every worker's module teardown
+# set is not slow, it is blocked: every worker's module teardown
 # checkpoints the shared test cluster, and the resulting writeback stalls
 # (the family src/taskq/testing/_shared_containers.py already tuned
 # fsync=off for: "individual drops took 2-14s ... pushed tests past their
-# timeout budgets") can outlast ANY budget this test picks. The product's
-# own contract for exactly this: a deadline-cancelled batch is a PAUSE,
+# timeout budgets") can outlast any budget this test picks. The product's
+# own contract for exactly this: a deadline-cancelled batch is a pause,
 # not a failure - the leader loop re-drives, the committed batches stay
 # committed, the aborted batch re-runs, the ledger conserves (the module
 # docstring's "a stopped drain is a pause, not a rollback"). So the
 # harness re-drives too (_drive_prune_to_completion below), and the
-# budget keeps the two jobs a wall clock CAN do: bound a hung statement
+# budget keeps the two jobs a wall clock can do: bound a hung statement
 # (the re-drive absorbs the cancellation) and cancel the population-wide
-# write on a healthy runner (4 s warm x 7.5 margin). The DISCRIMINATIVE
+# write on a healthy runner (4 s warm x 7.5 margin). The discriminative
 # tooth for bounded-vs-population is the batch-shape assertions in the
 # test body (10 productive batches, conserved sum), which no runner speed
 # can defeat; they are byte-identical to the ones the 4 s bound originally
@@ -135,30 +135,30 @@ _PRUNE_REDRIVE_ATTEMPTS = 5
 
 # The events family's defaults (the TTL herd pin).
 _EVENTS_BATCH = 10_000
-# Why 30 s: this budget is the pin's HANG GUARD, not its discriminative
+# Why 30 s: this budget is the pin's hang guard, not its discriminative
 # tooth - the same demotion the prune family's budget earned (and for the
-# same measured reason). The sweep's own batch is CHEAP warm, measured on
+# same measured reason). The sweep's own batch is cheap warm, measured on
 # this rig (PG 18 container, the test-identical 100k-row seed, no vacuum):
 # every one of the drain's 10k-row passes costs 20-52 ms and EXPLAIN
-# (ANALYZE, BUFFERS) shows the healthy plan - an Index Only Scan on
+# (ANALYZE, buffers) shows the healthy plan - an Index Only Scan on
 # job_events_occurred_at_idx with the age bound as an Index Cond (67 ms
 # first pass, Heap Fetches the only tax), no seq scan, no post-scan
 # Filter. There is no plan defect to fix: on CI's parallel legs the same
 # passes land 2.5-5 minutes apart (the same count=10000 statement logged,
 # then again minutes later, until the 300 s
-# pytest-timeout kills it) - a statement that crawls at ANY multiplier of its warm
-# cost while every dumped thread stack sits idle in epoll is BLOCKED by
+# pytest-timeout kills it) - a statement that crawls at any multiplier of its warm
+# cost while every dumped thread stack sits idle in epoll is blocked by
 # the shared runner's weather, not slow, and a wall-clock budget cannot
 # sit between that tail and any bound (the prune pin measured m ~ 10x,
 # m ~ 75x and m > 300x on the same runners). So: the pin joins the serial
 # load_sensitive lane (the prune pin's #523 precedent - no leg co-tenancy,
 # the multiplier bounded), and this budget keeps the two jobs a wall clock
-# CAN do: bound a hung statement and cancel a population-wide write on a
+# can do: bound a hung statement and cancel a population-wide write on a
 # healthy runner. 30 s is ~600x the warm pass; with the re-drive bound
 # below the pin's own worst case (~150 s of absorbed stalls plus the
 # ~20 s seed) still ends red well inside the 300 s pytest-timeout, so a
 # wedged drain fails instead of hanging the loop into the harness kill.
-# The DISCRIMINATIVE teeth stay in the test body, byte-identical: the
+# The discriminative teeth stay in the test body, byte-identical: the
 # first pass deletes exactly one batch, no pass exceeds it, the drain's
 # total conserved, the outbox carve-out spared.
 _EVENTS_TIMEOUT_MS = 30_000
@@ -275,7 +275,7 @@ async def _drive_prune_to_completion(
             duration_ms=totals.duration_ms + result.duration_ms,
         )
         # The drain is complete when an attempt finishes without a
-        # deadline abort AND finds nothing left to move: a cancelled tail
+        # deadline abort and finds nothing left to move: a cancelled tail
         # leaves terminal rows in place, and the next attempt's own
         # zero-row tick is what proves the cohort drained.
         if result.total_deleted == 0 and result.archived == 0:
@@ -296,7 +296,7 @@ async def _drive_prune_to_completion(
     return totals
 
 
-# ── Seeding: the herd, stamped the way the instant BEFORE the jump stamped it
+# ── Seeding: the herd, stamped the way the instant before the jump stamped it
 
 
 async def _seed_herd_worker(conn: asyncpg.Connection, schema: str) -> UUID:
@@ -331,7 +331,7 @@ FROM generate_series(1, {n}) AS n"""
 
 
 async def _seed_running_herd(conn: asyncpg.Connection, schema: str, worker_id: UUID) -> None:
-    """10,100 running rows, every stamp written the instant BEFORE the jump."""
+    """10,100 running rows, every stamp written the instant before the jump."""
     async with conn.transaction():
         # Budget remaining -> the re-pend arm.
         await conn.execute(
@@ -504,7 +504,7 @@ async def test_reclaim_herd_batches_stay_bounded_and_ledger_conserved(
 
         log = await _drain_reclaim_herd(conn, schema)
 
-        # SHAPE: every pass inside the documented arm bound (each arm's
+        # shape: every pass inside the documented arm bound (each arm's
         # LIMIT-ed snap; only the lease arm is populated here). One pass
         # transitioning the whole 10k would be the unbounded-work defect.
         assert log.total == _HERD_TOTAL
@@ -526,7 +526,7 @@ async def test_reclaim_herd_batches_stay_bounded_and_ledger_conserved(
         assert statuses.get("cancelled", 0) == _HERD_CANCEL
         assert sum(statuses.values()) == _HERD_TOTAL
 
-        # The attempt ledger: ONE crashed attempt row per lapsed job, no
+        # The attempt ledger: one crashed attempt row per lapsed job, no
         # duplicates (the batched INSERT's ON CONFLICT yields to nothing
         # here; a double reclaim would surface as a second write or a
         # rollback), every row naming the deadline that fired.
@@ -561,7 +561,7 @@ async def test_reclaim_herd_batches_stay_bounded_and_ledger_conserved(
         )
         assert residual == 0
 
-        # HERD DAMPING: the re-pended cohort's wake instants are spread
+        # herd damping: the re-pended cohort's wake instants are spread
         # across the jitter band [raw*(1-j), raw*(1+j)] = [2.5 s, 7.5 s]
         # for this seed's curve, not one synchronised instant (a flat
         # delay would land the whole cohort back on the fleet at once).
@@ -576,7 +576,7 @@ async def test_reclaim_herd_batches_stay_bounded_and_ledger_conserved(
         assert spread["n"] == _HERD_BUDGET
         assert float(spread["spread_s"]) >= 2.0
 
-        # The distinct-instant tolerance is DERIVED, not a free float, and
+        # The distinct-instant tolerance is derived, not a free float, and
         # not an in-flight allowance: by this line the drain terminated on
         # a clean tick and a second drain re-claimed nothing, so no writer
         # is in flight - the census is quiescent by construction.
@@ -649,7 +649,7 @@ async def test_reclaim_wake_is_one_notify_per_batch(
         # A statement-counting proxy over the sweep's connection: the
         # delivery count below is what consumers feel, but PostgreSQL
         # collapses same-transaction same-payload NOTIFYs at commit, so a
-        # per-row storm of identical NOTIFY STATEMENTS would still deliver
+        # per-row storm of identical NOTIFY statements would still deliver
         # once. The statement count is the mechanism-level claim: the sweep
         # fires exactly one pg_notify per batch, whatever the server does
         # with duplicates.
@@ -682,7 +682,7 @@ async def test_reclaim_wake_is_one_notify_per_batch(
         )
         assert rows == _BATCH
 
-        # The mechanism: ONE wake statement for the whole batch.
+        # The mechanism: one wake statement for the whole batch.
         assert notify_statements == 1
 
         # The observable: exactly one wake for the whole batch. A per-row
@@ -831,7 +831,7 @@ async def test_deadline_herd_batches_stay_bounded_and_ledger_conserved(
 # statements cost tens of ms warm but sit at the mercy of the shared
 # runners' IO weather on the parallel legs: the re-drive absorbs the
 # deadline-family cancellations (a cancelled batch is a pause) but the
-# weather has measured LONGER than the re-drive's whole five-attempt
+# weather has measured longer than the re-drive's whole five-attempt
 # budget (the 30s statements cancelled five times = 2.5+ minutes of
 # block on the observed legs), so on the parallel legs the pin ends
 # red by its own wedged-drain design. The serial lane is the one place
@@ -877,7 +877,7 @@ async def test_prune_herd_batches_stay_bounded_and_archive_conserves(
             statement_timeout_ms=_PRUNE_TIMEOUT_MS,
         )
 
-        # SHAPE: 100k rows drained in LIMIT-bounded batches (10 productive
+        # shape: 100k rows drained in LIMIT-bounded batches (10 productive
         # batches at the default prune batch), never one population-wide
         # write - the 363 lesson: the lock window is the batch. (The other
         # terminal statuses' empty probes are recorded too; only batches
@@ -1018,9 +1018,9 @@ async def test_event_ttl_herd_batch_bounded_and_outbox_carveout_holds(
         retention = timedelta(hours=1)
         batch = _EVENTS_BATCH
 
-        # ONE tick: at most one batch. The herd's first pass must not
+        # one tick: at most one batch. The herd's first pass must not
         # become a 100k-row DELETE in one transaction. (A pass the hang
-        # guard cancelled moved nothing, so the first SUCCESSFUL pass
+        # guard cancelled moved nothing, so the first successful pass
         # still meets the full backlog and the tooth is unchanged.)
         first, total = await _drive_events_to_completion(
             conn, retention=retention, batch_size=batch, schema=schema

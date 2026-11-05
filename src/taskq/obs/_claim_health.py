@@ -5,7 +5,7 @@ re-run): a long or overlapping transaction pins the MVCC horizon, VACUUM
 cannot reclaim, and the claim query's B-tree scans degenerate through
 dead tuples - 15x lock-time degradation measured, identical under SKIP
 LOCKED. The literature's first remedy is the PREDICTOR: the degradation
-shows in the claim-latency distribution BEFORE the backlog explodes.
+shows in the claim-latency distribution before the backlog explodes.
 
 What this module computes, per queue, from THIS worker's own claim
 latencies (each worker is the sole authority over its own series - the
@@ -15,7 +15,7 @@ no sampler-timeout surface either):
 
 - the recent window's p50/p95/p99 (``taskq.claim.latency_p{50,95,99}_seconds``);
 - the window's claim rate (``taskq.claim.claims_per_second``);
-- THE gauge: ``taskq.claim.degradation_ratio`` - the live p99 against a
+- the gauge: ``taskq.claim.degradation_ratio`` - the live p99 against a
   rolling 24h baseline of minute-bucketed p99s. Crossing ~10x is the
   pinned-horizon signature; the ``TaskQClaimLatencyDegraded`` alert and
   its runbook key on it.
@@ -29,7 +29,7 @@ queue label is the only label, bounded at record time; nothing
 job-shaped reaches a label.
 
 All windows are bounded and the empty-not-zero discipline holds: a
-worker that has claimed nothing yields NO observations, and a
+worker that has claimed nothing yields no observations, and a
 cold-start worker yields no RATIO (never a fabricated 1.0).
 """
 
@@ -106,18 +106,16 @@ class ClaimQueueHealth:
 
 # ── the bounded stores ─────────────────────────────────────────────────
 
-# THE STORES' LOCK (the gauge racing itself is a proven failure): the
-# record path runs on the EVENT-LOOP thread; the observable-gauge
-# callbacks run on the OTel SDK's COLLECTION thread. Both walk
-# ``_window`` (a deque — cross-thread mutation during iteration raises
-# ``RuntimeError: deque mutated during iteration``) and both roll/read
-# ``_baseline`` (the same race, deque and dict). The measured shape:
-# 287 RuntimeErrors in 3 s of hot load — every raise kills the
-# callback's observation batch, so the alert's operand (the degradation
-# ratio, the p99s) VANISHED exactly when the queue was hottest. The read
-# is ATOMIC: every store touch holds ``_store_lock``; the percentiles'
-# math runs on the COPY taken under it. Zero is a NUMBER, not an error —
-# a raced read never trades a number for a raise.
+# the record path runs on the event-loop thread; the observable-gauge callbacks
+# run on the OTel SDK's collection thread. Both walk ``_window`` (a deque —
+# cross-thread mutation during iteration raises ``RuntimeError: deque mutated
+# during iteration``) and both roll/read ``_baseline`` (the same race, deque
+# and dict). The measured shape: 287 RuntimeErrors in 3 s of hot load — every
+# raise kills the callback's observation batch, so the alert's operand (the
+# degradation ratio, the p99s) vanished exactly when the queue was hottest. The
+# read is atomic: every store touch holds ``_store_lock``; the percentiles'
+# math runs on the COPY taken under it. Zero is a number, not an error — a
+# raced read never trades a number for a raise.
 _store_lock = threading.Lock()
 
 # (monotonic_ts, queue, seconds), oldest first; trimmed by time and count.
@@ -142,11 +140,11 @@ def reset_claim_health_state() -> None:
 
 
 def record_claim_latency(queue: str, seconds: float, *, now: float | None = None) -> None:
-    """Record ONE claim statement's latency (the wiring site is the
+    """Record one claim statement's latency (the wiring site is the
     dispatch helper, success or failure - a failed claim round is still a
     latency the queue paid).
 
-    The queue label is bounded HERE, at record time - the same
+    The queue label is bounded here, at record time - the same
     ``_bounded_queue`` discipline every ``taskq.*`` metric uses; a
     payload-shaped string can never become a label.
     """
@@ -245,7 +243,7 @@ def claim_health_snapshot(*, now: float | None = None) -> dict[str, ClaimQueueHe
 
         # Freeze any baseline buckets the read's clock has completed (a
         # quiet worker's last bucket rolls on the read, not the next
-        # write) — the roll MUTATES the baseline stores, so it holds the
+        # write) — the roll mutates the baseline stores, so it holds the
         # same lock the walkers hold.
         _roll_baseline_buckets(int(ts // 60.0))
 
@@ -318,7 +316,7 @@ def _observe_rate(options: object) -> Iterable[Observation]:
 
 def _observe_ratio(options: object) -> Iterable[Observation]:
     for q, h in claim_health_snapshot().items():
-        # Warm-up guard: None yields NO data point, never a fabricated 1.0.
+        # Warm-up guard: None yields no data point, never a fabricated 1.0.
         if h.degradation_ratio is not None:
             yield Observation(h.degradation_ratio, {"queue": q})
 

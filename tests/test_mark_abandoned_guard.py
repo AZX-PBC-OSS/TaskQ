@@ -28,10 +28,10 @@ What is pinned and why:
   no-exit cell (running x NULL lease x dead holder); the template's own
   comment documents why that arm abandons directly.
 
-What is deliberately NOT pinned: the absence of a worker fence. The statement
-probes the row's OWN ``locked_by_worker`` (the ``holder`` CTE reads it back
+What is deliberately not pinned: the absence of a worker fence. The statement
+probes the row's own ``locked_by_worker`` (the ``holder`` CTE reads it back
 from ``upd``), so the caller-side cancel-poll predicate
-(``locked_by_worker = $1 AND cancel_requested_at IS NOT NULL AND
+(``locked_by_worker = $1 and cancel_requested_at IS not NULL and
 status = 'running'``) is the worker fence; a future defense-in-depth worker
 id guard added to this statement is a welcome tightening, not a red test.
 """

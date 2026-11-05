@@ -39,9 +39,9 @@ MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
     f"interval '{MIN_DEFERRAL_INTERVAL.total_seconds()} seconds'"
 )
 
-# The non-consuming release's attempt refund, ONE fragment shared by every
+# The non-consuming release's attempt refund, one fragment shared by every
 # release arm that hands back an attempt the actor did not finish on its
-# own terms AND did not start: mark_snoozed's 'snoozed'/'unavailable' arm,
+# own terms and did not start: mark_snoozed's 'snoozed'/'unavailable' arm,
 # mark_retry_after_consume_false's snoozed arm, and the shutdown drain's
 # hand-back (worker/shutdown.py imports this constant). Dispatch stamps
 # ``attempt = j.attempt + 1`` at claim (backend/_dispatch_sql.py); a
@@ -51,8 +51,8 @@ MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
 # attempt) is never revisited by a writer (see the mark_snoozed comment
 # block in backend/_sql_templates.py for the full argument).
 #
-# mark_interrupted's release arm is deliberately NOT a consumer: its
-# attempt DID start executing, so refunding the increment re-creates the
+# mark_interrupted's release arm is deliberately not a consumer: its
+# attempt did start executing, so refunding the increment re-creates the
 # exact attempt epoch the interrupted (zombie) handler still holds; the
 # zombie's later terminal write then passes the attempt fence and lands
 # on the re-dispatched attempt, and the live execution's own terminal
@@ -71,7 +71,7 @@ MIN_DEFERRAL_INTERVAL_SQL: Final[str] = (
 # so a claim within the poll floor is the intended latency.
 ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
 
-# The deadline-failure message and its mark_retry variant, ONE constant per
+# The deadline-failure message and its mark_retry variant, one constant per
 # spelling (the _ATTEMPT_MESSAGES pattern): every schedule_to_close terminal
 # exit stamps the message on the row, the job_attempts row, and the
 # state_change event, and the same texts are pinned verbatim by the
@@ -79,14 +79,14 @@ ATTEMPT_REFUND_SQL: Final[str] = "GREATEST(j.attempt - 1, 0)"
 # constants instead of hand-restating the strings. The variant exists because
 # mark_retry's deadline arm names the deadline that actually fires: the
 # schedule_to_close check there includes the retry delay itself, so the next
-# dispatch the deadline cuts off is the NEXT RETRY dispatch, not the next
-# ordinary one. NO value may change: the pins assert exact texts.
+# dispatch the deadline cuts off is the next retry dispatch, not the next
+# ordinary one. no value may change: the pins assert exact texts.
 DEADLINE_EXCEEDED_MESSAGE: Final[str] = "schedule_to_close reached before next dispatch"
 DEADLINE_RETRY_EXCEEDED_MESSAGE: Final[str] = "schedule_to_close reached before next retry dispatch"
 
-# The terminal-write fence, ONE fragment per spelling (the {has_budget}
+# The terminal-write fence, one fragment per spelling (the {has_budget}
 # mechanism): every worker-scoped terminal or deferral arm re-checks that the
-# row is still running, still locked by THIS worker, and still at the
+# row is still running, still locked by this worker, and still at the
 # attempt epoch the caller presents, and a fence conjunct edited in one
 # statement but not its siblings is exactly the drift that lets a stale
 # handler's write land (see the attempt-epoch fencing note in
@@ -126,7 +126,7 @@ JOB_FENCE_BOUND_SQL: Final[str] = (
     "AND attempt = ${attempt_bind} AND claim_epoch = ${epoch_bind}"
 )
 
-# The lease-clear SET trio, ONE fragment for every arm that releases a
+# The lease-clear set trio, one fragment for every arm that releases a
 # row's claim (the terminal writes, the deferral arms, the interruption
 # release): the row's claim dies with the transition, so the lock's three
 # columns clear together. Editing one column of the trio in one statement
@@ -134,29 +134,29 @@ JOB_FENCE_BOUND_SQL: Final[str] = (
 # locked on one axis (a cleared lock_expires_at with a stale
 # last_heartbeat_at misleads the stale-heartbeat readers; the reverse
 # misleads the reclaim probe), so the trio travels as one fragment.
-# Deliberately NOT a consumer: the mark_succeeded / mark_failed /
+# Deliberately not a consumer: the mark_succeeded / mark_failed /
 # mark_cancelled trio clears only the two lock columns and keeps
 # last_heartbeat_at (the attempt that finished is the row's last heartbeat,
 # the audit trail a terminal row should keep), so their 2-column shape is
 # hand-maintained. The reference is
-# unqualified (a SET clause, no alias) with the continuation indent baked in
-# at the templates' SET-body depth; a trailing comma is the caller's, since
+# unqualified (a set clause, no alias) with the continuation indent baked in
+# at the templates' set-body depth; a trailing comma is the caller's, since
 # the trio is always followed by another assignment.
 LEASE_CLEAR_SQL: Final[str] = (
     "locked_by_worker = NULL,\n        lock_expires_at = NULL,\n        last_heartbeat_at = NULL"
 )
 
-# The progress-merge SET pair, ONE fragment for every arm that folds a
+# The progress-merge set pair, one fragment for every arm that folds a
 # caller's progress update into the row (the terminal writes and the
 # deferral arms alike: progress published before the outcome must survive
-# it). ``progress_seq`` ratchets (GREATEST, an out-of-order publish never
+# it). ``progress_seq`` ratchets (greatest, an out-of-order publish never
 # regresses the sequence) and ``progress_state`` concatenates the update
 # only when one was bound (the params CTE carries it as NULL otherwise),
 # the exact two-line discipline restated in the in-memory twin's
 # _merge_progress helper (testing/_terminal.py). The fragment assumes the
 # consuming statement defines the two binds in a ``params`` CTE (the
 # multi-arm arbiters' shape); the single-row statements that bind progress
-# directly ($N) hand-maintain their pair instead. Unqualified SET-clause
+# directly ($N) hand-maintain their pair instead. Unqualified set-clause
 # spelling, continuation indent baked in, trailing comma on the caller.
 PROGRESS_MERGE_SQL: Final[str] = (
     "progress_seq = GREATEST(j.progress_seq, (SELECT progress_seq FROM params)),\n"

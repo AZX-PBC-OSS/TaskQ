@@ -1,12 +1,12 @@
 """The child flows' pins: the spawn→join happy path (the parent's
-body gets the child's typed result; the parent↔child links BOTH
+body gets the child's typed result; the parent↔child links both
 directions), the child-fail face (the parent's ``ChildFailed`` arm —
 never a silent swallow), the cancel cascade (the parent cancelled → the
 child's rows terminal), the retry's idempotency (the retry ADOPTS the
 same child — the two-claims law at the flow level), the fan-out (K
 children → the fan-in → the typed results list), the slot law (the
 parent's node rests in the held representation — no failed attempt, no
-slot held — while the child's work sits in its OWN rows), and the
+slot held — while the child's work sits in its own rows), and the
 crash-mid-wait (the wake arm delivers; the successor's reclaim joins;
 the hold-stamp reconcile is the belt for a lost resume).
 
@@ -41,9 +41,9 @@ from taskq.workflows import (
 )
 from taskq.workflows.engine import render_workflow_sql
 
-# ── the app pairs: every test builds its OWN (the D1 registry is
-# global — the workflow names are UNIQUE PER TEST... and ONE name per
-# app pair here: the child is a REAL flow, registered like any other). ─
+# ── the app pairs: every test builds its own (the D1 registry is
+# global — the workflow names are UNIQUE per test... and one name per
+# app pair here: the child is a real flow, registered like any other). ─
 
 
 class SubProbe(BaseModel):
@@ -71,9 +71,7 @@ def _child_app(name: str = "childflow_child", *, fail: bool = False) -> Workflow
 
     @app.actor(queue="cpu", max_attempts=1)
     async def probe(ctx: StepContext) -> SubReport:
-        # THE FLOW INPUT'S FACE (the house pattern — the jsonb value
-        # re-validates through the declared model's own codec): the
-        # spawn's ``input=`` rides the child root's payload; the body
+        # the spawn's ``input=`` rides the child root's payload; the body
         # re-hydrates it.
         probe_input = SubProbe.model_validate(ctx.input)
         if fail:
@@ -145,7 +143,7 @@ async def _run_parent_to_terminal(
 
 
 async def _spawn_and_hold(runner: FlowRunner, flow_id: JobId) -> None:
-    """ONE body execution of the parent's spawn_join node: the spawn +
+    """one body execution of the parent's spawn_join node: the spawn +
     the join hold (the body re-executes from the top on the later
     resume). Direct claim+run — the manual staging the crash/slot faces
     need (the dev driver's tick would drive the child in the same
@@ -205,12 +203,11 @@ class TestSpawnJoinHappyPath:
             parent_app, wf_pool, wf_schema, "childflow_parent_hp2"
         )
 
-        # THE PARENT'S RECEIPT: the spawning node's row carries the
-        # child's flow id.
+        # the spawning node's row carries the child's flow id.
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
         child_flow_id = _child_flow_id(parent_node)
 
-        # THE CHILD'S PROVENANCE: the child's ROOT row names its parent.
+        # the child's root row names its parent.
         root = await wf_conn.fetchrow(
             f'SELECT metadata FROM "{wf_schema}".jobs WHERE id = $1', child_flow_id
         )
@@ -236,9 +233,9 @@ class TestSpawnJoinHappyPath:
             f'SELECT step_key, status FROM "{wf_schema}".jobs WHERE id = $1', child_flow_id
         )
         assert root is not None
-        assert root["step_key"] == "__flow__"  # the REAL flow root's own shape
+        assert root["step_key"] == "__flow__"  # the real flow root's own shape
         assert root["status"] == "succeeded"
-        # The child has its OWN node rows — a separate flow's census,
+        # The child has its own node rows — a separate flow's census,
         # never the parent's.
         probe = await _node_row(wf_conn, wf_schema, child_flow_id, "probe")
         assert probe["status"] == "succeeded"
@@ -255,7 +252,7 @@ class TestChildFailFace:
         )
         assert outcome == "terminal"
         result = ParentOut.model_validate(await runner.result(flow_id))
-        # NEVER a silent swallow: the parent's body DECIDED off the
+        # never a silent swallow: the parent's body decided off the
         # ChildFailed member — the verdict is the body's own arm.
         assert result.verdict == "failed"
         assert result.findings == []
@@ -281,7 +278,7 @@ class TestCancelCascade:
         cancelled = await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=flow_id)
         assert cancelled >= 1
 
-        # THE CASCADE: the child's root AND its nodes terminal.
+        # the child's root and its nodes terminal.
         child_root = await wf_conn.fetchrow(
             f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', child_flow_id
         )
@@ -290,7 +287,7 @@ class TestCancelCascade:
         probe = await _node_row(wf_conn, wf_schema, child_flow_id, "probe")
         assert probe["status"] == "cancelled"
 
-        # IDEMPOTENT: a second cancel cancels nothing.
+        # idempotent: a second cancel cancels nothing.
         assert await cancel_workflow_run(wf_pool, schema=wf_schema, flow_id=flow_id) == 0
 
 
@@ -307,9 +304,9 @@ class TestRetryIdempotency:
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
         receipts = parent_node["metadata"]["child_flows"]
 
-        # THE CHILD CENSUS: exactly ONE child root row exists for the
-        # spawn — the body re-executed from the top (the hold's resume)
-        # and every re-execution ADOPTED the same child by the run key.
+        # exactly one child root row exists for the spawn — the body
+        # re-executed from the top (the hold's resume) and every re-execution
+        # adopted the same child by the run key.
         child_roots = await wf_conn.fetch(
             f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = '__flow__' "
             "AND (metadata->>'parent_flow_id')::uuid = $1",
@@ -323,7 +320,7 @@ class TestRetryIdempotency:
     async def test_a_second_spawn_site_under_an_explicit_key_adopts_too(
         self, wf_pool: asyncpg.Pool, wf_schema: str, wf_conn: asyncpg.Connection
     ) -> None:
-        """The explicit ``key=`` face: the SAME key ADOPTS the same
+        """The explicit ``key=`` face: the same key ADOPTS the same
         child (the caller's identity is the arbiter's rememberer)."""
         _child_app("childflow_child_adopt2").get("childflow_child_adopt2")
 
@@ -351,8 +348,8 @@ class TestRetryIdempotency:
         flow_id, _outcome, _runner = await _run_parent_to_terminal(
             parent_app, wf_pool, wf_schema, "childflow_parent_adopt2"
         )
-        # The body ran TWICE (the hold's resume re-executes from the
-        # top) — both executions recorded the SAME child id.
+        # The body ran twice (the hold's resume re-executes from the
+        # top) — both executions recorded the same child id.
         assert len(spawns) == 2
         assert spawns[0] == spawns[1]
         child_roots = await wf_conn.fetch(
@@ -428,13 +425,12 @@ class TestSlotLaw:
         parent_node = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
         child_flow_id = _child_flow_id(parent_node)
 
-        # THE HELD REPRESENTATION: pending + the hold marker (the slot
-        # law — the row is invisible to dispatch, no slot held).
+        # pending + the hold marker (the slot law — the row is invisible to
+        # dispatch, no slot held).
         assert parent_node["status"] == "pending"
         assert "hold" in parent_node["metadata"]
 
-        # THE LEDGER'S FACE: the attempt recorded 'awaited' — never a
-        # failed attempt for the hold.
+        # the attempt recorded 'awaited' — never a failed attempt for the hold.
         ledger = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".wf_step_ledger '
             "WHERE flow_id = $1 AND step_key = 'spawn_join'",
@@ -442,12 +438,12 @@ class TestSlotLaw:
         )
         assert ledger == "awaited"
 
-        # The child's work sits in its OWN rows, pending — the child is
-        # a real flow, executable by ANY driver while the parent holds.
+        # The child's work sits in its own rows, pending — the child is
+        # a real flow, executable by any driver while the parent holds.
         probe = await _node_row(wf_conn, wf_schema, child_flow_id, "probe")
         assert probe["status"] == "pending"
 
-        # The wake arm on a still-running child: NO wake (the hold
+        # The wake arm on a still-running child: no wake (the hold
         # stands — the arm is the child-terminal's resolver, never a
         # poll that guesses).
         assert await sweep_child_joins(wf_pool, render_workflow_sql(wf_schema)) == 0
@@ -484,10 +480,10 @@ class TestCrashMidWait:
             "terminal"
         )
 
-        # THE WAKE: the child terminal → the join hold DELIVERED (the
-        # child's own driver's tick runs the wake arm — ANY process's
-        # sweep resolves the waiter; the explicit pass below is the
-        # belt) and the parent's held marker cleared.
+        # the child terminal → the join hold delivered (the child's own
+        # driver's tick runs the wake arm — any process's sweep resolves the
+        # waiter; the explicit pass below is the belt) and the parent's held
+        # marker cleared.
         hold_status = await wf_conn.fetchval(
             f'SELECT status FROM "{wf_schema}".wf_signals '
             "WHERE signal_name = $1 ORDER BY hold_epoch DESC LIMIT 1",
@@ -496,18 +492,18 @@ class TestCrashMidWait:
         assert hold_status == "delivered", hold_status
         assert await sweep_child_joins(wf_pool, render_workflow_sql(wf_schema)) == 0
 
-        # THE SUCCESSOR'S RECLAIM: the parent's node re-claims; the body
-        # re-executes from the top (the spawn ADOPTS; the wait reads the
-        # child's terminal) — the typed result lands.
+        # the parent's node re-claims; the body re-executes from the top (the
+        # spawn adopts; the wait reads the child's terminal) — the typed result
+        # lands.
         rows = await runner._claimable(flow_id)
         assert len(rows) == 1
         await runner._run_node(flow_id, rows[0])
         finished = await _node_row(wf_conn, wf_schema, flow_id, "spawn_join")
         assert finished["status"] == "succeeded"
 
-        # THE BELT (the lost-resume replica): a hold stamp that survived
-        # the resolution is cleared + the row re-claims — the reconcile
-        # arm's law, exercised on the delivered hold's row.
+        # a hold stamp that survived the resolution is cleared + the row
+        # re-claims — the reconcile arm's law, exercised on the delivered
+        # hold's row.
         await wf_conn.execute(
             f'UPDATE "{wf_schema}".jobs SET metadata = metadata || '
             "'{\"hold\": \"orphan-stamp\"}'::jsonb, status = 'pending' "

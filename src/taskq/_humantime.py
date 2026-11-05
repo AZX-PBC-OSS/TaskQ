@@ -5,7 +5,7 @@ table (``taskq queues-depth``), the dashboard's ``/insights`` page, and
 the TimescaleDB report — and all three share this ``divmod``
 cascade over the same three unit sizes (86 400 / 3 600 / 60).  One
 split, three formatters: the unit sizes and the day/hour/minute/second split
-live here ONCE, and each surface's own presentation contract (spacing,
+live here once, and each surface's own presentation contract (spacing,
 rounding, sub-minute floor, pluralisation) stays a small formatter on
 top of the shared split.
 

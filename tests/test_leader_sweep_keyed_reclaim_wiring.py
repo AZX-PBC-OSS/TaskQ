@@ -179,7 +179,7 @@ async def test_sweep_loop_drives_keyed_row_reclaim_with_configured_horizon() -> 
     dispatcher pool, with the operator's configured horizon and batch
     size - the wiring that turns ``sweep_idle_keyed_rows`` into the
     fleet-wide reclaim (one bounded, committed batch per table per
-    tick, deliberately NOT a ``_drain_bounded`` drain - the
+    tick, deliberately not a ``_drain_bounded`` drain - the
     slow-and-constant discipline the event-retention block settled)."""
     deps = _deps(keyed_row_reclaim_period="2h")
     backend = _KeyedReclaimBackend()

@@ -1,6 +1,6 @@
 """Test-runner helpers for InMemoryBackend.
 
-These functions and types are NOT part of the Backend protocol, they
+These functions and types are not part of the Backend protocol, they
 exist solely to drive deterministic test execution (``run_until_drained``,
 cancel-polling simulation, stub/actor-config registration, archive
 simulation, and ``wait_for_batch``).
@@ -238,7 +238,7 @@ class _InMemoryActorConfig:
     retry: RetryPolicy
     # Why the separate override: an omitted ``retry=`` keeps the historical
     # RetryPolicy(jitter=0.0) default for backoff classification and must
-    # NOT restamp rows (a ref-declared budget stands), while an explicit
+    # not restamp rows (a ref-declared budget stands), while an explicit
     # ``retry=`` is the test's declared budget for the actor and stamps
     # max_attempts/retry fields onto every row dispatched for it, exactly
     # like an ActorRef's retry stamps rows at enqueue time.
@@ -586,7 +586,7 @@ def archive_terminal_jobs(
     retention by making separate calls per status group (matching
     the PG ``prune_terminal_jobs`` per-status CTE pattern).
 
-    NOT on the Backend Protocol, the leader calls this as a
+    not on the Backend Protocol, the leader calls this as a
     concrete method.
     """
     from taskq.worker.leader import PruneResult
@@ -620,14 +620,14 @@ def archive_terminal_jobs(
         if row.idempotency_key is not None:
             # The archive mirror of the PG prune's archive-move DELETE: the
             # live row is gone, so the pair is gone from the live unique
-            # index and the key is FREE again (the documented horizon,
+            # index and the key is free again (the documented horizon,
             # "dedupes until pruned"). The twin's index must drop the entry
             # with the row, the same guard _withdraw_inserted's rollback pop
-            # applies: only when the entry still points at THIS row. A
+            # applies: only when the entry still points at this row. A
             # single enqueue reusing the pair between the pop candidates and
-            # here has rewritten the index to ITS row (PG: the new row holds
+            # here has rewritten the index to its row (PG: the new row holds
             # the pair, the archive never touched it), and its dedup must
-            # survive. Without the pop a phantom entry pins the pair FOREVER
+            # survive. Without the pop a phantom entry pins the pair forever
             # in the bulk tiers: enqueue_batch_fast refuses the freed key
             # with a DuplicateIdempotencyKeyError Postgres' COPY never
             # raises, and _batch_cap_refusals discounts a real item against
@@ -650,7 +650,7 @@ def archive_terminal_jobs(
         # cascade deletes events a trailing-watermark consumer may not
         # have been delivered, so the highest deleted id becomes the
         # bound the consumer's cursor is tested against (migration
-        # 01.00.20_02, EventRetentionGapError). GREATEST semantics: a
+        # 01.00.20_02, EventRetentionGapError). greatest semantics: a
         # never-backwards bound.
         max_deleted_event_id = max(
             (e.event_id for e in backend._events if e.job_id in archived_ids),
@@ -684,7 +684,7 @@ def expire_archived_jobs(backend: "InMemoryBackend") -> "ArchiveExpiryResult":
     expired rows from ``_archive`` and their corresponding entries
     from ``_archive_attempts``.
 
-    NOT on the Backend Protocol, the leader calls this as a
+    not on the Backend Protocol, the leader calls this as a
     concrete method.
     """
     from taskq.worker.leader import ArchiveExpiryResult
@@ -736,7 +736,7 @@ async def get_archived(backend: "InMemoryBackend", job_id: JobId) -> _ArchivedJo
 async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
     """Simulate the heartbeat's cancel-poll-and-escalate step.
 
-    Iterates jobs where ``cancel_requested_at IS NOT NULL AND
+    Iterates jobs where ``cancel_requested_at IS not NULL and
     status == "running"``.  On first observation of ``cancel_phase == 1``,
     records ``_cancel_observed_at[job_id] = clock.now()`` and fires the
     per-job cancel event (registered via ``register_cancel_event``).
@@ -747,7 +747,7 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
     attempt's task: the runner's mirror of production phase 2's hard
     cancel of a non-cooperative attempt.
 
-    MUST NOT sleep or yield to the event loop.
+    MUST not sleep or yield to the event loop.
     """
     now = backend._clock.now()  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
     for job_id, row in list(backend._jobs.items()):  # pyright: ignore[reportPrivateUsage]  # Why: test runner helper intentionally accesses private InMemoryBackend state; this module is co-located with the backend and owns this access pattern.
@@ -794,7 +794,7 @@ async def tick_cancel_polling(backend: "InMemoryBackend") -> None:
             # alone cannot reach an attempt that never reads it, and the
             # runner awaits attempts inline, so without this cancel the
             # drain parks forever beside a row that already says
-            # abandoned.  The row is terminal BEFORE the cancel: the
+            # abandoned.  The row is terminal before the cancel: the
             # attempt's mark_cancelled path then no-ops against the
             # abandoned row instead of racing a second terminal write,
             # and the drain task's own cancellation propagates through
@@ -889,7 +889,7 @@ def _every_scheduled_job_starved(backend: "InMemoryBackend", starved: "set[JobId
     A first denial only proves "no capacity right now", the reschedule
     point it produces is the limiter's own Retry-After promise, and a
     limiter that refills by then must get its chance: the drain advances
-    the clock to that point and re-claims. A job denied AGAIN at or after
+    the clock to that point and re-claims. A job denied again at or after
     the point has exhausted the promise, admission only ever answers
     "no" for it, so advancing the clock further cannot drain it. This
     separates "waiting for the clock", which draining should advance
@@ -977,7 +977,7 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
     # the limiter's own Retry-After promise, and a limiter that refills
     # by then must get its chance. The drain therefore trusts the promise
     # once per job (advance to the point, re-claim) and counts a job as
-    # starved only when it is denied AGAIN at or after that point; once
+    # starved only when it is denied again at or after that point; once
     # every remaining scheduled job is starved, no clock advance can be
     # proven to help, and the drain stops.
     denied_reschedule: dict[JobId, datetime] = {}
@@ -986,7 +986,7 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
     # The concurrent ticker is what makes a mid-drain cancellation
     # reachable at all: the drain awaits each attempt inline, so a tick
     # squeezed between iterations never runs while an attempt is in
-    # flight, and only a tick running BESIDE the attempt can observe a
+    # flight, and only a tick running beside the attempt can observe a
     # cancel request (fire the cooperative event, escalate the phases).
     # The cadence is coarse real time; escalation timing is arbitrated
     # by the backend's own clock (FakeClock advances from the test).
@@ -1046,14 +1046,14 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
             if actor_cfg is None:
                 actor_cfg = _InMemoryActorConfig(retry=RetryPolicy(jitter=0.0))
 
-            # The row's retry budget is a bound stamped by the ENQUEUING
+            # The row's retry budget is a bound stamped by the enqueuing
             # call (the client stamps it from the ActorRef): no stub
             # registration may move it, before or after the enqueue. A
             # stub's retry= configures the stub's own retry
             # classification only.
 
             # PayloadValidationError escapes consume_one_job for two pre-actor
-            # reasons, both OUTSIDE its actor-body try/except: (1) the fallback
+            # reasons, both outside its actor-body try/except: (1) the fallback
             # validate_actor_payload call runs before rate-limit acquisition, so
             # an invalid payload raises before the actor body (and before any
             # token is consumed); (2) acquire_for_actor re-validates the payload
@@ -1130,7 +1130,7 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
                 #    task, so its cancel count is still at this dispatch's
                 #    baseline, absorb and keep draining.
                 # 2. Caller-originated: a cancel() requested on the drain task
-                #    itself. The count sits ABOVE the baseline and the row was
+                #    itself. The count sits above the baseline and the row was
                 #    not abandoned by the escalation tick, the caller's stop
                 #    always wins and must propagate, exactly as a production
                 #    worker stops when its dispatch task is cancelled, even if
@@ -1140,7 +1140,7 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
                 #    abandoned and only then cancels the inflight attempt ,
                 #    which the runner registered as the drain task itself, so
                 #    the count is above baseline exactly like origin 2. The
-                #    abandoned row, written BEFORE the cancel is delivered,
+                #    abandoned row, written before the cancel is delivered,
                 #    is the record that this cancel is the runner's own. The
                 #    runner is both the requester and the consumer of this
                 #    cancellation, so asyncio's contract has two halves:
@@ -1150,7 +1150,7 @@ async def run_until_drained(backend: "InMemoryBackend", *, cancel_polling: bool 
                 #    one uncancel(), the bookkeeping asyncio.timeout and
                 #    TaskGroup do for every cancel they inject, so an elevated
                 #    cancelling() count does not follow the caller's task past
-                #    the drain. If a caller cancel landed ON TOP of the
+                #    the drain. If a caller cancel landed on top of the
                 #    force-cancel, the count is still above baseline after the
                 #    balancing uncancel, the caller's stop wins and the raise
                 #    propagates. The outcome is "cancelled", matching

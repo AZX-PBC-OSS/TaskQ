@@ -1,17 +1,17 @@
 """The crashed-terminal wedge: a run whose
 nodes = {succeeded|failed, crashed} derives TERMINAL, never RUNNING.
 
-THE SEMANTICS DECISION (the design law, stated once here and in
+the SEMANTICS DECISION (the design law, stated once here and in
 ``taskq.workflows._status``): a jobs row in status ``crashed`` is
 TERMINAL-FOR-REAL. The state machine's own totality table already said so
 (``statemachine.VALID_TRANSITIONS['crashed'] == frozenset()`` — zero
 outbound transitions); the derivation's row-1 comment claimed "a
 crashed/abandoned node is the reclaim's input — the run is still live",
 and that premise was FALSE: the reclaim arms' input is status ``running``
-ONLY. A row reaches ``crashed`` through the reclaim's crashed branch —
+only. A row reaches ``crashed`` through the reclaim's crashed branch —
 the attempt budget exhausted (``{has_budget}`` false) — or
 ``mark_abandoned`` (the rolling-deploy record). NOTHING will ever revive
-either: the row's OWN state decides (the budget's death is
+either: the row's own state decides (the budget's death is
 deterministic). The REAL crash recovery is the reclaim of a RUNNING row
 whose holder died with budget remaining — that row re-pends and never
 carries ``crashed``. The asymmetry doctrine: a wedge (the flow never
@@ -21,11 +21,10 @@ terminal is the runbook's resumable-by-rerun. A corpse that reports
 leg's liveness predicates held it forever), holds retention (the prune
 touches terminal rows only), and greened G7 on a dead run.
 
-THE PINNED BEHAVIORS:
 * the derivation folds the terminal-crash class into the failed-class
   terminal (the corpse derives ``failed`` — never ``running``);
 * the maintenance leg's liveness predicates exclude the terminal-crash
-  class and its failed arm INCLUDES it (the wedged root heals on ONE
+  class and its failed arm INCLUDES it (the wedged root heals on one
   sweep pass);
 * the G7 assertion can RED a wedge: a live root whose rows reconstruct
   a TERMINAL verdict contradicts the rows — the assertion runs the
@@ -171,8 +170,8 @@ async def test_the_wedged_root_heals_on_one_sweep_pass(
         "the maintenance stamp names the reason (the operator's why)"
     )
 
-    # THE RECONSTRUCTION AGREES (G7's two faces cannot drift): the healed
-    # root's status is what the rows alone derive.
+    # G7's two faces cannot drift. the healed root's status is what the rows
+    # alone derive.
     reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
     assert reconstructed == "failed"
 
@@ -184,9 +183,9 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
     wf_sql: WorkflowSql,
     wedge_redlog: RedLog,
 ) -> None:
-    """The G7 mutation-pin (the mutation's proof): G7 stayed green ON THE
+    """The G7 mutation-pin (the mutation's proof): G7 stayed green ON the
     CORPSE — the anti-drift assertion could not fail on a wedged run.
-    THE TEETH: a live root whose rows reconstruct a TERMINAL
+    A live root whose rows reconstruct a TERMINAL
     verdict contradicts the rows; the assertion runs the one-pass heal
     and REDS when the reported state still disagrees. The scenario disables
     the heal (the maintenance statement's no-op mutant — the wedging
@@ -198,10 +197,10 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
         ok,
     )
     await seed_crashed_node(wf_conn, wf_schema, flow_id)
-    # the root reports 'running' over a TERMINAL reconstruction — the wedge.
+    # the root reports 'running' over a terminal reconstruction — the wedge.
 
-    # THE MUTANT: a maintenance statement that maintains nothing (the
-    # wedging sweep's own shape — the pass runs, maintains nothing).
+    # a maintenance statement that maintains nothing (the wedging sweep's own
+    # shape — the pass runs, maintains nothing).
     noop_sql = dataclasses.replace(
         wf_sql,
         # Consumes $1 (the batch arg) — the pass runs, maintains nothing.
@@ -226,8 +225,8 @@ async def test_g7_reds_a_wedge_the_corpse_stays_green_blind_spot(
         },
     )
 
-    # THE SHIPPED SHAPE GREENS: the same corpse through the REAL check —
-    # the heal runs, the root terminals, the assertion holds.
+    # the same corpse through the real check — the heal runs, the root
+    # terminals, the assertion holds.
     await g7_check(wf_conn, wf_schema, wf_sql)
 
 
@@ -243,11 +242,11 @@ async def test_the_reclaim_input_row_is_still_live(
     re-pends and the run stays live (the derivation's liveness reads
     THAT row's 'running', and the ledger's attempt-level 'crashed' is the
     reclaim's receipt, not a terminal). The ledger-crashed attempt must
-    NOT terminalize the run."""
+    not terminalize the run."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     holder = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="screen")
     # the holder's worker died: the ledger recorded the attempt-level
-    # 'crashed' (the reclaim's receipt) — the ROW re-pends scheduled.
+    # 'crashed' (the reclaim's receipt) — the row re-pends scheduled.
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".wf_step_ledger '
         "(id, flow_id, job_id, step_key, map_index, attempt, status) "
@@ -270,12 +269,12 @@ async def test_the_reclaim_input_row_is_still_live(
     )
 
 
-# ── THE ZOMBIE AUDIT'S STRUCTURAL PIN ───────────────────────────────────
+# ── the zombie audit's structural pin ───────────────────────────────────
 
 
 def test_the_liveness_predicates_exclude_the_terminal_crash_class() -> None:
     """The zombie audit's fence (structural): the maintenance leg's
-    liveness sets spell the terminal-crash class OUT and the failed arm
+    liveness sets spell the terminal-crash class out and the failed arm
     spells it IN — the same class re-derived against the state machine's
     totality table (crashed/abandoned: zero outbound transitions). A
     future edit that re-adds crashed/abandoned to a liveness set reds
@@ -289,5 +288,5 @@ def test_the_liveness_predicates_exclude_the_terminal_crash_class() -> None:
     assert "'running', 'crashed'" not in WORKFLOW_ROOT_MAINTAIN_SQL
     assert "'running','crashed'" not in WORKFLOW_ROOT_MAINTAIN_SQL
     assert "IN ('pending', 'running', 'scheduled', 'crashed'" not in WORKFLOW_ROOT_MAINTAIN_SQL
-    # The failed arm: the terminal-crash class IS the failed class.
+    # The failed arm: the terminal-crash class is the failed class.
     assert "n.status IN ('failed', 'crashed', 'abandoned')" in WORKFLOW_ROOT_MAINTAIN_SQL

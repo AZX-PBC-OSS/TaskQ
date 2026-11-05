@@ -13,7 +13,7 @@ originate from enqueue calls:
     obs/_otel.py:536   _observe_queue_depth -> Observation(depth, {"queue": queue})
 
 Queue names are charset-validated at enqueue (backend/_protocol.py:270-272:
-``[A-Za-z0-9_][A-Za-z0-9_.-]*``) but have NO length cap and NO registry:
+``[A-Za-z0-9_][A-Za-z0-9_.-]*``) but have no length cap and no registry:
 the name is user-supplied per enqueue call. src/taskq configures no OTel
 Views (grep: only tests/tasking create providers), and the SDK applies no
 per-label cardinality limit, so every distinct queue name mints a new

@@ -12,7 +12,7 @@ wiring: same module → same Mermaid, byte-stable, golden-testable.
   the emission never depends on dict insertion order (the byte-stability
   law).
 
-THE DIAGRAM-LIES PROPERTY (the acceptance gate): every node/edge in the
+Every node/edge in the
 compiled graph appears in the emission and nothing else does — the
 property test re-derives the emitted nodes/edges from the graph object
 and compares. One source of truth for both.
@@ -43,7 +43,7 @@ def _body_name(body: object) -> str:
 def _shape(node_kind: str, gated: bool) -> tuple[str, str]:
     """(open, close) delimiters per node kind — the §10.1 vocabulary."""
     if gated:
-        return ("([(", ")])")  # the HOLD node — the HITL interrupt point
+        return ("([(", ")])")  # the hold node — the hitl interrupt point
     if node_kind in ("map_source", "route_source"):
         return ("([", "])")
     if node_kind == "map_join":
@@ -73,9 +73,9 @@ def render_mermaid(compiled: CompiledWorkflow) -> str:
         glyph = " ⇅" if gated else ""
         # A fork-carrying node's shape: a node carrying the plain map's
         # item body or
-        # the typed route's arms IS a map source — it finalizes into
+        # the typed route's arms is a map source — it finalizes into
         # fork children the rows will name. The stadium
-        # + the arms ON the label render the branches the compile
+        # + the arms on the label render the branches the compile
         # carries (byte-stable: sorted tags, declared body names); the
         # plain rectangle would hide the route's branches.
         is_map_source = node.map_item is not None or node.map_arms is not None

@@ -719,7 +719,7 @@ def resolve_priority_stamp(raw: object) -> int | None:
     A stamp a hand-crafted row rendered unparseable (``int`` raises
     ``TypeError``/``ValueError``) or parseable but outside the
     ``smallint`` column's domain (``check_priority_domain``'s refusal,
-    caught) degrades to NO override — the declarations, or the column
+    caught) degrades to no override — the declarations, or the column
     default, speak; a priority is an ordering hint, never a correctness
     input worth crashing the door on. ``None`` = no override stamped.
     """
@@ -1039,14 +1039,14 @@ imported BY ``registry``, defining it in ``registry`` would be circular.
 
 
 def base_name_collides_with_reserved_prefix(base_name: str) -> bool:
-    """True if a keyed ref's ``f"{base_name}:{key}"`` names ALWAYS land in
+    """True if a keyed ref's ``f"{base_name}:{key}"`` names always land in
     the reserved queue-cap namespace.
 
     The concrete name is ``f"{base_name}:{key}"``; every such name starts
     with ``QUEUE_CONCURRENCY_PREFIX`` exactly when ``base_name`` itself
     starts with the prefix (e.g. ``"taskq:global:queue:x"``) or equals it
     minus the trailing colon (``"taskq:global:queue"``, the ``":"``
-    separator then completes the prefix for ANY key). Both are rejected at
+    separator then completes the prefix for any key). Both are rejected at
     ref-construction time so the collision surfaces at startup instead of
     as a per-job ``ValueError`` from the ``register()`` prefix guard.
 

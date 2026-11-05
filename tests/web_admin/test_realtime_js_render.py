@@ -413,7 +413,7 @@ def test_repeated_identical_polls_produce_zero_dom_mutations_and_zero_layout() -
         # kept running) and it polled the sequence the previous tick's
         # gate advanced - the fingerprint gate drops the render but the
         # conditional-GET cursor moves with every sequence, dropped or
-        # not, so the next tick asks about the NEW state, not a stale one.
+        # not, so the next tick asks about the new state, not a stale one.
         assert net_segments[tick] == [
             "fetch:/jobs/api/job/j1/state",
             f"inm:{expected_inm}",

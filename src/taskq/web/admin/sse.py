@@ -56,7 +56,7 @@ _SSE_HEADERS: dict[str, str] = {
 def _get_semaphore(topic: str, max_connections: int) -> asyncio.Semaphore:
     # The limit is part of the key, the same mechanism
     # taskq.web._sse_limit applies: the map is module-global and outlives
-    # any one mount, so keying by topic alone let the FIRST mount's limit
+    # any one mount, so keying by topic alone let the first mount's limit
     # silently govern every later mount of the same topic at a different
     # ``admin_max_sse_connections`` (the test suite mounts the admin
     # router repeatedly with different settings). A mount that disagrees
@@ -137,9 +137,9 @@ async def _sse_generator(
                 # Deterministic, bounded release of the LISTEN connection.
                 # An ``async for`` never closes its iterator, and every
                 # exit that is not the feed's own exhaustion - a client
-                # disconnect closes THIS generator, never the inner one -
+                # disconnect closes this generator, never the inner one -
                 # abandons *feed* mid-iteration. Without this close, the
-                # feed's finally (remove_listener, UNLISTEN,
+                # feed's finally (remove_listener, unlisten,
                 # pool.release) runs only when the GC finalizes the
                 # abandoned generator: an unbounded delay pinning a
                 # session-scoped LISTEN connection against the pool's
@@ -151,7 +151,7 @@ async def _sse_generator(
                 #
                 # The close must also survive the very cancellation that
                 # interrupts the stream. wait_for cancels the task it is
-                # waiting on when the WAIT itself is cancelled, and a
+                # waiting on when the wait itself is cancelled, and a
                 # cancelled stream re-delivers cancellation at every
                 # checkpoint (an anyio cancel scope does; that is the
                 # shape every ASGI server streams under). Unshielded, the
@@ -183,7 +183,7 @@ async def _sse_generator(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    # The close failed on THIS (observed) path - a
+                    # The close failed on this (observed) path - a
                     # suppressed-in-the-feed infra error surfaced by the
                     # closer. Silent suppression would hide a release that
                     # never happened; the detached path is covered by
@@ -275,7 +275,7 @@ async def _holds_generator(
                 else:
                     yield f"event: hold\ndata: {frame.model_dump_json()}\n\n"
         finally:
-            # The pump is NOT the frames iterator: closing the iterator
+            # The pump is not the frames iterator: closing the iterator
             # abandons the consumer's queue, never the pump task or its
             # dedicated LISTEN connection. Both teardowns are bounded
             # and shielded (the state feed's close, twice over).
@@ -303,7 +303,7 @@ async def _holds_generator(
 def register(router: APIRouter) -> None:
     """Attach the ``GET /sse/mode`` probe and the ``GET /sse/{topic}`` SSE endpoint.
 
-    ``/sse/mode`` is registered FIRST: FastAPI matches routes in registration
+    ``/sse/mode`` is registered first: FastAPI matches routes in registration
     order, so the probe must exist before the ``{topic}`` catch-all or the
     topic route claims the path (and answers 400 for an unknown topic).
     """
@@ -360,8 +360,8 @@ def register(router: APIRouter) -> None:
             (lambda: session_verifier(request)) if session_verifier is not None else None
         )
         if topic == "holds":
-            # THE HITL BROADCAST FACE: the typed listener's events
-            # — backfilled at subscribe, then the live NOTIFYs.
+            # the typed listener's events — backfilled at subscribe, then the
+            # live NOTIFYs.
             gen = _holds_generator(
                 semaphore,
                 lambda: get_pg_pool(request),

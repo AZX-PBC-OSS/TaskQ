@@ -53,7 +53,7 @@ from taskq.worker.leader import prune_terminal_jobs
 pytestmark = pytest.mark.integration
 
 _RETENTION = timedelta(days=1)
-#: The outbox arm's age: far past RETENTION x MULTIPLIER, so the sweep's
+#: The outbox arm's age: far past retention x multiplier, so the sweep's
 #: carve-out has lapsed for these rows and the age-cap arm deletes them.
 _OUTBOX_AGE = _RETENTION * RECLAIM_OUTBOX_RETENTION_MULTIPLIER * 2
 
@@ -177,7 +177,7 @@ class TestSweepAdvancesWatermark:
         assert count == 3, "the age-capped outbox arm must delete all three rows"
 
         # The old silent behavior at the backend layer: the poll answers
-        # zero rows and no error. The watermark is what makes the STREAM
+        # zero rows and no error. The watermark is what makes the stream
         # loud about why.
         assert await backend.poll_reclaim_events(e1) == []
         assert await backend.event_prune_watermark() == e3, (

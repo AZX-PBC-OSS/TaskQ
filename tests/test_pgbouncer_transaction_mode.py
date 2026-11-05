@@ -568,7 +568,7 @@ async def test_documented_topology_heartbeat_admin_and_listen_stay_direct(
         pytest.skip("the heartbeat pool's 0.1s command budget measures the tracer, not the code")
     stack = pgbouncer_stack
     ledger = await _migrated_conn(stack.direct_dsn, probe_schema)
-    # The admin lane gets its OWN direct connection: the concurrency this
+    # The admin lane gets its own direct connection: the concurrency this
     # leg proves is the admin reads running simultaneously with the pooled/
     # direct job traffic, not two tasks sharing one conn — asyncpg forbids
     # concurrent operations on a single connection (the main lane issues

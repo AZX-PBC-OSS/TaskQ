@@ -68,7 +68,7 @@ def test_base_template_realtime_mode_shows_badge_no_meta_refresh(
     own refresh transport (suppress_refresh) renders no meta refresh.
 
     The suppression is per-page, not badge-keyed: the meta refresh is a
-    page with no JS machinery's ONLY liveness, so the badge mode alone
+    page with no JS machinery's only liveness, so the badge mode alone
     never removes it (the review pins in test_review_ui_pins.py hold the
     matrix - the pages without a transport keep the meta refresh in every
     mode)."""
@@ -112,7 +112,7 @@ def test_meta_refresh_delay_floors_millisecond_remainder(
     assert '<meta http-equiv="refresh" content="1">' in html, html
 
 
-# ── the SSO logout control is a POST form carrying the session-bound token ─
+# ── the sso logout control is a POST form carrying the session-bound token ─
 
 
 def test_base_template_renders_no_logout_control_without_an_sso_session(

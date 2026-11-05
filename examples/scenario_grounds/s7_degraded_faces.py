@@ -47,12 +47,11 @@ QUEUE = "grounds-stale"
 
 
 async def main() -> None:
-    # THE PAGE FACE'S OWN CONTRACT, FORCED: the admin's UI mounts
-    # without an auth dependency only under the dev label — an ambient
-    # production label (a CI lane's env, a deploy artifact) would crash
-    # the page face at create_router. The scenario OVERRIDES the label
-    # (never a setdefault), and the page face is dev-only by design:
-    # production mounts the sidecar with its real auth dependency.
+    # the admin's UI mounts without an auth dependency only under the dev label
+    # — an ambient production label (a CI lane's env, a deploy artifact) would
+    # crash the page face at create_router. The scenario overrides the label
+    # (never a setdefault), and the page face is dev-only by design: production
+    # mounts the sidecar with its real auth dependency.
     os.environ["TASKQ_ENVIRONMENT"] = "development"
     dsn = pg_dsn()
     await fresh_schema(dsn, SCHEMA)

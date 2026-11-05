@@ -56,7 +56,7 @@ async def test_isolate_reaches_poll_reclaim_events(clean_jobs_app: "JobsApp") ->
             lock_expires_at=expired,
         )
 
-    # The isolate path reclaims the second worker's job BEFORE the sweep
+    # The isolate path reclaims the second worker's job before the sweep
     # can see it: both rows are lease-expired, so whoever runs first wins.
     settings = WorkerSettings.load_from_dict(
         {

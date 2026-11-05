@@ -210,7 +210,7 @@ async def test_a_429_reprieve_schedules_the_retry_at_the_server_horizon_in_virtu
         "partner",
         body,
         retry=_policy(),
-        # The REAL built-in, composed as a consumer would: the 429 shape
+        # The real built-in, composed as a consumer would: the 429 shape
         # below is the claimed signal (bare .status_code + .headers).
         retry_classifier=_rate_limit_aware_classifier,
         payload_type=EmptyPayload,
@@ -245,7 +245,7 @@ async def test_a_429_reprieve_schedules_the_retry_at_the_server_horizon_in_virtu
     assert clock.now() >= _START + _HINT
 
 
-# ── pin 3: the curve path STILL jitters (symmetric, unchanged) ──────
+# ── pin 3: the curve path still jitters (symmetric, unchanged) ──────
 
 
 def test_curve_derived_delays_still_jitter_symmetrically() -> None:
@@ -275,12 +275,12 @@ def test_curve_derived_delays_still_jitter_symmetrically() -> None:
     assert above, "the symmetric band must still draw above the raw curve value"
 
 
-# ── pin 4: jitter=0.0 stays the exact identity on BOTH paths ────────
+# ── pin 4: jitter=0.0 stays the exact identity on both paths ────────
 
 
 def test_jitter_zero_is_exact_on_both_paths() -> None:
     """``jitter=0.0`` is the deterministic-suite knob: the hint passes
-    through exactly AND the curve lands on its raw value."""
+    through exactly and the curve lands on its raw value."""
     policy = _policy(jitter=0.0, base=timedelta(seconds=5))
 
     hint_decision = decide_after_failure(
@@ -480,7 +480,7 @@ def test_max_attempts_one_delay_only_override_is_terminal() -> None:
 
 def test_override_kind_indefinite_lifts_the_attempt_ceiling_explicitly() -> None:
     """The rescue twin: an override carrying ``kind='indefinite'`` is an
-    explicit direction that replaces the policy's own kind BEFORE the
+    explicit direction that replaces the policy's own kind before the
     attempt-ceiling guard runs, so at ``max_attempts=1`` the delay IS
     honored and the job retries past its declared ceiling — bounded then
     only by ``schedule_to_close`` (the indefinite hazard the classifier

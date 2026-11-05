@@ -44,7 +44,7 @@ _TMP_MODULE_NAME = "tmp_actor_module"
 def _taskq_exe_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Put THIS environment's own ``taskq`` console script on PATH.
 
-    THE AMBIENT-PATH CLASS (named and fixed 2026-10-08): the watch-loop
+    AMBIENT-PATH CLASS (named and fixed 2026-10-08): the watch-loop
     tests drive the REAL ``_start_worker``, which resolves the worker
     command with ``shutil.which("taskq")`` — an ambient-environment read.
     Invoked as ``.venv/bin/pytest`` (how make runs it, how CI runs it,
@@ -109,7 +109,7 @@ class SpawnTracker:
 def spawn_tracker(monkeypatch: pytest.MonkeyPatch) -> SpawnTracker:
     """Patch ``asyncio.create_subprocess_exec`` to record spawns."""
     tracker = SpawnTracker()
-    # Patch where the name is LOOKED UP - the dev module's own ``asyncio``
+    # Patch where the name is looked up - the dev module's own ``asyncio``
     # binding - not through to the global asyncio module (tests/_ns_patch.py).
     monkeypatch.setattr(
         dev_mod, "asyncio", module_ns_proxy(asyncio, create_subprocess_exec=tracker._spawn)
@@ -411,7 +411,7 @@ async def test_syntax_error_suppresses_restart(
         path = str(actor_module.tmp_path / _TMP_MODULE_NAME)
         await broken_event.wait()
         yield {(1, path)}
-        # This line runs when the dev loop asks for the NEXT batch ,
+        # This line runs when the dev loop asks for the next batch ,
         # i.e. exactly after it finished processing the broken change
         # (validate-fail → continue, no spawn). Signalling here gives the
         # driver a deterministic "suppression decision made" point; a
@@ -434,7 +434,7 @@ async def test_syntax_error_suppresses_restart(
             pytest.fail(
                 "the dev loop did not finish processing the broken-syntax change within 5.0s"
             )
-        # THE suppression assertion: the broken change must not have
+        # the suppression assertion: the broken change must not have
         # spawned a replacement. Without it the post-break count is only
         # ever a baseline for the next wait, and a broken suppression
         # would pass silently.

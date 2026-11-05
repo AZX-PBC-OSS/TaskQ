@@ -2,7 +2,7 @@
 
 The broker stops serving commands (``CLIENT PAUSE ALL``: every redis
 round trip in the window times out and drops) while the fleet keeps
-taking work. Jobs are enqueued INTO the window, dispatched inside it,
+taking work. Jobs are enqueued into the window, dispatched inside it,
 and publish progress inside it - the outage covers all three.
 
 System invariants: the durable PG surface never loses a consumed seq
@@ -72,7 +72,7 @@ async def test_paused_broker_spans_enqueue_dispatch_progress_and_conserves(
         wait_worker_ready(worker)
 
         # Enqueue before the pause and subscribe on the healthy broker:
-        # the subscription proves what the fanout DID deliver, so the
+        # the subscription proves what the fanout did deliver, so the
         # loss assertions below cannot be vacuous.
         handle = await sys_client.enqueue(sys_progress, SysPayload(beats=_BEATS), tags=[_TAG])
         job_x = handle.job_id
@@ -84,7 +84,7 @@ async def test_paused_broker_spans_enqueue_dispatch_progress_and_conserves(
         # dispatch-side publishes, and progress publishes alike.
         await admin.execute_command("CLIENT", "PAUSE", str(_PAUSE_MS), "ALL")
 
-        # Enqueues INSIDE the window (PG surface: never blocked by the
+        # Enqueues inside the window (PG surface: never blocked by the
         # broker) and dispatch/progress of the pre-pause job both run
         # into the pause.
         inside_handles = [
@@ -133,7 +133,7 @@ async def test_paused_broker_spans_enqueue_dispatch_progress_and_conserves(
         await admin.execute_command("CLIENT", "PAUSE", "0", "ALL")
 
         # The fanout resumes: the next job's events flow to a subscriber
-        # again, on the SAME worker process (the outage did not kill it).
+        # again, on the same worker process (the outage did not kill it).
         assert worker is not None and worker.proc.poll() is None, (
             "the worker did not survive the outage window"
         )

@@ -229,7 +229,7 @@ async def paused_pg() -> AsyncIterator[tuple[str, PostgresContainer, str]]:
     """Disposable PG container (DSN, container, prepared schema) for the pause test.
 
     ``test_ti2`` pauses the container to prove readiness fails; pausing the
-    SHARED session container would freeze the ONE Postgres every xdist worker
+    SHARED session container would freeze the one Postgres every xdist worker
     of the run tests against for the whole pause window. This test therefore
     gets its own throwaway container (same pattern as
     ``killable_redis_container``), labeled with the ownership labels so a
@@ -351,7 +351,7 @@ async def test_ti3_fastapi_router_503_on_pg_stop(
 
             # Simulate PG unavailability by replacing the dispatcher pool
             # with a stub that raises on acquire. Avoids pausing the shared
-            # container (which would affect ALL tests sharing it).
+            # container (which would affect all tests sharing it).
             class _UnavailablePool:
                 def acquire(self, *, timeout: float | None = None) -> None:
                     raise asyncpg.PostgresConnectionError("simulated PG unavailability")

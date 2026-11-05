@@ -1,4 +1,4 @@
-"""Exception rendering in production JSON logs must be diagnostic AND redacted.
+"""Exception rendering in production JSON logs must be diagnostic and redacted.
 
 ``BoundLogger.exception`` puts ``exc_info=True`` into the event dict; TaskQ's
 processor chain had no exception renderer, so the JSON channel shipped a
@@ -179,7 +179,7 @@ def test_known_exception_string_fields_are_scrubbed_in_json_logs() -> None:
     output = buf.getvalue().strip()
     parsed = json.loads(output)
     assert canary not in output
-    # Message-style fields keep the diagnostic template, drop the DETAIL line.
+    # Message-style fields keep the diagnostic template, drop the detail line.
     assert (
         parsed["error"] == 'duplicate key value violates unique constraint "jobs_identity_key_key"'
     )
@@ -226,7 +226,7 @@ def test_terminal_write_failure_fields_are_scrubbed_in_json_logs() -> None:
     output = buf.getvalue().strip()
     parsed = json.loads(output)
     assert canary not in output
-    # Message-style fields keep the diagnostic template, drop the DETAIL line.
+    # Message-style fields keep the diagnostic template, drop the detail line.
     assert parsed["job_error_message"] == (
         'duplicate key value violates unique constraint "jobs_identity_key_key"'
     )

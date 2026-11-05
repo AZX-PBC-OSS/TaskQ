@@ -79,7 +79,7 @@ from taskq.worker._handlers import (
     AttemptOutcome,
     _ActorSystemExitAttemptError,  # pyright: ignore[reportPrivateUsage]  # Why: the sync-actor thread boundary raises the typed SystemExit carrier (see _run_sync_actor_tracked's docstring); _dispatch_exception unwraps it at the attempt boundary.
     _disown_job,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
-    _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for DI-resolution failures that escape consume_one_job's own try/except.
+    _handle_generic_exception,  # pyright: ignore[reportPrivateUsage]  # Why: _handle_generic_exception implements the same exception→retry/fail routing as consume_one_job's inner handlers; dispatch_one_job needs it for di-resolution failures that escape consume_one_job's own try/except.
     _log_terminal_write_failed,  # pyright: ignore[reportPrivateUsage]  # Why: same rationale as _TERMINAL_WRITE_INFRA_EXCEPTIONS above.
 )
 from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # Why: the tracked-handle registry is the dispatch layer's designated writer surface (see register_tracked_actor_handle's contract); no cycle: _watchdog imports nothing from the worker consumer side.
@@ -254,7 +254,7 @@ def _effective_reservations(
     change needed.
 
     Hot-path notes: the membership test uses
-    :meth:`RateLimitRegistry.has_reservation`, an O(1) lookup, NOT the
+    :meth:`RateLimitRegistry.has_reservation`, an O(1) lookup, not the
     ``reservations`` property, which defensively copies the whole dict and
     would make every job dispatch O(registry size). And when no cap is
     registered (the common case) the actor's own list is returned unchanged,
@@ -525,7 +525,7 @@ async def dispatch_one_job(
 
     # ── The job's transaction connection ─────────────────────────────
     # When the worker runs a dedicated slot pool (bootstrap opens one
-    # whenever a LOOP-scope connection is registered and
+    # whenever a loop-scope connection is registered and
     # max_concurrency > 1), each job acquires its own connection for
     # the duration of the dispatch, one transaction per connection, so
     # concurrent slots can never nest savepoints on a shared one. The
@@ -533,13 +533,13 @@ async def dispatch_one_job(
     # cannot acquire is infrastructure, not a job outcome, so it must
     # produce no consumer span and no consumed-message record. The
     # slot connection is also what the actor receives: it shadows the
-    # LOOP-scope cache for this actor invocation (loop_slot_values
-    # below), so an actor's own writes join THIS job's transaction and
-    # a registered LOOP-scope connection is never shared across
-    # concurrent slots' actors. The registered LOOP-scope
+    # loop-scope cache for this actor invocation (loop_slot_values
+    # below), so an actor's own writes join this job's transaction and
+    # a registered loop-scope connection is never shared across
+    # concurrent slots' actors. The registered loop-scope
     # connection itself stays untouched, every non-actor reader
     # (bootstrap's activation check, the loop-level enqueuer's
-    # provenance inference) still resolves it from the LOOP cache.
+    # provenance inference) still resolves it from the loop cache.
     async with AsyncExitStack() as conn_stack:
         job_enqueuer: SubJobEnqueuer = enqueuer
         transaction_conn: ConnLike | None = None
@@ -563,9 +563,9 @@ async def dispatch_one_job(
                 )
                 raise SlotPoolAcquireError(acquire_timeout=acquire_timeout) from exc
             transaction_conn = acquired
-            # Per-slot LOOP-scope semantics for the actor: the slot
-            # connection shadows the LOOP-registered asyncpg.Connection
-            # for this invocation (build_actor_scope wraps the LOOP
+            # Per-slot loop-scope semantics for the actor: the slot
+            # connection shadows the loop-registered asyncpg.Connection
+            # for this invocation (build_actor_scope wraps the loop
             # container in a LoopScopeSlotView). The actor's writes then
             # join this job's transaction on this connection, and two
             # concurrent slots' actors can never interleave operations
@@ -585,8 +585,8 @@ async def dispatch_one_job(
                 # own __aexit__: external cancellation can detach the
                 # job's transaction task (the consumer shields an
                 # in-flight commit, so the task outlives the dispatch
-                # call), and asyncpg's release-reset would then ROLL
-                # BACK under that live transaction and hand the
+                # call), and asyncpg's release-reset would then roll
+                # back under that live transaction and hand the
                 # connection to a sibling mid-flight, a false
                 # `succeeded` row with its sub-jobs gone, and two tasks
                 # on one connection. A connection still inside its
@@ -651,7 +651,7 @@ async def dispatch_one_job(
 
             conn_stack.push_async_callback(_release_slot_conn)
             # The acquired connection must carry the registered connection's
-            # declared setup before the actor's DI can receive it. A
+            # declared setup before the actor's di can receive it. A
             # bootstrap-built pool applied it at connect time (recorded on
             # deps); an injected/foreign pool did not, repair that here,
             # once per physical connection. Armed release first: a failed
@@ -677,7 +677,7 @@ async def dispatch_one_job(
                 transaction_conn=transaction_conn,
             )
         else:
-            # Why registry-trust instead of isinstance: the LOOP-scope
+            # Why registry-trust instead of isinstance: the loop-scope
             # cache is keyed by type and populated through the typed
             # register_value seam, and every other reader of this seam
             # (bootstrap's activation, the enqueuer's provenance
@@ -687,7 +687,7 @@ async def dispatch_one_job(
             # transaction connection.
             raw_conn = loop_scope.resolved_cache().get(asyncpg.Connection)
             if raw_conn is not None:
-                transaction_conn = cast(asyncpg.Connection, raw_conn)  # pyright: ignore[reportUnknownVariableType,reportAssignmentType]  # Why: resolved_cache returns Mapping[type, object]; the DI resolver guarantees the value registered under asyncpg.Connection is one, matching bootstrap's and the enqueuer's trust of the same key.
+                transaction_conn = cast(asyncpg.Connection, raw_conn)  # pyright: ignore[reportUnknownVariableType,reportAssignmentType]  # Why: resolved_cache returns Mapping[type, object]; the di resolver guarantees the value registered under asyncpg.Connection is one, matching bootstrap's and the enqueuer's trust of the same key.
         # Queue wait from the claimed row's own server-clock stamps, outside
         # the span for sampling independence; a row a test left unstamped
         # records nothing rather than a guess.
@@ -708,7 +708,7 @@ async def dispatch_one_job(
                 links=links,
             ) as consumer_span:
                 # Resolved first, inside the try: a failure before the
-                # actor runs (payload validation, DI resolution) is a
+                # actor runs (payload validation, di resolution) is a
                 # terminal failure like any other, and the outer handler
                 # below reports it through the same hook. A reporter
                 # misregistration surfaces the same way a broken actor
@@ -733,7 +733,7 @@ async def dispatch_one_job(
                         payload_schema_ver=str(job.payload_schema_ver),
                     )
 
-                    # Bound once for the whole job: the DI-resolution
+                    # Bound once for the whole job: the di-resolution
                     # context below and the live context consume_one_job
                     # builds share it, off the consumer's own logger so a
                     # job's lines carry one logger name whichever context
@@ -768,7 +768,7 @@ async def dispatch_one_job(
                         process_scope=process_scope,
                         thread_scope=thread_scope,
                         loop_scope=loop_scope,
-                        actor_func=actor_ref.fn,  # type: ignore[arg-type]  # Why: actor_ref.fn is Callable[..., object] (covers both sync and async); build_actor_scope expects Callable[..., Awaitable[object]] for DI resolution but never calls the function, sync-vs-async dispatch is handled later via actor_ref.is_sync
+                        actor_func=actor_ref.fn,  # type: ignore[arg-type]  # Why: actor_ref.fn is Callable[..., object] (covers both sync and async); build_actor_scope expects Callable[..., Awaitable[object]] for di resolution but never calls the function, sync-vs-async dispatch is handled later via actor_ref.is_sync
                         actor_name=actor_ref.name,
                         passthrough_kwargs=passthrough_kwargs,
                         loop_slot_values=actor_loop_slot_values,
@@ -846,7 +846,7 @@ async def dispatch_one_job(
                         # dropped: on the transactional-caller shape a
                         # gated-out completion attempt is unordered with this
                         # dispatch's own commit, and the contract the hook's
-                        # docstring states -- the CALLER honors it with one
+                        # docstring states -- the caller honors it with one
                         # post-commit re-arbitration -- is honored at the
                         # conn_stack exit below, after every transaction on
                         # the slot connection has ended.
@@ -866,7 +866,7 @@ async def dispatch_one_job(
                 except asyncio.CancelledError:
                     outcome = "cancelled"
                     consumer_span.set_status(StatusCode.ERROR, "cancelled")
-                    # A batch completes on ANY terminal member: the
+                    # A batch completes on any terminal member: the
                     # batch-completion hook runs per-job for all terminal
                     # outcomes (succeeded, failed, cancelled). So a
                     # cancelled last member must complete its batch here,
@@ -892,7 +892,7 @@ async def dispatch_one_job(
                 except Exception as exc:
                     outcome = "failed"
                     consumer_span.set_status(StatusCode.ERROR)
-                    # Unwrap the provider-SystemExit carrier first (the DI
+                    # Unwrap the provider-SystemExit carrier first (the di
                     # scope's get_or_create seam raises it for a factory's
                     # sys.exit): the failure handler must record the
                     # factory's own exception, never the carrier's name (a
@@ -921,7 +921,7 @@ async def dispatch_one_job(
                         )
                     except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                         # An infra-failed terminal write leaves the row
-                        # RUNNING, disowned, so lock-lease expiry and the
+                        # running, disowned, so lock-lease expiry and the
                         # sweep are the recovery, and no batch counter may
                         # budge on a write that never landed: the same rule
                         # the hook itself applies to the clean-return
@@ -959,7 +959,7 @@ async def dispatch_one_job(
     # The transactional-caller reissue (#589's contract): a completion
     # attempt that gated out while riding this dispatch's transaction was
     # never ordered against its own commit, so the batch is owed one
-    # re-arbitration AFTER the transaction ends -- this attempt's snapshot
+    # re-arbitration after the transaction ends -- this attempt's snapshot
     # postdates every writer's commit, its probe sees zero open members,
     # and it lands. Without it, a burst-shaped drain leaves the
     # all-terminal batch 'active' with no attempt left to land -- the

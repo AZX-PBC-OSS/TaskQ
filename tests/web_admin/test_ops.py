@@ -667,7 +667,7 @@ async def test_fetch_redis_rl_state_decodes_bytes() -> None:
     assert result["api:global"]["tokens"] == "10"
 
 
-# ── _fetch_redis_rl_state: GCRA kind ─────────────────────────────────────
+# ── _fetch_redis_rl_state: gcra kind ─────────────────────────────────────
 
 
 async def test_fetch_redis_rl_state_gcra() -> None:
@@ -912,7 +912,7 @@ def test_schedule_skip_redirects_on_success(monkeypatch: pytest.MonkeyPatch) -> 
                     "dst_strategy": "skip",
                     "next_fire_at": db_now - timedelta(minutes=30),
                     # The skip fetch reads the server clock in the same row
-                    # (clock_timestamp() AS db_now), so the stub row carries it.
+                    # (clock_timestamp() as db_now), so the stub row carries it.
                     "db_now": db_now,
                 }
             ),
@@ -1262,7 +1262,7 @@ def test_rate_limits_page_fetches_redis_state_for_pg_only_keyed_buckets(
     (absent from the admin process's registry) is included in the
     live-Redis state fetch, so its per-key token state is visible."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    # The registry stays EMPTY - the bucket exists only as a PG row.
+    # The registry stays empty - the bucket exists only as a PG row.
     conn = _ScriptedConn(
         fetch_map={
             "rate_limit_buckets ORDER": [

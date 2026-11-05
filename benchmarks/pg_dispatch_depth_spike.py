@@ -19,10 +19,10 @@ This probe:
   (house rule: a bench that cannot prove output-identity must not report
   timings).
 
-Alternatives (raw SQL here, NOT src - design-spike deliverables):
+Alternatives (raw SQL here, not src - design-spike deliverables):
 
 - ``v1_top_ids``: same candidate/dedup/rank body, but the LIMIT-ed id set is
-  finalized in a ``top_ids`` CTE BEFORE touching ``jobs``, and ``locked``
+  finalized in a ``top_ids`` CTE before touching ``jobs``, and ``locked``
   drives ``jobs`` by PK from that small set - the planner gets a
   structurally-bounded driven side instead of re-resolving
   ``j.status = 'pending'`` over the backlog.
@@ -35,7 +35,7 @@ Alternatives (raw SQL here, NOT src - design-spike deliverables):
   identical, and the bench asserts that.
 - ``v3_covering``: v1's SQL executed while a covering variant of the
   dispatch index (INCLUDE columns for the lateral's non-key references)
-  exists, so the candidates lateral is an index-ONLY scan - the heap is
+  exists, so the candidates lateral is an index-only scan - the heap is
   touched only for the rows actually locked. The index is created/dropped
   around v3's rounds so v0-v2 plan against the stock index set.
 
@@ -91,7 +91,7 @@ LOCK_LEASE = timedelta(seconds=30)
 def _preamble() -> str:
     # Plain string (not f-string): fragments carry literal "{schema}" tokens
     # and are .format(schema=...)-ed at render time, matching the
-    # _dispatch_sql.py template convention. NEVER mix f-string {{schema}}
+    # _dispatch_sql.py template convention. never mix f-string {{schema}}
     # escaping into these - .format() would strip the escape and leave the
     # literal unreplaced.
     return """\
@@ -222,7 +222,7 @@ RETURNING j.*"""
 
 
 def _v1_top_ids_sql(*, literal_limits: bool = False) -> str:
-    """Finalize the LIMIT-ed id set BEFORE the heap join; drive jobs by PK.
+    """Finalize the LIMIT-ed id set before the heap join; drive jobs by PK.
 
     With literal_limits=True the lateral/locked LIMIT bounds are rendered as
     literals instead of (SELECT ... FROM params) subqueries: the planner
@@ -238,7 +238,7 @@ def _v1_top_ids_sql(*, literal_limits: bool = False) -> str:
     sql = _preamble()
     # literal variant drops the residual multiply entirely (exact only for
     # NULL-cap actors, where residual == limit_n): the planner estimates a
-    # Limit node as the LIMIT value ONLY when it is a literal - any
+    # Limit node as the LIMIT value only when it is a literal - any
     # data-dependent expression keeps the child's (range-sized) estimate.
     # __LAT_LIMIT__/__TOP_LIMIT__ tokens + .replace, the same substitution
     # style as _render_dispatch_sql (ovr/lim are module constants, never
@@ -282,7 +282,7 @@ def _v2_lock_first_sql() -> str:
 
     Semantic deltas vs the shipped CTE (documented for the design doc, and
     neutralized in this probe's state): (a) per-actor residual and identity
-    dedup apply AFTER the row locks, so rows admitted-against are held locked
+    dedup apply after the row locks, so rows admitted-against are held locked
     only for the remainder of this statement and released untouched at
     commit; (b) the candidates bound is global (limit*oversample) rather
     than per-actor - with multiple capped actors a per-actor LATERAL over
@@ -384,7 +384,7 @@ async def seed_jobs_copy(conn: asyncpg.Connection, schema: str, depth: int) -> N
             "transient",  # retry_kind
             "pending",  # status
             now,  # scheduled_at (due)
-            i % 3,  # priority mix so priority DESC is exercised
+            i % 3,  # priority mix so priority desc is exercised
         )
         for i in range(depth)
     ]
@@ -534,7 +534,7 @@ async def run_depth(
             # set-level gate, which is the dispatch-semantics contract.
             order_only[name] = True
 
-    # v3 runs FIRST while the covering index exists, so all variants measure
+    # v3 runs first while the covering index exists, so all variants measure
     # on the same post-seed-vacuum state (each round rolls back; the residual
     # churn from v3's rounds is ~limit rows/round against a `depth`-row
     # backlog). v0/v1/v2 then run against the stock index set.
@@ -675,18 +675,18 @@ async def _go(args: argparse.Namespace) -> list[dict[str, object]]:
     await setup_schema(args.dsn, args.schema)
     conn = await asyncpg.connect(args.dsn)
     if args.jit_off:
-        # Opt-out, not the default: this benchmark once disabled JIT by
+        # Opt-out, not the default: this benchmark once disabled jit by
         # default "because the plan cost is far above jit_above_cost", which
-        # is exactly why the JIT-compile-per-round defect stayed invisible
+        # is exactly why the jit-compile-per-round defect stayed invisible
         # here while production connections (which carried no guard) paid
         # ~1s of Optimization+Emission per dispatch round at depth. The
         # default now measures the statement's own planner behavior -
-        # JIT included - so an estimate-cascade regression shows up in
+        # jit included - so an estimate-cascade regression shows up in
         # these numbers the way tests/test_dispatch_backlog_depth_bound.py's
-        # JIT oracle pins it. Production no longer sets jit client-side
+        # jit oracle pins it. Production no longer sets jit client-side
         # (the dispatcher pool's server_settings entry rode the startup
         # packet and broke boot behind poolers); the server-side
-        # channels (ALTER ROLE ... SET jit = off, DSN ?options=) are
+        # channels (alter role ... set jit = off, DSN ?options=) are
         # documented in docs/guides/ops.md §"Database performance knobs",
         # and --jit-off reproduces that guarded shape to isolate scan
         # time from compile time.

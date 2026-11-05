@@ -5,7 +5,7 @@ parked at the column ceiling cannot turn a whole claim round into a
 smallint-out-of-range driver error (the backlog-drain pin lives in
 tests/test_dispatch_pg.py::
 test_backlog_still_dispatches_with_a_job_at_the_attempt_ceiling). What that
-pin does not cover is what happens to the clamped job itself AFTER the claim
+pin does not cover is what happens to the clamped job itself after the claim
 - the chain this file exercises end to end:
 
 * the clamped row is claimed at attempt 32767 (not 32768, no driver error)
@@ -54,7 +54,7 @@ pytestmark = pytest.mark.integration
 
 #: The domain ceiling of the ``jobs.attempt`` smallint column
 #: (``constants.SMALLINT_MAX``). A row parked here has no headroom for the
-#: claim's ``attempt + 1``, so the claim's LEAST clamp engages.
+#: claim's ``attempt + 1``, so the claim's least clamp engages.
 _CEILING = 32767
 _LEASE = timedelta(seconds=30)
 
@@ -186,7 +186,7 @@ async def test_clamped_indefinite_job_survives_two_full_claim_fail_cycles(
     """An ``indefinite`` job clamped at the ceiling runs, fails, and
     reschedules TWICE: both cycles claim at attempt 32767, both terminal
     writes land, the second cycle's attempt-row insert collides with the
-    first's and is absorbed - the audit trail keeps the FIRST record of the
+    first's and is absorbed - the audit trail keeps the first record of the
     number, and the row is still scheduled (never stranded, never terminal,
     no driver error from any statement in either cycle).
     """

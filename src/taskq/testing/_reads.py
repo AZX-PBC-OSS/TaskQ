@@ -160,7 +160,7 @@ def _post_sweep_result_view(row: JobRow, now: datetime) -> JobRow:
     backends.
     """
     if row.result is not None and row.result_expires_at is not None and row.result_expires_at < now:
-        # result_expires_at is KEPT on the view, matching
+        # result_expires_at is kept on the view, matching
         # _SWEEP_RESULT_TTL_SQL: the past stamp is the expiry signal the
         # client's ResultUnavailable.reason='result_ttl_expired' reads.
         # Nulling it would erase even the TTL-elapsed fact; the stamp
@@ -177,7 +177,7 @@ async def _get(self: "InMemoryBackend", job_id: JobId) -> JobRow | None:
     The twin of ``taskq.backend._reads._get``: a
     row the prune simulation moved to ``_archive`` answers from there
     with ``archived=True`` on the row, the same jobs-then-archive probe
-    the PG backend and the CLI apply. The result-TTL view does NOT
+    the PG backend and the CLI apply. The result-TTL view does not
     compose on an archive hit, mirroring production: the result-TTL
     sweep updates only the hot ``jobs`` table, so a ``jobs_archive`` row
     reads the result columns it was archived with, whatever their

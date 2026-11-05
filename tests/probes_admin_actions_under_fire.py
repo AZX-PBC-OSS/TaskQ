@@ -1,8 +1,8 @@
-# ruff: noqa: S608, TID251, ASYNC230  # Why: the brief mandates the dash-named attack4-* module; the seeded adversarial rows deliberately use uuid4 (a row whose id must NOT collinearly pack the B-tree); the open() writes the latency capture beside the test.
+# ruff: noqa: S608, TID251, ASYNC230  # Why: the brief mandates the dash-named attack4-* module; the seeded adversarial rows deliberately use uuid4 (a row whose id must not collinearly pack the B-tree); the open() writes the latency capture beside the test.
 """The admin page under fire (the adversarial probes' suite).
 
 The stranger's adversarial probes against the workflow-run explorer:
-NOT the builder's happy-path pins (tests/web_admin/test_workflows_page.py
+not the builder's happy-path pins (tests/web_admin/test_workflows_page.py
 owns those) — the chaos shapes, over a REAL uvicorn server (the builder's
 own SSE tests ride the raw generator; httpx's ASGITransport buffers a
 StreamingResponse's body, so a through-the-endpoint probe needs the real
@@ -21,7 +21,7 @@ transport — that honesty is this file's premise):
   derivation over its own nodes == its status — whichever side of the
   race it caught);
 * the XSS surface: a node's error text carrying HTML / script / a
-  </script> closer (the boot JSON is rendered INSIDE a <script> tag —
+  </script> closer (the boot JSON is rendered inside a <script> tag —
   the tojson filter must break the closer), the hold's reason carrying
   markup, and the client's own conventions (textContent, never
   innerHTML, for every dynamic line);
@@ -152,7 +152,7 @@ def _free_port() -> int:
 async def live_server(
     module_pg_schema: ModulePgSchema, demo_env: types.ModuleType
 ) -> AsyncIterator[str]:
-    """A REAL uvicorn server on an ephemeral port, in its OWN THREAD (the
+    """A REAL uvicorn server on an ephemeral port, in its own THREAD (the
     server's tasks + pool live on the thread's loop — a long-lived task
     on the module loop would trip the suite's leaked-task detector for
     every test after it), serving the admin router with the module's
@@ -168,7 +168,7 @@ async def live_server(
         asyncio.set_event_loop(loop)
 
         async def build() -> FastAPI:
-            # The thread's OWN pool (asyncpg pools are loop-bound).
+            # The thread's own pool (asyncpg pools are loop-bound).
             pg = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
             bundle = create_router(
                 pg,
@@ -297,7 +297,7 @@ async def test_a_stale_or_hostile_last_event_id_still_replays_the_full_snapshot(
 ) -> None:
     """The replay contract under a hostile cursor: whatever the client
     sends in Last-Event-ID (stale-huge, negative, garbage, float-notation),
-    the NEXT frame over the wire is the run's FULL snapshot — a reconnect
+    the next frame over the wire is the run's FULL snapshot — a reconnect
     can never strand the page on a stale render, and none of them 500s."""
     schema = module_pg_schema.schema_name
     run_id = await _run_seed(module_pg_pool, schema)
@@ -328,11 +328,11 @@ async def test_the_kill_mid_stream_then_reconnect_replays(
     try:
         first = await _read_frames_for(live_server, run_id, count=1)
         assert first and first[0]["nodes"], "the first consumer saw the snapshot"
-        # THE SERVER SURVIVED the killed socket.
+        # the server survived the killed socket.
         async with httpx.AsyncClient(base_url=live_server, timeout=10.0) as client:
             probe = await client.get(f"/api/runs/{run_id}/nodes/review")
         assert probe.status_code == 200
-        # THE RECONNECT replays the full state.
+        # the reconnect replays the full state.
         again = await _read_frames_for(live_server, run_id, count=1)
         assert again[0]["nodes"] == first[0]["nodes"]
         assert again[0]["holds"] == first[0]["holds"]
@@ -349,9 +349,9 @@ async def test_two_browsers_on_one_run_the_snapshots_interleave_correctly(
     live_server: str,
 ) -> None:
     """TWO browsers on one run: both consumers get their own revisioned
-    snapshots; each consumer's own seq is monotonic; both see the SAME
+    snapshots; each consumer's own seq is monotonic; both see the same
     transition order — and the resolve that started it all lands EXACTLY
-    ONCE (two concurrent resolves = one delivered, one no-op)."""
+    once (two concurrent resolves = one delivered, one no-op)."""
     from taskq.workflows.api._hitl import HitlClient
 
     schema = module_pg_schema.schema_name
@@ -368,8 +368,8 @@ async def test_two_browsers_on_one_run_the_snapshots_interleave_correctly(
     assert first_a[0]["nodes"] == first_b[0]["nodes"]
     assert first_a[0]["status"] == first_b[0]["status"] == "blocked"
 
-    # The resolve, TWICE concurrently (two operators clicking the same
-    # button): exactly ONE delivered.
+    # The resolve, twice concurrently (two operators clicking the same
+    # button): exactly one delivered.
     client = HitlClient(module_pg_pool, schema=schema)
     (hold,) = await client.list(run_id)
     r1, r2 = await asyncio.gather(
@@ -381,7 +381,7 @@ async def test_two_browsers_on_one_run_the_snapshots_interleave_correctly(
     )
 
     # The drive to terminal, then both browsers re-read from their own
-    # stale cursors: both catch up to the SAME final derived state.
+    # stale cursors: both catch up to the same final derived state.
     compiled = sys.modules[MODULE_NAME].app.get("attack4a_hold_flow")  # type: ignore[attr-defined]
     await FlowRunner(compiled, module_pg_pool, schema).drive(uuid.UUID(run_id))
     tail_a, tail_b = await asyncio.gather(
@@ -407,7 +407,7 @@ async def test_the_rows_dom_check_holds_under_a_resolve_landing_mid_render(
 ) -> None:
     """A resolve lands WHILE the page renders (10 renders racing one
     resolve): every rendered page's boot JSON must be INTERNALLY
-    consistent — the §17.5 derivation over ITS OWN node states == its
+    consistent — the §17.5 derivation over ITS own node states == its
     status, and no render 500s mid-race."""
     schema = module_pg_schema.schema_name
     run_id = await _run_seed(module_pg_pool, schema)
@@ -450,7 +450,7 @@ async def test_the_rows_dom_check_holds_under_a_resolve_landing_mid_render(
             for n in nodes
         )
         derived = derive_workflow_status(views)
-        # The page's status == the derivation over the page's OWN nodes —
+        # The page's status == the derivation over the page's own nodes —
         # whichever side of the race this render caught.
         assert boot["state"]["status"] == derived, (
             f"the hybrid render: status {boot['state']['status']} vs "
@@ -458,7 +458,7 @@ async def test_the_rows_dom_check_holds_under_a_resolve_landing_mid_render(
         )
 
 
-# ── the XSS / redecoration surface ───────────────────────────────────────
+# ── the xss / redecoration surface ───────────────────────────────────────
 
 
 async def test_a_nodes_error_text_carrying_markup_is_escaped_everywhere(
@@ -468,13 +468,13 @@ async def test_a_nodes_error_text_carrying_markup_is_escaped_everywhere(
 ) -> None:
     """The XSS probe: a node's error text contains <script>, an
     <img onerror>, and a literal </script> closer (the wf-boot JSON
-    renders INSIDE a <script> tag — an unescaped closer is the injected
+    renders inside a <script> tag — an unescaped closer is the injected
     script's exit). The page must render it ESCAPED (server), and the
     panel API must carry it as JSON data (never markup)."""
     schema = module_pg_schema.schema_name
     evil = "<script>alert(1)</script> <img src=x onerror=alert(2)> </script>"
     run_uuid = uuid.uuid4()
-    # A run whose node carries the hostile error text (written AS a run's
+    # A run whose node carries the hostile error text (written as a run's
     # own row — the error text is job-data, never operator input).
     await module_pg_pool.execute(
         f'INSERT INTO "{schema}".jobs '
@@ -502,28 +502,27 @@ async def test_a_nodes_error_text_carrying_markup_is_escaped_everywhere(
         page = await client.get(f"/workflows/{run_uuid}")
         assert page.status_code == 200
         html = page.text
-        # THE SERVER RENDER: no raw markup survives into the HTML — the
-        # sharper check: the wf-boot JSON's script tag must not be
-        # CLOSED by the payload (the parse succeeding IS the proof).
+        # no raw markup survives into the HTML — the sharper check: the wf-boot
+        # JSON's script tag must not be closed by the payload (the parse
+        # succeeding is the proof).
         assert "<script>alert(1)" not in html
         assert "<img src=x onerror" not in html
         boot_json = html.split('<script id="wf-boot" type="application/json">')[1]
         boot = json.loads(boot_json.split("</script>")[0])
         assert boot["runId"] == str(run_uuid)
-        # THE PANEL API: the raw error is DATA (a JSON string), not markup.
+        # the raw error is data (a JSON string), not markup.
         panel = await client.get(f"/api/runs/{run_uuid}/nodes/evil_step")
         assert panel.status_code == 200
         assert panel.json()["error_message"] == evil  # intact as data
         assert panel.headers["content-type"].startswith("application/json")
-    # THE CLIENT'S CONVENTION (the redecoration surface): every dynamic
-    # line the workflow JS writes uses textContent — an innerHTML on an
-    # error/label line is the injection's door.
+    # every dynamic line the workflow JS writes uses textContent — an innerHTML
+    # on an error/label line is the injection's door.
     js = (
         __import__("pathlib").Path(__file__).parent.parent / "src/taskq/web/static/workflows.js"
     ).read_text()
     for line in js.splitlines():
         if "innerHTML" in line:
-            # The ONLY allowed innerHTML sites: the mermaid SVG (the
+            # The only allowed innerHTML sites: the mermaid svg (the
             # vendored renderer's own output) and the deliberate clear.
             stripped = line.strip()
             assert "res.svg" in stripped or stripped.endswith('innerHTML = "";'), (
@@ -567,7 +566,7 @@ async def test_every_action_button_lands_its_audit_row(
 ) -> None:
     """The audit trail (G4) under fire: the resolve and the cancel each
     land their admin_audit row, attributed, and the page's trail renders
-    them. A button whose action is NOT a row is the unaccountable
+    them. A button whose action is not a row is the unaccountable
     surface."""
     schema = module_pg_schema.schema_name
     app = _make_admin_app(
@@ -597,7 +596,7 @@ async def test_every_action_button_lands_its_audit_row(
         )
         assert r.status_code == 200, r.text
         assert r.json()["status"] == "delivered"
-        # THE CANCEL button (the run page's stop).
+        # the cancel button (the run page's stop).
         r2 = await client.post(
             f"/api/runs/{run_id}/cancel",
             data={"reason": "attack4 audit probe", "csrf_token": csrf},
@@ -615,7 +614,7 @@ async def test_every_action_button_lands_its_audit_row(
     assert "workflow.cancel" in actions, f"the cancel left no audit row: {actions}"
     for row in rows:
         assert row["principal_subject"], f"an unattributed action rode: {row['action']}"
-    # The page RENDERS the trail.
+    # The page renders the trail.
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -641,7 +640,7 @@ async def test_the_panel_and_page_latency_on_a_200_child_map(
     """The pinned 50 ms band, re-measured on the adversarial shape: a
     run whose map has 200 children (the builder's band was measured on a
     small run — the collapsed hexagon must keep the panel cheap at map
-    scale). MY OWN numbers, captured to the private temp captures root
+    scale). MY own numbers, captured to the private temp captures root
     (:func:`tests._wf_fixtures.redlog_captures_root`); the in-tree
     ``.measurements/attack4/`` home exists only under the explicit pin,
     and a fresh checkout carries none — the lane must not depend on

@@ -9,7 +9,7 @@ the optional hypertable mode and the flag boundary:
 
 * The FOLD path under both engines, looped: a stale ghost (an archive row
   whose job retried and re-terminalized) must converge to exactly one
-  archive row on the first prune and NEVER re-enter the candidate window
+  archive row on the first prune and never re-enter the candidate window
   (probed directly, statement by statement, not just through counts).
 * Re-archive racing the chunk boundary: the fold runs while a REAL
   retention-policy run drops the standing row's chunk underneath it.
@@ -23,7 +23,7 @@ the optional hypertable mode and the flag boundary:
   never drop before its rows expire (verified as a catalog invariant that
   follows from the write's stamping contract).
 * Plan truth on the hypertable: the expiry sweep's bound is expire_at -
-  NOT the partition column - so chunk startup-pruning is impossible for it
+  not the partition column - so chunk startup-pruning is impossible for it
   by construction; the pin is per-chunk index-boundedness (no per-chunk
   population walk), while partition-column windows must prune chunks.
 * The flag boundary on one database: off -> on -> off -> on converges with
@@ -75,7 +75,7 @@ pytestmark = pytest.mark.integration
 # The fold scenario's clocks. Prune retention 6h makes both ghost stamps
 # (30h and 54h old) aged candidates; the two stamps are 30h apart, which
 # 1-day chunks cannot span, so on the hypertable the ghost's two versions
-# are GUARANTEED to sit in different chunks - the exact shape where a
+# are guaranteed to sit in different chunks - the exact shape where a
 # missing archive-once guard would silently duplicate (UNIQUE (id,
 # finished_at) cannot catch a second row with a different finished_at).
 _FOLD_RETENTION = timedelta(hours=6)
@@ -86,7 +86,7 @@ _FOLD_ARCHIVE_RETENTION = timedelta(days=2)
 #: list - two independent server clock reads, not one - so the pair can
 #: straddle a microsecond tick, and the DB host's scheduler can put a few
 #: microseconds between the two evaluations (CI observed retention + 3us).
-#: A LATER expire_at keeps the row longer - the safe direction - so the
+#: A later expire_at keeps the row longer - the safe direction - so the
 #: data-safety side below pins tight while this side only guards the
 #: contract against a real stamping bug (a wrong retention misses by
 #: seconds/minutes, not by the scheduler's microseconds).
@@ -193,7 +193,7 @@ def _ts_settings(dsn: str, schema: str, *, flag: bool) -> WorkerSettings:
     )
 
 
-# ── 1. The fold path, looped, under BOTH engines ─────────────────────────
+# ── 1. The fold path, looped, under both engines ─────────────────────────
 
 
 async def _fold_loop_scenario(dsn: str, schema: str, *, convert: bool) -> None:
@@ -225,13 +225,13 @@ async def _fold_loop_scenario(dsn: str, schema: str, *, convert: bool) -> None:
             schema=schema,
             batch_size=100,
         )
-        # Both ordinary jobs archived AND the ghost's live row removed in
+        # Both ordinary jobs archived and the ghost's live row removed in
         # the same drain (the fold deletes via `verified`, not via `moved`).
         assert first.total_deleted == 3, f"first prune: {first.total_deleted}"
         facts = await _ghost_facts(conn, schema, gid)
         assert facts == {"live": 0, "archived": 1}, f"post-fold: {facts}"
 
-        # NO RE-ENTRY, forever: the candidate window itself must stop
+        # no re-entry, forever: the candidate window itself must stop
         # selecting the folded id, and five further drains must each be a
         # no-op with the archive row count pinned at exactly one.
         for round_no in range(5):
@@ -273,7 +273,7 @@ async def test_timescale_ghost_fold_converges_and_never_reenters(
 ) -> None:
     """Hypertable mode: the ghost's two versions sit in DIFFERENT chunks
     (their stamps are 30h apart), so UNIQUE (id, finished_at) cannot catch
-    a re-archive by accident - the NOT EXISTS guard is the only thing
+    a re-archive by accident - the not EXISTS guard is the only thing
     standing. The looped probe must show the fold, not a duplicate."""
     await _fold_loop_scenario(timescale_dsn, ts_schema, convert=True)
 
@@ -283,7 +283,7 @@ async def test_timescale_ghost_fold_converges_and_never_reenters(
 
 class _RetermBetweenWindowAndWriteConn:
     """ConnLike proxy that, the instant the candidate window returns (it
-    holds NO row locks - that is its design), retries a seeded job and
+    holds no row locks - that is its design), retries a seeded job and
     re-terminalizes it with a FRESH finished_at on a second connection.
     The write statement's lock-time re-check is what must then drop the
     zero-age row instead of archiving it as a ghost."""
@@ -309,7 +309,7 @@ class _RetermBetweenWindowAndWriteConn:
 
     async def fetch(self, sql: str, *args: object) -> list[asyncpg.Record]:
         rows = await self._inner.fetch(sql, *args)
-        # Fire on the TARGET STATUS's candidate window only: the prune
+        # Fire on the target status's candidate window only: the prune
         # loop runs one candidate per terminal status, and a fire on an
         # earlier status's window would re-time the row before the
         # succeeded window ever ran (the candidate's own age predicate
@@ -332,7 +332,7 @@ class _RetermBetweenWindowAndWriteConn:
 async def test_zero_age_reterminalization_between_window_and_write_is_dropped(
     pg_conn: asyncpg.Connection, settings: TaskQSettings
 ) -> None:
-    """A job retried and re-terminalized INSIDE the batch (between the
+    """A job retried and re-terminalized inside the batch (between the
     candidate window and the write, deterministically) is terminal again
     but zero seconds old: the lock-time age re-check must keep it out of
     the archive - archiving it would remove a just-finished job from the
@@ -483,7 +483,7 @@ async def test_rearchive_racing_chunk_drop_folds_without_duplicates(
             )
             for i in range(8)
         ]
-        # Pull the policies' next_start back to NOW: the chunk drops race
+        # Pull the policies' next_start back to now: the chunk drops race
         # the prune from this moment on.
         await _schedule_policies(conn, ts_schema, next_start=datetime.now(UTC))
 
@@ -591,7 +591,7 @@ async def test_expiry_sweep_vs_chunk_drop_no_double_delete_no_resurrection(
                 )
                 seeded.append(jid)
 
-        # Arm ONLY the retention policies (the compression policy stays at
+        # Arm only the retention policies (the compression policy stays at
         # _migrate_ts's deferred horizon): see the docstring - a ~now
         # compression run deadlocks the retention worker mid-drop and the
         # chunk outlives every window this test polls.
@@ -618,7 +618,7 @@ async def test_expiry_sweep_vs_chunk_drop_no_double_delete_no_resurrection(
         assert final_sweep.total_deleted == 0
         assert await conn.fetchval(f"SELECT count(*) FROM {ts_schema}.jobs_archive") == 0
         # The composed work distribution, exact and quiescent by
-        # construction: the four young-chunk past-expire rows are ONLY
+        # construction: the four young-chunk past-expire rows are only
         # reachable by the sweep (their chunk is policy-kept), and the
         # four old-chunk past-expire rows are below the policy's floor -
         # the sweep never pays for them (the sibling module's H7 pins the
@@ -680,7 +680,7 @@ async def test_policy_never_drops_a_chunk_before_its_rows_expire(
     conn = await asyncpg.connect(timescale_dsn)
     try:
         await _migrate_ts(conn, ts_schema, timescale_dsn, flag=True)
-        # Eight jobs across more than one chunk, archived by the REAL
+        # Eight jobs across more than one chunk, archived by the real
         # prune (so expire_at is stamped by the write, not by hand).
         for i in range(8):
             await _seed_terminal_job(
@@ -810,7 +810,7 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
     """The expiry sweep's plan on the hypertable, and chunk pruning for
     partition-column windows.
 
-    The sweep bounds expire_at, which is NOT the partition column
+    The sweep bounds expire_at, which is not the partition column
     (finished_at), so TimescaleDB cannot startup-prune chunks for it - by
     construction, not by neglect. The bound that MUST hold instead: every
     chunk the sweep touches is scanned through the expire_at index with
@@ -900,14 +900,14 @@ async def test_expiry_sweep_plan_is_index_bounded_per_chunk_and_windows_prune(
 async def test_flag_flip_cycle_on_one_database_converges(
     timescale_dsn: str, ts_schema: str
 ) -> None:
-    """off -> on -> off -> on on the SAME schema: convergence, no duplicate
+    """off -> on -> off -> on on the same schema: convergence, no duplicate
     policies, no orphaned chunks, the migration ledger checksums untouched,
-    the OFF position a verified ZERO-SQL gate, and the vanilla runtime
+    the off position a verified ZERO-SQL gate, and the vanilla runtime
     paths unharmed on the still-converted schema after each downgrade
     attempt (runtime code never branches on the mode)."""
     conn = await asyncpg.connect(timescale_dsn)
     try:
-        # OFF (virgin): plain migrations, vanilla schema.
+        # off (virgin): plain migrations, vanilla schema.
         await conn.execute(f'DROP SCHEMA IF EXISTS "{ts_schema}" CASCADE')
         await apply_pending(conn, schema=ts_schema)
         ledger = await conn.fetch(
@@ -919,7 +919,7 @@ async def test_flag_flip_cycle_on_one_database_converges(
         )
         assert ht_off == 0
 
-        # ON.
+        # on.
         on_settings = _ts_settings(timescale_dsn, ts_schema, flag=True)
         report = await enable_hypertables(conn, schema=ts_schema, settings=on_settings)
         assert set(report.converted) == {"job_events", "jobs_archive", "job_attempts_archive"}
@@ -937,8 +937,8 @@ async def test_flag_flip_cycle_on_one_database_converges(
         )
         assert prune_on.total_deleted == 1, "the prune must work on the converted schema"
 
-        # OFF (downgrade attempt): the zero-SQL gate, verified against the
-        # refusing stub; the schema STAYS converted and the vanilla paths
+        # off (downgrade attempt): the zero-SQL gate, verified against the
+        # refusing stub; the schema stays converted and the vanilla paths
         # (the same prune, the expiry sweep) keep working on it.
         off_settings = _ts_settings(timescale_dsn, ts_schema, flag=False)
         noop = await enable_hypertables(
@@ -965,7 +965,7 @@ async def test_flag_flip_cycle_on_one_database_converges(
         sweep_off = await archive_expiry_sweep(conn, schema=ts_schema, batch_size=100)
         assert sweep_off.total_deleted >= 0  # runs clean on the converted schema
 
-        # ON again: skip conversion, exactly three policies - no duplicates.
+        # on again: skip conversion, exactly three policies - no duplicates.
         report2 = await enable_hypertables(conn, schema=ts_schema, settings=on_settings)
         assert report2.converted == (), "an already-converted schema must not re-convert"
         n_policies = await conn.fetchval(
@@ -983,7 +983,7 @@ async def test_flag_flip_cycle_on_one_database_converges(
             conn, ts_schema, next_start=datetime.now(UTC) + timedelta(days=3650)
         )
 
-        # OFF once more, then ON (the cycle's second lap).
+        # off once more, then on (the cycle's second lap).
         await enable_hypertables(_RefusingConn(), schema=ts_schema, settings=off_settings)  # pyright: ignore[reportArgumentType]  # Why: same zero-SQL contract, second lap of the cycle.
         report3 = await enable_hypertables(conn, schema=ts_schema, settings=on_settings)
         assert report3.converted == ()
@@ -1019,14 +1019,14 @@ async def test_flag_flip_cycle_on_one_database_converges(
         assert [tuple(r) for r in ledger_after] == [tuple(r) for r in ledger], (
             "the flag cycle wrote to the migration ledger"
         )
-        # And the archive holds the cycle's OWN rows and nothing else.
-        # The rows' PERSISTENCE is deliberately not this pin's claim: on
+        # And the archive holds the cycle's own rows and nothing else.
+        # The rows' persistence is deliberately not this pin's claim: on
         # the converted schema the aged tail belongs to the retention
         # policy (the policy floor's documented boundary — the policy's
         # first registered run drops the aged tail whole-chunk, silently,
         # at the scheduler's own instant), so a drop between the prunes
         # and this read is the policy's legitimate expiry, never a cycle
-        # defect. The cycle's claim is the OTHER direction: no FOREIGN
+        # defect. The cycle's claim is the other direction: no FOREIGN
         # archive row exists (a re-archive or a spurious move would put
         # one there), and each lap's prune deleted exactly one job
         # (asserted at the lap).
@@ -1046,7 +1046,7 @@ async def test_flag_flip_cycle_on_one_database_converges(
 
 
 async def test_loud_refusal_leaves_ledger_and_prune_untouched(pg_dsn: str) -> None:
-    """Opt-in on a vanilla server AFTER the schema migrated: the refusal
+    """Opt-in on a vanilla server after the schema migrated: the refusal
     names the setting, converts nothing, writes nothing to the migration
     ledger, and the prune path still converges on the schema afterwards."""
     schema = "ts_atk_refusal"

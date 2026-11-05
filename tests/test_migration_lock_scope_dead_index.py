@@ -5,17 +5,17 @@ Three pin families:
 
 1. Structural (no PG): the restructured round is split into
    single-purpose files so no transaction mixes lock classes on ``jobs``:
-   the columns file holds ONLY the two metadata-only ALTERs (whose ACCESS
-   EXCLUSIVE is held for milliseconds), the backfill file ONLY the
+   the columns file holds only the two metadata-only ALTERs (whose ACCESS
+   EXCLUSIVE is held for milliseconds), the backfill file only the
    bounded UPDATE (ROW EXCLUSIVE: blocks neither readers nor writers),
-   the index files ONLY their CREATE INDEX statements (SHARE). The
+   the index files only their CREATE INDEX statements (SHARE). The
    runner wraps each FILE, not each statement, in one transaction, so
-   a file's builds share ONE write-block window (its duration is the
+   a file's builds share one write-block window (its duration is the
    sum of the file's builds, with no drain between builds inside a
    file) and the writes queued behind it drain only between FILES.
    What the split bounds is the window per file plus the lock MODE:
    the original single-file form held ACCESS EXCLUSIVE, which blocks
-   reads too, across the ALTERs, the backfill and both builds in ONE
+   reads too, across the ALTERs, the backfill and both builds in one
    window. The dead pair (01.00.11_01's create +
    01.00.12_05:post's drop of ``jobs_repended_probe_idx``, referenced by
    no code at HEAD) is gone from the bundled set entirely.
@@ -24,7 +24,7 @@ Three pin families:
    pinned-consumer baseline, the bundled set ends at 01.00.05_01,
    applying every pending migration, pre phase then post, exactly the
    gated one-shot ``apply_pending_locked`` deploy shape) reaches the
-   SAME final ``jobs``/``jobs_archive`` inventory as a fresh full apply:
+   same final ``jobs``/``jobs_archive`` inventory as a fresh full apply:
    identical index definitions, identical columns, identical
    constraints, identical ledger keys. The end state itself is pinned by
    name so the restructure cannot silently drop or reshape a structure
@@ -33,7 +33,7 @@ Three pin families:
 3. Plan oracles (PG): the measurement shape (re-pended rows ahead
    of producer-placed rows on the same (actor, queue)): the production
    candidates laterals' probes ride the new marker-partial indexes,
-   ``NOT assignment_routed`` is served by the index predicate instead of
+   ``not assignment_routed`` is served by the index predicate instead of
    walking the re-pended tail as a post-scan Filter.
 """
 
@@ -178,7 +178,7 @@ def test_backfill_file_holds_only_the_bounded_update() -> None:
 
 
 def test_probe_index_files_hold_only_their_builds() -> None:
-    """A file's builds share its ONE transaction (the runner wraps each
+    """A file's builds share its one transaction (the runner wraps each
     FILE, not each statement: the doctrine 01.00.12_06's own header
     states), so the write-block window is the file's builds summed and
     drains only between files; what the split bounds is the window per
@@ -293,25 +293,25 @@ _PINNED_JOBS_INDEXES: frozenset[str] = frozenset(
         # it removes.
         "jobs_seam_idx",
         # 01.00.23_01 (LIB-2): the fan-out ledger's partial index —
-        # pending/scheduled children only, parent_id IS NOT NULL.
+        # pending/scheduled children only, parent_id is not NULL.
         "jobs_parent_pending_idx",
         # 01.00.24 (pre): the workflow round's three jobs indexes, all
         # partial on workflow rows (the sweep's lock-first join-wait walk;
-        # the fire arm's join-wait probe — deliberately WITHOUT
+        # the fire arm's join-wait probe — deliberately without
         # deps_pending > 0: the firable row's cache was just reconciled
         # to 0 by the rederive in the same transaction; the
         # children-by-parent walk).
         "jobs_wf_join_wait_idx",
         "jobs_wf_join_fire_probe_idx",
         "jobs_wf_children_idx",
-        # 01.00.26_02 (pre): the flow-link index REBUILT on the read shape —
+        # 01.00.26_02 (pre): the flow-link index rebuilt on the read shape —
         # the expression carries the same uuid cast every flow-scoped read
         # carries, and the partial names the index's true population
         # (workflow rows only: metadata ? 'flow_id'). Measured at the 220k-row
         # fleet (40 runs x 500 nodes, VACUUMed): the grouped rollup read one
         # 500-node run in 21.2 ms on 01.00.26_01's raw-text shape (linear in
         # the fleet table), 0.12 ms on this one — O(the run's node count).
-        # The pin's update IS the commit that changed the index estate;
+        # The pin's update is the commit that changed the index estate;
         # the lock-scope discipline itself stays proven below (the dead
         # probe index absent, the marker predicates named, both paths).
         "jobs_wf_flow_nodes_idx",
@@ -328,7 +328,7 @@ _PINNED_JOBS_ARCHIVE_INDEXES: frozenset[str] = frozenset(
         # to sort in full on every page turn.
         "jobs_archive_seam_idx",
         # 01.00.21_01 (pre): the archive tab's own keyset page index
-        # (finished_at DESC NULLS LAST, id DESC) — the ordering no
+        # (finished_at desc nulls last, id desc) — the ordering no
         # earlier index served, the pathology benchmarks/archive_scale.py
         # red-proved (every page sorted the whole archive).
         "jobs_archive_page_idx",
@@ -465,7 +465,7 @@ async def test_consumer_upgrade_path_reaches_the_pinned_end_state(pg_dsn: str) -
             archive_names = set(await _index_inventory(conn, schema, "jobs_archive"))
             assert archive_names == _PINNED_JOBS_ARCHIVE_INDEXES, archive_names
 
-        # Every index is VALID (no interrupted-build debris) and the dead
+        # Every index is valid (no interrupted-build debris) and the dead
         # probe index is absent by name on both paths.
         assert await migrate_mod.list_invalid_indexes(conn, fresh) == []
         assert await migrate_mod.list_invalid_indexes(conn, upgraded) == []
@@ -492,8 +492,8 @@ async def test_consumer_upgrade_path_reaches_the_pinned_end_state(pg_dsn: str) -
 
 # ── 3. Plan oracles: the label-routed probes never walk re-pended rows ─────
 
-# The measurement shape: re-pended pending rows AHEAD of the
-# producer-placed rows in the probes' (priority DESC, ...) order on the
+# The measurement shape: re-pended pending rows ahead of the
+# producer-placed rows in the probes' (priority desc, ...) order on the
 # same (actor, queue), so the pending-only twins' ordered scans must walk
 # them all before reaching an admissible row.
 _REPEND_ROWS = 20_000
@@ -591,7 +591,7 @@ def _params_wrapper(lateral: str, schema: str, *, rr_keys: bool) -> str:
     ]
     # The capability CTE's body carries the {schema} token (the
     # schema-independent render form) and a trailing comma (the production
-    # template composes it BETWEEN ctes) — render it, then strip the
+    # template composes it between ctes) — render it, then strip the
     # trailing comma the join would double.
     ctes.append(_WF_EXEC_CAPABLE_CTE.format(schema=schema).rstrip().rstrip(","))
     if rr_keys:
@@ -636,7 +636,7 @@ async def test_strict_fifo_lateral_probe_rides_the_unrouted_index(
         plan = await _explain_analyze(
             conn,
             _params_wrapper(
-                # The PLAIN render's fragment, not the raw template: the
+                # The plain render's fragment, not the raw template: the
                 # fragment carries the claim-cursor hole, and a raw hole
                 # in an EXPLAIN is a PostgresSyntaxError (the CI red this
                 # constant exists to fix).

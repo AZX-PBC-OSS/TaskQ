@@ -132,7 +132,7 @@ def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> Payl
         validation_errors=errs,
         # The machine-readable copy of the message's index. ``idx`` is
         # already caller-global at both callers: the atomic arm's lazy
-        # generator enumerates the WHOLE stream, and the chunked arm's
+        # generator enumerates the whole stream, and the chunked arm's
         # remap passes chunk_offset + the located position, so the field
         # needs no second shift anywhere (the chunked arm's backend errors
         # are still chunk-local and shifted once by the registry; the
@@ -146,8 +146,8 @@ def _item_payload_error(idx: int, actor_name: str, exc: ValidationError) -> Payl
 #
 # enqueue_batch_streaming's chunked arm funnels one caller stream through
 # per-chunk calls, and every per-item typed error those calls raise names
-# an index into THE CHUNK, the backend's per-call contract, while the
-# caller needs an index into THE STREAM: with no caller connection each
+# an index into the chunk, the backend's per-call contract, while the
+# caller needs an index into the stream: with no caller connection each
 # chunk is its own committed transaction, so a later chunk's chunk-local
 # index confidently names a stream position that was never attempted
 # while the committed prefix stays durable, and a retry guided by the
@@ -439,7 +439,7 @@ class JobsClient:
                 ) from exc
 
             # Why not stack.enter_async_context(client): Redis.__aexit__
-            # calls aclose() UNBOUNDED, a hung broker would wedge
+            # calls aclose() unbounded, a hung broker would wedge
             # JobsClient.close(). initialize() preserves
             # __aenter__'s eager-setup semantics; the pushed callback
             # bounds the close instead (b072692 pattern).
@@ -450,13 +450,13 @@ class JobsClient:
                 # taskq.worker.deps).
                 await close_redis_bounded(client, "jobs-client", CLOSE_TIMEOUT_SECS)
 
-            # Why push BEFORE initialize(): from_url() has already allocated
+            # Why push before initialize(): from_url() has already allocated
             # the connection pool, so if initialize() raises (broker down)
             # the failed eager setup must still release it, the unwind runs
             # the pushed callback through the bounded close (never raises;
             # aclose() on a never-initialized client is a no-op).
             self._exit_stack.push_async_callback(_close_client)
-            # Why bounded: initialize() is the EAGER first broker round
+            # Why bounded: initialize() is the eager first broker round
             # trip, a black-holed Redis would wedge TaskQ.open() forever,
             # and client processes arm no watchdogs. The pushed callback
             # above already bounds the unwind's close.
@@ -520,7 +520,7 @@ class JobsClient:
         :meth:`JobHandle.wait` can validate the stored result back to
         ``R``.
 
-        The actor's name is NOT validated against the registration table
+        The actor's name is not validated against the registration table
         here: any :class:`~taskq.actor.ActorRef` is accepted, and a ref
         whose actor no worker fleet declares enqueues successfully and
         then parks (every worker that claims it snoozes it back with
@@ -534,7 +534,7 @@ class JobsClient:
         The ``metadata.singleton`` key is reserved by the library for
         singleton enforcement. When ``ref.singleton`` is ``True`` the
         library unconditionally writes ``metadata.singleton = True``,
-        overriding any caller-supplied value. Callers MUST NOT set
+        overriding any caller-supplied value. Callers MUST not set
         ``metadata.singleton`` manually.
 
         **max_pending:**
@@ -674,7 +674,7 @@ class JobsClient:
             # a queue no stored assignment routes to strands the row
             # silently (pending forever), the note is the enqueue-time
             # signal, warn-once per queue per TTL. Under
-            # TASKQ_QUEUES_STRICT this same verdict REFUSES
+            # TASKQ_QUEUES_STRICT this same verdict refuses
             # (UnknownQueueError) instead of warning — unless
             # allow_unregistered=True, the per-submit escape for a
             # genuinely dynamic queue name (the note still fires on an
@@ -774,7 +774,7 @@ class JobsClient:
         **finalizer:**
 
         When ``finalizer`` is set, a finalizer job is enqueued alongside
-        the batch. The finalizer is NOT stamped with ``batch_id``
+        the batch. The finalizer is not stamped with ``batch_id``
         metadata (deadlock prevention, if it were, ``wait_for_batch``
         would count it as a child and the finalizer would wait for
         itself). The batch row's ``finalizer_job_id`` column records the
@@ -804,7 +804,7 @@ class JobsClient:
         **max_pending:**
 
         Admission is partitioned per actor.  The backend issues one
-        aggregated ``SELECT actor, count(*) … WHERE actor = ANY($1)
+        aggregated ``SELECT actor, count(*) … WHERE actor = any($1)
         GROUP BY actor`` for the entire batch, resolves per-actor
         effective limits (operator-owned stored value when set, else the
         ``@actor(...)`` literal, same resolution as :meth:`enqueue`),
@@ -867,7 +867,7 @@ class JobsClient:
         # Auto-generate batch_id if not provided (UUIDv7)
         resolved_batch_id = UUID(bytes=new_job_id().bytes) if batch_id is None else batch_id
 
-        # Phase 1: Validate ALL payloads (and idempotency keys) before any I/O
+        # Phase 1: Validate all payloads (and idempotency keys) before any I/O
         for i, item in enumerate(items):
             ref = item.actor_ref
             validate_actor_payload(ref.payload_type, item.payload, actor=ref.name)
@@ -885,13 +885,13 @@ class JobsClient:
         # live (not through this client's TTL cache), discounts idempotency
         # pairs that will dedupe instead of writing, and partitions
         # admission per actor. The old client-side aggregated pre-check
-        # raised here for the WHOLE call, one capped actor aborted
+        # raised here for the whole call, one capped actor aborted
         # everyone's items, and its count was strictly less
         # informed than the backend's, so it was removed rather than
         # duplicated.
         effective_mp: dict[str, int | None] = {}
-        # Why memoized by ACTOR NAME and verdict-check per new name only:
-        # this assumes name -> queue is a FUNCTION (two refs sharing a
+        # Why memoized by actor name and verdict-check per new name only:
+        # this assumes name -> queue is a function (two refs sharing a
         # name always share a queue). That invariant is enforced at the
         # registry boundary (worker/_bootstrap refuses registry keys that
         # disagree with ref.name, and sync_actor_config would
@@ -910,7 +910,7 @@ class JobsClient:
 
         # Build per-item EnqueueArgs carrying the resolved limits for the
         # backend's per-actor admission check. The ambient parent context
-        # is read ONCE per call: every item is a child of the
+        # is read once per call: every item is a child of the
         # same parent when one is set.
         args_list = build_batch_args(
             items,
@@ -925,9 +925,9 @@ class JobsClient:
         # Build finalizer EnqueueArgs (without batch_id stamping, deadlock prevention).
         finalizer_args: EnqueueArgs | None = None
         if finalizer is not None:
-            # The finalizer rides the SAME strict verdict as the items: the
+            # The finalizer rides the same strict verdict as the items: the
             # per-item loop above iterates items only, and the finalizer's
-            # args write through BOTH sub-paths below (the atomic arm and
+            # args write through both sub-paths below (the atomic arm and
             # the caller-connection arm), so without this the finalizer
             # was the strict bypass — the exact orphan class strict exists
             # to kill (its row stored on an unregistered queue, no
@@ -955,7 +955,7 @@ class JobsClient:
                 parent_id=current_parent_id(),
             )
 
-        # Build BatchRow when failure_policy OR finalizer is set (the class law:
+        # Build BatchRow when failure_policy or finalizer is set (the class law:
         # finalizer-only batches also need a row for list_batches
         # discoverability and finalizer_job_id auto-exclusion in
         # wait_for_batch). When only finalizer is set, failure_threshold=None.
@@ -989,7 +989,7 @@ class JobsClient:
             finalizer_row = all_rows[len(items) :][0] if finalizer is not None else None
         else:
             # Caller-owned transaction or no extras: use regular enqueue_batch.
-            # M3: create the batch row BEFORE job inserts so the row exists
+            # M3: create the batch row before job inserts so the row exists
             # when the first terminal write triggers the batch hook (on an
             # autocommit conn, jobs can dispatch and fail before the row
             # exists otherwise). Insert the finalizer first so its returned
@@ -1081,7 +1081,7 @@ class JobsClient:
         atomicity.  Otherwise, chunks are inserted via
         :meth:`Backend.enqueue_batch`: with a caller-supplied connection
         all chunks share that connection's open transaction (one
-        transaction aggregate, the caller owns the boundary); with NO
+        transaction aggregate, the caller owns the boundary); with no
         connection each chunk is its own pool transaction, so progress
         is committed incrementally, chunk by chunk.
 
@@ -1095,10 +1095,10 @@ class JobsClient:
         rows) or by resuming from the point of failure.
 
         **Failure-policy counting limitation (caller-connection path):**
-        the batch row is created AFTER all chunk inserts, it must carry
+        the batch row is created after all chunk inserts, it must carry
         the final ``expected_size`` and ``create_batch`` is INSERT, not
         upsert, so a child job enqueued on that connection that
-        reaches a terminal state BEFORE the row exists is not counted
+        reaches a terminal state before the row exists is not counted
         toward ``failure_policy``: ``increment_batch_failures`` finds
         no row and returns ``(0, None, 0)``. The atomic
         (no-connection) path is unaffected, its single transaction
@@ -1177,7 +1177,7 @@ class JobsClient:
             )
 
         # Build a lazy generator of EnqueueArgs. The payload is validated
-        # exactly ONCE per item, inside build_enqueue_args, and a
+        # exactly once per item, inside build_enqueue_args, and a
         # ValidationError from there is re-annotated with the item's index
         # and actor here. Why not validate upfront and discard the result
         # (the previous shape): that ran pydantic-core twice per batch item
@@ -1192,7 +1192,7 @@ class JobsClient:
         # batches would get wrong deserialization).
         item_meta: list[tuple[ActorRef[Any, Any], JobId]] = []
 
-        # The ambient parent context, read ONCE per call: the
+        # The ambient parent context, read once per call: the
         # generator is consumed lazily, possibly mid-transaction, so the
         # contextvar is read at arm entry, never inside the generator.
         ambient_parent_id = current_parent_id()
@@ -1209,7 +1209,7 @@ class JobsClient:
         effective_mp: dict[str, int | None] = {}
 
         def _lazy_args(stream: Iterable[EnqueueItem]) -> Iterable[EnqueueArgs]:
-            # Why memoized by ACTOR NAME (verdict per new name only): the
+            # Why memoized by actor name (verdict per new name only): the
             # name -> queue function assumption — enforced at the registry
             # boundary (worker/_bootstrap refuses keys that disagree with
             # ref.name; sync_actor_config CardinalityViolations on
@@ -1260,7 +1260,7 @@ class JobsClient:
         # Determine queue from the first item.
         queue = first_item.actor_ref.queue
 
-        # Build BatchRow when failure_policy OR finalizer is set (the class law:
+        # Build BatchRow when failure_policy or finalizer is set (the class law:
         # finalizer-only batches also need a row for list_batches
         # discoverability and finalizer_job_id auto-exclusion in
         # wait_for_batch). When only finalizer is set, failure_threshold=None.
@@ -1287,7 +1287,7 @@ class JobsClient:
         total_count = 0
 
         if has_batch_extras and connection is None:
-            # Autonomous atomic path: do NOT materialize the iterable,
+            # Autonomous atomic path: do not materialize the iterable,
             # pass the lazy generator directly to the backend, which consumes
             # it in chunks inside its transaction. expected_size=0 is a
             # sentinel; the backend computes the real count from the items
@@ -1295,8 +1295,8 @@ class JobsClient:
             # generator being consumed, providing per-item actor_refs and
             # args_ids for handle pairing.
             #
-            # Warm the capacity snapshot BEFORE the backend's transaction
-            # starts: _lazy_args is a SYNC generator consumed mid-transaction,
+            # Warm the capacity snapshot before the backend's transaction
+            # starts: _lazy_args is a sync generator consumed mid-transaction,
             # so it cannot await a (possibly stale-triggering) refresh at
             # yield time. One awaited resolution here, for the first item's
             # actor, whose result the generator also reuses, spends the same
@@ -1310,7 +1310,7 @@ class JobsClient:
             )
             self._capacity_cache.maybe_warn_unserved_queue(first_ref.queue, actor=first_ref.name)
             if finalizer is not None:
-                # The finalizer rides the SAME strict verdict (the
+                # The finalizer rides the same strict verdict (the
                 # per-item verdicts run inside the sync generator, which
                 # never sees the finalizer — its args ride the atomic
                 # call below): the exact strict bypass the batch arm's
@@ -1346,12 +1346,12 @@ class JobsClient:
             finalizer_row = all_rows[-1] if finalizer is not None else None
         else:
             # Chunked path (caller-owned connection or no extras). The
-            # batch row is created AFTER all chunk inserts: create_batch is
+            # batch row is created after all chunk inserts: create_batch is
             # INSERT (not upsert), so the row must carry the real
             # expected_size, which is only known once the stream is drained.
-            # KNOWN LIMITATION: until the row exists, a child job reaching a
+            # known limitation: until the row exists, a child job reaching a
             # terminal state finds no batch row, increment_batch_failures
-            # returns (0, None, 0) and the failure is NOT counted toward
+            # returns (0, None, 0) and the failure is not counted toward
             # failure_policy (see the docstring disclosure above). Insert
             # the finalizer first so its returned row id is known for
             # finalizer_job_id (M4).
@@ -1359,7 +1359,7 @@ class JobsClient:
             finalizer_row = None
             if finalizer is not None:
                 assert finalizer_args is not None
-                # The finalizer writes FIRST here (M4), BEFORE the chunk
+                # The finalizer writes first here (M4), before the chunk
                 # loop's first awaited refresh — so this path's strict
                 # verdict needs the refresh spent on it explicitly (free
                 # when warm, the single-refresh-per-TTL budget; a failed
@@ -1378,13 +1378,13 @@ class JobsClient:
                 )
                 finalizer_row = await self._backend.enqueue_with_conn(connection, finalizer_args)  # type: ignore[arg-type]  # Why: guarded by has_batch_extras; when connection is provided it is runtime-compatible
 
-            # Consume chunks. The payload is validated exactly ONCE per item
+            # Consume chunks. The payload is validated exactly once per item
             # (inside build_enqueue_args, via build_batch_args), the previous
             # per-item pre-validation pass ran pydantic-core twice per item and
             # its result was discarded. Every per-item typed error this chunk
             # can raise, pydantic validation from the args build, the jsonb
             # NUL guard and the per-actor cap partition from the backend call
-            # , crosses ONE remapping boundary below (_ITEM_ERROR_REMAPS) and
+            # , crosses one remapping boundary below (_ITEM_ERROR_REMAPS) and
             # leaves annotated at stream-global indices, keeping the
             # index-annotated PayloadValidationError contract (M6) without a
             # second validation on the happy path.
@@ -1392,7 +1392,7 @@ class JobsClient:
                 chunk_items = list(islice(stream, chunk_size))
                 if not chunk_items:
                     break
-                # Resolve effective caps for actors NEW to this chunk
+                # Resolve effective caps for actors new to this chunk
                 # (memoized in effective_mp across chunks, the TTL'd
                 # cache makes this a lookup after the first) before the
                 # args are built, so a stored override on a literal-less
@@ -1413,13 +1413,13 @@ class JobsClient:
                             ci.actor_ref.queue, actor=ci.actor_ref.name
                         )
                 # The stream-global base for every per-item error this
-                # chunk can raise, captured BEFORE anything is built or
+                # chunk can raise, captured before anything is built or
                 # inserted: total_count is exactly the committed prefix
                 # (chunks 1..N-1), so a chunk-local item index plus this
-                # base names the item's position in the CALLER's stream.
+                # base names the item's position in the caller's stream.
                 chunk_offset = total_count
                 chunk_args: list[EnqueueArgs] | None = None
-                # ONE boundary for every remappable per-item error: the
+                # one boundary for every remappable per-item error: the
                 # registry's members (and their subclasses, via the
                 # isinstance dispatch) re-raise with stream-global item
                 # indices; anything else, driver errors, programming
@@ -1557,7 +1557,7 @@ class JobsClient:
         """Enqueue jobs via COPY FROM protocol for maximum throughput.
 
         **WARNING, bulk-import semantics, not general-purpose enqueue:**
-        this method does NOT detect or
+        this method does not detect or
         reject idempotency-key collisions (a duplicate key aborts the
         whole batch instead of being treated as "already enqueued"), and
         returns a bare row **count**, not per-job handles, there is no
@@ -1624,7 +1624,7 @@ class JobsClient:
         # Auto-generate batch_id if not provided (UUIDv7)
         resolved_batch_id = UUID(bytes=new_job_id().bytes) if batch_id is None else batch_id
 
-        # Phase 1: Validate ALL payloads before any I/O
+        # Phase 1: Validate all payloads before any I/O
         for item in items:
             ref = item.actor_ref
             validate_actor_payload(ref.payload_type, item.payload, actor=ref.name)
@@ -1644,7 +1644,7 @@ class JobsClient:
                 self._capacity_cache.maybe_warn_unserved_queue(ref.queue, actor=ref.name)
 
         # Phase 2: Build per-item EnqueueArgs. The ambient parent context
-        # is read ONCE per call: every item is a child of the
+        # is read once per call: every item is a child of the
         # same parent when one is set.
         args_list = build_batch_args(
             items,
@@ -1732,13 +1732,13 @@ class JobsClient:
 
         A read-only typed read (the design, mirroring the
         reader-method precedent of :meth:`get_row` / :meth:`list`) —
-        deliberately NOT an ``enqueue`` kwarg: ``enqueue`` is generic
+        deliberately not an ``enqueue`` kwarg: ``enqueue`` is generic
         ``JobHandle[R]`` and no flag may flip the reply type.
 
         Per queue (see :class:`~taskq.types.QueueBackpressure`):
 
         * ``depth`` — jobs holding a pending slot IN THIS QUEUE
-          (pending + scheduled), the queue-local ops view, ONE indexed
+          (pending + scheduled), the queue-local ops view, one indexed
           aggregate for the whole call
           (``count_pending_jobs_by_queue``, the ``count_active_jobs``
           pattern). The worker-side leader sampler's cache is
@@ -1750,7 +1750,7 @@ class JobsClient:
           traffic splits across queues.
         * ``binding_actor`` / ``admission_load`` /
           ``effective_max_pending`` — the VERDICT's basis: the routing
-          actor with the smallest headroom (its OWN pending+scheduled
+          actor with the smallest headroom (its own pending+scheduled
           count, ALL queues, from ``count_pending_jobs`` — the
           ``enqueue_max_pending_count`` grouping — against its stored
           cap from the ``ActorCapacityCache`` TTL snapshot). The data
@@ -1761,13 +1761,13 @@ class JobsClient:
           ``current_parent_id()``), the parent's pending children
           OUTSIDE the queue, exact via the ``parent_id`` ledger stamp
           (01.00.23_01). REPORTED, not verdict-bearing: every pending
-          child already counts toward its OWN actor's cap (wherever it
+          child already counts toward its own actor's cap (wherever it
           sits), which is the number admission enforces — the fan-out
           pressure reaches the verdict through the routing actors'
           admission loads, and this field is the parent-attributed
           ledger view of the same rows. Children already in the queue
           are in its ``depth`` and never counted twice.
-        * ``state`` — ``over`` when any routing actor's OWN count is at
+        * ``state`` — ``over`` when any routing actor's own count is at
           or over its cap (the next enqueue for that actor is likely
           refused with ``MaxPendingExceededError``), ``ok`` only when
           every routing actor resolves and none is over (an
@@ -1939,7 +1939,7 @@ class JobsClient:
         with self._translate_schema_errors():
             return await self._backend.cancel_where(filter, reason)
 
-    # ── Schedule CRUD ────────────────────────────────────────────────────
+    # ── Schedule crud ────────────────────────────────────────────────────
 
     def _server_clock_pool(self) -> "asyncpg.Pool | None":
         """The pool a server-clock read runs on, or ``None`` when this
@@ -1978,7 +1978,7 @@ class JobsClient:
         timeout, so an unbounded acquire wedges every
         ``create_schedule``/``update_schedule`` on an exhausted pool. On
         timeout a clear :class:`TimeoutError` is raised; falling back to
-        the client clock here is deliberately NOT an option, because a
+        the client clock here is deliberately not an option, because a
         skewed seed would phase-shift the fire chain for the schedule's
         life, a wedged pool must surface.
         """
@@ -2037,7 +2037,7 @@ class JobsClient:
         When *identity_key* is set, the cron loop propagates it to cron-fired
         jobs so they dedup against on-demand jobs for the same business key.
 
-        Does NOT validate actor existence at creation time, any string
+        Does not validate actor existence at creation time, any string
         actor name is accepted (validation is deferred to fire time).
 
         The first ``next_fire_at`` is seeded from the clock that

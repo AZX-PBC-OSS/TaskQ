@@ -12,7 +12,7 @@ from taskq.exceptions import PayloadValidationError
 #: module-level constant, and this module stays importable by the driver-free
 #: testing boundary (the same reason ``testing/_dispatch.py`` mirrors
 #: dispatch constants as literals). Raise sites that hold a job row must
-#: pass the ROW's stored version instead, see ``validate_actor_payload``'s
+#: pass the row's stored version instead, see ``validate_actor_payload``'s
 #: ``payload_schema_ver`` parameter.
 CURRENT_PAYLOAD_SCHEMA_VER: Final[int] = 1
 

@@ -37,11 +37,11 @@ async def _consumer(ctx: StepContext, r: Report) -> Report:
     return r
 
 
-# ── A3-V1: the E3 rule is DEAD CODE ─────────────────────────────────────
-# _validate.py::_rule_edgeless_join places `diagnostics.append(...)` AFTER
+# ── A3-V1: the E3 rule is dead code ─────────────────────────────────────
+# _validate.py::_rule_edgeless_join places `diagnostics.append(...)` after
 # `continue` inside the `if` — unreachable. No public verb can wire an
 # edge-less join (gather([]) is refused at the verb), so the dead rule is
-# unobservable through the verbs — but the RULE is the promised refusal,
+# unobservable through the verbs — but the rule is the promised refusal,
 # and the compiled graph is public data a plugin/extension writes.
 # Proof: inject the shape the rule exists to reject (a join-shaped node
 # with zero parents) and validate says NOTHING.
@@ -56,9 +56,9 @@ def test_a3_e3_rule_is_dead_code() -> None:
         return build(produced)
 
     compiled = app.get("a3_e3_dead")
-    # THE REJECTED SHAPE, injected post-compile: the verbs refuse it at
-    # the door, but the validator's own E3 rule (the report's "E1-E6")
-    # must own the shape — it owns NOTHING (the append is unreachable).
+    # the rejected shape, injected post-compile: the verbs refuse it at the
+    # door, but the validator's own E3 rule (the report's "E1-E6") must own the
+    # shape — it owns NOTHING (the append is unreachable).
     compiled.nodes["stranded"] = NodeDecl(
         key="stranded", actor="wf", queue="default", body=None, parents=(), kind="gather"
     )
@@ -70,10 +70,10 @@ def test_a3_e3_rule_is_dead_code() -> None:
 
 
 # ── A3-V2: the cross-graph promise smuggle ──────────────────────────────
-# step() / gather() never check that a promise's graph IS the active
-# recorder (map_source DOES). A promise from app B wired into app A
-# resolves its KEY against app A's nodes — with a colliding key that is
-# a silently WRONG edge to A's own node; clean at build AND at validate.
+# step() / gather() never check that a promise's graph is the active
+# recorder (map_source does). A promise from app B wired into app A
+# resolves its key against app A's nodes — with a colliding key that is
+# a silently wrong edge to A's own node; clean at build and at validate.
 
 
 def test_a3_cross_graph_promise_smuggle_builds_a_silently_wrong_edge() -> None:
@@ -82,7 +82,7 @@ def test_a3_cross_graph_promise_smuggle_builds_a_silently_wrong_edge() -> None:
 
     @app_b.workflow("a3_b")
     def a3_b() -> Promise[object]:
-        foreign = step(_annotated, Ingest(doc_id="d"), key="fetch")  # the SAME key
+        foreign = step(_annotated, Ingest(doc_id="d"), key="fetch")  # the same key
         return build(step(_consumer, foreign, key="consume"))
 
     compiled_b = app_b.get("a3_b")
@@ -96,12 +96,12 @@ def test_a3_cross_graph_promise_smuggle_builds_a_silently_wrong_edge() -> None:
         consume_smuggled = step(_consumer, forged, key="consume2")
         return build(consume_mine, consume_smuggled)
 
-    # the PROBE SEAM (app._compile): the smuggle's graph is INVALID on
+    # the probe seam (app._compile): the smuggle's graph is invalid on
     # purpose (the silently-wrong edge is the pin's subject) — the door
     # would raise before the diagnostics could be read.
     compiled = app_a._compile("a3_a")
     rules = [d.rule for d in _run_rules(compiled)]
-    # The WRONG EDGE: consume2's parent is app A's own 'fetch', not app
+    # The wrong edge: consume2's parent is app A's own 'fetch', not app
     # B's node. validate must refuse (there is no rule that even looks):
     assert rules, (
         "the cross-graph smuggle (a foreign promise wired under a "
@@ -182,8 +182,8 @@ async def _untyped_consumer(ctx: StepContext, r: Any) -> Unrelated:
 
 
 def test_a3_e5_blind_to_untyped_and_duck_shapes() -> None:
-    """A consumer whose param carries NO annotation (or a plain dict)
-    consumes ANY producer — E5 is silent (the checker half would need
+    """A consumer whose param carries no annotation (or a plain dict)
+    consumes any producer — E5 is silent (the checker half would need
     the corpus; the checker-independent half promises totality)."""
     app = WorkflowApp()
 
@@ -192,8 +192,8 @@ def test_a3_e5_blind_to_untyped_and_duck_shapes() -> None:
         produced = step(_annotated, Ingest(doc_id="d"), key="produce")
         return build(step(_untyped_consumer, produced, key="consume"))
 
-    # the PROBE SEAM (app._compile): the untyped consumer's graph is
-    # INVALID on purpose (E5's refusal is the pin's subject) — the
+    # the probe seam (app._compile): the untyped consumer's graph is
+    # invalid on purpose (E5's refusal is the pin's subject) — the
     # door would raise before the diagnostics could be read.
     compiled = app._compile("a3_e5_blind")
     rules = [d.rule for d in _run_rules(compiled)]

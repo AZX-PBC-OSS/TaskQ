@@ -1,16 +1,16 @@
 # ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test identifier (the conftest's hashed per-module schema), never user input; every value is $-bound.
 """The engine's claim-fence pins — a terminal flow's rows are never
-re-claimed (the in-process driver's claim path AND the fleet's dispatch
+re-claimed (the in-process driver's claim path and the fleet's dispatch
 claim both fence on the flow's terminal status), and a hold's wake is
 addressed to the hold's own stamped identity (a stale epoch's wake
 resolves nothing). Both pins stand as permanent green guards.
 
 The findings (each rejected live):
 
-* THE IN-PROCESS POST-TERMINAL EXECUTION HOLE: the
+* the IN-PROCESS POST-TERMINAL EXECUTION HOLE: the
   in-process driver's claim path (``CLAIMABLE_NODES_SQL_TEMPLATE`` /
   ``NODE_CLAIM_SQL_TEMPLATE``, ``workflows/api/_sql_runner.py``) carries
-  NO flow-status leg; only ``drive()``'s loop-top check covers it. A
+  no flow-status leg; only ``drive()``'s loop-top check covers it. A
   claimable child staged on a CANCELLED flow (the drain's documented
   exemption window: the join fire won, the drain landed after the
   cascade) is claimed and EXECUTED by a bare ``FlowRunner.tick()`` —
@@ -18,19 +18,19 @@ The findings (each rejected live):
   cancelled root. The fleet's dispatch SQL carries the fence
   (``backend/_dispatch_sql.py``'s ``_WF_DISPATCH_FENCE_TEMPLATE``: "a
   workflow row is claimable … never on a TERMINAL flow"); the in-process
-  door doesn't. THE PIN: the in-process claim carries the same
+  door doesn't. the PIN: the in-process claim carries the same
   terminal-flow fence — a body never executes on a terminal flow through
-  ANY door.
-* THE HOLD→NODE WAKE'S MISSING MAP-INDEX LEG (the resume-addressing
+  any door.
+* the HOLD→NODE WAKE'S MISSING MAP-INDEX LEG (the resume-addressing
   hole this tree ships): the deliver path's wake
   (``workflows/api/_hitl.py``'s ``deliver_payload``) resolves the held
-  node by ``step_key + flow + metadata ? 'hold'`` — NO map_index leg, NO
+  node by ``step_key + flow + metadata ? 'hold'`` — no map_index leg, no
   ORDER BY — so with several map siblings held (one step_key, distinct
   signals), resolving the MIDDLE sibling's hold wakes the ARBITRARY
   first-matching row (observed: sibling 0's hold marker cleared while the
   ANSWERED sibling 1 stays held — the delivered payload's own node never
-  resumes; a wrong sibling re-runs). THE PIN: a middle-out resolve wakes
-  the CORRECT sibling — the resume addresses the hold's OWN node (the
+  resumes; a wrong sibling re-runs). the PIN: a middle-out resolve wakes
+  the CORRECT sibling — the resume addresses the hold's own node (the
   hold id is already stamped in the node's ``metadata->>'hold'``; the
   map_index-addressed fix's semantic), never a sibling's.
 """
@@ -48,15 +48,15 @@ from taskq.workflows import FlowRunner, Promise, StepContext, WorkflowApp, build
 from taskq.workflows.api._hitl import deliver_payload
 from tests._wf_fixtures import seed_flow
 
-#: THE EXECUTION SENTINEL : the staged body appends here when it
-#: runs. Module-level (the in-process driver executes in THIS process);
-#: cleared at the pin's start — the defect is "the body NEVER ran".
+#: the staged body appends here when it runs. Module-level (the in-process
+#: driver executes in this process); cleared at the pin's start — the defect is
+#: "the body never ran".
 _E1_SENTINEL: list[str] = []
 
 
 # ── the pinned graph's bodies (module-level: the annotations must resolve —
 #    the compile's hint resolution + the §22.1 stamper read the body's own
-#    SOURCE, which a function-scope body does not reproducibly carry). ──
+#    source, which a function-scope body does not reproducibly carry). ──
 
 
 async def _e1_child_body(ctx: StepContext) -> str:
@@ -125,7 +125,7 @@ async def test_e1_the_in_process_claim_never_executes_on_a_terminal_flow(
 
 #: The staged hold's declared contract (the cold-process boundary's
 #: structural fit — no wait site ran in this process, so
-#: ``payload_schema`` IS the boundary's read).
+#: ``payload_schema`` is the boundary's read).
 _E2_HOLD_SCHEMA = {
     "Approval": {
         "type": "object",
@@ -139,11 +139,11 @@ _E2_HOLD_SCHEMA = {
 async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """ONE HOLD, ONE NODE, ONE RESUME: three map siblings (one step_key
-    ``work.item``, map_index 0/1/2, each held on its OWN signal — the
+    """one HOLD, one NODE, one RESUME: three map siblings (one step_key
+    ``work.item``, map_index 0/1/2, each held on its own signal — the
     node-keyed hold identity ``(workflow_id, node_key, signal_name,
     hold_epoch)`` admits the distinct names). Resolving the MIDDLE
-    sibling's hold must resume THE HOLD'S OWN NODE — the row whose
+    sibling's hold must resume the HOLD'S own NODE — the row whose
     ``metadata->>'hold'`` IS the resolved hold's id (the stamp
     register_hold writes; the map_index-addressed fix's semantic) — and
     must leave the other siblings' held representations intact. The
@@ -183,7 +183,7 @@ async def test_e2_a_middle_out_resolve_wakes_the_holds_own_node(
             f"call-{i}",
             json.dumps(_E2_HOLD_SCHEMA),
         )
-    # THE MIDDLE-OUT RESOLVE: sibling 1's hold answered first.
+    # sibling 1's hold answered first.
     result = await deliver_payload(
         wf_pool,
         schema=wf_schema,

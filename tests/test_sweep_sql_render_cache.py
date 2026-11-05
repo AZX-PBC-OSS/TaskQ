@@ -55,7 +55,7 @@ def test_cached_render_is_byte_identical(template: str, schema: str) -> None:
 
 
 def test_cached_render_is_memoised_same_object() -> None:
-    """Second call returns the SAME str object: the render ran once."""
+    """Second call returns the same str object: the render ran once."""
     first = _render_sweep_sql(_SWEEP_1_SQL, "tq_memoise_pin")
     second = _render_sweep_sql(_SWEEP_1_SQL, "tq_memoise_pin")
     assert first is second

@@ -26,7 +26,7 @@ Surfaces, in the order the deployment guide walks them:
    connects, without one it fails at parameter PARSE time
    (``ClientConfigurationError``) before any socket is opened — the
    documented contract of ``taskq.auth.ensure_sslmode_require``. Also
-   pinned: the plain DSN path injects NO sslmode (asyncpg's own
+   pinned: the plain DSN path injects no sslmode (asyncpg's own
    ``prefer`` default governs), which is why the credential-injecting
    auth factories add it for you.
 3. **IPv6 and Unix sockets**: the same roundtrip + rewriter parity the
@@ -36,7 +36,7 @@ Surfaces, in the order the deployment guide walks them:
    pinned against a live socket server, not assumed.
 4. **The pooled boundary's per-statement budget discipline**, DSN side:
    the pooled DSN string passes through settings byte-identical, the
-   worker pool deliberately carries NO client-side ``command_timeout``
+   worker pool deliberately carries no client-side ``command_timeout``
    (server-side budgets rule there), and a DSN-carried
    ``statement_timeout`` server setting lands on the pooled connection —
    the knob a PgBouncer deployment uses when the pooler drops startup
@@ -128,7 +128,7 @@ def test_multi_host_dsn_split_dsns_are_independent() -> None:
 @pytest.mark.integration
 async def test_multi_host_dsn_pool_factory_connects_rw(pg_dsn: str) -> None:
     """The deps.py-shaped pool factory accepts a two-host DSN (both hosts
-    the SAME container — the parsing is under test, not failover) and the
+    the same container — the parsing is under test, not failover) and the
     session it lands on is read-write, what target_session_attrs demands.
 
     The create_pool kwargs mirror worker/deps.py's dispatcher factory
@@ -183,7 +183,7 @@ def test_multi_host_dsn_rewriters_preserve_the_hostspec() -> None:
 @pytest.mark.integration
 async def test_multi_host_dsn_honest_ssl_failure_names_both_hosts(pg_dsn: str) -> None:
     """A rewritten multi-host DSN (sslmode added) against a plain server
-    fails with the HONEST upgrade refusal — proof asyncpg parsed BOTH
+    fails with the HONEST upgrade refusal — proof asyncpg parsed both
     hosts and engaged the TLS client. A mangled hostspec would produce a
     DNS or parse error instead of the server's own refusal."""
     base = _single_host_dsn(pg_dsn)
@@ -245,7 +245,7 @@ async def test_verify_full_with_ca_bundle_connects_tls(
 async def test_verify_full_without_rootcert_fails_at_parse_time(
     ssl_pg_dsn: str,
 ) -> None:
-    """A verifying sslmode without a CA bundle fails BEFORE any socket is
+    """A verifying sslmode without a CA bundle fails before any socket is
     opened — the ClientConfigurationError contract documented on
     taskq.auth.ensure_sslmode_require (asyncpg looks for
     ~/.postgresql/root.crt and refuses to guess a trust root)."""
@@ -256,7 +256,7 @@ async def test_verify_full_without_rootcert_fails_at_parse_time(
 
 @pytest.mark.integration
 async def test_plain_dsn_injects_no_sslmode(pg_dsn: str) -> None:
-    """The plain DSN path adds NO sslmode — a DSN without one connects to
+    """The plain DSN path adds no sslmode — a DSN without one connects to
     a plain server successfully (asyncpg's own ``prefer`` governs). This
     is why the credential-injecting factories add sslmode=require for
     you; a DSN path that forced require would break every non-TLS dev
@@ -310,7 +310,7 @@ def test_unix_socket_dsn_round_trips_through_settings() -> None:
     s = _multi_host_settings(dsn)
     assert str(s.pg_dsn_direct) == dsn
 
-    # The rewriters percent-encode the path; the VALUE must survive the
+    # The rewriters percent-encode the path; the value must survive the
     # roundtrip semantically (asyncpg decodes query parameters).
     rewritten = ensure_sslmode_require(dsn)
     assert "host=%2Fvar%2Frun%2Fpostgresql" in rewritten
@@ -322,7 +322,7 @@ async def test_unix_socket_dsn_connects_through_a_pool_and_a_rewriter(
     socket_pg_dsn: str,
 ) -> None:
     """A live socket server: the plain socket DSN connects through a pool,
-    AND the rewriter's percent-encoded form still connects — asyncpg
+    and the rewriter's percent-encoded form still connects — asyncpg
     decodes the query value, so the rewriting is not a mangling."""
     # The rewriter adds sslmode; the socket server is plain, so drop the
     # sslmode from the rewritten form before connecting (the encoding of
@@ -388,7 +388,7 @@ async def test_dsn_carried_statement_timeout_lands_on_pooled_sessions(
     unknown query parameters to server_settings) reaches every session
     the pool hands out — the DSN-side per-statement budget a PgBouncer
     deployment uses when the pooler will not forward startup parameters.
-    The pool is the deps.py worker-pool shape: deliberately NO
+    The pool is the deps.py worker-pool shape: deliberately no
     client-side command_timeout, so the server-side budget is the ruler."""
     base = _single_host_dsn(pg_dsn)
     pooled_dsn = base + "?statement_timeout=2500ms"
@@ -446,12 +446,12 @@ def test_documented_budget_profiles_match_the_computation(
     assert budget.pgbouncer_recommended is recommended, name
 
 
-# ── A6: AWS IAM auth on the multi-host form ─────────────────────────────
+# ── A6: aws iam auth on the multi-host form ─────────────────────────────
 
 
 # A fake boto3 client: records the (hostname, port, username) each token
 # signing was addressed to and returns a token that encodes them, so the
-# pins can assert WHO a token was signed for without any AWS machinery.
+# pins can assert who a token was signed for without any aws machinery.
 # ``Region`` is accepted and ignored - the real client's signature is
 # scoped to it, but nothing here reads the token's meaning.
 class _FakeRdsClient:
@@ -473,7 +473,7 @@ class _FakeRdsClient:
 
 
 def test_rds_iam_provider_multi_host_dsn_signs_the_first_hostspec() -> None:
-    """The multi-host DSN constructs, and the token is signed for the FIRST
+    """The multi-host DSN constructs, and the token is signed for the first
     hostspec - the one libpq tries first, and therefore the one the
     token fetch should address. Previously urlparse's ``.port`` cast on
     the joined ``5432,pg2.invalid:5432`` raised a raw ValueError here,
@@ -489,7 +489,7 @@ def test_rds_iam_provider_multi_host_dsn_signs_the_first_hostspec() -> None:
     credential = asyncio.run(provider.get_pg_credential())
     assert client.calls == [("pg1.invalid", 5432, "iamuser")]
     assert credential.password == "token-for-pg1.invalid:5432"
-    # The DSN's user is preserved (the IAM-mapped DB user); a token
+    # The DSN's user is preserved (the iam-mapped DB user); a token
     # credential carries no username override.
     assert credential.username is None
 
@@ -498,7 +498,7 @@ def test_rds_iam_provider_multi_host_parse_is_bracket_aware() -> None:
     """An IPv6 literal inside a multi-hostspec: the bracketed host's colons
     must not feed the port split, per hostspec."""
     from taskq.aws import (
-        _parse_dsn,  # pyright: ignore[reportPrivateUsage]  # Why: the parse contract IS the surface under test; the provider's construction rides it.
+        _parse_dsn,  # pyright: ignore[reportPrivateUsage]  # Why: the parse contract is the surface under test; the provider's construction rides it.
     )
 
     assert _parse_dsn("postgresql://u@[::1]:5432,[::2]:5433/db") == ("::1", 5432, "u")
@@ -531,7 +531,7 @@ def test_rds_iam_provider_single_host_parse_is_unchanged() -> None:
 def test_rds_iam_provider_token_lands_in_every_hostspec_password_slot() -> None:
     """The full rewrite, provider + ``enrich_pg_dsn`` on the multi-host
     DSN: the token goes into the DSN's single shared userinfo password
-    slot - i.e. EVERY hostspec's password slot, the only credential slot
+    slot - i.e. every hostspec's password slot, the only credential slot
     a multi-host DSN has - while the hosts, their ports and the
     ``sslmode`` all survive. Each component is asserted off the parsed
     rewritten DSN, not off substring luck."""
@@ -680,7 +680,7 @@ def socket_pg_dsn(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
             raise TimeoutError("socket-shape Postgres never became ready")
 
         asyncio.run(_wait())
-        # The socket file carries the SERVER's port (5432 inside the
+        # The socket file carries the server's port (5432 inside the
         # container), not the host-mapped one.
         yield f"postgresql://taskq:taskq@/taskq?host={sock_dir}/.s.PGSQL.5432"
     finally:

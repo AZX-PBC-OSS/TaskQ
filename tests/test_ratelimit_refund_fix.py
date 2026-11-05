@@ -206,8 +206,8 @@ async def test_refund_pg_log_executes_delete_by_request_id() -> None:
 
 
 # NOTE (the mock-subtraction cure): the DELETE's text pin above stays (the
-# statement SHAPE is the fault-injection-free contract this unit owns); its
-# BEHAVIOR — the admitted row actually deleted, the window refilled —
+# statement shape is the fault-injection-free contract this unit owns); its
+# behavior — the admitted row actually deleted, the window refilled —
 # converted to the real fixture in tests/test_ratelimit_sliding_window_pg.py
 # (test_refund_log_removes_the_admitted_row), and the none-request-id no-op
 # with it (test_refund_log_without_a_request_id_is_a_noop).

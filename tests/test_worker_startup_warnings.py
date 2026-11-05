@@ -47,7 +47,7 @@ async def _make_loop_scope(
 ) -> LoopScope:
     scope = LoopScope(resolver=_stub_resolver)
     if resolved is not None:
-        scope._cache.update(resolved)  # pyright: ignore[reportPrivateUsage] # Why: test helper populates the cache directly to avoid full DI bootstrap; the helper under test only reads resolved_cache()
+        scope._cache.update(resolved)  # pyright: ignore[reportPrivateUsage] # Why: test helper populates the cache directly to avoid full di bootstrap; the helper under test only reads resolved_cache()
     return scope
 
 
@@ -266,7 +266,7 @@ async def test_loop_conn_with_matching_dsns_emits_no_warning() -> None:
 
 
 async def test_no_loop_conn_with_mismatched_dsns_emits_only_one_warning() -> None:
-    """When no LOOP-scope conn, the DSN-mismatch warning must NOT also fire."""
+    """When no LOOP-scope conn, the DSN-mismatch warning must not also fire."""
     loop_scope = await _make_loop_scope()
     settings = _make_settings(
         pg_dsn_pooled="postgresql://user:pass@pgbouncer:6432/taskq",

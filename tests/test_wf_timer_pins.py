@@ -2,11 +2,11 @@
 
 ``ctx.wait_until(when)`` mints an ORDINARY hold row under the reserved
 ``__timer__`` signal prefix; the sweep's TIMER arm resolves it
-``'held' → 'delivered'`` with the CLOCK'S OWN RECEIPT (the
+``'held' → 'delivered'`` with the CLOCK'S own RECEIPT (the
 ``TimerWake`` payload — ``fired_by='timer'``, the scheduled vs the
-fired-at stamps) and the body RESUMES. THE TIMER'S FACE INVERTS THE
+fired-at stamps) and the body RESUMES. the TIMER'S FACE INVERTS the
 EXPIRY'S: ``wait_signal``'s deadline-pass = the ``Expired`` member (the
-fail-close); ``wait_until``'s deadline-pass = THE WAKE — the
+fail-close); ``wait_until``'s deadline-pass = the WAKE — the
 continuation, never the fail-close.
 
 The pins hold behaviors that were broken before their fixes: the captures:
@@ -58,15 +58,15 @@ async def _hold_row(wf_conn: asyncpg.Connection, wf_schema: str, flow_id: JobId)
     )
 
 
-# ── pin 1: THE AT-LEAST FACE (never early; the receipt's arithmetic) ────
+# ── pin 1: the at-least face (never early; the receipt's arithmetic) ────
 
 
 async def test_timer_wake_is_at_least_at_ts(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, timer_redlog: Any
 ) -> None:
     """The documented precision (the listener landmine 4's law, the
-    timer's own face): the fire lands at the FIRST sweep pass at-or-after
-    the deadline — a pass BEFORE the deadline fires NOTHING (the row
+    timer's own face): the fire lands at the first sweep pass at-or-after
+    the deadline — a pass before the deadline fires NOTHING (the row
     stays 'held'), a pass at/after fires the wake whose ``fired_at`` is
     at-or-after ``scheduled`` (the at-least receipt; ``lateness_s`` is
     the delta's own arithmetic)."""
@@ -87,7 +87,7 @@ async def test_timer_wake_is_at_least_at_ts(
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
-    # A SWEEP PASS BEFORE THE DEADLINE: nothing fires — the at-least
+    # A sweep pass before the deadline: nothing fires — the at-least
     # face's first half (never early).
     fired_early = await sweep_due_timers(wf_pool, schema=wf_schema)
     assert fired_early == 0, "a due-arm pass fired a hold whose deadline had NOT passed"
@@ -95,11 +95,7 @@ async def test_timer_wake_is_at_least_at_ts(
     assert hold is not None and hold["status"] == "held", hold
     assert hold["signal_name"].startswith(TIMER_SIGNAL_PREFIX)
 
-    # THE DEADLINE PASSES (the injected clock: the row's own expiry stamp
-    # written past — a generous declared deadline cannot be outlived by a
-    # loaded tick, so the dev drive's own tail sweep never steals the
-    # wake), then THE PASS AT/AFTER IT (the drive's tick runs the timer
-    # arm — the dev loop's mirror of the leader's): the wake fires.
+    # the deadline passes , then the pass at/after it: the wake fires.
     await expire_holds(wf_conn, wf_schema, flow_id)
     outcome = await runner.drive(flow_id)
     assert outcome == "terminal"
@@ -117,16 +113,16 @@ async def test_timer_wake_is_at_least_at_ts(
     )
 
 
-# ── pin 2: THE SLOT IS RELEASED (the hold's law) ─────────────────────────
+# ── pin 2: the slot is released (the hold's law) ─────────────────────────
 
 
 async def test_timer_hold_releases_the_slot(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The held representation (the slot is NEVER parked): a timer wait
+    """The held representation (the slot is never parked): a timer wait
     leaves the node 'pending' + stamped, the worker's lock RELEASED (no
     lease held, no claim, no attempt burned while sleeping), and the
-    ledger records 'awaited' (RESUME-NOT-RETRY — the timer's resume
+    ledger records 'awaited' (RESUME-not-RETRY — the timer's resume
     consumes no ladder attempt)."""
 
     async def timer_body(ctx: StepContext, params: Nudge) -> str:
@@ -163,7 +159,7 @@ async def test_timer_hold_releases_the_slot(
     assert ledger == "awaited", ledger
 
 
-# ── pin 3: THE DURABILITY (a death mid-wait; the successor's sweep) ─────
+# ── pin 3: the durability (a death mid-wait; the successor's sweep) ─────
 
 
 async def test_crash_mid_wait_the_successor_sweep_wakes_the_body(
@@ -197,15 +193,14 @@ async def test_crash_mid_wait_the_successor_sweep_wakes_the_body(
     runner = FlowRunner(app.get("timer_crash"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
-    # THE DEATH: the arming driver is gone (the process's objects drop;
-    # no graceful unwind, no second write — the row-state above IS the
-    # crash's residue).
+    # the arming driver is gone (the process's objects drop; no graceful
+    # unwind, no second write — the row-state above is the crash's residue).
     del runner
 
-    # THE SUCCESSOR (a fresh runner — a different process's claim path)
+    # the successor (a fresh runner — a different process's claim path)
     # fires the wake through its own sweep and drives to terminal.
     successor = FlowRunner(app.get("timer_crash"), wf_pool, wf_schema)
-    # THE DEADLINE PASSES while nobody watches (the injected clock — the
+    # the deadline passes while nobody watches (the injected clock — the
     # row's own expiry stamp written past; the successor's sweep reads
     # the row, never a wall).
     await expire_holds(wf_conn, wf_schema, flow_id)
@@ -215,9 +210,8 @@ async def test_crash_mid_wait_the_successor_sweep_wakes_the_body(
     assert outcome == "terminal"
     verdict = await successor.result(flow_id)
     assert verdict == "woken:crash", verdict
-    # THE REPLAY LAW: the pre-timer substep ran ONCE across the death —
-    # the successor's resume consumed the ledgered answer, never re-ran
-    # the effect.
+    # the pre-timer substep ran once across the death — the successor's resume
+    # consumed the ledgered answer, never re-ran the effect.
     assert substep_runs["n"] == 1, substep_runs
     timer_redlog.red(
         "pin-crash-wedge",
@@ -229,7 +223,7 @@ async def test_crash_mid_wait_the_successor_sweep_wakes_the_body(
     )
 
 
-# ── pin 4: THE CANCEL INTERPLAY (the hold dies with the flow) ───────────
+# ── pin 4: the cancel interplay (the hold dies with the flow) ───────────
 
 
 async def test_cancel_during_the_timer_kills_the_hold(
@@ -267,16 +261,16 @@ async def test_cancel_during_the_timer_kills_the_hold(
     assert status == "cancelled", status
 
 
-# ── pin 5: THE EXPIRED/TIMER INTERPLAY (orthogonal waits, one flow) ─────
+# ── pin 5: the expired/timer interplay (orthogonal waits, one flow) ─────
 
 
 async def test_expired_and_timer_waits_are_orthogonal(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The two WAIT faces in ONE flow: a node holding on a HUMAN gate
+    """The two WAIT faces in one flow: a node holding on a HUMAN gate
     whose deadline the expiry arm abandons (the ``Expired`` member —
     the fail-close) runs beside a node holding on the CLOCK (the wake
-    — the continuation); the fan-in join lands BOTH named outcomes.
+    — the continuation); the fan-in join lands both named outcomes.
     Neither face contaminates the other: the expiry arm never touches
     the timer's prefix, the timer arm never abandons the human's."""
 
@@ -304,9 +298,9 @@ async def test_expired_and_timer_waits_are_orthogonal(
     runner = FlowRunner(app.get("timer_orthogonal"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
-    # BOTH deadlines pass (the injected clock: both holds' expiry stamps
+    # both deadlines pass (the injected clock: both holds' expiry stamps
     # written past — a generous declaration cannot be outlived by a
-    # loaded tick), then BOTH arms run (the leader's signal sweep would;
+    # loaded tick), then both arms run (the leader's signal sweep would;
     # the pins call the arms directly — the same statements the leader's
     # tick runs).
     await expire_holds(wf_conn, wf_schema, flow_id, timer_only=False)
@@ -318,7 +312,7 @@ async def test_expired_and_timer_waits_are_orthogonal(
     assert verdict == "fail-close+wake:timer", verdict
 
 
-# ── pin 6: THE RESOLVE BOUNDARY (the clock is the only resolver) ────────
+# ── pin 6: the resolve boundary (the clock is the only resolver) ────────
 
 
 async def test_hand_delivery_cannot_resolve_a_timer_hold(
@@ -365,7 +359,7 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
         ),
     )
     assert result.status == "refused", result
-    # THE HOLD SURVIVES, and the CLOCK still resolves it (the typed
+    # the hold survives, and the clock still resolves it (the typed
     # door's refusal is the boundary's, not the row's death) — the
     # deadline passes by the injected clock (the row's own expiry stamp
     # written past; the generous declaration cannot be outlived by a
@@ -379,19 +373,19 @@ async def test_hand_delivery_cannot_resolve_a_timer_hold(
     assert verdict == "woken:forged:timer", verdict
 
 
-# ── pin 7: THE TIMER-THEN-SIGNAL STRAND (the I5c fix) ──────────────────
-# One PLAIN step, the timer wait BEFORE the signal wait, disjoint names:
+# ── pin 7: the timer-then-signal strand (the I5c fix) ──────────────────
+# One plain step, the timer wait before the signal wait, disjoint names:
 # the timer's documented re-consume ("a replay/retry re-consumes it from
-# the answer queue") ran on the SHARED per-attempt cursor — it inflated
-# the cursor past the signal site's own queue, the DELIVERED answer fell
+# the answer queue") ran on the shared per-attempt cursor — it inflated
+# the cursor past the signal site's own queue, the delivered answer fell
 # behind forever, the wait re-held silently (the plain kind has no E13
 # teeth), the deadline swept the row to 'abandoned', the body returned
-# the fail-close arm, and THE RUN TERMINALIZED `succeeded` with the
+# the fail-close arm, and the run terminalized `succeeded` with the
 # operator's decision a dead letter (the family's face on an
-# unwritten boundary). THE CONTRACT — E13's per-site discipline generalized:
-# the answer queue's cursor is keyed to the WAIT SITE (its own signal
-# name, beneath the attempt), so every site counts ITS OWN
-# consumptions; the loop kind keeps the iteration counter (the ADVANCE
+# unwritten boundary). the contract — E13's per-site discipline generalized:
+# the answer queue's cursor is keyed to the wait site (its own signal
+# name, beneath the attempt), so every site counts its own
+# consumptions; the loop kind keeps the iteration counter (the advance
 # statement's own write) untouched.
 
 
@@ -399,7 +393,7 @@ async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The strand's exact repro: the timer, then the signal, the
-    resolve, the wake — the body receives THE DELIVERED VERDICT (never
+    resolve, the wake — the body receives the DELIVERED VERDICT (never
     the ``Expired`` fail-close; the delivered answer's row is CONSUMED,
     never abandoned). Red x2 at the shared-cursor head (the timer's
     re-consume inflated the shared cursor past the signal site's own
@@ -424,9 +418,9 @@ async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
     runner = FlowRunner(app.get("timer_then_signal"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
 
-    # 1. The first pass: the body mints the TIMER hold.
+    # 1. The first pass: the body mints the timer hold.
     assert await runner.drive(flow_id, until="held") == "held"
-    # 2. THE CLOCK FIRES (the sweep's timer arm — the leader's leg; the
+    # 2. the clock fires (the sweep's timer arm — the leader's leg; the
     # deadline passes by the injected clock — the row's own expiry stamp
     # written past; the dev drive's `until="held"` check parks before
     # the tick, so the pin calls the arm the way the leader's sweep
@@ -434,9 +428,9 @@ async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
     # tail sweep from ever stealing the wake).
     await expire_holds(wf_conn, wf_schema, flow_id)
     assert await sweep_due_timers(wf_pool, schema=wf_schema, drain=True) == 1
-    # 3. The body consumes the wake and mints the SIGNAL hold.
+    # 3. The body consumes the wake and mints the signal hold.
     assert await runner.drive(flow_id, until="held") == "held"
-    # 4. THE OPERATOR DELIVERS (the CAS: delivered).
+    # 4. the operator delivers (the CAS: delivered).
     held = await wf_conn.fetchrow(
         f'SELECT id, signal_name FROM "{wf_schema}".wf_signals '  # noqa: S608
         "WHERE workflow_id = $1 AND status = 'held' ORDER BY id LIMIT 1",
@@ -452,8 +446,8 @@ async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
         payload_json=json.dumps({"word": "second"}),
     )
     assert delivered.status == "delivered", delivered
-    # 5. THE RESUME: the body re-executes from the top — the timer site
-    # re-consumes its wake, and the SIGNAL SITE must consume ITS OWN
+    # 5. the resume: the body re-executes from the top — the timer site
+    # re-consumes its wake, and the signal site must consume its own
     # delivered answer.
     out = await runner.drive(flow_id, until="terminal")
     assert out == "terminal"
@@ -473,8 +467,8 @@ async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
     assert abandoned == [], (
         f"the signal hold was abandoned — the delivered answer stranded: {abandoned}"
     )
-    # THE ANSWER'S ROW: delivered AND consumed — the operator's decision
-    # reached its site (never a dead letter on the rows).
+    # delivered and consumed — the operator's decision reached its site (never
+    # a dead letter on the rows).
     answer = [dict(r) for r in rows if r["signal_name"] == "SecondSay"]
     assert answer and answer[-1]["status"] == "delivered", answer
 
@@ -482,7 +476,7 @@ async def test_timer_then_signal_one_plain_step_delivers_the_verdict(
 async def test_two_signal_sites_one_plain_step_stays_green(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """The control (the I5b face — the shape that was NEVER broken): one
+    """The control (the I5b face — the shape that was never broken): one
     plain step, TWO signal waits, disjoint names. The per-site cursor
     keeps each site's own count exactly as the old shared cursor did
     when the sites each consume once per resume — the two delivered

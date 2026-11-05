@@ -89,9 +89,9 @@ class _ProgressBuffer:
     # ``progress_seq = row + delta`` merge, so a second statement issued
     # while one holds an unretired snapshot double-applies the delta (and
     # the second retire then drives ``pending_seq_delta`` negative, so the
-    # terminal write's absolute SET regresses the row). The immediate
+    # terminal write's absolute set regresses the row). The immediate
     # path skips instead of waiting: the buffer keeps its unflushed delta
-    # and the terminal write's absolute SET carries it. Mutable like the
+    # and the terminal write's absolute set carries it. Mutable like the
     # rest of the accumulator; both surfaces run on the worker's event
     # loop, so the flag never needs a lock.
     flush_in_flight: bool = False
@@ -110,7 +110,7 @@ class _ProgressBuffer:
 def _progress_after_flush(
     buffer: _ProgressBuffer | None,
 ) -> tuple[int, dict[str, object]]:
-    """Return (seq, state) from the flushed buffer WITHOUT consuming a seq.
+    """Return (seq, state) from the flushed buffer without consuming a seq.
 
     After ``_flush_buffer_immediate`` succeeds, ``buffer.base_seq`` holds the
     authoritative flushed seq and ``pending_seq_delta == 0``.  This helper reads

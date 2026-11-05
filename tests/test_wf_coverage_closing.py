@@ -46,8 +46,8 @@ async def test_ctx_step_opts_out_of_idempotency_and_reruns(wf_pool: Any, wf_sche
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
     assert calls["n"] == 1
-    # THE LEDGER: no claim row for the opted-out STEP (the NODE's own
-    # claim row exists — the filter names the step).
+    # no claim row for the opted-out step (the node's own claim row exists —
+    # the filter names the step).
     rows = await wf_pool.fetch(
         f'SELECT count(*) FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 '
         "AND step_key = 'side-effect'",
@@ -85,7 +85,7 @@ async def test_ctx_step_the_failing_step_ledgers_failed_and_reraises(
         flow_id,
     )
     statuses = [r["status"] for r in rows]
-    assert "failed" in statuses, statuses  # the step's OWN terminal
+    assert "failed" in statuses, statuses  # the step's own terminal
 
 
 async def test_ctx_step_the_memoized_replay_returns_the_record(
@@ -116,7 +116,7 @@ async def test_ctx_step_the_memoized_replay_returns_the_record(
     runner = FlowRunner(app.get("step_memo"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
-    assert calls["n"] == 1, calls  # the step RAN ONCE (the replay returned the record)
+    assert calls["n"] == 1, calls  # the step ran once (the replay returned the record)
 
 
 # ── the capture policies (capture.py + the finalize's capture writer) ────
@@ -126,7 +126,7 @@ async def test_capture_policies_none_and_errors_only(
     wf_pool: Any, wf_schema: str, wf_conn: Any
 ) -> None:
     """The declared capture policy decides the failing node's capture
-    jsonb: none → NO capture; errors-only → the error text, never the
+    jsonb: none → no capture; errors-only → the error text, never the
     input."""
     for policy, want_capture in (("none", False), ("errors-only", True)):
         app = WorkflowApp()
@@ -205,12 +205,12 @@ def test_cli_parse_decision_rejects_the_non_object() -> None:
 def test_cli_the_status_lines_for_the_empty_nodes_and_the_holds_reason() -> None:
     from taskq.workflows._cli import FlowNodeRow, format_flow_status
 
-    # THE EMPTY NODES (the honest degraded line + the remedy):
+    # the empty nodes (the honest degraded line + the remedy):
     lines = format_flow_status(run_id="r-1", workflow="wf", root_status="running", nodes=[])
     joined = "\n".join(lines)
     assert "nodes: none yet" in joined
     assert "taskq flows list" in joined
-    # The HOLD's REASON line (the context's reason rides the listing):
+    # The hold's reason line (the context's reason rides the listing):
     from taskq.workflows.api._hitl import HoldContext
 
     hold = HoldContext(
@@ -251,7 +251,7 @@ def test_the_version_module_is_importable() -> None:
 
 
 def test_capture_the_halving_loop_floors_at_one_char() -> None:
-    """The truncation's floor branch: a cap so small even ONE character
+    """The truncation's floor branch: a cap so small even one character
     overflows — the loop bottoms at chars==1 and returns (the cut
     recorded), never an infinite loop."""
     from taskq.workflows._capture import build_capture, utf8_byte_len
@@ -319,7 +319,7 @@ async def test_ctx_the_runtime_fields_on_the_step_and_the_loop_paths(
 
 
 def test_cli_the_gate_models_the_empty_gates_path() -> None:
-    """gate_models_for on a node with NO declared gates → the empty
+    """gate_models_for on a node with no declared gates → the empty
     tuple (the typed door's 422 names it)."""
     from taskq.workflows import WorkflowApp, build, step
     from taskq.workflows._cli import gate_models_for

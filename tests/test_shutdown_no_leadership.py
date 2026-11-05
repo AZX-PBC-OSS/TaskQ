@@ -1,7 +1,7 @@
 """Pins for the shutdown-ordering contract: no leadership while stopping.
 
 The shutdown-ordering invariant (leader.py's doc header, "Shutdown ordering
-contract"): a worker that is shutting down NEVER assumes the leader role,
+contract"): a worker that is shutting down never assumes the leader role,
 and a leader that begins shutting down hands the lease over EARLY, at
 shutdown START, before the job drain, so a rolling deploy never has a
 leaderless window and never sees a dying pod win or hold leadership.
@@ -18,10 +18,10 @@ beyond generous event-driven waits):
   anyway is handed straight back (fenced resign over the conn the elect
   just used), the assume path never starts, is_leader is never set;
 * the early handover: a leader's resign lands while the worker-wide
-  shutdown event is STILL CLEAR (the drain is still running), not at
+  shutdown event is still CLEAR (the drain is still running), not at
   teardown;
 * the wake seam: ``wake_election`` no-ops while stopping;
-* the quiesce: the handover demotes BEFORE the resign write issues (no
+* the quiesce: the handover demotes before the resign write issues (no
   leader-gated loop can start a new sweep mid-handover) and cancels
   nothing (an in-flight sweep's transaction completes or aborts whole on
   its own; the handover never closes or terminates a conn).
@@ -325,7 +325,7 @@ async def test_pin_elect_in_flight_at_stop_wins_then_is_resigned_never_assumed()
     shutdown = asyncio.Event()
     task = asyncio.create_task(leader._election_loop(shutdown))
     try:
-        # The elect is now IN FLIGHT. Land the stop while it hangs.
+        # The elect is now in flight. Land the stop while it hangs.
         await wait_for(conn.elect_started, description="the elect statement to go in flight")
         assert _resign_calls(conn) == [], "test premise: no resign before the win"
         deps.shutdown_start_event.set()
@@ -367,11 +367,11 @@ async def test_pin_elect_in_flight_at_stop_wins_then_is_resigned_never_assumed()
 
 
 async def test_pin_leader_resigns_at_stop_start_not_after_the_drain() -> None:
-    """A leader that begins shutting down resigns BEFORE shutdown completes.
+    """A leader that begins shutting down resigns before shutdown completes.
 
     The pod is leading (flag, term, fence all live). The stop signal
     lands mid-renew-cadence. The resign must issue while the worker-wide
-    shutdown event is STILL CLEAR - the drain runs after it - and the
+    shutdown event is still CLEAR - the drain runs after it - and the
     pod must already be demoted and parked when it does. Today's shape
     resigned in run()'s teardown, after the whole drain: this pin fails
     under that ordering, the resign never comes while the event is clear.
@@ -459,7 +459,7 @@ async def test_pin_handover_demotes_before_the_resign_write_and_cancels_nothing(
     """At the resign write, the flag is already down and nothing is cancelled.
 
     A sweep in flight when the stop lands must quiesce cleanly: the
-    handover demotes BEFORE the resign write issues, so no leader-gated
+    handover demotes before the resign write issues, so no leader-gated
     loop can pass its gate and start a new sweep mid-handover, and the
     handover itself neither closes nor terminates any conn - an
     in-flight sweep transaction finishes or aborts whole on its own
@@ -617,7 +617,7 @@ async def test_pin_row_gone_before_the_drain_write_and_successor_elects_during_i
 ) -> None:
     """The early handover against the real database.
 
-    The lease row stops being the stopping pod's BEFORE the DRAINING
+    The lease row stops being the stopping pod's before the DRAINING
     phase's write completes, and a successor elects and wins while the
     drain is still held open: the handover is early, and the drain
     window is the successor's to take.
@@ -652,7 +652,7 @@ async def test_pin_row_gone_before_the_drain_write_and_successor_elects_during_i
             )
 
     async def slow_drain(deps: WorkerDeps, worker_id: UUID) -> int:
-        # Runs INSIDE the DRAINING phase, in place of the drain's own
+        # Runs inside the draining phase, in place of the drain's own
         # write. The resign must land while the drain is still running:
         # a bounded wait for the row to stop being the stopping pod's.
         # Under the old ordering (resign at run()'s teardown, after the
@@ -701,7 +701,7 @@ async def test_pin_row_gone_before_the_drain_write_and_successor_elects_during_i
             )
         )
         # The successor elects while the stopping pod's drain is still
-        # held open inside DRAINING.
+        # held open inside draining.
         await wait_for_condition(
             lambda: drain_holding.is_set(),
             description="the drain to reach its hold (the row check passed)",

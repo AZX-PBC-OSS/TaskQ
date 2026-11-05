@@ -430,7 +430,7 @@ async def test_clearing_max_concurrent_uncaps_rather_than_reverting_to_the_liter
 
     Oracle: seed a literal of 2, dispatch (2 running, capped). Clear the
     override through the real operator API, then dispatch again and
-    require every remaining job to start - the literal 2 must NOT come
+    require every remaining job to start - the literal 2 must not come
     back.
     """
     deps = jobs_app.deps
@@ -714,7 +714,7 @@ async def statement_timeout_dispatcher_pool(
 
     Two asyncpg pool mechanics shape how the 1ms budget is applied:
 
-    - A connection's FIRST execution makes the driver run its own
+    - A connection's first execution makes the driver run its own
       prepare and type-introspection round trips before the statement
       itself. A 1ms cancel landing in THOSE wedges the protocol
       mid-operation (an InternalClientError that is neither the
@@ -744,7 +744,7 @@ async def statement_timeout_dispatcher_pool(
 
     async def _warm_and_degrade(conn: _asyncpg.Connection) -> None:
         # The warm-up's prepare and type introspection must mutate nothing:
-        # a connection created MID-TEST would otherwise run a real claim
+        # a connection created mid-test would otherwise run a real claim
         # against the seeded backlog (its rows exist by then) and mark real
         # jobs running under a throwaway worker id. The transaction's
         # rollback returns anything the warm claim touched; prepared-
@@ -818,12 +818,12 @@ async def test_dispatch_duration_is_recorded_when_the_dispatch_query_fails(
     reader = setup_meter(monkeypatch)
     monkeypatch.setattr(deps, "dispatcher_pool", statement_timeout_dispatcher_pool)
 
-    # The abort reaches this test in EITHER of its two real faces: the
+    # The abort reaches this test in either of its two real faces: the
     # server's clean cancel (a PostgresError — QueryCanceledError) or the
     # driver's own protocol wedge when the 1ms cancel lands in the
     # statement's setup (an InternalClientError — the pool-shorting shape
     # this pool's warm-up narrows but cannot close; the fixture's
-    # docstring). BOTH faces are the aborted round, and the pin's subject
+    # docstring). both faces are the aborted round, and the pin's subject
     # — the duration sample the product's own except records before the
     # re-raise — is exception-type-agnostic by construction.
     with pytest.raises((_asyncpg.PostgresError, _asyncpg.exceptions.InternalClientError)):
@@ -927,7 +927,7 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
     # Register the seeded actor so the round reaches the failing statement
     # with claimable rows: dispatch's candidates walk actor_config, so an
     # unregistered actor's pending rows make every round vacuously
-    # empty-handed - a scenario about FAILURE needs rounds that attempt
+    # empty-handed - a scenario about failure needs rounds that attempt
     # the claim and fail in it.
     configs = [ActorConfig(actor="telemetry_actor", max_concurrent=5, queue="default", metadata={})]
     async with deps.worker_pool.acquire() as conn:
@@ -964,7 +964,7 @@ async def test_dispatch_failure_is_visible_in_a_metric_not_only_a_log_line(
             # The failed rounds are the observable; waiting on a count of
             # them is what makes this deterministic rather than timed.
             # The injected failure is not in TRANSIENT_PG_ERRORS, so each
-            # failed round keeps the loud ERROR "dispatch-batch-error"
+            # failed round keeps the loud error "dispatch-batch-error"
             # record - the record an operator tailing the worker sees.
             await wait_for_condition(
                 lambda: (
@@ -1115,7 +1115,7 @@ async def test_backlog_still_dispatches_with_a_job_at_the_attempt_ceiling(
             lock_lease=_LEASE,
         )
     except Exception as exc:
-        # Why catch broadly: the defect is that ANY driver error escapes a
+        # Why catch broadly: the defect is that any driver error escapes a
         # dispatch round because one row cannot be incremented. Naming the
         # concrete exception class would pin the driver, not the behaviour.
         pytest.fail(

@@ -259,7 +259,7 @@ async def test_a_job_that_never_ran_cannot_reach_a_terminal_state(
     )
 
 
-# ── DI scaffolding ──────────────────────────────────────────────────────
+# ── di scaffolding ──────────────────────────────────────────────────────
 
 
 def _scopes() -> BootstrappedScopes:

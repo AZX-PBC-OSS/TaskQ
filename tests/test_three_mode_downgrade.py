@@ -6,7 +6,7 @@ timescaledb.license = 'apache'`` - the GUC cannot change in-session).
 Two states are measured on real 2.30.1 (the lifecycle module carries the
 container proofs):
 
-* the stale policies cannot be removed under apache - EVERY removal API
+* the stale policies cannot be removed under apache - every removal API
   (``remove_retention_policy``, ``remove_columnstore_policy``,
   ``remove_compression_policy``) refuses with ``FeatureNotSupportedError``
   - so :func:`taskq.timescale._remove_registered_policies` SKIPS the
@@ -31,7 +31,7 @@ from taskq.timescale import StorageMode, _remove_registered_policies
 
 class _DowngradedConn:
     """A conn speaking for a TSL-built server downgraded to the apache
-    license, still carrying ITS OWN conversion's policy jobs.
+    license, still carrying ITS own conversion's policy jobs.
 
     ``fetch`` answers the policy-jobs reads (the pre-read for the report
     and the loud remaining-check run the same query shape); every
@@ -115,5 +115,5 @@ async def test_tsl_mode_surviving_policy_refusal_keeps_its_own_truth() -> None:
     message = str(exc.value)
     assert "survived the removal APIs" in message, message
     # ... and here the removal calls really did go out (every removal API
-    # the TSL mode arms, per table and per trash name).
+    # the tsl mode arms, per table and per trash name).
     assert any("remove_retention_policy" in q for q in conn.executed), conn.executed

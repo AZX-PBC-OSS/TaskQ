@@ -580,7 +580,7 @@ async def test_ti7_equivalence_isolate_self_vs_sweep_cancel_phase_0(pg_dsn: str)
 
 @pytest.mark.asyncio
 async def test_ti7_equivalence_cancel_phase_1_grace_divergence(pg_dsn: str) -> None:
-    """cancel_phase=1 within grace: isolate_self reclaims, sweep_expired_locks does NOT.
+    """cancel_phase=1 within grace: isolate_self reclaims, sweep_expired_locks does not.
 
     Documented divergence - vs sweep 1 carve-out.
     """
@@ -804,7 +804,7 @@ async def test_sweep_loop_transitions_deadline_exceeded_pending_job(
         await stack.aclose()
 
 
-# ── FK violation on UPSERT triggers shutdown ─────────────────────
+# ── FK violation on upsert triggers shutdown ─────────────────────
 
 
 @pytest.mark.asyncio
@@ -1086,7 +1086,7 @@ def _drain_stale_parent_fork_stamp() -> None:
     the guard's honest report of a REAL fork landed in THIS test's
     caplog window and tripped the zero-errors assertion.
 
-    The drain scopes the capture honestly: only forks landing AFTER it
+    The drain scopes the capture honestly: only forks landing after it
     are this test's signals (nothing here forks; a fresh stamp during
     the window would still be reported). Not a guard bug and not a
     leadership bug - a capture-scope discipline for any process-wide
@@ -1481,7 +1481,7 @@ async def test_graceful_leader_shutdown_hands_over_within_one_election_cycle(
 
                 # The graceful stop: run()'s teardown resigns the lease
                 # before the connections go. The row's absence between the
-                # resign and the follower's win is deliberately NOT asserted
+                # resign and the follower's win is deliberately not asserted
                 # - the handover is designed to be faster than any
                 # post-hoc read of it; what proves the resign landed is the
                 # bound below: without it the follower would wait out the
@@ -1783,11 +1783,11 @@ async def test_won_but_unassumable_leader_hands_the_lease_to_a_peer(
         deps_a.settings.leader_lease = 2.0
 
         # Per-pod shutdown events, the production shape: the adversarial-review
-        # phase below shuts down ONLY the broken pod, and a shared event
+        # phase below shuts down only the broken pod, and a shared event
         # would tear the healthy peer down with it.
         shutdown_a = asyncio.Event()
         shutdown_b = asyncio.Event()
-        # Pod A starts ALONE so it is the certain first winner; pod B
+        # Pod A starts alone so it is the certain first winner; pod B
         # joins only once A is demonstrably in the won-but-unassumable
         # state, which is the state whose fleet-wide cost is the issue.
         leader_a = _UnassumableLeader(deps_a, wid_a, backend_a, clock=SystemClock())
@@ -1844,8 +1844,8 @@ async def test_won_but_unassumable_leader_hands_the_lease_to_a_peer(
                     "the lease row must name the healthy peer after the hand-back"
                 )
 
-            # Adversarial-review double-resign: shut down ONLY the broken
-            # pod. Its teardown resign runs AFTER the takeover, fenced on
+            # Adversarial-review double-resign: shut down only the broken
+            # pod. Its teardown resign runs after the takeover, fenced on
             # its own last won term, a different (worker_id, elected_at)
             # from the successor's, so B's row must survive it while B
             # keeps renewing. (A shared shutdown event here would resign

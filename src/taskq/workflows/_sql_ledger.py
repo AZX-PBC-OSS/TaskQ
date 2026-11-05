@@ -1,28 +1,28 @@
 """The ledger statement constants : the step-ledger claim (one round trip), the memoized-result read, the terminal + fence writes, the run-key arbiter's insert/read.
 
-The schema identifier is the ONLY interpolated value (validated at
+The schema identifier is the only interpolated value (validated at
 WorkflowSql.build); every caller-controlled value uses ``$N`` parameter
 binding. See _sql.py for the bundle and the JSONB-landmine rule.
 """
 
 from __future__ import annotations
 
-# The step-ledger claim: ONE round trip, P1 FINAL's idempotent-claim shape —
+# The step-ledger claim: one round trip, P1 final's idempotent-claim shape —
 # INSERT ... ON CONFLICT DO UPDATE ... RETURNING, never check-then-insert
 # (verified 30 reps x 10 concurrent). A fresh claim inserts status='running'
 # (the attempt increments at claim, the only grant of work); a conflicting
-# claim returns the EXISTING row — the claim arbiter
+# claim returns the existing row — the claim arbiter
 # (wf_step_ledger_claim_uniq, 01.00.24_03: (flow_id, step_key,
 # COALESCE(map_index, -1), attempt)) physically blocks double-recording (P3
 # rule 2), and the ledger terminal write rides the finalize's own
 # transaction.
 #
-# THE ARBITER KEYS ON COALESCE(map_index, -1): map children of one step key
-# are DIFFERENT claims (the run-key contract) — a conflict target omitting
-# map_index collapses them onto one row (child 1's claim returns child 0's
-# row, the terminal write overwrites, the memoized replay returns the wrong
-# child's result). The expression spells the index verbatim — an ON CONFLICT
-# target infers only an arbiter carrying the identical expression.
+# map_index, -1. map children of one step key are different claims (the run-key
+# contract) — a conflict target omitting map_index collapses them onto one row
+# (child 1's claim returns child 0's row, the terminal write overwrites, the
+# memoized replay returns the wrong child's result). The expression spells the
+# index verbatim — an ON CONFLICT target infers only an arbiter carrying the
+# identical expression.
 LEDGER_CLAIM_SQL = """\
 INSERT INTO {schema}.wf_step_ledger
     (id, flow_id, job_id, step_key, map_index, attempt, status)
@@ -36,8 +36,8 @@ RETURNING id, flow_id, job_id, step_key, map_index, attempt, status,
 
 # The memoized-result read (map-child retries, ctx.step replay): the latest
 # TERMINAL ledger row for (flow, step[, map_index]) — the ON CONFLICT path
-# returns the recorded result rather than re-executing. attempt is NOT in
-# this key: a retried map child claims a NEW attempt row, but the replay
+# returns the recorded result rather than re-executing. attempt is not in
+# this key: a retried map child claims a new attempt row, but the replay
 # consults any prior terminal outcome first (the retry's side effect is the
 # recorded result's, never a fresh execution).
 LEDGER_MEMOIZED_SQL = """\
@@ -52,11 +52,11 @@ LIMIT 1
 """
 
 
-# The ledger's terminal-outcome write — rides the finalize's OWN transaction
+# The ledger's terminal-outcome write — rides the finalize's own transaction
 # (the ledger-terminal-atomic rule, the terminal-atomicity rule): a split write leaves
 # node=succeeded with ledger=running, the phantom the fence prevents.
 #
-# TWO keyings, one invariant — the write touches EXACTLY the claimed row:
+# two keyings, one invariant — the write touches exactly the claimed row:
 #   * LEDGER_TERMINAL_SQL (the map-aware fallback) keys the full arbiter
 #     tuple, COALESCE(map_index, -1) included — the same expression the
 #     claim arbiter carries, so a map child's terminal can never overwrite
@@ -144,10 +144,10 @@ RETURNING id
 """
 
 
-# The RUN-KEY claim: the flow's root row inserted under the
+# The run-key claim: the flow's root row inserted under the
 # 'workflow-run' scope with the caller's key — the composite
 # (idempotency_scope, idempotency_key) arbiter is the rememberer. The root
-# row IS the run: its status is the run's status (the linearization point
+# row is the run: its status is the run's status (the linearization point
 # every flow-status leg checks), step_key names the entry step.
 FLOW_RUN_INSERT_SQL = """\
 INSERT INTO {schema}.jobs

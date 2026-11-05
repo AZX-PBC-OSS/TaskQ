@@ -10,7 +10,7 @@ the moved history. A documented divergence is still a divergence: tests
 written against the twin give false confidence, so the twin now mirrors
 production and these pins hold it there.
 
-The shape is ``test_batch_cap_refusals_parity``'s: drive BOTH
+The shape is ``test_batch_cap_refusals_parity``'s: drive both
 implementations through the identical scenario with matching seeded
 state and assert equivalent observable outcomes. The PG half runs the
 real read functions (``taskq.backend._reads``) over a fake pool/conn

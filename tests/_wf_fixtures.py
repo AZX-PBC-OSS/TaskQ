@@ -7,7 +7,7 @@ nested conftest's fixtures for a file revisited non-adjacently in the
 argument list (pytest-dev/pytest#14971). The workflow pins span four files
 (the engine's finalize/sweep/fork families, the schema's structural +
 band families, the ledger family), so the seed helpers and the red-log
-sink live here ONCE.
+sink live here once.
 
 Every helper drives the REAL engine surfaces (``taskq.workflows``); the
 seed shapes are the flow-row/join-row/running-node representations the
@@ -25,7 +25,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Final, cast
 from uuid import (
-    uuid4,  # noqa: TID251  # Why: the failure log RUN ID is deliberately NOT a persisted id — no B-tree, no ordering; randomness is the point (attribution token).
+    uuid4,  # noqa: TID251  # Why: the failure log run ID is deliberately not a persisted id — no B-tree, no ordering; randomness is the point (attribution token).
 )
 
 import asyncpg
@@ -44,7 +44,7 @@ MEASUREMENTS = Path(__file__).parent.parent / ".measurements"
 def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[object]]:
     """The negative probe's named seam (the typed door's runtime face):
     the ``@app.workflow`` decorator takes ``Callable[[], Promise[R]]`` —
-    a build function whose runtime return is NOT a promise (a bare dict,
+    a build function whose runtime return is not a promise (a bare dict,
     a bare ``None``) is refused STATICALLY at the decoration site (the
     probe corpus pins that refusal). The runtime refusals such a lying
     declaration would otherwise reach — the build door's "the return IS
@@ -56,30 +56,26 @@ def runtime_refusal_builder(fn: Callable[[], object]) -> Callable[[], Promise[ob
     return cast("Callable[[], Promise[object]]", fn)
 
 
-#: THE OFF-BY-ONE RULE'S NARROW EXCLUSION SET: the paths the staleness
-#: diff ignores for EVERY stem — the measurements estate and the
-#: workflow estate (.github). This is the DOCS-DERIVED stems' set (see
-#: ``DOCS_SENSITIVE_STEM_PREFIXES``): for the evidence kinds whose
-#: batteries READ the docs estate, a docs-only merge IS a source
-#: change.
+#: the paths the staleness diff ignores for every stem — the measurements
+#: estate and the workflow estate (.github). This is the docs-derived stems'
+#: set (see ``DOCS_SENSITIVE_STEM_PREFIXES``): for the evidence kinds whose
+#: batteries read the docs estate, a docs-only merge is a source change.
 OFF_BY_ONE_NARROW_EXCLUSIONS: tuple[str, ...] = (
     ":(exclude).measurements",
     ":(exclude).github",
 )
 
-#: THE OFF-BY-ONE RULE'S EXCLUSION SET (the docs-exemption round): the
-#: pathspecs the staleness diff IGNORES for every other stem — the
-#: narrow set above plus the NON-BEHAVIORAL paths (docs and the
-#: readme/license/metadata class: paths that cannot alter what a plain
-#: stem's claim verifies). This is the in-suite mirror of the
-#: verifier's own ``_NONBEHAVIORAL_EXCLUSIONS``
-#: (``scripts/verify_evidence_heads.py``) — one law, two faces; the sync
-#: pin (``tests/test_evidence_docs_exemption_pins.py``) holds them in
-#: step. Pathspec shapes (git's anchoring, verified against git 2.56): a
-#: directory pathspec covers its SUBTREE from the root; ``README*`` and
-#: the ``glob``-magic ``*.md`` match at the ROOT only (glob magic: ``*``
-#: does not cross ``/``) — a nested ``tests/*.md`` receipt still
-#: stalifies.
+#: the pathspecs the staleness diff ignores for every other stem — the narrow
+#: set above plus the non-behavioral paths (docs and the
+#: readme/license/metadata class: paths that cannot alter what a plain stem's
+#: claim verifies). This is the in-suite mirror of the verifier's own
+#: ``_NONBEHAVIORAL_EXCLUSIONS`` (``scripts/verify_evidence_heads.py``) — one
+#: law, two faces; the sync pin
+#: (``tests/test_evidence_docs_exemption_pins.py``) holds them in step.
+#: Pathspec shapes (git's anchoring, verified against git 2.56): a directory
+#: pathspec covers its subtree from the root; ``readme*`` and the
+#: ``glob``-magic ``*.md`` match at the root only (glob magic: ``*`` does not
+#: cross ``/``) — a nested ``tests/*.md`` receipt still stalifies.
 OFF_BY_ONE_DIFF_EXCLUSIONS: tuple[str, ...] = (
     *OFF_BY_ONE_NARROW_EXCLUSIONS,
     ":(exclude)LEDGER.md",
@@ -90,15 +86,14 @@ OFF_BY_ONE_DIFF_EXCLUSIONS: tuple[str, ...] = (
     ":(exclude).gitignore",
 )
 
-#: THE DOCS-DERIVED STEMS — the in-suite
-#: mirror of the verifier's own ``_DOCS_SENSITIVE_STEM_PREFIXES``: the
-#: evidence kinds whose batteries READ the docs estate (mkdocs builds
-#: ``docs/`` strict; the docs-example tests'
-#: ``tests/_docs_examples.py::DOC_ROOTS = ("docs", "README.md")``
-#: EXECUTE the fences those documents carry; the docs-lane captures run
-#: the same lanes). For these stems the docs exemption does not apply:
-#: ``source_changes_since`` judges them on the NARROW set, and a
-#: docs-only merge stalifies them exactly as a src/ merge would.
+#: the docs-derived stems — the in-suite mirror of the verifier's own
+#: ``_DOCS_SENSITIVE_STEM_PREFIXES``: the evidence kinds whose batteries read
+#: the docs estate (mkdocs builds ``docs/`` strict; the docs-example tests'
+#: ``tests/_docs_examples.py::DOC_ROOTS = ("docs", "readme.md")`` execute the
+#: fences those documents carry; the docs-lane captures run the same lanes).
+#: For these stems the docs exemption does not apply: ``source_changes_since``
+#: judges them on the narrow set, and a docs-only merge stalifies them exactly
+#: as a src/ merge would.
 DOCS_SENSITIVE_STEM_PREFIXES: tuple[str, ...] = (
     "mkdocs-strict",
     "docs-examples",
@@ -110,7 +105,7 @@ def source_changes_since(
     head_sha_value: str, stem: str | None = None, *, anchor: str | None = None
 ) -> bool:
     """The off-by-one rule (the head-stamp verifier's own, mirrored for
-    the in-suite guards): whether ANY commit since *head_sha_value*
+    the in-suite guards): whether any commit since *head_sha_value*
     touched a BEHAVIORAL path. For a plain stem that is anything
     outside the measurements estate and the non-behavioral paths
     (``OFF_BY_ONE_DIFF_EXCLUSIONS`` above): a claim recorded on H is
@@ -124,7 +119,7 @@ def source_changes_since(
     a property of the tree THEY verified, not of the checkout that
     happens to be reading them).
 
-    THE DOCS-DERIVED STEMS' FALLBACK: *stem*
+    *stem*
     carrying a ``DOCS_SENSITIVE_STEM_PREFIXES`` prefix names an
     evidence kind whose battery READS the docs estate — mkdocs builds
     ``docs/`` strict and the docs-example tests' ``DOC_ROOTS`` execute
@@ -135,15 +130,15 @@ def source_changes_since(
     An unresolvable claimed head (not an ancestor) = stale by
     definition.
 
-    THE PER-RUN MEMO (the estate's scale — 18k+ sink records across
+    the PER-RUN MEMO (the estate's scale — 18k+ sink records across
     ~100 distinct claimed heads): the verdict is a pure function of the
-    claimed sha, THE STEM'S exclusion set and THIS RUN's HEAD — and
+    claimed sha, the STEM'S exclusion set and THIS RUN's HEAD — and
     HEAD cannot move mid-run (a test process never commits; the run's
     git world is fixed), so each distinct (claimed sha, stem) is
-    resolved AT MOST ONCE per process. The guard's walk over every
+    resolved AT MOST once per process. The guard's walk over every
     sink record collapses from O(records) git subprocesses (18k+ — the
     per-test timeout's knife edge at 300 s, rejected: the wf battery's
-    failure log-guard timeout) to O(distinct heads). THE MEMO KEY IS THE
+    failure log-guard timeout) to O(distinct heads). the MEMO KEY IS the
     PAIR (the correctness fix): a docs-derived stem
     and a plain stem sharing a claimed head get DIFFERENT verdicts from
     DIFFERENT exclusion sets — keyed by the sha alone the first caller
@@ -183,7 +178,7 @@ def source_changes_since(
 
 #: The memo's store (see :func:`source_changes_since` — the verdict is
 #: pure in (claimed sha, the stem's exclusion set, the anchor); the key
-#: is the TRIPLE — the docs-derived stems' narrow set and a plain stem's
+#: is the triple — the docs-derived stems' narrow set and a plain stem's
 #: full set disagree on the same sha, and the estate anchor disagrees
 #: with the run's own HEAD).
 _SOURCE_CHANGES_MEMO: dict[tuple[str, str | None, str | None], bool] = {}
@@ -208,7 +203,7 @@ def head_sha() -> str:
 
 
 #: The provenance law's version marker — a sink record stamped with this
-#: law carries FULLY-CITED entries (run + capture path + sha256); the
+#: law carries fully-cited entries (run + capture path + sha256); the
 #: guard verifies every record stamped with it and grandfathered NOTHING
 #: forward: a pre-law record is history, never the live claim.
 REDLOG_LAW = "provenance-1"
@@ -255,7 +250,7 @@ def _repo_root_containing(start: Path) -> Path | None:
     return None
 
 
-#: The GUARD'S OWN CHECKOUT — the tree carrying this file, resolved
+#: The guard's own checkout — the tree carrying this file, resolved
 #: (an unresolved ``__file__`` through a symlinked checkout anchors the
 #: walk at the symlink's view, and a record root resolved to the real
 #: tree escapes it). The trust rule anchors there (never at the record's
@@ -278,7 +273,7 @@ def resolve_redlog_capture(
     *homes_searched* names every trusted root; *refused_roots* names
     the record-declared roots the trust rule rejected.
 
-    THE TRUST RULE for candidate roots: the estate root being read by
+    TRUST RULE for candidate roots: the estate root being read by
     the guard, the ``TASKQ_REDLG_CAPTURES_DIR`` pin, and the default
     temp root are trusted. The record's own captures_root is trusted
     only when it lies OUTSIDE the guard's own checkout (``_REPO_ROOT``,
@@ -340,11 +335,11 @@ def resolve_redlog_capture(
 def write_band_artifact(name: str, payload: dict[str, object]) -> Path:
     """The append-only conversion (the receipts law): a band artifact is
     a RUN-SCOPED file, never a write_text-in-place name. The rejected
-    defect: every run rewrote the SAME file whole — two concurrent runs'
+    defect: every run rewrote the same file whole — two concurrent runs'
     writes tore each other (the 11 torn rows the ledgers' union found),
     and a partial run's numbers falsified the recorded band (the newest
     subset is not the newest measurement). Each run writes
-    ``runs/{stem}-{timestamp}-{token}.json`` — AND APPENDS THE CLAIM to
+    ``runs/{stem}-{timestamp}-{token}.json`` — and APPENDS the CLAIM to
     the registry (``CLAIMS.json``; :func:`record_claim`) — the newest
     CITED (:func:`latest_band_artifact`) is the record the report reads.
     The filename convention stays for the humans; the claim lives in the
@@ -354,13 +349,12 @@ def write_band_artifact(name: str, payload: dict[str, object]) -> Path:
     stem = name.removesuffix(".json")
     path = runs / f"{stem}-{time.strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:4]}.json"
     record = dict(payload)
-    # THE HEAD-STAMP LAW: the artifact carries the head it was measured
-    # on — the verification (scripts/verify_evidence_heads.py) re-runs it
-    # on its claimed head.
+    # the artifact carries the head it was measured on — the verification
+    # (scripts/verify_evidence_heads.py) re-runs it on its claimed head.
     record.setdefault("head_sha", head_sha())
     path.write_text(json.dumps(record, indent=2, default=str))
-    # THE CLAIMS REGISTRY: the manifest is the estate's index — the
-    # verifier reads it, never the filename's run-scoped tail.
+    # the manifest is the estate's index — the verifier reads it, never the
+    # filename's run-scoped tail.
     record_claim(stem=stem, file=path.name, head_sha=str(record["head_sha"]))
     return path
 
@@ -380,15 +374,15 @@ def latest_band_artifact(stem: str) -> Path | None:
 # ── the loaded bar (the load-flake band's discipline) ────────────────
 
 #: The bar: ambient load (1-min run-queue average) per core at or below
-#: which the box counts QUIET and a wall-clock band may assert honestly.
-#: Above it, an absolute wall-clock bound measures the NEIGHBORS, not the
+#: which the box counts quiet and a wall-clock band may assert honestly.
+#: Above it, an absolute wall-clock bound measures the neighbors, not the
 #: code under test — a pin that greened solo while the box sat at 61/72
 #: is the shape this bar refuses.
 LOADED_BAR_PER_CORE: Final[float] = 0.5
 
 #: The loaded run's honesty scale: a deadline polled under load stretches
 #: by at most this factor (the box at 2x saturation gets 2x the bound —
-#: condition-not-clock: the CONDITION scales the clock, never a fixed
+#: condition-not-clock: the condition scales the clock, never a fixed
 #: number pretending the machine is quiet).
 LOADED_SCALE_MAX: Final[float] = 4.0
 
@@ -434,18 +428,18 @@ class RedLog:
     Every pin's rejected variant appends its observed dragon here; the
     fixture flushes on teardown.
 
-    THE PRESERVATION LAW: the evidence sinks are APPEND-ONLY and RUN-SCOPED — flush()
-    appends ONE JSONL record (``{"run": …, "entries": [...]}``) and
+    The evidence sinks are APPEND-only and RUN-SCOPED — flush()
+    appends one JSONL record (``{"run": …, "entries": [...]}``) and
     never rewrites the file. The rejected defect: ``write_text``
     rewrote the WHOLE sink per run, so a PARTIAL run (one pin file
-    re-run in isolation) replaced the corpus with ONLY that subset's
+    re-run in isolation) replaced the corpus with only that subset's
     entries — a full run's evidence silently deleted, the recorded band
     numbers falsified by whichever subset ran last. Append-only: a
     partial run adds its own run-scoped record; history is never
     truncated. The run id (pid + a token + the timestamp) makes each
     record attributable.
 
-    THE PROVENANCE LAW: every
+    Every
     entry cites a RECEIPT CHAIN — (a) its scenario's run-id, (b) the
     scenario's captured output FILE PATH, (c) a sha256 of that file. The
     capture is written at RECORD time (the scenario's own observation,
@@ -513,14 +507,14 @@ class RedLog:
             "run": self._run_id,
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "law": REDLOG_LAW,
-            # THE HEAD-STAMP LAW: the sink record carries the head the
-            # scenarios ran on (the receipt chain's fourth link — the run
-            # is attributable to a TREE, not just a process).
+            # the sink record carries the head the scenarios ran on (the
+            # receipt chain's fourth link — the run is attributable to a tree,
+            # not just a process).
             "head_sha": head_sha(),
             "entries": self.entries,
             # Where this run's cited captures live physically: the
             # default root is the system temp dir, which a reader can
-            # have under a different TMPDIR (or a tmpfs reaper can have
+            # have under a different tmpdir (or a tmpfs reaper can have
             # emptied), so the record carries its own — the resolver's
             # most specific candidate. Absent on records written before
             # the captures left the repository tree.
@@ -635,8 +629,8 @@ def timer_cures_redlog() -> Iterator[RedLog]:
 
 
 #: The G7 always-on assertion's mapping: the §17.5 derivation's workflow
-#: status → the flow ROOT row's job_status (the root's legal vocabulary).
-#: The mapping is the TERMINAL states' expectation; the LAW is stated in
+#: status → the flow root row's job_status (the root's legal vocabulary).
+#: The mapping is the terminal states' expectation; the law is stated in
 #: :func:`g7_check` (the root row is a cache, and each terminal root has
 #: exactly one writer whose semantics decide what it may claim).
 G7_DERIVED_TO_ROOT: dict[str, str] = {
@@ -671,16 +665,16 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
     """The G7 assertion's body (one home — the fixture and the teeth-scenario
     pin both run THIS, never a re-spelled copy).
 
-    THE LAW (the cache's semantics, stated from each terminal root's
-    writer — the phase-2 attack's H4 round made this check ALWAYS-ON for
+    the LAW (the cache's semantics, stated from each terminal root's
+    writer — the phase-2 attack's H4 round made this check always-ON for
     real, so the law must red lies and never red the flips' windows):
 
     * the root row is a CACHE of the derivation;
-    * a root claiming 'succeeded' is written by ONE writer only — the
+    * a root claiming 'succeeded' is written by one writer only — the
       maintenance leg's complete branch (all rows terminal, none failed,
       none cancelled) — so the rows MUST derive 'complete'. A
       prematurely-complete root over rows that derive anything else is
-      THE status-cache lie this check exists to catch (the teeth pin's
+      the status-cache lie this check exists to catch (the teeth pin's
       own lie is this shape);
     * a root claiming 'failed' may never contradict a COMPLETED run (the
       cascade and the maintenance leg both write it from a non-absorbed
@@ -694,13 +688,13 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
       fix heals it in one pass; the maintenance-liveness pin carries
       that teeth).
 
-    THE WEDGE LEG (the crashed-terminal wedge's mutation pin — the
-    the hostile caller's proof was G7 staying green ON THE CORPSE): a live root
+    the WEDGE LEG (the crashed-terminal wedge's mutation pin — the
+    the hostile caller's proof was G7 staying green ON the CORPSE): a live root
     whose rows reconstruct a TERMINAL verdict contradicts the rows.
-    The lag window is ONE pass, so the check RUNS the maintenance leg
+    The lag window is one pass, so the check RUNS the maintenance leg
     itself (the same statement the sweep drives) and re-reads: the
     reported state must now equal the rows' terminal verdict. A root
-    that still disagrees is THE WEDGE — a run the reported state claims
+    that still disagrees is the WEDGE — a run the reported state claims
     is live while the rows say it terminalized and nothing will ever
     change either side (the corpse that reports 'running' forever). The
     scenario pin (tests/test_wf_crashed_terminal_wedge.py) reds this
@@ -733,18 +727,17 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
             "cancelled",
             "complete",
         ):
-            # THE WEDGE LEG: the rows have spoken a TERMINAL verdict; the
-            # lag window is one sweep pass — run it, re-read, and the
-            # root must agree. (The maintain statement's own derivation
-            # re-derives the root from the node rows — a disagreement
-            # AFTER the pass is the two derivations' drift or a wedging
-            # sweep.) ONE HONEST LAG SURVIVES the leg: the §17.5
-            # cancelled/failed PRECEDENCE derives a terminal verdict OVER
-            # live rows (a fired-but-unclaimed join row is claimable
-            # work the derivation's cancelled row outranks) — the root
-            # legitimately waits for it. THE WEDGE is the ALL-TERMINAL
-            # corpse: no live-class row exists anywhere and the root
-            # still reports live — nothing will ever change either side.
+            # the rows have spoken a terminal verdict; the lag window is one
+            # sweep pass — run it, re-read, and the root must agree. (The
+            # maintain statement's own derivation re-derives the root from the
+            # node rows — a disagreement after the pass is the two derivations'
+            # drift or a wedging sweep.) one honest lag survives the leg: the
+            # §17.5 cancelled/failed precedence derives a terminal verdict over
+            # live rows (a fired-but-unclaimed join row is claimable work the
+            # derivation's cancelled row outranks) — the root legitimately
+            # waits for it. the wedge is the all-terminal corpse: no live-class
+            # row exists anywhere and the root still reports live — nothing
+            # will ever change either side.
             await wf_conn.execute(wf_sql.workflow_root_maintain, 200)
             healed = await wf_conn.fetchval(
                 f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow["id"]
@@ -761,10 +754,9 @@ async def g7_check(wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: Workflow
                 flow["id"],
             )
             if remaining:
-                # THE HONEST PRECEDENCE LAG: the terminal verdict derives
-                # OVER live rows (the fired-but-unclaimed join is
-                # claimable work) — the root waits for them, the law's
-                # lag window covers it.
+                # the terminal verdict derives over live rows (the
+                # fired-but-unclaimed join is claimable work) — the root waits
+                # for them, the law's lag window covers it.
                 continue
             assert healed == expected, (
                 f"THE WEDGE (G7's terminal-contradiction leg): flow "
@@ -795,7 +787,7 @@ async def wf_pool(module_pg_schema: Any) -> AsyncIterator[asyncpg.Pool]:
     """The RUNNER's pool (the typed API : the flow runner acquires from a pool (its
     claims + finalizes); the module's DSN builds it — one pool per test,
     closed at teardown. The loop pins share it (a fixture
-    duplicated across two files is a seam owed NOW — this is the
+    duplicated across two files is a seam owed now — this is the
     seam's home, beside the other wf fixtures)."""
     pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
     yield pool
@@ -883,7 +875,7 @@ async def seed_join(
         step_key,
         deps,
         json.dumps(meta),
-        # THE RUN'S COHORT (the shipped shape the engine's own inserts
+        # the run's cohort (the shipped shape the engine's own inserts
         # stamp — jobs_wf_fairness_cohort_check enforces it).
         str(flow_id),
     )
@@ -893,7 +885,7 @@ async def seed_join(
 async def seed_edge(
     conn: asyncpg.Connection, schema: str, child_id: JobId, parent_id: JobId, flow_id: JobId
 ) -> None:
-    """One edge-ledger row (the join counter's ONLY truth source)."""
+    """One edge-ledger row (the join counter's only truth source)."""
     await conn.execute(
         f'INSERT INTO "{schema}".wf_edge (child_id, parent_id, flow_id) VALUES ($1, $2, $3)',
         child_id,
@@ -919,7 +911,7 @@ async def seed_running_node(
         worker_id,
         step_key,
         json.dumps({"flow_id": str(flow_id)}),
-        # THE RUN'S COHORT (the shipped shape — the CHECK backstop
+        # the run's cohort (the shipped shape — the check backstop
         # enforces it on every wf row).
         str(flow_id),
     )

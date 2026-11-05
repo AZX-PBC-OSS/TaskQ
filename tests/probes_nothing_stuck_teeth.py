@@ -1,20 +1,20 @@
 # ruff: noqa: S603, S607, S608, ASYNC221, ASYNC230  # Why: the dash-named attack4-* module; the restart probe runs pg_ctl with the env-pinned data dir and reads/writes the cluster's own conf between restarts.
 """The nothing-stuck probes' teeth (the hostile shapes) —
-NOT the builder's; tests/probes_nothing_stuck_shapes.py owns those).
+not the builder's; tests/probes_nothing_stuck_shapes.py owns those).
 
-* THE SELF-CANCELLING BODY: a map's source body cancels ITS OWN run
+* the SELF-CANCELLING BODY: a map's source body cancels ITS own run
   mid-emit (the drive loop's fork tx and the cancel cascade race in one
   process) — the run must land in a NAMED terminal with no half-emitted
   children read as progress, and the drive must return, not wedge;
-* THE RESOLVE AFTER THE TERMINAL: the flow's root flipped terminal while
+* the RESOLVE after the TERMINAL: the flow's root flipped terminal while
   a hold still stands (the crash-window world) — the resolve's outcome
   must be DEFINED, and a delivered hold must never wake a node on a
   terminal run (the terminal fence at the ROOT, not only the node);
-* THE UNREGISTERED GATE: a hold whose row carries NO payload_schema (the
+* the UNREGISTERED GATE: a hold whose row carries no payload_schema (the
   pre-typing upgrade world — a row written before the typed door
   existed) meets a resolve — the typed door's cold-process fallback must
   refuse the untyped delivery LOUDLY (no silent untyped door);
-* THE RESTART ROUND (gated on ATTACK4_PG_DATA — needs a restartable PG;
+* the RESTART ROUND (gated on ATTACK4_PG_DATA — needs a restartable PG;
   the capture ran with it): the lost-job probe re-run with the DATABASE
   RESTARTED mid-round — a node claimed before the restart must land
   terminal after it; zero jobs lost, every attempt accounted.
@@ -70,7 +70,7 @@ async def test_a_body_that_cancels_its_own_run_mid_emit(
     app = WorkflowApp()
 
     async def suicidal_source(ctx: Any, params: Ingest) -> list[Item]:
-        # THE RUG PULL: this run cancels ITSELF while it emits.
+        # this run cancels itself while it emits.
         await cancel_workflow_run(
             module_pg_pool,
             schema=schema,
@@ -91,7 +91,7 @@ async def test_a_body_that_cancels_its_own_run_mid_emit(
 
     runner = FlowRunner(app.get("attack4c_self_cancel"), module_pg_pool, schema)
     flow_id = (await runner.create_flow()).flow_id
-    # THE BOUND: the drive ends (any outcome) — a wedge is the defect.
+    # the drive ends (any outcome) — a wedge is the defect.
     outcome = await asyncio.wait_for(runner.drive(flow_id, max_ticks=200), timeout=60)
     assert outcome in ("terminal", "max_ticks", "held"), outcome
     root = await clean_pg_conn.fetchval(
@@ -100,7 +100,7 @@ async def test_a_body_that_cancels_its_own_run_mid_emit(
     assert root in ("cancelled", "failed", "succeeded", "running"), (
         f"an unnamed root state: {root!r}"
     )
-    # THE COHERENCE: a cancelled run has no running children.
+    # a cancelled run has no running children.
     if root in ("cancelled", "failed"):
         kids = await clean_pg_conn.fetch(
             f'SELECT step_key, status FROM "{schema}".jobs '
@@ -140,8 +140,8 @@ async def test_a_resolve_arriving_after_the_flow_went_terminal(
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
-    # The FENCE-BYPASS world: the root goes terminal over the held node
-    # (the crash/fence probe's write — the rows are the truth, so this IS
+    # The fence-bypass world: the root goes terminal over the held node
+    # (the crash/fence probe's write — the rows are the truth, so this is
     # a reachable world).
     await clean_pg_conn.execute(
         f"UPDATE \"{schema}\".jobs SET status = 'succeeded', finished_at = now() "
@@ -151,11 +151,10 @@ async def test_a_resolve_arriving_after_the_flow_went_terminal(
     client = HitlClient(module_pg_pool, schema=schema)
     (hold,) = await client.list(str(flow_id))
     result = await client.resolve(hold.hold_id, {"verdict": "approve"})
-    # THE DEFINED OUTCOME: whatever it is, it is TYPED (never an exception
-    # to the caller).
+    # whatever it is, it is typed (never an exception to the caller).
     assert result.status in ("delivered", "no-op", "refused"), result
-    # THE INCOHERENCE CHECK: a delivered hold on a terminal run must not
-    # leave a re-pended child (the terminal fence at the ROOT).
+    # a delivered hold on a terminal run must not leave a re-pended child (the
+    # terminal fence at the root).
     node = await clean_pg_conn.fetchrow(
         f"SELECT status, scheduled_at, metadata ? 'hold' AS hold_mark FROM \"{schema}\".jobs "
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'review'",
@@ -164,7 +163,7 @@ async def test_a_resolve_arriving_after_the_flow_went_terminal(
     assert node is not None
     if result.status == "delivered":
         # The delivery consumed the hold; the node it woke must not sit
-        # pending on a run the root calls SUCCEEDED (the drive loop would
+        # pending on a run the root calls succeeded (the drive loop would
         # re-drive it, or the status surfaces disagree forever).
         assert not (node["status"] == "pending" and node["hold_mark"]), (
             f"THE LATE WAKE: the delivered hold re-pended node on a "
@@ -178,9 +177,9 @@ async def test_a_resolve_arriving_after_the_flow_went_terminal(
 async def test_a_hold_without_payload_schema_meets_the_typed_door(
     module_pg_pool: Any, module_pg_schema: ModulePgSchema, clean_pg_conn: Any
 ) -> None:
-    """The upgrade world, cold process: a hold row written WITHOUT a
+    """The upgrade world, cold process: a hold row written without a
     payload_schema (a row from before the typed door, or a hand-migrated
-    one) meets a resolve from a process that NEVER RAN THE WAIT SITE
+    one) meets a resolve from a process that never RAN the WAIT SITE
     (the real cold process — a subprocess; this process ran the drive,
     so its model catalog cannot witness this probe). The cold fallback's
     ``no declared models on the row`` arm must not fit ANYTHING."""
@@ -204,16 +203,15 @@ async def test_a_hold_without_payload_schema_meets_the_typed_door(
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
-    # THE REGISTRATION IS GONE: the row's payload_schema erased — the
-    # ROW is the cold process's only witness, and it now witnesses
-    # NOTHING.
+    # the row's payload_schema erased — the row is the cold process's only
+    # witness, and it now witnesses NOTHING.
     await clean_pg_conn.execute(
         f'UPDATE "{schema}".wf_signals SET payload_schema = NULL '
         "WHERE workflow_id = $1 AND status = 'held'",
         flow_id,
     )
-    # THE COLD RESOLVER: a fresh process, the garbage payload, the raw
-    # HitlClient (no mounted definitions to lean on).
+    # a fresh process, the garbage payload, the raw HitlClient (no mounted
+    # definitions to lean on).
     probe = textwrap.dedent(f"""
         import asyncio, json, sys
         import asyncpg
@@ -376,10 +374,10 @@ async def test_the_lost_job_probe_with_the_db_restarted_mid_round(
             flow_id,
         )
         await pool.close()
-        # THE RESTART (mid-round — the child has never run).
+        # the restart (mid-round — the child has never run).
         restart_pg()
         await wait_ready(dsn)
-        # RECONNECT + drive to terminal: the child must NOT be lost.
+        # reconnect + drive to terminal: the child must not be lost.
         pool2 = await asyncpg.create_pool(dsn, min_size=1)
         runner2 = FlowRunner(compiled, pool2, schema)
         await runner2.drive(flow_id)

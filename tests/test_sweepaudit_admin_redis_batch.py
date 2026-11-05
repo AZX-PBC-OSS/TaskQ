@@ -10,7 +10,7 @@ per-row-round-trip class: at 10k keyed buckets that is 10k sequential
 awaits (~seconds at ~0.3 ms each) inside one request handler, on a page
 the admin UI re-polls every ``admin_ui_polling_interval_seconds``.
 
-The fix is a single Redis pipeline: N commands queued, ONE ``execute()``
+The fix is a single Redis pipeline: N commands queued, one ``execute()``
 round trip, identical per-key semantics. This file pins that contract
 and the decode/mapping behavior.
 """
@@ -87,14 +87,14 @@ class _RecordingRedis:
 
 
 async def test_fetch_redis_state_is_one_pipelined_round_trip() -> None:
-    """N buckets must cost ONE execute() call, zero direct per-key calls."""
+    """N buckets must cost one execute() call, zero direct per-key calls."""
     names = [
         ("tb_a", "token_bucket"),
         ("tb_b", "token_bucket"),
         ("gcra_a", "sliding_window_gcra"),
         ("log_a", "sliding_window_log"),
     ]
-    # Canned results in command order: two HGETALLs, one GET, one ZCARD.
+    # Canned results in command order: two HGETALLs, one GET, one zcard.
     client = _RecordingRedis(
         [
             {b"tokens": b"9.5", b"ts": b"100.25"},
@@ -122,7 +122,7 @@ async def test_fetch_redis_state_is_one_pipelined_round_trip() -> None:
     # No per-key direct (unbatched) calls may remain.
     assert client.direct_calls == [], f"unbatched calls remained: {client.direct_calls}"
 
-    # Decode/mapping: bytes dict → str dict; GET → tat str; ZCARD → count str.
+    # Decode/mapping: bytes dict → str dict; GET → tat str; zcard → count str.
     assert result == {
         "tb_a": {"tokens": "9.5", "ts": "100.25"},
         "tb_b": {"tokens": "3.0", "ts": "101.5"},

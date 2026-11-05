@@ -184,13 +184,13 @@ async def test_copy_path_created_at_server_stamped_dedup_window_holds(pg_dsn: st
         second = replace(first, id=new_job_id())
         dup = await backend.enqueue(second)
 
-        # Deduplicated onto the first row; unguarded: a NEW row is inserted.
+        # Deduplicated onto the first row; unguarded: a new row is inserted.
         assert dup.id == first.id
     finally:
         await stack.aclose()
 
 
-# ── C5: COPY-path status/schedule decided by the fixup UPDATE's CASE ─────
+# ── C5: COPY-path status/schedule decided by the fixup UPDATE's case ─────
 
 
 @_integration
@@ -228,7 +228,7 @@ async def test_copy_path_status_decided_server_side_explicit_future(pg_dsn: str)
 async def test_immediate_enqueue_dispatchable_under_positive_skew(pg_dsn: str) -> None:
     """With the *producer host's* clock skewed +5 s ahead of the backend
     host (and the PG server), an immediate enqueue must still land
-    ``status='pending'`` and be dispatchable NOW - the server is the only
+    ``status='pending'`` and be dispatchable now - the server is the only
     arbiter.  A client that stamps ``scheduled_at`` from its own
     skewed Python clock (``client/_args.py``), the backend's Python
     pre-decision kept it (it reads as future to the unskewed backend
@@ -246,7 +246,7 @@ async def test_immediate_enqueue_dispatchable_under_positive_skew(pg_dsn: str) -
         assert job_row.status == "pending"
 
         # The same contract stated directly against the backend protocol:
-        # scheduled_at=None IS the immediate form (old backends fail loudly
+        # scheduled_at=None is the immediate form (old backends fail loudly
         # on it - TypeError, not silent misbehavior).
         direct = await backend.enqueue(
             EnqueueArgs(
@@ -456,7 +456,7 @@ async def test_retry_deadline_arbitrated_server_side(pg_dsn: str) -> None:
 
 def test_classifier_has_no_deadline_opinion() -> None:
     """the pin: attempts remain and the kind is retryable → Retry, regardless
-    of ``schedule_to_close`` - the classifier takes NO deadline and NO
+    of ``schedule_to_close`` - the classifier takes no deadline and no
     clock input at all.  The SQL deadline guard in ``mark_failed_or_retry``
     (pinned above) is the only deadline arbiter; a Python-side pre-check
     computed from the worker's clock disagrees with it under skew and
@@ -579,7 +579,7 @@ async def test_retry_survives_worker_clock_skew_deadline_disagreement(pg_dsn: st
 
 
 async def test_in_memory_sweeps_use_injected_clock_no_caller_now() -> None:
-    """Seam-removal pin: the sweep methods take NO caller-supplied ``now``.
+    """Seam-removal pin: the sweep methods take no caller-supplied ``now``.
     Pre-change the parameter was live on InMemoryBackend (the caller's
     clock decided promotion) and silently ignored on PostgresBackend (the
     server clock decided) - the two backends were not exercising the same
@@ -684,18 +684,18 @@ async def test_batch_immediate_stamp_is_statement_time_not_txn_start(pg_dsn: str
     )
 
 
-# ── Batch/COPY stc anchoring: the budget runs from ENQUEUE time ──────────
+# ── Batch/COPY stc anchoring: the budget runs from enqueue time ──────────
 
 
 @_integration
 async def test_batch_stc_anchored_to_enqueue_time_future_item_fails_pre_dispatch(
     pg_dsn: str,
 ) -> None:
-    """D9 pin: on EVERY arm the ``schedule_to_close`` budget runs from
+    """D9 pin: on every arm the ``schedule_to_close`` budget runs from
     ENQUEUE time (``clock_timestamp() + interval``), never from
     ``scheduled_at + interval``.  A
     future-scheduled batch item with a short interval therefore fails
-    DeadlineExceeded BEFORE it is ever dispatched (sweep 2) - the unified
+    DeadlineExceeded before it is ever dispatched (sweep 2) - the unified
     single-arm contract, behavior-changing for batch users who relied on
     the old scheduled_at anchoring."""
     stack, backend, schema = await _mk_backend(pg_dsn, timedelta(seconds=0))
@@ -725,7 +725,7 @@ async def test_batch_stc_anchored_to_enqueue_time_future_item_fails_pre_dispatch
             assert rec is not None
             # Future scheduled_at → deferred, not dispatchable yet...
             assert rec["status"] == "scheduled"
-            # ...but the deadline is anchored to ENQUEUE time, not to the
+            # ...but the deadline is anchored to enqueue time, not to the
             # future scheduled_at (the old batch arm stored srv+1h).
             stc_drift = (rec["schedule_to_close"] - rec["srv_now"]).total_seconds()
             assert abs(stc_drift) < 1.0, (
@@ -830,7 +830,7 @@ async def test_result_ttl_anchored_to_server_clock(pg_dsn: str) -> None:
         await stack.aclose()
 
 
-# ── D12: the sweeps judge cut-offs at STATEMENT time, not transaction start ──
+# ── D12: the sweeps judge cut-offs at statement time, not transaction start ──
 
 
 @_integration

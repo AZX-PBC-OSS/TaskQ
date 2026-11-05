@@ -111,7 +111,7 @@ def test_prometheus_reader_accepts_the_registry_kwarg() -> None:
 # ``importlib.metadata.version`` call costs ~320µs,
 # benchmarks/ab_otel_hotspots.py). The pins below hold the two halves of that design:
 # the memo actually memoizes, and - the part that makes memoization
-# legal - a tracer resolved BEFORE an SDK registers still rebinds to the
+# legal - a tracer resolved before an SDK registers still rebinds to the
 # real one afterwards (the API's ProxyTracer re-checks the global
 # provider on every span start, opentelemetry/trace/__init__.py
 # ``ProxyTracer._tracer``). Memoization must never pin the proxy/no-op
@@ -146,8 +146,8 @@ def test_get_tracer_resolves_once_and_memoizes(
 def test_memoized_tracer_rebinds_after_sdk_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The transition contract: a tracer memoized with NO provider yields
-    non-recording spans, and the SAME memoized object yields recording
+    """The transition contract: a tracer memoized with no provider yields
+    non-recording spans, and the same memoized object yields recording
     spans once a real provider registers. If memoization ever swaps the
     ProxyTracer for something that pins the no-op behavior, a worker that
     configures its SDK after first span goes silently dark - this pin is
@@ -169,7 +169,7 @@ def test_memoized_tracer_rebinds_after_sdk_registration(
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     monkeypatch.setattr(trace_api, "_TRACER_PROVIDER", provider)  # pyright: ignore[reportPrivateUsage]
 
-    # The SAME memoized object, now backed by the real provider.
+    # The same memoized object, now backed by the real provider.
     assert otel_mod.get_tracer() is tracer
     post = tracer.start_span("post-registration")
     assert post.is_recording()
@@ -182,11 +182,11 @@ def test_memoized_tracer_rebinds_after_sdk_registration(
 # 15 of the module's ~65 emit sites had no assertion anywhere: the calls
 # compiled, so their label dicts could drift (a renamed label key, a new
 # unbounded label value, a swapped attribute) without any test going
-# red. This section drives the TOP sites through their REAL paths (the
+# red. This section drives the top sites through their real paths (the
 # terminal write, the leader prune, the shared dedup reporter, the error
 # reporter, the progress flush) and pins each instrument's datapoint
-# with its EXACT documented label set - cardinality is part of the
-# contract, so the attribute DICT is compared, not membership.
+# with its exact documented label set - cardinality is part of the
+# contract, so the attribute dict is compared, not membership.
 
 
 _INSTRUMENTS: tuple[tuple[str, str, str, str], ...] = (
@@ -279,7 +279,7 @@ async def test_mark_interrupted_released_emits_the_documented_label_pair(
 
     Regression caught: a label rename (``held=`` vs ``hold=``) or a third
     hold value silently breaks every dashboard built on the documented
-    pair, and the counter is the ONLY record of the interruption class.
+    pair, and the counter is the only record of the interruption class.
     """
     from taskq.backend._sql_templates import render
     from taskq.backend._terminal import (
@@ -353,7 +353,7 @@ class _PruneScriptedConn:
     (arg-shape, status): the archive candidate is
     ``(status, retention, size)``, the archive write ``(status,
     archive_interval, ids, retention)``, the expiry batch ``(size,)``.
-    Each scripted answer is returned ONCE (the first matching call);
+    Each scripted answer is returned once (the first matching call);
     every further matching call answers empty, which ends the drain.
     """
 
@@ -401,7 +401,7 @@ class _PruneScriptedConn:
 async def test_prune_terminal_jobs_emits_paired_prune_and_archive_counters(
     meter_reader: Any,
 ) -> None:
-    """The fleet-wide prune arm records ``taskq.pruned.jobs`` AND
+    """The fleet-wide prune arm records ``taskq.pruned.jobs`` and
     ``taskq.archived.jobs`` together, per (actor, status) group, from the
     write statement's RETURNING - the real ``prune_terminal_jobs`` loop,
     batch statement by batch statement.

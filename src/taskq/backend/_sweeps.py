@@ -6,7 +6,7 @@ functions.  :class:`~taskq.backend.postgres.PostgresBackend` exposes
 thin ``@staticmethod`` wrappers that delegate here, preserving the
 existing ``PostgresBackend.sweep_*`` call surface.
 
-Sweeps 1-3 are bounded batch writers: ONE call transitions at most
+Sweeps 1-3 are bounded batch writers: one call transitions at most
 ``batch_size`` rows, using a constant number of statements (a LIMIT-ed
 driving UPDATE, one batched ``job_attempts`` INSERT where applicable,
 one batched ``job_events`` INSERT, one ``pg_notify`` where applicable)
@@ -73,7 +73,7 @@ co-monotonicity rationale above; only the row-selection bounds moved to
 Each snap also carries an ``ORDER BY`` on the column its partial index
 is keyed on. This is essential for the same reason: with only a
 LIMIT, the planner picks between partial-index population walks on
-fractional-cost guesses (it assumes the first N entries of ANY
+fractional-cost guesses (it assumes the first N entries of any
 predicate-implied partial index pass the filter), and a stats skew can
 make it walk the whole population of the WRONG partial index, measured:
 the sweep-3 snap chose a 21,000-entry walk of
@@ -88,7 +88,7 @@ pattern the prune/archive sweep already uses with
 provides it for the index-scan plans; where the planner prefers a
 bitmap it pays only a top-N sort of the LIMIT-ed batch, never of the
 backlog), makes the drain deterministic (oldest-eligible
-first), and does NOT scan the whole backlog: the index-ordered scan
+first), and does not scan the whole backlog: the index-ordered scan
 stops at the LIMIT in the backlog case and at the range boundary in the
 empty case.
 
@@ -183,7 +183,7 @@ _expiry_guard_fallback_logged = False
 #: ``str.format`` over a ~20 KB template per tick is per-tick allocation
 #: churn with a byte-identical result.  The render is memoised per
 #: (template, schema): the schema still passes ``_IDENT_RE`` validation
-#: before any interpolation (an invalid identifier raises here on EVERY
+#: before any interpolation (an invalid identifier raises here on every
 #: call, the cache never masks it), and the returned string is
 #: byte-identical to ``template.format(schema=schema)`` - the
 #: byte-equality discipline the SQL constants are pinned to.
@@ -234,11 +234,11 @@ stamp a finish), and three hand-maintained copies is how the
 # , the smallest positive base is 1e-6 s (timedelta resolution) and the
 # largest representable cap is ~8.6e13 s (999999999 days), so every
 # representable (base, cap) pair saturates by exponent 66 at the latest
-# (1e-6 * 2**67 >= 1.4e14 >= 8.6e13), and the outer LEAST against the
-# effective cap decides identically with or without the clamp, AND that
-# cannot overflow: Postgres RAISES "value out of range: overflow"
+# (1e-6 * 2**67 >= 1.4e14 >= 8.6e13), and the outer least against the
+# effective cap decides identically with or without the clamp, and that
+# cannot overflow: Postgres raises "value out of range: overflow"
 # (SQLSTATE 22003) when the float8 multiply ``base * power(2.0, e)``
-# exceeds ~1.8e308, it does NOT saturate to Infinity the way Python's
+# exceeds ~1.8e308, it does not saturate to Infinity the way Python's
 # float arithmetic does, so the historical clamp at power()'s own domain
 # ceiling (1023) still let the multiply raise for any base > ~2 once the
 # attempt passed ~1021: a non-transient data error escaping into the
@@ -261,14 +261,14 @@ _RECLAIM_EFFECTIVE_CAP_SQL = "LEAST(j.retry_cap_seconds, {max_backoff_seconds}::
 
 # raw_seconds: the unjittered curve value for this row's (base, cap,
 # backoff, attempt), byte-for-byte the same three-way branch and
-# LEAST(effective-cap, ...) clamp compute_backoff applies for
-# attempt=j.attempt (a reclaimed row's attempt is the CURRENT,
+# least(effective-cap, ...) clamp compute_backoff applies for
+# attempt=j.attempt (a reclaimed row's attempt is the current,
 # not-yet-refunded claim dispatch stamped, 1-indexed the same as
 # compute_backoff's parameter, see mark_failed_or_retry's call site).
-# Only the exponential arm's EXPONENT is attempt-1 (compute_backoff:
+# Only the exponential arm's exponent is attempt-1 (compute_backoff:
 # ``2.0 ** min(attempt - 1, _MAX_BACKOFF_EXPONENT)``); the linear arm
 # multiplies by attempt itself (``base_s * attempt``), not attempt-1 ,
-# the GREATEST(j.attempt - 1, 0) clamp below applies ONLY to the
+# the greatest(j.attempt - 1, 0) clamp below applies only to the
 # exponent, matching that asymmetry exactly.
 _RECLAIM_RAW_BACKOFF_SQL = (
     "(CASE j.retry_backoff "
@@ -294,7 +294,7 @@ exist."""
 # hand-back instant (the test_property_sweep_equivalence flake class: two
 # draws, one fixed comparison window) and makes a replayed sweep stamp a
 # different instant than the first pass.  Deriving the draw from the row's
-# own (id, attempt) makes every path stamp the SAME delay, so a reclaim
+# own (id, attempt) makes every path stamp the same delay, so a reclaim
 # replay is idempotent per row, strictly more robust than a fresh draw.
 # The fleet spread random() bought is preserved: distinct ids hash to
 # distinct fractions, so a mass-expired cohort still arrives spread across
@@ -323,7 +323,7 @@ identical in this database and in ``taskq.retry._reclaim_jitter_fraction``."""
 # The jitter band fitted under the effective cap, the twin of
 # taskq.retry._capped_jitter_band: the raw curve value clamped to the cap,
 # the band's lower edge raw·(1-j), its upper edge raw·(1+j) clamped to the
-# cap. The cap bounds the BAND, not the drawn value: clamping the drawn
+# cap. The cap bounds the band, not the drawn value: clamping the drawn
 # value collapsed the upper half of a saturated row's band onto the cap,
 # so half of any cohort reclaimed at the ceiling came due at one instant.
 _RECLAIM_CAPPED_RAW_SQL = f"LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, {_RECLAIM_RAW_BACKOFF_SQL})"
@@ -335,7 +335,7 @@ _RECLAIM_BAND_UPPER_SQL = (
 # The monopolisation floor, in the seconds domain the band draws in
 # (derived from taskq.constants.MIN_DEFERRAL_INTERVAL, the same constant
 # the failure-retry decision's floor reads, so the SQL and the Python
-# side cannot drift). The floor wraps the whole delay draw, AFTER the
+# side cannot drift). The floor wraps the whole delay draw, after the
 # band and the cap: a degenerate row (a zero or negative base stamped by
 # an earlier release, or a direct-SQL writer) draws zero or a negative
 # value from its own curve, and without this floor the re-pend would
@@ -348,9 +348,9 @@ _RECLAIM_BAND_UPPER_SQL = (
 _MIN_DEFERRAL_SECONDS_SQL = f"{MIN_DEFERRAL_INTERVAL.total_seconds()!r}::float8"
 
 _RECLAIM_DELAY_SQL = (
-    # lower + (upper - lower) · fraction, a closing LEAST that only
+    # lower + (upper - lower) · fraction, a closing least that only
     # absorbs float rounding at the top edge (the band already lies inside
-    # [0, cap]), then the GREATEST monopolisation floor: operand for
+    # [0, cap]), then the greatest monopolisation floor: operand for
     # operand taskq.retry._compute_reclaim_backoff including its floor.
     f"(GREATEST(LEAST({_RECLAIM_EFFECTIVE_CAP_SQL}, {_RECLAIM_BAND_LOWER_SQL} "
     f"+ ({_RECLAIM_BAND_UPPER_SQL} - {_RECLAIM_BAND_LOWER_SQL}) "
@@ -388,7 +388,7 @@ spread across a band instead of at a point."""
 #: same values the arms' reason columns and the events' cause key carry).
 #: One map, imported by the PG caller (which feeds it to the batched
 #: INSERT as the $6 text array), the in-memory twin (which builds its
-#: AttemptRow from it), and _SWEEP_1_SQL's own crashed-arm row SET (via
+#: AttemptRow from it), and _SWEEP_1_SQL's own crashed-arm row set (via
 #: the {lock_expired_message} / {heartbeat_timeout_message} fragments), so
 #: the row, the attempt, and the twin's copies cannot drift.
 _ATTEMPT_MESSAGES: dict[str, str] = {
@@ -400,15 +400,15 @@ _ATTEMPT_MESSAGES: dict[str, str] = {
 #: each branch, keyed by the post-update ``j.status`` the sweep's RETURNING
 #: already reports. One map, imported by the PG caller and the in-memory
 #: twin, so the metric's label set cannot drift between backends. The
-#: disposition is DERIVED from the returned status rather than emitted as
+#: disposition is derived from the returned status rather than emitted as
 #: a second CASE literal in the RETURNING on purpose: the status CASE is
 #: the single source of truth for which branch fired, and a second
-#: hand-maintained CASE beside it is exactly the drift surface the
+#: hand-maintained case beside it is exactly the drift surface the
 #: ``{has_budget}`` fragment exists to remove: one edit to the branch
 #: conditions must not leave a disposition literal silently disagreeing
 #: with the status it labels.
 #:
-#: The map's key set is pinned to the CASE's reachable statuses by
+#: The map's key set is pinned to the case's reachable statuses by
 #: ``tests/test_obs_reclaim_counters.py`` (both directions), and the
 #: lookups are total through :func:`_reclaim_disposition`.  See that
 #: function for why a bare ``[...]`` here is the reclaim loop's
@@ -421,7 +421,7 @@ _RECLAIM_DISPOSITIONS: dict[str, str] = {
 
 #: The disposition an unmapped post-update status counts under. Counting
 #: the unknowns, rather than dropping the rows or raising, preserves
-#: the metric's totals and makes map/code drift VISIBLE on dashboards as
+#: the metric's totals and makes map/code drift visible on dashboards as
 #: its own series, which is the property that turns a silent invariant
 #: breach into an operator-visible one.
 _RECLAIM_UNKNOWN_DISPOSITION: str = "unknown"
@@ -941,9 +941,9 @@ FROM expired
 WHERE j.id = expired.id
   AND j.result IS NOT NULL"""
 
-# THE GUARDED STATEMENT (the shipped shape) = the base + the liveness
+# the guarded statement (the shipped shape) = the base + the liveness
 # workflow-liveness guard, spliced at the window's LIMIT (the
-# _leader_shared composition pattern — ONE statement text, both
+# _leader_shared composition pattern — one statement text, both
 # constants from one home; the rolling-deploy tolerance's fallback
 # runs the base).
 _SWEEP_RESULT_TTL_SQL = _SWEEP_RESULT_TTL_BASE_SQL.replace(
@@ -1097,12 +1097,12 @@ RETURNING e.id"""
 # the row-level drain running 7.8x plain's drain-total at the 100k scale,
 # benchmarks/results/timescale-tradeoffs-sweep.json) for deletions
 # that are not ours to make.  The floor is composed by anchored .replace
-# (the {name}-fragment mechanism _SWEEP_1_SQL uses, NOT str.format: the
+# (the {name}-fragment mechanism _SWEEP_1_SQL uses, not str.format: the
 # rendered statement must stay byte-identical when the floor is None, and
 # tests/test_index_audit.py renders this constant with .format(schema=...)
 # alone, so an un-substituted format field here would KeyError there).
 # The bound is a parameter ($3, a timestamptz), so it is an eligible btree
-# Index Cond by the same STABLE-bound rule the $1 bound follows.
+# Index Cond by the same stable-bound rule the $1 bound follows.
 _EVENT_TTL_FLOOR_PRED = " AND occurred_at >= $3::timestamptz"
 _EVENT_TTL_MAIN_ARM_ANCHOR = "WHERE occurred_at < statement_timestamp() - $1::interval"
 _EVENT_TTL_OUTBOX_ARM_ANCHOR = "AND occurred_at < statement_timestamp() - $1::interval * "
@@ -1113,7 +1113,7 @@ def _render_event_ttl_sql(schema: str, floor: datetime | None) -> str:
 
     *floor* is None on vanilla Postgres / policy-less hypertables: the
     rendered statement is byte-identical to the pre-floor constant.  With
-    a floor, BOTH arms gain the ``occurred_at >= $3`` conjunct — the
+    a floor, both arms gain the ``occurred_at >= $3`` conjunct — the
     outbox arm included, because the floor's ownership claim is the
     policy's, and the policy's chunk drops defeat the carve-out below the
     floor regardless (pinned by
@@ -1178,25 +1178,23 @@ def _render_event_ttl_sql(schema: str, floor: datetime | None) -> str:
 # lease arm's text is pinned verbatim by
 # tests/test_sweep_expired_locks_bounded.py::test_job_attempts_row_shape.
 #
-# THE STANDING-CLAIM FENCE (WHERE a.started_at IS NOT NULL): the batched
-# INSERT records a crashed attempt ONLY for a reclaimed row that still
-# carries its claim's dispatch stamp. Dispatch stamps started_at at
-# claim time (backend/_dispatch_sql.py) and the claim-loss reconcile's
-# refund un-stamps it as it refunds the increment (worker/heartbeat.py's
-# _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE: ``started_at = NULL`` is the
-# durable "no claim stands on this number" marker), so a NULL stamp on a
-# running row is a PRODUCTION shape, not just a direct-SQL orphan: it is
-# the row the reconcile just de-charged, left running and locked for
-# this sweep to reclaim. Recording a crashed row at that refunded number
-# would permanentise an attempt the counter no longer carries - the
-# ledger then holds a phantom epoch the next claim re-mints, and the
-# job's lineage closes with one more attempt row than the counter
-# (measured: the soak's reconciliation red, ``attempt counter 1 vs 2
-# attempt rows`` - the refund moved the counter, the reclaim's INSERT
-# moved the ledger, and the two writers never moved together). The event
-# and the re-pend still fire: the reclaim happened and is audited; what
-# never happened is the execution a crashed attempt row would assert -
-# the exact fabrication issue 458's refund exists to keep out of the
+# WHERE a.started_at IS NOT NULL. the batched INSERT records a crashed attempt
+# only for a reclaimed row that still carries its claim's dispatch stamp.
+# Dispatch stamps started_at at claim time (backend/_dispatch_sql.py) and the
+# claim-loss reconcile's refund un-stamps it as it refunds the increment
+# (worker/heartbeat.py's _RECONCILE_LOST_CLAIMS_SQL_TEMPLATE: ``started_at =
+# NULL`` is the durable "no claim stands on this number" marker), so a NULL
+# stamp on a running row is a PRODUCTION shape, not just a direct-SQL orphan:
+# it is the row the reconcile just de-charged, left running and locked for this
+# sweep to reclaim. Recording a crashed row at that refunded number would
+# permanentise an attempt the counter no longer carries - the ledger then holds
+# a phantom epoch the next claim re-mints, and the job's lineage closes with
+# one more attempt row than the counter (measured: the soak's reconciliation
+# red, ``attempt counter 1 vs 2 attempt rows`` - the refund moved the counter,
+# the reclaim's INSERT moved the ledger, and the two writers never moved
+# together). The event and the re-pend still fire: the reclaim happened and is
+# audited; what never happened is the execution a crashed attempt row would
+# assert - the exact fabrication issue 458's refund exists to keep out of the
 # ledger. A row whose attempt never started owes the ledger nothing.
 _SWEEP_1_ATTEMPTS_BATCH_SQL = """\
 WITH holder AS (
@@ -1462,7 +1460,7 @@ def _batch_failure_arms(
 
     The not-deadline arm is the one DELIBERATE divergence between the
     two runner shapes, carried by *count_unexpected*: the prune family
-    counts EVERY aborted batch - the reduced tier is the safety net for
+    counts every aborted batch - the reduced tier is the safety net for
     the next unknown failure mode, so an archive UniqueViolation-class
     error must latch the breaker too instead of leaving every retry at
     the full-size batch - and lands the failure on
@@ -1532,7 +1530,7 @@ async def _run_bounded_batch[T](
         with _batch_failure_arms(sweep_name, sizer, count_unexpected=True):
             result = await work()
         # Success path only: restore the caller's timeout inside the
-        # still-open transaction (a savepoint RELEASE would otherwise
+        # still-open transaction (a savepoint release would otherwise
         # keep the batch's bound); on error the savepoint rollback has
         # already restored it.
         await _restore_statement_timeout(conn, prev_timeout)
@@ -1593,7 +1591,7 @@ async def sweep_expired_locks(
     ``job_attempts`` against ``jobs`` never reads a heartbeat reclaim
     asserting a lock expiry the sweep's own selection disproved) and a
     ``job_events`` row (kind ``'state_change'``, reason
-    ``'lock_expired'``, the crash-reclaim outbox channel BOTH arms
+    ``'lock_expired'``, the crash-reclaim outbox channel both arms
     ride, so ``poll_reclaim_events`` consumers and the retention
     carve-out see heartbeat reclaims exactly like lease reclaims, with
     a ``cause`` key naming which deadline fired); both writes are
@@ -1604,7 +1602,7 @@ async def sweep_expired_locks(
     row whose ``started_at`` is NULL carries no claim - the claim-loss
     reconcile's refund (worker/heartbeat.py) un-stamps started_at as it
     refunds the increment, leaving the row running and locked for this
-    sweep to reclaim WITHOUT its charge - and records NO attempt row. A
+    sweep to reclaim without its charge - and records no attempt row. A
     crashed row at that refunded number would permanentise an epoch the
     counter no longer carries; the next claim re-mints the number and
     the ledger closes the job's lineage with one more attempt row than
@@ -1674,7 +1672,7 @@ async def sweep_expired_locks(
     reclaimed: list[_ReclaimedRow] = []
     # (actor, disposition) -> rows this call reclaimed, for the
     # taskq.jobs.reclaimed counter. Aggregated on the row loop and emitted
-    # AFTER the transaction: the same shape sweep_deadline_exceeded uses
+    # after the transaction: the same shape sweep_deadline_exceeded uses
     # for its per-actor counter: per-row metric calls on the DB-hold path
     # are what the batching exists to remove.
     reclaim_counts: Counter[tuple[str, str]] = Counter()
@@ -1706,7 +1704,7 @@ async def sweep_expired_locks(
                 actor_name: str = rec["actor"]
                 original_worker: UUID | None = rec["locked_by_worker"]
                 reclaim_reason: str = rec["reclaim_reason"]
-                # The disposition label derives from the ONE branch
+                # The disposition label derives from the one branch
                 # arbiter, the status this statement just wrote, so the
                 # counter's split can never disagree with the row's own
                 # disposition (see _RECLAIM_DISPOSITIONS). Total lookup:
@@ -1766,7 +1764,7 @@ async def sweep_expired_locks(
                 wake_channel(schema),
             )
         # Success path only: restore the caller's timeout inside the
-        # still-open transaction (a savepoint RELEASE would otherwise
+        # still-open transaction (a savepoint release would otherwise
         # keep the sweep's bound); on error the savepoint rollback has
         # already restored it.
         await _restore_statement_timeout(conn, prev_timeout)
@@ -1781,7 +1779,7 @@ async def sweep_expired_locks(
             reason="lock_expired",
             cause=row.reclaim_reason,
         )
-    # Aggregated per (actor, disposition) AFTER the transaction: the
+    # Aggregated per (actor, disposition) after the transaction: the
     # same placement and rationale as sweep_deadline_exceeded's per-actor
     # emission. The generic taskq.maintenance_leader.sweep_rows counter
     # the leader loop records is deliberately left untouched: it stays
@@ -1821,7 +1819,7 @@ async def sweep_deadline_exceeded(
 
     ``started_at`` for never-dispatched jobs is NULL; the attempt INSERT
     uses ``COALESCE(started_at, clock_timestamp())`` to satisfy the
-    ``job_attempts.started_at NOT NULL`` constraint.
+    ``job_attempts.started_at not NULL`` constraint.
 
     PG uses server-side ``statement_timestamp()`` for the deadline range
     bound (STABLE, so the partial index serves it as an Index Cond ,
@@ -1890,7 +1888,7 @@ async def sweep_deadline_exceeded(
             await conn.execute(attempt_sql, job_ids, attempts, started_ats, duration_mss, due_ats)
             await conn.execute(event_sql, job_ids, details, "state_change")
         # Success path only: restore the caller's timeout inside the
-        # still-open transaction (a savepoint RELEASE would otherwise
+        # still-open transaction (a savepoint release would otherwise
         # keep the sweep's bound); on error the savepoint rollback has
         # already restored it.
         await _restore_statement_timeout(conn, prev_timeout)
@@ -1903,7 +1901,7 @@ async def sweep_deadline_exceeded(
             job_id=str(row.job_id),
             error_class=ERROR_CLASS_DEADLINE_EXCEEDED,
         )
-    # Aggregated per actor AFTER the transaction: the metric emission is
+    # Aggregated per actor after the transaction: the metric emission is
     # per-row work, and per-row work on the DB-hold path is what the
     # batching exists to remove.
     for actor, count in actor_counts.items():
@@ -1935,7 +1933,7 @@ async def sweep_scheduled_to_pending(
     ``statement_timeout`` included); repeated calls drain the eligible
     backlog a batch at a time.
 
-    A promotion writes NO ``job_events`` row. scheduled→pending is the
+    A promotion writes no ``job_events`` row. scheduled→pending is the
     scheduler's bookkeeping, not an outcome transition, and it is one of
     the two acts every admission-denial cycle repeats (claim + promote):
     under the 429 denial contract a denied job cycles until capacity
@@ -1977,7 +1975,7 @@ async def sweep_scheduled_to_pending(
                 wake_channel(schema),
             )
         # Success path only: restore the caller's timeout inside the
-        # still-open transaction (a savepoint RELEASE would otherwise
+        # still-open transaction (a savepoint release would otherwise
         # keep the sweep's bound); on error the savepoint rollback has
         # already restored it.
         await _restore_statement_timeout(conn, prev_timeout)
@@ -2100,9 +2098,9 @@ async def sweep_expired_results(
     elapsed TTL and the absent result. See ``_SWEEP_RESULT_TTL_SQL``'s
     comment.
 
-    THE ROLLING-DEPLOY TOLERANCE (the doc's named mechanism, real): the
+    The
     workflow-liveness guard probes ``wf_edge`` — a schema the
-    workflow round has not landed on has NO such table, and the guarded
+    workflow round has not landed on has no such table, and the guarded
     statement's miss is ``UndefinedTableError``. The arm TOLERATES it
     per call, the way the prune's candidate predicate does: the fallback
     runs the UNGUARDED base statement — semantically EXACT there (no
@@ -2185,7 +2183,7 @@ async def sweep_expired_events(
     ``detail->>'reason'='lock_expired'``) is kept past the ordinary
     retention age, deleting an unconsumed outbox row while a lagging
     consumer's watermark can still reach it silently loses a crashed
-    worker's reclaim, but NOT at every age: the same statement's outbox
+    worker's reclaim, but not at every age: the same statement's outbox
     arm deletes the slice at
     ``RECLAIM_OUTBOX_RETENTION_MULTIPLIER`` times *retention*, so a fleet
     with no ``watch_reclaims`` consumer cannot retain the slice forever
@@ -2198,17 +2196,17 @@ async def sweep_expired_events(
     The POLICY FLOOR (hypertable deployments only): when the connected
     server has a ``policy_retention`` job registered against
     ``job_events`` (:func:`taskq.backend._retention_floor.retention_policy_floor`,
-    probed ONCE per call — never per batch — and failing open to None on
+    probed once per call — never per batch — and failing open to None on
     any probe error), rows older than the policy's own ``drop_after``
     horizon gain the ``occurred_at >= $floor`` conjunct and are left to
-    the policy, which drops them whole-chunk silently.  THE BOUNDARY,
+    the policy, which drops them whole-chunk silently.  the BOUNDARY,
     stated honestly: OLDER than the floor, the POLICY owns deletion
     (silent, chunk-granular, watermark-blind — a chunk drop advances no
     ``pruned_through_id``, see the pinned boundary in
     ``tests/test_timescale_retention_interplay.py``); NEWER than it
     (inside the window), this sweep owns deletion (row-exact,
     watermark-visible, the carve-out honored).
-    The floor is the policy's OWN horizon (parsed from the registered
+    The floor is the policy's own horizon (parsed from the registered
     config, not re-derived), so where the settings and the registered
     policy disagree, the policy wins the aged end and this sweep keeps
     exactly the range nothing owns.  A row older than the floor inside a
@@ -2508,7 +2506,7 @@ async def sweep_idle_keyed_rows(
 
      This is the fleet-wide half of keyed row reclamation: the in-process
      half (registry idle eviction + the pending-reclaim drain) can only
-     name rows its OWN process materialised, so keyed rows orphan when
+     name rows its own process materialised, so keyed rows orphan when
      the worker that created them dies. The rows carry their own
      staleness instead, the ``keyed`` mark (migration 01.00.10_02) plus
      ``last_used_at``, refreshed by the acquire/release/upsert statements

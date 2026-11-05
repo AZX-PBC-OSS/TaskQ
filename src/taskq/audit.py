@@ -7,12 +7,12 @@ foreign key to jobs on purpose: its targets are exactly the rows routine
 maintenance prunes, archives, and deregisters, and an audit trail that
 dies with its target is not a trail.
 
-THE IMPORT LAW (the import law; the attack pins' Face C —
-``tests/test_wf_attack_cancel.py``): this module is CORE-DEPS-ONLY —
+the IMPORT LAW (the import law; the attack pins' Face C —
+``tests/test_wf_attack_cancel.py``): this module is CORE-DEPS-only —
 structlog, opentelemetry-api (a core dependency), and the taskq core;
 never the ``fastapi`` extra. The workflow engine's cancel/retry seams
 (the G4 law: "who cancelled this" is a ROW, not a log line) import FROM
-HERE and from nowhere else: ``taskq/workflows/`` must never import
+here and from nowhere else: ``taskq/workflows/`` must never import
 ``taskq.web.admin`` (whose package ``__init__`` imports the fastapi
 extra — a base ``taskq[flows]`` install would be unable to cancel).
 The admin surface's ``taskq.web.admin._audit`` is a COMPAT SHIM over
@@ -23,7 +23,7 @@ Two transactional shapes, per mutation kind:
 
 * Admin-owned SQL (schedule enable/disable/skip, actor deregister, the
   workflow engine's cancel/retry): the caller opens the transaction and
-  calls :func:`record_admin_action` on the SAME connection inside it, so
+  calls :func:`record_admin_action` on the same connection inside it, so
   the mutation and its audit row commit or roll back together -- a
   mutation that lands without its audit row is the defect this module
   exists to prevent.
@@ -32,7 +32,7 @@ Two transactional shapes, per mutation kind:
   rate-limit reset via the registry): the backend commits its own
   transaction, so the audit row is written on a separate checkout
   immediately after the backend call reports success, and a failure to
-  record is logged loudly (``admin-audit-record-failed``) AND counted on
+  record is logged loudly (``admin-audit-record-failed``) and counted on
   the ``taskq.admin.audit.record_failed`` metric -- alert on a nonzero
   rate, that is the only signal a silently-degrading trail gives --
   rather than failing a mutation that already landed. For cancel,
@@ -77,7 +77,7 @@ from taskq.obs import get_meter
 from taskq.obs._redact_exc import mask_credentials
 
 if TYPE_CHECKING:
-    # The pool type is the web package's bounded pool — an ANNOTATION
+    # The pool type is the web package's bounded pool — an annotation
     # only (the import law: the runtime path here is deps-free; the web
     # package's modules import the fastapi extra).
     from taskq.web._pool import BoundedPool
@@ -109,7 +109,7 @@ logger = structlog.get_logger("taskq.web.admin.audit")
 
 # Alertability for the degradation window: every failed audit record on the
 # backend-mediated paths increments this counter, so the degrade-to-warn
-# behavior is a METRIC (``taskq.admin.audit.record_failed``), not just a log
+# behavior is a metric (``taskq.admin.audit.record_failed``), not just a log
 # line. A log line is not alertable, and the window it reports can persist
 # indefinitely (a wedged pool, an unmigrated schema), so the compensating
 # control for warn-mode is an alert on a nonzero rate of this counter.
@@ -129,7 +129,7 @@ _record_failed_counter: Counter = get_meter().create_counter(
 # configured" with a row someone failed to attribute.
 ANONYMOUS_SUBJECT: str = "anonymous"
 
-# The principal_subject column's shape bound. The router accepts ANY auth
+# The principal_subject column's shape bound. The router accepts any auth
 # dependency a host passes, and its return value is untyped
 # (:func:`principal_subject` normalizes whatever arrives), so the subject's
 # shape is pinned here rather than trusted: an unbounded string (a bug, or
@@ -143,7 +143,7 @@ SUBJECT_MAX_LENGTH: int = 512
 # Control-character escapes for the subject: the same log-frame discipline
 # ops.py applies to caller-controlled log fields, applied at the audit
 # boundary. \n/\r/\t keep their letter escapes for readability; every other
-# C0 control and DEL renders as its hex escape. NUL is included (0x00):
+# C0 control and del renders as its hex escape. NUL is included (0x00):
 # asyncpg refuses \u0000 in a text bind, so an unescaped NUL would make
 # every same-transaction audit insert (and therefore the mutation itself)
 # fail, and every safe-path record degrade.
@@ -165,17 +165,17 @@ def _bound_subject(subject: str) -> str:
     return escaped[:SUBJECT_MAX_LENGTH]
 
 
-#: The reason column's shape bound — the OTHER free-text field this module
+#: The reason column's shape bound — the other free-text field this module
 #: writes (the cancel form's own ``maxlength`` on its reason input; the
-#: module docstring names the pair). THE AUDIT SEAM'S BOUNDS (finding 10's
-#: fix): ``admin_audit`` is the NEVER-PRUNED table — an unbounded reason
-#: was unbounded retention per row — and the reason rode the text bind RAW:
+#: module docstring names the pair). the audit seam's bounds (finding 10's
+#: fix): ``admin_audit`` is the never-pruned table — an unbounded reason
+#: was unbounded retention per row — and the reason rode the text bind raw:
 #: a NUL byte in an operator-supplied reason made asyncpg refuse the INSERT,
-#: and the audit leg's failure rolled back the WHOLE cancel (the same-tx
+#: and the audit leg's failure rolled back the whole cancel (the same-tx
 #: guarantee turned a poisoned free-text field into a failed mutation). The
-#: reason rides the SAME law the subject rides: the control escapes (NUL
-#: included — it renders as the ``\\x00`` ESCAPE, the bind survives) and
-#: the length cap applied at the LEAF, so every writer path (the engine's
+#: reason rides the same law the subject rides: the control escapes (NUL
+#: included — it renders as the ``\\x00`` escape, the bind survives) and
+#: the length cap applied at the leaf, so every writer path (the engine's
 #: cancel, the admin shim, the backend-mediated safe path) inherits it.
 REASON_MAX_LENGTH: int = 512
 
@@ -192,7 +192,7 @@ def bound_reason(reason: str | None, limit: int = REASON_MAX_LENGTH) -> str | No
 
     PUBLIC — the reason's OTHER write seats call THIS (never a second
     implementation): the cancel's root flip binds the reason into
-    ``jobs.error_message`` BEFORE the audit row exists, and a raw NUL
+    ``jobs.error_message`` before the audit row exists, and a raw NUL
     there refused the bind and rolled back the whole cancel (finding
     10's finding — the poisoned free-text field was a failed
     mutation). The audit leaf's own ``_bound_reason`` delegates here, so
@@ -214,8 +214,8 @@ def _bound_reason(reason: str | None) -> str | None:
 
 
 #: The detail column's shape bound — the jsonb free-text field's law
-#: ``admin_audit`` is the NEVER-PRUNED table
-#: and the detail rode the jsonb bind VERBATIM — a 5MB ``detail`` dict
+#: ``admin_audit`` is the never-pruned table
+#: and the detail rode the jsonb bind verbatim — a 5MB ``detail`` dict
 #: landed whole (unbounded retention per row). The serialized record
 #: above the bound is replaced by the house's named-truncation record:
 #: the ``__truncated__`` marker (the capture marker's own shape), the
@@ -298,7 +298,7 @@ def _bound_untyped_subject(raw: str) -> str:
     the ``admin_audit`` table is deliberately never pruned, and the
     subject is rendered on the job detail page -- a stored token there is a
     durable, page-rendered credential disclosure. The house credential
-    mask chain (:func:`taskq.obs.mask_credentials`) runs BEFORE the shape
+    mask chain (:func:`taskq.obs.mask_credentials`) runs before the shape
     pin, so the token material leaves as ``***`` while any non-secret frame
     (``Bearer ``) survives and the row still attributes the action to a
     redacted marker. The mask fires loudly: a credential-shaped principal
@@ -353,7 +353,7 @@ def _warn_typed_subject_credential_shaped(subject: str) -> None:
 # ── Closed-set action names ──────────────────────────────────────────────
 #
 # Kept as module constants (not an enum) so the routes stay plain-Python
-# and the SQL COMMENT on admin_audit.action documents the same set by hand;
+# and the SQL comment on admin_audit.action documents the same set by hand;
 # the unit tests pin the routes to exactly these strings.
 
 ACTION_JOB_CANCEL: str = "job.cancel"
@@ -376,8 +376,8 @@ _INSERT_SQL = (
     "VALUES ($1, $2, $3, $4, $5, $6::jsonb)"
 )
 
-# The cancel handler folds the operator principal into the NEWEST
-# cancel_request event of the job (id DESC: bigserial carries the stream
+# The cancel handler folds the operator principal into the newest
+# cancel_request event of the job (id desc: bigserial carries the stream
 # order). Escaped braces on the jsonb empty-object literal: this string
 # goes through str.format.
 _FOLD_CANCEL_PRINCIPAL_SQL = (
@@ -417,7 +417,7 @@ def _loaded_admin_audit() -> Any:
 def _failed_counter() -> Counter:
     """The degradation counter through the capability seam: the loaded
     shim's ``_record_failed_counter`` attribute when the shim is loaded
-    (the admin redteams' patch surface stays the ONE seam), this
+    (the admin redteams' patch surface stays the one seam), this
     module's own otherwise."""
     mod = _loaded_admin_audit()
     if mod is not None:
@@ -434,7 +434,7 @@ def principal_subject(principal: Any) -> str:
     ``request.state.principal`` untyped: the shipped SSO dependencies
     return :class:`IdentityClaims` (read ``.subject``), but a host
     application may pass any dependency, and the dev path (no
-    ``auth_dependency``) has ``None``. The audit column is ``NOT NULL``,
+    ``auth_dependency``) has ``None``. The audit column is ``not NULL``,
     so every shape resolves to a string, with the explicit
     :data:`ANONYMOUS_SUBJECT` for the no-auth case rather than a crash or
     an empty string.
@@ -445,7 +445,7 @@ def principal_subject(principal: Any) -> str:
     reaches a text bind, a jsonb detail document, and rendered pages.
 
     The UNTYPED shapes (a bare string principal, and the ``str()``
-    fallback) additionally run the house credential mask chain BEFORE the
+    fallback) additionally run the house credential mask chain before the
     shape pin (:func:`_bound_untyped_subject`, #463): a bare credential-
     shaped string -- the shape the admin-ui guide's own worked example
     produces -- is redacted to the ``***`` marker and logged loudly
@@ -478,10 +478,10 @@ async def _record_admin_action(
     reason: str | None = None,
     detail: dict[str, Any] | None = None,
 ) -> None:
-    """THE LEAF: the audit row's INSERT itself (the body
+    """The audit row's INSERT itself (the body
     :func:`record_admin_action` routes to — never the module attr, which
-    a rebinding can flip mid-chain). The reason AND the detail are
-    shape-pinned HERE (the leaf — every writer path inherits the bound):
+    a rebinding can flip mid-chain). The reason and the detail are
+    shape-pinned here (the leaf — every writer path inherits the bound):
     the never-pruned table's per-row cap, the NUL byte escaped before
     the text bind, and the truncation NAMED on the row (an
     unbounded reason/detail was unbounded retention,
@@ -626,13 +626,13 @@ async def record_admin_action_safe(
     change is done; a fake-failure response would invite a retry of an
     already-applied action), so any failure here (``admin_audit`` not
     migrated yet, pool wedged) is logged as
-    ``admin-audit-record-failed`` AND counted on the
+    ``admin-audit-record-failed`` and counted on the
     ``taskq.admin.audit.record_failed`` OTel counter, and swallowed.
     Warn-mode is deliberate rather than an oversight: post-commit there is
     no fail-closed option that tells the truth -- the only alternative is
     lying about a landed mutation -- so the compensating control is the
     counter. ALERT ON IT: any nonzero rate means mutations are landing
-    un-attributed right now. The admin-owned-SQL paths do NOT get this
+    un-attributed right now. The admin-owned-SQL paths do not get this
     wrapper -- there the audit row is in the mutation's own transaction
     and must fail it (fail-closed, where fail-closed is possible).
     """

@@ -167,7 +167,7 @@ async def test_listen_finally_releases_connection_on_close() -> None:
 
     pool.release.assert_awaited_with(good_conn)
     good_conn.remove_listener.assert_awaited()
-    good_conn.execute.assert_awaited()  # UNLISTEN
+    good_conn.execute.assert_awaited()  # unlisten
 
 
 # ── listen_with_reconnect: real Postgres (integration) ──────────────────
@@ -295,7 +295,7 @@ async def test_a_cancelled_close_still_releases_the_connection() -> None:
 
     close_task = asyncio.create_task(gen.aclose())
     await cleanup_started.wait()  # the cleanup is mid-flight
-    close_task.cancel()  # the wait_for-timeout shape: the CLOSE is cancelled
+    close_task.cancel()  # the wait_for-timeout shape: the close is cancelled
     with pytest.raises(asyncio.CancelledError):
         await close_task
 

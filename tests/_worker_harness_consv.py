@@ -14,7 +14,7 @@ actors, and honors one fault-injection switch:
     and no fanout.
 
 ``TASKQ_CONSV_KILL_BEFORE_TERMINAL=1``
-    The other side of the same window: the process dies by SIGKILL BEFORE
+    The other side of the same window: the process dies by SIGKILL before
     the terminal write is attempted, so the row is left running, locked,
     with a live lease - the uncommitted side of the terminal-write kill.
     Recovery is the lease-lapse reclaim, the requeue, and a second attempt.
@@ -22,7 +22,7 @@ actors, and honors one fault-injection switch:
 Both switches are the two deterministic brackets of one kill window: a kill
 that lands anywhere inside the terminal write's commit leaves the row
 committed (the first switch's shape) or uncommitted (the second's), and the
-conservation pins assert BOTH shapes conserve.
+conservation pins assert both shapes conserve.
 
 The ``grace_*`` actors also write one body-run ledger row per execution into
 ``{schema}.consv_body_runs`` (the calling test creates the table from the
@@ -59,7 +59,7 @@ _QUEUE = "consv_q"
 
 #: The grace actors' retry policy: a 1s flat reclaim curve with zero jitter.
 #: The leader sweep's re-pend reschedules a reclaimed job out by the row's
-#: OWN stamped curve (base * 2**(attempt-1), jittered, floored at 1s); with
+#: own stamped curve (base * 2**(attempt-1), jittered, floored at 1s); with
 #: base 1s and jitter 0 the delay is exactly 1.0s at attempt 1, so the pins'
 #: pickup bound carries a deterministic reclaim-backoff term instead of a
 #: jitter band.
@@ -81,15 +81,15 @@ async def consv_progress(
 
 
 # max_pending mirrors the test module's consv_slow literal. The two
-# registries boot the SAME actor name into the module's one PG schema —
+# registries boot the same actor name into the module's one PG schema —
 # this harness as a subprocess (the handover and sigkill tests) and the
 # test module's in-process workers (the storm and pause tests) — and
-# sync_actor_config seeds the stored cap from the literal on the FIRST
-# boot only: the upsert's DO UPDATE deliberately never rewrites a stored
+# sync_actor_config seeds the stored cap from the literal on the first
+# boot only: the upsert's do UPDATE deliberately never rewrites a stored
 # max_pending (the rolling-deploy durability law). A harness boot winning
 # that race (the order pytest-randomly rotates) seeded max_pending=NULL
 # and the cap-refusal storm's premise — the producer-side enqueue
-# admission reads the STORED row — never came into force: the storm test
+# admission reads the stored row — never came into force: the storm test
 # polled the stored NULL from its first poll (+0.003s, before its own
 # worker had taken a step) through +119s while its worker stayed healthy,
 # the cap premise unforceable at any deadline.
@@ -198,7 +198,7 @@ async def _mark_succeeded_with_conn_then_sigkill(self: Any, *args: Any, **kwargs
 
 
 async def _mark_succeeded_with_conn_sigkill_first(self: Any, *args: Any, **kwargs: Any) -> Any:
-    # The uncommitted side of the window: die BEFORE the terminal write is
+    # The uncommitted side of the window: die before the terminal write is
     # attempted. The row stays running, locked, its lease live; recovery is
     # the lease-lapse reclaim and a second attempt.
     os.kill(os.getpid(), signal.SIGKILL)

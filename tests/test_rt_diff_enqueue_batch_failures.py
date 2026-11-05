@@ -107,7 +107,7 @@ def _keyed_batch_item(
 
 
 async def _mid_batch_cross_actor_idempotency_poison(side: DiffSide) -> None:
-    """Two items of ONE batch call sharing an (idempotency_scope,
+    """Two items of one batch call sharing an (idempotency_scope,
     idempotency_key) pair across actors, nothing pre-stored.
 
     PG's bulk tier is one unnest INSERT in one transaction: the second
@@ -115,7 +115,7 @@ async def _mid_batch_cross_actor_idempotency_poison(side: DiffSide) -> None:
     arbiter skips its row), the result assembly resolves it to the first
     item's just-inserted row, and the cross-actor refusal propagates out
     of the transaction, withdrawing the first item's row too. The mirror
-    must refuse with the same typed error BEFORE its first insert, never
+    must refuse with the same typed error before its first insert, never
     store the good prefix and raise at the offending item's index.
     """
     good = _batch_item(side, "good")
@@ -125,7 +125,7 @@ async def _mid_batch_cross_actor_idempotency_poison(side: DiffSide) -> None:
         rows = await side.backend.enqueue_batch([good, first, second])
         side.record("batch", "admitted-all")
         side.record("returned", [side.token_of(r.id) for r in rows])
-    except Exception as exc:  # Why: the differential records the typed outcome; the exception type IS the observable.
+    except Exception as exc:  # Why: the differential records the typed outcome; the exception type is the observable.
         side.record("batch", type(exc).__name__)
         side.record("mismatch_actor", getattr(exc, "actor", None))
         side.record("mismatch_existing_actor", getattr(exc, "existing_actor", None))
@@ -180,7 +180,7 @@ async def _mid_batch_duplicate_id_poison(side: DiffSide) -> None:
         rows = await side.backend.enqueue_batch([good1, poison, good2])
         side.record("batch", "admitted-all")
         side.record("returned", [side.token_of(r.id) for r in rows])
-    except Exception as exc:  # Why: the differential records the typed outcome; the exception type IS the observable.
+    except Exception as exc:  # Why: the differential records the typed outcome; the exception type is the observable.
         side.record("batch", type(exc).__name__)
     stored_from_batch: list[str] = []
     for token, args in (("good1", good1), ("good2", good2)):
@@ -207,7 +207,7 @@ async def test_diff_enqueue_batch_mid_batch_duplicate_id_aborts_whole_call(pg_ds
 
 
 async def _mid_batch_singleton_collision_poison(side: DiffSide) -> None:
-    """Two same-actor singleton items in ONE batch call, nothing pre-stored.
+    """Two same-actor singleton items in one batch call, nothing pre-stored.
 
     PG's single unnest INSERT hits the jobs_singleton_uniq partial unique
     index and aborts the WHOLE statement - neither item is stored. The
@@ -222,7 +222,7 @@ async def _mid_batch_singleton_collision_poison(side: DiffSide) -> None:
         rows = await side.backend.enqueue_batch([item1, item2])
         side.record("batch", "admitted-all")
         side.record("returned", [side.token_of(r.id) for r in rows])
-    except Exception as exc:  # Why: the differential records the typed outcome; the exception type IS the observable.
+    except Exception as exc:  # Why: the differential records the typed outcome; the exception type is the observable.
         side.record("batch", type(exc).__name__)
     stored_from_batch: list[str] = []
     for token, args in (("item1", item1), ("item2", item2)):
@@ -263,7 +263,7 @@ async def test_diff_enqueue_batch_mid_batch_singleton_collision_aborts_whole_cal
 
 
 async def _atomic_dedup_hit_then_stream_failure(side: DiffSide) -> None:
-    """One atomic batch whose FIRST chunk is a dedup hit on a stored
+    """One atomic batch whose first chunk is a dedup hit on a stored
     keyed row and whose SECOND chunk fails mid-stream (chunk_size=1 puts
     the failure strictly after the hit).
 
@@ -292,7 +292,7 @@ async def _atomic_dedup_hit_then_stream_failure(side: DiffSide) -> None:
         )
         side.record("batch", "admitted-all")
         side.record("returned", [side.token_of(r.id) for r in rows])
-    except Exception as exc:  # Why: the differential records the typed outcome; the exception type IS the observable.
+    except Exception as exc:  # Why: the differential records the typed outcome; the exception type is the observable.
         side.record("batch", type(exc).__name__)
     side.record("holder_survives", await side.backend.get(holder.id) is not None)
 

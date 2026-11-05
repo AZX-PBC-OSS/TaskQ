@@ -104,7 +104,7 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
     "fan_out": fan_out,
     # batch actors
     "batch_counter": batch_counter,
-    # DI actors
+    # di actors
     "fetch": fetch_actor,
     "db_lookup": db_lookup_actor,
     # advanced actors
@@ -128,8 +128,8 @@ ACTORS: dict[str, ActorRef[Any, Any]] = {
 settings = TaskQSettings.load()
 
 # Owned rate-limit registry for this process. The example's actors reference
-# primitives by NAME, so they are registered explicitly here - the
-# worker-side pattern is instead to declare primitive INSTANCES on the actor
+# primitives by name, so they are registered explicitly here - the
+# worker-side pattern is instead to declare primitive instances on the actor
 # (@actor(rate_limits=[TokenBucket(...)])) and let the worker bootstrap's
 # collection pass register them automatically. Configs mirror
 # examples/actors/ratelimit.py, which still registers on the module singleton
@@ -157,10 +157,10 @@ _templates = Environment(
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
     if settings.migrate_on_start:
-        # PHASE=None (pre AND post) is the demo's fresh-schema contract
+        # phase=None (pre and post) is the demo's fresh-schema contract
         # (the stranger test's stumble #2): the pre-only default leaves
-        # the OLD single-column idempotency index standing (its drop is a
-        # post migration, gated for ROLLING deploys — a fresh demo schema
+        # the old single-column idempotency index standing (its drop is a
+        # post migration, gated for rolling deploys — a fresh demo schema
         # has no old workers to protect), and the static workflow nodes'
         # per-flow keys collide on it across runs (the second run's
         # create_flow raised UniqueViolationError on wf:gather).
@@ -190,15 +190,15 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         )
         application.state.tq = tq
 
-        # THE WORKFLOW DEMO: the drive loop's task + the mounted
-        # WorkflowApp — the admin's typed resolve/deliver doors validate
-        # through IT (no untyped deliver surface ships).
+        # the drive loop's task + the mounted WorkflowApp — the admin's typed
+        # resolve/deliver doors validate through it (no untyped deliver surface
+        # ships).
         from examples.workflows import drive_loop, wf_app
 
         application.state.workflow_app = wf_app
         drive_task = asyncio.create_task(drive_loop(pg_pool, settings.schema_name))
-        # Task.cancel is a SYNC method (it returns bool) — pushed as a
-        # SYNC callback. push_async_callback would await the bool at
+        # Task.cancel is a sync method (it returns bool) — pushed as a
+        # sync callback. push_async_callback would await the bool at
         # teardown (TypeError: object bool can't be used in 'await' —
         # CERT2 F-CERT2-1's demo-teardown red; the serve path itself
         # was always fine, the live stack proves it).
@@ -223,7 +223,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
 
 
 # The monitor's HEAD check against the trigger app's GET routes
-# (/, /rate-limits) must not 405. Set BEFORE the routes register.
+# (/, /rate-limits) must not 405. Set before the routes register.
 app = FastAPI(lifespan=lifespan)
 app.router.route_class = HeadForGetRoute
 
@@ -249,7 +249,7 @@ async def index(request: Request) -> Response:
                 "fields": fields,
                 "has_result": ref.result_ttl is not None,
                 # The demo progress toast subscribes to this actor's
-                # stream; the flag rides the CARD, never the response
+                # stream; the flag rides the card, never the response
                 # envelope (the enqueue envelope stays {"job_id","url"}).
                 "has_progress": name == "file_processor",
                 "watch_queue_url": ("/taskq/queues/examples" if name == "batch_counter" else None),
@@ -264,7 +264,7 @@ async def index(request: Request) -> Response:
 
 @app.post("/enqueue/{actor_name}")
 async def enqueue_actor(actor_name: str, request: Request) -> Response:
-    """Enqueue one job; the ONE success envelope: ``201`` (or ``202``
+    """Enqueue one job; the one success envelope: ``201`` (or ``202``
     for a result-bearing actor's deferred result page) with ``{"job_id",
     "url"}`` — the job id and the page that watches it — for every
     trigger route. Every 4xx is JSON with the FastAPI ``{"detail": ...}``
@@ -338,14 +338,14 @@ async def enqueue_actor(actor_name: str, request: Request) -> Response:
 
 # ── the workflow demo ─────────────────────────────────────────────
 #
-# The SAME envelope contract — HONEST (the
-# create-seam's cure): the workflow trigger answers 202 with the RUN id +
+# The same envelope contract — honest (the
+# create-seam's cure): the workflow trigger answers 202 with the run id +
 # the run-watch url (the admin's workflow page — the graph view with the
-# live SSE). A run-key conflict with a LIVE run answers 202 WITH THE
-# EXISTING run id (the idempotency shows in the envelope — the SAME id
+# live SSE). A run-key conflict with a live run answers 202 with the
+# existing run id (the idempotency shows in the envelope — the same id
 # for the same slot), the run-level idempotency is the demo, not an
-# error. A run-key conflict with a TERMINAL run answers 409 — the
-# REFUSED-TO-REUSE verdict the typed claim states (a failed run's key
+# error. A run-key conflict with a terminal run answers 409 — the
+# refused-to-reuse verdict the typed claim states (a failed run's key
 # replayed as a silent 202 was the convicted lie).
 
 

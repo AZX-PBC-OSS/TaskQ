@@ -10,7 +10,7 @@ see README.md for the two-minute `docker run`):
 
 The script migrates a fresh schema, flips the demo queue to
 `round_robin`, runs the boot's own registration + collection passes
-(the keyed decl lands in the resolved registry), then drives BOTH
+(the keyed decl lands in the resolved registry), then drives both
 tenants' runs through the REAL fleet door: the production dispatch
 claim, the workflow intercept's rate-limit gate (the per-key
 acquire/deny face), and the fleet execution door. The loop runs the
@@ -132,7 +132,7 @@ async def main() -> None:
     from taskq.settings import WorkerSettings
     from taskq.worker.deps import WorkerDeps
     from taskq.worker.run import (
-        _flow_rate_limit_gate,  # pyright: ignore[reportPrivateUsage]  # Why: the demo drives the intercept's OWN claim gate — the keyed face's enforcement seat is the subject; the underscore marks the worker-internal seam, not an unstable contract.
+        _flow_rate_limit_gate,  # pyright: ignore[reportPrivateUsage]  # Why: the demo drives the intercept's own claim gate — the keyed face's enforcement seat is the subject; the underscore marks the worker-internal seam, not an unstable contract.
     )
     from taskq.workflows import FlowRunner
     from taskq.workflows._sweep import drain_outbox, sweep_join_rederive
@@ -184,8 +184,8 @@ async def main() -> None:
     await land_configs()
     await _seed_queue(pool, schema, worker_id)
 
-    # THE TWO RUNS: one per tenant. The rows are born stamped — each
-    # run's fairness_key is its own flow_id (the round_robin cohorts).
+    # one per tenant. The rows are born stamped — each run's fairness_key is
+    # its own flow_id (the round_robin cohorts).
     flow_ids: dict[str, str] = {}
     runners: dict[str, FlowRunner] = {}
     for tenant in TENANTS:
@@ -204,14 +204,14 @@ async def main() -> None:
         dispatched = await backend.dispatch_batch(worker_id, [QUEUE], limit=LIMIT, lock_lease=LEASE)
 
         def _tenant_of(job: JobRow) -> str:
-            # The dispatch decode's metadata IS the dict (jsonb_to_dict).
+            # The dispatch decode's metadata is the dict (jsonb_to_dict).
             meta = job.metadata
             flow = str(meta.get("flow_id", "?"))
             return next((t for t, fid in flow_ids.items() if fid == flow), "?")
 
-        # THE ROUND'S OWN FACE: the claimed set IN CLAIM ORDER — the
-        # round-robin cohort rotation is what interleaves the tenants
-        # (one row per cohort per rank, the runs' cohorts alternating).
+        # the claimed set in claim ORDER — the round-robin cohort rotation is
+        # what interleaves the tenants (one row per cohort per rank, the runs'
+        # cohorts alternating).
         claimed_tenants = [_tenant_of(job) for job in dispatched]
         if dispatched:
             print(f"round {_round + 1}: claimed [{', '.join(claimed_tenants)}]")
@@ -222,7 +222,7 @@ async def main() -> None:
             tenant_of_row = next((t for t, f in flow_ids.items() if f == flow), "?")
             # JobRow carries no step_key column; the row's own shape
             # identifies the kind (the item rows carry their admission
-            # terms; the join row AND the join-wait downstream rows
+            # terms; the join row and the join-wait downstream rows
             # carry the join marker — the wait is what they share).
             if meta.get("rate_limits"):
                 step_key = "source.item"
@@ -250,9 +250,9 @@ async def main() -> None:
                     attempt=job.attempt,
                     claim_epoch=job.claim_epoch,
                 )
-                # THE APPLIED DEFERRAL (read back off the row): the
-                # backend's own deferral floor applies — the applied
-                # wait is at least the floor, whatever the hint priced.
+                # read back off the row. the backend's own deferral floor
+                # applies — the applied wait is at least the floor, whatever
+                # the hint priced.
                 applied = await pool.fetchval(
                     f'SELECT scheduled_at - now() FROM "{schema}".jobs WHERE id = $1',  # noqa: S608  # Why: the schema is the demo's settings-validated identifier; every value is a bound parameter.
                     job.id,
@@ -274,16 +274,15 @@ async def main() -> None:
                 f"  ACQUIRE tenant={tenant_of_row:<7} step={step_key:<12} "
                 f"bucket={','.join(names)}  outcome={execution.outcome}"
             )
-        # THE SWEEP ARMS (the leader's tick faces): due scheduled rows
-        # promote back to pending (the denial cycle's own act), the joins
-        # fire, the outbox delivers the consumers.
+        # due scheduled rows promote back to pending (the denial cycle's own
+        # act), the joins fire, the outbox delivers the consumers.
         async with pool.acquire() as db:
             await sweep_scheduled_to_pending(db, schema=schema)
         await sweep_join_rederive(pool, wsql)
         await drain_outbox(pool, wsql)
 
-        # THE IDLE BREATH: a round with nothing claimable (the snoozed
-        # rows' due time is in the future) waits instead of spinning.
+        # a round with nothing claimable (the snoozed rows' due time is in the
+        # future) waits instead of spinning.
         if not dispatched:
             await asyncio.sleep(0.05)
 

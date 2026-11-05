@@ -1,16 +1,16 @@
-"""The emit transaction's pins — the design's ONE new primitive (PROOF.md §6a).
+"""The emit transaction's pins — the design's one new primitive (PROOF.md §6a).
 
-The shipped fork inserts children ONLY inside the parent's terminal-mark
+The shipped fork inserts children only inside the parent's terminal-mark
 tx1 (fork-at-finalize). A STREAMING source must emit children while
 ITSELF staying ``running``: the emit tx is the certified fork shapes
 re-bound (the children INSERT + the edge rows) PLUS the cursor checkpoint
-on the source row's own metadata under the FULL claim fence — ONE
+on the source row's own metadata under the FULL claim fence — one
 transaction (the fork-atomicity law at page granularity).
 
-THE REFUTED-CLAIM DISCIPLINE (the spike's own refuted claim, PROOF.md §6 —
+the REFUTED-CLAIM DISCIPLINE (the spike's own refuted claim, PROOF.md §6 —
 198 UniqueViolations in the first run): the per-record identity rides
-``map_index`` — the fork's idempotency key AND the step-ledger's arbiter
-BOTH discriminate siblings by it; emit stamps ``map_index`` + ``trace_id``
+``map_index`` — the fork's idempotency key and the step-ledger's arbiter
+both discriminate siblings by it; emit stamps ``map_index`` + ``trace_id``
 per child, or every record's children collide onto one row.
 
 The kill-storm pins drive the REAL ``pg_terminate_backend`` (a real
@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 WindowHook = Callable[[str, ConnLike], Awaitable[None]]
 
 
-# ── the drivers (the REAL surfaces, the spike's recorded fakes replaced) ─
+# ── the drivers (the real surfaces, the spike's recorded fakes replaced) ─
 
 
 async def make_source(
@@ -68,7 +68,7 @@ async def make_source(
     source_id = await insert_node(
         conn, wf_sql, NodeSpec(flow_id=flow_id, step_key="source", actor="wf", queue="default")
     )
-    # A FLAT retry curve on the source row (the shipped RetryPolicy
+    # A flat retry curve on the source row (the shipped RetryPolicy
     # columns): the reclaim's deferral then floors at the shipped
     # MIN_DEFERRAL_INTERVAL (1 s) instead of the default curve's 5s * 2^n
     # — the storm's resume turns around fast, exactly as the spike's
@@ -170,7 +170,7 @@ async def reclaim_until_claim(
     sweep, polled (bounded — a hang is a defect) until the source row is
     actually claimable (its own retry curve's floor defers it), then the
     claim (the REAL dispatch-claim's fence shape). Returns the fresh
-    claim view. NO fixed sleep: the poll ticks the shipped sweeps; the
+    claim view. no fixed sleep: the poll ticks the shipped sweeps; the
     row's own curve decides when."""
     deadline = asyncio.get_running_loop().time() + timeout_s
     while True:
@@ -216,7 +216,7 @@ async def kill_backend_at(window: int, dsn: str) -> WindowHook:
     return hook
 
 
-# ── THE KILL STORM: a kill at every statement window ────────────────────
+# ── the kill storm: a kill at every statement window ────────────────────
 
 
 @pytest.mark.integration
@@ -232,10 +232,10 @@ async def test_emit_tx_atomic_at_every_statement_window(
 ) -> None:
     """The kill-storm scenario (the spike's table, windows #0-#2): a REAL
     server-side kill inside the emit tx — after the children (#1), after
-    the edges (#2), after the cursor checkpoint but BEFORE the commit
+    the edges (#2), after the cursor checkpoint but before the commit
     (#3, the window that pins the whole design) — must roll the WHOLE
     batch back (zero partial pages), and the resume (the REAL reclaim +
-    promotion + re-claim + re-emit FROM THE CURSOR) must land exactly the
+    promotion + re-claim + re-emit FROM the CURSOR) must land exactly the
     lost page: zero re-emitted children, zero lost children."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     source_id = await make_source(wf_conn, wf_schema, flow_id, wf_sql)
@@ -261,7 +261,7 @@ async def test_emit_tx_atomic_at_every_statement_window(
     finally:
         await close_storm_pool(pool)
 
-    # ZERO partial pages: the kill at ANY in-tx window rolls everything back.
+    # zero partial pages: the kill at any in-tx window rolls everything back.
     assert await committed_children(wf_conn, wf_schema, source_id) == 0, (
         f"window {window}: a killed emit tx left partial children — the emit is not one transaction"
     )
@@ -269,10 +269,9 @@ async def test_emit_tx_atomic_at_every_statement_window(
         f"window {window}: the cursor advanced outside the emit tx"
     )
 
-    # THE RESUME: the REAL reclaim + promotion; re-claim; re-emit the
-    # lost page FROM THE CURSOR, then the next page — ONE claim streams
-    # ALL pages (the source never finalizes mid-stream; every emit
-    # fences on the SAME claim view).
+    # the real reclaim + promotion; re-claim; re-emit the lost page FROM the
+    # cursor, then the next page — one claim streams all pages (the source
+    # never finalizes mid-stream; every emit fences on the same claim view).
     worker, attempt, epoch = await reclaim_until_claim(module_pg_pool, wf_sql, wf_schema, source_id)
     await emit_batch(
         module_pg_pool,
@@ -285,8 +284,8 @@ async def test_emit_tx_atomic_at_every_statement_window(
         children=page_children(_PAGES[0], flow_id),
         cursor={"page": 0},
     )
-    # Page 1 emits under the SAME claim; the run drains — the
-    # second page must exist EXACTLY ONCE.
+    # Page 1 emits under the same claim; the run drains — the
+    # second page must exist exactly once.
     await emit_batch(
         module_pg_pool,
         wf_sql,
@@ -328,7 +327,7 @@ async def test_emit_tx_zero_reemitted_zero_lost_across_pages(
     redlog: RedLog,
 ) -> None:
     """The storm's mid-page + between-pages windows (the spike's #3-#7): a
-    kill AFTER a committed page (the backend dies between emit calls)
+    kill after a committed page (the backend dies between emit calls)
     loses NOTHING (the page is committed); the resume continues from the
     cursor — the next page's children land exactly once. The kill inside
     page 2's tx (after its children) rolls page 2 back WHOLE (a
@@ -356,8 +355,8 @@ async def test_emit_tx_zero_reemitted_zero_lost_across_pages(
             cursor={"page": 0},
         )
         assert await committed_children(wf_conn, wf_schema, source_id) == 3
-        # THE KILL: server-side — the holder's lease left to lapse (the
-        # claim wrote a 250 ms lease) — the REAL reclaim's eligibility.
+        # server-side — the holder's lease left to lapse (the claim wrote a 250
+        # ms lease) — the real reclaim's eligibility.
         async with pool.acquire() as c:
             conn_pid = await c.fetchval("SELECT pg_backend_pid()")
         killer = await asyncpg.connect(dsn)
@@ -368,13 +367,12 @@ async def test_emit_tx_zero_reemitted_zero_lost_across_pages(
     finally:
         await close_storm_pool(pool)
 
-    # Page 0 SURVIVES the kill (it was committed): zero lost.
+    # Page 0 survives the kill (it was committed): zero lost.
     assert await committed_children(wf_conn, wf_schema, source_id) == 3
     cursor = await read_cursor(wf_conn, wf_schema, source_id)
     assert cursor == {"page": 0}, "a committed page's cursor must survive the kill"
 
-    # THE RESUME (the real reclaim; the lease lapsed): re-claim, emit
-    # page 1 — the resume starts at N+1, never N, never N+2.
+    # re-claim, emit page 1 — the resume starts at N+1, never N, never N+2.
     worker, attempt, epoch = await reclaim_until_claim(module_pg_pool, wf_sql, wf_schema, source_id)
     await emit_batch(
         module_pg_pool,
@@ -401,7 +399,7 @@ async def test_emit_tx_zero_reemitted_zero_lost_across_pages(
     )
     assert total == 6, f"expected exactly 6 chain rows after the resume, got {total}"
     assert len({r[0] for r in keys}) == 6, "duplicate idempotency keys — the resume re-emitted"
-    # Zero lost children: every record's chain START exists (6 distinct
+    # Zero lost children: every record's chain start exists (6 distinct
     # map_index values, one row each).
     idx = await wf_conn.fetch(
         f'SELECT map_index FROM "{wf_schema}".jobs WHERE parent_id = $1 '
@@ -411,7 +409,7 @@ async def test_emit_tx_zero_reemitted_zero_lost_across_pages(
     assert [r[0] for r in idx] == [0, 1, 2, 3, 4, 5]
 
 
-# ── THE FENCE: a zombie source cannot emit ───────────────────────────────
+# ── the fence: a zombie source cannot emit ───────────────────────────────
 
 
 @pytest.mark.integration
@@ -423,8 +421,8 @@ async def test_emit_fenced_on_superseded_claim(
     redlog: RedLog,
 ) -> None:
     """The claim fence is the emit's fence: the cursor checkpoint runs
-    under the FULL dispatch fence (status='running' AND locked_by_worker
-    AND attempt AND claim_epoch). A ZOMBIE source — its attempt
+    under the FULL dispatch fence (status='running' and locked_by_worker
+    and attempt and claim_epoch). A ZOMBIE source — its attempt
     superseded by the reclaim + re-claim — updates NOTHING: the emit tx
     aborts (the children + edges roll back with it), the loud refusal on
     the record."""
@@ -432,14 +430,13 @@ async def test_emit_fenced_on_superseded_claim(
     source_id = await make_source(wf_conn, wf_schema, flow_id, wf_sql)
     _worker, _attempt, _epoch = await claim_source(wf_conn, wf_schema, source_id)
 
-    # THE SUPERSESSION: the real reclaim + a fresh claim (the zombie's
-    # attempt is now stale).
+    # the real reclaim + a fresh claim (the zombie's attempt is now stale).
     _fresh_worker, fresh_attempt, fresh_epoch = await reclaim_until_claim(
         module_pg_pool, wf_sql, wf_schema, source_id
     )
     assert fresh_attempt > _attempt or fresh_epoch != _epoch
 
-    # THE ZOMBIE EMITS with its stale claim view: refused, loudly.
+    # the zombie emits with its stale claim view: refused, loudly.
     with pytest.raises(EmitFencedError):
         await emit_batch(
             module_pg_pool,
@@ -452,7 +449,7 @@ async def test_emit_fenced_on_superseded_claim(
             children=page_children(_PAGES[0], flow_id),
             cursor={"page": 0},
         )
-    # ZERO children, the cursor unmoved: the fenced emit wrote nothing.
+    # zero children, the cursor unmoved: the fenced emit wrote nothing.
     redlog.red(
         "t20-emit-zombie",
         "the cursor checkpoint NOT fenced on the claim (a zombie emit "
@@ -464,7 +461,7 @@ async def test_emit_fenced_on_superseded_claim(
     assert await read_cursor(wf_conn, wf_schema, source_id) is None
 
 
-# ── THE REFUTED-CLAIM DISCIPLINE: map_index is load-bearing ─────────────
+# ── the refuted-claim discipline: map_index is load-bearing ─────────────
 
 
 @pytest.mark.integration
@@ -476,10 +473,10 @@ async def test_emit_map_index_discriminates_siblings(
     redlog: RedLog,
 ) -> None:
     """The spike's refuted-claim discipline, pinned (198 collisions
-    without it): two records' chain starts through ONE emit — same step
+    without it): two records' chain starts through one emit — same step
     key, DIFFERENT map_index — are TWO rows with TWO idempotency keys,
     and the step-ledger's arbiter gives them TWO independent claims. The
-    collision scenario: the SAME (step, map_index) emitted twice aborts the
+    collision scenario: the same (step, map_index) emitted twice aborts the
     tx on the unique key (the loud refusal — never a silent dedup, never
     a partial page)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -525,8 +522,8 @@ async def test_emit_map_index_discriminates_siblings(
     assert len({r["idempotency_key"] for r in rows}) == 2, "one key per record"
     assert {r["trace_id"] for r in rows} == {"app-7", "app-8"}, "the trace rides the emit"
 
-    # THE LEDGER ARBITER: the two siblings take INDEPENDENT claims (the
-    # arbiter tuple (flow, step_key, map_index, attempt) discriminates).
+    # the two siblings take independent claims (the arbiter tuple (flow,
+    # step_key, map_index, attempt) discriminates).
     from taskq.workflows.ledger import claim_step_ledger
 
     row7, row8 = rows[0], rows[1]
@@ -551,16 +548,15 @@ async def test_emit_map_index_discriminates_siblings(
         )
     assert c7.ledger_id != c8.ledger_id, "the siblings share a ledger claim — the collision"
 
-    # THE COLLISION PROOF: re-emitting the same record (the same
-    # step + map_index) aborts the tx on the unique key — the loud
-    # refusal; the tx's OTHER children (a fresh sibling) roll back with
-    # it (never a partial page). THE NAMED DEATH (the streaming router's
-    # typed death): the raw UniqueViolationError no longer escapes
-    # whole — the divergence is PageDivergedError (the cursor diverged
+    # re-emitting the same record (the same step + map_index) aborts the tx on
+    # the unique key — the loud refusal; the tx's other children (a fresh
+    # sibling) roll back with it (never a partial page). the named death (the
+    # streaming router's typed death): the raw UniqueViolationError no longer
+    # escapes whole — the divergence is PageDivergedError (the cursor diverged
     # from the row history; the remedy — re-sync the cursor — rides the
-    # message). The ARBITER's teeth are the same teeth (the collision
-    # detected, the tx rolled back, the cursor un-advanced); the
-    # raw-typed ladder death is what was fixed.
+    # message). The arbiter's teeth are the same teeth (the collision detected,
+    # the tx rolled back, the cursor un-advanced); the raw-typed ladder death
+    # is what was fixed.
     dupes = [
         EmitChild(
             step_key="screen",
@@ -591,7 +587,7 @@ async def test_emit_map_index_discriminates_siblings(
             children=dupes,
             cursor={"page": 9},
         )
-    # The fresh sibling rolled back WITH the duplicate: no partial page.
+    # The fresh sibling rolled back with the duplicate: no partial page.
     assert await committed_children(wf_conn, wf_schema, source_id) == 2
     assert await read_cursor(wf_conn, wf_schema, source_id) == {"page": 0}, (
         "a failed emit must not advance the cursor"

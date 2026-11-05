@@ -15,7 +15,7 @@ trail), and the consumer loop task died, cancelling every in-flight
 sibling. These pins capture the corrected contract:
 
 - a custom ``BaseException`` subclass from an actor body routes through
-  the SAME generic handler as any ``Exception``: the drain completes, the
+  the same generic handler as any ``Exception``: the drain completes, the
   row lands terminal ``failed`` with the exception's own type name as
   ``error_class``, and the attempt rows carry the real outcome;
 - with retry budget left, the decision is the ordinary retry curve (the

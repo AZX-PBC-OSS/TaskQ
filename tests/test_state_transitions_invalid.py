@@ -157,7 +157,7 @@ async def test_scheduled_to_running_blocked_by_dispatch(
     """scheduled → running is blocked by the dispatch query.
 
     Enqueue a job with future scheduled_at (so it lands in 'scheduled'),
-    call dispatch_batch, and assert the job is NOT in the dispatch result.
+    call dispatch_batch, and assert the job is not in the dispatch result.
     The dispatch CTE selects WHERE status='pending'; a scheduled row
     must not appear.
     """
@@ -315,7 +315,7 @@ async def test_running_to_running_blocked() -> None:
 
     assert_valid_transition rejects it. cancel_phase escalation
     (running/cp=0 → running/cp=1 → running/cp=2) writes a
-    cancel_phase column update, which is NOT a status transition -
+    cancel_phase column update, which is not a status transition -
     the status column remains 'running' throughout.
     """
     job_id = new_uuid()

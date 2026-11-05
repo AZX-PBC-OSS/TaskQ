@@ -13,17 +13,17 @@ The behaviors held:
   releases, the run wedges ``running`` FOREVER; with the join as the
   TERMINAL the run terminalizes SUCCEEDED with ``result()`` == ``None``
   — the succeeded-having-routed-nothing shape through the empty-corpus
-  door. THE PIN'S SEMANTICS (the map's empty-join shape is the named
+  door. the PIN'S SEMANTICS (the map's empty-join shape is the named
   precedent): an empty source list → the join FIRES exactly once with
   ``[]`` → the consumer receives ``[]`` → the flow terminalizes
   succeeded → ``result()`` is the consumer's empty-list answer.
 * the >1000 FAN-IN DRIVER CRASH: ``_route_fork``
   carries no ``MAX_FAN_IN_PER_JOIN`` check; ``validate_fork`` raises
-  INSIDE the finalize tx, OUTSIDE the ladder's try
+  inside the finalize tx, OUTSIDE the ladder's try
   (api/_runner.py:746) — a raw ``ValueError`` escapes ``drive()``, the
   source row wedges ``running``, and the fleet's reclaim re-crashes it
   forever. The error's own remedy (``JoinSpec(child_driven=True)``) is
-  unreachable from the route API. THE PIN: a TYPED, LADDERED, NAMED
+  unreachable from the route API. the PIN: a TYPED, LADDERED, NAMED
   refusal — the source terminal-FAILED with a named ``error_class``,
   the run failed loudly, a re-drive does not re-crash.
 * the ARM-ARITY HOLE: E15's comment claims "E10/E12's faces
@@ -32,7 +32,7 @@ The behaviors held:
   _validate.py:664-666). A zero-param arm BUILDS clean and dies
   ``TypeError: arm_zero() takes 1 positional argument but 2 were given``
   at the child (observed live, ``error_class='TypeError'``); a
-  two-param arm the same. THE PIN: arm arity is a BUILD refusal
+  two-param arm the same. the PIN: arm arity is a BUILD refusal
   (an E-rule naming the arm + the shape).
 * the "RELATED" TRUNCATION: E15's related-check
   (_validate.py:672-678) admits SUPERCLASS params — ``item: DocBase``
@@ -40,48 +40,48 @@ The behaviors held:
   TRUNCATES the subclass's fields (pydantic ``extra='ignore'``: the arm
   receives ``DocBase(doc_id=...)``, the ``text`` field GONE — observed
   live); ``item: BaseModel`` builds clean and dies raw
-  ``PydanticUserError`` at the child. THE PIN (the direction named by
+  ``PydanticUserError`` at the child. the PIN (the direction named by
   the finding, flagged for the maintainer): the arm param
   must be EXACTLY the union member — a superclass/BaseModel param is a
   build refusal NAMING the truncation hazard.
-* the SAME-TAG TWIN COLLAPSE: ``type_tag`` =
+* the same-TAG TWIN COLLAPSE: ``type_tag`` =
   ``module.qualname`` is not injective — two ``create_model("SameQualnameTwin")``
   types share one tag; the second arm SILENTLY OVERWRITES the first in
   the normalized dict (_graph.py:663) and the tag-set totality compare
-  passes both (observed: ``map_arms`` carries ONE entry, the first
-  arm's body gone). THE PIN: duplicate type tags refuse at the verb
+  passes both (observed: ``map_arms`` carries one entry, the first
+  arm's body gone). the PIN: duplicate type tags refuse at the verb
   with the collision named.
 * the CONSUMER'S SMART-UNION MISPICK: the join's consumer
   param ``list[A | B]`` revalidates through pydantic's smart union
   (_runner_codec.py:219) — two members with IDENTICAL fields decode the
-  second member's values AS THE FIRST silently (observed live: the
+  second member's values AS the first silently (observed live: the
   fork's ``media.item:...AudioItem`` row carried ``note="from-b"`` and
-  the consumer received it as ``SumA``). THE PIN (direction flagged in
+  the consumer received it as ``SumA``). the PIN (direction flagged in
   the recorded gap): a routed union whose members are field-identical (no
   discriminator) is a build-time diagnostic naming both members.
 * the ARM-HELD HITL COMPILE-BLINDNESS: E14's ``_node_bodies``
-  walks body/loop_body/map_item but NOT ``map_arms``
+  walks body/loop_body/map_item but not ``map_arms``
   (_validate.py:815-826) — a ``wait_signal`` inside a route arm raises
-  NO E14 signal (no warning, no Mermaid hold) AND a gate declared on
+  no E14 signal (no warning, no Mermaid hold) and a gate declared on
   the SOURCE rejects "declared-never-waited" though the arm waits
-  (both observed live). THE PIN (the contract per the house's
+  (both observed live). the PIN (the contract per the house's
   zero-false-positive doctrine): the E14 walk covers ``map_arms`` — an
-  arm wait with NO declared gate is the WARNING face; the declared gate
+  arm wait with no declared gate is the WARNING face; the declared gate
   on the SOURCE covers the arms' waits (no diagnostic).
 * the ROUTE→MAP DOUBLE-ATTACH MESSAGE: map_source's
   check reads ``map_item`` only (_graph.py:572) — map-after-route
   refuses via the ACCIDENTAL "node 'media.join' is declared twice"
-  instead of the designed "already carries a map or a route". THE PIN:
+  instead of the designed "already carries a map or a route". the PIN:
   the designed message fires on all four double-attach directions.
 * the UNRESOLVABLE-ANNOTATION MESSAGE: the verb
   hard-refuses "does not declare a list[...] return" when the source
   DID declare one the compile could not resolve (_graph.py:714-719;
-  observed live with a factory-built model). THE PIN: the message
+  observed live with a factory-built model). the PIN: the message
   distinguishes undeclared from unresolvable (the undeclared face's
   message is the GREEN guard).
 * W2 BLIND TO ARM QUEUES: a typo'd
   ``RouteArm(queue="gpuu-typo")`` yields zero diagnostics
-  (_validate.py:1097-1120 reads ``node.queue`` only). THE PIN: the
+  (_validate.py:1097-1120 reads ``node.queue`` only). the PIN: the
   queue-vocabulary warning covers arm queues.
 """
 
@@ -151,12 +151,10 @@ async def process_audio(ctx: object, item: AudioItem) -> AudioResult:
 
 # ── the empty-list route ────────────────────────────────────────
 #
-# THE SAFE SEMANTICS (the map's empty-join shape is the named precedent —
-# ``_map_fork``'s own docstring: "the map over nothing — the join fires
-# empty"): the empty source list is a DEFINED outcome, never a wedge and
-# never a None. NOTE: at this head the MAP face's empty fork
-# crashes raw too (the docstring's shape is aspirational) — the route's
-# fix and the map's fix share the empty-join semantics these pins assert.
+# the empty source list is a defined outcome, never a wedge and never a None.
+# NOTE: at this head the map face's empty fork crashes raw too (the docstring's
+# shape is aspirational) — the route's fix and the map's fix share the
+# empty-join semantics these pins assert.
 
 
 @pytest.mark.integration
@@ -197,8 +195,8 @@ async def test_1a_the_empty_route_fires_the_join_with_the_empty_list(
         f"The empty route WEDGED the run (drive returned {verdict!r}) — "
         "the join row never spawns and the consumer's reserved dep never releases"
     )
-    # THE JOIN FIRED, exactly once, with the empty list.
-    join_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture — the assert IS the runtime shape check.
+    # the JOIN fired, exactly once, with the empty list.
+    join_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture — the assert is the runtime shape check.
         f'SELECT status FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'media.join'",
         flow_id,
@@ -212,7 +210,7 @@ async def test_1a_the_empty_route_fires_the_join_with_the_empty_list(
     )
     fires = await fire_count(wf_conn, wf_schema, join_id)  # pyright: ignore[reportArgumentType]  # Why: the same walk.
     assert fires == 1, f"The join fired {fires} times (exactly once is the law)"
-    # THE CONSUMER RECEIVED [] — its answer is the empty-sum zero, ON result().
+    # the consumer received [] — its answer is the empty-sum zero, on result().
     result = await runner.result(flow_id)
     assert result == {"count": 0}, (
         f"Result() is {result!r} — the consumer's empty-list answer "
@@ -273,7 +271,7 @@ async def test_1b_the_empty_route_terminal_join_returns_the_empty_sum(
 
 async def oversized_source(ctx: StepContext) -> list[ImageItem | AudioItem]:
     """The source: MAX_FAN_IN_PER_JOIN+1 elements (the fork's join
-    over them trips ``validate_fork`` INSIDE the finalize tx)."""
+    over them trips ``validate_fork`` inside the finalize tx)."""
     return [ImageItem(doc_id=f"d{i}", uri="u") for i in range(MAX_FAN_IN_PER_JOIN + 1)]
 
 
@@ -285,7 +283,7 @@ async def test_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
     wf_sql: object,
 ) -> None:
     """A route over MAX_FAN_IN_PER_JOIN+1 elements is a TYPED, LADDERED,
-    NAMED refusal: ``drive()`` does NOT raise a raw error through the
+    NAMED refusal: ``drive()`` does not raise a raw error through the
     driver, the source row terminal-FAILS with a named ``error_class``
     whose message names the fan-in bound, the run FAILS loudly, and a
     re-drive answers 'terminal' quietly (no re-crash loop)."""
@@ -312,9 +310,9 @@ async def test_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
 
     runner = FlowRunner(app.get("2_fan_in_refusa"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
     flow_id = (await runner.create_flow()).flow_id
-    # THE RED LANDS HERE: drive() raises the raw ValueError out of the
-    # finalize tx (untyped, unladdered) instead of returning 'terminal'
-    # over a terminal-FAILED source.
+    # drive() raises the raw ValueError out of the finalize tx (untyped,
+    # unladdered) instead of returning 'terminal' over a terminal-failed
+    # source.
     verdict = await runner.drive(flow_id, tick=0.02, max_ticks=120)
     assert verdict == "terminal", f"Drive returned {verdict!r} over the refusal"
     source_row = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
@@ -333,12 +331,12 @@ async def test_2_the_oversized_route_fan_in_is_a_laddered_named_refusal(
     assert str(MAX_FAN_IN_PER_JOIN) in str(  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
         source_row["error_message"]  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
     ), f"The refusal's message must name the bound: {source_row!r}"
-    # THE RUN FAILS LOUDLY.
+    # the run fails loudly.
     root = await wf_conn.fetchrow(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the same walk.
         f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id
     )
     assert root is not None and root["status"] == "failed", dict(root) if root else None  # pyright: ignore[reportArgumentType,reportIndexType]  # Why: the same walk.
-    # NO RE-CRASH LOOP: a re-drive over the terminal run is a quiet
+    # no re-crash loop: a re-drive over the terminal run is a quiet
     # 'terminal' (the reclaim never re-executes the refusal).
     assert await runner.drive(flow_id, tick=0.02, max_ticks=20) == "terminal"
 
@@ -373,10 +371,9 @@ def _assert_arm_arity_refusal(exc_info: pytest.ExceptionInfo[WorkflowValidationE
     assert any(
         rule in message for rule in ("E10-arity", "E12-deps-contract", "E15-route-totality")
     ), f"The refusal must be an E-rule owning the arm's arity — got: {message}"
-    # THE LANDED NAMING (the merge's reconciliation): the refusal names
-    # the offending route child — '<source>.item:<TypeTag>' (the runtime's
-    # own address for the arm; the child key IS the arm's identity on the
-    # rows).
+    # the refusal names the offending route child — '<source>.item:<TypeTag>'
+    # (the runtime's own address for the arm; the child key is the arm's
+    # identity on the rows).
     assert "media.item" in message, (
         f"The refusal must NAME the offending route child — got: {message}"
     )
@@ -441,7 +438,7 @@ async def doc_source(ctx: StepContext) -> list[TextDoc | ImageDoc]:
 
 async def base_arm(ctx: object, item: DocBase) -> dict[str, object]:
     """The superclass param: admitted by E15's related-check today; at
-    runtime the codec validates the TextDoc element INTO DocBase —
+    runtime the codec validates the TextDoc element into DocBase —
     pydantic's extra='ignore' drops ``text`` and the arm receives the
     truncated shell (observed live: type 'DocBase', has_text False)."""
     return {"doc_id": item.doc_id}
@@ -462,7 +459,7 @@ def test_4_a_superclass_arm_param_is_a_build_refusal() -> None:
     """The arm param IS the decode's target: anything WIDER than the
     union member decodes the element with the member's fields DROPPED —
     the silent truncation the typed boundary exists to refuse. The
-    refusal names the arm AND the truncation hazard."""
+    refusal names the arm and the truncation hazard."""
     app = WorkflowApp()
 
     @app.workflow("4_superclass_ar")
@@ -475,8 +472,8 @@ def test_4_a_superclass_arm_param_is_a_build_refusal() -> None:
     with pytest.raises(WorkflowValidationError) as exc_info:
         app.get("4_superclass_ar")
     message = str(exc_info.value)
-    # The contract: E15 fires, naming the offending arm AND the member
-    # type it must be EXACT to — the hazard's sentence is wording, never
+    # The contract: E15 fires, naming the offending arm and the member
+    # type it must be exact to — the hazard's sentence is wording, never
     # pinned.
     assert "E15-route-totality" in message, message
     assert "base_arm" in message, message
@@ -509,7 +506,7 @@ def test_4_a_bare_basemodel_arm_param_is_a_build_refusal() -> None:
 
 #: Two DISTINCT models, one ``module.qualname`` tag (the factory-built
 #: model shape): the normalized ``map_arms`` dict keys by the tag, so the
-#: second arm SILENTLY OVERWRITES the first (observed: one entry, the
+#: second arm silently overwrites the first (observed: one entry, the
 #: first arm's body gone) and the tag-set totality compare passes both.
 TwinA = create_model("SameQualnameTwin", doc_id=(str, ...))
 TwinB = create_model("SameQualnameTwin", doc_id=(str, ...))
@@ -519,7 +516,7 @@ async def twin_source(ctx: StepContext) -> list[Any]:  # the union rides __annot
     return []
 
 
-twin_source.__annotations__["return"] = list[TwinA | TwinB]  # type: ignore[valid-type]  # Why: the two twins ARE the scenario's union — the annotation must hold BOTH distinct types (a string annotation could not name them apart; that is the finding's point).
+twin_source.__annotations__["return"] = list[TwinA | TwinB]  # type: ignore[valid-type]  # Why: the two twins are the scenario's union — the annotation must hold both distinct types (a string annotation could not name them apart; that is the finding's point).
 
 
 async def twin_arm_a(ctx: object, item: Any) -> dict[str, str]:
@@ -552,7 +549,7 @@ def test_5_duplicate_type_tags_refuse_at_the_verb() -> None:
     with pytest.raises(WorkflowBuildError) as exc_info:
         app.get("5_twin_collaps")
     message = str(exc_info.value)
-    # The contract: the verb refuses, naming the COLLIDING TAG (the
+    # The contract: the verb refuses, naming the colliding tag (the
     # subject the two members share) — the collision's sentence is
     # wording, never pinned.
     assert "SameQualnameTwin" in message, (
@@ -586,7 +583,7 @@ async def sum_arm_b(ctx: object, item: AudioItem) -> ArmSumB:
 
 async def consume_sums(ctx: object, items: list[ArmSumA | ArmSumB]) -> dict[str, int]:
     """The join's consumer over the IDENTICAL-FIELD union: pydantic's
-    smart union decodes the second member's values AS THE FIRST silently
+    smart union decodes the second member's values AS the first silently
     (observed live: the AudioItem-armed child carried note='from-b' and
     the consumer received the arm A's sum type)."""
     return {"n": len(items)}
@@ -596,8 +593,8 @@ def test_6_field_identical_union_members_are_a_build_diagnostic() -> None:
     """A routed sum whose members are field-identical (no discriminator)
     cannot round-trip the consumer's decode honestly — the dispatch is
     exact-type at the fork but the consumer's decode needs the tag. The
-    build (the verb's door OR the validator's re-proof — the seat is the
-    maintainer's, it is flagged) names BOTH members and the hazard."""
+    build (the verb's door or the validator's re-proof — the seat is the
+    maintainer's, it is flagged) names both members and the hazard."""
     app = WorkflowApp()
 
     @app.workflow("6_smart_union_hazar")
@@ -625,10 +622,10 @@ def test_6_field_identical_union_members_are_a_build_diagnostic() -> None:
     )
     # (The hazard's sentence — "identical", "discriminator", the smart
     # union's prose — is wording, never pinned: the diagnostic naming
-    # BOTH offending members is the contract.)
+    # both offending members is the contract.)
 
 
-# ── the arm-held HITL compile-blindness ─────────────────────────
+# ── the arm-held hitl compile-blindness ─────────────────────────
 
 
 class ArmApproval(BaseModel):
@@ -644,7 +641,7 @@ async def waiting_image_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
 
 def test_7a_an_arm_wait_with_no_declared_gate_is_warned() -> None:
     """The E14 walk covers the arms: an arm body calling
-    ``ctx.wait_signal`` with NO gate declared on the route's source is
+    ``ctx.wait_signal`` with no gate declared on the route's source is
     the waited-never-declared face — the WARNING (the expiry-as-value ruling's
     severity: the hold is row-real but compile-invisible), naming the
     route's source node."""
@@ -673,7 +670,7 @@ def test_7a_an_arm_wait_with_no_declared_gate_is_warned() -> None:
 
 def test_7b_the_source_gate_covers_the_arms_waits() -> None:
     """The contract's other face: the route's arms are the source node's
-    OWN bodies for the gate walk — a gate declared on the source COVERS
+    own bodies for the gate walk — a gate declared on the source COVERS
     the arms' waits (per-arm gate declarations do not exist; the source's
     seat is the arms' seat). No E14 diagnostic fires either direction."""
     app = WorkflowApp()
@@ -695,8 +692,9 @@ def test_7b_the_source_gate_covers_the_arms_waits() -> None:
             )
         )
 
-    # THE RED LANDS HERE: app.get raises WorkflowValidationError (E14's
-    # declared-never-waited ERROR) though the arm WAITS on the declared gate.
+        # app.get raises WorkflowValidationError (E14's declared-never-waited
+
+    # error) though the arm waits on the declared gate.
     compiled = app.get("7b_arm_wait_gated_sourc")
     e14 = [d for d in validate_compiled(compiled) if d.rule == "E14-gate-wiring"]
     assert not e14, (
@@ -710,7 +708,7 @@ def test_7b_the_source_gate_covers_the_arms_waits() -> None:
 
 def test_8_every_double_attach_direction_speaks_the_designed_message() -> None:
     """One fork per node — ALL FOUR double-attach directions refuse, and
-    every refusal NAMES THE OFFENDING NODE (the doubled source, not its
+    every refusal NAMES the OFFENDING NODE (the doubled source, not its
     join child): the diagnostic's subject is the node that finalized
     twice, never the accidental join-key collision (which names a
     different node and no cause)."""
@@ -736,7 +734,7 @@ def test_8_every_double_attach_direction_speaks_the_designed_message() -> None:
         return _route(src)
 
     def wire_map_after_route(src: Promise[object]) -> Promise[object]:
-        _route(src)  # THE REJECTED DIRECTION: map_source's check reads map_item only
+        _route(src)  # the rejected direction: map_source's check reads map_item only
         return _map(src)
 
     def wire_map_after_map(src: Promise[object]) -> Promise[object]:
@@ -760,8 +758,8 @@ def test_8_every_double_attach_direction_speaks_the_designed_message() -> None:
         with pytest.raises(WorkflowBuildError) as exc_info:
             app.get(f"typed_route_refusal_{label.replace('-', '_')}")
         message = str(exc_info.value)
-        # The contract: the double-attach refusal fires on the DOUBLED
-        # SOURCE node — never on its join child (the accidental door's
+        # The contract: the double-attach refusal fires on the doubled
+        # source node — never on its join child (the accidental door's
         # subject). Which sentence carries the cause is wording; which
         # node the rule names is the subject.
         assert "'media'" in message, (
@@ -784,7 +782,7 @@ def _make_unresolvable_source() -> tuple[Any, type[BaseModel]]:
     ``body_hints`` returns {} and the verb cannot read the union."""
     model = create_model("UnresolvableDoc", doc_id=(str, ...))
 
-    async def factory_source(ctx: StepContext) -> "list[UnresolvableDoc]":  # noqa: F821, UP037  # Why: the quoted, never-resolvable name IS the scenario — a declared annotation the compile cannot resolve (the factory-built model's shape); a resolvable spelling would defeat the probe.  # pyright: ignore[reportUndefinedVariable, reportUnknownParameterType]  # Why: the same scenario — the undefined name is the probe's subject, not a defect.
+    async def factory_source(ctx: StepContext) -> "list[UnresolvableDoc]":  # noqa: F821, UP037  # Why: the quoted, never-resolvable name is the scenario — a declared annotation the compile cannot resolve (the factory-built model's shape); a resolvable spelling would defeat the probe.  # pyright: ignore[reportUndefinedVariable, reportUnknownParameterType]  # Why: the same scenario — the undefined name is the probe's subject, not a defect.
         return cast("list[UnresolvableDoc]", [{"doc_id": "d1"}])  # noqa: F821  # Why: the same deliberate unresolved name — the body's code references no value (no closure cell), so the hint-resolution seam finds nothing.  # pyright: ignore[reportUndefinedVariable]  # Why: the same scenario.
 
     return factory_source, model
@@ -797,7 +795,7 @@ async def hidden_arm(ctx: object, item: BaseModel) -> dict[str, str]:
 def test_9_the_unresolvable_return_is_distinguished_from_undeclared() -> None:
     """The source DECLARED ``list[UnresolvableDoc]`` — the compile cannot
     RESOLVE it. The refusal must say so — the DECLARED-but-unresolvable
-    face and the NO-annotation face are DIFFERENT refusals (the same
+    face and the no-annotation face are DIFFERENT refusals (the same
     door, the cause distinguished), and both name the offending source
     node. The distinction IS the contract; which sentence carries it is
     wording (the de-slop law: never pinned)."""
@@ -818,14 +816,14 @@ def test_9_the_unresolvable_return_is_distinguished_from_undeclared() -> None:
         f"The refusal must NAME the offending source node — got: {unresolvable}"
     )
 
-    # THE DISTINCTION, measured on the other face: a source with NO
-    # return annotation is a DIFFERENT refusal — same door, different
-    # cause (a collapse here is the lie in either direction: the
-    # undeclared face pointing at a resolution fix, the unresolvable
-    # face pointing at an annotation that exists).
+    # the distinction, measured on the other face: a source with no return
+    # annotation is a different refusal — same door, different cause (a
+    # collapse here is the lie in either direction: the undeclared face
+    # pointing at a resolution fix, the unresolvable face pointing at an
+    # annotation that exists).
     app2 = WorkflowApp()
 
-    async def bare_source(ctx: StepContext):  # pyright: ignore[reportUnknownParameterType]  # Why: the deliberately UNANNOTATED body IS the contrast face (the undeclared refusal's subject).
+    async def bare_source(ctx: StepContext):  # pyright: ignore[reportUnknownParameterType]  # Why: the deliberately unannotated body is the contrast face (the undeclared refusal's subject).
         return []
 
     @app2.workflow("9_undeclared_retur")

@@ -5,7 +5,7 @@ The obligations: the chain, the fan-out,
 the chatty body — ported onto the BUILT surface. Each pin's REJECTED
 VARIANT is named; the unfenced variants stay RED FOREVER (the failure log).
 
-THE LAW (the progress reporting decision e): observability degrades FIRST, never
+Observability degrades first, never
 correctness. The emission is best-effort — never in the finalize path
 (the zero-finalize-changes probe, ``test_wf_progress_persistence.py``),
 never raised into the body on infrastructure failure, never blocking the
@@ -53,7 +53,7 @@ class Ingest(BaseModel):
     doc_id: str
 
 
-# ── THE CHAIN (PROOF 1): the body's emission → the rows → the replay ────
+# ── the chain (proof 1): the body's emission → the rows → the replay ────
 
 
 async def test_the_chain_body_emission_lands_in_both_channels(
@@ -62,10 +62,10 @@ async def test_the_chain_body_emission_lands_in_both_channels(
     wf_pool: asyncpg.Pool,
 ) -> None:
     """The chain, end-to-end on the built runner: a body's
-    ``ctx.progress`` calls land in the STREAM ring (class='user') AND the
+    ``ctx.progress`` calls land in the STREAM ring (class='user') and the
     STATE channel (latest-wins), and the engine's auto projections
-    (started + terminal) interleave in the SAME seq space — ONE stream,
-    ONE cursor. The occurrence counter is HONEST: it counts every
+    (started + terminal) interleave in the same seq space — one stream,
+    one cursor. The occurrence counter is HONEST: it counts every
     emission, coalesced or not."""
     app = WorkflowApp()
     seen: dict[str, Any] = {}
@@ -107,8 +107,8 @@ async def test_the_chain_body_emission_lands_in_both_channels(
         node,
     )
     kinds = [(r["class"], r["kind"]) for r in stream]
-    # the auto STARTED first, the user emissions, the auto TERMINAL last —
-    # ONE interleaved range. The STREAM ring receives the COALESCED
+    # the auto started first, the user emissions, the auto terminal last —
+    # one interleaved range. The stream ring receives the coalesced
     # snapshots (one per flush — the cadence's, not the emissions'), while
     # the occurrence counter keeps the honest total (6, above): the
     # emitted-vs-delivered pair is the design, never a loss hidden in the
@@ -129,7 +129,7 @@ async def test_declared_schema_door_refuses_wrong_shape(
 ) -> None:
     """The typed door (decision a — the TypedGate-door pattern): a node
     that declared ``progress_schema=Page`` refuses a wrong-shaped data
-    emission with :class:`ProgressRefusedError` — raised INTO the body,
+    emission with :class:`ProgressRefusedError` — raised into the body,
     which is the authoring error's place. The refusal ladders like any
     body failure (the node's correctness path owns it)."""
     app = WorkflowApp()
@@ -194,7 +194,7 @@ async def test_data_cap_truncates_with_the_marker(wf_pool: asyncpg.Pool, wf_sql:
     await emitter.aclose()  # the flush task must not outlive the test
 
 
-# ── THE COALESCE (PROOF 4): the chatty body held at the cadence ─────────
+# ── the COALESCE (proof 4): the chatty body held at the cadence ─────────
 
 
 async def test_chatty_body_coalesce_cadence_and_constant_rows(
@@ -267,7 +267,7 @@ async def test_chatty_body_coalesce_cadence_and_constant_rows(
 
 async def test_flush_failure_never_fails_the_body(wf_sql: Any, wf_schema: str) -> None:
     """The asymmetry (decision e), unit-shaped: a flush that CANNOT write
-    (the pool is broken) is counted — ``write_errors`` — and NEVER raised
+    (the pool is broken) is counted — ``write_errors`` — and never raised
     into the body; the first loss is WARNED (the loudness half — the
     PoC's adversarial review note: a systematically failing flush must not look
     healthy). The all-dropped node still terminalizes: correctness is
@@ -287,7 +287,7 @@ async def test_flush_failure_never_fails_the_body(wf_sql: Any, wf_schema: str) -
     )
     await emitter.emit(50, "m", None)
     await emitter.emit(60, "m2", None)
-    await emitter.aclose()  # must NOT raise
+    await emitter.aclose()  # must not raise
     assert emitter.write_errors >= 1
     assert emitter.emitted == 2
     assert emitter.appended == 0
@@ -355,7 +355,7 @@ async def test_terminal_projection_lands_after_the_finalize(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The projection's order (the display-fence's substrate): the auto
-    TERMINAL event lands only AFTER the finalize applied (the ledger owns
+    TERMINAL event lands only after the finalize applied (the ledger owns
     the state; the projection publishes it) — and a FAILING node's
     terminal carries the outcome, so the display can derive the failure
     from the stream too (the ledger remains the authority)."""
@@ -382,10 +382,10 @@ async def test_terminal_projection_lands_after_the_finalize(
         f'SELECT status::text FROM "{wf_schema}".jobs WHERE id = $1', node
     )
     assert status == "failed"
-    # THE LIE'S SUBSTRATE, on the record: the node's last progress said
-    # 99% — and the STATE row keeps it (advisory), while the LEDGER says
-    # failed. The display pins (the faces file) reject the liar that
-    # derives the state from HERE.
+    # the lie's substrate, on the record: the node's last progress said 99% —
+    # and the state row keeps it (advisory), while the ledger says failed. The
+    # display pins (the faces file) reject the liar that derives the state from
+    # here.
     state = await wf_conn.fetchrow(
         f"""SELECT pct, message FROM "{wf_schema}".wf_node_progress
             WHERE node_id = $1 AND channel = 'progress'""",

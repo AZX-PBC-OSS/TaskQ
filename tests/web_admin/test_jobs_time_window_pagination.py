@@ -8,21 +8,21 @@ router driven through httpx ASGI — is this module's too):
 1. Page 2 silently lost the window. The jobs list's cursor pagination
    renders its page-turn URLs through the ``filter_qs`` macro in
    ``_partials/job_table.html``, which carried status/queue/actor/tags/
-   search/identity/fairness — but NOT ``time_from``/``time_to``. A page 1
+   search/identity/fairness — but not ``time_from``/``time_to``. A page 1
    filtered to an absolute window paginated into an UNFILTERED page 2:
    the cursor keys into a result set the next request no longer
    describes, so the operator silently read rows outside the window they
    asked about. The pin: page 1 filtered, then the walk through the REAL
-   rendered cursor — page 2 must ALSO be filtered, to the seed oracle.
+   rendered cursor — page 2 must also be filtered, to the seed oracle.
 
 2. A lone bound was silently ignored. ``_parse_time_range`` required the
    PAIR and returned no filter at all otherwise — no 400, the operator's
    "everything since Tuesday" read as "everything". The code's own intent
-   decides the fix: ``_build_where`` binds each bound as its OWN clause,
+   decides the fix: ``_build_where`` binds each bound as its own clause,
    and the client surface's ``JobFilter.created_before`` is a standalone
    predicate, so one side of a time window is a valid open-ended filter.
    (The partial-cursor 400s elsewhere in this admin — history.py,
-   queues.py — are about cursors: their halves encode ONE seam no subset
+   queues.py — are about cursors: their halves encode one seam no subset
    can describe. A time bound is a filter, and a filter narrows.) So a
    lone bound now filters, the other side open — pinned here against the
    seed plan on real Postgres, and at the unit boundary below.
@@ -52,13 +52,13 @@ from taskq.web.admin import create_router, setup_admin_state
 
 pytestmark = [pytest.mark.fastapi]
 
-# Every seeded timestamp derives from this FIXED instant (the
+# Every seeded timestamp derives from this fixed instant (the
 # differential's idiom): the windows are absolute, so their expectations
 # must not drift with the wall clock. Days in the past at authoring time.
 _BASE = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
 
 # 51 in-window rows: one more than the page size (50), so a filtered page 1
-# has exactly ONE page-2 row — any unfiltered page 2 is loud (it would show
+# has exactly one page-2 row — any unfiltered page 2 is loud (it would show
 # the older rows instead).
 _N_INSIDE = 51
 # Rows the window must exclude on each side: enough that an unfiltered
@@ -122,7 +122,7 @@ def _window_shapes(plan: _SeedPlan) -> list[tuple[str, str, list[_SeedRow]]]:
     to_str = quote_plus((_BASE + timedelta(minutes=50) + timedelta(seconds=1)).isoformat())
     return [
         # The full bracket: exactly the inside population (the upper bound
-        # is INCLUSIVE, created_at <= time_to — hence the +1s so the row
+        # is inclusive, created_at <= time_to — hence the +1s so the row
         # at exactly _BASE + 50min stays in).
         (
             "bracketed window",
@@ -158,7 +158,7 @@ class _Lab:
 async def lab(pg_dsn: str) -> AsyncIterator[_Lab]:
     """The real admin app on a real migrated+seeded schema.
 
-    The dev-env trio is set HERE (not just via the autouse per-test
+    The dev-env trio is set here (not just via the autouse per-test
     fixture) because ``create_router`` loads settings at module-fixture
     time, which runs before the function-scoped autouse fixture would
     have set them (the differential module's idiom).
@@ -276,12 +276,12 @@ async def _walk(app: FastAPI, first_path: str, *, max_pages: int = 20) -> list[s
 
 @pytest.mark.integration
 async def test_page_turn_carries_the_absolute_time_window(lab: _Lab) -> None:
-    """Page 1 filtered + page 2 ALSO filtered, walked via the REAL cursor.
+    """Page 1 filtered + page 2 also filtered, walked via the REAL cursor.
 
     The seed makes the unguarded failure maximally loud: 51 in-window rows
-    means a filtered page 2 holds exactly ONE row; the unguarded page 2 (the
+    means a filtered page 2 holds exactly one row; the unguarded page 2 (the
     filter dropped) held the OLDER, out-of-window rows instead. The Next
-    href itself is pinned too: the macro must carry BOTH bounds, the same
+    href itself is pinned too: the macro must carry both bounds, the same
     ride status/queue/actor get.
     """
     (_label, window_qs, _expected) = _window_shapes(lab.plan)[0]

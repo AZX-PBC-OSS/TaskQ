@@ -139,17 +139,17 @@ class ActorCapacityCache:
         self._ttl = ttl
         self._read_timeout = read_timeout
         # Strict queue-name validation (TASKQ_QUEUES_STRICT): when True,
-        # the unserved-queue verdict below REFUSES (UnknownQueueError)
+        # the unserved-queue verdict below refuses (UnknownQueueError)
         # instead of warning. One knob, one predicate, no parallel
         # validation path: every enqueue arm already consults
         # maybe_warn_unserved_queue, so strict rides the exact seam the
         # note rides.
         self._queues_strict = queues_strict
-        # The SECOND source of the two-source rule: the deploying
+        # The second source of the two-source rule: the deploying
         # process's own declared queue set (TASKQ_QUEUES, when its
         # settings carry one — a web process loading the base settings
         # has none, the snapshot-only corner). None means absent; a
-        # refusal requires the queue to miss BOTH sources.
+        # refusal requires the queue to miss both sources.
         self._env_queues: frozenset[str] | None = (
             frozenset(env_queues) if env_queues is not None else None
         )
@@ -163,16 +163,16 @@ class ActorCapacityCache:
         # the warn-once-per-TTL state maybe_warn_unserved_queue reads.
         self._unserved_warned_at: dict[str, float] = {}
         self._refreshed_at: float | None = None
-        # Monotonic timestamp of the last refresh that actually SUCCEEDED,
-        # distinct from _refreshed_at (which also stamps on FAILURE to
+        # Monotonic timestamp of the last refresh that actually succeeded,
+        # distinct from _refreshed_at (which also stamps on failure to
         # bound the retry rate): a sustained-failure regime keeps the
-        # retry stamp fresh while the DATA grows arbitrarily old. The
-        # backpressure read's cap_age_seconds reports THIS — the stale-
+        # retry stamp fresh while the data grows arbitrarily old. The
+        # backpressure read's cap_age_seconds reports this — the stale-
         # as-fresh mode (a verdict saying "1s old" over data 10 TTLs old)
         # is the lie the age field exists to prevent.
         self._last_success_at: float | None = None
         # True once a refresh has succeeded and been stored, independent
-        # of row count, because a successful read of an EMPTY
+        # of row count, because a successful read of an empty
         # actor_config table is still a snapshot (see _refresh).
         self._has_snapshot = False
         self._epoch = 0
@@ -204,9 +204,9 @@ class ActorCapacityCache:
                 # on every enqueue.
                 #
                 # Why a metric and not just this log: a load-shedding gate that
-                # RELAXES precisely when the backend is degraded needs a signal
+                # relaxes precisely when the backend is degraded needs a signal
                 # an operator can alert on. `has_snapshot=False` is the
-                # materially worse case -- no refresh has EVER succeeded, so
+                # materially worse case -- no refresh has ever succeeded, so
                 # there is no stored data at all and every enqueue enforces
                 # the @actor literal instead of the operator's tightened
                 # max_pending, for a full TTL at a time, indefinitely while
@@ -228,7 +228,7 @@ class ActorCapacityCache:
                 if epoch == self._epoch:
                     self._rows = rows
                     self._has_snapshot = True
-                    # The SUCCESS stamp, distinct from the retry-bounding
+                    # The success stamp, distinct from the retry-bounding
                     # stamp below: the read-side age reports this, so a
                     # sustained-failure regime shows the data's real age
                     # instead of reading stale as fresh.
@@ -299,7 +299,7 @@ class ActorCapacityCache:
         (``pending`` forever, nothing dispatches it), and before this
         note NOTHING signaled at enqueue time. Zero I/O: the verdict
         reads the current in-process snapshot, the hot path pays no round
-        trip for it. This is THE queue-name validation seam: every
+        trip for it. This is the queue-name validation seam: every
         enqueue arm (direct, the three batch arms, the sub-job fan-out
         enqueuer) consults it, so the strict branch below covers them all
         through one predicate — no parallel validation path exists.
@@ -307,8 +307,8 @@ class ActorCapacityCache:
         **The strict branch** (``queues_strict=True``, the
         ``TASKQ_QUEUES_STRICT`` knob): an unknown queue raises
         :class:`~taskq.exceptions.UnknownQueueError` instead of warning —
-        BEFORE any backend write, so the orphaned message is never
-        stored. THE ASYMMETRY DOCTRINE, the verdict's spine: over-
+        before any backend write, so the orphaned message is never
+        stored. the ASYMMETRY DOCTRINE, the verdict's spine: over-
         rejection is strictly worse than over-permission, so refusals
         require positive two-source evidence and every ambiguous state
         resolves to ALLOW + advisory —
@@ -325,7 +325,7 @@ class ActorCapacityCache:
           the registration lag, the note stays the advisory;
         * the TTL window (a queue registered seconds ago) is disclosed
           in the refusal message when one finally fires — and it fires
-          only when BOTH sources miss.
+          only when both sources miss.
 
         The judged sets are the registered queue assignments (fleet-wide
         ``actor_config`` DB truth, readable without actor registration —
@@ -363,24 +363,20 @@ class ActorCapacityCache:
         if served:
             return
         if self._queues_strict and not allow_unregistered:
-            # THE ASYMMETRY DOCTRINE: over-rejection is strictly worse
-            # than over-permission — every ambiguous state resolves to
-            # ALLOW + advisory; a refusal requires POSITIVE two-source
-            # evidence.
-            #
-            # 1. THE EMPTY-SNAPSHOT RULE: an empty snapshot (no worker
-            #    has ever started, the first-deploy state) carries ZERO
-            #    evidence of stranding — the check disables itself (the
-            #    note below stays the advisory) and never refuses.
-            # 2. THE TWO-SOURCE RULE: refuse only when the queue misses
-            #    BOTH the fleet's registered assignments AND the process's
-            #    own declared set (TASKQ_QUEUES, when it carries one). A
-            #    queue env-declared but snapshot-absent is a NEW queue
-            #    mid-deploy — allowed through the registration lag (the
-            #    note stays the advisory until the assignment registers).
-            # 3. An UNAVAILABLE snapshot (read failure, capability-less
-            #    backend) never refuses — the guards at the top failed
-            #    open long before this line.
+            # over-rejection is strictly worse than over-permission — every
+            # ambiguous state resolves to allow + advisory; a refusal requires
+            # positive two-source evidence. 1. the empty-snapshot rule: an
+            # empty snapshot (no worker has ever started, the first-deploy
+            # state) carries zero evidence of stranding — the check disables
+            # itself (the note below stays the advisory) and never refuses. 2.
+            # the two-source rule: refuse only when the queue misses both the
+            # fleet's registered assignments and the process's own declared set
+            # (TASKQ_QUEUES, when it carries one). A queue env-declared but
+            # snapshot-absent is a new queue mid-deploy — allowed through the
+            # registration lag (the note stays the advisory until the
+            # assignment registers). 3. An unavailable snapshot (read failure,
+            # capability-less backend) never refuses — the guards at the top
+            # failed open long before this line.
             if not self._queues:
                 pass  # empty snapshot: fall through to the note, never refuse
             elif self._env_queues is not None and queue in self._env_queues:
@@ -430,7 +426,7 @@ class ActorCapacityCache:
     def snapshot_age(self) -> float | None:
         """How old the CURRENT snapshot's DATA is, in seconds, zero I/O, never raises.
 
-        Computed from the last refresh that actually SUCCEEDED — NOT from
+        Computed from the last refresh that actually SUCCEEDED — not from
         the retry-bounding stamp (which also fires on failures, so a
         sustained-failure regime would otherwise report a fresh-looking
         age over arbitrarily old data, the stale-as-fresh mode). ``None``
@@ -464,7 +460,7 @@ class ActorCapacityCache:
 
         Why a sync peek: the same shape as :meth:`peek_max_pending` —
         the verdict composes the queue's depth against this cap with no
-        I/O of its own; the caller warms the snapshot with ONE
+        I/O of its own; the caller warms the snapshot with one
         :meth:`refresh` call first.
         """
         if not self._has_snapshot or self._queues is None:
@@ -506,7 +502,7 @@ class ActorCapacityCache:
         Why a sync variant: :meth:`JobsClient.enqueue_batch_streaming`'s
         atomic arm builds its ``EnqueueArgs`` inside a SYNC generator the
         backend consumes mid-transaction, no ``await`` is possible at
-        yield time. The caller warms the snapshot with ONE
+        yield time. The caller warms the snapshot with one
         :meth:`effective_max_pending` call before the generator starts
         (the same single refresh-per-call budget every other arm spends),
         and every actor the stream later introduces resolves from that
@@ -526,7 +522,7 @@ class ActorCapacityCache:
         # enqueue path. Why hasattr rather than callable(): test doubles
         # (MagicMock et al.) auto-vivify attributes, often as non-callable
         # children, those doubles are fine. The drift case this guards is
-        # a backend CLASS built before the method existed, where the
+        # a backend class built before the method existed, where the
         # attribute is genuinely absent.
         if not self._backend_checked:
             if not hasattr(self._backend, "get_actor_max_pending"):
@@ -559,6 +555,6 @@ class ActorCapacityCache:
         self._epoch += 1
         # The queue snapshot rides the same epoch: a stale assignment set
         # must not survive an explicit invalidation (an operator who just
-        # registered the actor calls this to make the note go quiet NOW).
+        # registered the actor calls this to make the note go quiet now).
         self._queues = None
         self._unserved_warned_at.clear()

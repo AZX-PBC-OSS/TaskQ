@@ -103,7 +103,7 @@ class _JobDetailPool(StubPool):
 
     async def _maybe_job(self, query: str, *args: object) -> dict[str, Any] | None:
         if 'FROM "taskq".jobs WHERE id = $1' in query:
-            # The fetch binds the requested id: only THAT id resolves to
+            # The fetch binds the requested id: only that id resolves to
             # the canned row, so a foreign uuid is a genuine miss.
             return self.job if str(args[0]) == str(_JOB_ID) else None
         return None
@@ -294,10 +294,10 @@ _REALTIME_JS = (
     Path(__file__).resolve().parents[2] / "src" / "taskq" / "web" / "static" / "realtime.js"
 )
 
-# Drives realtime.js under Node. The timeline is pre-seeded with ONE
+# Drives realtime.js under Node. The timeline is pre-seeded with one
 # server-rendered snapshot entry (the class string job_detail.html renders)
-# and the poll answers a CHANGED snapshot, so the first live event must
-# replace the snapshot entry (no stale twin) with nodes carrying the SAME
+# and the poll answers a changed snapshot, so the first live event must
+# replace the snapshot entry (no stale twin) with nodes carrying the same
 # Tailwind classes the template renders.
 _B3_HARNESS = r"""
 const fs = require("fs");
@@ -418,7 +418,7 @@ main();
 @requires_node
 def test_live_progress_entry_uses_the_server_templates_classes() -> None:
     """B3's styling half: the first live progress event renders with the
-    SAME Tailwind classes the server template renders the snapshot entry
+    same Tailwind classes the server template renders the snapshot entry
     with - the visible bar (track + fill), not an unstyled skeleton."""
     node = shutil.which("node")
     assert node is not None
@@ -519,7 +519,7 @@ def test_switch_tab_submits_the_clicked_tab_not_the_previous_one() -> None:
     assert log == ["submit:tab=archived:live=on"], log
 
 
-# ── D2: ONE source for the status colors ──────────────────────────────────
+# ── D2: one source for the status colors ──────────────────────────────────
 
 
 def test_status_classes_blob_is_served_from_the_single_python_source(
@@ -717,12 +717,12 @@ def test_pg_down_json_routes_get_the_503_envelope(
     assert resp.headers.get("retry-after") is not None
 
 
-# ── The server boot order: the handlers must survive a REAL lifespan ─────
+# ── The server boot order: the handlers must survive a real lifespan ─────
 # TestClient drives a lifespan through the router's context before any
 # scope reaches ``app.__call__``, so the handlers registered by
 # ``setup_admin_state`` are in place when the middleware stack builds. A
-# real server (uvicorn) hands the app the LIFESPAN scope first, and
-# Starlette builds the middleware stack on the FIRST scope it sees --
+# real server (uvicorn) hands the app the lifespan scope first, and
+# Starlette builds the middleware stack on the first scope it sees --
 # the ExceptionMiddleware snapshot is taken before the host's lifespan
 # body (where the setup_admin_state contract puts these registrations)
 # has run one line. These tests boot the app in the server's order and
@@ -754,7 +754,7 @@ def _boot_like_a_server(app: FastAPI) -> None:
 
 def _make_server_ordered_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     """The wiring the embedding contract prescribes (docs + admin_app.py):
-    ``setup_admin_state`` runs INSIDE the host's lifespan."""
+    ``setup_admin_state`` runs inside the host's lifespan."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     app = FastAPI()
 
@@ -820,7 +820,7 @@ def test_missing_job_renders_a_404_page_not_a_json_wall(
     browser; the JSON shape stays for the API-ish routes."""
 
     client = _make_job_detail_app(monkeypatch, backend=None)
-    # _JobDetailPool answers no job for a DIFFERENT id (the fetch keys on
+    # _JobDetailPool answers no job for a different id (the fetch keys on
     # the canned row's id): request a foreign uuid.
     missing = new_uuid()
     assert missing != _JOB_ID
@@ -907,8 +907,8 @@ class _HistoryRowsConnection:
         ]
 
     async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
-        # The list walk (and only it) is a wrapped UNION of full rows; the
-        # summary's UNION projects status/cnt only, so the shape check
+        # The list walk (and only it) is a wrapped union of full rows; the
+        # summary's union projects status/cnt only, so the shape check
         # keeps them apart.
         if query.startswith("SELECT * FROM (") and "jobs_archive" in query:
             return self.rows
@@ -990,7 +990,7 @@ def test_jobs_header_shows_the_range_with_the_total(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """U4: the header renders the "1-N of M" range server-side (the count
-    over the SAME filters the rows came from) instead of a bare page-row
+    over the same filters the rows came from) instead of a bare page-row
     number the footer duplicated."""  # Why: the header's own glyph is an en-dash; the docstring names it plainly.
     client = _make_history_app(monkeypatch)
     resp = client.get("/jobs", headers={"Accept": "text/html"})
@@ -1013,7 +1013,7 @@ def test_jobs_footer_no_longer_duplicates_the_count(
 def test_jobs_count_route_applies_the_tag_filter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """U4: /jobs/count honors EVERY filter the /jobs page honors - the
+    """U4: /jobs/count honors every filter the /jobs page honors - the
     header's "of N" must describe the filtered set. A NUL in a tag is the
     clean 400 the shared parser gives (before the route grew the filter,
     the parameter was dropped in silence)."""
@@ -1080,7 +1080,7 @@ main();
 @requires_node
 def test_admin_js_refreshes_the_count_from_the_count_route() -> None:
     """U4's live half: after every table refresh the header's count comes
-    from /jobs/count with the SAME filter query string, and the range
+    from /jobs/count with the same filter query string, and the range
     text renders "1-N of M" from it."""
     node = shutil.which("node")
     assert node is not None
@@ -1140,7 +1140,7 @@ def _make_rate_limits_app(
 
         async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
             if "rate_limit_buckets" in query:
-                # A worker-published keyed bucket that exists ONLY as a PG
+                # A worker-published keyed bucket that exists only as a PG
                 # row in this process (the registry has no primitive for
                 # it) - the dead-Reset-button shape.
                 return [

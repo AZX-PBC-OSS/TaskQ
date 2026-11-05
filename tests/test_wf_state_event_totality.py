@@ -1,12 +1,12 @@
 """The (state, event) totality table (hardening Layer 3, imported):
-EVERY (state, event) pair exercised against a live seeded row through the
+every (state, event) pair exercised against a live seeded row through the
 engine's REAL code paths — each pair either performs its table-defined
 transition or is REFUSED by the guard with the row untouched. **0 undefined
 cells is a TESTED property** ("no gaps, nothing missed").
 
-THE COUNT IS THE REPO MACHINE'S, not a forever number (re-adversarial review F9):
+COUNT IS the REPO MACHINE'S, not a forever number (re-adversarial review F9)
 the hardening proto's machine measured 104 node pairs (8 states x 13
-events) + 12 flow pairs — THE REPO's vocabulary differs by design (no
+events) + 12 flow pairs — the REPO's vocabulary differs by design (no
 `waiting_signal` status — the hold is a pending-row representation; the
 repo has `scheduled`), so this table re-derives the cell count for the
 REPO machine's vocabulary at implementation: 8 job_status states x the 8
@@ -33,10 +33,9 @@ from taskq.workflows._sql import WorkflowSql
 from taskq.workflows.engine import finalize_node
 from tests._wf_fixtures import claim_view, seed_flow
 
-#: THE REPO MACHINE'S VOCABULARY (the count re-derived — F9): the 8
-#: job_status states x the 8 event targets. Every cell below is DEFINED:
-#: it either names the shipped write that performs the transition, or the
-#: guard that refuses it (the row untouched). Zero undefined cells.
+#: the 8 job_status states x the 8 event targets. Every cell below is defined:
+#: it either names the shipped write that performs the transition, or the guard
+#: that refuses it (the row untouched). Zero undefined cells.
 _STATES = (
     "pending",
     "scheduled",
@@ -58,12 +57,12 @@ _EVENTS = (
     "running",
 )
 
-#: The cells the TABLE defines as PERFORMED (the shipped write + the
+#: The cells the TABLE defines as performed (the shipped write + the
 #: from-states it admits): the finalize's fenced terminal-mark admits
 #: 'running' → the five terminals; the vanilla retry arm admits
 #: 'running' → 'scheduled' (the ladder's mark_retry); the reclaim arms
 #: admit 'running' → 'pending'; the deadline sweep admits
-#: pending/scheduled → 'failed'. EVERYTHING ELSE is a refusal (the guard
+#: pending/scheduled → 'failed'. everything else is a refusal (the guard
 #: keeps the row).
 _PERFORMED: dict[str, dict[str, Any]] = {
     # event → the shipped drivers and the from-states each admits
@@ -83,8 +82,8 @@ _PERFORMED: dict[str, dict[str, Any]] = {
 
 def _expected_cell(state: str, event: str) -> str:
     """The table's cell: 'performed' when the state machine's own
-    VALID_TRANSITIONS admits it AND some shipped driver's from-set covers
-    the state; 'refused' otherwise. THE TOTALITY: no pair is undefined."""
+    VALID_TRANSITIONS admits it and some shipped driver's from-set covers
+    the state; 'refused' otherwise. the TOTALITY: no pair is undefined."""
     transitions = VALID_TRANSITIONS.get(state)
     if (
         transitions is not None
@@ -138,7 +137,7 @@ async def test_state_event_totality_zero_undefined_cells(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
 ) -> None:
-    """EVERY (state, event) pair — the repo machine's 64 — through the
+    """every (state, event) pair — the repo machine's 64 — through the
     REAL code paths: a PERFORMED cell performs its table-defined
     transition (the row moves exactly there); a REFUSED cell leaves the
     row untouched (the guard's own refusal — the CAS/rowcount gate, never
@@ -153,11 +152,10 @@ async def test_state_event_totality_zero_undefined_cells(
             node_id = await _seed_state(wf_conn, wf_schema, state)
             applied = False
             if state in ("pending", "scheduled") and event == "failed":
-                # THE DEADLINE SWEEP owns the (pending|scheduled → failed)
-                # cells: the shipped deadline-exceeded sweep is the ONLY
-                # write that terminal-fails an unclaimed row ("failed
-                # only via deadline-exceeded sweep" — the statemachine's
-                # own comment).
+                # the deadline sweep owns the (pending|scheduled → failed)
+                # cells: the shipped deadline-exceeded sweep is the only write
+                # that terminal-fails an unclaimed row ("failed only via
+                # deadline-exceeded sweep" — the statemachine's own comment).
                 from taskq.backend._sweeps import sweep_deadline_exceeded
 
                 await wf_conn.execute(
@@ -169,8 +167,8 @@ async def test_state_event_totality_zero_undefined_cells(
                     swept = await sweep_deadline_exceeded(deadline_conn, schema=wf_schema)
                 applied = swept >= 1
             elif state == "scheduled" and event == "pending":
-                # THE PROMOTION sweep owns (scheduled → pending): the
-                # scheduler's bookkeeping arm (the STABLE due bound).
+                # the promotion sweep owns (scheduled → pending): the
+                # scheduler's bookkeeping arm (the stable due bound).
                 from taskq.backend._sweeps import sweep_scheduled_to_pending
 
                 await wf_conn.execute(
@@ -182,10 +180,9 @@ async def test_state_event_totality_zero_undefined_cells(
                     promoted = await sweep_scheduled_to_pending(promote_conn, schema=wf_schema)
                 applied = promoted >= 1
             elif event in ("succeeded", "failed", "cancelled", "crashed", "abandoned"):
-                # THE FINALIZE'S FENCED TERMINAL-MARK: the shipped write —
-                # the fence (status = 'running' AND worker AND attempt AND
-                # epoch) is the guard; a non-running row is fenced out
-                # (the rowcount gate), the row untouched.
+                # the shipped write — the fence (status = 'running' and worker
+                # and attempt and epoch) is the guard; a non-running row is
+                # fenced out (the rowcount gate), the row untouched.
                 worker_id = (
                     (await claim_view(wf_conn, wf_schema, node_id))[0]
                     if state == "running"
@@ -206,7 +203,7 @@ async def test_state_event_totality_zero_undefined_cells(
                     worker_id=worker_id,
                     attempt=1,
                     claim_epoch=0,
-                    outcome=event,  # pyright: ignore[reportArgumentType]  # Why: the event IS the terminal outcome vocabulary's own member.
+                    outcome=event,  # pyright: ignore[reportArgumentType]  # Why: the event is the terminal outcome vocabulary's own member.
                     result={"t": True} if event == "succeeded" else None,
                     error_class="Tot" if event == "failed" else None,
                 )
@@ -239,8 +236,8 @@ async def test_state_event_totality_zero_undefined_cells(
                     "(the guard's gap)"
                 )
                 refused += 1
-    # THE PROPERTY (F9): the count is the repo machine's, re-derived —
-    # every pair defined, zero undefined cells.
+    # the count is the repo machine's, re-derived — every pair defined, zero
+    # undefined cells.
     assert defined == len(_STATES) * len(_EVENTS) == 64
     assert performed > 0 and refused > 0
     # The table agrees with the statemachine's own map (no cell invented):

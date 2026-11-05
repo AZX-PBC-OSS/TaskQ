@@ -51,7 +51,7 @@ _GIL_DOCUMENT = b"[" + b",".join(b"1.2345678901234" for _ in range(3_000_000)) +
 
 @actor(name="stall_blocking_probe", queue="default")
 async def _blocking_probe(payload: _Payload) -> None:
-    time.sleep(0.5)  # noqa: ASYNC251  # Why: blocking the loop IS the scenario under test.
+    time.sleep(0.5)  # noqa: ASYNC251  # Why: blocking the loop is the scenario under test.
 
 
 @actor(name="stall_gil_probe", queue="default")

@@ -59,7 +59,7 @@ def build_step_context(
     claimed_at: datetime | None = None,
     budget_remaining_ms: int | None = None,
 ) -> StepContext:
-    """The ONE context construction (the claim seam's factory): the
+    """The one context construction (the claim seam's factory): the
     runner's step path and the loop driver's iteration path build the
     same field set through here — the two call sites never drift."""
     return StepContext(
@@ -98,7 +98,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     — the HITL machinery) and the DURABLE TIMER (``ctx.wait_until`` —
     the hold whose resolver is the clock).
 
-    THE DOCUMENTED ANNOTATION: a workflow body declares its context as
+    A workflow body declares its context as
     ``ctx: StepContext`` — the checker verifies the body's ``ctx.*``
     reads against the real surface (users copy examples; the typed
     context is the story the docs tell)."""
@@ -113,7 +113,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     _map_index: int | None = None
     _is_loop: bool = False
     _ledger_id: JobId | None = None
-    #: The REGISTERED workflow's name (D1 — the signal-model catalog's
+    #: The registered workflow's name (D1 — the signal-model catalog's
     #: key; the hold-context redact hook's resolution).
     _workflow_name: str = ""
     #: The workflow's redact hook (chain → hook — the hold context's
@@ -123,15 +123,14 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     #: fences on it ). ``None`` = the context was built without a
     #: claim (a unit-test direct call) — the emit refuses loudly.
     _worker_id: JobId | None = None
-    #: THE MAX-IN-FLIGHT BOUND: the workflow's DECLARED
-    #: admission control, handed to every ``ctx.emit_batch`` (``None`` =
-    #: the explicit unbounded).
+    #: the workflow's declared admission control, handed to every
+    #: ``ctx.emit_batch`` (``None`` = the explicit unbounded).
     _max_in_flight: int | None = None
-    # THE EMISSION OP's buffer: the attempt's own ProgressEmitter —
-    # the runner wires it at the claim seam. None when unwired (direct
-    # testing): ctx.progress then VALIDATES the shape (the typed door is
-    # the authoring contract) and drops the emission (the deliberate
-    # no-op — the jobs ctx's unwired pattern), never a crash.
+    # the emission op's buffer: the attempt's own ProgressEmitter — the runner
+    # wires it at the claim seam. None when unwired (direct testing):
+    # ctx.progress then validates the shape (the typed door is the authoring
+    # contract) and drops the emission (the deliberate no-op — the jobs ctx's
+    # unwired pattern), never a crash.
     _progress: ProgressEmitter | None = None
     #: This attempt's claim epoch (the emit's cursor-fence's value — the
     #: runner's claim wrote it; the emit's checkpoint fences on the pair).
@@ -148,16 +147,13 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
     claimed_at: datetime | None = None
     budget_remaining_ms: int | None = None
     _runtime: dict[str, int] = field(default_factory=lambda: dict[str, int]())  # pyright: ignore[reportUnknownVariableType]  # Why: pyright's inference for the slots+frozen dataclass's mutable default degrades; the annotation is the truth.
-    # THE DEADLINE ENFORCEMENT'S CTX STATE (the consumer's
-    # ``_enforce_start_to_close`` designated write — the SAME ctx face
-    # the vanilla ``JobContext`` carries): the detached body task's
-    # handle, written when the deadline enforcement runs the body in its
-    # own task. The enforcement's OTHER designated write — the tx
-    # rollback-collision window stamp — is the tx carrier's alone: the
-    # wf body runs in NO transaction (each statement takes its own
-    # acquisition), so there is no ``__aexit__`` ROLLBACK the marker
-    # could collide with, no capture boundary, no reader here — the
-    # enforcement's protocol split keeps that write off this face.
+    # the detached body task's handle, written when the deadline enforcement
+    # runs the body in its own task. The enforcement's other designated write —
+    # the tx rollback-collision window stamp — is the tx carrier's alone: the
+    # wf body runs in no transaction (each statement takes its own
+    # acquisition), so there is no ``__aexit__`` ROLLBACK the marker could
+    # collide with, no capture boundary, no reader here — the enforcement's
+    # protocol split keeps that write off this face.
     _actor_body_task: asyncio.Task[object] | None = None
 
     def _set_actor_body_task(self, task: asyncio.Task[object]) -> None:
@@ -185,7 +181,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
 
     @property
     def hold_epoch(self) -> int | None:
-        """The LAST CONSUMED hold's epoch (a resumed body's answer
+        """The last CONSUMED hold's epoch (a resumed body's answer
         identity; None until a wait consumed an answer). The FROZEN
         ctx's mutable escape: the answer queue's consumption records it
         in the runtime dict (the identity never changes; the answer
@@ -193,7 +189,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         return self._runtime.get("hold_epoch")
 
     async def cursor(self) -> dict[str, object]:
-        """THE STREAMING SOURCE'S CHECKPOINTED CURSOR: read from
+        """Read from
         THIS source row's own metadata — the emit tx's checkpoint, under
         the ``emit_cursor`` key. ``{}`` before the first emit; the
         resume's body re-reads it to continue from the last COMMITTED
@@ -219,12 +215,12 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         cursor: dict[str, object],
         backpressure_timeout_s: float = 30.0,
     ) -> tuple[JobId, ...]:
-        """THE STREAMING SOURCE'S EMIT: this page's chain starts +
-        the edges + THIS node's cursor checkpoint, ONE transaction, while
+        """This page's chain starts +
+        the edges + THIS node's cursor checkpoint, one transaction, while
         the source stays ``running`` (see ``taskq.workflows._emit`` — the
         fork-atomicity law at page granularity; a kill at any statement
         window rolls the whole page back). Each yield of the paged
-        generator body is ONE ``ctx.emit_batch`` call."""
+        generator body is one ``ctx.emit_batch`` call."""
         from taskq.workflows._emit import emit_batch as _emit_batch
 
         if self._worker_id is None:
@@ -253,7 +249,7 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         message: str | None = None,
         data: dict[str, object] | None = None,
     ) -> None:
-        """THE EMISSION OP: report the node's progress —
+        """Report the node's progress —
         ``await ctx.progress(75, "page 3/4", {"page": 3})``.
 
         TYPED + BOUNDED: ``pct`` is an int 0..100 or None; ``message`` is
@@ -263,12 +259,12 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         Model)``, the TypedGate-door pattern) — validated against it, a
         wrong shape refused with :class:`taskq.workflows.ProgressRefusedError`.
 
-        BEST-EFFORT BY CONSTRUCTION (decision e — THE LAW: observability
-        degrades FIRST, never correctness): the call updates an in-memory
+        BEST-EFFORT BY CONSTRUCTION (decision e — the LAW: observability
+        degrades first, never correctness): the call updates an in-memory
         buffer latest-wins and arms the cadence flush (~20 deltas/s at
-        the 50 ms cadence); it NEVER awaits the network and NEVER
+        the 50 ms cadence); it never awaits the network and never
         touches the finalize path — the attempt's final flush runs
-        bounded, BEFORE the node's finalize transactions. A flush that
+        bounded, before the node's finalize transactions. A flush that
         fails is counted on the record (the emitter's ``write_errors``,
         the first loss warned); a node whose every flush fails still
         terminalizes normally. A lost emission costs FRESHNESS; a
@@ -277,14 +273,13 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
         emitter = self._progress
         if emitter is None:
             # Unwired (direct testing): the deliberate no-op — but the
-            # TYPED DOOR IS STILL THE AUTHORING CONTRACT (a wrong shape is
+            # typed door is still the authoring contract (a wrong shape is
             # refused here too, never silently swallowed: the author's
             # test then sees the refusal their production run will get).
             validate_emission(pct, message, data, None)
             return
-        # THE PUBLIC OP VALIDATES (the gate-hole fix): the emitter's own
-        # validating door — the buffer's private write is never reached
-        # around the gate.
+        # the emitter's own validating door — the buffer's private write is
+        # never reached around the gate.
         await emitter.emit(pct, message, data)
 
     async def substep(self, name: str, fn: Any, *args: Any, idempotent: bool = True) -> Any:
@@ -294,10 +289,10 @@ class StepContext(CtxSpawnOps, CtxWaitOps, CtxTimerOps):
 
         The connection is never yours, body: the claim and the terminal
         write each take their own
-        acquisition; between them the body runs with NO pool connection
+        acquisition; between them the body runs with no pool connection
         held — a hot map fan-out's concurrent substeps are bounded by
         the workers, never by the execution pool's conn count (holding
-        ONE connection across *fn* would throttle a 300-child fan-out
+        one connection across *fn* would throttle a 300-child fan-out
         to the dispatcher pool's 4).
 
         The name is ``substep``, not ``step``: the wiring verb

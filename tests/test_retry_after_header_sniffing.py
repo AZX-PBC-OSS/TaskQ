@@ -340,7 +340,7 @@ def test_no_header_sniffing_on_unclaimed_signals() -> None:
     )
 )
 def test_property_header_value_never_yields_out_of_band_delay(value: str) -> None:
-    """Property: for ANY header value, a claimed 429 stays an indefinite
+    """Property: for any header value, a claimed 429 stays an indefinite
     override and the delay, when present, is a finite positive timedelta
     (saturated at timedelta.max beyond the representable range) — garbage
     must degrade to the curve (delay None), never to a bogus delay or a
@@ -440,7 +440,7 @@ def test_jitter_zero_keeps_exact_retry_after_compliance() -> None:
 # ── performance pins ──────────────────────────────────────────────
 
 
-#: The tracemalloc noise floor, from MEASURED bands: batch-to-batch
+#: The tracemalloc noise floor, from measured bands: batch-to-batch
 #: bookkeeping jitter observed on CI runners is tens of bytes over 10k
 #: calls (32B observed on a red CI leg; 0B in 10 consecutive local runs) —
 #: noise, not signal. The CI leg re-measured the ceiling
@@ -481,7 +481,7 @@ def _traced_batch_growth(classifier: RetryClassifierHook, exc: BaseException) ->
 
 def test_miss_path_allocates_nothing() -> None:
     """No accumulating allocation on the miss path: the classifier is
-    invoked for EVERY exception the actor raises (most are not rate
+    invoked for every exception the actor raises (most are not rate
     limits), so the not-claimed path must not retain memory per call —
     and must not touch the header parse path.
 
@@ -512,7 +512,7 @@ def test_miss_path_allocates_nothing() -> None:
 
 def test_allocation_pin_has_teeth() -> None:
     """Scenario: the allocation pin must actually red on the defect it
-    exists for. A miss path that ALLOCATES AND RETAINS per call (the
+    exists for. A miss path that ALLOCATES and RETAINS per call (the
     leak class the pin's linear-growth signal detects: a lookup table
     appended to per exception, never released) is run through the pin's
     own harness — the scenario asserts the pin's statistic EXCEEDS its
@@ -524,7 +524,7 @@ def test_allocation_pin_has_teeth() -> None:
     leaked: list[dict[str, int]] = []
 
     def leaky_miss_path(exc: BaseException, attempt: int) -> RetryOverride | None:
-        # The defect under scenario: a fresh allocation RETAINED per miss.
+        # The defect under scenario: a fresh allocation retained per miss.
         leaked.append({"attempt": attempt})
         return rate_limit_aware_classifier(exc, attempt)
 

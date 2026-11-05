@@ -1,22 +1,22 @@
 """The source-terminal fence's probe — the source-terminal fence + the premature-terminal
 fence (the spike's 30-sweep probe's shape, PROOF.md §2, translated).
 
-The no-fan-in design has NO join, so the original premature-FIRE fence
+The no-fan-in design has no join, so the original premature-FIRE fence
 has no subject; its successor is the PREMATURE TERMINAL: the run's root
-must never finalize while ANY live row exists — not mid-stream (the
-source running), not mid-drain (chains in flight). The fence is NOT a
+must never finalize while any live row exists — not mid-stream (the
+source running), not mid-drain (chains in flight). The fence is not a
 new fire-guard: it is the shipped rows-only derivation itself — the root
 finalizes only when the rows are terminal (or resolved-blocked), and a
 derivation cannot fire early because it is not a fire at all.
 
-The probe drives the REAL sweep arms + the maintenance leg with NO WORKER
+The probe drives the REAL sweep arms + the maintenance leg with no WORKER
 AT ALL after a mid-stream death: nothing may terminalize, 30 passes
 running. Also asserted at every pass: the sweep finds NOTHING to fire
 (``firable=0``, zero join-wait rows) — the join machinery is inert in
 this design.
 
 The mutation scenario is the tooth: the maintenance leg with its
-LIVENESS GATE MUTATED OUT finalizes the root mid-stream on the same
+LIVENESS GATE MUTATED out finalizes the root mid-stream on the same
 shape of rows — the fence is load-bearing, not decorative.
 
 Captured: ``.measurements/t20-probe-*.txt``.
@@ -144,7 +144,7 @@ async def root_state(conn: asyncpg.Connection, schema: str, flow_id: JobId) -> d
 async def hard_sweep_pass(
     pool: asyncpg.Pool, wf_sql: WorkflowSql, flow_id: JobId
 ) -> tuple[int, int]:
-    """One hard sweep pass with NO worker: the certified re-derive + fire
+    """One hard sweep pass with no worker: the certified re-derive + fire
     arm, then the maintenance leg. Returns (firable, join_wait_rows)."""
     from taskq.workflows._sweep import sweep_join_rederive
 
@@ -188,20 +188,20 @@ async def test_premature_terminal_fence_30_sweeps(
     redlog: RedLog,
 ) -> None:
     """The 30-sweep probe (the spike's shape): a mid-stream death, then 30
-    hard sweep passes with NO worker — the root NEVER finalizes (the
+    hard sweep passes with no worker — the root never finalizes (the
     premature-terminal fence holds), the join machinery is inert
     (firable=0, zero join-wait rows — with no fan-in there is nothing to
-    fire). The resumed run then completes; the root terminalizes ONLY
+    fire). The resumed run then completes; the root terminalizes only
     after everything drained, and every row is terminal under it.
 
-    THE MUTATION TEST (the tooth): the maintenance leg with
+    The maintenance leg with
     its liveness gate mutated out finalizes the root MID-STREAM on a
     fresh mid-stream flow — the fence's teeth, observed red."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     source_id = await make_source(wf_conn, wf_schema, flow_id, wf_sql)
 
-    # The claim + page 0's emit run on a DEDICATED pool conn — the
-    # spike's driver — whose backend then dies a REAL server-side death
+    # The claim + page 0's emit run on a dedicated pool conn — the
+    # spike's driver — whose backend then dies a real server-side death
     # (pg_terminate_backend; no graceful path). The lease (250 ms)
     # lapses; the row is the reclaim's subject.
     dsn = module_pg_schema.pg_dsn
@@ -230,13 +230,12 @@ async def test_premature_terminal_fence_30_sweeps(
     finally:
         await close_storm_pool(storm_pool)
 
-    # THE MID-STREAM SHAPE: page 0 committed (its chains PENDING — live
-    # work), the cursor at the last committed page, the source
-    # running-with-a-dead-holder.
+        # page 0 committed (its chains pending — live work), the cursor at the last
+    # committed page, the source running-with-a-dead-holder.
     assert await committed_children(wf_conn, wf_schema, source_id) == 4
     assert await read_cursor(wf_conn, wf_schema, source_id) == {"page": 0}
 
-    # NO WORKER: only the certified sweeps + the maintenance legs, hard,
+    # no worker: only the certified sweeps + the maintenance legs, hard,
     # 30 passes. NOTHING may terminalize.
     ever_firable = 0
     for _ in range(30):
@@ -264,7 +263,7 @@ async def test_premature_terminal_fence_30_sweeps(
     )
     assert ever_firable == 0, "nothing may fire in the no-fan-in design"
 
-    # ── THE MUTATION TEST (live, on a FRESH mid-stream flow) ─────────
+    # ── the mutation test (live, on a fresh mid-stream flow) ─────────
     mutated = wf_sql.workflow_root_maintain.replace(
         "(pf.has_failed AND NOT COALESCE(pf.has_unresolved, false))\n"
         "          -- THE COMPLETED/CANCELLED ROOT: every row terminal (rows 4-5).\n"
@@ -301,17 +300,17 @@ async def test_premature_terminal_fence_30_sweeps(
         "the scenario's flow must have live rows under the premature terminal "
         "(the mid-stream shape the fence exists to prevent)"
     )
-    # THE MUTATION TEST'S UNDO: the mutated leg terminalized EVERY running root
-    # in the schema (no flow scoping) — the lie is restored to the honest
-    # live state before the resume (the always-on G7 assertion reads the
-    # roots at teardown; the scenario's evidence is the assertion above).
+    # the mutated leg terminalized every running root in the schema (no flow
+    # scoping) — the lie is restored to the honest live state before the resume
+    # (the always-on G7 assertion reads the roots at teardown; the scenario's
+    # evidence is the assertion above).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running', finished_at = NULL "
         "WHERE id = ANY($1)",
         [flow_id, flow2],
     )
 
-    # ── THE RESUME: the run completes; the root terminals ONLY at the end ─
+    # ── the resume: the run completes; the root terminals only at the end ─
     await reclaim_pass(module_pg_pool, wf_schema)
     worker, attempt, epoch = await reclaim_until_claim(module_pg_pool, wf_sql, wf_schema, source_id)
     # The remaining pages stream under the resumed claim.
@@ -343,11 +342,11 @@ async def test_premature_terminal_fence_30_sweeps(
     # under it).
     await finalize_source(module_pg_pool, wf_sql, flow_id, source_id, (worker, attempt, epoch))
 
-    # The chains drain; THEN (and only then) the root terminals.
+    # The chains drain; then (and only then) the root terminals.
     drained = await drain_chains(module_pg_pool, wf_sql, flow_id)
     assert drained == 12, f"12 chains must drain, got {drained}"
 
-    # One maintenance pass with every row terminal: the root finalizes NOW.
+    # One maintenance pass with every row terminal: the root finalizes now.
     async with module_pg_pool.acquire() as conn:
         await conn.execute(wf_sql.workflow_root_maintain, 200)
     root = await root_state(wf_conn, wf_schema, flow_id)

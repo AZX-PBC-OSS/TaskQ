@@ -66,7 +66,7 @@ def _active_nav_hrefs(nav: str) -> list[str]:
     return [href for href, cls in pairs if "border-blue-400" in cls]
 
 
-# ── Navigation / IA ──────────────────────────────────────────────────────
+# ── Navigation / ia ──────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("page", _PAGES)

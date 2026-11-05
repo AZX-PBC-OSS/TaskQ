@@ -4,7 +4,7 @@ The tick's driving SELECT (``taskq/worker/cron_loop.py``, the ``_cron_tick_sql``
 f-string) is ``LIMIT``-ed and ordered::
 
     SELECT ... FROM "<schema>".cron_schedules
-    WHERE enabled = true AND next_fire_at <= statement_timestamp()
+    WHERE enabled = true and next_fire_at <= statement_timestamp()
     ORDER BY next_fire_at
     LIMIT $1
 
@@ -219,7 +219,7 @@ async def _seed_due_schedules(
     actor: str = _CRON_ACTOR,
     identity_prefix: str | None = None,
 ) -> list[UUID]:
-    """Seed *count* enabled, already-due schedules in ONE round trip.
+    """Seed *count* enabled, already-due schedules in one round trip.
 
     ``cron_schedules`` is UNIQUE on ``(actor, name)`` (migration
     ``01.00.01_01_pre_per_property_cron.sql`` drops the original
@@ -240,7 +240,7 @@ async def _seed_due_schedules(
     by design (sequential catch-up fires each missed slot on its own tick,
     per ``WorkerSettings.cron_catch_up_window``) and the advance/second-
     tick pins below fail purely on time-of-day. On the grid, the next
-    boundary after the seed is the NEXT hour, strictly in the future for
+    boundary after the seed is the next hour, strictly in the future for
     every possible run instant.
     """
     ids = [new_uuid() for _ in range(count)]
@@ -505,7 +505,7 @@ class TestTickIsBounded:
         # the measured tick satisfies both at any runner speed. The
         # livelock regression is caught by the assertions below
         # regardless of where the deadline lands: their failure mode is
-        # ZERO committed fires, which no deadline size produces for a
+        # zero committed fires, which no deadline size produces for a
         # healthy or batch-committed tick. The schedules were seeded once
         # above; the calibration tick consumes them, and the reset below
         # hands the timed tick the same due state again.
@@ -546,10 +546,10 @@ class TestTickIsBounded:
                         worker_id,
                     )
 
-        # Read the outcome on a SEPARATE connection: the question is what is
-        # COMMITTED and visible fleet-wide, not what the (possibly aborted,
+        # Read the outcome on a separate connection: the question is what is
+        # committed and visible fleet-wide, not what the (possibly aborted,
         # possibly cancel-wounded) tick connection can still see. Anything
-        # uncommitted is invisible here by MVCC, which is exactly the
+        # uncommitted is invisible here by mvcc, which is exactly the
         # distinction the assertions below are about.
         observer = await asyncpg.connect(module_pg_schema.pg_dsn)
         try:
@@ -576,11 +576,11 @@ class TestTickIsBounded:
         )
 
 
-# ── Layer 2 - PASSES TODAY; must still pass after the fix ──────────────
+# ── Layer 2 - passes today; must still pass after the fix ──────────────
 
 
 class TestTickBehaviourPinned:
-    """Layer 2: pins existing behaviour - must pass before AND after the fix.
+    """Layer 2: pins existing behaviour - must pass before and after the fix.
 
     The fixes rewrite the SQL that selects due schedules, enqueues their jobs
     and advances ``next_fire_at``. These tests pin the observable result of a
@@ -594,7 +594,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour - must pass before AND after the fix.
+        """Pins existing behaviour - must pass before and after the fix.
 
         Exactly one job per due schedule, carrying the schedule's actor, the
         queue from ``actor_config`` (not the schedule row), ``max_attempts``
@@ -643,7 +643,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour - must pass before AND after the fix.
+        """Pins existing behaviour - must pass before and after the fix.
 
         A successful fire writes four things on ``cron_schedules``:
         ``next_fire_at`` moved strictly into the future, ``last_fired_at``
@@ -690,9 +690,9 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour - must pass before AND after the fix.
+        """Pins existing behaviour - must pass before and after the fix.
 
-        The tick's predicate is ``enabled = true AND next_fire_at <=
+        The tick's predicate is ``enabled = true and next_fire_at <=
         clock_timestamp()``. Rows failing either half must be left bit-for-bit
         alone: no job, no ``last_fired_at``, no ``next_fire_at`` movement. This
         is the pin most at risk from a rewrite that moves the predicate into a
@@ -750,7 +750,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour - must pass before AND after the fix.
+        """Pins existing behaviour - must pass before and after the fix.
 
         Idempotency of the advance: once a schedule has fired, its recomputed
         ``next_fire_at`` is in the future, so an immediately following tick
@@ -800,12 +800,12 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour - must pass before AND after the fix.
+        """Pins existing behaviour - must pass before and after the fix.
 
         ``tick_cron`` opens with ``pg_try_advisory_xact_lock``; when another
         session holds it the function returns cleanly - no exception, no fire,
         no job - after recording the contention metric. This is the
-        leader-handover double-fire guard, and it must stay the FIRST thing a
+        leader-handover double-fire guard, and it must stay the first thing a
         tick does: a fix that moved the driving SELECT ahead of the lock, or
         that batched work before checking it, would let two leaders fire the
         same schedules concurrently.
@@ -867,7 +867,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour - must pass before AND after the fix.
+        """Pins existing behaviour - must pass before and after the fix.
 
         A cron tick enqueues jobs; it does not write ``job_events`` or
         ``job_attempts``. That matters for
@@ -915,7 +915,7 @@ class TestTickBehaviourPinned:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """Pins existing behaviour - must pass before AND after the fix.
+        """Pins existing behaviour - must pass before and after the fix.
 
         ``job_events.occurred_at`` is stamped per row by ``clock_timestamp()``
         and must stay co-monotonic with the bigserial ``id`` -- the assumption

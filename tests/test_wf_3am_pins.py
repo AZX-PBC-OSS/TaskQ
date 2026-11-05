@@ -2,28 +2,28 @@
 observability lane's evidence, ).
 
 Each pin is a scenario gap's fence: the surface MUST say X, where X is the
-truth an operator needs at 3am with ONLY the documented surfaces (the
+truth an operator needs at 3am with only the documented surfaces (the
 CLI, the explorer, the rows). Collected against the exercised failures:
 
-1. THE STUCK RUN — a healthy join-wait row must get the HONEST join-wait
+1. the STUCK RUN — a healthy join-wait row must get the HONEST join-wait
    arm (the join fires when its parents finalize), never the
    retry-the-failed-upstream remedy (a false remedy the blocking-reason
    arm's order was printing for reason='join'; the scenario's planted hang
    showed the face). And a RUNNING node's age must be NAMED (stuck vs
    slow is the 3am question; a silent running row is indistinguishable
    from a dead one).
-2. THE WEDGED FAN-IN — the failed_parent stamp carries the dead parent's
+2. the WEDGED FAN-IN — the failed_parent stamp carries the dead parent's
    id (metadata.failed_parent) and the flow_dead stamp is the fence's
    record: the lines must NAME both (the parent's id; the dead path and
    its cancel remedy), never a bare retry line that reads as if a retry
    revives a dead path.
-3. THE LOST WORKER — ``job show`` must render the lease face
+3. the LOST WORKER — ``job show`` must render the lease face
    (locked_by_worker / last_heartbeat_at / lock_expires_at) and, past
    the lease, the LAPSED verdict (the worker died; the reclaim sweep
    repends within the sweep interval once a leader is up) — the
    distinction "the worker died" vs "the work is slow" must not require
    raw SQL.
-4. THE POISON/AUDIT — the cross-run cache hit's receipt
+4. the POISON/AUDIT — the cross-run cache hit's receipt
    (metadata.wf_cache_hit: the address + the producing run + the stored
    instant) must be visible on ``job show`` and on the explorer's node
    panel: a step that never executed must not read like one that did.
@@ -77,7 +77,7 @@ def test_a_crashed_terminal_node_renders_its_story() -> None:
     WorkerCrashed) must render the why-stuck line (class + message +
     remedy), because the derivation folds it into the failed class and
     the run reads '1 crashed' with no explanation otherwise. The
-    rejected variant: the crashed row produced NO line — the operator
+    rejected variant: the crashed row produced no line — the operator
     saw the count and nothing else."""
     row = FlowNodeRow(
         step_key="hang",
@@ -135,7 +135,7 @@ def test_running_node_age_is_named_with_the_lease_check_remedy() -> None:
     (job show's lease face + job events' lock_expired record). The
     rejected variant: a hung body read as a bare '1 running' count —
     the operator could not name the hung node or distinguish stuck from
-    slow on ANY surface."""
+    slow on any surface."""
     started = _NOW - timedelta(minutes=5, seconds=31)
     running = FlowNodeRow(
         step_key="hang",
@@ -201,9 +201,8 @@ def _job_row(**overrides: Any) -> dict[str, Any]:
         "error_class": None,
         "error_message": None,
         "idempotency_key": None,
-        # THE TAGS COLUMN (the sync-friction lane's operator-face fix):
-        # tags ride the pointed read (the recurring-run's display
-        # identity — an absent set renders `(none)`).
+        # tags ride the pointed read (the recurring-run's display identity — an
+        # absent set renders `(none)`).
         "tags": None,
         "locked_by_worker": None,
         "lock_expires_at": None,
@@ -345,8 +344,8 @@ async def test_node_panel_renders_the_cache_hit_receipt(
     clean_pg_conn: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The provenance scenario's explorer face: a run over the SAME input as
-    an earlier run reads the cross-run cache — its ``cached`` node NEVER
+    """The provenance scenario's explorer face: a run over the same input as
+    an earlier run reads the cross-run cache — its ``cached`` node never
     executed, and the panel must say so (the receipt: the producing run +
     the address). The rejected variant: the panel had no cache_hit key —
     a cache-hit step read exactly like an executed one."""

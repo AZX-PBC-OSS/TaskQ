@@ -1,37 +1,37 @@
 """The deep-research march (the system tier's full walk).
 
-ONE scenario, the whole spine, on a real fleet (real worker
+one scenario, the whole spine, on a real fleet (real worker
 subprocesses, one real Postgres — the deploy matrix's harness):
 
-1. THE CRON KICKOFF — a REAL schedule (the client's own
+1. the CRON KICKOFF — a REAL schedule (the client's own
    ``create_schedule``) whose every-minute slot the fleet's LEADER
    fires; the fire lands on the march's bridge actor, whose body kicks
    the workflow with the SLOT as the run key (G3's composition — the
    two dedup regimes compose).
-2. THE MAP — four sources; the armed TRANSIENT failure heals on the
+2. the MAP — four sources; the armed TRANSIENT failure heals on the
    ladder (the retried child succeeds alone); the armed PERMANENT
    failure fans in through the ``collect`` edge.
-3. THE MULTI-HITL LOOP — the budget-capped review loop holds THREE
+3. the MULTI-HITL LOOP — the budget-capped review loop holds THREE
    distinct hold epochs (refine, refine, approve); each hold addressed
    BY ID through the typed door; the carry advanced exactly once per
    iteration (the ledger's iteration records).
-4. THE ADMIN ACTIONS — every resolve's audit row (the G4 trail) read
+4. the ADMIN ACTIONS — every resolve's audit row (the G4 trail) read
    back and reconciled against the march's own decisions.
-5. THE PARTIAL REPORT + THE TIMEOUT FACE — the publish step's typed
+5. the PARTIAL REPORT + the TIMEOUT FACE — the publish step's typed
    wait is left UNRESOLVED on purpose: the expiry sweep's abandonment
    RETURNS the ``Expired`` member in the body (the expiry-as-value's amendment — the
    timeout face is a value), the body MATCHES it and pivots to the
    degraded report — the report NAMES the failed source and its own
    degradation, never wedges.
-6. THE STREAMING EMIT — the streaming router router lived on the tier: the paged
+6. the STREAMING EMIT — the streaming router router lived on the tier: the paged
    source emits TWO pages while running (the children + edges + cursor
    checkpoint per emit tx); the per-record chains route on the body's
-   OWN typed outcomes (the conditional chains: 2 flagged → manual
+   own typed outcomes (the conditional chains: 2 flagged → manual
    review, 2 clean → done).
-7. THE KILL STORM — a pod is SIGKILLed mid-march (the map live); the
+7. the KILL STORM — a pod is SIGKILLed mid-march (the map live); the
    march completes ANYWAY (the reclaim machinery owns the corpse's
    rows; the join counter never moved).
-8. THE EXPLORER — the run display reconstructed FROM THE ROWS at every
+8. the EXPLORER — the run display reconstructed FROM the ROWS at every
    connect (the DH7 law): the nodes' states, the map's progress line,
    the declared read-side aggregate.
 
@@ -76,11 +76,11 @@ pytestmark = [pytest.mark.system, pytest.mark.integration]
 _TAG = "wf-march-research"
 
 #: The cron kickoff's bound: the schedule's every-minute slot (the fire
-#: lands on the NEXT minute boundary) + the leader's tick cadence, then
+#: lands on the next minute boundary) + the leader's tick cadence, then
 #: the bridge's own execution — stretched.
 _KICKOFF_BOUND_S = (70.0 + 30.0) * TIER_LOAD_STRETCH
 
-#: The march's OWN timeline record (the perf-evidence file's rows).
+#: The march's own timeline record (the perf-evidence file's rows).
 _TIMELINE: list[dict[str, object]] = []
 
 
@@ -135,16 +135,16 @@ async def _resolve_review_holds(
 # load_sensitive (the settle-window law): the march's
 # verdict is its settle windows — the cron-kickoff loop (_KICKOFF_BOUND_S),
 # the map-fork loop (MARCH_SETTLE_BOUND_S), and wait_flow_terminal's
-# settle bound — and an observed run expired the settle with the rows STILL
-# MOVING (pending/scheduled, one item at attempt 2, nothing errored): the
+# settle bound — and an observed run expired the settle with the rows still
+# moving (pending/scheduled, one item at attempt 2, nothing errored): the
 # runner-starvation red, not a lost march — the receipt's own row dump is
 # the "still moving, not stuck" signature. All three marches in this file
 # drive the identical shape (each ends its spine in wait_flow_terminal),
 # so all three carry the mark; the state-based asserts inside (row shapes,
-# joins, the HITL audit, the render) ride along deterministically.
-# PLUMBING (landed with the routing this branch carries): the serial
+# joins, the hitl audit, the render) ride along deterministically.
+# plumbing (landed with the routing this branch carries): the serial
 # load-sensitive lane collects the tier via --system-e2e and runs these
-# pins ONCE, serially, under the tier's --timeout=900 default; the
+# pins once, serially, under the tier's --timeout=900 default; the
 # system-e2e lane's filter carries "and not load_sensitive", so the 4-leg
 # PG version matrix no longer re-runs them co-tenanted - the accepted
 # single-run trade (the load-sensitive lane's comment in ci.yaml).
@@ -172,8 +172,8 @@ async def test_the_deep_research_march_kick_to_explorer(
     try:
         fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["r1", "r2"])
 
-        # ══ 1. THE CRON KICKOFF ══════════════════════════════════════
-        # A REAL schedule on the march's bridge actor; the fleet's
+        # ══ 1. the cron kickoff ══════════════════════════════════════
+        # A real schedule on the march's bridge actor; the fleet's
         # leader fires the slot; the bridge kicks the run with the slot
         # as the run key.
         slot = time.strftime("%Y%m%dT%H%M")
@@ -204,11 +204,10 @@ async def test_the_deep_research_march_kick_to_explorer(
         )
         _note("cron-kickoff", time.monotonic() - start, _KICKOFF_BOUND_S)
 
-        # THE DOUBLE-FIRED SLOT'S COMPOSITION (G3): the schedule's
-        # next fire would REUSE the slot only on a clock edge — the
-        # arbiter's pin is the matrix's cell-7; here the RUN KEY is
-        # pinned: the run was born from the BRIDGE's kick (the fire's
-        # metadata names the schedule).
+        # the schedule's next fire would reuse the slot only on a clock edge —
+        # the arbiter's pin is the matrix's cell-7; here the run key is pinned:
+        # the run was born from the bridge's kick (the fire's metadata names
+        # the schedule).
         fired = await conn.fetchval(
             f"""SELECT count(*) FROM "{schema}".jobs
                 WHERE metadata->>'cron_schedule_id' = $1::text""",
@@ -216,16 +215,16 @@ async def test_the_deep_research_march_kick_to_explorer(
         )
         assert fired >= 1, "the schedule's fire never enqueued the bridge"
 
-        # ══ 2-5. THE MARCH RUNS — the holds resolved per the plan; the
-        # publish hold LEFT (the timeout face). The kill storm lands
-        # MID-MARCH (once the map's children are live).
+        # ══ 2-5. the march runs — the holds resolved per the plan; the
+        # publish hold left (the timeout face). The kill storm lands
+        # mid-march (once the map's children are live).
         resolver = asyncio.create_task(
             _resolve_review_holds(
                 march_pool, schema, flow_id, ["refine", "refine", "approve"], audited
             )
         )
 
-        # THE MAP IS LIVE (the kill storm's premise).
+        # the map is live (the kill storm's premise).
         start = time.monotonic()
         n = 0
         while time.monotonic() - start < MARCH_SETTLE_BOUND_S:
@@ -241,8 +240,8 @@ async def test_the_deep_research_march_kick_to_explorer(
         assert n, "the map's fork never fired"
         _note("map-fork", time.monotonic() - start, MARCH_SETTLE_BOUND_S)
 
-        # ══ 7. THE KILL STORM: SIGKILL one pod mid-map. The march must
-        # complete ANYWAY (the reclaim machinery owns the corpse's rows).
+        # ══ 7. the kill storm: SIGKILL one pod mid-map. The march must
+        # complete anyway (the reclaim machinery owns the corpse's rows).
         victim_pid = await conn.fetchval(
             f'SELECT pid FROM "{schema}".workers WHERE id = '
             f'(SELECT locked_by_worker FROM "{schema}".jobs '
@@ -267,8 +266,8 @@ async def test_the_deep_research_march_kick_to_explorer(
         resolver.cancel()
         _note("march-terminal", measured, MARCH_SETTLE_BOUND_S * 2)
         if status != "complete":
-            # THE ROWS SPEAK: a failed march names its failed nodes (the
-            # debug's own discipline, shipped in the scenario).
+            # a failed march names its failed nodes (the debug's own
+            # discipline, shipped in the scenario).
             rows = await conn.fetch(
                 f"""SELECT step_key, coalesce(map_index::text,'-') AS mi, status::text AS status,
                        attempt, error_class
@@ -279,8 +278,8 @@ async def test_the_deep_research_march_kick_to_explorer(
             print(f"[march] FAILED RUN'S ROWS: {[dict(r) for r in rows]}")
         assert status == "complete", f"the march derived {status!r}, not complete"
 
-        # ══ 2. THE MAP'S TWO FACES: the transient healed (the retried
-        # child succeeded ALONE — attempt 2), the permanent fanned in.
+        # ══ 2. the map's two faces: the transient healed (the retried
+        # child succeeded alone — attempt 2), the permanent fanned in.
         transient = await conn.fetchrow(
             f"""SELECT status::text AS status, attempt FROM "{schema}".jobs
                 WHERE (metadata->>'flow_id')::uuid = $1::uuid
@@ -294,9 +293,9 @@ async def test_the_deep_research_march_kick_to_explorer(
             f"the transient source healed without the ladder (attempt {transient['attempt']})"
         )
 
-        # ══ 5. THE PARTIAL REPORT (the publish node's result): the
-        # failed source NAMED, the degradation NAMED (the timeout face —
-        # the publish hold was left unresolved ON PURPOSE).
+        # ══ 5. the partial report (the publish node's result): the
+        # failed source named, the degradation named (the timeout face —
+        # the publish hold was left unresolved on purpose).
         publish = await conn.fetchval(
             f"""SELECT result FROM "{schema}".jobs
                 WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = 'publish'""",
@@ -319,7 +318,7 @@ async def test_the_deep_research_march_kick_to_explorer(
             f"the degradation is not NAMED in the note: {report_doc}"
         )
 
-        # ══ 3. THE MULTI-HITL LOOP: three hold epochs, the carry
+        # ══ 3. the multi-hitl loop: three hold epochs, the carry
         # advanced exactly once per iteration (the ledger's records).
         iters = await conn.fetch(
             f"""SELECT step_key, count(*)::int AS rows FROM "{schema}".wf_step_ledger
@@ -345,7 +344,7 @@ async def test_the_deep_research_march_kick_to_explorer(
             f"the multi-HITL holds were not distinct epochs: {[dict(r) for r in holds]}"
         )
 
-        # ══ 4. THE ADMIN ACTIONS' AUDIT (G4): every resolve wrote its
+        # ══ 4. the admin actions' audit (G4): every resolve wrote its
         # row, the principal named.
         audit_rows = await conn.fetch(
             f"""SELECT principal_subject, action FROM "{schema}".admin_audit
@@ -359,7 +358,7 @@ async def test_the_deep_research_march_kick_to_explorer(
             f"the resolves' principal is not the march's editor: {[dict(r) for r in audit_rows]}"
         )
 
-        # ══ 8. THE EXPLORER: the display reconstructed FROM THE ROWS.
+        # ══ 8. the explorer: the display reconstructed FROM the rows.
         from taskq.workflows._sql import WorkflowSql
 
         wsql = WorkflowSql.build(schema)
@@ -367,7 +366,7 @@ async def test_the_deep_research_march_kick_to_explorer(
 
         display = await run_display(march_pool, wsql, Jid(flow_id))
         assert display, "the explorer's display read is empty"
-        # The display model keys the JOB IDS (the rows' own identity);
+        # The display model keys the job IDS (the rows' own identity);
         # the step keys reconcile against the run's rows.
         node_rows = await conn.fetch(
             f"""SELECT id::text AS id, step_key, status::text AS status FROM "{schema}".jobs
@@ -383,7 +382,7 @@ async def test_the_deep_research_march_kick_to_explorer(
         line = await map_progress_line(march_pool, wsql, Jid(flow_id))
         assert isinstance(line, list), "the map's progress line did not read"
 
-        # THE INVARIANTS close the march.
+        # the invariants close the march.
         await tag_run_rows(march_pool, schema, flow_id, _TAG)
         await assert_balanced(sys_ledger, schema, _TAG)
         fires = await join_fires(conn, schema, flow_id)
@@ -403,7 +402,7 @@ async def test_the_streaming_emit_march_conditional_chains(
 ) -> None:
     """The streaming emit (the streaming router router lived on the tier): the paged
     source emits TWO pages while running; the per-record chains route on
-    the body's OWN typed outcomes — 2 flagged (risk > 0.8) walk the
+    the body's own typed outcomes — 2 flagged (risk > 0.8) walk the
     manual-review step, 2 clean go straight to done. The cursor
     checkpoints per emit tx; the join fires exactly once."""
     schema = module_pg_schema.schema_name
@@ -422,9 +421,9 @@ async def test_the_streaming_emit_march_conditional_chains(
         print(f"[emit-march] terminal: measured={measured:.2f}s bound={MARCH_SETTLE_BOUND_S}s")
         assert status == "complete", f"the emit march derived {status!r}"
 
-        # THE FOUR CHILDREN: two pages emitted while the source ran
-        # (the chain's entry step IS the child's identity — chain_start);
-        # the cursor checkpointed at the LAST page.
+        # two pages emitted while the source ran (the chain's entry step is the
+        # child's identity — chain_start); the cursor checkpointed at the last
+        # page.
         children = await conn.fetch(
             f"""SELECT step_key, status::text AS status, payload FROM "{schema}".jobs
                 WHERE (metadata->>'flow_id')::uuid = $1::uuid
@@ -437,9 +436,9 @@ async def test_the_streaming_emit_march_conditional_chains(
         assert all(c["status"] == "succeeded" for c in children), (
             f"an emitted chain child did not finish: {[dict(c) for c in children]}"
         )
-        # THE CONDITIONAL CHAINS: the flagged records walked the
-        # manual-review step (their chains' extra hop — the route rode
-        # the body's OWN typed outcome), the clean did not.
+        # the flagged records walked the manual-review step (their chains'
+        # extra hop — the route rode the body's own typed outcome), the clean
+        # did not.
         flagged = [
             c
             for c in children
@@ -509,17 +508,16 @@ async def test_the_doc_ingest_march_fan_in_progress_render(
         print(f"[ingest-march] terminal: measured={measured:.2f}s bound={MARCH_SETTLE_BOUND_S}s")
         assert status == "complete", f"the ingest march derived {status!r}"
 
-        # THE FAN-IN: the barrier's parents BOTH fired exactly once; the
-        # maybe collect's branch resolved (the labels' gather).
+        # the barrier's parents both fired exactly once; the maybe collect's
+        # branch resolved (the labels' gather).
         fires = await join_fires(conn, schema, str(flow_id))
         assert fires and all(f["fires"] == 1 for f in fires), (
             f"the fan-in's joins are not exactly-once: {fires}"
         )
 
-        # THE RENDER: the graph's mermaid render carries every node the
-        # wiring declared (the map's face is its JOIN — the map source's
-        # own key compiles to '<source>.join'; the render is the
-        # wiring's own face).
+        # the graph's mermaid render carries every node the wiring declared
+        # (the map's face is its JOIN — the map source's own key compiles to
+        # '<source>.join'; the render is the wiring's own face).
         render = render_mermaid(MARCH_FLOWS["doc_ingest_march"])
         for key in (
             "ingest",
@@ -531,7 +529,7 @@ async def test_the_doc_ingest_march_fan_in_progress_render(
         ):
             assert key in render, f"the render is missing the {key!r} node: {render[:200]}"
 
-        # THE INVARIANTS close the march.
+        # the invariants close the march.
         await tag_run_rows(march_pool, schema, str(flow_id), _TAG)
         await assert_balanced(sys_ledger, schema, _TAG)
     finally:
@@ -553,10 +551,9 @@ def _dump_timeline() -> Any:
             ".measurements",
             "p5",
         )
-        # THE EXTRACTION'S OWN (the estate left the PR's tree): the
-        # capture dir is gitignored and may not exist on a fresh
-        # checkout — the writer creates it (the capture lands locally,
-        # gitignored; the record rides the evidence branch).
+        # the capture dir is gitignored and may not exist on a fresh checkout —
+        # the writer creates it (the capture lands locally, gitignored; the
+        # record rides the evidence branch).
         os.makedirs(base, exist_ok=True)
         path = os.path.join(base, "march-timeline.json")
         with open(path, "w") as f:

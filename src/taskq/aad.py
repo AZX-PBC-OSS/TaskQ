@@ -56,7 +56,7 @@ one per call.
 
 This module never imports ``azure.identity`` at module top level, the
 import is deferred to call time so ``import taskq.aad`` is safe without
-the extra installed. Note ``import azure.identity`` alone does NOT make
+the extra installed. Note ``import azure.identity`` alone does not make
 ``azure.identity.aio`` available, the subpackage must be imported
 explicitly.
 """
@@ -87,9 +87,9 @@ __all__ = [
     "fetch_redis_credentials",
 ]
 
-# Azure resource scopes for AAD token requests.
-PG_TOKEN_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"  # noqa: S105  # Why: Azure AAD resource scope URI for PostgreSQL, not a password.
-REDIS_TOKEN_SCOPE = "https://redis.azure.com/.default"  # noqa: S105  # Why: Azure AAD resource scope URI for Redis, not a password.
+# Azure resource scopes for aad token requests.
+PG_TOKEN_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"  # noqa: S105  # Why: Azure aad resource scope URI for PostgreSQL, not a password.
+REDIS_TOKEN_SCOPE = "https://redis.azure.com/.default"  # noqa: S105  # Why: Azure aad resource scope URI for Redis, not a password.
 
 
 # ── Credential protocol ────────────────────────────────────────────────
@@ -123,7 +123,7 @@ class AadCredential(Protocol):
 def _require_azure_identity_aio() -> Any:
     """Import ``azure.identity.aio`` lazily and return the subpackage.
 
-     The ``aio`` subpackage is NOT pulled in by ``import azure.identity``
+     The ``aio`` subpackage is not pulled in by ``import azure.identity``
     , accessing ``azure.identity.aio`` without an explicit import raises
      :class:`AttributeError`. Raises :class:`ImportError` with install
      instructions if the ``[aad]`` extra is not installed.

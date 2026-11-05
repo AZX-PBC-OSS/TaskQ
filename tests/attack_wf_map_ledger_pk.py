@@ -4,10 +4,10 @@ The ledger's uniqueness is ``UNIQUE (flow_id, step_key, attempt)``
 (``01.00.24_02_pre_workflow_tables.sql``), and the claim's conflict target
 (``LEDGER_CLAIM_SQL`` in ``src/taskq/workflows/_sql_ledger.py``) is
 ``(flow_id, step_key, attempt)`` — ``map_index`` is carried as a bound
-value but is NOT part of the arbiter. the iteration ledger's contract says the map child's
+value but is not part of the arbiter. the iteration ledger's contract says the map child's
 step key is ``(workflow, map node, map_index)``: two map children of one
 map node (map_index 0 and 1, first attempt each) are DIFFERENT claims by
-that contract, but the ledger PK collapses them into ONE row.
+that contract, but the ledger PK collapses them into one row.
 
 The dragon: child 1's claim returns child 0's row (the ON CONFLICT path),
 child 1's finalize (``LEDGER_TERMINAL_SQL``, keyed flow+step+attempt)
@@ -17,7 +17,7 @@ replay the WRONG child's result — or nothing. The record lies about the
 work: the exact class this layer exists to prevent (the iteration ledger REVIEW's
 "the record must not lie").
 
-RED: the second map child's claim must return ITS OWN row
+RED: the second map child's claim must return ITS own row
 (``claim.job_id == node_1``); it returns child 0's row instead.
 """
 
@@ -54,7 +54,7 @@ async def test_attack_map_children_ledger_pk_collision(
     )
     assert claim_0.job_id == node_0  # child 0's own claim — fine.
 
-    # Child 1 claims the SAME step name under ITS OWN map_index — a
+    # Child 1 claims the same step name under its own map_index — a
     # different business claim per the iteration ledger's key contract.
     claim_1 = await claim_step_ledger(
         wf_conn,
@@ -66,15 +66,15 @@ async def test_attack_map_children_ledger_pk_collision(
         attempt=1,
     )
 
-    # THE ATTACK: the arbiter must treat child 1's claim as its own row.
-    # The shipped PK collapses it onto child 0's row.
+    # the arbiter must treat child 1's claim as its own row. The shipped PK
+    # collapses it onto child 0's row.
     assert claim_1.job_id == node_1, (
         f"map child 1's ledger claim returned child 0's row "
         f"(job_id={claim_1.job_id}): the UNIQUE (flow_id, step_key, attempt) "
         "omits map_index — map children share ONE ledger row"
     )
 
-    # The overwrite arm: both children finalize; the ledger must hold BOTH
+    # The overwrite arm: both children finalize; the ledger must hold both
     # results, each replayable under its own map_index.
     for node, result in ((node_0, {"child": 0}), (node_1, {"child": 1})):
         await wf_conn.execute(

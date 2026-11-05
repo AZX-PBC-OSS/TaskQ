@@ -102,7 +102,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "the same transaction (the split keeps the plancache off the "
         "generic plan; see _ARCHIVE_CANDIDATE_SQL's comment)",
     ),
-    # The PRE-BUDGET variant: the SAME write (the same candidate ids bound
+    # The pre-budget variant: the same write (the same candidate ids bound
     # as an array, the same LIMIT-ed candidate window) rendered against the
     # schema the budget columns have not landed on — the mirror-divergence
     # fallback's own statement. One write class, one reason, two renders.
@@ -296,9 +296,9 @@ _EXEMPT: dict[str, tuple[str, str]] = {
     ),
     # ── Batch-scoped ──
     # ── Workflow engine (taskq.workflows._sql_*): every write below is
-    #    keyed to ONE flow-scoped entity (a parent id, an arbiter tuple, a
+    #    keyed to one flow-scoped entity (a parent id, an arbiter tuple, a
     #    row id) or to a caller-bound batch — the workflow code's write
-    #    sets are bounded by the FORK BATCH (the fan-out chunk, ≤ 500 rows
+    #    sets are bounded by the fork batch (the fan-out chunk, ≤ 500 rows
     #    per statement) and by one node's declared fan-out, never by the
     #    jobs backlog. The bounded-writes walk first saw these when the dispatch-claim band's
     #    package joined the audit's surface (the certification's R2-1).
@@ -398,10 +398,10 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "_RECONCILE_LOST_CLAIMS_SQL_TEMPLATE registers for)",
     ),
     # ── The workflow engine's per-run writes (the failed-parent propagation..the progress reporting, the phase work):
-    # every write set below is ONE RUN's own rows — the compiled graph's
+    # every write set below is one run's own rows — the compiled graph's
     # node count (a definition-time constant, never the jobs backlog) —
-    # or ONE keyed row (id / arbiter). The class this file guards is work
-    # proportional to an unbounded BACKLOG inside one transaction; a
+    # or one keyed row (id / arbiter). The class this file guards is work
+    # proportional to an unbounded backlog inside one transaction; a
     # statement whose row count is bounded by one workflow's graph cannot
     # grow with the backlog no matter how many runs exist (runs are
     # isolated rows; no statement here scans by anything broader than its
@@ -515,8 +515,8 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single loop-node row (the budget read-back write)",
     ),
-    # ── The HITL machinery's writes (the hold machinery : every write set is ONE hold
-    # row or ONE resumed node row — the hold id is THE reply handle (the
+    # ── The hitl machinery's writes (the hold machinery : every write set is one hold
+    # row or one resumed node row — the hold id is the reply handle (the
     # mint's uuid7); a run's holds are its wait sites, not backlog rows.
     "_CANCEL_RUN_SIGNALS_SQL": (
         "AND status = 'held'",
@@ -532,7 +532,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "WHERE id = $1",
         "keyed single node row (the delivered hold's wake)",
     ),
-    # ── The child flows' writes (the child flows : both are the SPAWNING NODE's own
+    # ── The child flows' writes (the child flows : both are the spawning node's own
     # row — the body's attempt writes its own receipt, never a backlog.
     "_CHILD_RECEIPT_ENSURE_SQL": (
         "WHERE id = $1",
@@ -559,7 +559,7 @@ _EXEMPT: dict[str, tuple[str, str]] = {
         "keyed single hold row (the resolve CAS — the reply handle)",
     ),
     # ── The progress channels (the progress reporting decision d): the two-channel write set
-    # is nodes x channels — the node is the ONE row the attempt claims.
+    # is nodes x channels — the node is the one row the attempt claims.
     "PROGRESS_STATE_UPSERT_SQL": (
         "ON CONFLICT (node_id, channel)",
         "the STATE channel's upsert: its write set is the ONE conflict "

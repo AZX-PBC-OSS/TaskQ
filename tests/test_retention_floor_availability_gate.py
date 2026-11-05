@@ -1,14 +1,14 @@
 """The retention floor's availability gate: the TimescaleDB pre-check and
 the negative's cache.
 
-On a server WITHOUT the ``timescaledb`` extension — managed vanilla-
+On a server without the ``timescaledb`` extension — managed vanilla-
 Postgres offerings above all — the floor's catalog probe can never
 succeed, and before the gate it was ISSUED on every sweep: a round trip
 that always fails, an ``UndefinedTableError`` recorded as an exception
 event on the DB span each time (tens of thousands per month from one
 idle worker), alert fatigue with no rate limit and no cache.
 
-The gate: the floor asks ``pg_extension`` FIRST (unprivileged, one
+The gate: the floor asks ``pg_extension`` first (unprivileged, one
 catalog read), caches the negative answer per connection (pooled
 connections are long-lived, so per-connection is per-pool in effect;
 extensions cannot be removed mid-connection in practice), and answers
@@ -193,7 +193,7 @@ async def test_the_availability_check_is_cheap_and_the_sweep_issues_zero_catalog
 
 async def test_an_ambiguous_availability_answer_is_never_cached() -> None:
     """A failing pre-check is ambiguity, not an answer: the floor fails
-    open to None and does NOT cache — the next call re-asks (today's
+    open to None and does not cache — the next call re-asks (today's
     per-sweep behavior for anything uncertain), so a transient error can
     never pin a wrong availability verdict on the connection."""
     conn = _RecordingConn(availability_error=RuntimeError("the catalog is unreachable"))
@@ -223,7 +223,7 @@ async def test_the_present_path_reaches_the_probe_and_its_parse_teeth() -> None:
     assert len(conn.tsdb_statements()) == 1, "the present path issues the catalog probe"
     assert len(conn.availability_statements()) == 1
 
-    # The present answer caches the AVAILABILITY read only: the floor
+    # The present answer caches the availability read only: the floor
     # probe itself stays per-call (one catalog question per sweep run,
     # as documented) — the second call skips the pre-check and issues
     # the probe again.
@@ -244,7 +244,7 @@ async def test_the_production_proxy_shape_is_answered_not_raised() -> None:
     re-ask."""
     inner = _RecordingConn()  # vanilla
     first = _SlotsProxyConn(inner)
-    second = _SlotsProxyConn(inner)  # a fresh acquire over the SAME connection
+    second = _SlotsProxyConn(inner)  # a fresh acquire over the same connection
 
     assert await retention_policy_floor(first, "v_schema", "job_events", "occurred_at") is None, (
         "the proxy's type must be answered, never a TypeError through the sweep"
@@ -370,7 +370,7 @@ async def test_real_pool_acquire_shape_never_raises(pg_dsn: str) -> None:
 async def test_a_stale_answer_re_asks_when_its_ttl_passes(
     monkeypatch: Any,
 ) -> None:
-    """The cached answer (negative AND positive) is bounded: past the
+    """The cached answer (negative and positive) is bounded: past the
     TTL the connection re-asks — a staleness bound that holds regardless
     of process boundaries, pool recycling, or who installed the
     extension. The clock is the module's own seam (monotonic), and the
@@ -398,7 +398,7 @@ async def test_a_stale_answer_re_asks_when_its_ttl_passes(
     assert len(present.availability_statements()) == 1
 
     clock["now"] += (
-        1.0  # EXACTLY at the stated bound: still fresh (the answer's age is 300, the bound is inclusive)
+        1.0  # exactly at the stated bound: still fresh (the answer's age is 300, the bound is inclusive)
     )
     assert await retention_policy_floor(vanilla, "v_schema", "job_events", "occurred_at") is None
     assert await retention_policy_floor(present, "v_schema", "job_events", "occurred_at") is None

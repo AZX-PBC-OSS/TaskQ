@@ -1,4 +1,4 @@
-"""The progress numbers run — the design's numbers re-proven ON THE BUILT CODE.
+"""The progress numbers run — the design's numbers re-proven ON the BUILT CODE.
 
 The capture law: this run writes a timestamped JSON file into
 `.measurements/` — the verdicts read back in minutes, the file is the
@@ -6,17 +6,17 @@ record. Not a pytest pin (the timing bands live in the pins as
 boundaries); THIS is the measured evidence the report cites.
 
 Re-proven here (the PoC's PROOF 4/5/6's numbers, on the built surfaces):
-1. THE COALESCE CADENCE — 10,000 emissions at the ~1000/s shape → the
+1. the COALESCE CADENCE — 10,000 emissions at the ~1000/s shape → the
    STATE writes at the cadence's rate (the storm counterfactual: a write
    per emission → 10,000 writes).
-2. THE CONSTANT ROW COUNT — the STATE channel at 2 rows under 10k.
-3. THE HONEST COUNTERS — occurrences == 10,000; appended == retained +
+2. the CONSTANT ROW COUNT — the STATE channel at 2 rows under 10k.
+3. the HONEST COUNTERS — occurrences == 10,000; appended == retained +
    dropped.
-4. THE RING BOUND — retained == 64 = the bound.
-5. THE FINALIZE IS UNAFFECTED — the 10k-emission node's finalize wall
+4. the RING BOUND — retained == 64 = the bound.
+5. the FINALIZE IS UNAFFECTED — the 10k-emission node's finalize wall
    time vs the quiet node's (the asymmetry's measured half; the
    structural half is the zero-finalize-changes probe).
-6. THE 200-CHILD MAP LINE — the grouped read's shape + the read-side
+6. the 200-CHILD MAP LINE — the grouped read's shape + the read-side
    aggregate's fn time.
 """
 
@@ -64,7 +64,7 @@ async def main() -> dict[str, Any]:
     wsql = render_workflow_sql(schema)
     out: dict[str, Any] = {}
 
-    # ── 1-5: THE CHATTY NODE (10,000 emissions at the ~1000/s shape) ────
+    # ── 1-5: the chatty node (10,000 emissions at the ~1000/s shape) ────
     app = WorkflowApp()
 
     async def chatty(ctx: StepContext, params: Ingest) -> dict[str, object]:
@@ -106,7 +106,7 @@ async def main() -> dict[str, Any]:
             WHERE node_id = $1 AND channel = '__stream__'""",
         node,
     )
-    # The upsert ALWAYS returned its row (the flush ran — occurrences ==
+    # The upsert always returned its row (the flush ran — occurrences ==
     # 10,000 asserted below): the assert is the runtime guard behind the
     # typed door, the engine's own "the statement always returns its
     # summary row" pattern.
@@ -139,7 +139,7 @@ async def main() -> dict[str, Any]:
     quiet_s = time.perf_counter() - t0
     out["quiet"] = {"wall_s": round(quiet_s, 3)}
 
-    # ── 6: THE 200-CHILD MAP + THE READ-SIDE AGGREGATE ──────────────────
+    # ── 6: the 200-child map + the read-side aggregate ──────────────────
     app2 = WorkflowApp()
 
     async def fetch(ctx: StepContext, params: Ingest) -> list[int]:
@@ -179,8 +179,8 @@ async def main() -> dict[str, Any]:
         "aggregate_children": read.children,
         "aggregate_value": read.value,
         "aggregate_fn_ms": round(read.fn_ms, 3),
-        # the map's own join fired for DATAFLOW (it collects the items) —
-        # the DH8 law is that the PROGRESS question needed no join: the
+        # the map's own join fired for dataflow (it collects the items) —
+        # the DH8 law is that the progress question needed no join: the
         # read-side fn answered at read time, mid-flight-capable, writing
         # nothing.
         "join_fires_dataflow": join_fires,

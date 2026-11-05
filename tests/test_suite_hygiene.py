@@ -1,12 +1,12 @@
 """Static hygiene guards for the test suite itself.
 
 These are plain (non-PG, non-container) regression tests that grep the
-``tests/`` tree AND the published ``src/taskq/testing/`` package for
+``tests/`` tree and the published ``src/taskq/testing/`` package for
 anti-patterns which cause cross-test and cross-worker
 schema collisions under ``pytest-xdist``:
 
 - ``os.environ.get("PYTEST_XDIST_WORKER", ...)``-derived schema names give
-  NO real isolation - every test file within one xdist worker resolves to
+  no real isolation - every test file within one xdist worker resolves to
   the *same* string, so files sharing a worker mutually clobber each
   other's schema state. For the PUBLISHED testing package this is worse:
   a fixed per-worker default reaches consumer suites on shared-database
@@ -24,7 +24,7 @@ helpers) - those tests necessarily set and assert ``PYTEST_XDIST_WORKER``,
 which is the second reason the self-exemption exists. ``conftest.py``
 files are excluded from the ``tests/`` scan: the conftest db-name helper
 (``_module_db_name``) and the e2e schema helper use the worker id only as
-ONE input to a per-module hash - the sanctioned worker-qualified-hash
+one input to a per-module hash - the sanctioned worker-qualified-hash
 pattern. ``src/taskq/testing/fixtures.py`` is allowlisted from the
 worker-id scan for the same reason (``_schema_name_from_module`` /
 ``_schema_name_from_test`` hash the worker id together with the module
@@ -47,7 +47,7 @@ production never constructs. See the section comment there.
 # behaviour finished on this branch. Recorded here so the survivors are not
 # mistaken for ones nobody looked at.
 #
-# DELIBERATELY STATIC - codebase invariants with no runtime expression. A
+# deliberately static - codebase invariants with no runtime expression. A
 # running system cannot be asked "does this module import that one at import
 # time"; the property is structural, so the check is too. All are AST-based or
 # an inventory of an artifact, not substring greps:
@@ -62,10 +62,10 @@ production never constructs. See the section comment there.
 #   - test_scheduled_writers_audit.py - inventory of `mark_*` methods.
 #   - test_sse_connection_caps.py::test_no_uncapped_sse_endpoint_remains -
 #     inventory over the web package; it guards endpoints not yet written.
-#   - test_max_concurrent_docs_contract.py, and the README/deployment-guide
+#   - test_max_concurrent_docs_contract.py, and the readme/deployment-guide
 #     checks in test_migrate_on_start_worker.py - documentation contracts,
 #     reading docs rather than source. Same shape as test_ci_workflow.py.
-#   - this file - greps the TEST tree for anti-patterns, which is its job.
+#   - this file - greps the test tree for anti-patterns, which is its job.
 #
 # The rule that settled each case: if a scanner's protection was already
 # provided by behavioural tests, it was deleted rather than rewritten, and the
@@ -115,7 +115,7 @@ from tests.test_rt_lost_job_soak import (
     stop_worker_and_reap_bootstrap,  # pyright: ignore[reportPrivateUsage]  # Why: same.
 )
 from tests.test_rt_lost_job_soak import (
-    test_lost_job_soak_grand_mixin as _soak_grand_mixin,  # pyright: ignore[reportPrivateUsage]  # Why: aliased with the underscore so importing it does not COLLECT the soak trial into this module's suite - only its timeout mark is read.
+    test_lost_job_soak_grand_mixin as _soak_grand_mixin,  # pyright: ignore[reportPrivateUsage]  # Why: aliased with the underscore so importing it does not collect the soak trial into this module's suite - only its timeout mark is read.
 )
 
 _TESTS_DIR = Path(__file__).parent
@@ -127,9 +127,9 @@ _TESTING_PKG_WORKER_ALLOWLIST = frozenset({"fixtures.py"})
 # tests/http_mock.py documents the retired bridge verbatim and is the one
 # module allowed to drive respx directly, so it is excluded alongside _SELF.
 _HTTP_MOCK = _TESTS_DIR / "http_mock.py"
-# tests/_prom_review.py's PORT PARTITION (the prom-harness's per-worker
+# tests/_prom_review.py's port PARTITION (the prom-harness's per-worker
 # band, 75b78c5f) is the worker-qualified-hash pattern's port twin: the
-# worker id is ONE input to a bounded per-worker port range (gw<N> ->
+# worker id is one input to a bounded per-worker port range (gw<N> ->
 # base + N * stride, modded within the stride), never a schema or an
 # identifier — the conftest hash's sanction, at the port seam.
 _PROM_REVIEW = _TESTS_DIR / "_prom_review.py"
@@ -174,7 +174,7 @@ def test_no_pytest_xdist_worker_derived_schema_names() -> None:
     database row remembers belongs NOWHERE in this list.
     """
     allowlist = {
-        "_prom_review.py",  # port-band partition ONLY (see above)
+        "_prom_review.py",  # port-band partition only (see above)
     }
     offenders = [
         str(p.relative_to(_TESTS_DIR))
@@ -268,7 +268,7 @@ def _testing_module_all_contract(module: str) -> tuple[set[str], set[str], set[s
 
     Public = ``def``/``class`` definitions and literal-constant assignments
     (``RUN_TOKEN_ENV_VAR = "..."``) that lack the underscore prefix. Imports
-    are NOT public surface of the importing module - except when spelled in
+    are not public surface of the importing module - except when spelled in
     ``__all__`` as a deliberate re-export (fixtures.py re-exports nothing
     today, but the declared-side check below tolerates one). Top-level
     ``if``/``else`` branches are scanned one level deep so the runtime
@@ -343,7 +343,7 @@ def test_testing_module_all_lists_public_surface_only(module: str) -> None:
 # ── Direct os.environ writes in the test tree ────────────────────────
 # The atk_iso incident: a test wrote ``os.environ["TASKQ_SCHEMA_NAME"] = ...``
 # directly (no restore on the failure path), and the value leaked into the
-# CLI's settings load in a LATER test - the schema name is read lazily, so
+# CLI's settings load in a later test - the schema name is read lazily, so
 # the write outlived the test that made it. ``monkeypatch.setenv`` is the
 # sanctioned seam: it restores on every exit path, including teardown
 # errors. For session-scoped fixtures, which have no ``monkeypatch``
@@ -360,7 +360,7 @@ def test_testing_module_all_lists_public_surface_only(module: str) -> None:
 
 def _all_test_tree_files() -> list[Path]:
     """Every file under tests/ - conftest.py files INCLUDED (unlike
-    ``_test_files``): the env pin's whole point is that NO file in the
+    ``_test_files``): the env pin's whole point is that no file in the
     tree, fixtures included, mutates the process environment directly."""
     return [p for p in _TESTS_DIR.rglob("*.py") if p != _SELF]
 
@@ -441,25 +441,25 @@ def test_no_test_file_writes_os_environ_directly() -> None:
 # ── Process-global stdlib-module patching ────────────────────────────
 # The asyncio.sleep incident: ``monkeypatch.setattr(run_mod.asyncio,
 # "sleep", fake)`` reads as if it scoped the fake to ``run_mod``, but
-# ``run_mod.asyncio`` IS the global ``asyncio`` module - the fake lands on
+# ``run_mod.asyncio`` is the global ``asyncio`` module - the fake lands on
 # the process-global module, and every coroutine in the process that
 # resolves ``asyncio.sleep`` during the patched window gets it, including
 # module-scoped fixture machinery and any leftover task on the shared
-# module loop. The failure then shows up in a LATER test - an ordering
+# module loop. The failure then shows up in a later test - an ordering
 # dependency, not a deterministic red.
 #
-# The fix this pin holds in place: patch the name where it is LOOKED UP -
+# The fix this pin holds in place: patch the name where it is looked up -
 # rebind the owning module's own ``<stdlib>`` binding to a delegation
 # proxy with the fake shadowed (``tests/_ns_patch.py``), leaving the
 # global module untouched for every other namespace.
 #
-# Two measured exemptions, both with NO working module-local seam:
+# Two measured exemptions, both with no working module-local seam:
 # - ``setattr(sys, "path"/"argv", ...)``: the import system and the CLI
 #   argument vector are genuinely process-global state; there is nothing
 #   module-local to rebind.
 # - ``setattr(builtins, "__import__", ...)`` (the simulated-missing-extra
 #   fakes in test_aws.py / test_aad.py): rebinding the module under
-#   test's ``__builtins__`` to a copied dict does NOT scope the lookup on
+#   test's ``__builtins__`` to a copied dict does not scope the lookup on
 #   CPython 3.13 - measured: the fake never fires for that module. The
 #   fakes delegate to the real ``__import__`` for every name but the one
 #   extra's module, and pytest runs tests single-threaded, so the
@@ -474,7 +474,7 @@ _SYS_SEAMLESS_ATTRS = frozenset({"path", "argv"})
 
 
 def _global_stdlib_setattrs(tree: ast.Module) -> list[str]:
-    """``setattr`` calls whose FIRST argument resolves to (or reaches
+    """``setattr`` calls whose first argument resolves to (or reaches
     through to) a stdlib module object - the two spellings of the incident:
     ``setattr(asyncio, "sleep", ...)`` and the disguised
     ``setattr(run_mod.asyncio, "sleep", ...)``."""
@@ -521,7 +521,7 @@ def test_no_test_file_setattrs_a_global_stdlib_module() -> None:
     for the length of the test - including module-scoped fixture machinery
     and leftover tasks on the shared module loop - so its failure mode is
     an ordering dependency in a LATER test (the asyncio.sleep incident).
-    Patch where the name is LOOKED UP instead: rebind the owning module's
+    Patch where the name is LOOKED up instead: rebind the owning module's
     own ``<stdlib>`` binding to a delegation proxy with the fake shadowed
     (``tests/_ns_patch.py``).
     """
@@ -541,23 +541,23 @@ def test_no_test_file_setattrs_a_global_stdlib_module() -> None:
 
 
 # ── The per-module-database discipline (pg_container/pg_dsn) ─────────
-# Every PG touch in the suite is scoped to the requesting module's OWN
+# Every PG touch in the suite is scoped to the requesting module's own
 # database: ``pg_dsn`` (tests/conftest.py) derives a per-module database
 # name from the module path + run-isolation token, creates it on the
-# invocation's ONE shared container, and ``DROP DATABASE ... WITH
-# (FORCE)``s it on module teardown - so schemas, tables and rows a test
+# invocation's one shared container, and ``drop database ... with
+# (force)``s it on module teardown - so schemas, tables and rows a test
 # leaves behind cannot outlive the module and cannot be observed by any
 # other module, worker, or invocation. ``module_pg_schema`` /
 # ``clean_pg_conn`` / ``clean_jobs_app`` layer per-module/per-test schema
-# isolation ON TOP of that database.
+# isolation on top of that database.
 #
-# The residue hazard is a test that reaches for the RAW container DSN
+# The residue hazard is a test that reaches for the raw container DSN
 # (the fixture ``pg_container``) without ``pg_dsn``: it would create
-# schemas/tables/rows in the container's DEFAULT database - shared with
+# schemas/tables/rows in the container's default database - shared with
 # every module and worker of the invocation - where a fixed schema name
 # collides across modules (the pre-per-module-database incident class)
 # and leftover rows are observable state for whoever runs later. The
-# ONLY sanctioned direct consumer is the ``pg_dsn`` fixture itself.
+# only sanctioned direct consumer is the ``pg_dsn`` fixture itself.
 
 
 def test_pg_container_is_only_consumed_through_pg_dsn() -> None:
@@ -597,13 +597,13 @@ def test_pg_container_is_only_consumed_through_pg_dsn() -> None:
 
 # ── pg_stat_activity database scoping ────────────────────────────────
 #
-# pg_stat_activity is CLUSTER-wide, and the invocation's ONE shared
+# pg_stat_activity is cluster-wide, and the invocation's one shared
 # Postgres container hosts every xdist worker's per-module database (see
 # the pg_dsn fixture's docstring): a lock-waiter gate that polls
 # pg_stat_activity without a database scope counts backends it has no
-# relationship with, and a statement-shape LIKE cannot fix that - every
+# relationship with, and a statement-shape like cannot fix that - every
 # bulk-cancel and deregister driving statement in the suite shares the
-# ``matching AS MATERIALIZED`` shape, so another worker's parked drain
+# ``matching as materialized`` shape, so another worker's parked drain
 # satisfies the gate as surely as our own. A false positive lands the
 # test's raced COMMIT early: test_rt_cancel_window_race.py's
 # deregistration preflight then saw the claimed row as committed
@@ -713,10 +713,10 @@ def test_pg_stat_activity_queries_are_scoped_to_the_current_database() -> None:
 
 
 # ── Two-HTTP-stack hygiene ──────────────────────────────────────────────
-# The `taskq[oidc]` extra ships ONLY httpx2 - nothing under src/taskq
+# The `taskq[oidc]` extra ships only httpx2 - nothing under src/taskq
 # imports httpx - but the dev group installs httpx as well, so the test
 # environment has two httpcore-backed stacks that cannot see each other's
-# mocks: src/taskq/web/admin/auth/oidc.py fetches discovery and JWKS over
+# mocks: src/taskq/web/admin/auth/oidc.py fetches discovery and jwks over
 # httpx2, and authlib's AsyncOAuth2Client (pinned >=1.8.0, which prefers
 # httpx2 whenever it is importable) performs the token exchange. Stock
 # respx patches httpcore only, so it sees one half. tests/http_mock.py
@@ -814,11 +814,11 @@ def test_mock_http_intercepts_every_installed_stack() -> None:
 # ── Run-isolation naming seam ──────────────────────────────────────
 #
 # Serial bare-``pytest`` runs share ``/tmp/pytest-of-<user>`` (the shared-pair
-# state dir) across ALL invocations and checkouts, and the pre-token hash
+# state dir) across all invocations and checkouts, and the pre-token hash
 # inputs were only ``(worker-or-"master", module)`` - invocation-invariant.
-# Two overlapping serial runs of the same module therefore landed on the SAME
-# database on the SAME shared pair, and each run's module teardown
-# ``DROP DATABASE ... WITH (FORCE)`` killed the other run's live pools
+# Two overlapping serial runs of the same module therefore landed on the same
+# database on the same shared pair, and each run's module teardown
+# ``drop database ... with (force)`` killed the other run's live pools
 # mid-test (redteam-reproduced: both runs rc=1 with pool-init failures on
 # tq_db_5a19dc6e3f4c). The run token mixes the invocation-unique basetemp
 # dir name into every hash input; under xdist the worker id already is
@@ -891,7 +891,7 @@ def test_session_publishes_run_isolation_token(
 ) -> None:
     """The session conftest publishes the token before any naming helper
     runs: the invocation-unique basetemp PATH (the numbered invocation dir
-    PLUS the xdist worker's own subdirectory - invocation-unique AND
+    PLUS the xdist worker's own subdirectory - invocation-unique and
     worker-distinct in one string, and distinct from any subprocess
     pytest's own fresh numbered dir - the mutual-drop class's root fix).
     The OLD token (the bare worker id, or the basetemp NAME alone) failed
@@ -913,7 +913,7 @@ def test_session_publishes_run_isolation_token(
 # asyncio task pending on the module event loop - a live loop keeps
 # writing shared state into later tests (module-scoped loops mean the
 # task advances at every later test's await points). This pin holds the
-# guard's classification to its contract: leaks are NAMED (task name and
+# guard's classification to its contract: leaks are named (task name and
 # coroutine), completed tasks and inherited baselines are not leaks.
 
 
@@ -946,7 +946,7 @@ def test_warn_once_stamp_reset_restores_the_global_stamps() -> None:
             "the warn-once stamp reset left a stale stamp behind - the "
             "warning-existence pins are order-dependent again"
         )
-    # In-place: the list above already holds the ORIGINAL dict objects
+    # In-place: the list above already holds the original dict objects
     # (no rebinding happened), which is the contract the fixture's
     # docstring promises value-importing callers.
 
@@ -1111,7 +1111,7 @@ async def test_watchdog_trip_does_not_kill_the_test_process(
             # process. Without the seam this force-exits the process
             # (exit code 2, zero output); with it the trip is recorded
             # and the test keeps running.
-            _time.sleep(0.8)  # noqa: ASYNC251  # Why: the blocking call IS the injection - a deliberate loop stall the detector must catch.
+            _time.sleep(0.8)  # noqa: ASYNC251  # Why: the blocking call is the injection - a deliberate loop stall the detector must catch.
         finally:
             watchdog.stop()
 
@@ -1131,7 +1131,7 @@ async def _hygiene_window_probe_coro() -> None:
 
 async def test_call_window_leak_report_names_test_end_residue() -> None:
     """The call-window snapshot's contract: a task that was pending when
-    the test's body finished is named - whether it is STILL pending by the
+    the test's body finished is named - whether it is still pending by the
     guard's teardown check (the live diff's case) or finished during the
     teardown window (the shape the live diff cannot see: a worker bootstrap
     left mid-drain at test end, reaped by an awaiting teardown fixture —
@@ -1145,7 +1145,7 @@ async def test_call_window_leak_report_names_test_end_residue() -> None:
     reaped.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await reaped
-    # `reaped` is done NOW, but the snapshot model is: it was pending at
+    # `reaped` is done now, but the snapshot model is: it was pending at
     # call end and done by teardown - so the pin feeds the done task list
     # the guard's teardown would hand the classifier.
     window_dead.append(reaped)
@@ -1167,10 +1167,10 @@ async def test_call_window_leak_report_names_test_end_residue() -> None:
 
 # ── Guard wiring, end to end ────────────────────────────────────────
 #
-# The pins above drive the CLASSIFIERS with hand-fed sets: deleting the
+# The pins above drive the classifiers with hand-fed sets: deleting the
 # pytest_runtest_call hook (or the guard's window wiring) leaves them
-# green.  These pins drive the REAL hook and the REAL guard fixture
-# through one simulated item lifecycle, so the WIRING is under test: the
+# green.  These pins drive the real hook and the real guard fixture
+# through one simulated item lifecycle, so the wiring is under test: the
 # hook must capture the call-end residue, and the guard's teardown must
 # turn it into a failure on the leaking test.
 
@@ -1235,7 +1235,7 @@ async def _drive_guarded_call(
 async def test_guard_catches_residue_reaped_in_the_teardown_window() -> None:
     """The wiring pin for the call-window snapshot: a task minted by the
     test body, still pending when the body finished, and REAPED by a
-    later fixture's teardown (the loop ran during teardown) must fail THE
+    later fixture's teardown (the loop ran during teardown) must fail the
     LEAKING test - the live diff alone scores it green (done tasks are
     filtered), so deleting the snapshot hook or the guard's window wiring
     turns this pin red."""
@@ -1289,7 +1289,7 @@ async def test_guard_catches_a_fixture_looking_task_name_smuggled_by_the_body() 
 
 async def test_guard_passes_a_genuinely_fixture_owned_task() -> None:
     """The exemption's non-leak direction, through the real machinery: a
-    task pending BEFORE the call phase (a function fixture's long-lived
+    task pending before the call phase (a function fixture's long-lived
     worker, minted at setup) is in the guard's baseline and the hook's
     call-start snapshot, so the guard scores the test green even though
     the task is still pending at teardown - its owner reaps it.  Without
@@ -1315,9 +1315,9 @@ async def test_guard_passes_a_genuinely_fixture_owned_task() -> None:
 # ── The soak's teardown budget arithmetic ───────────────────────────
 #
 # The soak's outer 2700s pytest-timeout mark must cover the legitimate
-# worst case INCLUDING the two-stage teardown, and stage 1's stop bound
+# worst case including the two-stage teardown, and stage 1's stop bound
 # must exceed the worker's own exit bound - the invariant that keeps the
-# shutdown watchdog's os._exit (if it trips at all) INSIDE stage 1's
+# shutdown watchdog's os._exit (if it trips at all) inside stage 1's
 # wait, so stage 2's reaping never feeds an armed watchdog.
 
 
@@ -1328,11 +1328,11 @@ def test_soak_stage1_stop_bound_exceeds_the_worker_exit_bound() -> None:
     trip is observed and the bounded metrics flush before os._exit, 8s as
     the settings property models it).  The bound is what makes the
     disarm-skip shape unreachable: a drain parked at the tracked-actor
-    reap gate is bounded by the worker's OWN watchdog trip (whose
+    reap gate is bounded by the worker's own watchdog trip (whose
     ``os._exit`` lands inside stage 1's wait, killing a wedged process
     loudly); stage 2's awaits only run once the worker task is done and
     the watchdog disarmed.  If stage 1's bound ever dips below the
-    worker's, a stage-1 timeout delivers a second cancellation INTO
+    worker's, a stage-1 timeout delivers a second cancellation into
     _main's cleanup finally - skipping ``shutdown_watchdog.cancel()`` and
     ``lag_watchdog.stop()`` (they sit after the gate await) - and stage 2
     runs with the watchdog armed: the os._exit lands mid-reaping, the CI
@@ -1438,9 +1438,9 @@ async def test_soak_stage2_names_a_survivor_within_its_bound() -> None:
     await worker_task
     release = asyncio.Event()
     swallower = asyncio.create_task(_soak_reap_swallower(release), name="soak-reap-swallower")
-    # The residue stage's cancels land MID-AWAIT in the real bootstrap (a
+    # The residue stage's cancels land mid-await in the real bootstrap (a
     # wedged sibling is always mid-run): let the swallower reach its park
-    # point, because a cancel delivered before a task's FIRST step throws
+    # point, because a cancel delivered before a task's first step throws
     # into the coroutine at position 0 - before its try is entered - and
     # the task dies cancelled instead of swallowing.
     await asyncio.sleep(0)
@@ -1510,7 +1510,7 @@ async def test_soak_stage2_stays_silent_when_residue_honours_cancel() -> None:
 # presumably motivated the shared group are all schema-qualified — the
 # advisory locks go through schema_lock_name(...) on per-test-unique schemas
 # (tc1_ .. tc5_{new_base62()}) and the NOTIFY channels are
-# wake_channel(schema_name) — so each module now pins its OWN group and the
+# wake_channel(schema_name) — so each module now pins its own group and the
 # pins below keep it that way.
 
 _CHAOS_GROUP_MEMBERS: dict[str, str] = {
@@ -1544,7 +1544,7 @@ def test_chaos_modules_carry_per_module_xdist_groups() -> None:
 
 def test_the_listen_group_stays_whole() -> None:
     """tests/web_admin/test_listen_coverage.py's ``listen`` group is the
-    chaos family's ONE genuine db-global affinity: fixed LISTEN channel
+    chaos family's one genuine db-global affinity: fixed LISTEN channel
     names on the shared pg_dsn, where two workers would receive each other's
     NOTIFYs (everything else in the family is schema-qualified). It must
     keep its group — whole and named ``listen``."""
@@ -1560,26 +1560,26 @@ def test_the_listen_group_stays_whole() -> None:
 # ── The mock-subtraction law, part 1: the fakes fail closed ──────────────
 #
 # A fake connection class whose fetch/fetchrow/fetchval/execute answers an
-# UNKNOWN statement from a silent default (a literal, an unscripted
+# unknown statement from a silent default (a literal, an unscripted
 # ``self._x_result`` attribute, a sequential ``.pop(0)`` script) is a liar
 # double: the recorded incident had the availability gate's probe eat a
 # scripted batch and the sweeps deleted 0 of 7 — the probe matched nothing,
 # the fake answered anyway, and every downstream assertion measured the
 # answer, not the database. Two cures exist:
 #
-#   1. FAIL CLOSED — the method's fall-through raises AssertionError naming
+#   1. fail closed — the method's fall-through raises AssertionError naming
 #      the statement fragment (every statement shape is a named match), and
 #      the sequential pop(0) script dies with it; a named-subclass match
 #      with an explicit raise-on-unmatched replaces it.
-#   2. COUNT, DON'T ANSWER — where the property is statement
-#      identity/order/count, the test wraps the REAL connection (the
+#   2. count, don't answer — where the property is statement
+#      identity/order/count, the test wraps the real connection (the
 #      recording-proxy pattern:
 #      tests/test_cancel_where_bounded.py::_StatementRecordingPool); a fake
-#      ANSWERS only for fault injection.
+#      answers only for fault injection.
 #
-# A fake whose remaining purpose IS fault injection (a branch no real
+# A fake whose remaining purpose is fault injection (a branch no real
 # database reaches deterministically — a driver raising mid-statement, a
-# trigger swallowing RETURNING) stays exempt, but must SAY SO: the class
+# trigger swallowing RETURNING) stays exempt, but must say so: the class
 # docstring carries the marker ``fail-closed-exempt:`` followed by the
 # fault-injection subject it exists to inject. A marker without a subject
 # is an offender like an unmarked class.
@@ -2032,8 +2032,8 @@ def _setattr_site_target(node: ast.Call, aliases: dict[str, str]) -> tuple[str, 
         return None
     if not isinstance(name.value, str):
         return None
-    # ``import taskq.worker.leader as leader_mod`` aliases the MODULE; a
-    # ``from taskq.x import Thing`` alias binds a CLASS - the attribute is
+    # ``import taskq.worker.leader as leader_mod`` aliases the module; a
+    # ``from taskq.x import Thing`` alias binds a class - the attribute is
     # patched on the class whose module the alias names.
     return module_path, name.value
 

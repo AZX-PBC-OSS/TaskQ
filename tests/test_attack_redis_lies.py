@@ -11,7 +11,7 @@ between TaskQ and Redis returning semantically wrong replies:
   string),
 * values for the WRONG key (a crossed wire).
 
-The fail-closed contract pinned here: a lie routes to the SAME path as an
+The fail-closed contract pinned here: a lie routes to the same path as an
 outage, the PG fallback on acquire (admission re-run against the durable
 row), the worker's synthetic non-consuming denial when no fallback is
 wired, and message discard on the SSE stream, never a crash, never the
@@ -142,7 +142,7 @@ class _FakePgConn:
             # GCRA fused acquire's RETURNING row.
             return {"new_tat": 1767225601.0, "now_s": 1767225600.0}
         if "kind" in sql:
-            # GCRA denial follow-up read.
+            # gcra denial follow-up read.
             return {"kind": "gcra", "tat": None, "now_s": 1767225600.0}
         # The log-style peek's count row.
         return {"count": 0}
@@ -189,7 +189,7 @@ _LIES: list[Any] = [
 
 @pytest.mark.parametrize("reply", _LIES)
 async def test_token_bucket_lie_routes_to_pg_fallback(reply: object) -> None:
-    """Every semantically-wrong reply is failed closed to the SAME path an
+    """Every semantically-wrong reply is failed closed to the same path an
     outage takes: the PG fallback re-runs admission against the durable
     row. No lie reaches the decision as ``backend="redis"``; none crashes
     with a bare ValueError/IndexError/TypeError.
@@ -349,7 +349,7 @@ _PEEK_HASH_CONTAINER_LIES: list[Any] = [
     # the RESP3 dict map (byte- and str-keyed), a set, a bare int - raise
     # bare KeyError/TypeError on the integer index, a sibling of no guarded
     # conversion family, so the lie escapes the peek as a crash. The
-    # silent-garbage shapes - a bare string, bare bytes - ARE subscriptable,
+    # silent-garbage shapes - a bare string, bare bytes - are subscriptable,
     # so the index silently yields garbage ("12" -> "1", b"12" -> 49) and
     # the peek builds a RateLimitState from the proxy's lie, the fail-open
     # direction. The honest hmget reply is a list (one value per requested
@@ -370,7 +370,7 @@ async def test_token_bucket_peek_container_lies_raise_the_sentinel(reply: object
     its own: a reply no honest hmget could hold (a dict-shaped RESP3 map,
     a str-keyed map, a set, a bare int) raises the sentinel, not a bare
     KeyError/TypeError, and a subscriptable lie (a bare string or bare
-    bytes) is NOT indexed into a RateLimitState - the same fail-closed
+    bytes) is not indexed into a RateLimitState - the same fail-closed
     verdict every other reply lie takes.
 
     The capacity is 1000, not 5, deliberately: the bare string/bytes lies
@@ -434,7 +434,7 @@ async def test_sliding_window_huge_retry_hint_routes_to_fallback() -> None:
 async def test_sliding_window_gcra_non_utf8_tat_echo_routes_to_fallback() -> None:
     """The type-valid 5-element acquire whose TAT echo bytes are invalid
     UTF-8: ``pre.decode()`` raises ``UnicodeDecodeError`` (a ``ValueError``
-    sibling ``with_pg_fallback`` does NOT name), so before the decode guard
+    sibling ``with_pg_fallback`` does not name), so before the decode guard
     the lie escaped the wrapped boundary as a bare crash instead of the
     PG fallback. The echo contract (see ``_validate_script_reply``'s
     docstring) says a corrupt echo fails closed; here that is the
@@ -502,7 +502,7 @@ async def test_sliding_window_peek_lies_raise_the_sentinel() -> None:
             settings=_settings(),
         )
     with pytest.raises(RateLimitStoreCorrupt, match="window"):
-        # The score lie: the reply names a member OUTSIDE the window the
+        # The score lie: the reply names a member outside the window the
         # query itself filtered by; a huge one overflowed the timedelta
         # before the boundary existed.
         await _peek_redis_log(
@@ -558,7 +558,7 @@ async def test_log_peek_score_conversion_lies_raise_the_sentinel() -> None:
 
 async def test_gcra_peek_huge_tat_hint_is_clamped_not_an_overflow() -> None:
     """The GCRA peek's denial hint: the patched TAT conversion plus the
-    isfinite check admit ANY finite float, so a lying GET answering
+    isfinite check admit any finite float, so a lying GET answering
     ``b"1e300"`` passes every numeric check and then overflows
     ``timedelta(milliseconds=round(allow_at - now_ms))`` at the denial
     arm. The hint is advisory, so it is clamped the way
@@ -631,7 +631,7 @@ async def test_log_peek_lying_withscores_container_raises_the_sentinel() -> None
             await _peek_redis_log(
                 SlidingWindow("l", limit=5, window=timedelta(seconds=10), style="log"),
                 redis_client=_PeekRedis(
-                    time_reply=[2000, 0],  # honest TIME
+                    time_reply=[2000, 0],  # honest time
                     zcount_reply=10,  # an exhausted log bucket: the peek enters the oldest arm
                     zrangebyscore_reply=container,
                 ),
@@ -784,7 +784,7 @@ async def _collect(pubsub: Any, n: int) -> list[Any]:
 async def test_sse_huge_seq_lie_cannot_blackhole_the_cursor() -> None:
     """The huge-seq lie: an envelope carrying a seq no honest writer can
     issue (the durable cursor is the int4 ``progress_seq`` column) must
-    be discarded WITHOUT advancing the dedup cursor, so the honest event
+    be discarded without advancing the dedup cursor, so the honest event
     behind it still arrives. The mutant that drops the range check
     yields the lie, sets ``last_emitted_seq`` to 2^31, and the honest
     event is filtered as a duplicate: the progress blackhole.

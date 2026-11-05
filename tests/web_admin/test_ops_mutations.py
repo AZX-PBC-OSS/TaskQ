@@ -110,7 +110,7 @@ def _make_app(pool: Any, **kwargs: Any) -> Any:
 # ── Schedule enable ──────────────────────────────────────────────────────
 
 
-# NOTE (the mock-subtraction cure): the schedule-mutation SUCCESS paths
+# NOTE (the mock-subtraction cure): the schedule-mutation success paths
 # (enable/disable/skip → 303, the run-now enqueue) are deleted —
 # tests/test_web_admin_integration.py owns them against real PG
 # (test_schedule_enable_resets_failures, test_schedule_disable_sets_enabled_false,
@@ -497,7 +497,7 @@ def test_rate_limit_reset_pg_only_bucket_is_not_a_500(monkeypatch: pytest.Monkey
     clean, explanatory error, not the registry's raw KeyError as a 500."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
-    # The registry stays EMPTY - the bucket exists only as a PG row.
+    # The registry stays empty - the bucket exists only as a PG row.
     monkeypatch.setattr(rl_registry, "_rate_limits", {})
     conn = _ScriptedConnection()
     client = _make_app(_ScriptedPool(conn))
@@ -619,9 +619,9 @@ def test_reservations_page_merges_pg_state_and_extra_bucket(
 
     # Fetch order with a configured reservation: the page reads
     # (reservations, held), sync_slots then reads per reservation
-    # (existing, insert) through its OWN transaction - the shared stub
+    # (existing, insert) through its own transaction - the shared stub
     # supports conn.transaction(), so the sync completes here instead of
-    # erroring into the degraded no-refetch path - and the page REFETCHES
+    # erroring into the degraded no-refetch path - and the page refetches
     # (reservations, held) to render post-sync state.
     conn = _ScriptedConnection(
         fetch_results=[[configured_row, orphan_row], [], [], [], [configured_row, orphan_row], []]

@@ -54,7 +54,7 @@ from tests._docs_examples import DocsExample, iter_examples
 
 #: The declared export surface rule 4 checks free calls against: the two
 #: modules the fences' import lines overwhelmingly name. Raw ``dir()`` is
-#: deliberately NOT the surface — it includes transitive import artifacts
+#: deliberately not the surface — it includes transitive import artifacts
 #: (``timedelta``, ``UUID``) that no doc should rely on unbound.
 _DECLARED_EXPORTS = frozenset(taskq.__all__) | frozenset(taskq.retry.__all__)
 
@@ -305,7 +305,7 @@ def _verify_fragment(
         page_bound.add(bound)
     for module, name, asname in _taskq_from_imports(tree):
         if _import_resolves(module, name) and _is_module(f"{module}.{name}"):
-            # The BINDING (asname if aliased) is what later fences chain through:
+            # The binding (asname if aliased) is what later fences chain through:
             # ``from taskq import retry as tr2`` roots ``tr2.<attr>`` chains.
             contributions[asname or name] = f"{module}.{name}"
     for module, asname in _taskq_plain_imports(tree):
@@ -315,7 +315,7 @@ def _verify_fragment(
             # chain root later fences reach for.
             contributions[asname] = module
         elif rest:
-            # ``import taskq.retry`` binds the ROOT name (``taskq``), not the
+            # ``import taskq.retry`` binds the root name (``taskq``), not the
             # leaf; chains rooted there resolve natively, so record the head.
             contributions.setdefault(head, head)
         else:
@@ -342,7 +342,7 @@ def _check_pages() -> _PageReport:
                 continue
             report.no_exec_checked += 1
             if _DELIBERATELY_BROKEN in example.info:
-                continue  # documents a path that MUST fail; nothing to enforce
+                continue  # documents a path that must fail; nothing to enforce
             contributions = _verify_fragment(example, module_aliases, page_bound, report)
             module_aliases.update(contributions)
     return report
@@ -478,7 +478,7 @@ def test_the_checker_reds_on_a_broken_chain_through_an_aliased_taskq_module() ->
 
 def test_a_star_import_binds_only_the_declared_exports() -> None:
     """``from taskq import *`` legitimately binds ``taskq.__all__`` — a call to
-    a declared export through the star form must NOT red (a checker that
+    a declared export through the star form must not red (a checker that
     flags a working idiom trains readers to ignore it), while a call to a
     declared export the star could not have bound stays enforced."""
     fence_info = "python no-exec — not executed: fragment, names bound by an earlier fence"
@@ -498,7 +498,7 @@ def test_a_star_import_binds_only_the_declared_exports() -> None:
         for name in taskq.__all__
         if not name.startswith("_") and callable(getattr(taskq, name, None))
     )
-    # A taskq.retry-only declared export: `from taskq import *` does NOT bind
+    # A taskq.retry-only declared export: `from taskq import *` does not bind
     # it, so a bare call must stay enforced. Membership, not hasattr: the
     # star's binding is __all__, and a stray module attribute (another
     # test's leak) is irrelevant to what the star imports.

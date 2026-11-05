@@ -41,7 +41,7 @@ async def _saturate(sw: SlidingWindow, clock: FakeClock, n: int) -> None:
         assert decision.allowed is True, f"acquire {i} unexpectedly denied"
 
 
-# ── GCRA acquire: the two denial branches yield different numbers ─────
+# ── gcra acquire: the two denial branches yield different numbers ─────
 
 
 async def test_gcra_denied_by_emission_interval_retry_after_is_exact() -> None:
@@ -93,14 +93,14 @@ async def test_gcra_denied_by_count_at_allow_at_boundary_retry_after_is_exact() 
     assert denied.retry_after == timedelta(milliseconds=750)
     # The strictness property itself, on the observable state: the
     # in-window admission count still sits at exactly ``limit`` - a
-    # pure-GCRA path would have just admitted a (limit+1)-th cell and
+    # pure-gcra path would have just admitted a (limit+1)-th cell and
     # left the bucket one deeper than its configured bound.
     state = await sw.peek(clock=clock)
     assert state.is_exhausted is True
     assert state.remaining == 0.0
 
 
-# ── GCRA peek: exhausted state ───────────────────────────────────────
+# ── gcra peek: exhausted state ───────────────────────────────────────
 
 
 async def test_gcra_peek_exhausted_returns_exact_state() -> None:

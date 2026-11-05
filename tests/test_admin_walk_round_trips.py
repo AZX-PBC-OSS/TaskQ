@@ -89,7 +89,7 @@ async def test_history_round_trip_forward_then_backward_is_row_exact(
             }
         )
         # Half in the archive, half live (the union's both-branch shape).
-        # duration_ms is COMPUTED in the walk's SELECT, never stored; the
+        # duration_ms is computed in the walk's SELECT, never stored; the
         # archive carries expire_at, the live table does not.
         target = "jobs_archive" if i < _POP // 2 else "jobs"
         if target == "jobs_archive":
@@ -134,7 +134,7 @@ async def test_history_round_trip_forward_then_backward_is_row_exact(
 
     # ── the forward walk ──
     seen: list[uuid_mod.UUID] = []
-    # Each page's FIRST-row key: exactly the prev cursor the route stamps
+    # Each page's first-row key: exactly the prev cursor the route stamps
     # (the template's Previous link walks from the page's first row).
     prev_cursors: list[tuple[Any, ...]] = []
     cursor: tuple[Any, ...] | None = None
@@ -166,7 +166,7 @@ async def test_history_round_trip_forward_then_backward_is_row_exact(
         cursor = (top, last["created_at"], last["id"])
     assert seen == reference, "the forward walk must reproduce the reference order"
 
-    # ── the backward round trip: from the LAST page's prev cursor (its
+    # ── the backward round trip: from the last page's prev cursor (its
     # first row) back up to the top — the operator's own walk. The rows
     # above that key are exactly the reference's covered prefix.
     covered = len(reference) - (len(reference) % _PAGE_SIZE)
@@ -177,7 +177,7 @@ async def test_history_round_trip_forward_then_backward_is_row_exact(
         if not fetched:
             break
         # The backward fetch arrives re-sorted into display order; the
-        # page is the LAST page-worth (the rows nearest the cursor).
+        # page is the last page-worth (the rows nearest the cursor).
         page = fetched[-_PAGE_SIZE:]
         seen_backward = [r["id"] for r in page] + seen_backward
         if len(fetched) < _PAGE_SIZE:
@@ -215,7 +215,7 @@ async def test_queue_detail_round_trip_is_row_exact(
             base + timedelta(minutes=i),
             base,
         )
-    reference = list(ids)  # ASC by scheduled_at = insertion order
+    reference = list(ids)  # asc by scheduled_at = insertion order
 
     async def _fetch(cursor: tuple[Any, ...] | None, direction: str) -> list[asyncpg.Record]:
         if cursor is None:
@@ -230,7 +230,7 @@ async def test_queue_detail_round_trip_is_row_exact(
         return list(await walk_conn.fetch(sql, "walk_queue", "pending", cursor[0], cursor[1]))
 
     seen: list[uuid_mod.UUID] = []
-    # Each page's FIRST-row key: the prev cursor the route stamps.
+    # Each page's first-row key: the prev cursor the route stamps.
     prev_cursors: list[tuple[Any, ...]] = []
     cursor: tuple[Any, ...] | None = None
     while True:

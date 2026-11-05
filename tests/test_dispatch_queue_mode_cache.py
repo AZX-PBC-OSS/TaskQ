@@ -1,7 +1,7 @@
 """Queue-mode resolution cache pins: TTL pickup and explicit invalidation.
 
 Every ``dispatch_batch`` opened its transaction with a queue-mode resolve
-round trip (``SELECT name, mode FROM queues WHERE name = ANY($1)``) for
+round trip (``SELECT name, mode FROM queues WHERE name = any($1)``) for
 data that changes only through queue ops. The worker-side
 :class:`~taskq.backend._dispatch.QueueModeCache` collapses that per-round
 statement to a per-TTL resolve. These pins hold the two halves that make
@@ -175,7 +175,7 @@ async def test_mode_change_is_picked_up_within_the_ttl(
     await _dispatch(pool, cache, queues=["qm_ttl_flip"], schema=schema)
     assert pool.dispatch_sqls[-1] == tmpl.dispatch_strict_fifo
 
-    # Out-of-band flip on the REAL row - invisible to this process until
+    # Out-of-band flip on the real row - invisible to this process until
     # the TTL expires.
     await _seed_queue(module_pg_pool, schema, "qm_ttl_flip", mode="round_robin")
     clock.advance(timedelta(seconds=QUEUE_MODE_CACHE_TTL_SECONDS + 0.1))
@@ -213,7 +213,7 @@ async def test_mode_change_is_picked_up_immediately_after_queue_ops_invalidation
         row = await set_queue_mode(ops_conn, "qm_seam", "round_robin", schema=schema)
     assert row.mode == "round_robin"
 
-    # Clock NOT advanced: only the seam's invalidation can make this miss.
+    # Clock not advanced: only the seam's invalidation can make this miss.
     await _dispatch(pool, cache, queues=["qm_seam"], schema=schema)
     assert pool.resolve_fetches == 2, (
         "set_queue_mode must clear the live cache - a same-process mode "

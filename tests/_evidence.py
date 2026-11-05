@@ -98,7 +98,7 @@ _staging_lock: IO[str] | None = None
 
 def evidence_measurements_dir() -> Path:
     """The estate's ROOT as a Path — the branch's .measurements/ staged
-    ONCE into a temp dir (git archive + extract), cached for the
+    once into a temp dir (git archive + extract), cached for the
     process's lifetime. The pins that WALK the tree (the docs-numbers
     rglob faces) read the staged copy; the verifier's own --evidence-ref
     uses the same staging shape.

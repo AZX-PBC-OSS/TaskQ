@@ -9,22 +9,22 @@ The method: every pin builds a SYNTHETIC ESTATE in
 a tmp dir (a ``runs/`` with a hand-written ``CLAIMS.json`` + the tampered
 capture) and runs the verifier as a subprocess against it
 (``--runs-dir``). Every claim is FRESH (``head_sha`` = the worktree's own
-``git rev-parse HEAD``) so the head-stamp law holds and ONLY the door leg
+``git rev-parse HEAD``) so the head-stamp law holds and only the door leg
 under pin can judge. The verifier's ``REPO`` is its own parent — the
 working tree's residue never enters.
 
 The pin families (every estate below exits rc=0 today; each was a
 shape the door once greened):
 
-* THE SCAN WINDOW: ``_scan_window`` reads
+* the SCAN WINDOW: ``_scan_window`` reads
   the whole capture — a red verdict (``1 failed, N passed``) sitting
   MID-FILE, pushed past a ``rc=0`` stamp by trailing chatter, is
   still rejected: the scan is verdict-shaped, never
   line-counted.
-* THE JSON LAUNDER: JSON captures' verdict fields
+* the JSON LAUNDER: JSON captures' verdict fields
   (``rc``/``failed``/``errors``) are read like any stamp; the band
   family's verdict-free measurements stay green.
-* THE EMPTY REGISTRY GREENS VACUOUSLY: an empty registry is a loud
+* the EMPTY REGISTRY GREENS VACUOUSLY: an empty registry is a loud
   refusal — an estate with no
   claims is unverifiable,
   per the verifier's own missing-registry law.
@@ -32,8 +32,8 @@ shape the door once greened):
   stamp,
   where present) must be sane — not future-dated beyond the law's
   stated tolerance (one day, in the verifier's docstring).
-* THE ENV-FORGED HEAD: the verified
-  head is the REPO'S OWN head (``git rev-parse HEAD``), env-
+* the ENV-FORGED HEAD: the verified
+  head is the REPO'S own head (``git rev-parse HEAD``), env-
   influenceable never; the CI env face survives only under the
   cross-check against the repo's own history (a sha the repo cannot
   name never judges the estate).
@@ -51,14 +51,14 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[1]
 _VERIFIER = _REPO / "scripts" / "verify_evidence_heads.py"
 
-#: A sha that exists NOWHERE in the repo (the forgery).
+#: A sha that exists nowhere in the repo (the forgery).
 _FORGED_SHA = "f" * 40
 
 
 def _repo_head() -> str:
     """The worktree's own HEAD — the fresh claim's stamp (never
     hardcoded: the pin survives rebases)."""
-    return subprocess.run(  # Why: fixed argv, no shell; the git binary resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+    return subprocess.run(  # Why: fixed argv, no shell; the git binary resolves on the dev/CI path exactly as the repo's own scripts invoke it.
         ["git", "rev-parse", "HEAD"],  # noqa: S607  # Why: as above.
         cwd=_REPO,
         capture_output=True,
@@ -122,7 +122,7 @@ def test_d1_the_door_convicts_a_red_verdict_anywhere_in_the_capture(tmp_path: Pa
         "head: staged",
     ]
     lines += [f"chatter before {i}" for i in range(20)]
-    lines.append("1 failed, 31 passed in 42.0s")  # the TRUE red — line 24 of 44
+    lines.append("1 failed, 31 passed in 42.0s")  # the true red — line 24 of 44
     lines += [f"trailing chatter {i}" for i in range(20)]
     runs_dir = tmp_path / "runs"
     _write_estate(
@@ -172,7 +172,7 @@ def test_d2_a_json_capture_verdict_is_never_laundered(tmp_path: Path) -> None:
 
 
 def test_d3_the_empty_registry_is_a_loud_refusal(tmp_path: Path) -> None:
-    """An estate with NO claims is UNVERIFIABLE — the verifier's own
+    """An estate with no claims is UNVERIFIABLE — the verifier's own
     missing-registry law's shape extended to the empty one: the loop over
     zero stems proves nothing, so the pass is vacuous. The pin: a loud
     refusal, never "the law holds"."""
@@ -197,7 +197,7 @@ def test_d4_a_future_dated_capture_is_refused(tmp_path: Path) -> None:
     own field — ``record_claim`` always writes it) must not be
     future-dated beyond a tolerance, and the filename's embedded
     timestamp gets the same read where present. The estate: a fresh,
-    green capture dated 2030 — in the registry field AND in the name."""
+    green capture dated 2030 — in the registry field and in the name."""
     runs_dir = tmp_path / "runs"
     _write_estate(
         runs_dir,

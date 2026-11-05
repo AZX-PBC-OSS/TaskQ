@@ -98,8 +98,8 @@ def test_sanitize_nul_str_replaces_nul_with_visible_escape() -> None:
 
 # ── Handler-level sanitization ───────────────────────────────────────────
 #
-# The strand cycle is only broken if the terminal write actually LANDS with
-# the escape visible: the handlers must sanitize derived text BEFORE the
+# The strand cycle is only broken if the terminal write actually lands with
+# the escape visible: the handlers must sanitize derived text before the
 # guarded construction, so the write succeeds instead of raising. Driving
 # the real handlers against InMemoryBackend pins the stored row - the exact
 # input the PG terminal write would bind.

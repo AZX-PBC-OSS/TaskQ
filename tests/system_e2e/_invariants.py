@@ -1,7 +1,7 @@
 """The system invariants: the counter every scenario is asserted against.
 
 These are SYSTEM invariants, not per-call pins. They run over the whole
-tagged population, across BOTH the live table and the archive, and they
+tagged population, across both the live table and the archive, and they
 are asserted continuously in the sense that matters for a lifecycle
 scenario: at every settle point (after every chaos window, before every
 teardown) the counter must balance.
@@ -257,7 +257,7 @@ async def effect_ledger_violations(conn: asyncpg.Connection, schema: str, tag: s
     One effects row per (job_id, attempt, actor, kind): a re-run is a
     NEW attempt, never a second run of the same one, and no effects row
     exists without the matching claim row (a body ran where nothing was
-    dispatched to it) - with ONE documented exception, the same shape
+    dispatched to it) - with one documented exception, the same shape
     the ledger paragraph above records: an INTERRUPTED attempt (the
     shutdown release arm, ``mark_interrupted``) writes no claim row, so
     a body that recorded effects and was then interrupted by a drain
@@ -374,7 +374,7 @@ async def delete_tagged(conn: asyncpg.Connection, schema: str, tag: str) -> None
     await conn.execute(f'DELETE FROM "{schema}".jobs WHERE tags @> ARRAY[$1::text]', tag)
 
 
-#: The client-side bound on ONE cleanup attempt (the two deletes). A
+#: The client-side bound on one cleanup attempt (the two deletes). A
 #: healthy pair lands in milliseconds; the bound exists for the weather
 #: classes, so a hung attempt cannot consume the scenario's own budget.
 _DELETE_ATTEMPT_BOUND_S = 30.0
@@ -386,22 +386,22 @@ async def delete_tagged_resilient(
     """Teardown that survives the ledger connection's own death.
 
     The PG17 leg's finding:
-    a silently-dead PG socket turned ONE infrastructure event into
+    a silently-dead PG socket turned one infrastructure event into
     THREE legs — the scenario hung past its pytest-timeout, the test's
-    ``finally`` hung on the SAME dead socket (the test task was left
+    ``finally`` hung on the same dead socket (the test task was left
     pending at call end — the teardown error), and the never-deleted
     tagged population (same module schema, same per-scenario tag)
     contaminated the SIBLING scenario's own population read. The law
-    this helper lands: a scenario's population must be deleted EVEN
+    this helper lands: a scenario's population must be deleted even
     WHEN the ledger connection it ran on died — the rows are the
     scenario's own residue, and a fresh connection is one the dead
     socket cannot veto.
 
     Two attempts, each bounded (``_DELETE_ATTEMPT_BOUND_S``): the
     ledger connection first (the healthy path, byte-identical to
-    :func:`delete_tagged`), then — on ANY failure (a dead socket's
+    :func:`delete_tagged`), then — on any failure (a dead socket's
     hang, its fast ``ConnectionDoesNotExistError``, the server-side
-    statement timeout) — ONE fresh connection off the DSN and the same
+    statement timeout) — one fresh connection off the DSN and the same
     delete. The fresh attempt's failure is logged and swallowed: the
     cleanup runs in a test's ``finally`` and must never mask the
     scenario's own verdict; a persisting residue surfaces through the

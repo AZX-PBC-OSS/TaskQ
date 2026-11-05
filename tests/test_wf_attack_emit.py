@@ -15,7 +15,7 @@ tx) and ``taskq/workflows/chain.py`` (the router's record identity).
   range") and rolls its VALID page-mates back with it — the ceiling is
   nowhere a typed, named, documented refusal at the emit door.
 
-THE GUARD THAT IS NOT HERE: this front's kill-at-the-post-cursor/
+This front's kill-at-the-post-cursor/
 pre-commit-window repro (kill inside the emit tx after the cursor
 checkpoint, whole-tx rollback, the reclaim re-emitting exactly the lost
 page — zero dup, zero lost) is ALREADY PINNED by the shipped suite:
@@ -150,8 +150,7 @@ async def test_f_emit_1_reemitting_a_committed_page_is_a_typed_refusal(
 
     raised: Exception | None = None
     try:
-        # THE DIVERGENCE: the same page re-emitted (the resume that lost
-        # its checkpoint).
+        # the same page re-emitted (the resume that lost its checkpoint).
         await emit_batch(
             wf_pool,
             wf_sql,
@@ -205,7 +204,7 @@ async def test_f_emit_1_repaging_at_a_different_width_is_a_typed_refusal(
 
     raised: Exception | None = None
     try:
-        # THE DIVERGENCE: the re-paged width-6 replay of the same records.
+        # the re-paged width-6 replay of the same records.
         await emit_batch(
             wf_pool,
             wf_sql,
@@ -242,7 +241,7 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
 ) -> None:
     """The ceiling is real (``jobs.map_index smallint``, 01.00.23) and
     UNDOCUMENTED where an author reads. The law the door already lives
-    by (the map_index-None refusal: a ``ValueError`` BEFORE any row
+    by (the map_index-None refusal: a ``ValueError`` before any row
     exists) is exactly the shape the ceiling refusal must take — typed,
     named, naming the ceiling's number, and the number in the docs."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -251,7 +250,7 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
 
     raised: Exception | None = None
     try:
-        # A page pairing a VALID record (32767, the smallint max) with
+        # A page pairing a valid record (32767, the smallint max) with
         # the record that crosses the ceiling (32768).
         await emit_batch(
             wf_pool,
@@ -277,10 +276,10 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
         "The ceiling refusal must NAME the ceiling (32767) — an author "
         "reading 'map_index out of range' learns nothing"
     )
-    # THE SHIPPED BATCH SEMANTICS (MapIndexExhaustedError's own contract):
-    # the poison record kills ITSELF, NEVER ITS MATES — the valid
-    # page-mate (32767) committed FIRST (its tx landed), THEN the raise.
-    # The old whole-page-atomicity leg predates the typed fix.
+    # MapIndexExhaustedError's own contract. the poison record kills itself,
+    # never its mates — the valid page-mate (32767) committed first (its tx
+    # landed), then the raise. The old whole-page-atomicity leg predates the
+    # typed fix.
     assert await committed_children(wf_conn, wf_schema, source_id) == 1, (
         "the valid page-mate must SURVIVE the poison record — the emit's "
         "batch semantics: the valid tx commits, the poison kills itself loudly"
@@ -290,9 +289,9 @@ async def test_f_emit_2_the_map_index_ceiling_is_a_typed_documented_refusal(
         "starts PAST the poison record's page"
     )
 
-    # THE DOCUMENTED CEILING: the number an author can plan around, named
-    # where the emit surface is documented (the module docstrings, the
-    # EmitChild contract, or the workflows guide's map_index prose).
+    # the number an author can plan around, named where the emit surface is
+    # documented (the module docstrings, the EmitChild contract, or the
+    # workflows guide's map_index prose).
     import re
     from pathlib import Path
 

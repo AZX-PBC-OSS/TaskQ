@@ -1,7 +1,7 @@
 """Rate-limit decision result returned by every backend.
 
 Consumed by ``TokenBucket.acquire()``, the sliding-window primitive,
-the concurrency reservation, and the unified AND-composition registry
+the concurrency reservation, and the unified and-composition registry
 .  The shape is frozen, callers read fields, never mutate them.
 """
 

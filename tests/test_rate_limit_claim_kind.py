@@ -119,7 +119,7 @@ def test_red_builtin_cannot_bound_the_storm() -> None:
     """RED (the adoption blocker, the haunt pin's shape replayed as a
     storm walk): the storm shape — a transient policy, no
     time_budget, the BUILT-IN — meets a sustained 429 storm and the
-    decision ladder NEVER terminates. The built-in cannot express
+    decision ladder never terminates. The built-in cannot express
     '429 → bounded'; every attempt retries, past max_attempts forever."""
     actor = StubActorConfig(
         retry=_storm_policy(),
@@ -136,7 +136,7 @@ def test_red_builtin_cannot_bound_the_storm() -> None:
 
 
 def test_green_transient_mode_terminates_with_hint_honored() -> None:
-    """GREEN: the SAME storm through the factory's transient mode
+    """GREEN: the same storm through the factory's transient mode
     terminates at max_attempts, and every retry along the way carries the
     server's hint end-to-end (jitter=0.0: the hint's own number, subject
     to the documented bounds — the 24 h default ceiling above it, the
@@ -259,7 +259,7 @@ def test_fail_loud_on_garbage_claim_kind(bad: object) -> None:
         make_rate_limit_aware_classifier(bad)  # type: ignore[arg-type]  # Why: the test feeds deliberately off-contract values to pin the fail-loud validation
 
 
-# ── the identity pin: the built-in IS the factory at defaults ──────
+# ── the identity pin: the built-in is the factory at defaults ──────
 
 
 _IDENTITY_BATTERY: list[BaseException] = [
@@ -284,7 +284,7 @@ _IDENTITY_BATTERY: list[BaseException] = [
     ReservationUnavailable("pool", timedelta(seconds=30), source="reservation"),
 ]
 # (The battery is seconds-form only: the HTTP-date parse reads the clock,
-# and the identity pin runs both classifiers against the SAME inputs
+# and the identity pin runs both classifiers against the same inputs
 # without injection. The date form's identity is structural — the two
 # share one parse — and its behavior is pinned in
 # test_retry_after_header_sniffing.py.)
@@ -368,7 +368,7 @@ def test_verbatim_hint_clamped_by_max_retry_backoff_end_to_end() -> None:
     assert decision.retry_delay == timedelta(seconds=60)
 
 
-# ── parser alignment 1: huge-but-finite hints CLAMP, not fall back ─
+# ── parser alignment 1: huge-but-finite hints clamp, not fall back ─
 
 
 def test_huge_but_finite_hint_is_honored_verbatim_at_classifier_level() -> None:
@@ -554,7 +554,7 @@ def test_zero_hint_keeps_the_curve_fallback_rule() -> None:
 # the decision path before this hardening:
 #
 # * a non-timedelta ``delay`` raised AttributeError/TypeError inside
-#   ``RetryClassifier._retry_decision``'s ceiling arithmetic — OUT of
+#   ``RetryClassifier._retry_decision``'s ceiling arithmetic — out of
 #   ``decide_after_failure``, whose contract is that a broken hook is
 #   logged and skipped, never propagated (the dispatch loop's failure
 #   path died);
@@ -680,7 +680,7 @@ def test_the_shape_guard_never_rejects_an_honest_override() -> None:
     )
 )
 def test_property_any_header_value_never_crashes_and_stays_finite(value: str) -> None:
-    """Property: for ANY header value, a claimed 429 always classifies,
+    """Property: for any header value, a claimed 429 always classifies,
     and the delay — when present — is a finite positive timedelta. No
     input can crash the classifier (the OverflowError saturation), and
     garbage degrades to delay=None, never to a bogus delay."""

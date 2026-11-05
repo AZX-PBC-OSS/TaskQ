@@ -24,7 +24,7 @@ Usage (the compose file picks the image up via ``TASKQ_EXAMPLE_IMAGE``)::
 ``--print-tag`` prints the tag without building (pure Python, no Docker).
 
 The build context is staged, not used in place: containerspec hashes the
-copy layer's source path string AND its bytes, so the staging directory must
+copy layer's source path string and its bytes, so the staging directory must
 be stable across runs (a per-run temp path would re-mint the hash and pay a
 full rebuild every run — the same lesson ``tests/e2e/conftest.py``'s wheel
 cache learned). Staging also replicates the root ``.dockerignore``'s
@@ -53,7 +53,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 #: Repository name for the content-hashed image.
 IMAGE_REPOSITORY = "taskq-example"
 
-#: Stable staging root OUTSIDE the repository (the staged context is a full
+#: Stable staging root outside the repository (the staged context is a full
 #: copy of it — inside the repo it would feed the next context walk into
 #: itself).
 _CONTEXT_CACHE_ROOT = Path.home() / ".cache" / "taskq" / "docker-contexts"
@@ -120,7 +120,7 @@ def stage_context(repo_root: Path = _REPO_ROOT, cache_root: Path = _CONTEXT_CACH
     if target.exists():
         return target
     # The scratch dir must share the target's filesystem for the atomic
-    # os.replace (a /tmp scratch is cross-device when the cache lives in $HOME).
+    # os.replace (a /tmp scratch is cross-device when the cache lives in $home).
     target.parent.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="taskq-example-ctx-", dir=target.parent))
     try:

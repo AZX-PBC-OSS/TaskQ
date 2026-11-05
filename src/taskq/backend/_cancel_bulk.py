@@ -20,9 +20,9 @@ round N's pending/scheduled arm walks a keyset window forward, and a
 matching RUNNING row rescheduled mid-drain (a denial snooze, a shutdown
 interrupt, a crash reclaim, a consumer retry) lands pending/scheduled at
 an id the pending arm has already passed, where the running arm (strictly
-after it, matching only ``running AND cancel_phase=0``) can never see it
+after it, matching only ``running and cancel_phase=0``) can never see it
 (the pre-rounds drain returned normally with such a row uncancelled,
-contradicting the "cancels EVERY matching job" contract below). The next
+contradicting the "cancels every matching job" contract below). The next
 round's fresh cursor re-walks from the bottom of the key space and picks
 the straggler up; the drain stops at the first round that matched nothing,
 capped at the constant bound so sustained concurrent churn cannot turn
@@ -128,22 +128,19 @@ _UUID_MIN = UUID(int=0)
 #: skip everything earlier rounds cancelled, so a re-run is resumable,
 #: never double-counted.
 #:
-#: THE SHAPE: draining a filtered set as
-#: repeated bounded predicate windows rather than one unbounded
-#: statement. One ``LIMIT``-ed, ``FOR UPDATE SKIP
-#: LOCKED`` predicate window whose callers re-invoke until the
-#: predicate stops matching: keep fetching batches, break when one
-#: comes back under the limit. The rounds adopt that
-#: re-scan-until-satisfied instinct in place of a single forward-only
-#: pass, which loses rows a concurrent re-pend moves behind the cursor.
-#: Two deliberate divergences: every arm
-#: pages on a keyset cursor inside its drain (no batch re-walks rows an
-#: earlier batch of the same arm already handled, where a bare
-#: predicate window re-evaluates them), and the loop is hard-capped:
-#: a maintenance daemon may legitimately run that loop as long as the
-#: feed does, but for a single API call that shape is an
-#: unbounded loop under sustained churn; the cap is what keeps one call
-#: a constant multiple of one drain.
+#: draining a filtered set as repeated bounded predicate windows rather than
+#: one unbounded statement. One ``LIMIT``-ed, ``FOR UPDATE SKIP LOCKED``
+#: predicate window whose callers re-invoke until the predicate stops matching:
+#: keep fetching batches, break when one comes back under the limit. The rounds
+#: adopt that re-scan-until-satisfied instinct in place of a single
+#: forward-only pass, which loses rows a concurrent re-pend moves behind the
+#: cursor. Two deliberate divergences: every arm pages on a keyset cursor
+#: inside its drain (no batch re-walks rows an earlier batch of the same arm
+#: already handled, where a bare predicate window re-evaluates them), and the
+#: loop is hard-capped: a maintenance daemon may legitimately run that loop as
+#: long as the feed does, but for a single API call that shape is an unbounded
+#: loop under sustained churn; the cap is what keeps one call a constant
+#: multiple of one drain.
 _MAX_CANCEL_DRAIN_ROUNDS: Final = 3
 
 
@@ -253,7 +250,7 @@ async def _drain_cancel_batches(
         per-iteration inside the ``while`` body would capture a variable
         the loop reassigns. The retry guard's flag is marked only after
         the transaction's COMMIT is acknowledged: a parked/dead
-        connection failing any statement INSIDE the transaction rolled
+        connection failing any statement inside the transaction rolled
         the whole batch back server-side (the drain re-runs it: EPQ
         predicates skip whatever earlier batches committed, the cursor
         is unchanged, nothing is cancelled or counted twice), while past
@@ -274,7 +271,7 @@ async def _drain_cancel_batches(
         guard.mark_wrote()
         return batch_row
 
-    # The keyset cursor: the greatest id this drain has WINDOWED so far.
+    # The keyset cursor: the greatest id this drain has windowed so far.
     # Starts below every UUID so the first pass is unbounded on the low
     # side, then advances past each batch so the next pass resumes where
     # this one stopped instead of re-walking what it already handled.
@@ -296,8 +293,8 @@ async def _drain_cancel_batches(
         matched_count = int(row["matched_count"]) if row is not None else 0
         if matched_count < batch_size:
             return
-        # Advance past everything this batch WINDOWED, not merely what it
-        # cancelled: a row that failed the EPQ re-check was claimed by a
+        # Advance past everything this batch windowed, not merely what it
+        # cancelled: a row that failed the epq re-check was claimed by a
         # dispatcher between the snapshot and the row lock, so it is no
         # longer this statement's to cancel. Re-windowing it would make
         # the drain spin on it forever without matched_count ever falling
@@ -337,7 +334,7 @@ async def _cancel_where(
     limit_ph = len(params) + 2
 
     # Statement 1: cancel pending/scheduled → terminal 'cancelled'
-    # EPQ-safe: predicates on the target table (j.status) are re-evaluated
+    # epq-safe: predicates on the target table (j.status) are re-evaluated
     # for concurrently-modified rows.
     cancel_ps_sql = f"""
     -- MATERIALIZED is essential: without it the planner may inline the
@@ -539,9 +536,9 @@ async def _cancel_where(
             if wid is not None
         )
 
-    # The two-arm drain as bounded fixpoint ROUNDS. A single
+    # The two-arm drain as bounded fixpoint rounds. A single
     # pair of passes loses matching rows that a concurrent re-pend
-    # moves BEHIND the pending arm's keyset cursor mid-drain: the row
+    # moves behind the pending arm's keyset cursor mid-drain: the row
     # was 'running' (or phase!=0) when the pending arm windowed past
     # its id, so no window ever held it, and the running arm, strictly
     # after the pending arm, matching only running+phase-0, cannot
@@ -549,15 +546,15 @@ async def _cancel_where(
     # bottom of the key space (`_UUID_MIN`), so a re-pended straggler
     # is matched by round N+1's pending arm whatever id it carries.
     #
-    # Termination and cost: a round stops the loop when NEITHER arm
+    # Termination and cost: a round stops the loop when neither arm
     # committed a single row (progress measured on the committed id
-    # lists the handlers append to: windowed-but-EPQ-dropped rows are
+    # lists the handlers append to: windowed-but-epq-dropped rows are
     # deliberately not progress, they belong to the other arm), and
     # `_MAX_CANCEL_DRAIN_ROUNDS` bounds the loop outright, because a
     # live claim/fail/retry churn on matching rows re-feeds the match
     # set every round and an uncapped fixpoint would chase it forever.
     # Ids cannot repeat across rounds: arm 1's rows land terminal
-    # 'cancelled' (EPQ re-check rejects them forever after) and arm 2's
+    # 'cancelled' (epq re-check rejects them forever after) and arm 2's
     # rows leave the running arm's phase-0 predicate, so the result
     # totals stay exactly-once.
     for _round in range(_MAX_CANCEL_DRAIN_ROUNDS):

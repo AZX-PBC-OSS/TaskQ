@@ -2,7 +2,7 @@
 
 The attack brief's fleet scenario: a rate-limit bucket's state is shared by
 the whole fleet (the Redis hash under ``taskq:{schema}:rl:tb:{name}``, the
-PG ``rate_limit_buckets`` row), while every worker materializes its OWN
+PG ``rate_limit_buckets`` row), while every worker materializes its own
 ``TokenBucket`` instance from the actor declaration. Nothing ties the
 instances together, so the pins here build two independent instances and
 drive them concurrently, exactly the deployment shape:
@@ -13,7 +13,7 @@ drive them concurrently, exactly the deployment shape:
   admits ``capacity`` per instance; a racy read-modify-write admits more
   than ``capacity``. Both mutations fail the exact-count pins.
 * **The deny-then-allow boundary.** A denied acquire must be denied again
-  strictly BEFORE its own ``retry_after`` hint elapses (the hint is a
+  strictly before its own ``retry_after`` hint elapses (the hint is a
   deficit over the refill rate, not a free pass), and must be admitted
   once the hint has elapsed. A script that advanced the denial's ``ts``
   without storing the refilled count (or spent on denial) makes the
@@ -62,7 +62,7 @@ async def test_redis_fleet_double_spend_exact(redis_url: str) -> None:
     # Shared-pair tenant (documented, per fixtures.redis_url's tenancy
     # contract): logical acquire/deny assertions on the test's own unique
     # logical DB - no broker-global command, no latency or wall-clock
-    # boundary assertion. The boundary-timing sibling below is NOT such a
+    # boundary assertion. The boundary-timing sibling below is not such a
     # tenant and rides a private broker.
     """Two worker instances bursting one shared fixed-quota hash admit
     exactly ``capacity`` total, not per instance."""
@@ -130,13 +130,13 @@ async def test_redis_deny_then_allow_boundary_at_the_hint(private_redis_url: str
 
     try:
         # The deny-stands assert is only meaningful on an attempt whose
-        # early acquire provably ran STRICTLY INSIDE the hint window, so
+        # early acquire provably ran strictly inside the hint window, so
         # the premise is verified per attempt from the hash's own stamps
         # and a stalled attempt retries on a fresh slate rather than
         # asserting against a window that no longer exists.
         #
         # Why the premise can fail without any product lie: the window is
-        # anchored at the DENIAL's ts stamp (the Redis TIME the deny
+        # anchored at the denial's ts stamp (the Redis time the deny
         # script read), but this test's sleep runs on the client's wall
         # clock and starts only when the denial reply lands. A runner
         # stall between the two expires the window before the early
@@ -155,7 +155,7 @@ async def test_redis_deny_then_allow_boundary_at_the_hint(private_redis_url: str
             hint = denied.retry_after.total_seconds()
             assert 0.0 < hint <= 1.0, f"retry hint {hint}s: a zero hint is a spin, > 1s is a lie"
 
-            # The denial script stamped ts with its own TIME read: the
+            # The denial script stamped ts with its own time read: the
             # window's exact start, not a client-side estimate.
             denial_raw = await client.hget(key, "ts")
             assert denial_raw is not None
@@ -169,14 +169,14 @@ async def test_redis_deny_then_allow_boundary_at_the_hint(private_redis_url: str
             if not early.allowed:
                 break  # the deny stood: the pin holds this attempt
 
-            # Granted: was the window intact when the script read TIME?
+            # Granted: was the window intact when the script read time?
             # The grant overwrote ts with the early script's own instant,
             # so the server-side elapsed since the denial is exact.
             early_raw = await client.hget(key, "ts")
             assert early_raw is not None
             elapsed = float(early_raw) - denial_ts
             if elapsed < hint:
-                # Granted while the script's own TIME read was still
+                # Granted while the script's own time read was still
                 # strictly inside the window: the denial branch wrote a
                 # spend or lost the refilled count.
                 pytest.fail(
@@ -255,7 +255,7 @@ async def test_pg_allow_boundary_is_inclusive_at_exact_refill(
     module_pg_schema: ModulePgSchema,
     module_pg_pool: asyncpg.Pool,
 ) -> None:
-    """The LAST token of a fixed quota is grantable: the spend comparison
+    """The last token of a fixed quota is grantable: the spend comparison
     is inclusive (``refilled >= count``), all three backends must agree.
 
     Determinism note: a refilling bucket cannot pin this exactly, the
@@ -278,7 +278,7 @@ async def test_pg_allow_boundary_is_inclusive_at_exact_refill(
         spent = await tb.acquire(1.0, pg_pool=module_pg_pool, settings=settings)
         assert spent.allowed is True
 
-    # Balance exactly 1.0, refill 0: the next acquire sits ON the
+    # Balance exactly 1.0, refill 0: the next acquire sits on the
     # boundary, the inclusive comparison grants the last token.
     boundary = await tb.acquire(1.0, pg_pool=module_pg_pool, settings=settings)
     assert boundary.allowed is True, (

@@ -22,7 +22,7 @@ __all__ = ["_flush_buffer", "_flush_buffer_immediate", "_flush_dirty_set", "prog
 
 _log: structlog.stdlib.BoundLogger = structlog.get_logger("taskq.progress._flush")
 
-# Columnar unnest binding order shared by BOTH flush surfaces, the
+# Columnar unnest binding order shared by both flush surfaces, the
 # tick's batched multi-row statement and the single-row immediate/crash
 # statement (which binds one-element arrays). Keeping one list keeps the
 # template's parameter positions and the two call sites from drifting.
@@ -135,7 +135,7 @@ def _retire_flushed_snapshot(
     snapshot_delta: int,
     snapshot_state: dict[str, object],
 ) -> None:
-    """Adopt the authoritative seq and retire ONLY the snapshotted portion.
+    """Adopt the authoritative seq and retire only the snapshotted portion.
 
     A ctx.progress() call landing while the statement was suspended
     mutates ``buffer.pending_seq_delta`` / ``buffer.pending_state`` in
@@ -181,7 +181,7 @@ async def _flush_buffer(
     snapshot_state = dict(buffer.pending_state)
 
     try:
-        # The acquire is a POOL-stage operation: a failure or exhaustion
+        # The acquire is a pool-stage operation: a failure or exhaustion
         # here loses every job's flush this tick, not just this one's, so
         # it is labeled with the pool event/kind, the same taxonomy the
         # loop-level pool_getter handler uses, and must not be folded
@@ -496,8 +496,8 @@ async def progress_flush_loop(
     # The unexpected-error backstop, the same one every other long-lived
     # loop carries (worker/_transient.py): the statement and pool failures
     # inside _flush_dirty_set are already handled per batch (buffers stay
-    # dirty, the tick goes on), but the frames AROUND them, the snapshot
-    # phase's per-buffer state rendering and the retire loop, are NOT, and
+    # dirty, the tick goes on), but the frames around them, the snapshot
+    # phase's per-buffer state rendering and the retire loop, are not, and
     # before this guard a non-transient shape there (a partial-migration
     # AttributeError on a buffer field, a data defect that renders
     # TypeError past the ValueError guard) escaped the while body and
@@ -520,7 +520,7 @@ async def progress_flush_loop(
 
         # Snapshot the dirty set before any await: a ctx.progress() call
         # landing mid-tick mutates buffers and must be picked up by the
-        # NEXT tick, not raced into this one's in-flight statement.
+        # next tick, not raced into this one's in-flight statement.
         dirty = [(job_id, buffer) for job_id, buffer in progress_buffers.items() if buffer.dirty]
         if not dirty:
             continue

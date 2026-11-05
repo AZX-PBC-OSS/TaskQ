@@ -6,7 +6,7 @@
 
 {% block content %}
 <div class="space-y-6">
-    {# The disabled-actions banner: a deployment that cannot act must SAY
+    {# The disabled-actions banner: a deployment that cannot act must say
        so where the forms would have been, not silently render nothing.
        One banner, one text, shared with the mutation routes' 403 detail
        (the actionable-refusal contract). #}
@@ -71,8 +71,8 @@
 
     {# The confirms are the rate-limits page's delegated-listener idiom, not
        inline onclick strings: the HTML parser decodes attribute entities
-       BEFORE the JS runs, so an interpolated value carrying '); breaks the
-       string and executes. The label rides as escaped DATA; a document-level
+       before the JS runs, so an interpolated value carrying '); breaks the
+       string and executes. The label rides as escaped data; a document-level
        submit listener reads it. #}
     <script>
     document.addEventListener('submit', function(e) {
@@ -323,7 +323,7 @@
         </div>
     </section>
 
-    {# The progress driver loads in ALL modes: realtime.js opens the SSE
+    {# The progress driver loads in all modes: realtime.js opens the SSE
        stream in real-time mode and falls back to polling the state endpoint
        everywhere else, so gating this block on realtime_mode left pure-polling
        deployments (no Redis) with a progress section nothing ever updated.

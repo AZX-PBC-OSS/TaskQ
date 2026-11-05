@@ -36,7 +36,7 @@ class Strict(BaseModel):
 
 
 class Lenient(BaseModel):
-    """All-optional: ANY dict validates into it (the confusion's door)."""
+    """All-optional: any dict validates into it (the confusion's door)."""
 
     model_config = {"extra": "ignore"}
 
@@ -73,12 +73,12 @@ async def _held_flow(
     return flow_id, runner, JobId(node_id)
 
 
-# ── A3-H1: the timeout face is DEAD — an expired hold re-holds forever ──
+# ── A3-H1: the timeout face is dead — an expired hold re-holds forever ──
 # The pin's own docstring: "the node resumes (the body re-runs and the
 # wait site raises the typed timeout face)" — on_timeout="fail" →
-# SignalTimeoutError. The shipped wait_signal NEVER raises it: past the
+# SignalTimeoutError. The shipped wait_signal never raises it: past the
 # queue's end it finds no 'held' row (the sweep set it 'abandoned') and
-# mints a NEW hold with a NEW deadline. Hold → expire → re-hold → …
+# mints a new hold with a new deadline. Hold → expire → re-hold → …
 # the workflow never times out.
 
 
@@ -89,7 +89,7 @@ async def test_a3_expired_hold_reholds_forever_no_timeout_face(
     from taskq.workflows import Expired
 
     async def hold_body(ctx: StepContext, params: Ingest) -> Any:
-        # the expiry-as-value'S AMENDMENT: the face is a VALUE (the Expired member); the
+        # the expiry-as-value'S amendment: the face is a value (the Expired member); the
         # body converts it into the raised failure (the ladder's own use).
         outcome = await ctx.wait_signal(Approval, timeout_s=0.3)
         match outcome:
@@ -103,8 +103,8 @@ async def test_a3_expired_hold_reholds_forever_no_timeout_face(
     )
     await asyncio.sleep(0.4)
     assert await sweep_expired_signals(wf_pool, schema=wf_schema) == 1
-    # THE RESUME: the body re-runs. The CONTRACT: the wait site raises
-    # the typed timeout face; the node terminal-fails.
+    # the body re-runs. The contract: the wait site raises the typed timeout
+    # face; the node terminal-fails.
     await runner.drive(flow_id, max_ticks=30)
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', flow_id)
     epochs = await wf_conn.fetch(
@@ -120,12 +120,12 @@ async def test_a3_expired_hold_reholds_forever_no_timeout_face(
     )
 
 
-# ── A3-H2: the DOUBLE concurrent resolve — the audit is NOT exactly-once ─
-# The deliver CAS makes the RESUME exactly-once (one 'delivered', one
+# ── A3-H2: the double concurrent resolve — the audit is not exactly-once ─
+# The deliver CAS makes the resume exactly-once (one 'delivered', one
 # 'no-op') — but resolve() writes the audit row + fires the knock in the
-# GUARD tx (the row still 'held'), and the deliver CAS runs AFTER that tx
-# commits. Two concurrent resolves both pass the guard → TWO audit rows,
-# TWO 'resolved' knocks for ONE resolution.
+# guard tx (the row still 'held'), and the deliver CAS runs after that tx
+# commits. Two concurrent resolves both pass the guard → two audit rows,
+# two 'resolved' knocks for one resolution.
 
 
 async def test_a3_double_resolve_audit_not_exactly_once(
@@ -141,7 +141,7 @@ async def test_a3_double_resolve_audit_not_exactly_once(
     holds = await client.list(run=flow_id)
     assert len(holds) == 1
     hold_id = holds[0].hold_id
-    # THE DOUBLE: two operators hit the same hold simultaneously.
+    # two operators hit the same hold simultaneously.
     results = await asyncio.gather(
         client.resolve(hold_id, {"verdict": "approve"}, principal="op-a"),
         client.resolve(hold_id, {"verdict": "approve"}, principal="op-b"),
@@ -165,11 +165,11 @@ async def test_a3_double_resolve_audit_not_exactly_once(
     )
 
 
-# ── A3-H3: the canary in tool args reaches the client list() RAW ────────
+# ── A3-H3: the canary in tool args reaches the client list() raw ────────
 # The module law: "a canary secret in tool args must no more reach the
-# client list than the capture row" and "REDACT-BEFORE-PERSIST". The
-# shipped wait_signal persists reason/tool/args RAW (no chain, no hook);
-# HitlClient redacts ONLY at read time and ONLY when the constructor got
+# client list than the capture row" and "redact-before-persist". The
+# shipped wait_signal persists reason/tool/args raw (no chain, no hook);
+# HitlClient redacts only at read time and only when the constructor got
 # a hook — and NOTHING in the runner/client wires the workflow's own
 # redact hook into the client. The default surface leaks.
 
@@ -191,7 +191,7 @@ async def test_a3_hold_context_canary_leaks_through_list_by_default(
     flow_id, _runner, _node = await _held_flow(
         wf_conn, wf_schema, wf_pool, wait_body=hold_body, name="a3_canary_flow"
     )
-    # THE DEFAULT SURFACE (the operator's client — no redact hook passed;
+    # the default surface (the operator's client — no redact hook passed;
     # nothing in the estate wires one for them).
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
@@ -205,7 +205,7 @@ async def test_a3_hold_context_canary_leaks_through_list_by_default(
     )
 
 
-# ── A3-H4: the knock is POINTER-ONLY (the confirming probe) ─────────────
+# ── A3-H4: the knock is pointer-only (the confirming probe) ─────────────
 
 
 async def test_a3_knock_is_pointer_only(
@@ -229,9 +229,9 @@ async def test_a3_knock_is_pointer_only(
     holds = await wf_conn.fetch(
         f'SELECT id FROM "{wf_schema}".wf_signals WHERE workflow_id = $1', flow_id
     )
-    # THE LISTENER: a raw pg_notify consumer on the hold channel — on the
-    # MODULE's database (pg_notify is per-database; the env DSN's db is
-    # NOT the module's db — the first listener draft missed it).
+    # a raw pg_notify consumer on the hold channel — on the module's database
+    # (pg_notify is per-database; the env DSN's db is not the module's db — the
+    # first listener draft missed it).
     listen_conn = await asyncpg.connect(module_pg_schema.pg_dsn)
 
     async def listener() -> None:
@@ -258,13 +258,13 @@ async def test_a3_knock_is_pointer_only(
     await listen_conn.close()
 
 
-# ── A3-H5: the wrong-model payload is NOT refused at the boundary ───────
+# ── A3-H5: the wrong-model payload is not refused at the boundary ───────
 # The deliver docstring: "the smuggled Approval.model_construct(verdict=42)
-# is refused at the boundary with the named error, the hold SURVIVES".
+# is refused at the boundary with the named error, the hold survives".
 # The shipped boundary does not exist at runtime: HitlClient.resolve
-# delivers ANY dict; the payload is consumed (delivered, cursor
-# advanced) and the BODY's re-validation blows up — the ladder burns,
-# the flow dies. The hold does NOT survive.
+# delivers any dict; the payload is consumed (delivered, cursor
+# advanced) and the body's re-validation blows up — the ladder burns,
+# the flow dies. The hold does not survive.
 
 
 async def test_a3_wrong_model_payload_not_refused_at_boundary(
@@ -278,8 +278,8 @@ async def test_a3_wrong_model_payload_not_refused_at_boundary(
     )
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
-    # THE SMUGGLE: a payload that validates against NOTHING (Approval
-    # requires 'verdict'; the smuggled dict lacks it).
+    # a payload that validates against NOTHING (Approval requires 'verdict';
+    # the smuggled dict lacks it).
     result = await client.resolve(holds[0].hold_id, {"verdict": 42, "note": "smuggled"})
     assert result.status == "refused", (
         f"the smuggled payload was {result.status!r} — the promised "
@@ -289,10 +289,10 @@ async def test_a3_wrong_model_payload_not_refused_at_boundary(
     )
 
 
-# ── A3-H6: the union wait narrows to the FIRST model (type confusion) ───
+# ── A3-H6: the union wait narrows to the first model (type confusion) ───
 # _coerce_signal iterates the declared models in order and returns the
 # first that validates — a lenient first member swallows a strict
-# second member's delivery: the body receives the WRONG type instance.
+# second member's delivery: the body receives the wrong type instance.
 
 
 async def test_a3_union_wait_narrows_to_the_first_model(
@@ -311,7 +311,7 @@ async def test_a3_union_wait_narrows_to_the_first_model(
     client = HitlClient(wf_pool, schema=wf_schema)
     holds = await client.list(run=flow_id)
     assert len(holds) == 1
-    # The operator answered the STRICT shape.
+    # The operator answered the strict shape.
     result = await client.resolve(holds[0].hold_id, {"decision": "the strict answer"})
     assert result.status == "delivered", result
     await runner.drive(flow_id, max_ticks=30)
@@ -323,7 +323,7 @@ async def test_a3_union_wait_narrows_to_the_first_model(
     )
 
 
-# ── A3-H7: drive(until="held") misses the ETERNAL hold ──────────────────
+# ── A3-H7: drive(until="held") misses the eternal hold ──────────────────
 # _any_held counts 'pending' rows with scheduled_at > now() — a hold
 # with timeout_s=None never sets a future scheduled_at (the deadline is
 # NULL → the held representation keeps the old value): the driver never
@@ -353,9 +353,9 @@ async def test_a3_drive_held_misses_the_eternal_hold(
     )
 
 
-# ── A3-H8: the epoch on a RETRIED hold-site (the confirming probe) ──────
+# ── A3-H8: the epoch on a retried hold-site (the confirming probe) ──────
 # The docs' v1 semantics: while a hold stands, a re-execution re-raises
-# the SAME hold (idempotent re-hold — same epoch, no second row).
+# the same hold (idempotent re-hold — same epoch, no second row).
 
 
 async def test_a3_retried_hold_site_reuses_the_standing_hold(
@@ -372,8 +372,8 @@ async def test_a3_retried_hold_site_reuses_the_standing_hold(
         flow_id,
     )
     assert len(before) == 1
-    # THE RETRY: re-drive (the worker's re-claim path — the body
-    # re-executes from the top on the standing hold).
+    # re-drive (the worker's re-claim path — the body re-executes from the top
+    # on the standing hold).
     verdict = await runner.drive(flow_id, until="held", max_ticks=10)
     after = await wf_conn.fetch(
         f'SELECT id, hold_epoch, status FROM "{wf_schema}".wf_signals WHERE workflow_id = $1',

@@ -2,7 +2,7 @@
 """Adversarial review: lone-surrogate strings at the progress and result boundaries.
 
 A lone surrogate (e.g. ``"\\udcff"``, exactly what ``os.fsdecode`` of a
-non-UTF-8 filename byte produces) is a legal Python ``str`` that can NEVER
+non-UTF-8 filename byte produces) is a legal Python ``str`` that can never
 be encoded to UTF-8 -- so it can never reach a PG ``text``/``jsonb`` value.
 The NUL guard family (``sanitize_nul_str`` / ``check_no_nul_str`` /
 ``dumps_jsonb_str``) rejects NUL at every boundary; NOTHING rejects
@@ -110,7 +110,7 @@ async def test_progress_data_with_surrogate_raises_at_publish() -> None:
 
 
 async def test_progress_detail_with_surrogate_must_be_rejected_at_publish() -> None:
-    """RED: ``detail=`` with the SAME unencodable string must be rejected
+    """RED: ``detail=`` with the same unencodable string must be rejected
     at publish exactly like ``data=`` -- context.py serializes only
     ``data`` before buffering, so a surrogate detail silently enters
     pending_state and detonates later at the terminal write's jsonb_param
@@ -183,7 +183,7 @@ async def test_unencodable_result_is_non_retryable_like_result_too_large() -> No
     """RED: an actor result containing a lone surrogate is a
     DETERMINISTIC serialization defect -- the actor already ran and a
     re-run returns the same unencodable value -- so it must fail
-    non-retryably after exactly ONE execution (ResultTooLarge's exact
+    non-retryably after exactly one execution (ResultTooLarge's exact
     contract, retry.py:351-357). Today the orjson TypeError classifies as
     a generic retryable failure and burns all three attempts."""
     runs: list[int] = []
@@ -215,7 +215,7 @@ async def test_unencodable_result_is_non_retryable_like_result_too_large() -> No
     )
 
 
-# ── Defect 3's mirror half: surrogate exception MESSAGE ─────────────────
+# ── Defect 3's mirror half: surrogate exception message ─────────────────
 
 
 async def test_mirror_marks_failed_for_surrogate_exception_message() -> None:
@@ -270,7 +270,7 @@ async def test_failure_log_lines_survive_json_rendering() -> None:
     # around every test, so reinstall it here to run the drain under the
     # chain a plain ``import taskq`` produces.
     importlib.reload(taskq_obs_structlog)
-    # The pin is only honest if the chain REALLY renders through the strict
+    # The pin is only honest if the chain really renders through the strict
     # encoder: an escaped message under a tolerant chain proves nothing.
     assert structlog.is_configured(), "the reload must leave structlog configured"
     chain_processors = structlog.get_config()["processors"]
@@ -324,7 +324,7 @@ async def test_failure_error_class_survives_hostile_type_name() -> None:
 
     class _RaisingNameMeta(type):
         @property
-        def __name__(cls) -> str:  # pyright: ignore[reportImplicitOverride, reportIncompatibleVariableOverride]  # Why: the metaclass property IS the hostile shape under test - a name access that raises; the override checks do not model metaclass name attributes.
+        def __name__(cls) -> str:  # pyright: ignore[reportImplicitOverride, reportIncompatibleVariableOverride]  # Why: the metaclass property is the hostile shape under test - a name access that raises; the override checks do not model metaclass name attributes.
             raise RuntimeError("the name access itself is the defect")
 
     raising_named = _RaisingNameMeta(
@@ -390,7 +390,7 @@ async def test_failure_error_class_survives_hostile_type_name() -> None:
 async def test_terminal_write_failure_log_survives_json_rendering() -> None:
     """A terminal write that fails with an infra exception leaves the row
     ``running`` (lock-lease expiry reclaims it) and logs the failure — and
-    that log runs INSIDE the terminal-write failure handler, so a surrogate
+    that log runs inside the terminal-write failure handler, so a surrogate
     riding the infra exception's text must not raise through the handler
     and strand the drain itself."""
     importlib.reload(taskq_obs_structlog)
@@ -560,8 +560,8 @@ async def test_render_survives_hostile_identity_access() -> None:
     assert stored.status == "failed", (
         f"contract: a hostile identity access must not strand the classification; status={stored.status!r}"
     )
-    # The class NAME access is untouched by this metaclass (it only breaks
+    # The class name access is untouched by this metaclass (it only breaks
     # the qualname), so the row's error_class reads the real name; the
-    # RENDER's degradation is what kept the drain alive.
+    # render's degradation is what kept the drain alive.
     assert stored.error_class == "_HostileIdentity"
     assert "the message" in (stored.error_message or "")

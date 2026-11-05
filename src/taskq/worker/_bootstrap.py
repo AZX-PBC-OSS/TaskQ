@@ -159,7 +159,7 @@ def _validate_error_reporter_scope(registry: ProviderRegistry) -> None:
     entry = registry.get(ErrorReporter)
     if entry.scope in (Scope.PROCESS, Scope.THREAD, Scope.LOOP):
         return
-    # A DI misregistration, typed like the ones registry.validate raises.
+    # A di misregistration, typed like the ones registry.validate raises.
     raise DIError(
         f"ErrorReporter is registered at {entry.scope.name} scope; a terminal-failure "
         "hook outlives the actor invocation and must be PROCESS, THREAD or LOOP scoped"
@@ -197,7 +197,7 @@ def _emit_progress_fanout_unconfigured_warning(redis_client: object | None) -> N
 
     The predicate is *redis_client*, ``WorkerDeps.redis_client`` at the
     call site: the exact object the publish block tests. It is
-    deliberately NOT ``_redis_configured``, the rate-limit gate's
+    deliberately not ``_redis_configured``, the rate-limit gate's
     predicate: the two consumers resolve Redis through different
     machinery, so "configured" is not one predicate. Rate limiters
     resolve through DI (``register_redis_pool`` → ``get_redis_pool``),
@@ -247,7 +247,7 @@ def _served_redis_rate_limits(
     and are therefore invisible to a registry scan.
 
     ``rl_registry`` is the **resolved** registry for this worker (from
-    :func:`_resolve_rl_registry`), NOT the module-level singleton, a
+    :func:`_resolve_rl_registry`), not the module-level singleton, a
     user-supplied custom registry via DI must be scanned, otherwise
     Redis-backed limits on the custom registry are invisible at startup
     (false negative → per-dispatch crash) and singleton-only limits cause
@@ -276,9 +276,9 @@ def _warn_unregistered_workflow_reservations(
     unknown_names: list[str],
     rl_registry: RateLimitRegistry,
 ) -> None:
-    """THE STR-NAME RESERVATIONS' BOOT WARNING (the
+    """the STR-NAME RESERVATIONS' BOOT WARNING (the
     ``workflow-rate-limit-name-unregistered`` twin's own shape): a
-    workflow-declared plain-``str`` reservation name that NO registry
+    workflow-declared plain-``str`` reservation name that no registry
     entry backs (a vanilla actor's registration included) is the
     WARNING's subject — probably a typo, may be declared on another app
     the fleet serves; never a refusal. The row still stamps the name:
@@ -495,11 +495,11 @@ def _slot_pool_factory(
 # The session state a slot connection must match, paired with the query
 # that reads its live value. ``search_path`` decides which schema an
 # actor's unqualified table references resolve against; ``role`` decides
-# which RLS policies apply to every one of its statements. Both are
+# which rls policies apply to every one of its statements. Both are
 # readable back from the server and both are settable as startup GUCs, so
 # both round-trip onto a pool the worker builds. Values are read from the
 # live session rather than the driver's connect-time parameters because
-# an application configures these as often by a post-connect ``SET``, on
+# an application configures these as often by a post-connect ``set``, on
 # an ``init`` hook, or right after ``connect()``, as by a connect
 # keyword, and a connect-time read sees nothing at all in that case.
 _INHERITED_SESSION_STATE: tuple[tuple[str, str], ...] = (
@@ -532,7 +532,7 @@ async def _registered_session_state(
     cannot be determined is therefore warned about and left uninherited,
     never skipped quietly.
     """
-    # Why the callable guard: a LOOP-scope registration is only nominally
+    # Why the callable guard: a loop-scope registration is only nominally
     # an asyncpg.Connection, the boot path's own harnesses register
     # duck-typed stands-in, and one that cannot answer a query must
     # degrade to the server defaults rather than break boot.
@@ -610,7 +610,7 @@ async def _maybe_open_slot_pool(
     """Open the per-slot transaction pool when the per-slot path activates.
 
     Activation is the sharing precondition the dispatch path would
-    otherwise hit: a resolvable LOOP-scope ``asyncpg.Connection`` AND
+    otherwise hit: a resolvable LOOP-scope ``asyncpg.Connection`` and
     ``max_concurrency > 1``. On that shape the worker's transactional
     consume moves to per-slot connections, one transaction per
     connection, so concurrent slots can never nest savepoints on a
@@ -679,10 +679,10 @@ async def _maybe_open_slot_pool(
             settings, pg_credential_provider, session_state, init=inherited_init
         )
 
-    # The slot pool's provider, when it is NOT already tracked on deps (it
+    # The slot pool's provider, when it is not already tracked on deps (it
     # usually is: the documented worker path builds every role through the
     # same provider, which open_worker_deps closes after the role pools).
-    # Pushed BEFORE the pool's teardown guard so LIFO unwinds the slot
+    # Pushed before the pool's teardown guard so lifo unwinds the slot
     # pool first and the credential that built it second, and never while
     # the role pools a shared provider also serves are still open, which
     # is why a tracked provider is skipped rather than closed here.
@@ -873,7 +873,7 @@ def _emit_unconsumed_queue_startup_warnings(
     ]
     if not offending:
         return
-    # Why: ONE aggregated event per boot, not one per actor, workgroup
+    # Why: one aggregated event per boot, not one per actor, workgroup
     # deployments have every child import the full actor registry while
     # consuming its own queue subset, so per-actor warnings would fire
     # once per actor per child per boot: a warning storm on exactly the
@@ -907,16 +907,16 @@ def _fail_fast_on_unrouted_configured_queues(
     """Strict mode's worker-side boot gate: a configured queue nothing
     routes to refuses the boot.
 
-    THE split-deployment rule, and why this check lives HERE and only
-    here: actors register ONLY in the worker process, so any startup
+    the split-deployment rule, and why this check lives here and only
+    here: actors register only in the worker process, so any startup
     check shaped like "configured queue with no registered actor" can
     run in the worker alone — the client process (web/admin submits,
     worker consumes) gets the submit-time gate
     (``ActorCapacityCache.maybe_warn_unserved_queue``'s strict branch)
-    and NO boot check, advisory or otherwise; a client-side boot check
+    and no boot check, advisory or otherwise; a client-side boot check
     of this shape would brick every split deployment.
 
-    Runs AFTER ``sync_actor_config`` and the fleet-wide read-back, so
+    Runs after ``sync_actor_config`` and the fleet-wide read-back, so
     the coverage set is the STORED assignments (every ``actor_config``
     row in the table, this worker's registry seeded them and sibling
     workers' rows persist) — the operator-owned routing truth that
@@ -960,41 +960,41 @@ def _fail_fast_on_unconsumed_workflow_queues(
     settings: WorkerSettings,
     wf_configs: list[ActorConfig],
 ) -> None:
-    """THE QUEUE-TRAP DOOR (the wf cohorts' face of the unconsumed-queue
+    """the QUEUE-TRAP DOOR (the wf cohorts' face of the unconsumed-queue
     check): a projected workflow cohort whose queue is not in this
     worker's consumed set (``settings.queues``) — the STRICT gate
     refuses the boot; NON-strict, the aggregated WARNING fires and the
     boot proceeds (the vanilla twin's own opt-in law).
 
-    Why a raise HERE under strict, where the vanilla actors' same shape
+    Why a raise here under strict, where the vanilla actors' same shape
     is only the aggregated warning: a workflow step's queue is a DEFAULT
     it inherits (``queue="default"``) — never spelled at most wiring
     sites — so the strand is silent by construction: the rows enqueue
     fine, sit pending forever, and the only trace is a workflow that
-    never advances. The cohorts are also projected by EVERY worker that
+    never advances. The cohorts are also projected by every worker that
     imported the app (the projection is process-global), so the refusal
     fires exactly where the trap is knowable: the boot that would claim
     those rows does not consume their queue.
 
-    THE STRICT GATE (the heterogeneous fleet's own opt-in): the
+    The
     vanilla twin (``_fail_fast_on_unrouted_configured_queues``) fires
-    ONLY on ``settings.queues_strict`` because a per-queue worker
+    only on ``settings.queues_strict`` because a per-queue worker
     specialization legitimately imports the shared apps module while a
     SIBLING worker consumes the foreign queues. The wf cohorts' refusal
     keeps the vanilla twin's two arms (NON-strict: the boot proceeds
-    with the ONE aggregated warning
+    with the one aggregated warning
     (``workflow-cohorts-on-unconsumed-queues`` — the vanilla warning's
     own shape, the remedy named); strict: the refusal) but its gate is
-    the OR-LAW's own, NOT the env alone: strict if the env
-    (``TASKQ_QUEUES_STRICT``) is set OR any imported app declares
-    ``queues_strict=True`` (the OR-LAW paragraph below).
+    the or-LAW's own, not the env alone: strict if the env
+    (``TASKQ_QUEUES_STRICT``) is set or any imported app declares
+    ``queues_strict=True`` (the or-LAW paragraph below).
 
-    Runs BEFORE the cohorts' sync (a refusing process writes nothing; a
+    Runs before the cohorts' sync (a refusing process writes nothing; a
     healthy sibling projects the same cohorts). The consumed-set-is-empty
     corner belongs to the ``worker-consumes-no-queues`` warning — nothing
     cohort-vs-consumed is decidable there, no double-signal.
 
-    THE OR-LAW (the strict gate's SECOND FACE — the app-declared
+    the or-LAW (the strict gate's SECOND FACE — the app-declared
     strictness): the gate is strict if EITHER face is set — the app's
     own declaration (``WorkflowApp(queues_strict=True)``, read off the
     app registry the projection itself walks:
@@ -1013,8 +1013,8 @@ def _fail_fast_on_unconsumed_workflow_queues(
     unconsumed = sorted({config.queue for config in wf_configs} - consumed)
     if not unconsumed:
         return
-    # THE OR-LAW is the gate docstring's own paragraph above (the faces
-    # OR-combine). The lazy import keeps the wf seam's module
+    # the or-law is the gate docstring's own paragraph above (the faces
+    # or-combine). The lazy import keeps the wf seam's module
     # graph out of the bootstrap's own import time (the raise path's
     # import below is the same seam).
     from taskq.workflows._worker_execution import (
@@ -1024,9 +1024,9 @@ def _fail_fast_on_unconsumed_workflow_queues(
 
     strict = bool(getattr(settings, "queues_strict", False)) or any_app_declares_strict_queues()
     if not strict:
-        # THE NON-STRICT WARNING ARM: the heterogeneous fleet's
-        # own shape — a sibling worker may consume the queue; the boot
-        # proceeds, the foreign cohorts named once, the remedy spelled.
+        # the heterogeneous fleet's own shape — a sibling worker may consume
+        # the queue; the boot proceeds, the foreign cohorts named once, the
+        # remedy spelled.
         _startup_log.warning(
             "workflow-cohorts-on-unconsumed-queues",
             cohorts=dict(
@@ -1077,10 +1077,10 @@ def _emit_retired_queue_assignments_advisory(
     stored_rows: Mapping[str, ActorConfigRow],
     log: structlog.stdlib.BoundLogger,
 ) -> None:
-    """THE RETIREMENT HALF, the boot gate's inverse visibility: stored
+    """RETIREMENT HALF, the boot gate's inverse visibility: stored
     assignments for actors this worker neither serves nor consumes —
     retired-actor drift, a queue the fleet's stored config still routes
-    after the actor left the code — surface as ONE aggregated ADVISORY,
+    after the actor left the code — surface as one aggregated ADVISORY,
     never a refusal.
 
     The asymmetry this respects: the configured-but-unrouted gate above
@@ -1100,7 +1100,7 @@ def _emit_retired_queue_assignments_advisory(
         return
     consumed = set(settings.queues)
     served = {ref.queue for ref in actor_registry.values()}
-    # Rows for actors NOT in this registry: the full-registry fleet
+    # Rows for actors not in this registry: the full-registry fleet
     # (every worker imports the whole registry) makes these exactly the
     # retired-from-code actors the DB still routes; split-registry
     # fleets read the sibling caveat.
@@ -1255,9 +1255,9 @@ async def _register_cron_schedules(
             # (disable, retime) must not be reverted by a redeploy. But
             # it also means that changing a @cron decorator's cron_expr,
             # timezone or dst_strategy in code deploys "successfully"
-            # and silently keeps the OLD cadence. Structural
+            # and silently keeps the old cadence. Structural
             # actor_config drift raises ActorConfigDriftList and refuses
-            # to start; cron drift produced one DEBUG line that named
+            # to start; cron drift produced one debug line that named
             # the code's values and never compared them to the stored
             # row, so the mismatch itself was undetectable at any log
             # level. Compare and warn, without changing the write
@@ -1388,13 +1388,13 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
 
     # Why: the release park's lease cap (the first of the two
     # lease-vs-park inequalities the release-until-exited design turned
-    # into guarantees: this one CLOSED STRUCTURALLY, by the cap in
+    # into guarantees: this one closed structurally, by the cap in
     # _actor_exit_wait_budget, so this is a trade-off surface, not a
     # safety hole). The park's budget bound is the remaining termination
     # budget minus the release write's own budget; the lease cap
     # (lock_lease - heartbeat - write budget) binds first whenever
     # lock_lease < termination - cancellation - cleanup + heartbeat. The
-    # config is SAFE either way: the cap is exactly the bound that keeps
+    # config is safe either way: the cap is exactly the bound that keeps
     # the parked consumer's release write ahead of the earliest lease
     # reclaim, but a binding cap means deploy-interrupted sync actors
     # release earlier with longer holds instead of getting the full
@@ -1431,8 +1431,8 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
 
     # Why: the disown path's lease bound (the second of the two
     # lease-vs-park inequalities the release-until-exited design turned
-    # into guarantees). When BOTH release writers fail their writes (the
-    # RELEASING phase's write and the consumer's, whose exhausted retries
+    # into guarantees). When both release writers fail their writes (the
+    # releasing phase's write and the consumer's, whose exhausted retries
     # disown the row), the row stays running behind a lease the heartbeat
     # has already stopped renewing, and the leader's reclaim sweep becomes
     # the only exit: at the earliest last-heartbeat + lock_lease. For
@@ -1440,13 +1440,13 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
     # the exit tail: where an outlived actor thread dies), the lease must
     # cover termination - cancellation - cleanup + heartbeat + the exit
     # tail. The shipped default is 63 against lock_lease 60: a ~3s residue
-    # that requires the double write failure AND a sweep tick landing
+    # that requires the double write failure and a sweep tick landing
     # inside it. Deliberately a warning, not a hard fail: the shipped
     # default would not load otherwise, and whether to spend 3 more
     # seconds of lease on that residue is an operator call, surfaced here
     # as a warning rather than decided (see
     # WorkerSettings.release_disown_lease_floor).
-    # Deliberately NOT gated on watchdog_enabled, unlike its sibling
+    # Deliberately not gated on watchdog_enabled, unlike its sibling
     # above: the lease arithmetic does not read the flag, and an operator
     # running without the watchdog is exactly the config where the
     # double-failure residue matters most - no deadline trip bounds an
@@ -1493,12 +1493,12 @@ def _emit_startup_warnings(settings: WorkerSettings) -> None:
             remedy=remedy,
         )
 
-    # Why: TASKQ_MIGRATE_ON_START is defined on TaskQSettings, so WorkerSettings
-    # inherits and happily VALIDATES it -- an operator setting it on a worker
+    # Why: TASKQ_MIGRATE_ON_START is defined on Taskqsettings, so WorkerSettings
+    # inherits and happily validates it -- an operator setting it on a worker
     # gets no error and no migration. The worker deliberately does not honour
     # it (N replicas racing to migrate is exactly the hazard the migration
     # advisory lock exists to prevent), so say so rather than ignoring it
-    # silently. Reading the README during an incident is precisely when this
+    # silently. Reading the readme during an incident is precisely when this
     # would be set.
     if settings.migrate_on_start:
         _startup_log.warning(
@@ -1642,7 +1642,7 @@ async def _ensure_own_reservation_slots(
 
     Every wait here is bounded by ``dispatcher_command_timeout``, the same
     budget every sibling bootstrap await carries. The bound matters because
-    the dispatcher pool's ``command_timeout`` does NOT bound a pool ACQUIRE:
+    the dispatcher pool's ``command_timeout`` does not bound a pool ACQUIRE:
     under pool starvation a bare ``pool.acquire`` waits forever,
     observed once as a 300s CI hang in this exact path). The pool-level
     bound comes from ``ensure_slots``' ``timeout`` forward; a typed
@@ -1689,7 +1689,7 @@ def _bootstrap_guards_and_registries(
     ``open_worker_deps`` opens. Returns the assembled ``(registry,
     resolved_rl_registry)`` pair ``_main`` continues with.
     """
-    # The fork guard goes in BEFORE any resource exists: every connection
+    # The fork guard goes in before any resource exists: every connection
     # built after this point records this process as its owner, and a fork
     # anywhere in the worker's lifetime is stamped for the loops to report.
     # Idempotent, so an embedding that already installed it (TaskQ.open)
@@ -1715,7 +1715,7 @@ def _bootstrap_guards_and_registries(
 
     if _local_queue_seed is not None and len(_local_queue_seed) > settings.max_concurrency:
         # Why at the boundary, before any I/O: the seed loop below pushes
-        # onto local_queue (maxsize = max_concurrency) BEFORE the consumer
+        # onto local_queue (maxsize = max_concurrency) before the consumer
         # TaskGroup exists, so the excess put would park bootstrap forever
         # on a full queue with zero consumers running, a silent hang, not
         # a slow start. Rejecting here fails before a worker row is
@@ -1740,11 +1740,11 @@ def _bootstrap_guards_and_registries(
     # Actor-declared primitive instances (the primary registration path):
     # collect every TokenBucket / SlidingWindow / ConcurrencyReservation
     # declared on actors in this worker's actor_registry into the resolved
-    # registry BEFORE validate() runs. Conflict semantics are register()'s
+    # registry before validate() runs. Conflict semantics are register()'s
     # own (_same_config): identical config = debug-log no-op; same name
     # with different config = ValueError at startup (fail fast). Actors
-    # decorated but absent from the mapping are NOT collected. The startup
-    # log counts DECLARATIONS (not distinct new registrations), the same
+    # decorated but absent from the mapping are not collected. The startup
+    # log counts declarations (not distinct new registrations), the same
     # instance declared on two actors logs rate_limit_count=2 but
     # registers once (idempotent no-op).
     if actor_registry is not None:
@@ -1757,22 +1757,20 @@ def _bootstrap_guards_and_registries(
                     collected_rl_names.append(rl_entry.name)
             for res_entry in actor_ref.reservations:
                 if isinstance(res_entry, ConcurrencyReservation):
-                    # THE ONE REBIND DOCTRINE (the register-step
-                    # law): the declaration is constructed at module
-                    # import — before settings exist — so its schema is
-                    # the declaration's default, not this deployment's.
-                    # The registration rebinds a COPY (the declaration
-                    # object is never mutated), the SAME rebind at the
-                    # SAME phase the wf pass applies to the
-                    # workflow-declared reservations below. The registry's
-                    # own register step completes the doctrine: a
-                    # PRE-REGISTERED raw instance (the docs' explicit-
-                    # registry pattern — the raw declaration registered on
-                    # an owned RateLimitRegistry) is REBOUND to the
-                    # incoming settings-bound copy at whichever pass
-                    # encounters it — the resolved registry's entries are
-                    # ALWAYS settings-schema-bound, and _same_config
-                    # (schema EXCLUDED) compares identical configs.
+                    # the declaration is constructed at module import — before
+                    # settings exist — so its schema is the declaration's
+                    # default, not this deployment's. The registration rebinds
+                    # a COPY (the declaration object is never mutated), the
+                    # same rebind at the same phase the wf pass applies to the
+                    # workflow-declared reservations below. The registry's own
+                    # register step completes the doctrine: a pre-registered
+                    # raw instance (the docs' explicit- registry pattern — the
+                    # raw declaration registered on an owned RateLimitRegistry)
+                    # is rebound to the incoming settings-bound copy at
+                    # whichever pass encounters it — the resolved registry's
+                    # entries are always settings-schema-bound, and
+                    # _same_config (schema EXCLUDED) compares identical
+                    # configs.
                     resolved_rl_registry.register(res_entry.rebind_schema(settings.schema_name))
                     collected_res_names.append(res_entry.name)
         _startup_log.info(
@@ -1805,14 +1803,14 @@ async def _main(
 
     ``_local_queue_seed`` is a test seam, keyword-only, defaults to ``None``,
     prefixed with ``_`` to mark it as non-production API.  When not ``None``,
-    each job in the seed list is pushed onto ``local_queue`` BEFORE the
+    each job in the seed list is pushed onto ``local_queue`` before the
     TaskGroup starts, so consumer stubs immediately consume them.  The seed
     is size-checked at entry: ``local_queue`` is bounded at
     ``max_concurrency`` and is drained only by consumers created after the
     seed loop, so an oversized seed (more than ``max_concurrency`` jobs)
     raises ``ValueError`` here rather than parking the bootstrap on a full
     queue with zero consumers started.  Production callers (``worker_main``)
-    MUST NOT pass this parameter.
+    MUST not pass this parameter.
 
     ``pg_credential_provider`` is the resolved Postgres credential
     provider the worker's internal per-slot transaction pool
@@ -1835,7 +1833,7 @@ async def _main(
     This allows integration tests to inject a pre-configured (possibly
     misconfigured) registry to verify that ``validate()`` errors propagate
     through the real ``_main`` bootstrap path.  Production callers
-    (``worker_main``) MUST NOT pass this parameter.
+    (``worker_main``) MUST not pass this parameter.
 
     ``_cron_registry`` is the resolved list of :class:`CronScheduleSpec`
     objects to auto-register at startup.  Populated by ``worker_main``
@@ -1947,13 +1945,13 @@ async def _main(
                     "the queue will never drain. Use --idle-max-runtime as a cap.",
                 )
 
-        # Schema-currency guard: refuse boot BEFORE any boot step writes to
+        # Schema-currency guard: refuse boot before any boot step writes to
         # the database (sync_rate_limit_buckets, register_worker, ...). A
         # schema one release behind passes every boot step except the
         # queue-cap query's 01.00.04 guard: the enqueue INSERT's column list
         # omits whatever the missing migration adds, so writes half-work,
         # and the first dispatch claim's RETURNING then dies in the strict
-        # ``_job_row_from_record`` read AFTER the claim already committed
+        # ``_job_row_from_record`` read after the claim already committed
         # the row to running+locked, every dispatched job loops through
         # lock-expiry crash-reclaim and never executes. Same doctrine as
         # the queue-cap guard below: a deployment mistake must crash
@@ -1961,9 +1959,9 @@ async def _main(
         # schema.
         await _refuse_boot_on_pending_migrations(deps, settings)
 
-        # Only register the worker pool in DI when the user hasn't provided
+        # Only register the worker pool in di when the user hasn't provided
         # their own asyncpg.Pool provider, and only then may the reload
-        # coordinator refresh the DI cache after a hot-reload swap.
+        # coordinator refresh the di cache after a hot-reload swap.
         worker_pool_registered_in_di = not registry.has_provider(asyncpg.Pool)
         if worker_pool_registered_in_di:
             registry.register_value(asyncpg.Pool, Scope.LOOP, deps.worker_pool)
@@ -1996,7 +1994,7 @@ async def _main(
         if settings.redis_url is not None:
             if not _redis_extra_installed():
                 # Why: without this check the missing extra surfaces later as
-                # a bare MissingProvider at DI validate, no hint that the
+                # a bare MissingProvider at di validate, no hint that the
                 # fix is installing the package. Only raise when Redis is
                 # actually required: a URL set without redis-backed limits
                 # is harmless (register_redis_pool silently skips).
@@ -2009,7 +2007,7 @@ async def _main(
                         "pip install 'taskq-py[redis]'"
                     )
                     raise RuntimeError(msg)
-            # Why: LoopScope.bootstrap eagerly resolves every LOOP provider,
+            # Why: LoopScope.bootstrap eagerly resolves every loop provider,
             # and get_redis_pool raises when redis_url is None, registering
             # unconditionally would crash workers that don't use Redis.
             register_redis_pool(registry)
@@ -2019,7 +2017,7 @@ async def _main(
         from taskq.ratelimit import sync_rate_limit_buckets, sync_slots
 
         # The resolved rate-limit registry may carry reservations declared
-        # for OTHER schemas/databases (e.g. sibling apps sharing one
+        # for other schemas/databases (e.g. sibling apps sharing one
         # registry). Only this worker's own schema is in scope: touching
         # another schema's slot tables here would write into the wrong
         # database or fail noisily.
@@ -2056,7 +2054,7 @@ async def _main(
         # only after bootstrap), so each factory await carries the same
         # reload_factory_timeout bound every WorkerConnections factory
         # open carries: a black-holed "database pools, HTTP
-        # clients" DI factory fails boot loudly within the bound instead
+        # clients" di factory fails boot loudly within the bound instead
         # of wedging worker startup undetected.
         process_scope = ProcessScope(
             resolver=resolver, factory_timeout=settings.reload_factory_timeout
@@ -2093,10 +2091,10 @@ async def _main(
         )
 
         # The per-slot transaction pool activates on exactly the shape
-        # that would otherwise share one LOOP-scope connection across
+        # that would otherwise share one loop-scope connection across
         # concurrent slots; every other worker shape is untouched. Opened
         # after loop_scope.bootstrap(), that is the first point the
-        # app-registered LOOP-scope connection is resolvable, and before
+        # app-registered loop-scope connection is resolvable, and before
         # the startup warnings so the mode signal and any credential
         # warning land with the rest of the startup story.
         await _maybe_open_slot_pool(
@@ -2116,7 +2114,7 @@ async def _main(
             backend=backend,
             # Strict queue-name validation rides the enqueuer's capacity
             # cache into every fan-out arm (and the per-job enqueuer the
-            # dispatch path builds shares THIS cache, so it inherits the
+            # dispatch path builds shares this cache, so it inherits the
             # knobs rather than re-deriving them). env_queues is the
             # two-source rule's second source: this worker's own declared
             # set.
@@ -2132,20 +2130,18 @@ async def _main(
                 _startup_log,
             )
 
-        # THE WORKFLOW EXECUTION PROJECTION (the F3 law's call site + the
-        # dispatch fence's capability): resolved BEFORE register_worker —
-        # the workers row's metadata carries the capability the dispatch
-        # fence reads as data. The lazy import keeps the import law
-        # (a worker that never installed taskq[flows] pays nothing, and
-        # is not capable — the fence never hands it a workflow row).
-        # The PROJECTION runs here too (compiling every imported app's
+        # resolved before register_worker — the workers row's metadata carries
+        # the capability the dispatch fence reads as data. The lazy import
+        # keeps the import law (a worker that never installed taskq[flows] pays
+        # nothing, and is not capable — the fence never hands it a workflow
+        # row). The projection runs here too (compiling every imported app's
         # workflows): its side effect is the D1 definition registry's
-        # population in THIS process — the dispatch intercept's body
-        # resolution answers from it. A cohort conflict (one actor name,
-        # two queues) REFUSES the boot — the drift-guard precedent, the
-        # fix named in the error. The cohort rows' SYNC rides after the
-        # plain actors' sync below (the startup-warnings ordering pin:
-        # the observability emits precede every config-sync round trip).
+        # population in this process — the dispatch intercept's body resolution
+        # answers from it. A cohort conflict (one actor name, two queues)
+        # refuses the boot — the drift-guard precedent, the fix named in the
+        # error. The cohort rows' sync rides after the plain actors' sync below
+        # (the startup-warnings ordering pin: the observability emits precede
+        # every config-sync round trip).
         _wf_execution = None
         try:
             from taskq.workflows import _worker_execution as _wf_execution_mod
@@ -2159,13 +2155,12 @@ async def _main(
             wf_execution_capable = _wf_execution.workflow_execution_capable()
             if wf_execution_capable:
                 _wf_cohort_configs = _wf_execution.project_workflow_actor_configs()
-                # THE WORKFLOW-DECLARED RATE LIMITS' COLLECTION:
-                # the authoring face's bucket instances register into the
-                # SAME resolved registry the vanilla actors' collection
-                # pass fills (ONE registry, ONE acquire path); a str name
-                # nothing registers is the WARNING (W2's register —
-                # probably a typo, never a refusal; the claim path's
-                # fail-closed arm is the teeth).
+                # the authoring face's bucket instances register into the same
+                # resolved registry the vanilla actors' collection pass fills
+                # (one registry, one acquire path); a str name nothing
+                # registers is the warning (W2's register — probably a typo,
+                # never a refusal; the claim path's fail-closed arm is the
+                # teeth).
                 _wf_rl_registered, _wf_rl_unknown = _wf_execution.collect_workflow_rate_limits(
                     resolved_rl_registry
                 )
@@ -2182,29 +2177,25 @@ async def _main(
                         "registry or fix the declared name; until then the "
                         "rows naming it park fail-closed at claim",
                     )
-                # THE WORKFLOW-DECLARED RESERVATIONS' COLLECTION (the
-                # vanilla actors' collection loop's sibling, over the
-                # projected graphs): the nodes' declared
-                # ConcurrencyReservation instances register into the SAME
-                # resolved registry (ONE registry, ONE acquire path) and
-                # ride the SAME ensure-slots pass below (their slot rows
-                # materialize at boot exactly like the vanilla ones').
-                # The registration REBINDS to this deployment's schema —
-                # the rebind doctrine (the registry's register step rebinds
-                # any pre-registered raw instance to the same copy).
+                # the nodes' declared ConcurrencyReservation instances register
+                # into the same resolved registry (one registry, one acquire
+                # path) and ride the same ensure-slots pass below (their slot
+                # rows materialize at boot exactly like the vanilla ones'). The
+                # registration rebinds to this deployment's schema — the rebind
+                # doctrine (the registry's register step rebinds any
+                # pre-registered raw instance to the same copy).
                 _wf_reservations, _wf_res_unknown = _wf_execution.collect_workflow_reservations(
                     resolved_rl_registry
                 )
                 for wf_res in _wf_reservations:
-                    # THE SCHEMA REBIND: a
-                    # workflow-declared reservation is constructed at module
+                    # a workflow-declared reservation is constructed at module
                     # import — before settings exist — so its schema is the
                     # declaration's default, not this deployment's. The
                     # registration rebinds a COPY (the declaration object is
-                    # never mutated); a silent schema-filter skip here was
-                    # the guard failing closed invisibly — the reservation
-                    # registered, its slots never materialized, every
-                    # acquire denied forever.
+                    # never mutated); a silent schema-filter skip here was the
+                    # guard failing closed invisibly — the reservation
+                    # registered, its slots never materialized, every acquire
+                    # denied forever.
                     live_res = wf_res.rebind_schema(settings.schema_name)
                     resolved_rl_registry.register(live_res)
                     own_reservations.append(live_res)
@@ -2213,12 +2204,10 @@ async def _main(
                         "workflow-reservations-registered",
                         reservation_names=sorted(res.name for res in _wf_reservations),
                     )
-                # THE STR-NAME WARNING (the rate-limit twin's own
-                # shape): a plain name NO registry entry backs (a vanilla
-                # actor's registration included) is probably a typo —
-                # the WARNING is the primary face, the claim-time
-                # fail-closed park the defense in depth (the row still
-                # stamps the name).
+                # a plain name no registry entry backs (a vanilla actor's
+                # registration included) is probably a typo — the warning is
+                # the primary face, the claim-time fail-closed park the defense
+                # in depth (the row still stamps the name).
                 _warn_unregistered_workflow_reservations(
                     _startup_log, _wf_res_unknown, resolved_rl_registry
                 )
@@ -2237,12 +2226,12 @@ async def _main(
         # and without the backstop the workers row would outlive the
         # process fresh-heartbeated, invisible to nothing until the
         # staleness sweep reaps it a whole worker_staleness later. The
-        # callback rides deps._exit_stack, which unwinds FIRST at context
+        # callback rides deps._exit_stack, which unwinds first at context
         # exit, while the dispatcher pool is still open. On every path
         # that reached the TaskGroup's finally, that finally already
         # deleted the row and cleared deps.registered_worker_id, so this
         # is a no-op there; the flag also stays set when the finally's
-        # own deregister FAILED - a transient failure reported as False
+        # own deregister failed - a transient failure reported as False
         # without raising, or a non-transient one that raised and was
         # logged-and-suppressed - making this the retry. A permanent
         # failure reproduces identically here (deregister_worker raises
@@ -2299,7 +2288,7 @@ async def _main(
                         schema=settings.schema_name,
                     )
             except Exception as exc:
-                # WARN, never quieter: with the read degraded the coverage
+                # warn, never quieter: with the read degraded the coverage
                 # check below runs on decorator literals it cannot trust, so
                 # its warning can fire on an actor the stored config routes
                 # to a queue this worker consumes (or stay silent on one it
@@ -2372,7 +2361,7 @@ async def _main(
                         error=repr(exc),
                     )
                 else:
-                    # Strict's boot gate runs HERE, on the fleet-wide
+                    # Strict's boot gate runs here, on the fleet-wide
                     # post-sync read: stored_rows is the coverage set (see
                     # the gate's docstring), and a read failure above
                     # means the gate silently skips — fail-open on an
@@ -2393,31 +2382,28 @@ async def _main(
                         log=_startup_log,
                     )
 
-        # THE ENSURE-SLOTS PASS (deliberately OUTSIDE the actor_registry
-        # gate): every reservation this process resolved — the vanilla
-        # actors' declarations AND the workflow nodes' collected ones (the
-        # projection block above extends own_reservations) — gets its slot
-        # rows materialized here. A pure-workflow worker (no vanilla
-        # actors, an imported app) must ensure its own declared slots:
-        # gating this pass on the vanilla registry would leave the wf
-        # reservations registered but UNSLOTTED — every acquire denying
-        # (ReservationUnavailable), the guarded steps parked forever.
+        # deliberately outside the actor_registry gate. every reservation this
+        # process resolved — the vanilla actors' declarations and the workflow
+        # nodes' collected ones (the projection block above extends
+        # own_reservations) — gets its slot rows materialized here. A
+        # pure-workflow worker (no vanilla actors, an imported app) must ensure
+        # its own declared slots: gating this pass on the vanilla registry
+        # would leave the wf reservations registered but unslotted — every
+        # acquire denying (ReservationUnavailable), the guarded steps parked
+        # forever.
         await _ensure_own_reservation_slots(deps, own_reservations)
 
         if _wf_execution is not None and _wf_cohort_configs:
-            # THE QUEUE-TRAP DOOR (the loud check): an unconsumed
-            # projected wf queue REFUSES the boot — the vanilla queues'
-            # own fail-fast shape, before the sync writes the cohorts (a
-            # refusing process writes nothing; the healthy fleet members
+            # an unconsumed projected wf queue refuses the boot — the vanilla
+            # queues' own fail-fast shape, before the sync writes the cohorts
+            # (a refusing process writes nothing; the healthy fleet members
             # project the same cohorts).
             _fail_fast_on_unconsumed_workflow_queues(settings, _wf_cohort_configs)
-            # THE WORKFLOW COHORTS' SYNC (the F3 projection's write half —
-            # the same `sync_actor_config` surface, the same drift guards
-            # the plain actors' sync just rode). AFTER the plain sync
-            # block: the startup-warnings ordering pin holds (the
-            # observability emits precede every config-sync round trip),
-            # and the capability is already stamped on the workers row —
-            # the fence's data leg never waits on this write.
+            # the workflow cohorts' sync ``. after the plain sync block: the
+            # startup-warnings ordering pin holds (the observability emits
+            # precede every config-sync round trip), and the capability is
+            # already stamped on the workers row — the fence's data leg never
+            # waits on this write.
             async with deps.dispatcher_pool.acquire(
                 timeout=settings.dispatcher_command_timeout
             ) as conn:
@@ -2446,7 +2432,7 @@ async def _main(
         # them. register_queue_cap_reservation() is idempotent for identical
         # config (the public register() rejects names in the reserved
         # queue-cap namespace to prevent user shadowing). sync_slots
-        # (not ensure_slots) is used so that BOTH growing AND shrinking a
+        # (not ensure_slots) is used so that both growing and shrinking a
         # cap take effect on restart, ensure_slots can never remove
         # excess slots (its conflict arm only flips the fleet-reclaim
         # keyed mark; INSERT ... ON CONFLICT otherwise) so lowering
@@ -2497,11 +2483,11 @@ async def _main(
             queue_cap_reservations.append(reservation)
 
         if queue_cap_reservations:
-            # Fail loudly, deliberately NOT warn-and-continue. The
+            # Fail loudly, deliberately not warn-and-continue. The
             # reservations were registered above, and dispatch prepends the
             # cap name as a plain string, so the acquire path has no
             # ensure_slots retry: a sync_slots failure here would leave the
-            # cap registered with zero (or stale) slot rows, and EVERY
+            # cap registered with zero (or stale) slot rows, and every
             # dispatch on those queues would snooze with
             # ReservationUnavailable until a human restarted the worker ,
             # a whole queue silently refusing work. Crashing startup
@@ -2558,7 +2544,7 @@ async def _main(
                 try:
                     await health_server.start(deps)
                 except HealthTcpBindError:
-                    # The probe port the deployment manifest routed to THIS
+                    # The probe port the deployment manifest routed to this
                     # replica cannot be served: refusing to start is the
                     # honest outcome (probes passing against whatever else
                     # holds the port is the alternative, and a booting
@@ -2566,13 +2552,13 @@ async def _main(
                     raise
                 except HealthUnixBindCollisionError as exc:
                     # The Unix surface alone is lost (a live peer owns the
-                    # socket path), but the TCP probe listener IS up and
+                    # socket path), but the TCP probe listener is up and
                     # this server owns it: the boot continues with
                     # port-routed probes answering, the collision stays the
-                    # WARN it has been since the earlier fix, and the stop
-                    # callback is STILL pushed (a raised start() gets no
+                    # warn it has been since the earlier fix, and the stop
+                    # callback is still pushed (a raised start() gets no
                     # `else`, and the TCP listener must not outlive the
-                    # worker). The WARN is the action item it always was:
+                    # worker). The warn is the action item it always was:
                     # give each replica a unique socket path.
                     _startup_log.warning(
                         "health-server-unavailable",
@@ -2585,12 +2571,12 @@ async def _main(
                     stack.push_async_callback(health_server.stop)
                 except OSError as exc:
                     # A unix-socket collision with no TCP listener
-                    # configured, by contrast, means a live PEER worker
+                    # configured, by contrast, means a live peer worker
                     # owns the path (HealthServer.start's loud refusal
                     # stops a newcomer silently stealing it) and nothing
                     # of ours is serving anywhere: refusing to boot would
                     # crash-loop a healthy pair during a rolling restart.
-                    # The collision is a WARN and the boot carries on
+                    # The collision is a warn and the boot carries on
                     # registering and claiming. No stop callback is
                     # pushed: start() raised before this server owned
                     # anything (its own failure paths already cleaned
@@ -2680,7 +2666,7 @@ async def _main(
             )
             # A plain ``async with`` plus one finally satisfies both
             # requirements, see that finally for the ordering rationale. A
-            # manual __aenter__/__aexit__ pair is NOT needed here and is a
+            # manual __aenter__/__aexit__ pair is not needed here and is a
             # trap: awaiting __aexit__ inside the finally makes everything
             # after it conditional on the group exiting without raising,
             # which silently drops deregister_worker on the crash path.
@@ -2839,13 +2825,13 @@ async def _main(
                         # event still clear they park again and the group's
                         # __aexit__ waits forever, leaving _main unkillable
                         # and the shutdown watchdog never disarmed. Raise the
-                        # flag BEFORE the group starts collecting siblings so
+                        # flag before the group starts collecting siblings so
                         # every park loop observes a shutdown in progress,
                         # drains, and exits; the shutdown watchdog sees the
                         # event too, so its deadline trip arms and bounds the
                         # whole exit exactly as on the signal path.
                         # Stamp the in-flight jobs as shutdown-interrupted
-                        # BEFORE the re-raise starts the group's teardown:
+                        # before the re-raise starts the group's teardown:
                         # this path never runs orchestrate_shutdown (the
                         # orchestrator is reachable only from the signal and
                         # drain paths), so without the stamp every running
@@ -2860,7 +2846,7 @@ async def _main(
                         # entries are stamped.
                         _stamp_interrupt_origins(deps)
                         shutdown_event.set()
-                        # Stamp the shutdown start HERE, synchronously: the
+                        # Stamp the shutdown start here, synchronously: the
                         # watchdog's own stamping is asynchronous (its task
                         # wakes through asyncio.wait hops and can lose the
                         # race to this finally on a group whose siblings are
@@ -2875,28 +2861,28 @@ async def _main(
                 # The order here matters, and every statement must be
                 # non-raising so the ones after it still run.
                 #
-                # The watchdogs are disarmed only AFTER the TaskGroup's exit
+                # The watchdogs are disarmed only after the TaskGroup's exit
                 # has completed: a wedged sibling hanging that exit is exactly
                 # what detector 1 exists to catch, so cancelling them any
                 # earlier would make the detector dead code on the only path
                 # that matters. Both calls swallow their own errors.
                 #
-                # ── THE GROUP'S OWN QUIT-CUT, CONSUMED (observed in CI) ──
-                # A failing sibling's completion handler cancels THIS task
+                # ── the GROUP'S own quit-cut, consumed (observed in CI) ──
+                # A failing sibling's completion handler cancels this task
                 # (the TaskGroup's abort: "stop the body, the group is
                 # quitting"). When that handler loses its race with this
                 # finally — the sibling's _guarded already raised the
-                # shutdown_event, so the body exits CLEANLY (et=None) and
-                # __aexit__'s uncancel-at-entry guard reads the flag FALSE
+                # shutdown_event, so the body exits cleanly (et=None) and
+                # __aexit__'s uncancel-at-entry guard reads the flag false
                 # before the handler sets it — the abort's cancel is left
-                # UNCONSUMED on this task's count. The disarm's reaper then
+                # unconsumed on this task's count. The disarm's reaper then
                 # reads cancelling() > 0, believes a shutdown cut belongs to
-                # it, re-raises, and the finally DIES before deregister_worker
+                # it, re-raises, and the finally dies before deregister_worker
                 # — the exact statement this block's own law (every statement
                 # non-raising so the ones after it still run) exists to keep
                 # alive. The body has quit; the quit-cut's purpose is served;
                 # the in-flight ExceptionGroup still propagates after this
-                # finally; and a REAL external cut raised the body through its
+                # finally; and a real external cut raised the body through its
                 # own delivery already (its exception is the one in flight,
                 # not this count). So the count is consumed to zero: the
                 # disarm's reaper reads the truth — no cut belongs to it —
@@ -2932,22 +2918,22 @@ async def _main(
                     await await_tracked_actor_reap()
                 await shutdown_watchdog.cancel()
                 lag_watchdog.stop()
-                # deregister_worker must run even when the group exit RAISED
+                # deregister_worker must run even when the group exit raised
                 # (the sibling-crash path): a crashed worker that leaves its
                 # workers row behind makes the supervisor's staleness check ,
                 # the fleet-level backstop, start from a staler picture.
                 try:
                     outcome = await deregister_worker(deps.dispatcher_pool, settings, worker_id)
                     # Cleared only when the DELETE is confirmed or
-                    # unreported: deregister_worker swallows a TRANSIENT
-                    # failure internally and reports it as False WITHOUT
+                    # unreported: deregister_worker swallows a transient
+                    # failure internally and reports it as False without
                     # raising, so on False the flag stays set and the
                     # deps-teardown backstop genuinely retries the delete
                     # while the dispatcher pool is still open - the pool
-                    # may be healthier by then. An UNREPORTED outcome (a
+                    # may be healthier by then. An unreported outcome (a
                     # caller override still on the pre-outcome None
                     # contract) keeps the old clear-on-return behaviour.
-                    # A non-transient failure RAISES here instead: it is
+                    # A non-transient failure raises here instead: it is
                     # logged-and-suppressed just below, the flag stays
                     # set, and the retry reproduces identically in the
                     # backstop, which also logs-and-suppresses it - the
@@ -2988,9 +2974,9 @@ def _stamp_interrupt_origins(deps: WorkerDeps) -> None:
     A sibling crash is an infrastructure interruption, the same class of
     event the shutdown orchestrator's CANCELLING phase and ``isolate_self``
     stamp SHUTDOWN for, so the crash stamps the same origin. The stamp runs
-    synchronously in the failing sibling, BEFORE ``shutdown_event.set()``
+    synchronously in the failing sibling, before ``shutdown_event.set()``
     and before the group's ``__aexit__`` starts cancelling the remaining
-    siblings, so every job claimed BEFORE the stamp point carries its
+    siblings, so every job claimed before the stamp point carries its
     origin before its cancellation is delivered. That narrows the
     phantom-cancel window; it does not close it. A consumer can complete a
     fresh claim in the gap between the stamp and the delivery of that
@@ -3014,7 +3000,7 @@ def _stamp_interrupt_origins(deps: WorkerDeps) -> None:
         if isinstance(deps, WorkerDeps):  # pyright: ignore[reportUnnecessaryIsInstance]  # Why: not unnecessary at runtime - a MagicMock(spec=WorkerDeps) aliases __class__ to the spec, so this is the test that tells a production-shaped double from a registry-less stub; the static type is the real WorkerDeps, where the check is trivially true.
             # Loud, not silent: a production-shaped double (a
             # MagicMock(spec=WorkerDeps), say) that forgot to configure
-            # active_jobs lands HERE - the field is a default_factory
+            # active_jobs lands here - the field is a default_factory
             # dataclass field, so it is not in the spec's dir(), the read
             # raises AttributeError and getattr's default swallows it.
             # Stamping over that hole would quietly no-op: the exact
@@ -3041,7 +3027,7 @@ def _stamp_interrupt_origins(deps: WorkerDeps) -> None:
     for active in registry.all():
         if active.cancel_origin is CancelOrigin.NONE:
             active.cancel_origin = CancelOrigin.SHUTDOWN
-            active.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the crash path is the other designated shutdown-side writer of the context's origin stamp, same contract as the orchestrator's CANCELLING phase and isolate_self.
+            active.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the crash path is the other designated shutdown-side writer of the context's origin stamp, same contract as the orchestrator's cancelling phase and isolate_self.
 
 
 def _make_sibling_spawner(
@@ -3077,12 +3063,12 @@ def _make_sibling_spawner(
             await coro
         except asyncio.CancelledError:
             # Normal cancellation (the group's own cancel logic): not a
-            # crash, not a contract issue, and NOT counted, one real fault
+            # crash, not a contract issue, and not counted, one real fault
             # cancelling N siblings must not report N+1 crashes.
             raise
         except BaseException:
             _sibling_crashes.add(1, {"loop": getattr(coro, "__qualname__", repr(coro))})
-            # Stamp BEFORE shutdown_event.set(): both are synchronous, but
+            # Stamp before shutdown_event.set(): both are synchronous, but
             # the stamp must be in place before the group's teardown starts
             # cancelling the consumer siblings, whose terminal routing reads
             # it (see _stamp_interrupt_origins).
@@ -3090,7 +3076,7 @@ def _make_sibling_spawner(
             shutdown_event.set()
             raise
         if may_return:
-            # may_return skips ONLY the clean-return check; exceptions
+            # may_return skips only the clean-return check; exceptions
             # above still set shutdown_event and count the crash.
             return
         shutdown_in_progress = (
@@ -3184,7 +3170,7 @@ async def _reload_coordinator_loop(
     Semantics:
 
     * The event is cleared *before* each reload and never cleared after,
-      so a SIGHUP arriving mid-reload, success OR failure, is honored
+      so a SIGHUP arriving mid-reload, success or failure, is honored
       by exactly one follow-up reload. (Event coalescing: N signals
       during one reload produce one follow-up, not N.)
     * Reloads are skipped while shutdown orchestration is in progress
@@ -3226,16 +3212,12 @@ async def _reload_coordinator_loop(
         try:
             await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
         finally:
-            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix — the
-            # same shape the reload schedule's, the watchdog's, and the
-            # producer's loops carry): CANCEL ALL the pending waiters
-            # first, THEN reap each through the reaper helper. The
-            # one-per-lap cancel + bare suppress(await) let the reaper's
-            # OWN concurrent cancellation die inside the suppress (the
-            # F-DEMO-2's exact shape) and orphan the remaining
-            # waiters — the two leaked Event.wait tasks the guard
-            # caught. Our own cancel propagates: after the bounded
-            # reap completes, never swallowed.
+            # cancel all the pending waiters first, then reap each through the
+            # reaper helper. The one-per-lap cancel + bare suppress(await) let
+            # the reaper's own concurrent cancellation die inside the suppress
+            # (the F-DEMO-2's exact shape) and orphan the remaining waiters —
+            # the two leaked Event.wait tasks the guard caught. Our own cancel
+            # propagates: after the bounded reap completes, never swallowed.
             pending = [t for t in waiters if not t.done()]
             for task in pending:
                 task.cancel()
@@ -3244,7 +3226,7 @@ async def _reload_coordinator_loop(
                 try:
                     await reap_cancelled_child(task)
                 except asyncio.CancelledError as exc:
-                    # the reaper re-raised OUR cancel: noted — the
+                    # the reaper re-raised our cancel: noted — the
                     # remaining children are reaped first.
                     own = exc
             if own is not None:
@@ -3272,13 +3254,13 @@ async def _reload_coordinator_loop(
             continue
 
         if refresh_worker_pool_di and loop_scope is not None and "worker" in reloaded:
-            # The worker pool was hot-swapped, refresh the DI cache so
+            # The worker pool was hot-swapped, refresh the di cache so
             # actors injected with db: asyncpg.Pool get the live pool, not
             # the one now draining in the background.
             try:
                 loop_scope.replace_value(asyncpg.Pool, deps.worker_pool)
             except KeyError:
-                # Unreachable via _main (bootstrap eagerly caches all LOOP
+                # Unreachable via _main (bootstrap eagerly caches all loop
                 # providers), but the kwarg contract permits an
                 # un-bootstrapped loop_scope, a raise here would tear down
                 # the worker's TaskGroup.
@@ -3325,7 +3307,7 @@ def worker_main(
     ``di_registry`` is an optional pre-configured :class:`ProviderRegistry`
     containing application-specific provider registrations (database pools,
     HTTP clients, etc.).  When supplied, the worker uses it instead of
-    creating a fresh registry, callers must NOT call ``validate()`` before
+    creating a fresh registry, callers must not call ``validate()`` before
     passing it here; the worker calls ``validate()`` as part of its bootstrap
     sequence.  ``WorkerSettings`` and ``Clock`` are registered automatically
     if not already present.
@@ -3347,7 +3329,7 @@ def worker_main(
     the ``@cron`` decorator are auto-discovered.  When an explicit list
     is passed (even empty ``[]``), only those schedules are registered;
     decorator-registered schedules are skipped.  For each spec, a direct
-    ``INSERT INTO … cron_schedules`` is executed inside
+    ``INSERT into … cron_schedules`` is executed inside
     ``try/except asyncpg.UniqueViolationError: pass``, the DB ``(actor, name)``
     UNIQUE constraint prevents duplicates, so concurrent worker replicas
     can safely race.  Startup auto-discovery is **create-only,
@@ -3381,7 +3363,7 @@ def worker_main(
                 idle_max_runtime=idle_max_runtime,
             )
         )
-    # The drain's verdict is guarded by the ENTRYPOINTS (the taskq worker
+    # The drain's verdict is guarded by the entrypoints (the taskq worker
     # command and the e2e/system-e2e worker entries), not here. This must
     # not end with ``signal.signal(SIGTERM, SIG_IGN)`` - correct for a
     # process about to ``sys.exit``, poison for any other caller: an

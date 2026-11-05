@@ -10,10 +10,10 @@ The behaviors held:
   ``error_traceback`` / ``captured_error`` (the Q5 read-side fix) but
   ``error_class`` (unbounded text) still round-trips WHOLE:
   ``_wf_rows.py``'s ``_run_view_from_rows`` (node + root) and
-  ``_wf_actions.py``'s node-panel route (the detail AND the children
+  ``_wf_actions.py``'s node-panel route (the detail and the children
   census) serve it raw.
 * ``reap_nodeless_roots`` returns ``int(fetchval(RETURNING
-  f.id))`` — the FIRST reaped row's UUID as a 128-bit int — as the
+  f.id))`` — the first reaped row's UUID as a 128-bit int — as the
   "reaped count" metric.
 * ``step(gates=(<a TypedGate from channel.gate(...)>,))``
   (the natural door-confusion: ``TypedGate`` instead of ``GateDecl``)
@@ -27,7 +27,7 @@ The behaviors held:
   ``CharacterNotInRepertoireError`` (the jobs-cancel route carries the
   ``parse_text_filter`` NUL guard; the workflow route doesn't).
 * ``DISPATCH_CLAIMABLE_PROBE_CURSOR_SQL`` drops the
-  ``deps_pending = 0`` filter AND the workflow fence (the ``__flow__``
+  ``deps_pending = 0`` filter and the workflow fence (the ``__flow__``
   exclusion + the terminal-flow exclusion) that the plain probe
   carries — against the module's own "the two fences may not disagree"
   invariant.
@@ -108,8 +108,8 @@ from tests import _evidence
 from tests._wf_fixtures import seed_flow
 
 #: The estate's own display-bound conventions (the panel's
-#: ``_PANEL_FIELD_CAP_CHARS``): the SAFE bound any fix of the
-#: error_class/audit binds lands under. The pin asserts the CEILING of
+#: ``_PANEL_FIELD_CAP_CHARS``): the safe bound any fix of the
+#: error_class/audit binds lands under. The pin asserts the ceiling of
 #: the house's bounded conventions, never a specific one — a tighter
 #: fix (the 512 of the cancel form's maxlength, the 2000 of the rows
 #: traceback cap) satisfies it too.
@@ -117,7 +117,7 @@ _BOUND_CEILING_CHARS = 10_000
 
 #: The honesty marker's shape, both house spellings (the panel's
 #: "… [truncated: +N characters stay in the row]" and the rows cap's
-#: "... (N more characters)") — the fix must NAME the truncation.
+#: "... (N more characters)") — the fix must name the truncation.
 _TRUNCATION_MARKER = re.compile(r"truncat|more characters", re.IGNORECASE)
 
 
@@ -142,7 +142,7 @@ async def _seed_failed_run_with_a_hostile_error_class(
     """A failed run (root + TWO same-key map siblings, so the panel's
     children census renders) whose ``error_class`` columns carry a
     200KB string — the Q5 comment's own threat model: "a row written by
-    ANY other path — or a hostile DB write" (the write-side caps never
+    any other path — or a hostile DB write" (the write-side caps never
     saw it). Returns (flow_id, node_key)."""
     flow_id = await seed_flow(conn, schema, status="failed")
     hostile = "Hostile" + "E" * 200_000
@@ -270,7 +270,7 @@ async def test_2_the_nodeless_reap_returns_the_reaped_count(
     )
 
 
-# ── a TypedGate in step(gates=...) is a NAMED refusal ──────────
+# ── a TypedGate in step(gates=...) is a named refusal ──────────
 
 
 async def _hold_body(ctx: StepContext, params: _Ingest) -> Any:
@@ -281,7 +281,7 @@ def test_3_a_typed_gate_in_step_gates_is_a_named_refusal() -> None:
     """The author's mistake — ``gates=(app.channel().gate(Model),)``,
     the BOUND-DOOR object where the declaration (``GateDecl``) belongs —
     must be refused by NAME (the validator's report, or the wiring
-    door's build refusal), NEVER a raw ``AttributeError`` traceback out
+    door's build refusal), never a raw ``AttributeError`` traceback out
     of the validator's own rule walk."""
     app = WorkflowApp()
     gate = app.channel().gate(_Approval)  # the TypedGate — the wrong door's object
@@ -342,7 +342,7 @@ async def test_4b_a_nul_reason_never_aborts_the_wf_cancel(
 ) -> None:
     """The cancel is the operator's safety verb — a control character in
     the free-text reason must never make it fail opaque and WHOLE (the
-    flip, the nodes, the signals AND the audit row rolled back). The
+    flip, the nodes, the signals and the audit row rolled back). The
     reason is SANITIZED (the audit module's own control-escape
     discipline for the subject column) and the cancel LANDS. TODAY:
     ``invalid byte sequence for encoding "UTF8": 0x00`` out of the
@@ -371,10 +371,10 @@ async def test_4b_a_nul_reason_never_aborts_the_wf_cancel(
     )
 
 
-# ── the cursor probe's fence must BE the plain probe's ─────────
+# ── the cursor probe's fence must be the plain probe's ─────────
 
 #: The seeded trio (each leg alone, one sub-case per isolation): the
-#: shapes the PLAIN probe's fence excludes (deps_pending=0 + the
+#: shapes the plain probe's fence excludes (deps_pending=0 + the
 #: workflow fence) and the cursor probe must exclude identically.
 
 
@@ -392,7 +392,7 @@ async def test_5_the_cursor_probe_fences_identically_to_the_plain_probe(
 ) -> None:
     """The fence-agreement law (the module's own, at
     ``_WF_PROBE_FENCE_TEMPLATE``): the cursor probe and the plain probe
-    answer "is anything routable" over the SAME candidacy — a row the
+    answer "is anything routable" over the same candidacy — a row the
     claim statement must never admit (a ``__flow__`` root — never work;
     a terminal flow's pending node — the terminal fence; a
     ``deps_pending > 0`` join-wait — not ready) counts in NEITHER. TODAY
@@ -435,20 +435,20 @@ async def test_5_the_cursor_probe_fences_identically_to_the_plain_probe(
 
     legs: list[str] = []
 
-    # LEG 1: a live __flow__ root alone (the root is never work).
+    # leg 1: a live __flow__ root alone (the root is never work).
     root = new_uuid()
     await seed_root(root, "pending")
     legs.append(f"__flow__ root: plain/cursor = {await _probe_pair(wf_conn, sql)}")
     await wf_conn.execute(f'DELETE FROM "{wf_schema}".jobs')
 
-    # LEG 2: a terminal flow's pending node alone (the terminal fence).
+    # leg 2: a terminal flow's pending node alone (the terminal fence).
     dead = new_uuid()
     await seed_root(dead, "failed")
     await seed_node(dead, "tnode", 0)
     legs.append(f"terminal-flow node: plain/cursor = {await _probe_pair(wf_conn, sql)}")
     await wf_conn.execute(f'DELETE FROM "{wf_schema}".jobs')
 
-    # LEG 3: a deps_pending=1 join-wait on a live flow (not ready).
+    # leg 3: a deps_pending=1 join-wait on a live flow (not ready).
     live = new_uuid()
     await seed_root(live, "running")
     await seed_node(live, "dnode", 1)
@@ -462,7 +462,7 @@ async def test_5_the_cursor_probe_fences_identically_to_the_plain_probe(
     )
 
 
-# ── the expired cursor mid-expansion is a NAMED degradation ────
+# ── the expired cursor mid-expansion is a named degradation ────
 
 
 class _AcquireCtx:
@@ -512,7 +512,7 @@ def test_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None:
     from taskq.backend._dispatch import _dispatch_batch
     from taskq.backend._sql_templates import render
 
-    sql = render("in_wir")  # the statements' TEXT is the subject; the stub conn is the wire
+    sql = render("in_wir")  # the statements' text is the subject; the stub conn is the wire
 
     class _WireConn:
         """The wire, honestly: the probe statements answer "rows remain"
@@ -575,12 +575,12 @@ def test_6_the_expired_cursor_mid_expansion_is_a_named_degradation() -> None:
             4,
             timedelta(seconds=90),
             queue_mode_cache=_StrictFifoModeCache(),
-            claim_cursor=_ExpiringCursor(),  # type: ignore[arg-type]  # Why: the duck IS the contract (bound/advance); the pin's seam.
+            claim_cursor=_ExpiringCursor(),  # type: ignore[arg-type]  # Why: the duck is the contract (bound/advance); the pin's seam.
         )
 
     try:
         asyncio.run(_drive())
-    except BaseException as exc:  # Why: the pin's subject IS the exception's class.
+    except BaseException as exc:  # Why: the pin's subject is the exception's class.
         raised = exc
     assert not isinstance(raised, asyncpg.InterfaceError), (
         f"The expired-cursor round died on the RAW driver arity error "
@@ -605,7 +605,7 @@ def test_7_concurrent_record_and_snapshot_never_raise() -> None:
     the exporter's threads read. Neither may ever see the other: zero
     ``RuntimeError`` (nor any exception) across a sustained concurrent
     hammering. The thread pair is the honest driver (the gauge callback
-    runs OFF the event loop); an asyncio-only shape cannot preempt the
+    runs off the event loop); an asyncio-only shape cannot preempt the
     mid-iteration window."""
     import taskq.obs._otel as otel_mod
     from taskq.obs._claim_health import (
@@ -629,7 +629,7 @@ def test_7_concurrent_record_and_snapshot_never_raise() -> None:
             while time.monotonic() < stop:
                 try:
                     claim_health_snapshot()
-                except BaseException as exc:  # Why: the pin's subject IS the exception stream.
+                except BaseException as exc:  # Why: the pin's subject is the exception stream.
                     errors.append(exc)
 
         threads = [threading.Thread(target=writer, args=(i,)) for i in range(4)]
@@ -666,7 +666,7 @@ def test_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -> No
     one — the validator's E11 walking the container, or the wiring door
     (the build error), or the encoder's own typed refusal raised at
     DECLARATION time — never the mid-flow ``UnencodableValue`` at the
-    first claim. (``sink(parent)`` keeps E2 quiet so the ONLY question
+    first claim. (``sink(parent)`` keeps E2 quiet so the only question
     on the floor is the nested handle; verified at the head: this shape
     validates CLEAN today, and ``dumps_jsonb_str({'carry': {'seed':
     <Promise>}})`` raises ``UnencodableValue`` at the row write.)"""
@@ -685,7 +685,7 @@ def test_8_a_nested_promise_in_the_initial_carry_is_a_build_time_refusal() -> No
         app.get("loop_nested_promis")
 
 
-# ── E10 counts the ACTUAL params ───────────────────────────────
+# ── E10 counts the actual params ───────────────────────────────
 
 
 def test_9_e10_counts_the_actual_params() -> None:
@@ -696,20 +696,20 @@ def test_9_e10_counts_the_actual_params() -> None:
     * the unannotated-but-runnable body wired with its correct count
       validates CLEAN (the zero-false-positive doctrine: a duck-typed
       param is the estate's own tolerated shape);
-    * a REAL mismatch refuses AND the message names the REAL arity
+    * a REAL mismatch refuses and the message names the REAL arity
       ("takes 2 param(s)"), never the annotated count.
 
-    THE WIRING NOTE (the run-view fix's reconciliation): the
+    The
     exactly-one-param-beyond-the-wiring shape belongs to the DEPS class
     — E12's contract, not E10's arity (the rules' own partition of the
-    arity surface). E10 owns TWO-OR-MORE beyond the wiring, so leg 2
+    arity surface). E10 owns TWO-or-MORE beyond the wiring, so leg 2
     wires ZERO args: still a real mismatch, still the signature's
     numbers in the message.
 
     TODAY both legs reject: the runnable shape is refused, and the
     refusal's message reports 0 params for a 2-param body."""
 
-    # The pin's SUBJECT is the unannotated-but-runnable shape (E5's
+    # The pin's subject is the unannotated-but-runnable shape (E5's
     # tolerated duck hole) — annotating it annotates the finding away.
     async def duck_body(ctx, params) -> _Report:  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
         return _Report(ref=params["doc_id"])
@@ -720,10 +720,10 @@ def test_9_e10_counts_the_actual_params() -> None:
     def _wf() -> object:
         return build(step(duck_body, {"doc_id": "d"}, key="only"))
 
-    app.get("e10_duck_o")  # the doctrine: NO refusal
+    app.get("e10_duck_o")  # the doctrine: no refusal
 
     # The annotation surface is the old bug's counting basis, never the
-    # pin's — the message must name the REAL arity of THIS shape.
+    # pin's — the message must name the real arity of this shape.
     async def two_param_body(ctx, first, second) -> _Report:  # pyright: ignore[reportUnknownParameterType, reportMissingParameterType]
         return _Report(ref="x")
 
@@ -733,7 +733,7 @@ def test_9_e10_counts_the_actual_params() -> None:
     def _wf2() -> object:
         return build(
             step(two_param_body, key="only")
-        )  # ZERO wired args: 2 params beyond the wiring — E10's class (the 1-beyond shape is E12's)
+        )  # zero wired args: 2 params beyond the wiring — E10's class (the 1-beyond shape is E12's)
 
     with pytest.raises(WorkflowValidationError) as excinfo:
         app2.get("e10_real_mismatc")
@@ -762,7 +762,7 @@ def test_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
     * the header's "operator table" citation names the cells in the
       cited doc (the table the cells claim to be rows of).
 
-    THE FLOOR (the run-view fix's reconciliation): the pack pinned the
+    The pack pinned the
     header's NINE claimed cells; three (OUTAGE, REDISPATCH OWNERSHIP,
     RETENTION MID-FLIGHT) named no test function anywhere — header
     fiction. The fix regenerated the header to the SIX cells this
@@ -826,25 +826,24 @@ def test_10_every_deploy_matrix_cell_maps_to_a_real_test() -> None:
 
 # ── the battery's deterministic red — the RESOLVED behavior ───
 #
-# THE VERDICT (root-caused at the head): the test's declaration is the
-# lie, the validator is right. ``chain_source(chain, body)`` wires ZERO
-# args; the runner invokes a chain-source body with ctx ALONE
-# (``_runner.py``: ``if not node.args: return
-# tuple(parent_results.values())`` — empty for a source), so a source
-# body taking ``(ctx, params)`` would TypeError mid-flow — exactly the
-# ladder discovery E10 exists to refuse. Every other chain source in
-# the estate (the router pack's ``screen_app``, the march app's
-# ``triage_source``) is ctx-only. The pin asserts the RESOLVED behavior
-# both ways, GREEN: the corrected declaration projects both cohorts, and the bad
-# declaration keeps refusing LOUDLY (the projection skip names E10; the
-# healthy fleets' projection is untouched). The battery's red is fixed
-# by fixing the DECLARATION in the battery's test — this pin guards the
-# resolution, so it cannot rot in either direction.
+# root-caused at the head. the test's declaration is the lie, the validator is
+# right. ``chain_source(chain, body)`` wires zero args; the runner invokes a
+# chain-source body with ctx alone (``_runner.py``: ``if not node.args: return
+# tuple(parent_results.values())`` — empty for a source), so a source body
+# taking ``(ctx, params)`` would TypeError mid-flow — exactly the ladder
+# discovery E10 exists to refuse. Every other chain source in the estate (the
+# router pack's ``screen_app``, the march app's ``triage_source``) is ctx-only.
+# The pin asserts the resolved behavior both ways, green: the corrected
+# declaration projects both cohorts, and the bad declaration keeps refusing
+# loudly (the projection skip names E10; the healthy fleets' projection is
+# untouched). The battery's red is fixed by fixing the declaration in the
+# battery's test — this pin guards the resolution, so it cannot rot in either
+# direction.
 
 
 def test_11_the_split_placement_declaration_resolved() -> None:
     """The split placement's two cohorts (the source's ``wf``/default
-    pair and the chain's gpu-named pair), ONE row each — the projection
+    pair and the chain's gpu-named pair), one row each — the projection
     the battery's red test MEANT to pin, over the DECLARED-CORRECTLY
     shape (the ctx-only chain source — the estate's own pattern)."""
     import enum
@@ -890,13 +889,13 @@ def test_11_the_split_placement_declaration_resolved() -> None:
 
 
 def test_11_the_bad_source_declaration_still_refuses_loudly() -> None:
-    """The other half of the resolution: the battery test's OWN shape
+    """The other half of the resolution: the battery test's own shape
     (a params-taking chain-source body wired with zero args) stays a
     NAMED refusal — the projection skips the workflow LOUDLY with the
     rule id in the record, and no cohort for it projects. A fix that
     instead SILENCED the arity rules would flip this red.
 
-    THE RULE ID (the run-view fix's reconciliation): the exactly-one-
+    The exactly-one-
     param-beyond-the-wiring shape belongs to the DEPS class — the
     refusal names ``E12-deps-contract`` (the same loudness, the rule
     that OWNS the shape, the message still naming the fix). The guard
@@ -988,13 +987,13 @@ def test_12_every_typeprobe_file_is_wired_into_the_gate() -> None:
 
 
 #: The ranged-figure claim: "p50 3.2—8.1 ms" — the metric word, the en-dash
-#: range, the ms unit. Band contexts (the doc's DECLARED bounds) are not
+#: range, the ms unit. Band contexts (the doc's declared bounds) are not
 #: measurements.
 _RANGE_RE = re.compile(r"(p50|p95|max)\s+(\d+(?:\.\d+)?)\s*\u2013\s*(\d+(?:\.\d+)?)\s*ms")
 
 #: The doc's measured sections → the capture's metric family (the
-#: docs-numbers pin's FAMILY LAYER, extended to ranges: a figure is
-#: matched against its OWN artifact family, so an unrelated metric's
+#: docs-numbers pin's family layer, extended to ranges: a figure is
+#: matched against its own artifact family, so an unrelated metric's
 #: coincidence can never green a lie).
 _STREAMING_SECTION_FAMILIES = {
     "The emit tx per page": "emit_tx_per_page",
@@ -1007,7 +1006,7 @@ _STREAMING_DOC = _REPO / "perf-evidence-workflows-streaming.md"
 def test_14_every_ranged_figure_covers_its_captures() -> None:
     """The doc's own law walked: every ranged ms figure in a measured
     section of ``perf-evidence-workflows-streaming.md`` must COVER the
-    corresponding metric across EVERY capture on disk (the run-scoped
+    corresponding metric across every capture on disk (the run-scoped
     ``t20-streaming-bands-*.json`` plus the rolled artifact), compared
     at the figure's own cited precision. A capture outside the cited
     range is the cherry-pick/dead-figure class this law exists to
@@ -1034,7 +1033,7 @@ def test_14_every_ranged_figure_covers_its_captures() -> None:
         for match in _RANGE_RE.finditer(line):
             context = line[max(0, match.start() - 40) : match.start()].lower()
             if "band" in context or "≤" in context:
-                continue  # the DECLARED bound, not a measurement
+                continue  # the declared bound, not a measurement
             family = next(
                 (
                     fam

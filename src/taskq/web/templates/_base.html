@@ -16,8 +16,8 @@
         })();
     </script>
     {% if not suppress_refresh | default(false) %}
-    {# The page's ONLY refresh transport is this meta refresh, so it is
-       suppressed ONLY by a page declaring its own (suppress_refresh) -
+    {# The page's only refresh transport is this meta refresh, so it is
+       suppressed only by a page declaring its own (suppress_refresh) -
        never by the badge mode alone. Keying the suppression off
        realtime_mode left every page without JS machinery (history,
        workers, actors, batches, schedules, rate-limits, reservations,
@@ -27,7 +27,7 @@
        (admin.js; a paused table is frozen by contract), /queues in
        real-time mode (the htmx poll is that mode's transport), the job
        detail page always (realtime.js polls in every mode). #}
-    {# The refresh delay is evaluated against the BROWSER's clock, and the
+    {# The refresh delay is evaluated against the browser's clock, and the
        browser floors the attribute at whole seconds: ``content="0"`` is
        honored as "reload immediately", so a sub-second
        admin_ui_polling_interval_seconds (the setting admits 0.1) would
@@ -38,7 +38,7 @@
     {# The status colors' single source (admin/_constants.py), rendered as
        the JSON blob admin.js derives its STATUS_COLORS / CHIP_COLORS /
        BADGE_CLASSES maps from - four hand-maintained copies died; a status
-       color changes HERE or nowhere. #}
+       color changes here or nowhere. #}
     <script>window.__taskqStatusClasses = {
         chip: {{ status_chip_classes | tojson }},
         text: {{ status_text_classes | tojson }},
@@ -46,18 +46,18 @@
     };</script>
     <title>{% block title %}TaskQ Admin{% endblock %}</title>
     <link rel="stylesheet" href="{{ base_path }}/static/admin.css">
-    {# Alpine loads from the SAME local /static dir as htmx: an air-gapped
+    {# Alpine loads from the same local /static dir as htmx: an air-gapped
        ops deployment (the admin UI's natural habitat) must not lose every
        Alpine-driven control - the dark toggle, the status combobox, the
        jobs page's live machinery - to a CDN it cannot reach. The shipped
-       alpine.min.js IS the version the CDN tag pins (3.14.9). #}
+       alpine.min.js is the version the CDN tag pins (3.14.9). #}
     <script defer src="{{ base_path }}/static/alpine.min.js"></script>
-    {# lucide ships from the SAME local /static dir as Alpine and htmx:
+    {# lucide ships from the same local /static dir as Alpine and htmx:
        the air-gapped ops deployment argument that moved Alpine applies
-       verbatim - an unpkg tag renders every data-lucide icon as an EMPTY
+       verbatim - an unpkg tag renders every data-lucide icon as an empty
        <i> the moment the deployment cannot reach the CDN (the icon boot
        is guarded, so the page survives; the decoration does not). The
-       shipped file IS unpkg's lucide v0.544.0 UMD build, pinned. #}
+       shipped file is unpkg's lucide v0.544.0 umd build, pinned. #}
     <script src="{{ base_path }}/static/lucide.min.js"></script>
     <script src="{{ base_path }}/static/htmx.min.js"></script>
     <style>
@@ -86,9 +86,9 @@
             <div class="flex items-center gap-2">
                 {% set _logout_token = sso_logout_token() if sso_logout_token is defined else "" %}
                 {% if _logout_token %}
-                {# The SSO logout contract is POST + a token derived from the live session;
+                {# The sso logout contract is POST + a token derived from the live session;
                    a bare link (GET) is the shape the logout hardening removed, and the
-                   token is armed per request by the SSO auth dependency. #}
+                   token is armed per request by the sso auth dependency. #}
                 <form method="post" action="{{ base_path }}/logout" class="m-0">
                     <input type="hidden" name="csrf_token" value="{{ _logout_token }}">
                     <button type="submit" class="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors" aria-label="Sign out">Sign out</button>
@@ -150,7 +150,7 @@
     {# lucide never created its icons: nothing called createIcons() at
        boot, so every data-lucide icon (the jobs tabs, the row's view
        action, the empty-state inbox, the pagination chevrons) rendered as
-       an EMPTY <i> on first paint - the row action was a 28px invisible
+       an empty <i> on first paint - the row action was a 28px invisible
        click target until admin.js's first poll swap happened to re-create
        the jobs table's. Create on first paint, and re-create after every
        htmx swap: the swapped-in fragments carry icon nodes no other code

@@ -1,7 +1,6 @@
-"""THE TYPED-OUTCOME CHAIN SURFACE — the router: conditional edges
-over a step's OWN typed outcomes, total or refused.
+"""TYPED-OUTCOME CHAIN SURFACE — the router: conditional edges
+over a step's own typed outcomes, total or refused.
 
-THE PICKED SHAPE (the ergonomics bar):
 
     CHAIN = Chain(
         name="application-enrichment",
@@ -18,10 +17,10 @@ THE PICKED SHAPE (the ergonomics bar):
 
 A chain step's body is an ordinary typed-outcome coroutine (its return IS
 the route's decision); the conditional edge is a dict keyed by the body's
-OWN outcome enum; the terminal is ``DONE``; the totality fence is
+own outcome enum; the terminal is ``DONE``; the totality fence is
 invisible until violated.
 
-TOTALITY IS THE FENCE, at TWO doors (the asymmetry doctrine — refuse
+TOTALITY IS the FENCE, at TWO doors (the asymmetry doctrine — refuse
 loudly, never silently drop):
 
 1. DECLARATION TIME: :class:`Chain` refuses a route that is not total
@@ -33,8 +32,8 @@ loudly, never silently drop):
    ``error_class='RouterNotTotal'``: the record names the defect; the
    record's chain visibly dies, never vanishes.
 
-THE ROUTE RIDES THE CERTIFIED FORK: a chain step's finalize forks AT MOST
-ONE child (the route's next step — no fan-in, no join); the record's
+A chain step's finalize forks AT MOST
+one child (the route's next step — no fan-in, no join); the record's
 identity (``map_index``) and trace ride forward on the child, and the
 chain instantiates per record through the certified fork-at-finalize
 machinery. The run completes from the rows (the shipped root-finalize
@@ -64,7 +63,7 @@ __all__ = [
 ]
 
 #: The chain's terminal route: a body outcome that ends the record's
-#: chain (the step's finalize carries NO fork — the chain ends here).
+#: chain (the step's finalize carries no fork — the chain ends here).
 DONE = "__done__"
 
 
@@ -74,14 +73,14 @@ def type_tag(cls: type) -> str:
     returned ELEMENT against (``type(element)``), and the tag the
     declaration's totality check compares the route's keys to. PUBLIC
     since the graph-level typed route landed: the graph-level typed route (``api/_graph.route``) shares
-    the tag — the dispatch key is ONE vocabulary at both levels (the
+    the tag — the dispatch key is one vocabulary at both levels (the
     chain's steps and the graph's arms route the same union the same
     way)."""
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
 class RouterNotTotal(Exception):
-    """An outcome arrived at a route with no arm for it. THE LOUD REFUSAL:
+    """An outcome arrived at a route with no arm for it. the LOUD REFUSAL:
     the runner converts this to a terminal-FAILED finalize carrying
     ``error_class='RouterNotTotal'`` — the record names the defect; the
     record's chain visibly dies instead of silently dropping. (With a
@@ -91,20 +90,20 @@ class RouterNotTotal(Exception):
 
 
 class Route:
-    """The conditional edge map for ONE chain step: outcome → next step
+    """The conditional edge map for one chain step: outcome → next step
     (a step key of the chain, or :data:`DONE`).
 
     TWO dispatch vocabularies (the type-tagged route — the routing
     proof's fix — beside the original enum face):
 
-    * THE ENUM FACE: the keys are the members of the step body's outcome
+    * the ENUM FACE: the keys are the members of the step body's outcome
       enum — the LITERAL TAG (the member's ``.value`` string) is the
       dispatch key; the record rides the row's payload VERBATIM.
-    * THE TYPE-TAGGED FACE: the keys are the member TYPES of the step
+    * the TYPE-TAGGED FACE: the keys are the member TYPES of the step
       body's payload UNION (``Step.outcomes=Summary | Unreadable``) —
       the body returns the union ELEMENT itself and the router
       dispatches on the element's runtime TYPE; on a type-tagged arm the
-      ELEMENT IS THE RECORD (the arm's body declares its arm's type —
+      ELEMENT IS the RECORD (the arm's body declares its arm's type —
       the narrowed arms in the editor — and the typed boundary
       re-validates the round-trip, so a mis-routed element dies LOUDLY
       in the coercion).
@@ -118,7 +117,7 @@ class Route:
 
     def __init__(self, routes: dict[enum.Enum | type, str | None]) -> None:
         # The keys normalize: an enum member through its enum value (the
-        # literal tag); a payload CLASS through its type-tag. A NON-enum,
+        # literal tag); a payload class through its type-tag. A non-enum,
         # non-type key — a raw string — is the declaration-time refusal's
         # other face: bind() names it 'unknown' below.
         normalized: dict[str, str | None] = {}
@@ -191,7 +190,7 @@ class Step:
 
     The outcome vocabulary (``outcomes``) is EITHER the body's outcome
     ENUM (the literal-tag face: the body returns the enum member, the
-    record rides verbatim) OR the body's payload UNION — the member
+    record rides verbatim) or the body's payload UNION — the member
     TYPES key the type-tagged route (the body returns the union ELEMENT
     itself; on a type-tagged arm the element IS the record)."""
 
@@ -202,7 +201,7 @@ class Step:
 
 @dataclass(frozen=True, slots=True)
 class Chain:
-    """The chain declared ONCE, instantiated per record (each emit inserts
+    """The chain declared once, instantiated per record (each emit inserts
     the start step's row; each step's finalize forks the route's next
     step). ``start`` names the entry step key."""
 
@@ -235,24 +234,24 @@ class Chain:
         payload: dict[str, object] | None,
         map_index: int | None,
     ) -> ChildSpec | None:
-        """The router's decision for ONE step's outcome — the fork's child
+        """The router's decision for one step's outcome — the fork's child
         spec (or ``None`` = the chain ends here). Raises
         :class:`RouterNotTotal` loudly when the outcome has no arm.
 
-        THE TYPE-TAGGED FACE: a non-enum, non-str outcome is a union
+        A non-enum, non-str outcome is a union
         ELEMENT — its runtime type is the dispatch key, and on its arm
-        the ELEMENT IS THE RECORD (the child's ``wf_item`` is the
+        the ELEMENT IS the RECORD (the child's ``wf_item`` is the
         element, jsonb-encoded; the arm's body declares its arm's type
         and the typed boundary re-validates).
 
-        THE PER-RECORD IDENTITY RIDES map_index (the refuted-claim
+        the PER-RECORD IDENTITY RIDES map_index (the refuted-claim
         discipline): the certified fork's idempotency key and the
         step-ledger's arbiter both discriminate siblings by it — the
-        record's index rides EVERY row of its chain, and the child
+        record's index rides every row of its chain, and the child
         carries it forward. Without it, two records' children of one step
         collide onto one row (the measured 198 UniqueViolations).
 
-        THE TRACE IS THE FORK'S OWN DOOR (the accept-and-ignore hunt's
+        the TRACE IS the FORK'S own DOOR (the accept-and-ignore hunt's
         fix): ``next_child`` once accepted ``trace_id=`` and consumed
         nothing — the trace actually propagates through
         :func:`chain_fork`'s ``trace_id=`` (the caller passes both legs
@@ -266,19 +265,18 @@ class Chain:
         elif isinstance(outcome, str):
             outcome_str = outcome
         else:
-            # THE TYPE-TAGGED FACE: the body returned the union ELEMENT
-            # itself — the element's runtime TYPE is the dispatch key.
+            # the body returned the union element itself — the element's
+            # runtime type is the dispatch key.
             outcome_str = type_tag(type(outcome))
         nxt = step.route.next_step(outcome_str)
         if nxt is DONE or nxt is None:
             return None
         if not isinstance(outcome, (enum.Enum, str)):
-            # THE ELEMENT IS THE RECORD (the type-tagged arm's law): the
-            # body's returned union element rides the fork as the
-            # child's wf_item — the arm's body declares its arm's type
-            # and the typed boundary re-validates the round-trip (a
-            # mis-routed element dies LOUDLY in the coercion). The
-            # enum face's verbatim-payload law is untouched.
+            # the body's returned union element rides the fork as the child's
+            # wf_item — the arm's body declares its arm's type and the typed
+            # boundary re-validates the round-trip (a mis-routed element dies
+            # loudly in the coercion). The enum face's verbatim-payload law is
+            # untouched.
             element: object = (
                 outcome.model_dump(mode="json") if isinstance(outcome, BaseModel) else outcome
             )
@@ -321,7 +319,7 @@ def chain_fork(
     max_attempts: int = 3,
     retry_kind: str = "transient",
 ) -> ForkSpec | None:
-    """The fork a chain step's finalize carries: AT MOST ONE child (no
+    """The fork a chain step's finalize carries: AT MOST one child (no
     fan-in, no join — the route rides the certified fork-at-finalize
     machinery), the record's trace riding to it. ``None`` = the chain
     ends here (the finalize carries no fork)."""

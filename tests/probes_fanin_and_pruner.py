@@ -1,23 +1,23 @@
-"""The pruner coupling AND the barrier's fan-in bound under
+"""The pruner coupling and the barrier's fan-in bound under
 concurrency.
 
 1. the retention coupling EXPIRY COUPLING DIRECTION: the guard holds a child's result while
-   its join is UN-FIRED. The shipped pin sweeps BEFORE the fire. The
+   its join is UN-FIRED. The shipped pin sweeps before the fire. The
    race window is the OTHER arm: sweep runs BETWEEN the fire and
    the reduce's batch read — does anything still eat the results? (The
    body reads in the fire's own tx on both paths; the probe documents
    the boundary and hunts the gap via the sweep's own shipped driver.)
 
-2. the retention coupling THE OVER-HOLD DIRECTION (vanilla rows): the guard must not hold
+2. the retention coupling the over-HOLD DIRECTION (vanilla rows): the guard must not hold
    NON-workflow rows (no edges → swept normally). A guard that over-holds
    vanilla rows is the retention regression.
 
-3. the fan-in bound THE BARRIER RACING A CANCEL: the flow cancels while the ladder's
-   LAST intermittent child is mid-ladder; the child then terminalizes.
+3. the fan-in bound the BARRIER RACING A CANCEL: the flow cancels while the ladder's
+   last intermittent child is mid-ladder; the child then terminalizes.
    The barrier + the cancel fence must give: no fire on a cancelled flow,
    one verdict per row.
 
-4. the fan-in bound THE TIMEOUT ARM RACING THE LADDER'S LAST RETRY: the deadline
+4. the fan-in bound the TIMEOUT ARM RACING the LADDER'S last RETRY: the deadline
    sweep fires while the child is RUNNING its would-succeed final
    attempt. The child's real finalize must lose the fence CLEANLY (no
    corrupt row, no fire over the deadline-failed fail_closed parent).
@@ -63,7 +63,7 @@ async def _seed_edge_named(
     )
 
 
-# ── 1: the expiry coupling's OTHER window (fire→read) ───────────────────
+# ── 1: the expiry coupling's other window (fire→read) ───────────────────
 
 
 @pytest.mark.integration
@@ -88,7 +88,7 @@ async def test_attack_expiry_after_the_fire_before_the_reduce(
     await _seed_edge_named(wf_conn, wf_schema, join_id, a, flow_id, "collect")
     await _seed_edge_named(wf_conn, wf_schema, join_id, b, flow_id, "collect")
 
-    # both children terminalize with results + a SHORTENED expiry (the
+    # both children terminalize with results + a shortened expiry (the
     # named clock mechanism — the rows' expiry forced into the past).
     for node, key in ((a, "a"), (b, "b")):
         await finalize_node(
@@ -109,16 +109,16 @@ async def test_attack_expiry_after_the_fire_before_the_reduce(
         [a, b],
     )
     # join not fired yet (both decrements landed through the finalize —
-    # deps hit 0 → the finalize FIRED it already; the fire happened in the
+    # deps hit 0 → the finalize fired it already; the fire happened in the
     # last child's tx2 — the gap the pin's pre-fire sweep never covers).
     fired = await fire_count(wf_conn, wf_schema, join_id)
 
-    # THE SWEEP IN THE GAP: the join is fired (deps=0) — the guard no
-    # longer counts the rows. The results are the reduce's inputs... but
-    # the reduce ALREADY ran (the body executed inside the firing tx2 —
-    # resolve_flow_reducer → none here → body_unavailable). What does the
-    # record show AFTER the sweep? The consumers read the JOIN's result —
-    # is the join's fired record independent of the children's rows?
+    # the join is fired (deps=0) — the guard no longer counts the rows. The
+    # results are the reduce's inputs... but the reduce already ran (the body
+    # executed inside the firing tx2 — resolve_flow_reducer → none here →
+    # body_unavailable). What does the record show after the sweep? The
+    # consumers read the JOIN's result — is the join's fired record independent
+    # of the children's rows?
     expired = await sweep_expired_results(module_pg_pool, schema=wf_schema)
     survivors = await wf_conn.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs WHERE id = ANY($1) AND result IS NOT NULL',
@@ -137,17 +137,16 @@ async def test_attack_expiry_after_the_fire_before_the_reduce(
             indent=2,
         )
     )
-    # THE ASSERTION (the coupling's contract at the gap): whatever the
-    # sweep eats, the FIRED record must already carry the delivery — the
-    # fire row exists and the join row is resolved. The reduce's own read
+    # whatever the sweep eats, the fired record must already carry the delivery
+    # — the fire row exists and the join row is resolved. The reduce's own read
     # happened in the firing tx. So: fire == 1 and the row resolvable.
     assert fired == 1, "the collect join must have fired in the last child's tx2"
     assert join_state["deps_pending"] == 0
-    # DOCUMENTED BOUNDARY: post-fire, the results are expirable rows (the
+    # documented boundary: post-fire, the results are expirable rows (the
     # TTL is their normal aging). The reduce's inputs are read in the
     # fire's tx — the sweep cannot interleave there (single tx). The
     # record's delivery contract survives the sweep eating the children.
-    # If the fire did NOT happen above (fired==0), the guard must hold the
+    # If the fire did not happen above (fired==0), the guard must hold the
     # results — the shipped pin's shape, already rejected there.
 
 
@@ -196,8 +195,8 @@ async def test_attack_barrier_racing_a_cancel(
 ) -> None:
     """The flow cancels while the last intermittent child runs its final
     attempt; the child terminalizes right after. The fence set must give
-    ONE verdict: the child's success CAS loses to the cancel (or wins the
-    race fairly), and the join NEVER fires into a cancelled flow."""
+    one verdict: the child's success CAS loses to the cancel (or wins the
+    race fairly), and the join never fires into a cancelled flow."""
     for round_no in range(4):
         flow_id = await seed_flow(wf_conn, wf_schema)
         join_id = await seed_join(wf_conn, wf_schema, flow_id, step_key="bar", deps=2)
@@ -220,8 +219,8 @@ async def test_attack_barrier_racing_a_cancel(
             result={"k": "d0"},
         )
 
-        # THE CANCEL: the flow root + the late child cancel (the cancel
-        # arm's direct write — the record's cancelled shape)
+        # the flow root + the late child cancel (the cancel arm's direct write
+        # — the record's cancelled shape)
         await wf_conn.execute(
             f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled', finished_at = now() "
             "WHERE id = $1",
@@ -229,10 +228,10 @@ async def test_attack_barrier_racing_a_cancel(
         )
         late_worker, late_attempt, late_epoch = await claim_view(wf_conn, wf_schema, late_child)
 
-        # THE RACE: the late child's SUCCESS tx2 vs the cancelled flow.
-        # The terminal-mark CAS (status='running') still matches the child
-        # row — the child marks succeeded — but tx2's decrement/fire must
-        # refuse on the flow-status leg.
+        # the late child's success tx2 vs the cancelled flow. The terminal-mark
+        # CAS (status='running') still matches the child row — the child marks
+        # succeeded — but tx2's decrement/fire must refuse on the flow-status
+        # leg.
         await finalize_node(
             module_pg_pool,
             wf_sql,
@@ -287,8 +286,8 @@ async def test_attack_timeout_sweep_racing_the_last_attempt(
     child = await seed_running_node(wf_conn, wf_schema, flow_id, step_key="t0")
     await _seed_edge_named(wf_conn, wf_schema, join_id, child, flow_id, "fail_closed")
 
-    # the ladder's shape: the child FAILED attempt 1 and re-scheduled
-    # (mark_retry) — mid-ladder, SCHEDULED — and its schedule_to_close
+    # the ladder's shape: the child failed attempt 1 and re-scheduled
+    # (mark_retry) — mid-ladder, scheduled — and its schedule_to_close
     # has elapsed.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'scheduled', attempt = 2, "
@@ -301,8 +300,8 @@ async def test_attack_timeout_sweep_racing_the_last_attempt(
         swept = await sweep_deadline_exceeded(deadline_conn, schema=wf_schema)
     assert swept >= 1, "the deadline sweep must take the overdue running row"
 
-    # the real worker's finalize lands NOW (the attempt was genuinely
-    # running — its work SUCCEEDED).
+    # the real worker's finalize lands now (the attempt was genuinely
+    # running — its work succeeded).
     worker, attempt, epoch = await claim_view(wf_conn, wf_schema, child)
     result = await finalize_node(
         module_pg_pool,

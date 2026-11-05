@@ -94,7 +94,7 @@ class _DocsRow:
 
 
 def _split_cells(line: str) -> list[str]:
-    """Split a table line on ``|`` -- NOT on the escaped ``\\|`` the docs
+    """Split a table line on ``|`` -- not on the escaped ``\\|`` the docs
     use inside type cells (``str \\| None``), which would otherwise shift
     every later column (this bug silently misread Default cells)."""
     return [c.replace("\\|", "|").strip() for c in re.split(r"(?<!\\)\|", line)]
@@ -380,7 +380,7 @@ def test_every_code_setting_is_documented_in_a_docs_table() -> None:
 
 # ── scenarios ───────────────────────────────────────────────────
 # The pin's failure modes, proven in-suite: each scenario feeds a mutated
-# copy through the SAME reconciliation the real assertions run and
+# copy through the same reconciliation the real assertions run and
 # asserts the specific offender is named.
 
 

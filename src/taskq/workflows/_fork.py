@@ -1,5 +1,5 @@
 """The fork (the fork-atomicity rule): the parent's guarded terminal
-UPDATE + the fork's child INSERTs + the join-row INSERT share ONE
+UPDATE + the fork's child INSERTs + the join-row INSERT share one
 transaction — the writes land inside the CALLER's tx1 (never a second
 transaction, which would break the atomicity rule 5 and reopen the
 fork-debt window pin 19 rejects).
@@ -8,7 +8,7 @@ Fan-out inserts are chunked parallel-array statements (``_FORK_CHUNK``
 rows per statement — never one round trip per child; the 1000-child
 fan-out tx band's shape). Ids are minted per fork through the
 ``taskq._ids`` seam (uuid7, time-ordered); the wiring lives in
-``(parent_id, map_index)`` — NEVER in a string-shape convention on
+``(parent_id, map_index)`` — never in a string-shape convention on
 hand-built ids (pin 18's collision dragon).
 """
 
@@ -43,7 +43,7 @@ async def insert_fork(
 ) -> tuple[list[JobId], JobId | None]:
     """The fork's writes, inside the CALLER's transaction (tx1): the child
     rows, the edge rows, the join node — parallel-array chunks, ids minted
-    app-side (uuid7 via the seam). NEVER a second transaction: the parent's
+    app-side (uuid7 via the seam). never a second transaction: the parent's
     terminal mark, the children, and the join share one tx, one now()."""
     validate_fork(fork)  # the empty fork is a build-time refusal, never a runtime dragon
     children = fork.children
@@ -64,10 +64,10 @@ async def insert_fork(
             [c.map_index for c in chunk],
             [c.step_key for c in chunk],
             [fork.trace_id] * len(chunk),
-            # PER-CHILD metadata: a child declaring admission terms (FIX
-            # 2 — the arm's/map's bucket names, and the STRICT
+            # per-child metadata: a child declaring admission terms (fix
+            # 2 — the arm's/map's bucket names, and the strict
             # reservation names beside them — the own ride) carries
-            # them on its OWN row; the no-terms rows keep the base shape
+            # them on its own row; the no-terms rows keep the base shape
             # byte-identical.
             [
                 _jsonb(
@@ -78,7 +78,7 @@ async def insert_fork(
                 for c in chunk
             ],
             [f"workflow:{flow_id}"] * len(chunk),
-            # The key is PARENT-SCOPED (the wiring identity: parent node +
+            # The key is parent-scoped (the wiring identity: parent node +
             # child key + map index) — a bare (flow, child step) key would
             # collide across every fork of the same step (pin 18's dragon).
             [
@@ -107,7 +107,7 @@ async def insert_fork(
             ids,
             [parent_id] * len(chunk),
             [flow_id] * len(chunk),
-            # The fork's own child edges carry the DEFAULT policy: these
+            # The fork's own child edges carry the default policy: these
             # edges reconcile fork debt; the propagation rule reads
             # the JOIN's incoming edges only.
             ["fail_closed"] * len(chunk),
@@ -115,13 +115,12 @@ async def insert_fork(
 
     join_id: JobId | None = None
     if fork.join is not None:
-        # THE ADOPTION PROBE (the full-static-insert probe): the
-        # API's create_flow pre-inserted EVERY node — the join included
-        # (deps 1: its source edge). When the row exists, the fork
-        # ADOPTS it: add the items' weight to the counter + stamp the
-        # consumers — never a second insert (the plain insert's
-        # idempotency collision killed the second demo run's fork). The
-        # engine's raw shapes (no static row) keep the insert path.
+        # the API's create_flow pre-inserted every node — the join included
+        # (deps 1: its source edge). When the row exists, the fork adopts it:
+        # add the items' weight to the counter + stamp the consumers — never a
+        # second insert (the plain insert's idempotency collision killed the
+        # second demo run's fork). The engine's raw shapes (no static row) keep
+        # the insert path.
         join_id = await conn.fetchval(
             f"SELECT id FROM {wsql.schema}.jobs WHERE step_key = $1 "  # noqa: S608  # Why: the schema is the bundle's validated identifier; every value is $-bound.
             "AND (metadata->>'flow_id')::uuid = $2",
@@ -129,13 +128,11 @@ async def insert_fork(
             flow_id,
         )
         if join_id is not None:
-            # THE ADOPTED JOIN'S SHAPE = THE NON-ADOPTED JOIN'S: the
-            # pre-created row (the drain-precreated shape — the flow
-            # link + the cohort stamp, NO join-wait marker) leaves the
-            # adoption UPDATE carrying the marker AND the run's cohort
-            # (the source row's resolved names), so a nested fan-out
-            # over THIS join reads the stamp — the depth-N induction
-            # holds through adoption too.
+            # the pre-created row (the drain-precreated shape — the flow link +
+            # the cohort stamp, no join-wait marker) leaves the adoption UPDATE
+            # carrying the marker and the run's cohort (the source row's
+            # resolved names), so a nested fan-out over this join reads the
+            # stamp — the depth-N induction holds through adoption too.
             join_doc = _join_metadata(
                 flow_id,
                 (),
@@ -177,23 +174,21 @@ async def insert_fork(
                         flow_id,
                         fork.join.consumers,
                         child_driven=fork.join.child_driven,
-                        # THE SOURCE ROW'S RESOLVED RESERVATION NAMES (the
-                        # run's own cohort): the join carries them so a
-                        # nested fan-out over this join reads the stamp —
-                        # the depth-N cohort guarantee.
+                        # the join carries them so a nested fan-out over this
+                        # join reads the stamp — the depth-N cohort guarantee.
                         reservations=fork.join.reservations,
                     )
                 ),
                 f"workflow:{flow_id}",
                 f"wf:{flow_id}:{parent_step_key}:{fork.join.step_key}",
                 # The join's resolved priority (the priority surface): the
-                # SOURCE's resolution — the join is the source's own
+                # source's resolution — the join is the source's own
                 # cohort (the placement fields say so); the arms'
                 # overrides apply to the arm children, never the join.
                 # The unset case coalesces to the column default's own
                 # value (the pre-fix byte-identical row).
                 fork.priority if fork.priority is not None else 0,
-                # The join's declared deadline: the SOURCE's resolution
+                # The join's declared deadline: the source's resolution
                 # (the join is the
                 # source's own cohort); the unset case binds NULL.
                 fork.start_to_close,
@@ -208,8 +203,8 @@ async def insert_fork(
             chunk_ids = child_ids[start : start + FORK_CHUNK]
             await conn.execute(
                 wsql.fork_edges,
-                # child_id = the join; parent_id = each child. EACH EDGE
-                # RECORDS THE JOIN'S DECLARED FAILURE POLICY: the
+                # child_id = the join; parent_id = each child. each edge
+                # records the JOIN'S declared failure policy: the
                 # propagation rule reads it off the ledger — the absorption
                 # is on the record, never inferred.
                 [join_id] * len(chunk_ids),
@@ -217,18 +212,16 @@ async def insert_fork(
                 [flow_id] * len(chunk_ids),
                 [fork.join.failure_policy] * len(chunk_ids),
             )
-        # THE FORK'S CONSUMER EDGES (the map-join consumption fix — the
-        # ecosystem mapper's defect): the join's DOWNSTREAM consumers are
-        # wired like any node — the consumer's dep was RESERVED at create
-        # (the runner's static insert counts the fork-spawned join's edge
-        # before the join's id exists), so THIS edge row is the ledger's
-        # truth that releases it: the consumer dispatches strictly after
-        # the JOIN'S OWN TERMINAL (the join row's claim + default packer
-        # writes the collected result), and the consumer's arg resolution
-        # reads the join's result through the SAME typed door as any node
-        # result (the parent-results query on the edge ledger). The
-        # outbox's consumer insert stays as the belt (the arbiter's
-        # idempotency key conflicts with the static row — no double
+        # the join's downstream consumers are wired like any node — the
+        # consumer's dep was reserved at create (the runner's static insert
+        # counts the fork-spawned join's edge before the join's id exists), so
+        # this edge row is the ledger's truth that releases it: the consumer
+        # dispatches strictly after the JOIN'S own terminal (the join row's
+        # claim + default packer writes the collected result), and the
+        # consumer's arg resolution reads the join's result through the same
+        # typed door as any node result (the parent-results query on the edge
+        # ledger). The outbox's consumer insert stays as the belt (the
+        # arbiter's idempotency key conflicts with the static row — no double
         # dispatch).
         if fork.join.consumers:
             await conn.execute(
@@ -239,14 +232,13 @@ async def insert_fork(
                 [c.failure_policy for c in fork.join.consumers],
             )
         if not children:
-            # THE BORN-ZERO JOIN'S FIRE RECEIPT (the exactly-once
-            # law): a join born deps_pending=0 never runs the decrement
-            # path (there are no children to decrement it), so its fire
-            # went UNLEDGERED — the empty route's consumer dispatched and
-            # the exactly-once receipt never existed. The SAME guarded
-            # INSERT the decrement path fires (the PK's ON CONFLICT:
-            # idempotent; the guards: deps_pending=0, the row pending,
-            # the flow alive) mints the receipt at the birth; the
-            # consumer's dispatch stays the spawn's own path.
+            # a join born deps_pending=0 never runs the decrement path (there
+            # are no children to decrement it), so its fire went unledgered —
+            # the empty route's consumer dispatched and the exactly-once
+            # receipt never existed. The same guarded INSERT the decrement path
+            # fires (the PK's ON CONFLICT: idempotent; the guards:
+            # deps_pending=0, the row pending, the flow alive) mints the
+            # receipt at the birth; the consumer's dispatch stays the spawn's
+            # own path.
             await conn.execute(wsql.fire, join_id, flow_id, new_uuid(), "born-zero")
     return child_ids, join_id

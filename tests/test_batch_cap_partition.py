@@ -2,8 +2,8 @@
 
 ``_batch_cap_refusals`` (PG) / ``_batch_cap_refusals`` (InMemory)
 (InMemory) refused the ENTIRE enqueue_batch / enqueue_batch_fast call
-when ANY single actor's group exceeded its cap - all-or-nothing across
-actors. A parent enqueuing a mixed-actor sub-batch where ONE child actor
+when any single actor's group exceeded its cap - all-or-nothing across
+actors. A parent enqueuing a mixed-actor sub-batch where one child actor
 is capped lost the whole call: nothing enqueued for anyone.
 
 The evolved contract: multi-entrypoint admission routes items with free
@@ -13,7 +13,7 @@ over-cap actor's items are refused as a
 group (never partially filled - the single path refuses a capped enqueue
 outright, and filling "up to" the cap would admit items whose ordering
 the caller never chose), every other actor's items are admitted, and the
-refusal surfaces AFTER the admitted items are inserted as
+refusal surfaces after the admitted items are inserted as
 :class:`~taskq.exceptions.BatchMaxPendingExceededError` - the bulk-tier
 sibling of :class:`~taskq.exceptions.PartialBatchError`, which is the
 house pattern for partial batch admission (succeeded count + failed
@@ -104,7 +104,7 @@ def _stored_count(backend: InMemoryBackend, actor_name: str) -> int:
 async def test_backend_enqueue_batch_partitions_admission_per_actor() -> None:
     """Mixed batch, one capped actor: healthy actors' items are inserted,
     the capped actor's items are refused with attribution, and the refusal
-    raises AFTER the admitted rows are stored."""
+    raises after the admitted rows are stored."""
     backend = _make_backend()
     await _seed_one_pending(backend, _capped_ref)
 
@@ -165,7 +165,7 @@ async def test_backend_enqueue_batch_exact_fill_is_admitted() -> None:
 
 async def test_backend_enqueue_batch_multi_refusal_attribution() -> None:
     """TWO over-cap actors in one mixed batch (every earlier partition
-    test refuses exactly one): ``refusals`` names BOTH, in group order (first
+    test refuses exactly one): ``refusals`` names both, in group order (first
     appearance in the caller's list), each with its own per-actor
     ``refused_indices``, and ``admitted_count`` counts only the healthy
     actor's items - everything a caller needs to retry several refused
@@ -240,7 +240,7 @@ async def test_backend_enqueue_batch_refusal_includes_would_dedupe_items() -> No
 
     err = exc_info.value
     # Discount math: existing 1 + admitted (2 items - 1 deduped) = 2 > 1
-    # → the whole group refuses, INCLUDING the would-dedupe item.
+    # → the whole group refuses, including the would-dedupe item.
     assert err.refused_indices == {_capped_ref.name: [0, 1]}
     assert err.admitted_count == 0
     # The stored dedup row is untouched: nothing new for this actor.
@@ -253,7 +253,7 @@ async def test_backend_enqueue_batch_discounts_stored_idempotency_pairs() -> Non
     (scope, key) pair is already stored dedupe instead of writing, so
     the aggregate admission discounts them - parity with the PG tier's
     ON CONFLICT discount. The old in-memory mirror re-checked caps per
-    item WITHOUT the discount and refused mid-batch."""
+    item without the discount and refused mid-batch."""
     backend = _make_backend()
     seed = build_enqueue_args(
         _capped_ref,
@@ -404,7 +404,7 @@ def _pg_mixed_args() -> list[Any]:
 
 async def test_pg_enqueue_batch_inserts_admitted_items_only() -> None:
     """The PG bulk tier partitions on the inserting connection: the
-    unnest INSERT receives ONLY the within-cap actors' arrays, and the
+    unnest INSERT receives only the within-cap actors' arrays, and the
     typed refusal raises after those items are inserted."""
     args_list = _pg_mixed_args()
     admitted_ids = [args_list[0].id, args_list[2].id]
@@ -449,7 +449,7 @@ async def test_pg_enqueue_batch_inserts_admitted_items_only() -> None:
 async def test_pg_enqueue_batch_abort_mode_refuses_whole_call() -> None:
     """refuse_whole_batch_on_cap=True (the enqueue_batch_atomic chunk
     arm) keeps the legacy all-or-nothing contract: MaxPendingExceededError
-    raises BEFORE any INSERT, so the caller's transaction rolls back
+    raises before any INSERT, so the caller's transaction rolls back
     everything."""
     args_list = _pg_mixed_args()
 
@@ -567,7 +567,7 @@ async def test_pg_caller_txn_admitted_items_follow_commit_and_rollback(
         EnqueueItem(actor_ref=_healthy_ref, payload=_Payload(value=2)),
     ]
 
-    # Commit scenario: the refusal raises INSIDE the open transaction,
+    # Commit scenario: the refusal raises inside the open transaction,
     # the admitted items are inserted but uncommitted, and commit makes
     # them durable.
     tx = clean_pg_conn.transaction()
@@ -588,7 +588,7 @@ async def test_pg_caller_txn_admitted_items_follow_commit_and_rollback(
     # Rollback scenario: the same batch shape inside a second
     # transaction, rolled back after the refusal - the admitted items
     # are discarded; the committed scenario's rows and the seed remain.
-    # Why try/finally: the rollback IS the scenario, so it must run on
+    # Why try/finally: the rollback is the scenario, so it must run on
     # both the pass and fail paths - without double-invocation if the
     # refusal assertion itself fails.
     tx = clean_pg_conn.transaction()

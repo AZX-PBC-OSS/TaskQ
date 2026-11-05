@@ -23,10 +23,10 @@ the resilience defaults over the fork-guard:
 - ``retry`` — :class:`~redis.asyncio.retry.Retry` with
   :class:`~redis.backoff.ExponentialBackoff` (0.02s base, 0.1s cap, 1
   attempt) and ``retry_on_error=[ConnectionError, TimeoutError]``. The
-  retry is inherited by EVERY connection the pool hands out — including a
+  retry is inherited by every connection the pool hands out — including a
   pubsub connection, whose blocked ``get_message`` read reconnects and
   re-subscribes (via redis-py's ``on_connect`` callback) instead of
-  escaping the kill/idle-drop into the consumer. ONE attempt is the
+  escaping the kill/idle-drop into the consumer. one attempt is the
   doctrine (see ``RETRY_RETRIES``): the retry buys the reconnect, never
   the outage — a multi-attempt budget measured starving the worker's
   dispatcher tick on real CI runners.
@@ -39,7 +39,7 @@ blocking read is unaffected by it either way (``PubSub.parse_response``
 hands ``math.inf`` to ``read_response`` when ``block=True``,
 overriding the socket timeout explicitly). The pin exists because the
 bounded wall of the fail-closed surfaces DEPENDS on it: the rate
-limiter's ``with_pg_fallback`` wraps its redis call in NO
+limiter's ``with_pg_fallback`` wraps its redis call in no
 application-level ``wait_for`` — against a black-holed broker (a
 peer that accepts TCP and never answers) the only bound on each read
 is the socket timeout, and the limiter's

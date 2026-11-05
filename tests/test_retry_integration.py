@@ -4,7 +4,7 @@ in-memory consumer loop.
 Covers:
 - transient retry happy path (3 attempts, final success)
 - transient exhaustion (2 attempts, terminal failure)
-- cancellation does NOT consume retry budget
+- cancellation does not consume retry budget
 - dispatch filter respects schedule_to_close (past-deadline exclusion)
 - schedule_to_close computed server-side via clock_timestamp() + interval
 """
@@ -47,7 +47,7 @@ pytestmark = pytest.mark.integration
 
 # Tolerance for time-based assertions in CI environments.
 # In local dev, backoff timing is exact (clock resolution < 1 ms).
-# CI runners (GHA macOS, Docker-in-Docker) add 200-800 ms of scheduling
+# CI runners (gha macOS, Docker-in-Docker) add 200-800 ms of scheduling
 # jitter on asyncio.sleep, so 1 second is a safe floor.
 # Value is intentionally loose to avoid spurious failures under CI load;
 # tighten after adding FakeClock-based deterministic backoff.
@@ -326,18 +326,18 @@ async def test_transient_exhaustion(
     assert attempts[-1]["error_class"] == "RuntimeError"
 
 
-# ── cancellation does NOT consume retry budget ──────────────────
+# ── cancellation does not consume retry budget ──────────────────
 
 
 async def test_cancel_skips_classifier() -> None:
-    """cancellation does NOT consume retry budget.
+    """cancellation does not consume retry budget.
 
     Enqueue with max_attempts=3; dispatch the job (status='running');
     write a cancel request; tick_cancel_polling to deliver the cancel;
     then mark_cancelled (the consumer's response to cancel, not the
     classifier's response to failure). Assert: mark_cancelled
-    was called (NOT mark_failed_or_retry); the final row's attempt
-    equals 1 (NOT incremented past the single dispatch).
+    was called (not mark_failed_or_retry); the final row's attempt
+    equals 1 (not incremented past the single dispatch).
     """
     clock = FakeClock(start=datetime(2025, 1, 1, tzinfo=UTC))
     backend = InMemoryBackend(
@@ -437,7 +437,7 @@ async def test_schedule_to_close_computed_server_side(
     clean_jobs_app: JobsApp,
 ) -> None:
     """enqueue with kind='indefinite', time_budget=timedelta(hours=2)
-    against real PG. Oracle: server_now <= schedule_to_close AND
+    against real PG. Oracle: server_now <= schedule_to_close and
     schedule_to_close <= server_now + interval '2h' + interval '1 second',
     where server_now is read via a fresh single-statement ``now()`` (its
     own implicit transaction, so it is not subject to the transaction-start
@@ -484,7 +484,7 @@ async def test_dispatch_filter_respects_schedule_to_close(
 ) -> None:
     """dispatch filter respects schedule_to_close. Enqueue an
     indefinite-tier job, manually UPDATE schedule_to_close to the past
-    via asyncpg, run dispatch_batch. Oracle: the job is NOT returned.
+    via asyncpg, run dispatch_batch. Oracle: the job is not returned.
     """
 
     from pydantic import BaseModel

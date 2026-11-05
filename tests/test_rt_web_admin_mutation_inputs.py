@@ -206,7 +206,7 @@ def _make_client(
 
 
 def _csrf_post(client: TestClient, path: str, data: dict[str, str] | None = None) -> Any:
-    """CSRF-valid POST that does NOT follow the 303 - the stub pool serves no
+    """CSRF-valid POST that does not follow the 303 - the stub pool serves no
     detail row, so following the redirect would 404 for reasons unrelated to
     the behavior under test."""
     client.cookies.set("taskq_csrf_token", "rt-csrf")
@@ -277,7 +277,7 @@ def test_cancel_reason_nul_is_400_not_500() -> None:
     client = _make_client(_StubPool(_DetailConn(None)), backend=backend)
 
     # Control: a clean reason cancels fine (proves the route itself works).
-    # reason is a FORM field now (the job detail page's cancel form collects
+    # reason is a form field now (the job detail page's cancel form collects
     # it), so it posts in the body, not the query string.
     ok = _csrf_post(client, f"/jobs/{job_id}/cancel", data={"reason": "operator-requested"})
     assert ok.status_code == 303, (

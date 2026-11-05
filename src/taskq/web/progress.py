@@ -11,7 +11,7 @@ includes ``sse-starlette``).
 
 Design notes
 ------------
-- Subscribe-before-query: the Redis channel is subscribed BEFORE the PG
+- Subscribe-before-query: the Redis channel is subscribed before the PG
   snapshot read to eliminate the race window where an event published between
   the PG read and the subscribe would be silently lost.
 - The PG connection is released immediately after the initial row fetch; no
@@ -124,10 +124,10 @@ _REDIS_503_BODY: dict[str, str] = {"error": "redis_not_configured"}
 _BROKER_READ_GRACE_SECS: float = 0.5
 
 # Wire ceiling for a resume cursor and an envelope's ``seq``. Storage is
-# NOT the bound: the durable cursor is the jobs table's ``progress_seq``
+# not the bound: the durable cursor is the jobs table's ``progress_seq``
 # column, a bigint since migration 01.00.20_03 widened it from int4 (the
 # migration's own header explains why the storage domain, not any wire
-# choice, was the overflow risk). The 2^31-1 ceiling is wire HYGIENE: it
+# choice, was the overflow risk). The 2^31-1 ceiling is wire hygiene: it
 # bounds the domain a hostile cursor can name on the wire -- the query
 # parameter, the ``Last-Event-ID`` header, and the seq an envelope may
 # claim -- to far above anything the healthy pipeline issues and far
@@ -318,13 +318,13 @@ async def _event_generator(
                 # The reconnect blackhole: the row went terminal while the
                 # client was away and the durable progress_seq never
                 # advanced past the client's cursor (the terminal write's
-                # GREATEST() expression can stand still), so there is
+                # greatest() expression can stand still), so there is
                 # NOTHING to replay — falling through into the
-                # pub/sub loop would only ever forward NEW events: the
+                # pub/sub loop would only ever forward new events: the
                 # reconnecting EventSource subscribed to a finished job
                 # would receive keepalives forever. The client cannot learn
                 # the job is over from any frame; tell it directly - the
-                # replay contract is "catch up OR say done", not "be quiet".
+                # replay contract is "catch up or say done", not "be quiet".
                 yield _make_done_event()
                 return
             else:
@@ -411,7 +411,7 @@ async def _event_generator(
                     raise ValueError("seq outside the int4 cursor domain")
                 if envelope["job_id"] != str(job_id):
                     # The crossed-wire check: the channel is per-job, but
-                    # a lying proxy can deliver ANOTHER job's envelope on
+                    # a lying proxy can deliver another job's envelope on
                     # it. Without this compare the foreign event would be
                     # forwarded onto this stream (its seq could even gate
                     # this job's future events). Off-wire deliverables
@@ -464,7 +464,7 @@ async def _event_generator(
 
     finally:
         # Released here, not in the route handler: the slot is held for the
-        # LIFE of the stream, and a client disconnect arrives as CancelledError
+        # life of the stream, and a client disconnect arrives as CancelledError
         # thrown into this generator. Releasing in the handler would free the
         # slot the instant the response was constructed, making the cap a no-op.
         if sse_slot_semaphore is not None:
@@ -708,7 +708,7 @@ def create_router(
         On initial connection (no ``last_event_id`` / ``Last-Event-ID``
         header): emits the current PG snapshot, then streams Redis events.
 
-        On reconnect (``last_event_id`` present): subscribes Redis FIRST,
+        On reconnect (``last_event_id`` present): subscribes Redis first,
         emits one catch-up event from PG if ``progress_seq > last_event_id``,
         then resumes streaming.
 
@@ -743,7 +743,7 @@ def create_router(
         # not consume a slot) and before any pubsub subscription is created,
         # so a rejected connection allocates nothing.
         sse_slot_semaphore = await acquire_sse_slot("progress-stream", _max_sse)
-        # The slot is held for the LIFE of the stream, so ownership transfers
+        # The slot is held for the life of the stream, so ownership transfers
         # to the generator on the success path only. Every early exit below
         # (503 subscribe failure, PG error, 404 job not found) has to give it
         # back -- otherwise a run of requests for missing jobs would exhaust
@@ -946,20 +946,20 @@ def create_router(
             raise HTTPException(status_code=404, detail="job not found")
 
         # The progress sequence is a monotonically increasing write cursor
-        # on the progress bytes this endpoint returns, so it IS the ETag
+        # on the progress bytes this endpoint returns, so it is the ETag
         # for the progress state: a seq the client already rendered means
         # every progress field (including the fingerprint the client
         # derives from it) is unchanged.
         #
         # The terminal rows are the exception: the terminal writes' seq
-        # expression is GREATEST(progress_seq, $buffer_seq) and the
+        # expression is greatest(progress_seq, $buffer_seq) and the
         # consumer passes the seq its progress buffer just flushed,
         # exactly the row's current cursor, so the status flips terminal
         # and the cursor stands still. A 304 there would hide the
         # terminal transition behind an unchanged cursor, and the poll
-        # client (realtime.js stops only on a DOWNLOADED terminal status)
+        # client (realtime.js stops only on a downloaded terminal status)
         # would render running forever. A terminal row therefore always
-        # answers 200: the terminal body is the LAST body a poll client
+        # answers 200: the terminal body is the last body a poll client
         # needs, the one download that ends the poll loop, so the cost is
         # one bounded download per job and the seq-matching 304 keeps
         # serving the steady non-terminal state.

@@ -176,7 +176,7 @@ def site_investigation() -> Promise[object]:
 
 class AuditDeps:
     """What the audit bodies need beyond their data: the DSN + schema the
-    sub-investigation runner uses. ONE instance, bound ONCE at the app
+    sub-investigation runner uses. one instance, bound once at the app
     door (``WorkflowApp(deps=...)``); bodies opt in by declaring the
     parameter. The execution-ledger is the drills' idempotency receipt:
     each body start inserts one row (the resume drill reads the counts)."""
@@ -236,7 +236,7 @@ class SiteBusError(RuntimeError):
 
 
 async def plan_audit(ctx: StepContext, params: AuditInput) -> list[SiteSensor | SitePanel]:
-    """The plan step: the run's OWN input is the truth (``create_flow(
+    """The plan step: the run's own input is the truth (``create_flow(
     input=...)``); the wiring-declared batch is the default corpus. The
     returned list is what the route fans out — one child per element."""
     raw = ctx.input if ctx.input is not None else params.model_dump()
@@ -266,7 +266,7 @@ async def audit_sensor(ctx: StepContext, item: SiteSensor, deps: AuditDeps) -> S
         runner = FlowRunner(INVESTIGATION_APP.get("site_investigation"), pool, deps.schema)
         claim = await runner.create_flow(
             input=InvestigateInput(site_id=item.site_id, reading=item.reading),
-            # the run key IS the idempotency: a re-run of this site's
+            # the run key is the idempotency: a re-run of this site's
             # audit answers existing-terminal with the prior verdict —
             # never a second silent investigation.
             run_key=f"site-investigation:{item.site_id}",
@@ -292,7 +292,7 @@ async def audit_panel(ctx: StepContext, item: SitePanel, deps: AuditDeps) -> Pan
 
 async def write_report(ctx: StepContext, audits: list[SensorAudit | PanelAudit]) -> AuditReport:
     """The fan-in's consumer: the typed sum of the SURVIVORS. A failed
-    site contributes NO result item — its absence is the plan residual
+    site contributes no result item — its absence is the plan residual
     (``failed``), named here from the rows, never silently dropped."""
     raw = ctx.input if ctx.input is not None else AuditInput().model_dump()
     plan = AuditInput.model_validate(raw)
@@ -325,7 +325,7 @@ backend is per-process and must not gate a fleet)."""
 
 
 def build_app(deps: AuditDeps, max_attempts: int = 3) -> WorkflowApp:
-    """Bind ONE deps instance at the door and spell the graph.
+    """Bind one deps instance at the door and spell the graph.
 
     ``max_attempts`` is the audit ladder's per-node ceiling — leave
     headroom (the default 3): a fleet whose ceiling is already spent has
@@ -335,13 +335,12 @@ def build_app(deps: AuditDeps, max_attempts: int = 3) -> WorkflowApp:
     @app.workflow("site_audit")
     def site_audit() -> Promise[object]:
         planned = step(plan_audit, AuditInput(), key="plan")
-        # THE TYPED ROUTE: the arms are keyed by the item union's MEMBERS
-        # (a route that is not total over the union is a BUILD refusal);
-        # each arm body declares ITS member on the item param; the arms'
-        # rate_limits are each branch's own bucket; and on_failure=
-        # declares the join's failure policy — collect: a site whose
-        # ladder exhausts fans in as a TYPED failure record and the
-        # survivors' join still fires.
+        # the arms are keyed by the item union's members (a route that is not
+        # total over the union is a build refusal); each arm body declares its
+        # member on the item param; the arms' rate_limits are each branch's own
+        # bucket; and on_failure= declares the join's failure policy — collect:
+        # a site whose ladder exhausts fans in as a typed failure record and
+        # the survivors' join still fires.
         audited = route(
             planned,
             {
@@ -384,6 +383,6 @@ class DefaultCorpus:
         )
 
 
-# the module-level app (the import IS the registration — a worker process
+# the module-level app (the import is the registration — a worker process
 # importing this module boots workflow-capable)
 app = build_app(default_deps())

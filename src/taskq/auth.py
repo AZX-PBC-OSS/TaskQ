@@ -221,7 +221,7 @@ def ensure_sslmode_require(dsn: str) -> str:
 
     Because an explicit ``verify-ca``/``verify-full`` is passed through
     untouched, it reaches asyncpg needing a CA bundle that this helper does
-    not supply: asyncpg and libpq do NOT fall back to the system trust store
+    not supply: asyncpg and libpq do not fall back to the system trust store
     for a verifying sslmode, they look for ``~/.postgresql/root.crt`` and
     raise ``ClientConfigurationError`` while *parsing connection arguments*
     (before any socket is opened) when it is absent - which is the normal
@@ -277,7 +277,7 @@ def enrich_pg_dsn(dsn: str, credential: PgCredential) -> str:
     if user:
         # The userinfo will carry a user, which shadows any query user= in
         # asyncpg's resolver - drop the stale query copy. When the userinfo
-        # has NO user (credential.username unset, none in the DSN), a query
+        # has no user (credential.username unset, none in the DSN), a query
         # user= is the effective principal and must be preserved.
         query.pop("user", None)
     netloc = f"{user}:{quote(credential.password, safe='')}@{hostspec}"
@@ -856,7 +856,7 @@ def make_dedicated_conn_factory(
             # connection, the same lifecycle position as a pool's init.
             # A failed hook means no usable connection: terminate rather
             # than leak a half-configured connection (with_connection_init
-            # applies the same rule to the LOOP-scope one).
+            # applies the same rule to the loop-scope one).
             try:
                 await setup(conn)
             except BaseException:

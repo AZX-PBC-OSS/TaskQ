@@ -55,11 +55,11 @@ class ChainOps(_ChainHost):
         *,
         claim_epoch: int = 0,
     ) -> None:
-        """THE CHAIN STEP'S ROUTED FINALIZE: the body's typed
+        """The body's typed
         outcome is the router's decision —
 
         * an arm to a step key → the certified fork-at-finalize carries
-          AT MOST ONE child (no fan-in, no join): the record's payload
+          AT MOST one child (no fan-in, no join): the record's payload
           rides the row's own (verbatim), its identity (``map_index``)
           and trace ride forward (the refuted-claim discipline);
         * DONE → no fork (the chain ends here);

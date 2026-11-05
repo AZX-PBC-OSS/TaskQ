@@ -72,7 +72,7 @@ async def test_the_archive_sweep_cascades_job_events_away(
     )
     assert before == 2, "the plant must put events in the ledger"
 
-    # THE production archive sweep, byte-for-byte (the write statement the
+    # the production archive sweep, byte-for-byte (the write statement the
     # prune loop runs): move to jobs_archive, then DELETE FROM jobs.
     moved = await clean_pg_conn.fetch(
         _ARCHIVE_CTE_SQL.format(schema=schema),
@@ -128,9 +128,9 @@ async def test_the_archived_detail_page_renders_the_cascade_truth(
         resp = await client.get(f"/jobs/{jid}")
     assert resp.status_code == 200
     assert "Event Log" in resp.text
-    # The honest contract (RED until the page says so): production's
+    # The honest contract (red until the page says so): production's
     # archive sweep cascade-removes the events -- the page must say the
-    # history was removed AT ARCHIVE, not "No events recorded." (which
+    # history was removed at archive, not "No events recorded." (which
     # claims the job never emitted any).
     assert "No events recorded." not in resp.text, (
         "an archived job's events were removed by the sweep's cascade: "
@@ -173,7 +173,7 @@ async def test_batch_detail_rejects_injection_and_job_ids(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         assert (await client.get("/batches/'; DROP TABLE batches; --")).status_code == 422
-        # A real JOB id on the batch drilldown: 404, not a leak.
+        # A real job id on the batch drilldown: 404, not a leak.
         jid = await _plant_job_with_events(clean_pg_conn, schema)
         resp = await client.get(f"/batches/{jid}")
         assert resp.status_code == 404, (
@@ -188,7 +188,7 @@ async def test_batch_detail_metadata_extraction_never_cast_errors(
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Attack #2: jobs whose metadata is NOT a JSON object (scalar, array)
+    """Attack #2: jobs whose metadata is not a JSON object (scalar, array)
     must not break the drilldown's member queries for OTHER batches."""
     schema = module_pg_schema.schema_name
     batch_id = new_uuid()
@@ -238,7 +238,7 @@ async def test_batch_member_cap_honesty_at_201(
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """Attack #2 (200-cap honesty): 201 members -> counts say 201, the
-    member table caps at 200 AND the page says the cap bit."""
+    member table caps at 200 and the page says the cap bit."""
     schema = module_pg_schema.schema_name
     batch_id = new_uuid()
     now = datetime.now(UTC)

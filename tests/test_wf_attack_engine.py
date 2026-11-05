@@ -1,15 +1,15 @@
 """The crashed-terminal wedge + the run-creation seam
 (engine half).
 
-THE WEDGE (the engine's most severe defect; the
+the WEDGE (the engine's most severe defect; the
 evidence lives in the probe schema's rows). The pins assert the SAFE
 behavior.
 
-THE WEDGE: a run whose nodes are
+A run whose nodes are
 ``{succeeded|failed, crashed}`` wedges ``running`` FOREVER. The chain:
 
 * the jobs-level reclaim (``backend._sweeps._SWEEP_1_BODY``) reads
-  ``status = 'running'`` rows ONLY, and writes ``crashed`` exactly when
+  ``status = 'running'`` rows only, and writes ``crashed`` exactly when
   the attempt budget is EXHAUSTED (``_RECLAIM_HAS_BUDGET_SQL``:
   ``attempt < max_attempts`` fails → the ELSE arm) — so every crashed
   row is terminal at the jobs layer, revisited by no arm;
@@ -30,26 +30,26 @@ table): a budget-exhausted crashed node is an UNABSORBED, IRRECOVERABLE
 failure — the table's rule 2 (``counts_failed``) shape — so the wedge
 derives ``failed``, never ``running``, and never ``complete``
 (rule 4's all-succeeded/failed/skipped row cannot claim a node whose
-work can never report). The pins assert NOT-running + ``failed``.
+work can never report). The pins assert not-running + ``failed``.
 
 ``FlowRunner.create_flow`` is N+M+2 auto-committed
 statements — ``_insert_root`` commits the root row ALONE on its own
 pool acquire; ``_insert_static_nodes`` + ``ROOT_START`` ride a SECOND
-acquire with NO ``conn.transaction()``. Kill after the root insert →
+acquire with no ``conn.transaction()``. Kill after the root insert →
 an orphan root (``pending``, zero nodes) the derivation can never see
 (``WORKFLOW_ROOT_MAINTAIN_SQL`` inner-joins the node rows — the orphan
 produces no ``per_flow`` row), never terminalizes, never prunes.
 
 the pending root row (``actor='wf'``,
 ``step_key='__flow__'``, ``metadata.flow_id`` = its own id) matches the
-dispatch candidate predicates — ``backend/_dispatch_sql.py`` carries NO
+dispatch candidate predicates — ``backend/_dispatch_sql.py`` carries no
 ``__flow__`` exclusion (grep-verified: the only ``step_key`` legs in
 the claim path are the ``IS NULL`` short-circuit and the
 capability/flow-terminal fence, which the pending root PASSES for a
 ``workflow_execution``-capable worker: the flow it names is itself,
 and ``pending`` is not terminal). The claimed root reaches the
 intercept, ``_resolve_body('__flow__', None)`` raises the plain
-``WorkflowRunError`` — NOT the ``WorkflowBodyUnresolvableError`` the
+``WorkflowRunError`` — not the ``WorkflowBodyUnresolvableError`` the
 intercept catches — and the row churns.
 """
 
@@ -76,7 +76,7 @@ from tests._wf_fixtures import FlowStandIn, seed_flow
 
 pytestmark = pytest.mark.integration
 
-#: The jobs-table terminal vocabulary (the pin's SAFE side: a surfaced
+#: The jobs-table terminal vocabulary (the pin's safe side: a surfaced
 #: run is one of these, never 'running').
 TERMINAL = ("succeeded", "failed", "cancelled", "crashed", "abandoned")
 
@@ -130,7 +130,7 @@ async def _seed_wedge(wf_conn: asyncpg.Connection, wf_schema: str) -> JobId:
     return flow_id
 
 
-# ── Pack 1, pin (a): THE DERIVATION MUST TERMINALIZE THE CORPSE ────────
+# ── Pack 1, pin (a): the derivation must terminalize the corpse ────────
 
 
 async def test_wedge_derivation_terminalizes_the_dead_run(
@@ -139,7 +139,7 @@ async def test_wedge_derivation_terminalizes_the_dead_run(
     """PACK 1(a): the derivation must terminalize a run whose work is
     all terminal-or-irrecoverable. The wedge shape {crashed at
     attempt == max_attempts, succeeded} derives ``failed`` — the table's
-    rule-2 verdict for an unabsorbed failure — NEVER ``running``.
+    rule-2 verdict for an unabsorbed failure — never ``running``.
 
     The unmarked failing run: ``reconstruct_workflow_status``
     returns ``'running'`` for the corpse — and the G7 always-on
@@ -155,7 +155,7 @@ async def test_wedge_derivation_terminalizes_the_dead_run(
     )
 
 
-# ── Pack 1, pin (b): THE WEDGE IS SURFACED, NOT HIDDEN (the G7 face) ───
+# ── Pack 1, pin (b): the wedge is surfaced, not hidden (the G7 face) ───
 
 
 async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
@@ -180,7 +180,7 @@ async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
         "OUTPUT (terminal at the jobs layer), never its input; the root must "
         "terminalize 'failed' so the operator (and retention) can see the corpse"
     )
-    # The drift-check's agreement is honest ONLY on the terminal verdict.
+    # The drift-check's agreement is honest only on the terminal verdict.
     reconstructed = await reconstruct_workflow_status(wf_conn, wf_sql, flow_id)
     assert reconstructed == "failed", (
         f"reported {root!r} but the rows reconstruct {reconstructed!r} — "
@@ -188,7 +188,7 @@ async def test_wedge_root_is_surfaced_failed_within_maintenance_grace(
     )
 
 
-# ── THE INTERRUPTED CREATE LEAVES NO LIVE ORPHAN ───────────
+# ── the interrupted create leaves no live orphan ───────────
 
 
 class _CreateIn(BaseModel):
@@ -210,7 +210,7 @@ async def test_interrupted_create_leaves_no_live_orphan(
     killed (``_insert_static_nodes`` raises — the crash-after-root-insert
     window). The SAFE law, either fix direction:
 
-    * ONE TRANSACTION — the root insert rolls back with the failure: NO
+    * one TRANSACTION — the root insert rolls back with the failure: no
       root row exists afterwards; or
     * A NAMED ARM'S GRACE — the orphan is terminalized/reaped by the
       sweep within 3 maintenance passes.
@@ -254,14 +254,14 @@ async def test_interrupted_create_leaves_no_live_orphan(
     )
 
 
-# ── THE CLAIM PATH NEVER HANDS OUT THE __flow__ ROW ────────
+# ── the claim path never hands out the __flow__ row ────────
 
 
 async def test_dispatch_never_claims_the_flow_root_row(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_sql: WorkflowSql
 ) -> None:
     """at the SQL level (the doctrine's verify-first): the
-    pending root row — the mid-create window's shape AND every run's
+    pending root row — the mid-create window's shape and every run's
     steady pre-``ROOT_START`` instant — must be UNCLAIMABLE even by a
     registered, ``workflow_execution``-capable worker serving the root's
     own (actor, queue) cohort. The ``__flow__`` row is the run's
@@ -271,7 +271,7 @@ async def test_dispatch_never_claims_the_flow_root_row(
         wf_conn, wf_sql, entry=FlowStandIn(name="root-claim-flow"), run_key="create3:root"
     )
     assert claim.created
-    # The cohort + the CAPABLE worker (the F3 projection's stamps, seeded
+    # The cohort + the capable worker (the F3 projection's stamps, seeded
     # the way test_pin_2's fence pin seeds them).
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".actor_config (actor, queue) '

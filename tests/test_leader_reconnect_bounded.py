@@ -146,7 +146,7 @@ def _make_leader(deps: WorkerDeps) -> MaintenanceLeader:
 async def _factory_calls_reach(factory_calls: list[int], n: int) -> None:
     """Bounded wait until the hanging factory has been entered n times.
 
-    RED unguarded: the loop is parked inside the FIRST factory() call - no
+    RED unguarded: the loop is parked inside the first factory() call - no
     retry ever happens and this bounded wait fails by name.
     """
     deadline = asyncio.get_running_loop().time() + _TEST_BUDGET_SECS
@@ -186,7 +186,7 @@ async def test_election_leader_conn_rebuild_factory_hang_is_bounded_and_retried(
     leader = _make_leader(deps)
     shutdown = asyncio.Event()
 
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop IS the test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop is the test.
     try:
         await asyncio.wait_for(factory_entered.wait(), timeout=_TEST_BUDGET_SECS)
         # Two entries prove the first call's bound fired and the loop's own
@@ -230,7 +230,7 @@ async def test_election_dedicated_conn_rebuild_factory_hang_is_bounded_and_retri
     leader = _make_leader(deps)
     shutdown = asyncio.Event()
 
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop IS the test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: driving the production election loop is the test.
     try:
         await asyncio.wait_for(dedicated_entered.wait(), timeout=_TEST_BUDGET_SECS)
         assert any("pg_try_advisory_lock" in sql for sql, _ in leader_conn.fetchval_calls), (

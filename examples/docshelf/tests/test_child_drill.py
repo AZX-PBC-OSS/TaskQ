@@ -1,6 +1,6 @@
-"""THE CHILD DRILL — the child-flow face, measured:
+"""CHILD DRILL — the child-flow face, measured
 
-1. THE SLOT LAW, OBSERVED (not asserted): on a ONE-slot worker, the
+1. the SLOT LAW, OBSERVED (not asserted): on a one-slot worker, the
    parent's run-children node HOLDS (its slot releases) and the CHILD
    FLOWS' rows RUN in that window — the child could not run otherwise.
 2. The children's TYPED results join (SubDone decoded into the parent's
@@ -29,7 +29,7 @@ from taskq.workflows import FlowRunner
 
 def _large_corpus() -> tuple[list[DocPayload], list[str], str]:
     """Three LARGE documents (>= many_chunks_threshold chunks each — the
-    child-flow trigger); the LAST one is the poison (its sub-analysis
+    child-flow trigger); the last one is the poison (its sub-analysis
     fails terminally). The chunking is deterministic in the doc id, so
     the corpus hunts ids whose roll says 'large'."""
     docs: list[DocPayload] = []
@@ -63,23 +63,23 @@ async def test_child_drill_slot_release_and_typed_join(
     flow_ids = await deliver_batch(pool, schema, DeliveryBatch(delivery_id=delivery_id, docs=docs))
     assert len(flow_ids) == 1
     flow_id = flow_ids[0]
-    # ONE SLOT: the slot law's stage. If the parent's slot did NOT
+    # one slot: the slot law's stage. If the parent's slot did not
     # release during the holds, the children's rows could never claim.
     await workers.spawn_ready(pool, tag="child-solo", max_concurrency=1)
 
     status = await await_terminal(pool, schema, flow_id, timeout_s=240)
     assert status == "succeeded", f"the child drill terminal-failed: {status}"
 
-    # THE LINKS: 3 child flows, one per large doc, all rows.
+    # 3 child flows, one per large doc, all rows.
     links = await store.child_links(pool, schema)
     mine = [lnk for lnk in links if lnk["parent_run_id"] == flow_id]
     assert len(mine) == 3, f"expected 3 child flows, links say {len(mine)}"
 
-    # THE SLOT MEASUREMENT, from the rows: the parent's ONE batch hold
-    # (a row: created when the parent's body reached the wait, resolved
-    # by the last tail's delivery) vs EACH child's execution window —
-    # on a ONE-slot worker the overlap is only possible because the
-    # parent's slot RELEASED while it waited.
+    # the slot measurement, from the rows: the parent's one batch hold (a row:
+    # created when the parent's body reached the wait, resolved by the last
+    # tail's delivery) vs each child's execution window — on a one-slot worker
+    # the overlap is only possible because the parent's slot released while it
+    # waited.
     hold = await pool.fetchrow(
         f'SELECT created_at, resolved_at FROM "{schema}".wf_signals '  # noqa: S608  # Why: the interpolated value is the app's settings-validated schema identifier; every caller-controlled value is $N-bound.
         "WHERE workflow_id = $1 AND resolved_at IS NOT NULL LIMIT 1",
@@ -105,9 +105,9 @@ async def test_child_drill_slot_release_and_typed_join(
             min(child_window["f"], hold_e) - max(child_window["s"], hold_s)
         ).total_seconds()
         if doc_id != poison_id:
-            # The POISON child fails FAST (its body raises before any
+            # The poison child fails fast (its body raises before any
             # compute) — it can legitimately finish before the parent's
-            # hold opens. The HEALTHY children run 1-3 s INSIDE the
+            # hold opens. The healthy children run 1-3 s inside the
             # hold's window: the slot law's measurement.
             assert overlap_s > 0.2, (
                 f"the child {doc_id}'s execution did NOT overlap the parent's hold "
@@ -125,7 +125,7 @@ async def test_child_drill_slot_release_and_typed_join(
             }
         )
 
-    # THE TYPED RECEIPT: the poison doc in the FAILED arm; the others joined.
+    # the poison doc in the failed arm; the others joined.
     runner = FlowRunner(SHELF_APP.get("docshelf_batch"), pool, schema)
     digest = ShelfDigest.model_validate(await runner.result(flow_id))
     assert digest.total_docs == 3
@@ -136,7 +136,7 @@ async def test_child_drill_slot_release_and_typed_join(
     joined = set(digest.contracts_published + digest.ledger_entries + digest.quarantined)
     assert set(plain_ids) <= joined, f"a healthy child's typed result never joined: {joined}"
 
-    # The children's own typed results carry the CHILD's tags (the join
+    # The children's own typed results carry the child's tags (the join
     # delivered the child's SubDone, not just its absence).
     for link in mine:
         if link["doc_id"] == poison_id:

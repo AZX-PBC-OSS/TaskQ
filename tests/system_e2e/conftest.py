@@ -48,7 +48,7 @@ async def sys_ledger(
 ) -> AsyncIterator[asyncpg.Connection]:
     """A raw connection with the module's effects table created.
 
-    The table is a per-TEST clean slate: setup is IF NOT EXISTS (a
+    The table is a per-TEST clean slate: setup is IF not EXISTS (a
     crashed prior run's leftovers cannot poison the population) and
     teardown DROPs it, so no effects row can outlive the test that
     owned its jobs. Scenario bodies use the connection for seeding,
@@ -88,7 +88,7 @@ def toxiproxy() -> Iterator[Toxiproxy]:
     """One toxiproxy server per session (per xdist worker): the partition
     campaign's weather engine, see :mod:`tests.system_e2e._toxiproxy`.
 
-    The server itself carries NO weather - individual tests create the
+    The server itself carries no weather - individual tests create the
     proxies they need (per-worker cuts a container outage cannot express)
     and clear them in their own ``finally``; the session teardown stops
     the container. Skips with a reason (never errors) when the Docker

@@ -14,12 +14,12 @@ The landed five:
   (``WHERE c.parent_id = $1``) but the engine's fork parents map
   children at the MAP SOURCE node (``_fork.insert_fork(parent_id=
   source_row)``) and static nodes carry ``parent_id NULL`` — so the
-  grouped read matches zero rows, ``map_children`` is ALWAYS 0, and the
+  grouped read matches zero rows, ``map_children`` is always 0, and the
   hexagon collapse + n/m counter (``rows_mermaid``'s ``{{…}}`` shape,
   whose docstring promises "ZERO child boxes") can never fire: a big
   map renders as thousands of raw node rows.
 * a shape-refused resolve at the page's validation layer
-  (``_wf_actions._validate_through_gates`` raises the 422 BEFORE
+  (``_wf_actions._validate_through_gates`` raises the 422 before
   ``HitlClient.resolve`` — the layer whose own refusal IS audited — is
   ever called) writes ZERO audit rows, while the page's own template
   (workflow_detail.html's audit-trail section) claims "every
@@ -41,7 +41,7 @@ The landed five:
   detail line).
 
 The failed three (green guards): the boot JSON's ``tojson`` escapes
-``</script>`` (GUARD-1), the graph renders FROM THE ROWS for a run
+``</script>`` (GUARD-1), the graph renders FROM the ROWS for a run
 stamped with a never-importable workflow module (GUARD-2), and the
 node-panel read binds the node key as a parameter (GUARD-3).
 """
@@ -86,12 +86,12 @@ _TICK = 0.02
 
 #: the stored payload size: far above any honest display cap (the
 #: jobs page's 2000-char traceback bound, the CLI's 120-char detail
-#: line), far below PG's text limit — the write LANDS, so the served
-#: length proves boundedness at the READ.
+#: line), far below PG's text limit — the write lands, so the served
+#: length proves boundedness at the read.
 _HUGE_CHARS = 200_000
 
-#: The bound the pin asserts on the panel's served error text: THE
-#: SHIPPED CONSTANT ITSELF (pin the constant, not a copy — a copy
+#: The bound the pin asserts on the panel's served error text: the
+#: shipped constant itself (pin the constant, not a copy — a copy
 #: drifts from the served truth; the sweepaudit's own precedent).
 _PANEL_FIELD_BOUND = (  # Why: the constant must ride the shipped module — pin the shipped value, never a copy.
     __import__(
@@ -188,7 +188,7 @@ def _make_admin_app(
 
 def _make_authed_admin_app(pool: asyncpg.Pool, schema: str) -> tuple[FastAPI, dict[str, bool]]:
     """The admin router behind the #316 pin's wiring shape: the auth
-    dependency and its exposed ``session_verifier`` attribute read ONE
+    dependency and its exposed ``session_verifier`` attribute read one
     shared revocation flag (mirrors test_sse_session_recheck.py's
     _make_admin_app one-for-one)."""
     auth_state = {"session_valid": True}
@@ -204,7 +204,7 @@ def _make_authed_admin_app(pool: asyncpg.Pool, schema: str) -> tuple[FastAPI, di
         _ = request
         return auth_state["session_valid"]
 
-    _dependency.session_verifier = _verifier  # pyright: ignore[reportFunctionMemberAccess]  # Why: the re-check the SSO dependency exposes; create_auth_dependency attaches the same attribute.
+    _dependency.session_verifier = _verifier  # pyright: ignore[reportFunctionMemberAccess]  # Why: the re-check the sso dependency exposes; create_auth_dependency attaches the same attribute.
     return _make_admin_app(pool, schema, auth_dependency=_dependency), auth_state
 
 
@@ -261,7 +261,7 @@ async def _seed_node(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# THE pin: the map-collapse read is dead (the page's
+# the pin: the map-collapse read is dead (the page's
 # signature feature is currently dead code with live cost).
 # ──────────────────────────────────────────────────────────────────────
 
@@ -282,7 +282,7 @@ async def test_the_map_collapse_counts_the_real_children(
     runner = FlowRunner(compiled, module_pg_pool, schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
-    # The children EXIST as rows (the fork landed — per-item identity).
+    # The children exist as rows (the fork landed — per-item identity).
     child_count = await module_pg_pool.fetchval(
         f'SELECT count(*) FROM "{schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'ingest.item'",
@@ -318,7 +318,7 @@ async def test_the_map_collapse_counts_the_real_children(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# the shape-refused resolve writes ZERO audit rows while the
+# the shape-refused resolve writes zero audit rows while the
 # page claims "every Resolve/cancel/deliver is audited".
 # ──────────────────────────────────────────────────────────────────────
 
@@ -330,7 +330,7 @@ async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
     demo_app_module: Any,
 ) -> None:
     """A wrong-shape decision POST answers the named 422 and moves
-    nothing — AND the refused attempt is a ROW in admin_audit (the
+    nothing — and the refused attempt is a ROW in admin_audit (the
     page's own audit claim covers attempts, not only deliveries)."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_held_run(module_pg_pool, schema)
@@ -347,7 +347,7 @@ async def test_a_shape_refused_resolve_attempt_writes_an_audit_row(
             f"/api/runs/{run_id}/resolve",
             data={
                 "hold_id": hold.hold_id,
-                "decision": json.dumps({"verdict": 42}),  # the wrong SHAPE (verdict is a str)
+                "decision": json.dumps({"verdict": 42}),  # the wrong shape (verdict is a str)
                 "reason": "the shape attack's attempt",
                 "csrf_token": _csrf_of(http),
             },
@@ -383,15 +383,15 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
     monkeypatch: pytest.MonkeyPatch,
     demo_app_module: types.ModuleType,
 ) -> None:
-    """A run stream opened BEFORE session invalidation must not outlive
+    """A run stream opened before session invalidation must not outlive
     it: at the next poll tick the re-check fails and the stream ENDS
     (modeled the way the #316 endpoint pin models /sse/{topic}: raw
     ASGI, a shared revocation flag, a bounded wait)."""
     monkeypatch.setattr(wf_actions, "_STREAM_POLL_S", _TICK)
     app, auth_state = _make_authed_admin_app(module_pg_pool, module_pg_schema.schema_name)
-    # A REAL run (the held shape): the shipped stream endpoint serves a
+    # A real run (the held shape): the shipped stream endpoint serves a
     # run that EXISTS — a no-rows id is the honest 404, never a stream;
-    # the revocation's subject is the stream's LIFETIME, not the lookup.
+    # the revocation's subject is the stream's lifetime, not the lookup.
     run_id = await _seed_held_run(module_pg_pool, module_pg_schema.schema_name)
 
     received: list[bytes] = []
@@ -435,7 +435,7 @@ async def test_the_run_stream_ends_when_the_session_is_revoked_mid_stream(
 
         auth_state["session_valid"] = False
         tail = len(received)
-        # A revision change AFTER the revocation: the stale stream SERVES
+        # A revision change after the revocation: the stale stream serves
         # the frame to the dead session (the finding's own words: it keeps
         # receiving frames); the fixed stream has already ended.
         await module_pg_pool.execute(
@@ -565,10 +565,9 @@ async def test_the_node_panel_bounds_the_error_fields_it_serves(
             "display-cap precedent (a bounded render + a truncation marker) never "
             "reached the node panel"
         )
-        # THE MARKER'S SHIPPED VOCABULARY: the panel's own
-        # '[truncated: +N characters stay in the row]' suffix (Q5's fix),
-        # or the estate's older '... (N more characters)' shape — a silent
-        # cut reads as the whole value.
+        # the panel's own '[truncated: +N characters stay in the row]' suffix
+        # (Q5's fix), or the estate's older '... (N more characters)' shape — a
+        # silent cut reads as the whole value.
         assert (
             "[truncated:" in value
             or "more characters" in value
@@ -582,7 +581,7 @@ async def test_the_node_panel_bounds_the_error_fields_it_serves(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# The GREEN guards — attacks the machinery held; encoded so the
+# The green guards — attacks the machinery held; encoded so the
 # safe behavior can never rot silently.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -635,7 +634,7 @@ async def test_the_run_page_renders_a_run_stamped_with_a_never_importable_module
     module_pg_schema: ModulePgSchema,
     wf_conn: asyncpg.Connection,
 ) -> None:
-    """GUARD-2 (verified safe): the graph is built FROM THE
+    """GUARD-2 (verified safe): the graph is built FROM the
     ROWS — a run whose ``metadata.workflow`` stamp names a module that
     does not exist ANYWHERE renders fully (200); the render never
     imports the workflow's module (an import attempt would raise
@@ -670,7 +669,7 @@ async def test_the_node_panel_binds_the_node_key_as_a_value(
     wf_conn: asyncpg.Connection,
 ) -> None:
     """GUARD-3 (verified safe): a node key carrying a SQLi
-    payload (``x' OR '1'='1' --``) answers 404 — the key binds as a
+    payload (``x' or '1'='1' --``) answers 404 — the key binds as a
     VALUE ($1), never interpolates into the predicate. A 200 here means
     the WHERE clause was string-built and the injection matched."""
     schema = module_pg_schema.schema_name

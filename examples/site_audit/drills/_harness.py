@@ -1,6 +1,6 @@
 """Shared drill plumbing: schema-per-drill setup and the capture helper.
 
-Each drill runs against its OWN schema (fresh migrations, no cross-drill
+Each drill runs against its own schema (fresh migrations, no cross-drill
 state) and captures its receipt to stdout — the run's output IS the
 evidence (redirect it into ``.measurements/``).
 """
@@ -22,8 +22,8 @@ def dsn() -> str:
 
 
 def use_schema(slug: str) -> str:
-    """Compute + provision a fresh schema for ONE drill and point the
-    pipeline module's env at it. Call BEFORE importing ``pipeline`` — the
+    """Compute + provision a fresh schema for one drill and point the
+    pipeline module's env at it. Call before importing ``pipeline`` — the
     module reads the environment at import time (the deps door binds
     once)."""
     base = os.environ.get("TASKQ_SCHEMA_NAME", "taskq")

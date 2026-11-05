@@ -4,7 +4,7 @@ The backend talks to the IdP over two different HTTP stacks within one request:
 ``oidc.py`` does ``import httpx2 as httpx`` for the discovery and JWKS fetches,
 while authlib's ``AsyncOAuth2Client`` performs the token exchange on whichever
 stack authlib itself binds to. ``tests.http_mock.mock_http`` is respx aimed at
-httpcore AND httpcore2 through one route table, so every call is intercepted on
+httpcore and httpcore2 through one route table, so every call is intercepted on
 the stack production actually uses. A test RSA key signs id_tokens.
 
 This replaces a setup where respx saw ``httpcore`` only and an autouse fixture
@@ -449,7 +449,7 @@ def test_logout_post_with_a_foreign_token_is_refused() -> None:
     assert client.get("/admin/protected", headers={"accept": "application/json"}).status_code == 200
 
 
-# ── state-cookie scoping (mirror of the SAML correlation-cookie pins) ─────
+# ── state-cookie scoping (mirror of the saml correlation-cookie pins) ─────
 
 
 def _state_cookie_headers(resp: Any) -> list[str]:
@@ -498,7 +498,7 @@ def test_state_cookie_is_cleared_on_the_callback_path() -> None:
     assert "path=/console/callback" in cleared
 
 
-# ── discovery/JWKS are cached per issuer, not fetched per request ─────────
+# ── discovery/jwks are cached per issuer, not fetched per request ─────────
 
 
 def test_login_and_callback_fetch_discovery_and_jwks_once_per_issuer() -> None:
@@ -512,9 +512,9 @@ def test_login_and_callback_fetch_discovery_and_jwks_once_per_issuer() -> None:
     with _mock_provider() as router:
         _do_login(client)
         state2 = _do_login(client)
-        # The callback answers the SECOND login (its state cookie is the one
+        # The callback answers the second login (its state cookie is the one
         # still in the jar). Whether the exchange itself later validates is
-        # out of scope here, discovery and JWKS are read before it.
+        # out of scope here, discovery and jwks are read before it.
         client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state2},
@@ -533,7 +533,7 @@ def test_login_and_callback_fetch_discovery_and_jwks_once_per_issuer() -> None:
     )
 
 
-# ── PKCE authorization-request surface (login redirect) ────────────────────
+# ── pkce authorization-request surface (login redirect) ────────────────────
 
 
 def _state_cookie_payload(client: TestClient) -> dict[str, str]:
@@ -576,7 +576,7 @@ def test_login_redirect_targets_discovered_authorization_endpoint_with_pkce() ->
     assert query["code_challenge_method"] == ["S256"]
     challenge = query["code_challenge"][0]
     assert challenge, "login redirect carries no code_challenge"
-    # PKCE S256 binding: challenge == unpadded base64url(sha256(verifier)).
+    # pkce S256 binding: challenge == unpadded base64url(sha256(verifier)).
     cookie = _state_cookie_payload(client)
     expected_challenge = (
         base64.urlsafe_b64encode(hashlib.sha256(cookie["cv"].encode()).digest())
@@ -587,7 +587,7 @@ def test_login_redirect_targets_discovered_authorization_endpoint_with_pkce() ->
     assert query["state"][0] == cookie["state"]
 
 
-# ── PKCE token-request capture (callback exchange) ─────────────────────────
+# ── pkce token-request capture (callback exchange) ─────────────────────────
 
 
 def _token_request_posts(router: respx.MockRouter) -> list[httpx.Request]:
@@ -602,7 +602,7 @@ def _token_request_posts(router: respx.MockRouter) -> list[httpx.Request]:
 
 
 def test_callback_token_request_carries_pkce_verifier_from_state_cookie() -> None:
-    """The token exchange POST carries the SAME code_verifier the state
+    """The token exchange POST carries the same code_verifier the state
     cookie recorded at login - the PKCE round-trip binding between the
     authorization request and the token request."""
     config = _config()
@@ -661,7 +661,7 @@ def test_callback_rejects_invalid_id_tokens(token_response: dict[str, Any]) -> N
     assert "taskq_session=" not in resp.headers.get("set-cookie", "")
 
 
-# ── Discovery / JWKS fetch failures ────────────────────────────────────────
+# ── Discovery / jwks fetch failures ────────────────────────────────────────
 
 
 def test_login_discovery_failure_returns_error_redirect() -> None:
@@ -745,7 +745,7 @@ def test_discovery_and_jwks_run_on_httpx2() -> None:
         assert client.get("/admin/login", follow_redirects=False).status_code == 302
         state = _do_login(client)
         # The callback's exchange itself may fail validation on this mocked
-        # provider; the JWKS fetch under test happens before any of that.
+        # provider; the jwks fetch under test happens before any of that.
         client.get(
             "/admin/callback",
             params={"code": "fake-code", "state": state},

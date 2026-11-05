@@ -13,11 +13,11 @@ Cell 1 (heartbeat): a worker whose PG link blackholes mid-job must
 self-isolate - count (F+1) consecutive failed ticks, give the isolate's
 own bounded connect a chance, walk away, and leave the row for the
 leader's sweep - while a healthy sibling re-runs the job exactly once.
-The sibling ready-gates BEFORE the cut arms (its bootstrap touches PG
-directly, never through the proxy), the cut arms BEFORE the sibling's
+The sibling ready-gates before the cut arms (its bootstrap touches PG
+directly, never through the proxy), the cut arms before the sibling's
 health probe enqueues, and the test's own asserts pin that order.
 
-Cell 2 (claim + commit): a fleet whose ONLY PG path is the proxy takes
+Cell 2 (claim + commit): a fleet whose only PG path is the proxy takes
 weather aimed at the dispatcher's windows - claim and terminal-commit -
 and the conservation counter must balance: no lost job, no resurrected
 job, every body run backed by a claim, every claim that "committed but
@@ -63,30 +63,30 @@ pytestmark = [pytest.mark.integration, pytest.mark.system]
 _TAG = "sys-partition-pg"
 
 
-#: The heartbeat cascade the isolate contract is held against, DERIVED
+#: The heartbeat cascade the isolate contract is held against, derived
 #: from the worker env below, never asserted from hope. A's knobs are
-#: raised to their cascade-legal maximum so A's lifetime PROVABLY
+#: raised to their cascade-legal maximum so A's lifetime provably
 #: outlives the sibling probe's budget (see _PROBE_BUDGET_S): the
 #: concurrency assert below requires the probe to complete while A is
-#: STILL ALIVE, and A's lifetime is governed by A's OWN watchdog
+#: still alive, and A's lifetime is governed by A's own watchdog
 #: ladder - a small cascade (the original F=2 at interval 0.5: isolate
-#: at ~2.75s, force-exit ~17s) makes that assert a RACE the loaded-box
+#: at ~2.75s, force-exit ~17s) makes that assert a race the loaded-box
 #: pipeline straddles (the CI red: the probe landed post-exit).
 #: Stretching the probe's budget cannot fix that - a longer budget
-#: tolerates a LATER completion, further past A's exit - so the bound
-#: moves on A's side. The lever is the heartbeat INTERVAL, because the
-#: interval is the floor of EVERY failed cycle under the cut (measured
+#: tolerates a later completion, further past A's exit - so the bound
+#: moves on A's side. The lever is the heartbeat interval, because the
+#: interval is the floor of every failed cycle under the cut (measured
 #: in this suite's own probes): a blackholed cycle can only end at a
-#: LOCAL timeout, and there are exactly two shapes - the pool acquire
+#: local timeout, and there are exactly two shapes - the pool acquire
 #: hanging a fresh connect to its own ``timeout=interval`` bound, or a
 #: cached-connection command hanging the tick's whole command budget
 #: (``heartbeat_command_timeout``) and paying the failed tick's
 #: prompt-retry wait, ``min(interval - duration, 0.25 * interval)``.
-#: With ``command_timeout >= 0.75 * interval`` the two shapes COINCIDE
+#: With ``command_timeout >= 0.75 * interval`` the two shapes coincide
 #: at exactly one interval per cycle (16 >= 0.75 * 21; 16 + 5 = 21):
 #:
 #:   worst_beat_cycle = heartbeat_interval + heartbeat_command_timeout
-#:                    = 21 + 16 = 37s   (a cycle's SLOWEST legal span)
+#:                    = 21 + 16 = 37s   (a cycle's slowest legal span)
 #:   cycle floor       = min(interval, command_timeout + 0.25*interval)
 #:                       = min(21, 16 + 5.25) = 21s
 #:   F = max_heartbeat_failures = 6: the isolate decision lands on the
@@ -103,32 +103,32 @@ _A_LAST_BEAT_TAIL_S = max(_A_HEARTBEAT_INTERVAL_S, _A_HEARTBEAT_COMMAND_TIMEOUT_
 _A_CASCADE_FLOOR_S = _A_LAST_BEAT_TAIL_S + (_A_MAX_HEARTBEAT_FAILURES + 1) * _A_WORST_BEAT_CYCLE_S
 _A_LOCK_LEASE_S = 285.0  # >= the cascade floor 280 the settings' post_load enforces
 
-#: A's LIFETIME FLOOR after the cut - the number the concurrency assert
+#: A's lifetime floor after the cut - the number the concurrency assert
 #: stands on. Every failed cycle costs >= the interval (21s: the two
 #: legal shapes above coincide there, and a blackholed cycle can end
-#: at nothing FASTER than a local timeout), so (F+1) consecutive
+#: at nothing faster than a local timeout), so (F+1) consecutive
 #: failures take >= 7 * 21 = 147s, and A is alive through the cascade
-#: AND the isolate's own bounded connect on top of it. That floor is
+#: and the isolate's own bounded connect on top of it. That floor is
 #: >= 7x the probe's 20s budget, so the probe - whatever the load -
 #: lands strictly inside A's lifetime, and the concurrency assert
-#: below is arithmetic, not a race. (Load only STRETCHES cycles: the
+#: below is arithmetic, not a race. (Load only stretches cycles: the
 #: loop's sleeps oversleep, the timeouts fire late - the floor is the
 #: one direction starvation cannot undercut.)
 #:
 #: Refuse-conditional caveat, measured: the floor's premise is that a
 #: blackholed cycle can end at NOTHING faster than a local timeout -
-#: true for the shipped weather (toxiproxy's ``timeout: 0`` ACCEPTS the
-#: TCP handshake, holds bytes, and keeps the connection ESTABLISHED: a
+#: true for the shipped weather (toxiproxy's ``timeout: 0`` accepts the
+#: TCP handshake, holds bytes, and keeps the connection established: a
 #: live census of a blackholed listener showed connect succeed in
 #: <1ms, 20s of silence, and asyncpg's connect hanging to its own
-#: budget - never a refusal). A weather that REFUSES instead (a dead
+#: budget - never a refusal). A weather that refuses instead (a dead
 #: proxy listener - infra failure, not load) collapses a failed tick's
 #: duration to ~0, and the failed cycle gaps at only the prompt-retry
 #: backoff, ``0.25 * interval`` (heartbeat_loop waits
 #: ``min(remaining, _FAILED_TICK_RETRY_FRACTION * interval)`` after a
 #: failed tick): the honest refuse-shape lifetime is the tail (21s) +
-#: 7 x 5.25s = ~58s - NOT 147s, but still ~3x the probe's 20s budget,
-#: so the concurrency assert below holds under BOTH shapes; only the
+#: 7 x 5.25s = ~58s - not 147s, but still ~3x the probe's 20s budget,
+#: so the concurrency assert below holds under both shapes; only the
 #: 147s figure is refuse-conditional.
 _A_MIN_FAILED_CYCLE_S = min(
     _A_HEARTBEAT_INTERVAL_S,
@@ -137,17 +137,17 @@ _A_MIN_FAILED_CYCLE_S = min(
 _A_LIFETIME_FLOOR_S = (_A_MAX_HEARTBEAT_FAILURES + 1) * _A_MIN_FAILED_CYCLE_S  # 147s
 _CASCADE_S = _A_CASCADE_FLOOR_S
 
-#: The isolate's OWN walk-away, measured in a standalone probe: the
+#: The isolate's own walk-away, measured in a standalone probe: the
 #: cascade fires isolate, the isolate's fresh connect gives up at 5s,
 #: the shutdown closes every dedicated connection at its 5s close
-#: bound under a full cut (~8 closers = 40s), and the SHUTDOWN WATCHDOG
+#: bound under a full cut (~8 closers = 40s), and the shutdown watchdog
 #: (on by production default, ``watchdog_enabled=True``) force-exits
 #: the wedged teardown at the 15s termination grace - measured at this
 #: cell's raised cascade: trip recorded, rc EXIT_WATCHDOG. The exit
-#: bound is the cascade's WORST span (280s - the lease floor, the last
+#: bound is the cascade's worst span (280s - the lease floor, the last
 #: good beat a full interval back and every cycle at its slowest legal
 #: pace) + the connect's 5s + the grace's 15s = 300s. The exit is a
-#: FAMILY pin - the armed watchdog's shutdown-deadline is the detector
+#: family pin - the armed watchdog's shutdown-deadline is the detector
 #: that bounds it (the stale-tick floor below is raised past the
 #: cascade so detector 2 cannot preempt the isolate) - and where the
 #: wedged teardown drains inside its closers' bounds the isolate's own
@@ -163,7 +163,7 @@ _ISOLATE_EXIT_BUDGET_S = (
 #: starve (dispatch_batch is a multi-statement transaction, each
 #: statement hanging its pool command budget) and the leader loops'
 #: sweeps starve with them - at the shipped 10s floor the stale-tick
-#: detector fires mid-cascade, A exits EARLY, and the concurrency
+#: detector fires mid-cascade, A exits early, and the concurrency
 #: assert below is a race again (measured: the cascade's cycles
 #: stretch to ~2s under the loop's own congestion). Sized past the
 #: cascade, detector 2 cannot preempt the isolate decision it exists
@@ -175,35 +175,35 @@ _ISOLATE_EXIT_BUDGET_S = (
 #: (5.0 + 21 < 285.0).
 _A_WATCHDOG_STALE_FLOOR_S = 400.0
 
-#: The reclaim pipeline that must hand the job back WITHOUT the cut
-#: worker's help. The MEASURED shape (standalone probe, identical
+#: The reclaim pipeline that must hand the job back without the cut
+#: worker's help. The measured shape (standalone probe, identical
 #: topology): A's watchdog-bounded exit, then B's leadership takeover
 #: (the leader advisory lock only frees with A's session; the election
 #: cadence plus first sweep tick), then the job's lease expiry (the
 #: last renewal is A's last good beat, so expiry lands at most one
-#: interval past the cut + lock_lease = ~cut + 306s, INSIDE A's exit
+#: interval past the cut + lock_lease = ~cut + 306s, inside A's exit
 #: bound) + sweep tick (1s) + reclaim delay (retry curve base 1s) +
 #: claim (poll 0.05) + body (_A_BODY_S = 45s - attempt 2 runs the
 #: redesign's longer body in full). Budget: the binding path is the
 #: expiry 306 + the stretchable post-expiry tail (~2.1s of rounds at
 #: the storm's 20x band -> 42) + the body 45 -> ~393, with A's exit
-#: bound 340 running CONCURRENT to it, never additive; slack -> 460.
+#: bound 340 running concurrent to it, never additive; slack -> 460.
 _RERUN_BUDGET_S = 460.0
 
-#: The sibling-health probe's budget, RE-DERIVED for the redesign's
-#: ordering: B READY-GATES BEFORE THE CUT ARMS. B's spawn and whole
+#: The sibling-health probe's budget, re-derived for the redesign's
+#: ordering: B ready-gates before the cut arms. B's spawn and whole
 #: bootstrap - pool creation, listen attach, the schema's first-touch -
-#: run on B's OWN DIRECT PG path (``spawn_worker`` stamps TASKQ_PG_DSN
+#: run on B's own direct PG path (``spawn_worker`` stamps TASKQ_PG_DSN
 #: from the direct ``pg_dsn`` argument and no extra_env overrides it:
 #: A is the only process pointed at the proxy), so the bootstrap is
 #: independent of the weather this cell arms and answers to exactly one
 #: bound, the harness's own readiness gate (``_harness.wait_for_socket``:
-#: 30s) awaited before the cut exists. NONE of it rides in this budget
+#: 30s) awaited before the cut exists. none of it rides in this budget
 #: any more - the CI red that forced the redesign:
-#: enqueued mid-cut before B's gate, the bootstrap rode INSIDE the old
+#: enqueued mid-cut before B's gate, the bootstrap rode inside the old
 #: 63s budget at full weight and outgrew it on a loaded -n 2 runner
 #: (the probe stuck at ``status='running'`` past the deadline). The
-#: budget bounds the POST-READY pipeline only - the in-window work,
+#: budget bounds the post-ready pipeline only - the in-window work,
 #: idle-box ~1s end to end:
 #:
 #: * the enqueue's direct INSERT and its visibility to B's warm poll
@@ -220,24 +220,24 @@ _RERUN_BUDGET_S = 460.0
 #:
 #:   1.0 * 20  =>  20.0s.
 #:
-#: Like the storm's, the budget bounds FAILURE only: a sibling that
+#: Like the storm's, the budget bounds failure only: a sibling that
 #: genuinely cannot serve never completes the probe - the teeth hold
-#: twice over. A sibling pointed at the BLACKHOLED proxy cannot even
+#: twice over. A sibling pointed at the blackholed proxy cannot even
 #: join: its bootstrap touches PG only through the cut, the health
 #: socket never appears, and the harness's 30s gate reds the test at
 #: B's readiness by name (mutant run recorded). And the concurrency
-#: assert's posture is arithmetic on ANY runner: A's lifetime floor
+#: assert's posture is arithmetic on any runner: A's lifetime floor
 #: (147s, derived above) is 7x this budget, so a completing probe is
 #: always concurrent evidence.
 _PROBE_PIPELINE_S = 1.0  # the post-ready in-window work, idle-box end to end
 _COTENANCY_STRETCH = 20  # the storm's band (74c5931b) on loaded -n 2 runners
 _PROBE_BUDGET_S = _PROBE_PIPELINE_S * _COTENANCY_STRETCH  # 20.0s
 
-#: The partitioned body's span. The redesign moved B's bootstrap BETWEEN
+#: The partitioned body's span. The redesign moved B's bootstrap between
 #: the claim and the cut (B ready-gates before the cut arms), so the
 #: claim→cut gap is now B's whole spawn+bootstrap - capped by the
 #: harness's own 30s readiness bound. The body must outlive that cap
-#: for the cut to land DURING the body BY CONSTRUCTION, not by luck:
+#: for the cut to land during the body by construction, not by luck:
 #: 45 = 30 (the gate's hard bound) + 15 (spawn + bootstrap slack). The
 #: pre-cut status pin in the test body confirms the landing at runtime;
 #: the cost returns in _RERUN_BUDGET_S (attempt 2 runs the body in full).
@@ -258,19 +258,19 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
     classifies itself (HeartbeatLost isolate), exits, and the job is
     re-run EXACTLY once by a sibling that never took the weather.
 
-    The ordering is deterministic by construction: B ready-gates BEFORE
+    The ordering is deterministic by construction: B ready-gates before
     the cut arms (B's bootstrap runs on its own DIRECT PG path), the cut
-    arms BEFORE the probe enqueues, and the runtime asserts pin both
+    arms before the probe enqueues, and the runtime asserts pin both
     legs of that order."""
     schema = module_pg_schema.schema_name
     conn = sys_ledger
 
     # Worker A is the claimer (spawned alone, so the job cannot land on a
     # sibling) and takes the weather; the sibling spawns only after A's
-    # claim is observed and ready-gates BEFORE the cut arms. A's
+    # claim is observed and ready-gates before the cut arms. A's
     # heartbeat knobs are the
     # cascade-legal maximum (see the arithmetic at the constants):
-    # interval 21 with command timeout 16 pins EVERY failed cycle at
+    # interval 21 with command timeout 16 pins every failed cycle at
     # >= 21s (the two blackhole shapes coincide), F=6 puts the isolate
     # decision at the 7th consecutive failure - a lifetime floor of
     # 147s, 7x the probe's 20s budget - and the lease carries the
@@ -282,8 +282,8 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
     # cell's concurrency assert died to); the shutdown-deadline
     # detector is what bounds the exit and provides the pinned trip.
     proxy_a = toxiproxy.create_proxy_sync("pg_heartbeat_a", *dsn_host_port(pg_dsn))
-    # The log sink: a partitioned worker logs every failed tick - a PIPE
-    # nobody drains fills and BLOCKS the worker's logging write, a wedge
+    # The log sink: a partitioned worker logs every failed tick - a pipe
+    # nobody drains fills and blocks the worker's logging write, a wedge
     # the harness would manufacture. The file carries the isolate's own
     # failure record for the diagnostics below.
     log_a = tmp_path / "part-a.log"
@@ -292,8 +292,8 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         schema,
         tag="part-a",
         extra_env={
-            # scoped BEFORE proxied: ``proxied_dsn`` swaps the host:port and
-            # PRESERVES the query, so composing them keeps the harness's
+            # scoped before proxied: ``proxied_dsn`` swaps the host:port and
+            # preserves the query, so composing them keeps the harness's
             # ``application_name=<schema>`` stamp through the weather.
             # (Measured in a live census: a bare ``proxied_dsn(pg_dsn, ...)``
             # override replaces the harness's scoped DSN wholesale and leaves
@@ -305,7 +305,7 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
             "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": str(_A_HEARTBEAT_COMMAND_TIMEOUT_S),
             "TASKQ_MAX_HEARTBEAT_FAILURES": str(_A_MAX_HEARTBEAT_FAILURES),
             "TASKQ_LOCK_LEASE": str(_A_LOCK_LEASE_S),
-            # The production watchdog shape: the shipped default is ON;
+            # The production watchdog shape: the shipped default is on;
             # the harness's _BASE_ENV disables it. Under a persistent cut
             # the isolate fires and the teardown's own closers are
             # unfinishable - the watchdog's grace force-exit is what
@@ -324,7 +324,7 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         handle = await sys_client.enqueue(sys_slow, SysPayload(sleep=_A_BODY_S), tags=[_TAG])
         job_id = handle.job_id
 
-        # The cut will land DURING the body: the claim (and the attempt it
+        # The cut will land during the body: the claim (and the attempt it
         # charged) is already durable, the heartbeats that must keep the
         # lease alive now starve. Deadline: the claim is visible within
         # poll+sweep slack; failure here means the worker never claimed
@@ -345,9 +345,9 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
             f"worker A never claimed the job within 15s (poll 0.05 + slack): {last_row}"
         )
 
-        # ── B ready-gates BEFORE the cut arms ──
+        # ── B ready-gates before the cut arms ──
         # B's spawn and whole bootstrap - pool creation, listen attach,
-        # the schema's first-touch - run on B's OWN DIRECT PG path
+        # the schema's first-touch - run on B's own direct PG path
         # (spawn_worker stamps TASKQ_PG_DSN from the direct pg_dsn
         # argument; no extra_env overrides it, so A is the only process
         # behind the proxy), so the bootstrap is independent of the
@@ -355,7 +355,7 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         # bound: the harness's own readiness gate (30s). No part of it
         # rides in the probe's budget below - the CI red that forced
         # this shape (the CI red): enqueued mid-cut before B's
-        # gate, the bootstrap rode INSIDE the old 63s budget at full
+        # gate, the bootstrap rode inside the old 63s budget at full
         # weight and outgrew it on a loaded -n 2 runner. B still spawns
         # only after A's claim is observed: A remains the claimer by
         # construction - B never exists while the job is claimable.
@@ -367,7 +367,7 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         # The body-window pin, pre-cut: the claim→cut gap is B's whole
         # spawn+bootstrap, capped by the harness's 30s readiness bound,
         # and the body (_A_BODY_S) outlives that cap - the cut lands
-        # DURING the body by construction, not by luck. Confirmed on
+        # during the body by construction, not by luck. Confirmed on
         # both sides at runtime: A alive, the row still running (a body
         # that had finished would have committed while the wire was
         # still healthy, and the row would read succeeded).
@@ -391,32 +391,31 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         cut_at = time.monotonic()
 
         # ── The sibling-health proof (the per-worker scoping's tooth) ──
-        # The probe is enqueued NOW, mid-cut, AFTER B's readiness gate:
+        # The probe is enqueued now, mid-cut, after B's readiness gate:
         # A's PG link is blackholed (it cannot claim), so the probe can
         # only complete on B - and B's bootstrap is already paid for
         # (gated above, pre-cut), so the probe's budget bounds the
-        # POST-READY pipeline only: claim, body, commit. Success here is
-        # the CONCURRENT evidence the per-worker scoping stands on: the
-        # sibling was healthy DURING the cut, not merely by the time the
+        # post-ready pipeline only: claim, body, commit. Success here is
+        # the concurrent evidence the per-worker scoping stands on: the
+        # sibling was healthy during the cut, not merely by the time the
         # re-run settled. (A re-run asserted only after A's exit would
         # prove nothing about the cut's window.)
         probe = await sys_client.enqueue(sys_fast, SysPayload(sleep=0.1), tags=[_TAG])
         probe_enqueued_at = time.monotonic()
 
-        # THE ORDERING PIN - the redesign is deterministic by
-        # construction and this assert is its witness: any reorder of
-        # the three moments reds HERE, before any weather-dependent
-        # wait. B ready ─before→ the cut arms (the bootstrap never
-        # competes with the weather); the cut arms ─before→ the probe
-        # enqueues (the probe's whole pipeline runs in-window - A's link
-        # is already down, the probe can only land on B).
-        # Clock provenance: all three stamps are ``time.monotonic()`` in
-        # THIS test process, assigned strictly sequentially between the
-        # awaits they witness (and ``b_ready_at`` is stamped by the
-        # harness's readiness gate, whose health socket the worker only
-        # serves after ``open_worker_deps`` has yielded - post-bootstrap)
-        # - one monotonic clock, no wall-clock source, so NTP/step cannot
-        # reorder a pin the sequencing already fixes.
+        # the ordering pin - the redesign is deterministic by construction and
+        # this assert is its witness: any reorder of the three moments reds
+        # here, before any weather-dependent wait. B ready ─before→ the cut
+        # arms (the bootstrap never competes with the weather); the cut arms
+        # ─before→ the probe enqueues (the probe's whole pipeline runs
+        # in-window - A's link is already down, the probe can only land on B).
+        # Clock provenance: all three stamps are ``time.monotonic()`` in this
+        # test process, assigned strictly sequentially between the awaits they
+        # witness (and ``b_ready_at`` is stamped by the harness's readiness
+        # gate, whose health socket the worker only serves after
+        # ``open_worker_deps`` has yielded - post-bootstrap) - one monotonic
+        # clock, no wall-clock source, so ntp/step cannot reorder a pin the
+        # sequencing already fixes.
         assert b_ready_at < cut_at < probe_enqueued_at, (
             f"the ordering regressed (B ready {b_ready_at:.3f}, cut armed {cut_at:.3f}, "
             f"probe enqueued {probe_enqueued_at:.3f}): B must ready-gate BEFORE the cut "
@@ -440,8 +439,8 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
             f"pipeline {_PROBE_PIPELINE_S}s x{_COTENANCY_STRETCH} co-tenancy stretch "
             f"= {_PROBE_BUDGET_S}s budget, poll 0.05): {probe_row}"
         )
-        # The DETERMINISTIC containment: the probe's budget bounds
-        # COMPLETION at 20s, A's raised lifetime bounds EXIT at >= 147s
+        # The deterministic containment: the probe's budget bounds
+        # completion at 20s, A's raised lifetime bounds exit at >= 147s
         # (the cascade floor: 7 failed beats x 21s minimum cycle, 7x the
         # budget), so the probe - whatever the load - lands strictly
         # inside A's lifetime. The assert is the arithmetic's witness,
@@ -457,12 +456,12 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
 
         # The isolate cascade (the raised floor: 7 failed beats, worst
         # span 280s) + the isolate connect's own 5s give-up + the
-        # termination grace (15s): A must EXIT, not linger as a zombie
-        # holding in-memory state. The bound is the cascade's WORST
+        # termination grace (15s): A must exit, not linger as a zombie
+        # holding in-memory state. The bound is the cascade's worst
         # legal span plus the walk-away - the exit is bounded, only
         # late.
         exit_deadline = cut_at + _ISOLATE_EXIT_BUDGET_S
-        while time.monotonic() < exit_deadline and worker_a.proc.poll() is None:  # noqa: ASYNC110  # Why: the wait is a deadline OR the process's death - an Event cannot express either arm.
+        while time.monotonic() < exit_deadline and worker_a.proc.poll() is None:  # noqa: ASYNC110  # Why: the wait is a deadline or the process's death - an Event cannot express either arm.
             await asyncio.sleep(0.2)
         assert worker_a.proc.poll() is not None, (
             f"the partitioned worker did not self-isolate and exit within "
@@ -470,10 +469,10 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
             f"{_A_ISOLATE_CONNECT_S}s + grace {_A_SHUTDOWN_GRACE_S}s)"
         )
 
-        # The worker's OWN evidence, from its log sink: the failed ticks
+        # The worker's own evidence, from its log sink: the failed ticks
         # the isolate ledger counted (F=6 - the isolate fires on the 7th
         # consecutive failure) and the bounded exit above. A worker that
-        # exits for any OTHER reason (a crash, a supervisor kill, a
+        # exits for any other reason (a crash, a supervisor kill, a
         # clean return) without walking the cascade is not the contract
         # here.
         log_text = log_a.read_text(errors="replace")
@@ -488,7 +487,7 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         )
         # The production-shape exit: the watchdog is armed (the shipped
         # default, re-armed explicitly in this cell's env) and the exit
-        # is DELIBERATE - either the wedged teardown's force-exit at the
+        # is deliberate - either the wedged teardown's force-exit at the
         # shutdown-deadline (the measured shape: trip recorded,
         # rc EXIT_WATCHDOG) or the isolate's own walk-away completing
         # inside its closers' bounds (rc 0 - the same contract's
@@ -512,7 +511,7 @@ async def test_blackhole_mid_heartbeat_isolates_worker_and_job_reruns_exactly_on
         # + sweep (1s) + reclaim delay (1s) + claim + body (_A_BODY_S -
         # attempt 2 runs it in full) - the job
         # must reach succeeded on attempt 2
-        # with exactly ONE body run recorded (attempt 1 was interrupted
+        # with exactly one body run recorded (attempt 1 was interrupted
         # before its effect; the effects ledger is the evidence).
         settle_deadline = cut_at + _RERUN_BUDGET_S
         final: asyncpg.Record | None = None
@@ -584,7 +583,7 @@ async def test_blackhole_windows_across_claims_and_commits_conserve(
     System invariant: the conservation counter balances - no lost job,
     no resurrected job, no limbo row - and the effects ledger reconciles
     per attempt (a re-run after an unknown-commit is a NEW attempt, never
-    a second run of the same one). The workers are held OUT of the
+    a second run of the same one). The workers are held out of the
     isolate cascade on purpose (F=40): this cell attacks the dispatcher's
     windows, the heartbeat cascade has its own cell above.
     """
@@ -602,7 +601,7 @@ async def test_blackhole_windows_across_claims_and_commits_conserve(
                 "TASKQ_MAX_HEARTBEAT_FAILURES": "40",
                 # The lease validator requires the lease to cover the
                 # F=40 cascade (0.5 + 41 * (0.5 + 0.5) = 41.5s): the soak
-                # workers must ride OUT the weather windows, never
+                # workers must ride out the weather windows, never
                 # isolate, so the lease carries the cascade they are
                 # granted.
                 "TASKQ_LOCK_LEASE": "45.0",
@@ -614,7 +613,7 @@ async def test_blackhole_windows_across_claims_and_commits_conserve(
         for worker in workers:
             wait_worker_ready(worker)
 
-        # Enqueue BEFORE the weather, INTO it, and AFTER it: the cut must
+        # Enqueue before the weather, INTO it, and after it: the cut must
         # not distinguish where a job's lifecycle began.
         before = [
             await sys_client.enqueue(sys_fast, SysPayload(sleep=0.1), tags=[_TAG]) for _ in range(4)
@@ -647,7 +646,7 @@ async def test_blackhole_windows_across_claims_and_commits_conserve(
         await proxy.clear()
 
         # The last 4 jobs, enqueued into the recovery: the fleet must take
-        # them on refilled pools WITHOUT any restart.
+        # them on refilled pools without any restart.
         handles.extend(
             [
                 await sys_client.enqueue(sys_fast, SysPayload(sleep=0.1), tags=[_TAG])
@@ -667,7 +666,7 @@ async def test_blackhole_windows_across_claims_and_commits_conserve(
         )
         await assert_effects_balance(conn, schema, _TAG)
 
-        # The workers are the SAME processes: recovery without restart.
+        # The workers are the same processes: recovery without restart.
         for i, worker in enumerate(workers):
             assert worker.proc.poll() is None, (
                 f"soak worker {i} exited during the weather windows: recovery "

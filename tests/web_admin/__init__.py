@@ -63,7 +63,7 @@ class StubConnection:
     """
 
     def __init__(self, *, scripts: dict[str, object] | None = None) -> None:
-        # The render tier's page scripts are the DEFAULT: a directly
+        # The render tier's page scripts are the default: a directly
         # constructed stub renders the pages (empty) through the same
         # named scripts the fixture uses - never blind defaults.
         self._scripts: dict[str, object] = dict(RENDER_ONLY_SCRIPTS) if scripts is None else scripts
@@ -148,11 +148,11 @@ class StubAcquireContext:
 # ── The render tier's named page scripts ────────────────────────────────
 #
 # The render-only tests (nav structure, table headers, pagination bars,
-# styling) drive pages that legitimately query: the RENDER fixture scripts
-# each page's own list/count statement ONCE, centrally, with the empty-page
+# styling) drive pages that legitimately query: the render fixture scripts
+# each page's own list/count statement once, centrally, with the empty-page
 # answer — a named script per page, never a blind default (the fail-closed
 # rule). A render test needing rows scripts the page's fragment with them;
-# the page's happy-path DATA belongs to the real-PG packs
+# the page's happy-path data belongs to the real-PG packs
 # (tests/test_web_admin_integration.py, tests/test_web_admin_actors.py,
 # tests/test_insights.py, tests/web_admin/test_batch_detail_pg.py).
 
@@ -195,7 +195,7 @@ RENDER_ONLY_SCRIPTS: dict[str, object] = {
     # the exact status-count scalar probe (the templates' badge counters)
     'SELECT COUNT(*) FROM "taskq".jobs WHERE status = ANY($1)': 0,
     'SELECT COUNT(*) FROM "taskq".jobs_archive WHERE status = ANY($1)': 0,
-    # job detail's lookup: the render tier's default row set is EMPTY -
+    # job detail's lookup: the render tier's default row set is empty -
     # the detail page's 404 shape; a render test scripting its own row
     # overrides this fragment with the record.
     'SELECT * FROM "taskq".jobs WHERE id = $1': None,
@@ -213,7 +213,7 @@ class StubPool:
     pool's ``scripts`` dict directly."""
 
     def __init__(self, *, scripts: dict[str, object] | None = None) -> None:
-        # The render tier's page scripts are the DEFAULT: a directly
+        # The render tier's page scripts are the default: a directly
         # constructed pool renders the pages (empty) through the same
         # named scripts the fixture uses - never blind defaults.
         self._scripts: dict[str, object] = dict(RENDER_ONLY_SCRIPTS) if scripts is None else scripts
@@ -315,7 +315,7 @@ class StubBackend:
 # ── Redis pipeline transport double ───────────────────────────────────────
 #
 # The admin rate-limits fetch (taskq.web.admin.ops._fetch_redis_rl_state)
-# reads every bucket through ONE redis-py pipeline: N commands queued, a
+# reads every bucket through one redis-py pipeline: N commands queued, a
 # single execute() round trip. These doubles speak that transport, mirroring
 # the recording pattern in tests/test_sweepaudit_admin_redis_batch.py.
 
@@ -323,7 +323,7 @@ class StubBackend:
 class StubRedisPipeline:
     """redis-py pipeline double: queues reads, resolves them at execute().
 
-    Commands are recorded (not executed) as they are queued; ONE
+    Commands are recorded (not executed) as they are queued; one
     ``execute()`` call resolves them in order by replaying each read
     against the owning client's direct readers. A reader that raises
     therefore surfaces at the round trip - exactly where a live Redis

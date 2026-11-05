@@ -342,7 +342,7 @@ def configure_exporters(settings: _ExporterSettings) -> ExporterWiring:
         # entry point is the gRPC exporter in every signal, and the protocol
         # variables (OTEL_EXPORTER_OTLP_PROTOCOL and its per-signal forms)
         # select the HTTP one only when the name is resolved through this
-        # mapping. Names handed to _initialize_components directly SKIP it
+        # mapping. Names handed to _initialize_components directly skip it
         # (it applies only to its own environment parse), so without this
         # step a worker configured with http/protobuf silently exported gRPC.
         return [_get_exporter_entry_point(name, signal) for name in names]

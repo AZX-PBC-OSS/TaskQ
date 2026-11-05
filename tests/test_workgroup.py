@@ -1332,7 +1332,7 @@ async def test_run_forever_spawn_failure_continues() -> None:
             await asyncio.wait_for(first_attempt.wait(), timeout=5.0)
         except TimeoutError:
             pytest.fail("run_forever did not attempt its first spawn within 5.0s")
-        # The signal handlers are installed AFTER the initial spawn loop,
+        # The signal handlers are installed after the initial spawn loop,
         # so the spawn attempt alone does not yet prove the supervisor is
         # stoppable - wait for the registration the stop below drives.
         try:
@@ -1346,7 +1346,7 @@ async def test_run_forever_spawn_failure_continues() -> None:
         # drives. A bare task.cancel() aborts the supervisor mid-
         # _delay_then_respawn, whose asyncio.wait() does not cancel its
         # inner futures when the caller itself is cancelled: the backoff
-        # sleep and the shutdown Event.wait went on running WITHOUT the
+        # sleep and the shutdown Event.wait went on running without the
         # supervisor, two tasks orphaned on the module loop. The signal
         # path is clean in every interleaving - shutting_down set either
         # skips the restart arm under the restart lock, or wins the
@@ -1456,7 +1456,7 @@ async def test_spawn_failure_exhausts_burst_budget_and_stops_retrying() -> None:
         task = asyncio.create_task(run_forever(config_path))
         try:
             # Bounded wait on the budget-exhausted decision itself - the
-            # event that PROVES the monitor stopped scheduling; when it
+            # event that proves the monitor stopped scheduling; when it
             # fires, the last budgeted attempt has already happened.
             # (time.monotonic, not the loop clock: asyncio.get_running_loop
             # is patched by this test's run_forever harness.)
@@ -1506,7 +1506,7 @@ async def test_stream_pump_failure_is_logged_and_task_completes() -> None:
 
     with structlog.testing.capture_logs() as captured:
         pump = asyncio.create_task(_stream_output(_ExplodingReader(), "w1", "warning"))  # type: ignore[arg-type]  # Why: structural StreamReader double - readuntil is the only member _read_line touches.
-        # RED on the unguarded shape: this await raises RuntimeError and the
+        # red on the unguarded shape: this await raises RuntimeError and the
         # task's exception is never retrieved anywhere.
         await asyncio.wait_for(pump, timeout=5.0)
 
@@ -1602,10 +1602,10 @@ async def test_run_forever_graceful_shutdown_via_signal() -> None:
         # Trigger the signal handler to set shutting_down
         signal_handlers[signal.SIGTERM]()
 
-        # Let the graceful shutdown proceed - with NO manual returncode:
+        # Let the graceful shutdown proceed - with no manual returncode:
         # the forwarded SIGTERM is what stops the child, and the final
         # assert verifies it. (Setting _returncode by hand would
-        # deterministically suppress the SIGTERM forwarding AND make the
+        # deterministically suppress the SIGTERM forwarding and make the
         # final assert vacuous: `returncode is not None` would always be
         # true because the test had just set it.)
         try:
@@ -1778,7 +1778,7 @@ async def test_run_forever_terminates_hung_health_pool_close(
 
         signal_handlers[signal.SIGTERM]()
         # Why wait_for: unguarded, shutdown awaits pg_pool.close() unbounded,
-        # so the RED state would hang forever instead of failing fast.
+        # so the red state would hang forever instead of failing fast.
         await asyncio.wait_for(task, timeout=5)
 
     assert fake_pool.terminated is True
@@ -1848,7 +1848,7 @@ async def test_run_forever_liveness_restarts_crashed_child() -> None:
         from taskq.worker.workgroup import run_forever
 
         task = asyncio.create_task(run_forever(config_path))
-        # run_forever registers handlers AFTER the initial spawn loop, so
+        # run_forever registers handlers after the initial spawn loop, so
         # this wait also guarantees procs[0] below exists - the fixed
         # 0.2s sleep it replaced could IndexError under startup
         # starvation.
@@ -1885,7 +1885,7 @@ async def test_run_forever_liveness_restarts_crashed_child() -> None:
 # `_handle_child_exit` received `actors` and `wg_instance` and dropped
 # both from every event it logs. `workgroup.start` logs them once at
 # startup, but the events that matter operationally - a child exiting and
-# the CRITICAL burst-limit trip - carried only the worker name, so they
+# the critical burst-limit trip - carried only the worker name, so they
 # could not be correlated back to the workgroup instance that owns them.
 
 
@@ -1930,8 +1930,8 @@ async def test_child_exit_events_carry_workgroup_identity() -> None:
 # fetchrow itself had no deadline. A server that accepts the query and
 # never answers parked the health loop inside the child's `restart_lock`
 # - and because both the liveness monitor and the shutdown path acquire
-# the same locks sequentially, ONE black-holed query froze restart
-# scheduling for every child AND wedged the supervisor's SIGTERM
+# the same locks sequentially, one black-holed query froze restart
+# scheduling for every child and wedged the supervisor's SIGTERM
 # forwarding. The fix is a client-side deadline on the query itself: per
 # `taskq.worker._transient`, a client-side TimeoutError is a transient
 # PG error, so it must land in the existing consecutive-failure
@@ -1999,7 +1999,7 @@ async def test_health_check_query_timeout_counts_as_transient_failure(
     """
     import taskq.worker.workgroup as workgroup_mod
 
-    # Why raising=False: the RED run must fail on the missing bound
+    # Why raising=False: the red run must fail on the missing bound
     # itself (the outer wait_for timing out), not on an AttributeError
     # for the constant the fix introduces.
     monkeypatch.setattr(workgroup_mod, "_HEALTH_QUERY_TIMEOUT_SECS", 0.05, raising=False)
@@ -2008,7 +2008,7 @@ async def test_health_check_query_timeout_counts_as_transient_failure(
     pool = _BlackHolePool(hang_label="test_worker")
     cfg = WorkerHealthConfig(enabled=True, consecutive_failure_limit=3)
 
-    # Why the outer wait_for: the RED state hangs, and a hung test
+    # Why the outer wait_for: the red state hangs, and a hung test
     # proves nothing - it must fail fast instead.
     result = await asyncio.wait_for(
         _child_health_check(child, pool, "taskq", cfg, UUID(int=1)), timeout=1.0
@@ -2030,7 +2030,7 @@ async def test_health_check_query_timeout_at_limit_declares_unhealthy(
 
     monkeypatch.setattr(
         workgroup_mod, "_HEALTH_QUERY_TIMEOUT_SECS", 0.05, raising=False
-    )  # Why raising=False: same RED-honesty seam as the first test in this section.
+    )  # Why raising=False: same red-honesty seam as the first test in this section.
     child = _make_child()
     child.process = _proc(FakeProcess(returncode=None))
     child.health_failures = 2
@@ -2054,14 +2054,14 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
     The health loop walks children sequentially while holding each
     child's restart_lock across its check, and the shutdown path
     acquires the same locks to forward SIGTERM - unguarded, one
-    never-answered fetchrow froze health checks for EVERY child and the
+    never-answered fetchrow froze health checks for every child and the
     supervisor's graceful shutdown with it.
     """
     import taskq.worker.workgroup as workgroup_mod
 
     monkeypatch.setattr(
         workgroup_mod, "_HEALTH_QUERY_TIMEOUT_SECS", 0.05, raising=False
-    )  # Why raising=False: same RED-honesty seam as the first test in this section.
+    )  # Why raising=False: same red-honesty seam as the first test in this section.
     config = WorkgroupConfig(
         actors="myapp.actors:registry",
         supervisor=SupervisorConfig(
@@ -2113,7 +2113,7 @@ async def test_run_forever_black_holed_health_query_does_not_stall_the_loop(
         patch("asyncio.get_running_loop") as mock_loop,
         patch("taskq.worker.workgroup.asyncpg.create_pool", new_callable=AsyncMock) as pool_mock,
     ):
-        # Why _child_health_check is NOT patched here (unlike the other
+        # Why _child_health_check is not patched here (unlike the other
         # run_forever health tests): the behaviour under test lives
         # inside it - the real check against a pool that never answers.
         mock_loop.return_value.add_signal_handler = capture_handler

@@ -58,7 +58,7 @@ class AbortBatchAfter(BatchFailurePolicy):
     ``__post_init__`` so the client can read it polymorphically via
     ``policy.failure_threshold``.
 
-    Running jobs are NOT cancelled by the abort, only pending and
+    Running jobs are not cancelled by the abort, only pending and
     scheduled jobs are cancelled.  Running jobs continue to completion.
     This matches the post-terminal-write hook design: the hook runs after
     the terminal write, so a job that was dispatched before the abort

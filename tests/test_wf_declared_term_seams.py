@@ -7,7 +7,7 @@ docstrings and guides, at the input that tells the two declarations apart:
 
 * the step's explicit retry terms override the wired handle's — including
   the value that equals the step's own default (three attempts);
-* ``capture_policy=`` and its ``capture=`` alias are ONE value on BOTH
+* ``capture_policy=`` and its ``capture=`` alias are one value on both
   decorators, and a disagreement is refused (never a silent winner);
 * ``result_ttl=`` accepts a ``timedelta`` on the route arm and the stored
   form is the seconds number (the duration law's "every face").
@@ -86,7 +86,7 @@ def test_a_step_declaring_three_attempts_overrides_a_handle_declaring_seven() ->
 
 
 def test_a_workflow_capture_policy_and_capture_alias_disagreeing_is_refused() -> None:
-    """TWO SPELLINGS, ONE VALUE: ``capture_policy=`` is the canonical
+    """TWO SPELLINGS, one VALUE: ``capture_policy=`` is the canonical
     workflow-decorator name and ``capture=`` rides as the alias; a
     declaration passing both with different values is refused (the
     ``@app.actor`` face refuses it). A silent winner here decides which
@@ -106,7 +106,7 @@ def test_a_workflow_capture_policy_and_capture_alias_disagreeing_is_refused() ->
 def test_the_capture_alias_accepts_agreeing_and_single_declarations() -> None:
     """The refusal's other side: only two DECLARED values that disagree
     are refused. Unset both (the errors-only default), one spelling
-    declared (that value wins), and both declared with the SAME value are
+    declared (that value wins), and both declared with the same value are
     all accepted — the None sentinel separates "unset" from "declared the
     default", and equality is agreement, never a disagreement."""
     app = WorkflowApp()

@@ -20,7 +20,7 @@ The findings, one pin each:
   driver's body failure killed a healthy RECLAIMED loop mid-drive (and
   wrote the escalation row); a stale advance moved the counter BACKWARD
   3→1 over the live carry.
-* the escalation consumer NEVER RUNS in production shape:
+* the escalation consumer never RUNS in production shape:
   the dispatch fence's terminal-flow leg refuses the row (the
   exhaustion terminalizes the flow in the outbox insert's own tx — the
   row is born unfenceable); the phase-3 pin greens via an in-process
@@ -99,7 +99,7 @@ async def test_f_loop_1_the_typed_carry_reaches_the_body_at_iteration_zero(
 
     async def trusting_body(ctx: StepContext, carry: Counter) -> Done[Counter] | Refine[Counter]:
         seen.append(type(carry).__name__)
-        nxt = carry.acc + 1  # the annotation's promise: carry IS a Counter
+        nxt = carry.acc + 1  # the annotation's promise: carry is a Counter
         return Done(Counter(acc=nxt)) if nxt >= 3 else Refine(Counter(acc=nxt))
 
     app = WorkflowApp()
@@ -137,7 +137,7 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     terminal write and the carry advance (the pg_terminate_backend
     window — the shipped pin #6's own classified seam); the memo heals
     the window (the guard below proves the ledger-level exactly-once) —
-    and the replayed carry must arrive AS THE DECLARED MODEL, so the
+    and the replayed carry must arrive AS the DECLARED MODEL, so the
     accumulate sequence is EXACTLY [(Counter, 1), (Counter, 2),
     (Counter, 3)]. TODAY the defensive-body shape observes the dict and
     resets: [("dict", 1), ("dict", 1), ("Counter", 2), ("Counter", 3)]."""
@@ -157,8 +157,9 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     def _wf() -> Promise[object]:
         return build(loop("counter", counting_body, initial=Counter(acc=0), max_iterations=5))
 
-    # THE CRASH, DETERMINISTIC: iteration 0's terminal write COMMITS,
-    # then the backend dies before the advance. Once only.
+        # iteration 0's terminal write commits, then the backend dies before the
+
+    # advance. Once only.
     real_record = _runner_loop.LoopOps._record_iteration_terminal
     kills = {"n": 0}
 
@@ -177,7 +178,7 @@ async def test_f_loop_1_the_accumulate_across_resume_sequence_is_exact(
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, max_ticks=30)
     monkeypatch.undo()
-    # THE RE-DRIVE (the reclaim's re-claim — a fresh driver identity, as
+    # the re-drive (the reclaim's re-claim — a fresh driver identity, as
     # a re-claiming peer would be).
     runner2 = FlowRunner(app.get("aloop_carry_resume"), wf_pool, wf_schema)
     assert await runner2.drive(flow_id, max_ticks=50) == "terminal"
@@ -225,7 +226,7 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
     the control union), NOTHING is recorded as succeeded, drive()
     returns the bounded 'terminal' verdict (never a bare
     AssertionError), and no later reclaim can launder the garbage into a
-    Refine (the body runs ONCE)."""
+    Refine (the body runs once)."""
     spawns: list[int] = []
 
     async def raw_body(ctx: StepContext, carry: object) -> object:
@@ -256,9 +257,8 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
         "WHERE flow_id = $1 AND step_key LIKE 'counter.iter%' AND status = 'succeeded'",
         flow_id,
     )
-    # THE LAUNDER WINDOW: reclaim the row (the estate's heal) and
-    # re-drive — the memo must not replay a garbage 'succeeded' row as a
-    # Refine.
+    # reclaim the row (the estate's heal) and re-drive — the memo must not
+    # replay a garbage 'succeeded' row as a Refine.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'scheduled', scheduled_at = now(), "
         "locked_by_worker = NULL WHERE step_key = 'counter' "
@@ -303,17 +303,17 @@ async def test_f_loop_4_a_non_union_return_fails_named_at_the_point_of_return(
 
 
 # ── the sweep's return counts every exhaustion ────────────────
-# FIXED (the sweep-count fix): the budget sweep's return counts EVERY
+# fixed (the sweep-count fix): the budget sweep's return counts every
 # CAS-held exhaustion — the named state + the flow's terminalization
 # complete at the exhaust statement; the escalation arm is additional
-# work. The marker is gone, the green IS the receipt.
+# work. The marker is gone, the green is the receipt.
 
 
-# ── the escalation's claim on the REAL dispatch path ──────────
-# FIXED (this head): the ESCALATION-KIND exemption is shipped in BOTH
-# fences (the claim fence AND the probe fence — the two may not
-# disagree): the loop's registered escalation consumer is dispatchable ON
-# the terminal flow that spawned it. The marker is gone, the green IS the
+# ── the escalation's claim on the real dispatch path ──────────
+# fixed (this head): the escalation-kind exemption is shipped in both
+# fences (the claim fence and the probe fence — the two may not
+# disagree): the loop's registered escalation consumer is dispatchable on
+# the terminal flow that spawned it. The marker is gone, the green is the
 # receipt.
 async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_path(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
@@ -326,10 +326,10 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
 
     The CONTROL (a live flow's pending loop node) MUST be claimed — the
     probe is never vacuous. The SUBJECT (the escalation row on the
-    terminal flow) must be claimed AND run: the registered body receives
+    terminal flow) must be claimed and run: the registered body receives
     the exhaustion record and the row terminal-succeeds with it. The
     'workflow' actor cohort is seeded up front (a3f's separation probe):
-    with capacity present, the ONLY refuser left is the fence leg."""
+    with capacity present, the only refuser left is the fence leg."""
     from dataclasses import replace
 
     from taskq._json import loads as _loads
@@ -337,11 +337,10 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
     from taskq.workflows._worker_execution import execute_flow_job
     from tests._stub_job_row import make_job
 
-    # THE FLEET SHAPE: a workflow_execution-capable worker row (the boot
-    # projection's stamp) + the synced cohorts — 'wf' (the compiled
-    # nodes') AND 'workflow' (the WorkflowDef default actor — the
-    # escalation row's placement; seeded so the capacity question is OFF
-    # the table and the pin isolates the fence leg).
+    # a workflow_execution-capable worker row (the boot projection's stamp) +
+    # the synced cohorts — 'wf' (the compiled nodes') and 'workflow' (the
+    # WorkflowDef default actor — the escalation row's placement; seeded so the
+    # capacity question is off the table and the pin isolates the fence leg).
     worker_id = new_uuid()
     await wf_conn.execute(
         f'INSERT INTO "{wf_schema}".workers (id, hostname, pid, queues, metadata) '
@@ -392,7 +391,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
         f"the escalation never enqueued+drained (the setup's own shape): {esc}"
     )
 
-    # THE CONTROL: a live flow's pending loop node.
+    # a live flow's pending loop node.
     live_flow = (await runner.create_flow()).flow_id
     live_node = await wf_conn.fetchrow(
         f"SELECT id FROM \"{wf_schema}\".jobs WHERE step_key = 'counter' "
@@ -401,7 +400,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
     )
     assert live_node is not None
 
-    # THE REAL DISPATCH CTE — the fleet's claim statement, this schema.
+    # the real dispatch CTE — the fleet's claim statement, this schema.
     got = await dispatch_batch(
         wf_conn,
         sql=DISPATCH_ROUND_ROBIN_SQL.format(schema=wf_schema),
@@ -424,7 +423,7 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
         "transaction). On the fleet, escalates_to= never fires; the row sits "
         "pending until retention."
     )
-    # AND RAN: the fleet's execution door runs the claimed row (D1 — the
+    # and ran: the fleet's execution door runs the claimed row (D1 — the
     # body resolves from the registered definition).
     metadata = esc_claimed["metadata"]
     payload = esc_claimed["payload"]
@@ -453,11 +452,11 @@ async def test_f_loop_3_the_escalation_is_claimed_and_runs_on_the_real_dispatch_
     )
 
 
-# FIXED (this head): the claim identity's fence landed on BOTH the
+# fixed (this head): the claim identity's fence landed on both the
 # advance and the exhaust statements (LOOP_ADVANCE_SQL / LOOP_EXHAUST_SQL's
 # worker + attempt + claim_epoch legs — the one-tx-finalize doctrine's
 # back door closed); the zombie's stale strike is refused at the statement.
-# The marker is gone, the green IS the receipt.
+# The marker is gone, the green is the receipt.
 
 
 async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
@@ -469,7 +468,7 @@ async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
     re-claims, runs iter0, advances, parks mid-iter1; A wakes and its
     stale body raises — A's exhaust must update NOTHING. SAFE: the loop
     row still running at iteration 1 with B's carry, the flow root live,
-    NO escalation row written; B then completes the loop with its own
+    no escalation row written; B then completes the loop with its own
     count."""
     gate_a = asyncio.Event()
     gate_b = asyncio.Event()
@@ -480,8 +479,8 @@ async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
     async def gated_body(ctx: StepContext, carry: object) -> Done[Carry] | Refine[Carry]:
         c = carry if isinstance(carry, Carry) else Carry()
         if ctx.attempt == 1:
-            # THE ZOMBIE's stale iteration-0 body: parked past the lease,
-            # then its timed-out dependency finally errors.
+            # the zombie's stale iteration-0 body: parked past the lease, then
+            # its timed-out dependency finally errors.
             parked_a.set()
             await gate_a.wait()
             raise ValueError("the stale attempt's dependency timed out")
@@ -489,7 +488,7 @@ async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
         spawns.append((ctx.attempt, iteration))
         if iteration == 1:
             parked_b.set()
-            await gate_b.wait()  # B parks MID-LOOP, healthy, the row running
+            await gate_b.wait()  # B parks mid-loop, healthy, the row running
         if iteration >= 2:
             return Done(Carry(acc=iteration + 1, by="B"))
         return Refine(Carry(acc=iteration + 1, by="B"))
@@ -509,14 +508,13 @@ async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
         "AND (metadata->>'flow_id')::uuid = $1",
         flow_id,
     )
-    # THE ESTATE RECLAIM (the lease expired — the zombie lost the row):
     # the re-pend shape, claimable again.
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'scheduled', locked_by_worker = NULL, "
         "scheduled_at = now() WHERE id = $1",
         loop_id,
     )
-    # B — the healthy re-claimer (a FRESH driver identity).
+    # B — the healthy re-claimer (a fresh driver identity).
     runner_b = FlowRunner(app.get("aloop_zombie"), wf_pool, wf_schema)
     drive_b = asyncio.create_task(runner_b.drive(flow_id, max_ticks=60))
     await asyncio.wait_for(parked_b.wait(), timeout=10)
@@ -529,7 +527,7 @@ async def test_f_loop_2_a_zombie_drivers_strike_updates_nothing(
         f"the interleave setup failed (B not mid-loop): {dict(mid) if mid else None}"
     )
 
-    # THE ZOMBIE WAKES: its stale body raises; its exhaust must not land.
+    # its stale body raises; its exhaust must not land.
     gate_a.set()
     verdict_a: object
     try:
@@ -589,7 +587,7 @@ async def test_f_loop_5_the_sweep_counts_every_exhaustion(
 
     runner = FlowRunner(app.get("aloop_fail_policy"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
-    # ORPHAN the loop at the cap (the worker died mid-iteration; the
+    # orphan the loop at the cap (the worker died mid-iteration; the
     # lease expired, as the real window converges to).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'running', "
@@ -618,9 +616,9 @@ async def test_f_loop_5_the_sweep_counts_every_exhaustion(
 
 
 # ── the promised 'waits forever' validate warning ─────────────
-# FIXED (this head): the W3-eternal-loop warning rule landed — the
+# fixed (this head): the W3-eternal-loop warning rule landed — the
 # docstring's promise is the shipped behavior; the marker is gone, the
-# green IS the receipt.
+# green is the receipt.
 
 
 def test_f_loop_6_validate_warns_on_the_waits_forever_loop() -> None:
@@ -652,10 +650,10 @@ def test_f_loop_6_validate_warns_on_the_waits_forever_loop() -> None:
 
 
 # ── E8 rejects one seam late (registration, not validate) ────
-# FIXED (this head): the registration door validates — app.get() runs
+# fixed (this head): the registration door validates — app.get() runs
 # validate_compiled before recording/registering, so the mismatched
 # carrier is refused before any row exists; the marker is gone, the
-# green IS the receipt.
+# green is the receipt.
 
 
 def test_f_loop_7_the_carrier_type_refusal_fires_at_registration() -> None:
@@ -685,17 +683,17 @@ def test_f_loop_7_the_carrier_type_refusal_fires_at_registration() -> None:
         app.get("aloop_e8_late")
 
 
-# ── GUARD (a): the walls live in the SWEEP, never the body ──────────────
+# ── guard (a): the walls live in the sweep, never the body ──────────────
 
 
 async def test_guard_the_budget_wall_fires_from_the_sweep_with_the_driver_dead(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """GUARD (the attack FAILED — the probe's finding): the budget wall is
-    enforced BY THE SWEEP with the driver hard-killed mid-iteration (the
+    enforced BY the SWEEP with the driver hard-killed mid-iteration (the
     SIGKILL shape: the task cancelled, no cleanup runs) — the named
     state, the typed failure class, the flow terminal, and the body
-    spawned EXACTLY ONCE (the wall never lived in the body)."""
+    spawned EXACTLY once (the wall never lived in the body)."""
     gate = asyncio.Event()
     spawns: list[int] = []
 
@@ -718,7 +716,7 @@ async def test_guard_the_budget_wall_fires_from_the_sweep_with_the_driver_dead(
     drive_task.cancel()  # SIGKILL's in-process shape: no reclaim runs
     with contextlib.suppress(asyncio.CancelledError):
         await drive_task
-    # The deadline (PG's clock) passes; NO driver ever runs again.
+    # The deadline (PG's clock) passes; no driver ever runs again.
     await asyncio.sleep(0.7)
     exhausted = await sweep_loop_budget(wf_pool, runner.wsql)
     node = await wf_conn.fetchrow(
@@ -744,7 +742,7 @@ async def test_guard_the_cap_wall_fires_from_the_sweep_on_the_crash_window_row(
     counter REACH max), then dies before the top-of-loop cap check (the
     until= predicate raises CancelledError on the killing pass — the
     crash window). The orphaned running row at the cap, lease expired as
-    the real window converges to, is exhausted BY THE SWEEP — the body
+    the real window converges to, is exhausted BY the SWEEP — the body
     spawned EXACTLY max_iterations times."""
     spawns: list[int] = []
     calls = {"n": 0}
@@ -755,7 +753,7 @@ async def test_guard_the_cap_wall_fires_from_the_sweep_on_the_crash_window_row(
 
     async def killing_until() -> bool:
         # The pass where iteration == max (the counter reached the cap):
-        # the worker dies HERE — before the driver's cap check.
+        # the worker dies here — before the driver's cap check.
         calls["n"] += 1
         if calls["n"] > 5:
             raise asyncio.CancelledError("the worker died after the final advance")
@@ -795,7 +793,7 @@ async def test_guard_the_cap_wall_fires_from_the_sweep_on_the_crash_window_row(
     assert root == "failed", root
 
 
-# ── GUARD (b): the crash window heals exactly-once ──────────────────────
+# ── guard (b): the crash window heals exactly-once ──────────────────────
 
 
 async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly_once(
@@ -809,7 +807,7 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
     advance (the pg_terminate_backend window, injected at the classified
     seam the shipped pin #6 uses). The reclaim records 'crashed' (the
     ladder untouched), the memo replay heals the window, the ledger
-    shows EXACTLY ONE succeeded row per iteration key, and the result is
+    shows EXACTLY one succeeded row per iteration key, and the result is
     correct. (The RESUME's carry TYPE is the pin — this guard
     pins the ledger's exactly-once, which held.)"""
     from taskq.workflows.api import _runner_loop
@@ -843,7 +841,7 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, max_ticks=30)
     monkeypatch.undo()
-    # THE RE-DRIVE (the reclaim's re-claim — a fresh driver identity).
+    # the re-drive (the reclaim's re-claim — a fresh driver identity).
     runner2 = FlowRunner(app.get("aloop_guard_heal"), wf_pool, wf_schema)
     assert await runner2.drive(flow_id, max_ticks=50) == "terminal"
     assert await runner2.result(flow_id) == {"acc": 3}
@@ -870,16 +868,16 @@ async def test_guard_the_crash_window_between_terminal_and_advance_heals_exactly
     assert failed == 0, f"the crash burned the ladder ({failed} failed rows)"
 
 
-# ── GUARD (c): the held iteration is invisible to the budget arm ────────
+# ── guard (c): the held iteration is invisible to the budget arm ────────
 
 
 async def test_guard_the_held_iteration_is_invisible_to_the_budget_arm(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """GUARD (the attack FAILED — the probe's finding, the arm's heart): a
-    ``budget_paused`` row with its deadline FORCED INTO THE PAST
+    ``budget_paused`` row with its deadline FORCED into the PAST
     survives the sweep untouched (holds are free); the un-paused twin at
-    the same deadline fires. (The arm WITHOUT ``AND NOT
+    the same deadline fires. (The arm without ``and not
     budget_paused`` — the CONSUME-BUDGET dragon — is the mutation
     scenario's red in the shipped pins; this guard pins the fence as this
     front independently re-proved it.)"""
@@ -954,8 +952,8 @@ def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None
         lp = loop("scan", refine_forever, initial=p, max_iterations=10)
         return build(lp, p)
 
-    # THE REGISTRATION DOOR (the registration seam) refuses the
-    # handle BEFORE any row exists — the named rule, the named fix.
+    # the registration door (the registration seam) refuses the
+    # handle before any row exists — the named rule, the named fix.
     from taskq.workflows.api._validate import WorkflowValidationError
 
     with pytest.raises(WorkflowValidationError, match="E11-loop-promise-carry"):
@@ -965,7 +963,7 @@ def test_f_loop_8_validate_refuses_a_promise_as_the_loop_initial_carry() -> None
     def _wf_ok() -> Promise[object]:
         return build(loop("counter", refine_forever, initial={"n": 0}, max_iterations=10))
 
-    # The honest alternative still builds clean: a VALUE initial carries
+    # The honest alternative still builds clean: a value initial carries
     # through the door, and the clean graph's own diagnostics carry no
     # E11 (the refusal never over-fires onto a value carry).
 

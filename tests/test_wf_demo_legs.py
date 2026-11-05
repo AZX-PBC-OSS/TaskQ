@@ -8,7 +8,7 @@ a RUNNABLE path + the captured output:
   named states (the root `cancelled`, the held signals resolved, the
   downstream skipped-with-the-record), the audit row, the explorer's
   derived status reading `cancelled`.
-* **LEG 2 — RESUMABILITY**: THE KILL-AND-RESUME SCENARIO: a PRODUCTION
+* **LEG 2 — RESUMABILITY**: the KILL-and-RESUME SCENARIO: a PRODUCTION
   worker subprocess (``taskq worker``) claims a node mid-run and is
   SIGKILLed; a fresh worker re-claims it (the lease expiry + the
   reclaim) and the run COMPLETES. The operator's resilience story,
@@ -49,7 +49,7 @@ MEASUREMENTS = Path(__file__).parent.parent / ".measurements" / "demo-legs"
 def demo_dotdir(tmp_path_factory: Any) -> Any:
     """The scenario's dotdir, PORTABLE: the worker subprocesses' stdout logs
     and the empty dotenv dir live in pytest's own tmp estate — a path
-    that exists on EVERY runner (the hardcoded scratch dotdir was
+    that exists on every runner (the hardcoded scratch dotdir was
     the local dev loop's pre-created path and died on CI with a
     FileNotFoundError at the first spawn — the CI
     measured face)."""
@@ -65,14 +65,14 @@ def _capture(name: str, content: str) -> Path:
     return path
 
 
-# ── LEG 1: the cancellation ──────────────────────────────────────────────
+# ── leg 1: the cancellation ──────────────────────────────────────────────
 
 
 async def test_leg1_the_cancellation_story(wf_pool: Any, wf_schema: str, wf_conn: Any) -> None:
     """A run cancelled MID-FLIGHT: the named states + the audit row + the
-    explorer's derived status. THE RUNNABLE PATH: trigger → mid-flight →
+    explorer's derived status. the RUNNABLE PATH: trigger → mid-flight →
     ``taskq flows cancel <run_id> --reason ...`` (the CLI; the admin's
-    Cancel button writes the SAME rows)."""
+    Cancel button writes the same rows)."""
     from taskq.workflows import FlowRunner, cancel_workflow_run
 
     app = WorkflowAppFixture()
@@ -81,7 +81,7 @@ async def test_leg1_the_cancellation_story(wf_pool: Any, wf_schema: str, wf_conn
     run_id = (await runner.create_flow()).flow_id
     await runner.drive(run_id, until="held", max_ticks=300)  # mid-flight: the review holds
 
-    # THE CANCELLATION (the operator's action — the CLI's own form):
+    # the cancellation (the operator's action — the CLI's own form):
     stopped = await cancel_workflow_run(
         wf_pool,
         schema=wf_schema,
@@ -91,7 +91,7 @@ async def test_leg1_the_cancellation_story(wf_pool: Any, wf_schema: str, wf_conn
     )
     assert stopped >= 1, "the cancel cascade landed on nothing"
 
-    # THE NAMED STATES: the root + the nodes + the signals + the audit.
+    # the root + the nodes + the signals + the audit.
     root = await wf_conn.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', run_id)
     assert root == "cancelled"
     node_rows = await wf_conn.fetch(
@@ -99,7 +99,7 @@ async def test_leg1_the_cancellation_story(wf_pool: Any, wf_schema: str, wf_conn
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key <> '__flow__'",
         run_id,
     )
-    # EVERY node row is in a NAMED state (never running mid-flight).
+    # every node row is in a named state (never running mid-flight).
     for row in node_rows:
         assert row["status"] in ("cancelled", "succeeded", "pending"), (
             f"{row['step_key']}: {row['status']}"
@@ -118,7 +118,7 @@ async def test_leg1_the_cancellation_story(wf_pool: Any, wf_schema: str, wf_conn
     assert audit is not None, "the cancel without its audit row reds"
     assert audit["principal_subject"] == "cli:demo"
 
-    # THE EXPLORER'S STORY: the derived status reads CANCELLED.
+    # the derived status reads cancelled.
     from taskq.web.admin._wf_rows import fetch_run_view
 
     view = await fetch_run_view(wf_conn, wf_schema, run_id)
@@ -146,7 +146,7 @@ async def test_leg1_the_cancellation_story(wf_pool: Any, wf_schema: str, wf_conn
     )
 
 
-# ── LEG 2: the kill-and-resume scenario ─────────────────────────────────────
+# ── leg 2: the kill-and-resume scenario ─────────────────────────────────────
 
 
 @pytest.fixture
@@ -161,9 +161,9 @@ async def test_leg2_the_kill_and_resume_drill(
     fresh worker re-claims it (the lease expiry + the reclaim) and the
     run COMPLETES. The operator's resilience story, runnable."""
     schema = module_pg_schema.schema_name
-    # THE TRIGGER: the ROUTER flow (hold-free — the scenario's run must be
-    # completable by the WORKERS alone; the doc_ingest's review hold
-    # needs a human, and the scenario's operator is the lease clock).
+    # the router flow (hold-free — the scenario's run must be completable by
+    # the workers alone; the doc_ingest's review hold needs a human, and the
+    # scenario's operator is the lease clock).
     from examples.workflows import wf_app
 
     from taskq.workflows import FlowRunner
@@ -181,8 +181,8 @@ async def test_leg2_the_kill_and_resume_drill(
         "TASKQ_SCHEMA_NAME": schema,
         "TASKQ_ENVIRONMENT": "dev",
         "TASKQ_ADMIN_ACTIONS_ENABLED": "true",
-        # THE WORKFLOW COHORTS' QUEUES (the boot projection declares
-        # them; the worker must SUBSCRIBE to consume — the demo's
+        # the workflow cohorts' queues (the boot projection declares
+        # them; the worker must subscribe to consume — the demo's
         # chain's queue).
         "TASKQ_QUEUES": "demo-screen,demo-cpu,demo-io,demo-classify,demo-publish,demo-enrich,default",
         "DOTENV_DIR": str(demo_dotdir / "empty-dotenv"),
@@ -205,7 +205,7 @@ async def test_leg2_the_kill_and_resume_drill(
             stderr=subprocess.STDOUT,
         )
 
-    # WORKER 1: runs the flow's nodes.
+    # worker 1: runs the flow's nodes.
     killed = spawn("killed")
     killed_deadline = time.time() + 90
     saw_running = False
@@ -221,12 +221,12 @@ async def test_leg2_the_kill_and_resume_drill(
         await asyncio.sleep(0.3)
     assert saw_running, "the worker never claimed the flow's nodes"
 
-    # THE KILL (SIGKILL — the operator's scenario's teeth: no shutdown, no
+    # the kill (SIGKILL — the operator's scenario's teeth: no shutdown, no
     # cleanup; the lease expires on the row).
     killed.send_signal(signal.SIGKILL)
     await asyncio.to_thread(killed.wait)
 
-    # WORKER 2: the fresh worker re-claims (the lease expiry + the
+    # worker 2: the fresh worker re-claims (the lease expiry + the
     # reclaim) and the run completes.
     fresh = spawn("fresh")
     try:
@@ -249,8 +249,7 @@ async def test_leg2_the_kill_and_resume_drill(
         except TimeoutError:
             fresh.kill()
 
-    # THE LEDGER'S STORY: the killed attempt's rows + the successful
-    # re-run (the reclaim's record).
+        # the killed attempt's rows + the successful re-run (the reclaim's record).
     ledger = await wf_conn.fetch(
         f'SELECT attempt, status FROM "{wf_schema}".wf_step_ledger WHERE flow_id = $1 ORDER BY id',
         run_id_uuid,
@@ -271,7 +270,7 @@ async def test_leg2_the_kill_and_resume_drill(
     )
 
 
-# ── LEG 3: the observability (the live scrape — a REAL one) ─────────────
+# ── leg 3: the observability (the live scrape — a real one) ─────────────
 
 _SCRAPE_SCRIPT = """
 import json
@@ -284,9 +283,9 @@ from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.sdk.metrics import MeterProvider
 from prometheus_client import CollectorRegistry
 
-# THE BOOT ORDER IS THE PIN: the provider is wired at process start,
-# BEFORE the first taskq.obs import — the module-level wf gauge's meter
-# resolves against THIS provider (the shipped serve path's real order;
+# the boot order is the pin: the provider is wired at process start,
+# before the first taskq.obs import — the module-level wf gauge's meter
+# resolves against this provider (the shipped serve path's real order;
 # a provider installed mid-process never rebinds a real meter).
 registry = CollectorRegistry()
 reader = PrometheusMetricReader(registry=registry)
@@ -317,7 +316,7 @@ async def test_leg3_the_live_wf_gauge_scrape(
     leader's sampler feeds ``taskq.wf_progress_nodes_total``; the
     /metrics ENDPOINT's actual response is captured verbatim.
 
-    THE RECEIPTS LAW APPLIES TO DOCS: the earlier "capture" was the
+    The earlier "capture" was the
     test's own f-string rendering — never scraped — carrying an ILLEGAL
     metric name (the dotted ``taskq.wf_progress_nodes_total`` never
     leaves the process: the Prometheus bridge's translation is dots →
@@ -327,13 +326,13 @@ async def test_leg3_the_live_wf_gauge_scrape(
     verbatim output; both defects are impossible in it, and the pins
     below red if either shape ever returns.
 
-    THE SCRAPE RUNS IN A SUBPROCESS — the endpoint e2e's own isolation
+    the SCRAPE RUNS IN A SUBPROCESS — the endpoint e2e's own isolation
     shape: the wf gauge's instrument binds at import to whatever provider
-    is then process-global, and a provider another test installed FIRST
+    is then process-global, and a provider another test installed first
     strands it there forever (OTel's own law: real-provider meters never
     rebind — only the pre-provider proxy does). In a long CI session the
     scrape then came back EMPTY. The
-    subprocess wires the provider at its process start, BEFORE the first
+    subprocess wires the provider at its process start, before the first
     ``taskq.obs`` import — the shipped serve path's real boot order,
     order-immune by construction."""
     pytest.importorskip("fastapi")
@@ -351,15 +350,14 @@ async def test_leg3_the_live_wf_gauge_scrape(
     )
     await runner.drive(run_id_uuid, until="held", max_ticks=300)
 
-    # THE LEADER'S SAMPLER, VERBATIM: the same query + the same
-    # registered-names collapse the maintenance leader's wf-progress
-    # sampler runs at its tick (the sampler's read is the feed; the
-    # gauge's cache is its only consumer).
+    # the same query + the same registered-names collapse the maintenance
+    # leader's wf-progress sampler runs at its tick (the sampler's read is the
+    # feed; the gauge's cache is its only consumer).
     from taskq.worker._leader_shared import _QUERY_WF_PROGRESS_SQL_TEMPLATE
     from taskq.workflows.definitions import get_registry
 
     wf_rows = await wf_conn.fetch(_QUERY_WF_PROGRESS_SQL_TEMPLATE.format(schema=schema))
-    registered = frozenset(get_registry()._workflows)  # pyright: ignore[reportPrivateUsage]  # Why: the sampler reads the SAME registry the definitions' import populated (the leader's own walk).
+    registered = frozenset(get_registry()._workflows)  # pyright: ignore[reportPrivateUsage]  # Why: the sampler reads the same registry the definitions' import populated (the leader's own walk).
     collapsed: dict[tuple[str, str], int] = {}
     for row in wf_rows:
         name = str(row["workflow"])
@@ -368,9 +366,8 @@ async def test_leg3_the_live_wf_gauge_scrape(
         key = (name, str(row["state"]))
         collapsed[key] = collapsed.get(key, 0) + int(row["count"])
 
-    # THE SCRAPE SUBPROCESS: provider first, then the import, then the
-    # cache feed, then the verbatim scrape (the boot order the shipped
-    # serve path runs).
+        # provider first, then the import, then the cache feed, then the verbatim
+    # scrape (the boot order the shipped serve path runs).
     probe_env = {
         key: value for key, value in os.environ.items() if not key.startswith(("OTEL_", "TASKQ_"))
     }
@@ -389,8 +386,8 @@ async def test_leg3_the_live_wf_gauge_scrape(
     scrape_text = result.stdout.split("SCRAPE_BEGIN\n", 1)[1]
     _capture("leg3-wf-gauge-scrape.prom", scrape_text)
 
-    # THE CAPTURE'S TRUTH: the LEGAL rendering (dots → underscores), the
-    # workflow label carrying a REGISTERED name, and no ghost series.
+    # the legal rendering (dots → underscores), the workflow label carrying a
+    # registered name, and no ghost series.
     wf_lines = [line for line in scrape_text.splitlines() if "wf_progress_nodes_total" in line]
     assert wf_lines, f"the scrape carried no wf series: {scrape_text[:2000]}"
     assert any("taskq_wf_progress_nodes_total" in line for line in wf_lines), wf_lines
@@ -407,7 +404,7 @@ async def test_leg3_the_live_wf_gauge_scrape(
     )
 
 
-# ── LEG 4: the conditional router (the streaming router chain, live) ──────────────────
+# ── leg 4: the conditional router (the streaming router chain, live) ──────────────────
 
 
 async def test_leg4_the_conditional_router_routes_live(
@@ -415,12 +412,12 @@ async def test_leg4_the_conditional_router_routes_live(
 ) -> None:
     """The streaming router router LIVE: the chain's SCREEN step routes each record —
     READABLE → index, UNREADABLE → dead_letter; the totals are the
-    fence. THE RUNNABLE PATH: the demo's ``doc_screen_router`` run."""
+    fence. the RUNNABLE PATH: the demo's ``doc_screen_router`` run."""
     from examples.workflows import _DOC_SOURCE
 
     from taskq.workflows import FlowRunner
 
-    # The demo's corpus: a doc MISSING from the source = the UNREADABLE arm.
+    # The demo's corpus: a doc missing from the source = the unreadable arm.
     assert "doc-doomed" in _DOC_SOURCE  # the demo's corpus is intact
     compiled = wf_app_fixture().get("doc_screen_router")
     runner = FlowRunner(compiled, wf_pool, wf_schema)
@@ -428,9 +425,8 @@ async def test_leg4_the_conditional_router_routes_live(
     outcome = await runner.drive(run_id, max_ticks=500)
     assert outcome == "terminal"
 
-    # THE ROUTE'S STORY: the readable docs' rows → index; the missing
-    # ones (the source's None) → the dead-letter arm. The chain's rows
-    # carry the steps' keys.
+    # the readable docs' rows → index; the missing ones (the source's None) →
+    # the dead-letter arm. The chain's rows carry the steps' keys.
     node_rows = await wf_conn.fetch(
         f'SELECT step_key, status FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 ORDER BY id",
@@ -458,7 +454,7 @@ async def test_leg4_the_conditional_router_routes_live(
     assert by_key.get("screen.start") or by_key.get("screen_source"), by_key
 
 
-# ── the fixture the legs share (the demo's app, imported ONCE) ───────────
+# ── the fixture the legs share (the demo's app, imported once) ───────────
 
 
 def wf_app_fixture() -> Any:
@@ -467,29 +463,29 @@ def wf_app_fixture() -> Any:
     return wf_app
 
 
-# ── THE POISON-LOOP PIN: a foreign run in the schema ────────────────────
+# ── the poison-loop pin: a foreign run in the schema ────────────────────
 
 
 async def test_the_drive_loop_tolerates_a_foreign_run(
     module_pg_pool: Any, module_pg_schema: Any, wf_conn: Any
 ) -> None:
     """The poison-loop pin: a foreign workflow's run in the same schema
-    (the demo's OWN second workflow is exactly that, to the doc_ingest
+    (the demo's own second workflow is exactly that, to the doc_ingest
     driver — and any other app's run can share the schema) must not
-    poison the pass. THE OLD SHAPE: the driver built ONE doc_ingest
+    poison the pass. the OLD SHAPE: the driver built one doc_ingest
     runner for every row; the foreign run raised on its first foreign
     step key — ABORTING every pass — starved the runs behind it (no
-    ORDER BY), and spammed the same error every 0.5 s forever. THE CONTRACT,
+    ORDER BY), and spammed the same error every 0.5 s forever. the CONTRACT,
     pinned here: the pass derives from THIS app's registry (each run's
-    runner is the run's OWN stamped workflow), a foreign name is
-    tolerated LOUDLY-ONCE (the deduped warning, not a per-pass spam),
+    runner is the run's own stamped workflow), a foreign name is
+    tolerated LOUDLY-once (the deduped warning, not a per-pass spam),
     and the runs behind the foreign row still complete."""
     import uuid as uuid_mod
 
     from examples.workflows import _drive_pending, trigger_router_run, trigger_run
 
     schema = module_pg_schema.schema_name
-    # THE FOREIGN RUN, at the claim sequence's HEAD (created first — the
+    # the FOREIGN run, at the claim sequence's HEAD (created first — the
     # poison sat in front of every victim). Its workflow name is not
     # registered on the demo's app.
     from taskq.workflows._sql import WorkflowSql
@@ -506,16 +502,16 @@ async def test_the_drive_loop_tolerates_a_foreign_run(
         )
     assert foreign.created
 
-    # THE VICTIMS: the demo's own workflows, behind the poison in the
-    # ORDER BY (uuid7 = the claim sequence).
+    # the demo's own workflows, behind the poison in the ORDER BY (uuid7 = the
+    # claim sequence).
     router_run = await trigger_router_run(module_pg_pool, schema)
     victim = str((await trigger_run(module_pg_pool, schema)).flow_id)
 
-    # ONE pass — the old shape aborted HERE on the poison's first tick.
+    # one pass — the old shape aborted here on the poison's first tick.
     await _drive_pending(module_pg_pool, schema)
 
-    # THE VICTIM'S STORY: the pass reached it (the poison did not abort
-    # the walk) — its nodes exist and moved.
+    # the pass reached it (the poison did not abort the walk) — its nodes exist
+    # and moved.
     victim_uuid = uuid_mod.UUID(victim)
     node_rows = await wf_conn.fetch(
         f'SELECT status, count(*) AS n FROM "{schema}".jobs '
@@ -527,8 +523,8 @@ async def test_the_drive_loop_tolerates_a_foreign_run(
     assert statuses.get("succeeded", 0) >= 1, (
         f"the pass never reached the run behind the poison run: {statuses}"
     )
-    # THE ROUTER'S RUN — the demo's own second workflow — drove from ITS
-    # OWN compiled graph (the registry's derivation, not a hardcode).
+    # the router's run — the demo's own second workflow — drove from its
+    # own compiled graph (the registry's derivation, not a hardcode).
     router_root = await wf_conn.fetchval(
         f'SELECT status FROM "{schema}".jobs WHERE id = $1', __import__("uuid").UUID(router_run)
     )
@@ -536,8 +532,8 @@ async def test_the_drive_loop_tolerates_a_foreign_run(
         f"the router run never drove from its own runner: {router_root}"
     )
 
-    # THE LOUD-ONCE: a SECOND pass over the foreign row does not repeat
-    # the warning (the dedup, not the 0.5 s spam).
+    # a second pass over the foreign row does not repeat the warning (the
+    # dedup, not the 0.5 s spam).
     import structlog.testing
 
     with structlog.testing.capture_logs() as logs:
@@ -549,18 +545,18 @@ async def test_the_drive_loop_tolerates_a_foreign_run(
     )
 
 
-# ── THE SWALLOWED-CANCEL PIN: the drive loop's stop is BOUNDED ──────────
+# ── the swallowed-cancel pin: the drive loop's stop is bounded ──────────
 
 
 async def test_the_drive_loop_stops_on_cancel_within_the_bound(
     module_pg_pool: Any, module_pg_schema: Any
 ) -> None:
     """The swallowed-cancel pin (measured): cancel → the loop STOPPED
-    within the bound. THE OLD SHAPE: the drive pass rode
+    within the bound. the OLD SHAPE: the drive pass rode
     ``suppress(CancelledError)`` — a cancellation delivered mid-drive was
     SWALLOWED (a consumed cancellation is never delivered again), the
     loop slept on, and the loop measured ALIVE 12 s after the cancel,
-    still ticking. THE CONTRACT: the pass re-raises the cancel and the
+    still ticking. the CONTRACT: the pass re-raises the cancel and the
     lifespan's stop AWAITS the loop (bounded join). The cancel here
     lands DURING a drive pass — the swallow's own window."""
     import asyncio
@@ -572,7 +568,7 @@ async def test_the_drive_loop_stops_on_cancel_within_the_bound(
     run_id = str((await trigger_run(module_pg_pool, schema)).flow_id)
 
     task = asyncio.create_task(drive_loop(module_pg_pool, schema))
-    # Wait until the pass is MID-DRIVE (a node row 'running' = the drive
+    # Wait until the pass is mid-drive (a node row 'running' = the drive
     # pass is executing bodies) — then cancel INTO the pass.
     deadline = time_mod.monotonic() + 60
     mid_drive = False
@@ -597,7 +593,7 @@ async def test_the_drive_loop_stops_on_cancel_within_the_bound(
     assert stopped_s < 5.0, f"the loop stopped in {stopped_s:.2f}s — past the 5 s bound"
 
 
-# ── THE COMPOSE SUBSCRIPTION PIN: the shipped stack's placement ─────────
+# ── the compose subscription pin: the shipped stack's placement ─────────
 
 
 def test_the_compose_workers_subscribe_to_the_demo_queues() -> None:
@@ -605,7 +601,7 @@ def test_the_compose_workers_subscribe_to_the_demo_queues() -> None:
     SUBSCRIBE to the demo's queues — per worker, per the placement (the
     heterogeneous placement is DEMONSTRATED by the stack, never
     decorative: a queue's node runs on ITS worker). The old stack
-    subscribed both workers to ``examples`` ONLY — the demo's five
+    subscribed both workers to ``examples`` only — the demo's five
     cohorts had no worker, the wiring's placement was decoration."""
     from pathlib import Path
 
@@ -617,12 +613,12 @@ def test_the_compose_workers_subscribe_to_the_demo_queues() -> None:
         worker: compose["services"][worker]["environment"]["TASKQ_QUEUES"].split(",")
         for worker in ("worker-1", "worker-2")
     }
-    # THE VANILLA QUEUE stays on both (the trigger UI's actors).
+    # the vanilla queue stays on both (the trigger UI's actors).
     for worker, queues in subs.items():
         assert "examples" in queues, f"{worker} lost the vanilla actors' queue"
-    # THE DEMO'S QUEUES: every cohort the wiring names (the doc_ingest
-    # nodes + the router chain's queue) — subscribed, and by EXACTLY ONE
-    # worker (the gpu-ish queue's node runs on ITS worker).
+        # every cohort the wiring names (the doc_ingest nodes + the router chain's
+    # queue) — subscribed, and by exactly one worker (the gpu-ish queue's node
+    # runs on its worker).
     demo_queues: set[str] = set()
     for name in ("doc_ingest", "doc_screen_router"):
         compiled = wf_app_fixture().get(name)
@@ -637,9 +633,9 @@ def test_the_compose_workers_subscribe_to_the_demo_queues() -> None:
         assert len(holders) == 1, (
             f"{queue!r} rides {holders} — the cohort's node must run on ITS worker"
         )
-    # THE REGISTRY FACE: the worker's process carries the workflow
-    # definitions (a queue-routed claim can resolve its body — the
-    # subscription is only real if the D1 registry is populated).
+        # the worker's process carries the workflow definitions (a queue-routed
+    # claim can resolve its body — the subscription is only real if the D1
+    # registry is populated).
     worker_py = (repo / "examples" / "worker.py").read_text()
     assert "import examples.workflows" in worker_py, (
         "the worker never imports the demo's workflow definitions — a "

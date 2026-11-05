@@ -136,7 +136,7 @@ async def test_default_timeout_is_3_seconds() -> None:
 
     await invoke_error_reporter(cast(ErrorReporter, _DelayReporter()), job, exc)
 
-    # The claim in the docstring IS the pin: the signature's own default
+    # The claim in the docstring is the pin: the signature's own default
     # must be 3.0 - a default that drifts from on_retry_exhausted's
     # convention silently re-bounds every caller that omits the argument.
     default = inspect.signature(invoke_error_reporter).parameters["timeout"].default

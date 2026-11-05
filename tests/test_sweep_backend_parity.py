@@ -81,7 +81,7 @@ async def _seed_scheduled_pg(
     schema: str,
     count: int,
 ) -> list[UUID]:
-    """Seed *count* due scheduled jobs on Postgres in ONE round trip."""
+    """Seed *count* due scheduled jobs on Postgres in one round trip."""
     job_ids = [new_uuid() for _ in range(count)]
     await conn.execute(
         f'INSERT INTO "{schema}".jobs '  # noqa: S608  # Why: schema is a test-fixture identifier, validated by render() upstream.
@@ -123,7 +123,7 @@ async def test_both_backends_promote_at_most_batch_size_per_call(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """One capped call promotes exactly the cap on BOTH backends.
+    """One capped call promotes exactly the cap on both backends.
 
     The two backends must honour the same bound per call: the leader's
     sweep budget (and the ``job_events`` INSERT-to-COMMIT span the
@@ -174,7 +174,7 @@ async def test_capped_calls_drain_completely_without_writing_events(
     clean_pg_conn: asyncpg.Connection,
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Repeated capped calls drain fully on BOTH backends, writing no event
+    """Repeated capped calls drain fully on both backends, writing no event
     rows.
 
     The companion to the cap assertion: a bound that leaves rows behind

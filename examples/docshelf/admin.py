@@ -24,7 +24,7 @@ def build_admin_app(dsn: str, schema: str, *, auth: bool | None = None) -> FastA
     workflow definitions mounted (the typed resolve door delivers).
 
     *auth* forces the fail-closed auth posture on/off (the drill's
-    local capture runs with it OFF — the admin's own startup check
+    local capture runs with it off — the admin's own startup check
     demands an auth_dependency in non-dev environments otherwise)."""
     import os
 

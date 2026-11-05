@@ -1,11 +1,11 @@
 """The registered-definition registry (D1 — dispatch resolves bodies
 from the REGISTERED definition).
 
-DISPATCH RESOLVES BODIES FROM THE REGISTERED DEFINITION: per-call body maps
+DISPATCH RESOLVES BODIES FROM the REGISTERED DEFINITION: per-call body maps
 must not exist in the public API — two overlapping dispatches with
 different body maps double-task a pending node and the claim-CAS loser
 runs the WRONG body (the observed hazard; pin 16). The registry is the
-ONLY body source: a body resolved here is the definition's body, whatever
+only body source: a body resolved here is the definition's body, whatever
 the caller passed.
 
 The registry is a module-level map keyed by the workflow's registered
@@ -41,10 +41,10 @@ __all__ = [
 #: A step body: the coroutine the dispatch runs for one step.
 StepBody = Callable[[Any], Awaitable[Any]]
 
-#: The map's DECLARED read-side aggregate fn: a PURE fn
-#: over the children's decoded result rows, evaluated AT READ TIME by the
+#: The map's declared read-side aggregate fn: a pure fn
+#: over the children's decoded result rows, evaluated at read time by the
 #: aggregation surfaces — never a blocking fan-in (the fence: the join
-#: is for DATAFLOW, progress aggregation is OBSERVABILITY).
+#: is for dataflow, progress aggregation is observability).
 AggregateFn = Callable[[list[Any]], object]
 
 
@@ -70,22 +70,22 @@ class WorkflowDef:
     capture_policy: str = "errors-only"
     redact: Callable[[str], str] | None = None
     #: The loop nodes' declared ``on_exhausted`` policies, keyed by loop
-    #: key: the SWEEP's arm reads the policy from
-    #: the REGISTERED DEFINITION (D1) — a hand-crafted loop row carries
+    #: key: the sweep's arm reads the policy from
+    #: the registered definition (D1) — a hand-crafted loop row carries
     #: no policy face, and the node row's metadata is the counter's
     #: cache, never the declaration's source.
     loop_policies: dict[str, str] = field(default_factory=dict[str, str])
-    #: The maps' DECLARED read-side aggregates, keyed by
-    #: the SOURCE step key (the children's parent — the read surfaces
-    #: resolve by the parent row's own step key), resolved DURABLY at
-    #: read time (the flow root's stamped workflow name → THIS
+    #: The maps' declared read-side aggregates, keyed by
+    #: the source step key (the children's parent — the read surfaces
+    #: resolve by the parent row's own step key), resolved durably at
+    #: read time (the flow root's stamped workflow name → this
     #: registry), the same doctrine the fired join's body uses.
     aggregates: dict[str, AggregateFn] = field(default_factory=lambda: dict[str, AggregateFn]())
 
 
 class WorkflowRegistry:
     """The one registry: workflow name → definition. Dispatch resolves step
-    bodies from HERE only."""
+    bodies from here only."""
 
     def __init__(self) -> None:
         self._workflows: dict[str, WorkflowDef] = {}
@@ -93,11 +93,11 @@ class WorkflowRegistry:
     def register(self, definition: WorkflowDef) -> WorkflowDef:
         if definition.name in self._workflows:
             existing = self._workflows[definition.name]
-            # IDEMPOTENT RE-REGISTRATION (the compile's contract: same
+            # idempotent re-registration (the compile's contract: same
             # module → same graph → the same body map): recompiling the
-            # SAME definition is not a second registration — the registry
+            # same definition is not a second registration — the registry
             # is keyed by name and the compile is deterministic. Only a
-            # DIFFERING re-definition (a shadow) is the coding error.
+            # differing re-definition (a shadow) is the coding error.
             if (
                 existing.bodies == definition.bodies
                 and existing.aggregates == definition.aggregates
@@ -127,7 +127,7 @@ class WorkflowRegistry:
             ) from None
 
     def body(self, name: str, step_key: str) -> StepBody:
-        """Resolve ONE step body from the registered definition (D1)."""
+        """Resolve one step body from the registered definition (D1)."""
         definition = self.get(name)
         try:
             return definition.bodies[step_key]
@@ -156,7 +156,7 @@ def resolve_step_body(name: str, step_key: str) -> StepBody:
 
 
 # ── The build-time graph validators (the declarative API's refusals) ────
-# A malformed GRAPH is a coding error, refused at build time — never a
+# A malformed graph is a coding error, refused at build time — never a
 # runtime dragon the sweep has to diagnose after the fact (the sweep's
 # orphan_parent stamp remains the runtime diagnosis for rows that reach
 # the DB anyway; the validators are the door the API layer composes).
@@ -166,8 +166,8 @@ def resolve_step_body(name: str, step_key: str) -> StepBody:
 #: ``failure_policy`` column's vocabulary; a fork/join declaring anything
 #: else is refused at build time (the runtime never sees an unknown
 #: policy — the propagation rule's split would silently take the default).
-#: ``maybe`` is the optional edge: a maybe child's TERMINAL failure is
-#: ABSORBED like collect's (fan-in + the join fires) but is SURFACED —
+#: ``maybe`` is the optional edge: a maybe child's terminal failure is
+#: absorbed like collect's (fan-in + the join fires) but is surfaced —
 #: the fan-in item names the policy that absorbed it, so the result
 #: envelope cannot lie about which policy ran.
 FAILURE_POLICIES: Final[tuple[str, ...]] = ("fail_closed", "collect", "maybe")
@@ -192,8 +192,8 @@ def validate_fork(fork: ForkSpec) -> None:
     """Refuse a malformed fork at build time — the 'record healthy, work
     wrong' class, rejected before any row is written.
 
-    THE EMPTY-JOIN PRECEDENT: a fork over a
-    legitimately-empty corpus STILL declares its join — the join is born
+    A fork over a
+    legitimately-empty corpus still declares its join — the join is born
     ``deps_pending=0``, fires IMMEDIATELY, and packs the EMPTY list (the
     typed sum's honest value: ``result() == []``, the run terminal,
     SUCCESS truthful — a night with no documents chunked zero documents,
@@ -209,19 +209,17 @@ def validate_fork(fork: ForkSpec) -> None:
             "build time: it carries no work and no collect — the "
             "stranded invisible join's shape"
         )
-    # THE EMPTY-JOIN PRECEDENT (fall-through): a zero-children fork WITH
-    # a join passes the refusal above — the join fires with the empty
-    # list; the join's own declared policy and bound still validate
-    # below.
+        # fall-through. a zero-children fork with a join passes the refusal above —
+    # the join fires with the empty list; the join's own declared policy and
+    # bound still validate below.
     if fork.join is not None and fork.join.failure_policy not in FAILURE_POLICIES:
         raise ValueError(
             f"join {fork.join.step_key!r} declares unknown failure_policy "
             f"{fork.join.failure_policy!r} — one of {FAILURE_POLICIES}"
         )
-    # THE FAN-IN BOUND (the fork's door): the fork's join over more
-    # children than the bound is refused unless it declares the
-    # child-driven shape explicitly (the choice is recorded on the joined
-    # node's metadata — the docs state when child-driven engages).
+        # the fork's join over more children than the bound is refused unless it
+    # declares the child-driven shape explicitly (the choice is recorded on the
+    # joined node's metadata — the docs state when child-driven engages).
     if (
         fork.join is not None
         and len(fork.children) > MAX_FAN_IN_PER_JOIN
@@ -239,16 +237,16 @@ def validate_fork(fork: ForkSpec) -> None:
         )
 
 
-#: The DECLARED MAXIMUM FAN-IN PER JOIN (the operational bound): the
+#: The declared maximum fan-in per JOIN (the operational bound): the
 #: join's re-derive cost scales with the edge-ledger row count per join,
 #: and the measured curve's honest reading (P1's three points — 200 →
-#: 14.9 ms, 1000 → 23.8 ms, 5000 → 39.3 ms — are NOT one line: the 1000
+#: 14.9 ms, 1000 → 23.8 ms, 5000 → 39.3 ms — are not one line: the 1000
 #: point is the outlier; the endpoint fit ~5.1 µs/edge + ~14 ms base) is
-#: that the BASE term dominates — no fan-in meets a 5 ms-class budget at
+#: that the base term dominates — no fan-in meets a 5 ms-class budget at
 #: the ~14-16 ms base, and the marginal edge cost is ~5 µs. The bound's
-#: candidate therefore stands on the BASE-COST argument (the base is paid
+#: candidate therefore stands on the base-cost argument (the base is paid
 #: once per sweep pass regardless of fan-in; the bound bounds the
-#: PER-JOIN marginal work inside one pass), not on the false 5 ms-class
+#: per-join marginal work inside one pass), not on the false 5 ms-class
 #: comparison. Past the bound the child-driven shape is the documented
 #: escape (an explicit opt-in, recorded on the joined node).
 MAX_FAN_IN_PER_JOIN: Final[int] = 1000
@@ -272,11 +270,11 @@ def validate_join_spec(step_key: str, parents: tuple[JobId, ...], deps_pending: 
             f"{len(parents)} parents — the counter's cache must equal the "
             "declared edge count"
         )
-    # THE FAN-IN BOUND: past the operational bound the declared-edge
-    # shape is refused — the error NAMES the bound and the child-driven
-    # alternative (the documented escape for the genuinely-needed case:
-    # the child-driven join counts its terminal children from the edge
-    # ledger at fire time instead of trusting the per-joined-row cache).
+        # past the operational bound the declared-edge shape is refused — the error
+    # names the bound and the child-driven alternative (the documented escape
+    # for the genuinely-needed case: the child-driven join counts its terminal
+    # children from the edge ledger at fire time instead of trusting the
+    # per-joined-row cache).
     if len(parents) > MAX_FAN_IN_PER_JOIN:
         raise FanInBoundExceededError(
             f"join node {step_key!r} declares {len(parents)} parents — above "

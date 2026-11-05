@@ -7,7 +7,7 @@ The retry interaction. ``create_flow(run_key=K)``
 after an interrupted create hits the arbiter's conflict path
 (``ledger.insert_flow_run`` → ``RunClaim(created=False)``) and
 ``FlowRunner.create_flow`` EARLY-RETURNS the existing run's id — the
-static nodes are NEVER inserted. The key is squatted forever by a shell
+static nodes are never inserted. The key is squatted forever by a shell
 that can never run: zero node rows, no error, the caller told "your
 run". The SAFE law: a run-key conflict whose existing run has an
 INCOMPLETE node census must COMPLETE the census (the replay heals the
@@ -62,7 +62,7 @@ async def _runkey_body(ctx: StepContext, params: _RunkeyIn) -> Any:
 
 def _one_step_runner(wf_pool: asyncpg.Pool, wf_schema: str, name: str) -> FlowRunner:
     """A compiled one-step flow's runner — the census law's subject: a
-    complete create inserts exactly ONE static node row."""
+    complete create inserts exactly one static node row."""
     app = WorkflowApp()
 
     @app.workflow(name)
@@ -95,12 +95,12 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
 ) -> None:
     """Kill the first create after the root insert
     (``_insert_static_nodes`` raises once), then RETRY with the same run
-    key — the caller's recovery move. THE SAFE LAW (the shipped arm,
-    pinned exactly): the retry returns the SAME run with a COMPLETE node
+    key — the caller's recovery move. the SAFE LAW (the shipped arm,
+    pinned exactly): the retry returns the same run with a COMPLETE node
     census (one static node for the one-step flow). The alternative fix
     shape once considered — the retry refuses with a named
     ``WorkflowRunError`` — is documented here as an alternative only,
-    NOT an accepted arm: the census completion is what shipped (the flip
+    not an accepted arm: the census completion is what shipped (the flip
     receipts), so a refusal reds this pin."""
     runner = _one_step_runner(wf_pool, wf_schema, "create2_retry_flow")
     key = "create2:retry"
@@ -115,8 +115,7 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
     with pytest.raises(RuntimeError, match="killed mid-create"):
         await runner.create_flow(run_key=key)
 
-    # THE RETRY (the caller's recovery): the arbiter's conflict path —
-    # created=False — must not strand the shell.
+    # the arbiter's conflict path — created=False — must not strand the shell.
     replay = await runner.create_flow(run_key=key)
 
     flow_id = await wf_conn.fetchval(
@@ -124,8 +123,8 @@ async def test_runkey_retry_after_interrupted_create_completes_the_census(
         key,
     )
     assert flow_id is not None  # the interrupted create's root row exists
-    # THE REPLAY IS THE SAME ROW (the replay law, pin 4's green at the
-    # ledger layer) — and its census is COMPLETE (the shipped arm: the
+    # the replay is the same row (the replay law, pin 4's green at the
+    # ledger layer) — and its census is complete (the shipped arm: the
     # retry finishes the interrupted create's node rows).
     assert str(getattr(replay, "flow_id", replay)) == str(flow_id)
     census = await _node_census(wf_conn, wf_schema, JobId(flow_id))
@@ -157,7 +156,7 @@ def test_the_guide_s_documented_run_entrypoint_resolves() -> None:
     )
 
 
-# ── THE RUNNER DOOR'S FAILURE FACES ─────────────────────────────────────
+# ── the runner door's failure faces ─────────────────────────────────────
 
 
 async def test_create_flow_on_an_unmigrated_schema_names_the_remedy(
@@ -210,10 +209,10 @@ async def test_a_terminal_run_s_key_replay_carries_the_claim_verdict(
 async def test_the_run_key_alias_is_accepted_on_both_doors(
     wf_pool: asyncpg.Pool, wf_schema: str
 ) -> None:
-    """``key=`` is the canonical run-key name on BOTH run doors;
+    """``key=`` is the canonical run-key name on both run doors;
     ``run_key=`` rides as the alias — the two spellings claim the same
     run — and passing both with different values is refused (the run
-    key is ONE value)."""
+    key is one value)."""
     from taskq.workflows import WorkflowBuildError
 
     runner = _one_step_runner(wf_pool, wf_schema, "runkey_alias_flow")

@@ -114,7 +114,7 @@ def main() -> None:
 
     # Edge cases that distinguish the flags (not timed):
     #   int/bool/None keys: A coerces silently, B raises TypeError.
-    #   bytes keys: BOTH raise TypeError - the flag does not license bytes keys.
+    #   bytes keys: both raise TypeError - the flag does not license bytes keys.
     print("== edge cases (behaviour, not timing) ==")
     try:
         dumps_a({1: "x"})

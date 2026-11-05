@@ -199,7 +199,7 @@ def test_enrich_pg_dsn_injects_password_and_forces_ssl() -> None:
     params = _resolve(result)
     assert params.user == "user"
     assert params.password == "my-token"
-    # sslmode=require → TLS context that does NOT verify the certificate.
+    # sslmode=require → TLS context that does not verify the certificate.
     assert isinstance(params.ssl, ssl_module.SSLContext)
     assert params.ssl.verify_mode == ssl_module.CERT_NONE
     assert "host:5432" in result
@@ -216,7 +216,7 @@ def test_enrich_pg_dsn_preserves_existing_params() -> None:
 
 
 def test_enrich_pg_dsn_credential_wins_over_userinfo_password() -> None:
-    """A stale userinfo password MUST NOT shadow the injected credential.
+    """A stale userinfo password MUST not shadow the injected credential.
 
     asyncpg applies userinfo before query params (both behind
     ``if password is None`` guards), so a query-string password loses -
@@ -426,7 +426,7 @@ async def test_make_pg_pool_factory_forwards_init_hook_verbatim() -> None:
     assert "sslmode=require" in call_kwargs["dsn"]
 
     # Drive the hook the way asyncpg does - once per new physical
-    # connection - and verify it registers a codec ON THAT CONNECTION
+    # connection - and verify it registers a codec on that connection
     # (the pgvector use case), not merely that a callable was passed.
     conn = MagicMock()
     conn.set_type_codec = AsyncMock()
@@ -506,7 +506,7 @@ async def test_make_pg_pool_factory_forwards_setup() -> None:
 async def test_make_pg_pool_factory_omits_new_params_when_not_provided() -> None:
     """Without the new params, none reach create_pool - backward-compat guard.
 
-    Amended by the fork-guard campaign: ``connection_class`` now ALWAYS
+    Amended by the fork-guard campaign: ``connection_class`` now always
     reaches create_pool. A pool the factory builds is TaskQ-owned wire, and
     TaskQ-owned wire carries the fork guard by default (the caller's own
     class still wins, see the resolver pin in
@@ -858,7 +858,7 @@ async def test_make_dedicated_conn_factory_applies_setup_inside_the_factory() ->
 async def test_make_dedicated_conn_factory_omits_new_params_when_not_provided() -> None:
     """Without the new params, none reach connect - backward-compat guard.
 
-    Amended by the fork-guard campaign: ``connection_class`` now ALWAYS
+    Amended by the fork-guard campaign: ``connection_class`` now always
     reaches connect (the factory's dedicated connections - the LISTEN wire
     included - are TaskQ-owned and carry the guard by default); the other
     optional params keep the omit-when-absent contract.
@@ -904,10 +904,10 @@ async def test_make_dedicated_conn_factory_declares_setup_as_the_inheritable_ini
 # ---- Per-connection credential refresh ----
 #
 # The regression these cover: factories resolving the credential
-# ONCE and handing asyncpg a fixed `password=` string. asyncpg reuses that string
+# once and handing asyncpg a fixed `password=` string. asyncpg reuses that string
 # for every physical connection it opens later, so with a finite-lifetime token
-# (Entra ID, AWS IAM RDS) the pool works at deploy and then, roughly one token
-# lifetime later, every NEW physical connection fails to authenticate while the
+# (Entra ID, aws iam rds) the pool works at deploy and then, roughly one token
+# lifetime later, every new physical connection fails to authenticate while the
 # already-open ones keep working. `max_inactive_connection_lifetime` (300s by
 # default) recycles idle connections continuously, so the pool degrades to
 # unusable. A test that only checks the first connection succeeds passes
@@ -948,7 +948,7 @@ async def test_pool_password_is_callable_refetched_per_physical_connection() -> 
     # The token rotates while the pool is alive.
     provider.password = "tok-2"
     # Physical connection 2 (pool growth) and 3 (idle-recycle replacement)
-    # both pick up the NEW credential - this is what the old code could not do.
+    # both pick up the new credential - this is what the old code could not do.
     assert await _pw(password_arg) == "tok-2"
     assert await _pw(password_arg) == "tok-2"
 

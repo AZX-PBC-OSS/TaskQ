@@ -1,6 +1,6 @@
 """Unit tests for the in-worker watchdog detectors.
 
-Each detector gets both cases: it trips when it should, and it does NOT
+Each detector gets both cases: it trips when it should, and it does not
 trip on slow-but-alive (the staleness floor and the startup grace are
 the assertions that matter - a terminal detector must never false-fire).
 ``os._exit`` is patched to a recorder that raises a sentinel, so trip
@@ -63,7 +63,7 @@ def _clock(start: float = 0.0) -> tuple[list[float], Callable[[], float]]:
 
 
 def test_liveness_staleness_respects_floor() -> None:
-    """A tiny interval (0.5s x grace 5 = 2.5s) must NOT trip before the
+    """A tiny interval (0.5s x grace 5 = 2.5s) must not trip before the
     10s floor - Docker starvation must never fire a terminal detector."""
     t, clock = _clock()
     liveness = LoopLiveness(grace_factor=5.0, clock=clock)
@@ -172,7 +172,7 @@ def test_trip_exits_even_when_the_counter_and_log_sink_raise(
 ) -> None:
     """A raising metric add or a raising log write must not skip the exit.
 
-    The counter add and the critical log run INSIDE the
+    The counter add and the critical log run inside the
     try/finally that guarantees os._exit: either raising outside it kills the
     watchdog task with no exit, and the tracked-exit gate loses its bound:
     a stuck actor thread would then hold the process open past the
@@ -286,7 +286,7 @@ async def test_shutdown_watchdog_trip_names_live_tracked_actor_handles(
 ) -> None:
     """A live tracked actor handle at the deadline trips with its own reason.
 
-    The trip at the deadline with a tracked actor still alive is NOT a
+    The trip at the deadline with a tracked actor still alive is not a
     stall: the shutdown completed, the TaskGroup exited, and an executor
     thread the cancel could never reach is still running its body: the
     designed exit for exactly that shape. An operator reading the dump
@@ -522,7 +522,7 @@ async def test_event_loop_lag_histogram_samples_a_blocked_loop(
         assert len(healthy) >= 3, "a responsive loop must produce a sample per landed beat"
         assert max(healthy) < block / 2, healthy
 
-        time.sleep(block)  # noqa: ASYNC251  # Why: blocking the loop IS the scenario under test.
+        time.sleep(block)  # noqa: ASYNC251  # Why: blocking the loop is the scenario under test.
 
         # The beat outstanding across the block lands when it ends and is
         # sampled on the watchdog's next poll; a beat that had landed just
@@ -693,7 +693,7 @@ def test_loop_lag_warn_latch_resets_on_beat(
     monkeypatch: pytest.MonkeyPatch, exit_codes: list[int]
 ) -> None:
     """A beat (the loop scheduling again after the stall) clears the warn
-    latch, so the NEXT stall gets a fresh tier-1 warning instead of riding
+    latch, so the next stall gets a fresh tier-1 warning instead of riding
     the first stall's latch - one warn per stall, not one per process."""
     increments, _dumps = _warn_recorder(monkeypatch)
     t, clock = _clock()
@@ -820,7 +820,7 @@ def test_loop_lag_warn_schedules_deferred_task_dump(
     )
     watchdog2.start()
     try:
-        # One stall crossing BOTH tiers at once on a closed loop: the warn
+        # One stall crossing both tiers at once on a closed loop: the warn
         # tier's deferred dump raises RuntimeError and is swallowed, and
         # the terminal check in the same poll iteration still exits. (The
         # thread then ends on the beat-scheduling return - with the loop
@@ -891,8 +891,8 @@ def _spawner_deps() -> Any:
 
 
 async def test_spawner_clean_return_while_clear_raises() -> None:
-    """A sibling returning cleanly while NO shutdown is in progress is a
-    contract violation: shutdown_event is set AND an error raised."""
+    """A sibling returning cleanly while no shutdown is in progress is a
+    contract violation: shutdown_event is set and an error raised."""
     from taskq.worker._bootstrap import _make_sibling_spawner
 
     shutdown = asyncio.Event()
@@ -945,7 +945,7 @@ async def test_spawner_may_return_opt_out() -> None:
 
 
 async def test_spawner_clean_return_allowed_during_drain() -> None:
-    """The graceful SIGTERM path must NOT trip the contract: producer_loop
+    """The graceful SIGTERM path must not trip the contract: producer_loop
     exits on producer_stop_event / phase entry long before shutdown_event
     is set at the end of orchestration."""
     from types import SimpleNamespace
@@ -1067,7 +1067,7 @@ async def test_demoted_leader_watchdog_never_goes_stale() -> None:
     assert "leader.watchdog" not in liveness.ages()
 
 
-# ── Graceful drain does NOT trip detector 1 ────────────────────────────────
+# ── Graceful drain does not trip detector 1 ────────────────────────────────
 
 
 async def test_shutdown_watchdog_silent_during_graceful_drain(
@@ -1220,7 +1220,7 @@ def test_classifier_blocking_call_when_the_watchdog_thread_keeps_ticking() -> No
 
 
 def test_classifier_gil_held_when_the_watchdogs_own_waits_overshoot() -> None:
-    """Loop lag with the watchdog thread's OWN wakeup starved is the
+    """Loop lag with the watchdog thread's own wakeup starved is the
     interpreter held: the overshoot of one wait past a full extra interval
     is the bystander signal a blocking call that released the GIL cannot
     produce."""

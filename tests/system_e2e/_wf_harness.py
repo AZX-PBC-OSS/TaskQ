@@ -37,7 +37,7 @@ from tests.system_e2e._harness import (
 )
 from tests.system_e2e._wf_app import MARCH_WORKER_QUEUES, PUBLISH_APPROVAL_TIMEOUT_S
 
-#: The workflow-capable entry: subprocesses run THIS module (its app
+#: The workflow-capable entry: subprocesses run this module (its app
 #: import is the capability stamp).
 WF_ENTRY = "tests.system_e2e._wf_entry"
 
@@ -47,24 +47,22 @@ WF_ENTRY = "tests.system_e2e._wf_entry"
 #: churns forever). The march bounds derive from this name.
 MARCH_LEADER_LEASE_S = 20.0
 
-#: THE MARCH FLEET'S LOCK LEASE (the heartbeat budget's co-invariant):
-#: the deploy-matrix's migration cell prices a 3s ACCESS-EXCLUSIVE
-#: window, so the fleet's heartbeat failure budget (10 failures ≈ 10.5s
-#: of tolerance — the ladder heals THROUGH the window instead of the
-#: fail-fast isolation eating the pod) demands a lease that covers its
-#: own worst coherent failed-beat cascade (the settings validator's
-#: floor: 0.5 + 11 x 1.0 = 11.5s). The march bounds derive from THIS
-#: lease — never the vanilla harness's 8s.
+#: the deploy-matrix's migration cell prices a 3s access-exclusive window, so
+#: the fleet's heartbeat failure budget (10 failures ≈ 10.5s of tolerance — the
+#: ladder heals through the window instead of the fail-fast isolation eating
+#: the pod) demands a lease that covers its own worst coherent failed-beat
+#: cascade (the settings validator's floor: 0.5 + 11 x 1.0 = 11.5s). The march
+#: bounds derive from this lease — never the vanilla harness's 8s.
 MARCH_LOCK_LEASE_S = 15.0
 
-#: A march's settle bound: the flow's OWN body times (the marches' bodies
+#: A march's settle bound: the flow's own body times (the marches' bodies
 #: are sub-second each) x the co-tenancy stretch, plus one leader lease
 #: (the dispatch cadence the fleet's leader owns) plus the sweep interval
 #: — the same derivation shape the rolling-fleet file's bounds carry —
-#: PLUS the publish's hold window (PUBLISH_APPROVAL_TIMEOUT_S = 900/3,
+#: plus the publish's hold window (PUBLISH_APPROVAL_TIMEOUT_S = 900/3,
 #: unstretched — it is already the hosted-runner constant) + one sweep
 #: tick: the flow cannot terminalize before the hold's abandonment
-#: delivers. KNOWN INSUFFICIENT under multi-CI co-tenancy: PR #698's run
+#: delivers. known insufficient under multi-CI co-tenancy: pr #698's run
 #: expired this bound with the march's rows still moving (4 concurrent
 #: CIs on the shared pool) — the stretch absorbs the co-tenancy it was
 #: measured against, not an arbitrary shared-pool starved runner. The
@@ -77,8 +75,8 @@ MARCH_SETTLE_BOUND_S = (
     + SWEEP_INTERVAL_S
 )
 
-#: The reclaim cell's bound: the lapsed lease's re-pend (THE MARCH lease +
-#: the sweep) + the new pod's claim (one poll) + the body's OWN re-run (the
+#: The reclaim cell's bound: the lapsed lease's re-pend (the march lease +
+#: the sweep) + the new pod's claim (one poll) + the body's own re-run (the
 #: ``reclaim_target`` long node sleeps 30s — the re-claimed attempt pays
 #: it again) — all stretched.
 RECLAIM_BODY_S = 30.0  # the long node's sleep (the killed attempt's remainder)
@@ -98,16 +96,15 @@ async def spawn_wf_fleet(
     env = {
         "TASKQ_LEADER_LEASE": str(MARCH_LEADER_LEASE_S),
         "TASKQ_LOCK_LEASE": str(MARCH_LOCK_LEASE_S),
-        # THE HEARTBEAT BUDGET SIZES TO THE DEPLOY WINDOW (the operator's
-        # own law, docs/guides/deployment.md): the fail-fast isolation
-        # (3 consecutive failures ≈ 6s of unavailability) is the RIGHT
-        # default for a dead database and the WRONG one for a deploy's
-        # ACCESS-EXCLUSIVE migration window — an operator deploying into
-        # a live fleet raises the budget above the window so the ladder
-        # heals through it (the matrix's migration cell prices a 3s
-        # hold; 10 failures ≈ 10.5s of tolerance clears it with margin).
+        # the fail-fast isolation (3 consecutive failures ≈ 6s of
+        # unavailability) is the right default for a dead database and the
+        # wrong one for a deploy's access-exclusive migration window — an
+        # operator deploying into a live fleet raises the budget above the
+        # window so the ladder heals through it (the matrix's migration cell
+        # prices a 3s hold; 10 failures ≈ 10.5s of tolerance clears it with
+        # margin).
         "TASKQ_MAX_HEARTBEAT_FAILURES": "10",
-        # BOTH queues: the vanilla actors' system_e2e + the flows'
+        # both queues: the vanilla actors' system_e2e + the flows'
         # framework-default (the join nodes ride the default queue).
         "TASKQ_QUEUES": MARCH_WORKER_QUEUES,
     }
@@ -178,7 +175,7 @@ async def wait_flow_terminal(
 
 
 async def tag_run_rows(pool: asyncpg.Pool, schema: str, flow_id: str, tag: str) -> None:
-    """Stamp *tag* on every row of the run NOW (the invariants'
+    """Stamp *tag* on every row of the run now (the invariants'
     population filter). Called immediately before each
     ``assert_balanced``: rows born since the last stamp (map forks,
     emitted chains) join the population — the tag is a census, not a

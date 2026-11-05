@@ -65,10 +65,10 @@ class FakeConn:
             for row in self._fetch_rows:
                 if row["id"] == job_id:
                     # The RETURNING now carries j.status too - the
-                    # arbiter's CASE outcome is the classification's
+                    # arbiter's case outcome is the classification's
                     # source of truth (the snapshot's attempt can be
                     # stale behind a refund that committed in the
-                    # window). The fake emulates the CASE faithfully:
+                    # window). The fake emulates the case faithfully:
                     # operator cancel first, then the budget arms.
                     if row["cancel_phase"] != 0:
                         status = "cancelled"
@@ -151,7 +151,7 @@ def _make_deps(
 
 async def test_isolate_self_writes_reclaim_event_rows() -> None:
     """Every job isolate_self transitions rides the crash-reclaim outbox
-    channel: ONE batched job_events insert (the sweep's event writer
+    channel: one batched job_events insert (the sweep's event writer
     shape) whose rows carry reason='lock_expired' (the channel key
     poll_reclaim_events tails) and cause='isolate_self' (which origin
     fired), with the arm's to_state. Without it, an isolate-reclaimed
@@ -215,7 +215,7 @@ async def test_isolate_self_writes_reclaim_event_rows() -> None:
         assert list(job_ids) == [row["id"] for row in job_rows]  # type: ignore[arg-type] # Why: FakeConn records untyped tuples; the insert's $1 is the uuid[] binding.
         detail_json = cast("tuple[object, ...]", details)
         parsed = [json.loads(str(d)) for d in detail_json]
-        # Arm classification mirrors the UPDATE's CASE order: the
+        # Arm classification mirrors the UPDATE's case order: the
         # transient job with budget re-pends, the non_retryable one
         # crashes.
         assert parsed[0]["to_state"] == "pending"
@@ -244,7 +244,7 @@ async def test_isolate_self_classifies_from_the_arbiter_not_the_snapshot() -> No
 
     snapshot_row: dict[str, object] = {
         "id": new_uuid(),
-        # The SNAPSHOT the SELECT hands out: the attempt budget spent -
+        # The snapshot the SELECT hands out: the attempt budget spent -
         # the stale view the old classification crashed the row from.
         "attempt": 2,
         "started_at": "2025-01-01T00:00:00Z",
@@ -252,7 +252,7 @@ async def test_isolate_self_classifies_from_the_arbiter_not_the_snapshot() -> No
         "retry_kind": "transient",
         "cancel_phase": 0,
     }
-    # The ARBITER's RETURNING: the refund committed in the window (the
+    # The arbiter's RETURNING: the refund committed in the window (the
     # charge de-charged: attempt 2 -> 1; the stamp un-stamped), the
     # arbiter re-evaluated the budget on the live row and re-pended it.
     arbiter_returning: dict[str, object] = {
@@ -290,7 +290,7 @@ async def test_isolate_self_classifies_from_the_arbiter_not_the_snapshot() -> No
         await isolate_self(deps, new_uuid(), shutdown)
 
         assert shutdown.is_set()
-        # The event carries the ARBITER's verdict: to_state pending - not
+        # The event carries the arbiter's verdict: to_state pending - not
         # the snapshot's 'crashed'.
         event_calls = [(sql, args) for sql, args in conn.execute_calls if "job_events" in sql]
         assert len(event_calls) == 1, (
@@ -306,7 +306,7 @@ async def test_isolate_self_classifies_from_the_arbiter_not_the_snapshot() -> No
             "does not carry"
         )
         # The fence's other half stands with it: the re-pended row's
-        # un-stamped charge writes NO attempt row (nothing was executed
+        # un-stamped charge writes no attempt row (nothing was executed
         # for the isolate to charge).
         attempt_inserts = [(sql, args) for sql, args in conn.execute_calls if "job_attempts" in sql]
         assert attempt_inserts == [], (
@@ -317,7 +317,7 @@ async def test_isolate_self_classifies_from_the_arbiter_not_the_snapshot() -> No
 
 
 async def test_isolate_self_opens_fresh_connect() -> None:
-    """isolate_self opens a fresh asyncpg.connect() - NOT the heartbeat pool."""
+    """isolate_self opens a fresh asyncpg.connect() - not the heartbeat pool."""
 
     connect_calls: list[tuple[str, float]] = []
 
@@ -442,7 +442,7 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
             # columns through due_at. A dropped or appended binding is a
             # statement-shape change this pin must see.
             assert len(args) == 11
-            # The due_at stamp (the 11th binding): the SNAPSHOT's
+            # The due_at stamp (the 11th binding): the snapshot's
             # scheduled_at - the claim-time due time this attempt
             # dispatched against. The arbiter's re-pend already
             # rescheduled the row, so its RETURNING cannot carry it; the
@@ -455,7 +455,7 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
         apg.connect = orig_connect  # type: ignore[method-assign]
 
 
-# ── Test: isolate_self honours CASE shape ──────────────────────────
+# ── Test: isolate_self honours case shape ──────────────────────────
 
 
 async def test_isolate_self_honours_fr12_case_shape() -> None:
@@ -543,7 +543,7 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         assert "WHERE j.id = $1" in runner
         assert "j.locked_by_worker = $2" in runner
         # pins: operator intent outranks retry budget. The cancel
-        # arm is evaluated BEFORE the budget arm; the cancel columns are
+        # arm is evaluated before the budget arm; the cancel columns are
         # preserved on the arm that honours them; the crashed arm
         # self-describes on the job row (shape-mirror of the sweep's
         # WorkerCrashed stamp, with the intentionally distinct class).
@@ -663,7 +663,7 @@ async def test_isolate_self_terminates_hung_conn_close(
     deps = _make_deps()
     shutdown = asyncio.Event()
     # Why the outer timeout: unguarded, the finally awaited conn.close()
-    # unbounded, so the RED state would hang forever instead of failing fast.
+    # unbounded, so the red state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         await isolate_self(deps, new_uuid(), shutdown)
 
@@ -729,7 +729,7 @@ async def test_isolate_self_cancels_live_actors_and_excludes_their_rows() -> Non
 
     async def _fake_consumer() -> None:
         # Park the way a real consumer does between flag polls; on cancel,
-        # the SHUTDOWN-origin interrupt arm runs its release write during
+        # the shutdown-origin interrupt arm runs its release write during
         # unwinding.
         try:
             await asyncio.Event().wait()
@@ -780,8 +780,8 @@ async def test_isolate_self_cancels_live_actors_and_excludes_their_rows() -> Non
     finally:
         apg.connect = monkeypatch_orig  # type: ignore[method-assign]
 
-    # The actor got the CANCELLING-phase treatment: cooperative event, the
-    # SHUTDOWN origin stamp (the interrupt arm's routing key), and the
+    # The actor got the cancelling-phase treatment: cooperative event, the
+    # shutdown origin stamp (the interrupt arm's routing key), and the
     # task cancellation that delivered it into unwinding.
     assert cancel_event.is_set()
     assert origin_stamps == [CancelOrigin.SHUTDOWN]
@@ -819,7 +819,7 @@ async def test_isolate_self_excludes_claim_intent_rows() -> None:
 
     job_id = new_uuid()
     deps = _make_deps()
-    # ONLY a claim intent, no registered entry: the exact window shape.
+    # only a claim intent, no registered entry: the exact window shape.
     deps.active_jobs.mark_claimed(job_id)
 
     row: dict[str, object] = {
@@ -872,7 +872,7 @@ async def test_isolate_self_excludes_claim_intent_rows() -> None:
     assert job_id in fetch_args[1], (
         "the re-pend selection must exclude the claimed-but-unregistered row"
     )
-    # The row was NOT re-pended: no disposition UPDATE, no crashed
+    # The row was not re-pended: no disposition UPDATE, no crashed
     # attempt INSERT, the local body's epoch keeps the row.
     assert conn.execute_calls == [], "the claim intent's row must never enter the isolate's re-pend"
     assert shutdown.is_set()

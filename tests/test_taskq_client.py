@@ -69,7 +69,7 @@ _RA: TypeAdapter[None] = TypeAdapter(type(None))
 async def _migrate(dsn: str, schema: str = _SCHEMA_LABEL) -> None:
     """Drop the test schema and apply all migrations.
 
-    pg_conn fixture drops the schema but does NOT recreate it - migrations
+    pg_conn fixture drops the schema but does not recreate it - migrations
     must be applied before TaskQ can use the schema.
     """
     conn = await asyncpg.connect(dsn)
@@ -202,7 +202,7 @@ class TestLifecycle:
         assert pool is not None
         try:
             async with TaskQ(pool=pool, schema=_SCHEMA_LABEL):
-                pass  # opens and closes TaskQ but must NOT close the pool
+                pass  # opens and closes TaskQ but must not close the pool
 
             # Pool should still be usable after TaskQ closed.
             async with pool.acquire() as conn:
@@ -331,7 +331,7 @@ class TestCloseBounded:
         tq._pool = cast(asyncpg.Pool, fake_pool)
 
         # Why the outer timeout: unguarded, close() awaits pool.close()
-        # unbounded, so the RED state would hang forever instead of failing
+        # unbounded, so the red state would hang forever instead of failing
         # fast.
         async with asyncio.timeout(5):
             await tq.close()
@@ -499,7 +499,7 @@ class TestEnqueue:
                     make_enqueue_args(idempotency_key=key),
                 )
 
-                # Victim: the REAL client pool (5.0s command_timeout),
+                # Victim: the real client pool (5.0s command_timeout),
                 # exactly as an application would use it.
                 async with TaskQ(dsn=pg_dsn, schema=_SCHEMA_LABEL) as tq:
                     with pytest.raises(IdempotencyKeyLockTimeoutError) as excinfo:

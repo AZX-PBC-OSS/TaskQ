@@ -7,7 +7,7 @@ The observable contract, attacked here end to end:
 
 * the contended row is SKIPPED - the other eligible rows are still
   transitioned by the same call (skip, not block, not abort);
-* the skipped row gains NO attempts/events from the call that skipped
+* the skipped row gains no attempts/events from the call that skipped
   it (nothing is written for a row the snap never returned);
 * once the holder's transaction rolls back, a subsequent call reclaims
   the row with exactly one attempts row and one event - the
@@ -103,7 +103,7 @@ async def test_locked_row_is_skipped_then_reclaimed_after_holder_rollback(
     """An external row lock must be skipped, not blocked on - and the
     skipped row must still be reclaimable afterwards.
 
-    A worker holding an open transaction on ONE of five eligible jobs is
+    A worker holding an open transaction on one of five eligible jobs is
     the production shape: a dispatcher mid-transaction, or a terminal
     write in flight.  The sweep must make progress on the other four
     without waiting, and the skipped row must come back cleanly on a
@@ -184,7 +184,7 @@ async def test_mid_batch_attempt_collision_skips_and_commits_the_batch(
     yields to it.  The superseded expectation was not a tolerance loss:
     the old rollback is precisely the wedge the doctrine removes - a
     permanently colliding row would abort the sweep on a non-transient
-    error every tick, leaving its own job AND every sibling batched
+    error every tick, leaving its own job and every sibling batched
     behind it unreclaimed forever.  Batch atomicity under a genuine
     mid-batch failure is still pinned (server-side, one transaction) by
     ``test_postgres_sweeps.py``'s

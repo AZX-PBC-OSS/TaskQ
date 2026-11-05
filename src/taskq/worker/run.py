@@ -312,11 +312,11 @@ async def producer_loop(
     made_a_claim = False
     # The unexpected-error backstop, the same one every leader
     # maintenance loop carries (see taskq.worker._transient): a
-    # NON-transient dispatch failure (a revoked grant, a code bug, a
+    # non-transient dispatch failure (a revoked grant, a code bug, a
     # data error) is logged loudly each round but must not retry
     # forever into a zombie that keeps ticking, keeps its liveness
     # registration fresh and stays ready while claiming nothing. After
-    # ``max_consecutive`` consecutive unexpected rounds the ORIGINAL
+    # ``max_consecutive`` consecutive unexpected rounds the original
     # error propagates and tears the worker down deliberately;
     # transient failures never feed it, and only a fully successful
     # round resets the streak, exactly the leader loops' semantics.
@@ -350,7 +350,7 @@ async def producer_loop(
             # The worker's genuinely free slots: every slot is
             # either empty, lent to a queued row (qsize), claimed by a
             # consumer whose registration has not absorbed the take yet
-            # (intent_count: the claim-to-register window where DI
+            # (intent_count: the claim-to-register window where di
             # resolution and the admission acquire run), or occupied by
             # a running job (active_jobs). Sizing the claim by queue
             # emptiness alone counted a fully-busy worker's slots as
@@ -393,7 +393,7 @@ async def producer_loop(
                 await asyncio.sleep(cooldown_remaining)
                 continue
 
-            # Cleared BEFORE the round, not after: a NOTIFY that lands
+            # Cleared before the round, not after: a NOTIFY that lands
             # while the round runs may announce a row the round's
             # snapshot predates, and must survive as exactly one
             # follow-up round. Everything that arrived before this point
@@ -431,26 +431,23 @@ async def producer_loop(
                     # otherwise never leave (see the guard construction
                     # above and taskq.worker._transient).
                     guard.unexpected(exc)
-                # THE SWALLOW SEAT: the poll's sleep suppresses the
-                # CancelledError + continues — the worker's own cancel
-                # never lands here (the documented absorbed-cancel
-                # shape, the uncancel accounting below). Removing the
-                # suppress (letting the cancel propagate) shifted the
-                # e2e tier's leg2 timing (the
-                # kill-and-resume's reclaim did not land within its
-                # bound) — the behavioral shift is un-verified
-                # against the tier's own record, so the seat REMAINS
-                # until that verification lands
-                # (the pin carries the seat's name).
+                    # the poll's sleep suppresses the CancelledError + continues —
+                # the worker's own cancel never lands here (the documented
+                # absorbed-cancel shape, the uncancel accounting below).
+                # Removing the suppress (letting the cancel propagate) shifted
+                # the e2e tier's leg2 timing (the kill-and-resume's reclaim did
+                # not land within its bound) — the behavioral shift is
+                # un-verified against the tier's own record, so the seat
+                # remains until that verification lands (the pin carries the
+                # seat's name).
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.sleep(poll_interval)
-                # THE ABSORB'S OWN ACCOUNTING (the uncancel closure): the
-                # suppress ABSORBED a delivered cancel request — the
-                # loop's documented contract here — and an un-uncancelled
-                # request is a STALE COUNT: every later reaper decision
-                # (me.cancelling() as the own-vs-child discriminator)
-                # misreads the loop as cancelled and tears it down. The
-                # request was consumed by the absorb; the count says so.
+                    # the suppress absorbed a delivered cancel request — the loop's
+                # documented contract here — and an un-uncancelled request is a
+                # stale count: every later reaper decision (me.cancelling() as
+                # the own-vs-child discriminator) misreads the loop as
+                # cancelled and tears it down. The request was consumed by the
+                # absorb; the count says so.
                 _me = asyncio.current_task()
                 if _me is not None and _me.cancelling():
                     _me.uncancel()
@@ -463,7 +460,7 @@ async def producer_loop(
 
             # DEBUG_ONLY (TASKQ_LOG_EVENTS_LEVEL=debug; see
             # taskq.obs._structlog's classification table): the poll
-            # cadence detail, one line per round. stdlib INFO deliberately
+            # cadence detail, one line per round. stdlib info deliberately
             # - the events-level filter, not the root logger level, owns
             # this line's visibility, and it is dropped at
             # info/warning/off (the default stream stays byte-identical).
@@ -542,19 +539,17 @@ async def producer_loop(
                     all_waits,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix,
-                # the same shape the reload schedule's and the watchdog's
-                # loops carry): CANCEL ALL the losers first, THEN reap
-                # each — the one-per-lap cancel+reap let the reaper's own
-                # concurrent cancellation re-raise out of the first reap
-                # and orphan the remaining waiters (the parked sleep and
-                # Event.wait tasks the guard caught).
+                # cancel all the losers first, then reap each — the one-per-lap
+                # cancel+reap let the reaper's own concurrent cancellation
+                # re-raise out of the first reap and orphan the remaining
+                # waiters (the parked sleep and Event.wait tasks the guard
+                # caught).
                 for task in pending:
                     task.cancel()
                 for task in pending:
                     await reap_cancelled_child(task)
             finally:
-                # Cover OUR OWN cancellation at the wait point: cancel all
+                # Cover our own cancellation at the wait point: cancel all
                 # the pending waiters first, then reap each; our own cancel
                 # (the reaper's re-raise) still propagates — after the
                 # bounded reap completes, never swallowed, never allowed
@@ -567,7 +562,7 @@ async def producer_loop(
                     try:
                         await reap_cancelled_child(task)
                     except asyncio.CancelledError as exc:
-                        # the reaper re-raised OUR cancel: noted — the
+                        # the reaper re-raised our cancel: noted — the
                         # remaining children are reaped first.
                         own = exc
                 if own is not None:
@@ -588,16 +583,16 @@ async def producer_loop(
                 # no further wait, whatever the previous round returned.
                 claim_not_before = 0.0
 
-    # Exit hand-back, on the DRAINING path only (producer_stop_event is
-    # what the orchestrator sets at DRAINING entry): the DRAINING pass
+    # Exit hand-back, on the draining path only (producer_stop_event is
+    # what the orchestrator sets at draining entry): the draining pass
     # re-pends what this worker held when it ran, but a claim round already
-    # in flight at that moment commits AFTER it, the producer only
+    # in flight at that moment commits after it, the producer only
     # observes the stop event between rounds. Those rows are locked to a
     # process on its way out and no later phase sees them (they never reach
     # the active-jobs registry), so the producer hands back whatever it
     # still holds as its own last act on that path: by loop exit no further
     # claim of this worker's can commit, which is exactly the ordering the
-    # single DRAINING pass could not give. The statement is the same
+    # single draining pass could not give. The statement is the same
     # bounded, registry-excluding, attempt-refunding one (idempotent, a
     # row the first pass already released no longer matches), and its
     # failure mode is the helper's own (log + return 0; the lease-expiry
@@ -650,17 +645,16 @@ async def producer_loop_stub(
                 [stop_wait, shutdown_wait],
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix):
-            # cancel all the losers first, then reap each — the reaper's
-            # own concurrent cancellation must not orphan the sibling.
+            # cancel all the losers first, then reap each — the reaper's own
+            # concurrent cancellation must not orphan the sibling.
             for task in pending:
                 task.cancel()
             for task in pending:
                 await reap_cancelled_child(task)
         finally:
-            # Cover OUR OWN cancellation at the wait point: cancel all
+            # Cover our own cancellation at the wait point: cancel all
             # first, then reap each — our own cancel (the reaper's
-            # re-raise) is noted and re-raised AFTER the bounded reap, so
+            # re-raise) is noted and re-raised after the bounded reap, so
             # the sibling's completion is awaited, never orphaned.
             own: asyncio.CancelledError | None = None
             for task in [stop_wait, shutdown_wait]:
@@ -714,7 +708,7 @@ async def _stub_terminal_write(
         )
 
 
-#: The workflow execution seam, resolved ONCE (the import law: the
+#: The workflow execution seam, resolved once (the import law: the
 #: worker core never imports the workflows package at module scope; the
 #: intercept's hook seam does, lazily, and remembers — a worker that
 #: never installed ``taskq[flows]`` resolves ``None`` and keeps paying
@@ -769,7 +763,7 @@ class _FlowSlotGate(NamedTuple):
 
 
 class _UnknownFlowRateLimitError(RuntimeError):
-    """The row's metadata names a rate-limit bucket NO registry entry
+    """The row's metadata names a rate-limit bucket no registry entry
     backs (the claim-time refusal teeth): the
     fail-closed arm's carrier — the row parks budget-free, LOUD, never a
     silent pass-through (the admitted-never-limited lie), never a crash.
@@ -780,7 +774,7 @@ class _UnknownFlowRateLimitError(RuntimeError):
 
 
 def _str_list_metadata(metadata: dict[str, object], key: str) -> list[str] | None:
-    """THE METADATA'S WALK IS THE GUARD (the jsonb boundary — the
+    """the METADATA'S WALK IS the GUARD (the jsonb boundary — the
     isinstance pass IS the runtime shape check, the estate's
     Any-contract walk's own shape): the row's ``key`` as a list of str,
     ``[]`` when the row declares none, ``None`` when the shape lies (a
@@ -807,12 +801,12 @@ def _flow_denial_snooze_metadata(
     *,
     parked_kind: str | None = None,
 ) -> dict[str, object]:
-    """THE DENIAL'S ROW STAMP: the snooze's ``metadata_update`` —
+    """The snooze's ``metadata_update`` —
     the row's ``released_reason`` names the denial's kind and the denied
     bucket's own name rides beside it (the operator's row read answers
     "why is this step looping" without the log).
 
-    BOTH ARMS' snoozes stamp. A real denial (``denied is not None``)
+    both ARMS' snoozes stamp. A real denial (``denied is not None``)
     keeps the ``flow-rate-limit-denied`` + ``released_bucket`` shape. A
     FAIL-CLOSED PARK (``denied is None`` — an unknown bucket, a
     malformed metadata shape, a store outage) stamps
@@ -823,13 +817,13 @@ def _flow_denial_snooze_metadata(
     the snooze statement's metadata merge is jsonb concatenation, the
     park's keys overwrite, the untouched keys survive) — without the
     clear the trail read "parked" beside a bucket that was not the
-    park's truth (one row, one truth). THE
+    park's truth (one row, one truth). the
     PRIOR SHAPE: the caller
     ASSERTED ``denied is not None`` on this path — the AssertionError
     landed in the caller's broad except → ``_disown_job`` — the
     heartbeat stopped renewing the row, the reclaim handed it back, the
     re-claim re-denied: the infinite churn at lease cadence, the denial
-    stamps never landing. The snooze is THE park for BOTH arms."""
+    stamps never landing. The snooze is the park for both arms."""
     if denied is not None:
         return {
             "released_reason": "flow-rate-limit-denied",
@@ -852,22 +846,22 @@ async def _flow_rate_limit_gate(
     *,
     job_log: structlog.stdlib.BoundLogger,
 ) -> _FlowSlotGate:
-    """THE QUEUE'S RATE LIMIT + THE ROW'S OWN BUCKETS ON THE WORKFLOW
-    PATH (the one-mechanism law): a workflow row's claim honors the SAME
+    """the QUEUE'S RATE LIMIT + the ROW'S own BUCKETS ON the WORKFLOW
+    PATH (the one-mechanism law): a workflow row's claim honors the same
     queue rate limits the vanilla actors honor — the queue-cap
     reservation the fleet's dispatch already prepends for vanilla jobs
-    (:func:`taskq.worker.dispatch._effective_reservations`) — AND the
-    row's OWN admission terms (the metadata the fork/static
+    (:func:`taskq.worker.dispatch._effective_reservations`) — and the
+    row's own admission terms (the metadata the fork/static
     insert stamped, the authoring face's ``rate_limits=``), acquired in
-    ONE call (the AND-composition: the registry acquires reservations
-    then rate limits, rollback on any denial) from the SAME registry the
+    one call (the and-composition: the registry acquires reservations
+    then rate limits, rollback on any denial) from the same registry the
     vanilla pre-flight reads (passed in — the caller's loop-scope read,
-    the vanilla read's own pattern), through the SAME acquire helper
-    (the denial-retry budget included). ONE mechanism, not a second one.
+    the vanilla read's own pattern), through the same acquire helper
+    (the denial-retry budget included). one mechanism, not a second one.
 
-    THE SLOT LAW (the holds' own): a denial HOLDS THE STEP'S CLAIM —
+    A denial HOLDS the STEP'S CLAIM —
     the row is snoozed back to the pending pool by the caller (the
-    worker is NOT parked; the consumer loop moves on) and the
+    worker is not parked; the consumer loop moves on) and the
     acquired-empty result tells the intercept to release the claim. The
     deny is observable (``record_ratelimit_denial`` — the vanilla
     denials counter, the postgres backend label). A registry/store
@@ -881,18 +875,16 @@ async def _flow_rate_limit_gate(
     ``reservation_slots.job_id → jobs.actor`` regardless of row kind, so
     a workflow row's held slot damps the fleet's next claim round the
     same way a vanilla row's does. A ``None`` registry (the worker's
-    scope never resolved one) is the NO-CAPS fleet: the gate passes
+    scope never resolved one) is the no-CAPS fleet: the gate passes
     everything through, the vanilla path's own shape."""
     if rl_registry is None:
         return _FlowSlotGate([], None, None, None)  # no registry — no caps anywhere
-    # THE ROW'S OWN BUCKETS: the names the fork/static insert
-    # stamped. A non-list or non-str entry is the hand-crafted row's
-    # shape — the same fail-closed arm (the metadata lies, the row
-    # parks).
+        # the names the fork/static insert stamped. A non-list or non-str entry is
+    # the hand-crafted row's shape — the same fail-closed arm (the metadata
+    # lies, the row parks).
     names_raw = _str_list_metadata(job.metadata, "rate_limits")
     if names_raw is None:
-        # THE HAND-CRAFTED ROW'S SHAPE (the metadata lies): the same
-        # fail-closed arm — the row parks.
+        # the same fail-closed arm — the row parks.
         job_log.warning(
             "dispatch-flow-rate-limit-metadata-malformed",
             job_id=str(job.id),
@@ -906,13 +898,12 @@ async def _flow_rate_limit_gate(
             parked_kind="flow-rate-limit-metadata-malformed",
         )
     names = names_raw
-    # THE ROW'S OWN STRICT CAPS (the reservations' own ride): the
-    # reservation NAMES the fork/static insert stamped beside
-    # ``rate_limits`` — the claim path resolves them through THIS
-    # registry (the instances live there — registered at boot from
-    # ``collect_workflow_reservations`` with the rebind) and acquires
-    # them in the same composition. The SAME metadata walk (the jsonb
-    # boundary), the SAME fail-closed arms.
+    # the reservation names the fork/static insert stamped beside
+    # ``rate_limits`` — the claim path resolves them through this registry (the
+    # instances live there — registered at boot from
+    # ``collect_workflow_reservations`` with the rebind) and acquires them in
+    # the same composition. The same metadata walk (the jsonb boundary), the
+    # same fail-closed arms.
     res_raw = _str_list_metadata(job.metadata, "reservations")
     if res_raw is None:
         job_log.warning(
@@ -928,18 +919,16 @@ async def _flow_rate_limit_gate(
             parked_kind="flow-reservation-metadata-malformed",
         )
     res_names = res_raw
-    # THE KEYED CONCRETE NAMES (the wf keyed face): a name this registry
-    # does not carry directly may be a fork-stamped keyed concrete name
-    # ("base:key") — it resolves back through the boot's collected keyed
-    # decls and the concrete bucket materializes on first claim (the
-    # same lazy registration, cap and idle-eviction bound the vanilla
-    # keyed acquire runs). The materialization's OWN denial (the entry
-    # cap's raise after the opportunistic eviction) IS the denial
-    # verdict here — the budget-free park the settings doc promises, the
-    # same shape the acquire's own denial takes below; a raise out of
-    # the gate would kill the worker's loop and strand the claimed row.
-    # A name no declared ref claims stays unknown — the fail-closed arm
-    # below owns it.
+    # a name this registry does not carry directly may be a fork-stamped keyed
+    # concrete name ("base:key") — it resolves back through the boot's
+    # collected keyed decls and the concrete bucket materializes on first claim
+    # (the same lazy registration, cap and idle-eviction bound the vanilla
+    # keyed acquire runs). The materialization's own denial (the entry cap's
+    # raise after the opportunistic eviction) is the denial verdict here — the
+    # budget-free park the settings doc promises, the same shape the acquire's
+    # own denial takes below; a raise out of the gate would kill the worker's
+    # loop and strand the claimed row. A name no declared ref claims stays
+    # unknown — the fail-closed arm below owns it.
     keyed_unknown = [n for n in names if not rl_registry.has_rate_limit(n)]
     if keyed_unknown:
         try:
@@ -960,9 +949,9 @@ async def _flow_rate_limit_gate(
             return _FlowSlotGate([], None, exc, None)
     unknown = keyed_unknown
     if unknown:
-        # THE FAIL-CLOSED ARM: the row names a bucket this worker's
-        # registry does not carry — admitting it unprotected is the lie
-        # the authoring face exists to refuse. Park budget-free, LOUD.
+        # the row names a bucket this worker's registry does not carry —
+        # admitting it unprotected is the lie the authoring face exists to
+        # refuse. Park budget-free, loud.
         job_log.warning(
             "dispatch-flow-rate-limit-unknown-bucket",
             job_id=str(job.id),
@@ -980,9 +969,8 @@ async def _flow_rate_limit_gate(
         )
     unknown_res = keyed_res_unknown
     if unknown_res:
-        # THE FAIL-CLOSED ARM, THE RESERVATION FACE: a strict cap
-        # this worker cannot resolve is the admitted-never-limited lie's
-        # own shape — park budget-free, LOUD (the boot's collection pass
+        # a strict cap this worker cannot resolve is the admitted-never-limited
+        # lie's own shape — park budget-free, loud (the boot's collection pass
         # warns on the declaration; this is the defense in depth).
         job_log.warning(
             "dispatch-flow-reservation-unknown-bucket",
@@ -1035,10 +1023,10 @@ async def _dispatch_flow_job(
     flow_seam: ModuleType,
     flow_slot: "tuple[list[AcquiredResource], RateLimitRegistry] | None" = None,
 ) -> str:
-    """ONE claimed workflow row's execution through the workflow
+    """one claimed workflow row's execution through the workflow
     machinery (the intercept's engine room).
 
-    The SAME discipline the vanilla path keeps: the attempt runs in a
+    The same discipline the vanilla path keeps: the attempt runs in a
     per-job CHILD task, and the child is what ``active_jobs`` registers
     (so the cancel ladder's escalation scopes to the job, the loop
     survives, and the lost-claim reconcile sees the registry entry for
@@ -1046,9 +1034,9 @@ async def _dispatch_flow_job(
     label; the consumption metric records with the vanilla path's
     vocabulary.
 
-    *flow_slot* is THE QUEUE'S RATE-LIMIT SLOT the intercept acquired
-    (the one-mechanism law: the SAME queue-cap reservation the vanilla
-    path prepends). Released in the door's OWN finally — a HELD outcome
+    *flow_slot* is the QUEUE'S RATE-LIMIT SLOT the intercept acquired
+    (the one-mechanism law: the same queue-cap reservation the vanilla
+    path prepends). Released in the door's own finally — a HELD outcome
     releases too (the wait is not occupancy), and a cancelled/laddered
     attempt never leaks the slot.
     """
@@ -1073,10 +1061,9 @@ async def _dispatch_flow_job(
             schema=deps.settings.schema_name,
             worker_id=JobId(worker_id),
             job=job,
-            # THE WORKER'S DEFAULT DEADLINE (the wf start_to_close floor —
-            # the resolution chain's own tail): the settings' value
-            # threaded to the door; the row's own stamp outranks it (the
-            # vanilla _effective_start_to_close chain's own order).
+            # the settings' value threaded to the door; the row's own stamp
+            # outranks it (the vanilla _effective_start_to_close chain's own
+            # order).
             default_start_to_close=deps.settings.default_start_to_close,
         )
 
@@ -1085,9 +1072,9 @@ async def _dispatch_flow_job(
     try:
         execution = await task
     except asyncio.CancelledError:
-        # Route by WHO was cancelled (the vanilla dispatch's own split):
+        # Route by who was cancelled (the vanilla dispatch's own split):
         # this helper's caller cancelling (a shutdown signal's loop
-        # teardown) re-raises — the loop dies with its job. The CHILD
+        # teardown) re-raises — the loop dies with its job. The child
         # alone being cancelled (an operator cancel's phase-2 escalation,
         # or a force-cancel) is absorbed: the flow row stays running
         # under this worker's lock with no terminal, and the same
@@ -1111,10 +1098,9 @@ async def _dispatch_flow_job(
         return "cancelled"
     finally:
         await deps.active_jobs.deregister(job.id, entry)
-        # THE QUEUE'S RATE-LIMIT SLOT RELEASES (the same slot law as the
-        # holds): the flow attempt is over — succeeded, laddered, HELD
-        # (the wait is not occupancy), cancelled — the queue's capacity
-        # is back before this worker claims again.
+        # the flow attempt is over — succeeded, laddered, held (the wait is not
+        # occupancy), cancelled — the queue's capacity is back before this
+        # worker claims again.
         if flow_slot is not None:
             acquired_slot, slot_registry = flow_slot
             await slot_registry.release_for_actor(acquired_slot)
@@ -1126,11 +1112,10 @@ async def _dispatch_flow_job(
         job_id=str(job.id),
         actor=job.actor,
         queue=job.queue,
-        # THE DOOR'S REAL VALUES (F2-5): the dispatch decode DROPS the
-        # workflow's step identity (the vanilla JobRow has no fields for
-        # it), so the metadata read here was always empty — the door's
-        # bounded read is where the truth is, and the record carries it
-        # back.
+        # the dispatch decode drops the workflow's step identity (the vanilla
+        # JobRow has no fields for it), so the metadata read here was always
+        # empty — the door's bounded read is where the truth is, and the record
+        # carries it back.
         step_key=execution.step_key,
         workflow=execution.workflow_name,
         flow_id=execution.flow_id,
@@ -1168,9 +1153,8 @@ async def consumer_loop_stub(
                 [q_get, shut_wait, stop_wait],
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix):
-            # cancel all the losers first, then reap each — the reaper's
-            # own concurrent cancellation must not orphan the siblings.
+            # cancel all the losers first, then reap each — the reaper's own
+            # concurrent cancellation must not orphan the siblings.
             for task in pending:
                 task.cancel()
             for task in pending:
@@ -1179,7 +1163,7 @@ async def consumer_loop_stub(
                 # A stop signal won the race and nothing was taken.
                 return
             if deps.producer_stop_event.is_set():
-                # DRAINING owns every row this worker holds: the get TAKEN
+                # draining owns every row this worker holds: the get taken
                 # a row on the same turn the drain began. The hand-back
                 # re-pends it to the fleet (the take moved only the
                 # in-process queue entry, never the DB row), so running
@@ -1187,14 +1171,14 @@ async def consumer_loop_stub(
                 # twice. Return without dispatching.
                 return
             # Why fall through on a shutdown_event-only both-done turn:
-            # the get has already TAKEN the job out of local_queue and no
+            # the get has already taken the job out of local_queue and no
             # drain owns it (producer_stop_event is unset), returning here
             # would discard it with no consumer run, no terminal write, and
             # no release, leaving recovery to lock-lease expiry. The taken
             # job runs this final iteration; the outer while's shutdown
             # check then exits the loop.
         finally:
-            # Cover OUR OWN cancellation at the wait point: cancel all the
+            # Cover our own cancellation at the wait point: cancel all the
             # pending waiters first, then reap each — our own cancel (the
             # reaper's re-raise) is noted and re-raised after the bounded
             # reap, never swallowed, never orphaning the siblings.
@@ -1213,12 +1197,12 @@ async def consumer_loop_stub(
 
         job: JobRow = q_get.result()
 
-        # Record the claim intent BEFORE any await: between this take and
+        # Record the claim intent before any await: between this take and
         # register() the DB row is running, locked here, and invisible to
         # active_jobs, and a hand-back pass running in that window would
         # re-pend it to the fleet while this loop is about to execute it.
         # The token is what scopes this iteration's resolve_claim below
-        # to ITS OWN claim (the issue-461 class): a same-worker re-claim
+        # to its own claim (the issue-461 class): a same-worker re-claim
         # can re-mark the key before this iteration unwinds.
         _claim = deps.active_jobs.mark_claimed(job.id)
 
@@ -1234,7 +1218,7 @@ async def consumer_loop_stub(
         if current_task is None:
             raise RuntimeError("consumer_loop_stub must run inside a TaskGroup")
 
-        # The ONE parent context: tag inheritance AND the fan-out ledger
+        # The one parent context: tag inheritance and the fan-out ledger
         # stamp — every child enqueue in the actor body carries
         # this job's id as parent_id, the exact pending-children
         # accounting the client's backpressure read serves.
@@ -1265,7 +1249,7 @@ async def consumer_loop_stub(
             )
 
             # The registration is captured for the exit path below (issue
-            # 461): deregister must pop THIS attempt's entry, not a
+            # 461): deregister must pop this attempt's entry, not a
             # bare-id pop of whatever the key holds if a re-claim
             # overwrote it mid-run.
             _stub_entry = await deps.active_jobs.register(job.id, current_task, ctx)  # type: ignore[arg-type]  # Why: JobContext[_StubPayload] is a JobContext[BaseModel]; pyright cannot widen Generic[TChild] to Generic[TParent] without explicit covariance.
@@ -1381,9 +1365,8 @@ async def di_consumer_loop(
                 [q_get, shut_wait, stop_wait],
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            # THE TEARDOWN'S OWN ORDER (the leaked-task guard's fix):
-            # cancel all the losers first, then reap each — the reaper's
-            # own concurrent cancellation must not orphan the siblings.
+            # cancel all the losers first, then reap each — the reaper's own
+            # concurrent cancellation must not orphan the siblings.
             for task in pending:
                 task.cancel()
             for task in pending:
@@ -1392,21 +1375,21 @@ async def di_consumer_loop(
                 # A stop signal won the race and nothing was taken.
                 return
             if deps.producer_stop_event.is_set():
-                # DRAINING owns every row this worker holds: the get TAKEN
+                # draining owns every row this worker holds: the get taken
                 # a row on the same turn the drain began. Running it would
                 # double-execute, the row is locked to this worker and
                 # never reached the active-jobs registry, so the hand-back
-                # (the orchestrator's DRAINING pass for rows claimed before
+                # (the orchestrator's draining pass for rows claimed before
                 # it ran, the producer's exit pass for a claim round that
                 # committed after) re-pends it to the fleet while this
                 # loop's stale local copy would also run here. Return
                 # without dispatching. The taken row needs no release from
-                # THIS loop: the take moved only the in-process queue
+                # this loop: the take moved only the in-process queue
                 # entry, never the DB row, so whichever hand-back pass
                 # runs finds it exactly as claimed.
                 return
             # Why fall through on a shutdown_event-only both-done turn:
-            # the get has already TAKEN the job out of local_queue and no
+            # the get has already taken the job out of local_queue and no
             # drain owns it (producer_stop_event is unset, this is the
             # external-exit path, not a graceful-shutdown orchestration) ,
             # returning here would discard it with no dispatch, no
@@ -1414,7 +1397,7 @@ async def di_consumer_loop(
             # lock-lease expiry. The taken job runs this final iteration;
             # the outer while's shutdown check then exits the loop.
         finally:
-            # Cover OUR OWN cancellation at the wait point: cancel all the
+            # Cover our own cancellation at the wait point: cancel all the
             # pending waiters first, then reap each — our own cancel (the
             # reaper's re-raise) is noted and re-raised after the bounded
             # reap, never swallowed, never orphaning the siblings.
@@ -1433,12 +1416,12 @@ async def di_consumer_loop(
 
         job: JobRow = q_get.result()
 
-        # Record the claim intent BEFORE any await: between this take and
+        # Record the claim intent before any await: between this take and
         # register() the DB row is running, locked here, and invisible to
         # active_jobs, and a hand-back pass running in that window would
         # re-pend it to the fleet while this loop is about to execute it.
-        # The token scopes this iteration's resolve_claim below to ITS
-        # OWN claim (the issue-461 class): a same-worker re-claim's take
+        # The token scopes this iteration's resolve_claim below to its
+        # own claim (the issue-461 class): a same-worker re-claim's take
         # can re-mark the key while this iteration's attempt unwinds.
         _claim = deps.active_jobs.mark_claimed(job.id)
 
@@ -1452,32 +1435,27 @@ async def di_consumer_loop(
         if slot_freed_event is not None:
             slot_freed_event.set()
 
-        # THE WORKFLOW INTERCEPT (the execution-verdict gap's guard): a
-        # claimed row carrying the flow lineage (metadata.flow_id — the
-        # engine's stamp on every node row) executes THROUGH THE WORKFLOW
-        # MACHINERY, never through the actor registry: the body resolves
-        # from the registered definition (D1 — the flow root's stamped
-        # workflow name) and runs via the runner's ledger-claim/finalize
-        # machinery (the same tx1/tx2 + the fences — NOT a second
-        # execution semantics; the in-process driver and this door differ
-        # only in WHO CLAIMED). The seam resolves lazily (the import
-        # law): a worker that never installed taskq[flows] has no
-        # seam — and the dispatch fence (the workers row's
-        # workflow_execution capability) never hands it a workflow row in
-        # the first place, so falling through to the actor-not-found
-        # parking below is the defined legacy behavior, not a snooze
-        # loop.
+            # a claimed row carrying the flow lineage (metadata.flow_id — the
+        # engine's stamp on every node row) executes through the workflow
+        # machinery, never through the actor registry: the body resolves from
+        # the registered definition (D1 — the flow root's stamped workflow
+        # name) and runs via the runner's ledger-claim/finalize machinery (the
+        # same tx1/tx2 + the fences — not a second execution semantics; the
+        # in-process driver and this door differ only in who claimed). The seam
+        # resolves lazily (the import law): a worker that never installed
+        # taskq[flows] has no seam — and the dispatch fence (the workers row's
+        # workflow_execution capability) never hands it a workflow row in the
+        # first place, so falling through to the actor-not-found parking below
+        # is the defined legacy behavior, not a snooze loop.
         if job.metadata.get("flow_id") is not None:
             _flow_seam = _workflow_execution_seam()
             if _flow_seam is not None:
-                # THE QUEUE'S RATE LIMIT ON THE WORKFLOW PATH (the
-                # one-mechanism law): the SAME queue-cap reservation the
-                # vanilla path prepends for its jobs, acquired from the
-                # SAME registry through the SAME denial-retry helper. A
-                # denial HOLDS THE STEP'S CLAIM — the row snoozed back
-                # to the pending pool (the slot law the holds keep), the
-                # deny observable (the denials counter), the worker NOT
-                # parked (the loop moves on).
+                # the same queue-cap reservation the vanilla path prepends for
+                # its jobs, acquired from the same registry through the same
+                # denial-retry helper. A denial holds the step's claim — the
+                # row snoozed back to the pending pool (the slot law the holds
+                # keep), the deny observable (the denials counter), the worker
+                # not parked (the loop moves on).
                 _raw_flow_rl = loop_scope.resolved_cache().get(RateLimitRegistry)
                 _flow_gate = await _flow_rate_limit_gate(
                     _raw_flow_rl if isinstance(_raw_flow_rl, RateLimitRegistry) else None,
@@ -1500,16 +1478,13 @@ async def di_consumer_loop(
                         )
                         _flow_snooze = _flow_gate.denied.retry_after
                     else:
-                        # THE FAIL-CLOSED DEPENDENCY ARM (the vanilla
-                        # pre-flight's own shape): the limiter's store
-                        # could not answer — an outage is not a job
-                        # outcome; the snooze is budget-free, the
-                        # WARNING names the unavailability. The gate's
-                        # own invariant puts an arm in
-                        # ``dependency_failure`` here (the outer if
-                        # guaranteed one arm set, and ``denied`` is
-                        # None on this branch) — no assert, the
-                        # churn door is gone.
+                        # the limiter's store could not answer — an outage is
+                        # not a job outcome; the snooze is budget-free, the
+                        # warning names the unavailability. The gate's own
+                        # invariant puts an arm in ``dependency_failure`` here
+                        # (the outer if guaranteed one arm set, and ``denied``
+                        # is None on this branch) — no assert, the churn door
+                        # is gone.
                         _consumer_log.warning(
                             "dispatch-flow-rate-limit-dependency-failure",
                             job_id=str(job.id),
@@ -1518,26 +1493,21 @@ async def di_consumer_loop(
                         )
                         _flow_snooze = timedelta(seconds=10)
                     try:
-                        # THE PARK IS THE SNOOZE, FOR BOTH ARMS (no
-                        # assert, no disown): the row goes
-                        # back to the pending pool budget-free, the
-                        # stamp naming ITS arm on the record (the
-                        # helper's two shapes — the denial's bucket,
-                        # the fail-closed park's kind). A disown here
-                        # would churn: an assert failure in
-                        # this try's except → _disown_job → the
-                        # heartbeat stops renewing → the reclaim hands
-                        # the row back → the re-claim re-denies, at
-                        # lease cadence, forever.
+                        # no assert, no disown. the row goes back to the
+                        # pending pool budget-free, the stamp naming its arm on
+                        # the record (the helper's two shapes — the denial's
+                        # bucket, the fail-closed park's kind). A disown here
+                        # would churn: an assert failure in this try's except →
+                        # _disown_job → the heartbeat stops renewing → the
+                        # reclaim hands the row back → the re-claim re-denies,
+                        # at lease cadence, forever.
                         _flow_release = await backend.mark_snoozed(
                             job.id,
                             worker_id,
                             _flow_snooze,
-                            # THE DENIAL'S ROW STAMP: the
-                            # release_reason names the arm's kind and
-                            # the denied BUCKET's own name rides beside
-                            # it — a reservation denial's row names the
-                            # reservation.
+                            # the release_reason names the arm's kind and the
+                            # denied bucket's own name rides beside it — a
+                            # reservation denial's row names the reservation.
                             metadata_update=_flow_denial_snooze_metadata(
                                 _flow_gate.denied,
                                 parked_kind=_flow_gate.parked_kind,
@@ -1568,11 +1538,10 @@ async def di_consumer_loop(
                         worker_id=worker_id,
                         enqueuer=enqueuer,
                         flow_seam=_flow_seam,
-                        # THE QUEUE'S RATE-LIMIT SLOT (the one-mechanism
-                        # law): the acquired queue-cap reservation rides
-                        # the door — released in the door's own finally
-                        # (the hold's slot law: a HELD outcome releases
-                        # too, the wait is not occupancy).
+                        # the acquired queue-cap reservation rides the door —
+                        # released in the door's own finally (the hold's slot
+                        # law: a held outcome releases too, the wait is not
+                        # occupancy).
                         flow_slot=(
                             (_flow_gate.acquired, _flow_gate.registry)
                             if _flow_gate.acquired and _flow_gate.registry is not None
@@ -1580,11 +1549,11 @@ async def di_consumer_loop(
                         ),
                     )
                 except _flow_seam.WorkflowBodyUnresolvableError:
-                    # THE UNRESOLVABLE ROW (a stamped workflow name no
-                    # process carries, a hand-crafted row): the SAME
-                    # defined parking an unregistered actor gets — the
-                    # snooze cadence, budget-free, the stranded-jobs
-                    # detector the witness. LOUD, never a silent wedge.
+                    # a stamped workflow name no process carries, a
+                    # hand-crafted row. the same defined parking an
+                    # unregistered actor gets — the snooze cadence,
+                    # budget-free, the stranded-jobs detector the witness.
+                    # loud, never a silent wedge.
                     _consumer_log.error(
                         "dispatch-workflow-body-unresolvable",
                         job_id=str(job.id),
@@ -1615,23 +1584,21 @@ async def di_consumer_loop(
                     deps.active_jobs.resolve_claim(job.id, _claim)
                     continue
                 except SlotPoolAcquireError:
-                    # THE TRANSIENT ABSORPTION (F2-2, the vanilla leg's own
-                    # shape, mirrored): the door's pool acquire failed —
-                    # infrastructure, not a job outcome. The row is still
-                    # running under this worker's lock with no runner left
-                    # to move it: disown it (the heartbeat stops renewing
-                    # the lease, the reclaim sweep hands it back) exactly
-                    # as the vanilla leg disowns its own
-                    # SlotPoolAcquireError. THE LOOP MUST SURVIVE: an
-                    # uncaught transient here would kill the whole
-                    # consumer loop (every co-resident job stalled behind
-                    # the corpse) and LEAK the claim intent (the
-                    # hand-back fences firing forever).
+                    # F2-2, the vanilla leg's own shape, mirrored. the door's
+                    # pool acquire failed — infrastructure, not a job outcome.
+                    # The row is still running under this worker's lock with no
+                    # runner left to move it: disown it (the heartbeat stops
+                    # renewing the lease, the reclaim sweep hands it back)
+                    # exactly as the vanilla leg disowns its own
+                    # SlotPoolAcquireError. the loop must survive: an uncaught
+                    # transient here would kill the whole consumer loop (every
+                    # co-resident job stalled behind the corpse) and leak the
+                    # claim intent (the hand-back fences firing forever).
                     _disown_job(deps.disowned_jobs, job)
                     deps.active_jobs.resolve_claim(job.id, _claim)
                     continue
                 except Exception:
-                    # The door's OTHER failures (the ledger claim's
+                    # The door's other failures (the ledger claim's
                     # transient, a finalize write's connection loss): the
                     # vanilla leg's own generic arm, mirrored — counted,
                     # logged, the claim resolved, the loop alive. The row
@@ -1722,7 +1689,7 @@ async def di_consumer_loop(
         actor_ref = actor_registry[job.actor]
         # The attempt runs in a per-job child task, and the child is what
         # consume_one_job registers as the job's inflight attempt
-        # (asyncio.current_task() inside the child). Registering THIS loop
+        # (asyncio.current_task() inside the child). Registering this loop
         # task instead (awaiting dispatch_one_job inline) would let the
         # cancel ladder's phase-2 escalation
         # (cancel.py's active.task.cancel()) cancel the whole loop:
@@ -1734,7 +1701,7 @@ async def di_consumer_loop(
         # consumers, so the worker stranded max_concurrency rows and parked).
         # The child scopes every cancel of a registered attempt task to the
         # one job: phase-2 escalation, the shutdown orchestrator's
-        # CANCELLING/FORCING phases, and the isolate path all cancel the
+        # cancelling/forcing phases, and the isolate path all cancel the
         # child, this loop survives, and the cancel's delivery semantics are
         # the inline ones (a cancel of this loop while it awaits the child
         # propagates into the child first, through the same frames an inline
@@ -1762,12 +1729,12 @@ async def di_consumer_loop(
             try:
                 outcome = await dispatch_task
             except asyncio.CancelledError:
-                # Route by WHO was cancelled. This loop task's own
+                # Route by who was cancelled. This loop task's own
                 # cancellation (the TaskGroup's teardown cancel, count
                 # elevated) or any shutdown signal means the child was killed
                 # as part of the worker coming down: re-raise, the loop dies
                 # with its job. The
-                # remaining case is the child ALONE being cancelled while
+                # remaining case is the child alone being cancelled while
                 # this loop lives: an operator cancel's phase-2 escalation
                 # (or an actor that raised CancelledError itself). The child
                 # already terminalised the job through its own CancelledError
@@ -1819,7 +1786,7 @@ async def di_consumer_loop(
             # the intent exists to fence. Resolving in the loop's own
             # finally cannot straddle a drain: the row is no longer
             # running-and-unowned by the time this runs. Identity-scoped
-            # to THIS iteration's token (the issue-461 class): a
+            # to this iteration's token (the issue-461 class): a
             # same-worker re-claim's take can have re-marked the key
             # while this iteration's attempt was unwinding, and this
             # resolve must not erase the live claim's intent.
@@ -1913,13 +1880,13 @@ async def deregister_worker(pool: asyncpg.Pool, settings: WorkerSettings, worker
 
     Acquires from *pool* with a 2.0 s timeout.  On timeout or connection
     error, logs a structured warning ``deregister_worker_failed`` and
-    reports the failure WITHOUT raising: shutdown MUST NOT block on this
+    reports the failure without raising: shutdown MUST not block on this
     cleanup, and the caller's backstop (the deps-teardown retry, then the
     recovery sweep) decides what a still-unknown row fate means.
 
     Returns the DELETE's outcome: ``True`` when the row is confirmed gone
     (the DELETE executed and reported ``rowcount > 0``), ``False`` when the
-    delete is NOT confirmed, either because a transient failure was
+    delete is not confirmed, either because a transient failure was
     swallowed here (the dominant class: pool-acquire timeout, conn loss;
     the row's fate is unknown) or because the DELETE matched no row (the
     sweep or a peer already removed it, so there was nothing to delete).

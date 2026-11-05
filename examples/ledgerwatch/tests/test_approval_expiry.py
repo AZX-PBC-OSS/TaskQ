@@ -1,4 +1,4 @@
-"""THE EXPIRY ARM: no approval lands in the window — the wait site
+"""No approval lands in the window — the wait site
 returns the union's Expired member; the body escalates to the
 compliance queue. This module's fleet runs the SHORT window (3s): the
 expiry's precision is AT-LEAST (the DB-clock deadline + the sweep's
@@ -40,7 +40,7 @@ async def test_approval_expired_escalates_to_compliance_queue(
     assert verdict.txn_id == "B-expired-T00000"
     assert verdict.to_queue == "compliance"
 
-    # ONE durable compliance row — the escalation is real and exactly-once.
+    # one durable compliance row — the escalation is real and exactly-once.
     rows = await pool.fetch(
         f'SELECT txn_id, batch_id FROM "{schema}".lw_compliance_queue WHERE batch_id = $1',  # noqa: S608  # Why: the schema identifier only.
         "B-expired",
@@ -49,7 +49,7 @@ async def test_approval_expired_escalates_to_compliance_queue(
     assert rows[0]["txn_id"] == "B-expired-T00000"
     assert rows[0]["batch_id"] == "B-expired"
 
-    # the hold row is the record: THIS run's hold was created and the
+    # the hold row is the record: this run's hold was created and the
     # sweep abandoned it (never silently orphaned).
     statuses = await pool.fetchval(
         f'SELECT status FROM "{schema}".wf_signals WHERE workflow_id = $1',  # noqa: S608  # Why: as above.

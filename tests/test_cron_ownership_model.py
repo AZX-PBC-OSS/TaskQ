@@ -3,7 +3,7 @@ worker restart is allowed to do about it (issue #342).
 
 Before the ownership model, cron auto-disable wrote only ``enabled=false``,
 indistinguishable from an operator's deliberate disable, and startup cron
-registration was create-only, so BOTH stayed disabled forever: a transient
+registration was create-only, so both stayed disabled forever: a transient
 partial-DB blip (fires fail, strike writes commit -- realistic during
 failover/saturation) permanently halted critical recurring work until a human
 re-enabled it.
@@ -14,7 +14,7 @@ The model, as implemented:
   auto-disable, written alongside ``enabled=false``), ``'operator'`` (schedule
   handle disable, admin UI, actor deregistration), or NULL (enabled, or a row
   an old pod wrote during a mixed-version deploy; see below).
-* The startup registration pass re-enables ONLY rows with
+* The startup registration pass re-enables only rows with
   ``disabled_by='auto'`` -- plus the mixed-version deploy's unmarked
   fingerprint of one (NULL marker, ``consecutive_failures`` at or past the
   threshold, ``last_fire_error`` set; issue #460) -- of code-owned,
@@ -151,8 +151,8 @@ async def _seed_auto_disabled(
         actor=actor,
         name=name,
         cron_expr=_HOURLY,
-        # An hour out from the SERVER's clock_timestamp, deliberately OFF the
-        # hour grid: ``hour_floor(now) + 1h`` IS the next hour boundary, so a
+        # An hour out from the server's clock_timestamp, deliberately off the
+        # hour grid: ``hour_floor(now) + 1h`` is the next hour boundary, so a
         # run that reaches the restart window as the wall clock crosses the
         # hour (CI at 15:59:59 -> boot tick at 16:00:00) sees the "future"
         # row come due mid-test, and the boot's own loop strikes the missing
@@ -248,7 +248,7 @@ class TestAutoDisableRecovery:
             # The failure UPDATE never advances next_fire_at, so the disabled
             # row sits due; push it out of due range so the boot's own cron
             # loop cannot strike the row while the test observes the restart.
-            # Off the hour grid on purpose: hour_floor + 1h IS the next hour
+            # Off the hour grid on purpose: hour_floor + 1h is the next hour
             # boundary, so a run straddling the hour sees the row come due
             # mid-test and the boot loop strikes it once (the CI 16:00:00
             # event). server_now + 1h cannot come due inside the window.
@@ -480,7 +480,7 @@ class TestOperatorIntentIsNeverReverted:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """NULL ``disabled_by`` on a disabled row with NO failure fingerprint
+        """NULL ``disabled_by`` on a disabled row with no failure fingerprint
         is not re-enabled (and does not crash the registration pass).
 
         In a real database the pre-ownership population (rows disabled before
@@ -523,7 +523,7 @@ class TestMixedVersionRollingDeploy:
     * the old pod's disable fingerprint (NULL marker, counter at the
       threshold, error set) is recovered by a full restart -- the repro;
     * the same fingerprint at the registration pass level;
-    * a NULL marker WITHOUT the fingerprint (an old pod's operator disable
+    * a NULL marker without the fingerprint (an old pod's operator disable
       during the window) survives, like an operator disable;
     * the spec guards (``owner='operator'``, ``enabled=False``) hold for the
       fingerprint row too;
@@ -605,7 +605,7 @@ class TestMixedVersionRollingDeploy:
             # The failure UPDATE never advances next_fire_at; push the row
             # out of due range so the boot's own cron loop cannot strike it
             # while the test observes the restart. Off the hour grid on
-            # purpose: hour_floor + 1h IS the next hour boundary, so a run
+            # purpose: hour_floor + 1h is the next hour boundary, so a run
             # straddling the hour sees the row come due mid-test (the CI
             # 16:00:00 event); server_now + 1h cannot come due inside the
             # window.
@@ -674,7 +674,7 @@ class TestMixedVersionRollingDeploy:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """A NULL marker WITHOUT the fingerprint (an old pod's operator
+        """A NULL marker without the fingerprint (an old pod's operator
         disable during the window, or a row the backfill has not reached):
         no failure evidence, so the boot reads intent and leaves the row
         alone."""
@@ -874,15 +874,15 @@ class TestMarkerWriteArmsSerialize:
     """The re-enable arm (``update_schedule(enabled=True)`` / the admin
     enable SQL: ``enabled=true`` clears ``disabled_by``) and the cron loop's
     batched failure UPDATE (its disable arm writes ``enabled=false,
-    disabled_by='auto'``) are NOT disjoint column sets: both write
+    disabled_by='auto'``) are not disjoint column sets: both write
     ``enabled``, ``consecutive_failures``, ``last_fire_error`` and
     ``disabled_by``. They still cannot produce a torn marker state: each arm
-    writes the ``(enabled, disabled_by)`` pair as ONE atomic row version,
+    writes the ``(enabled, disabled_by)`` pair as one atomic row version,
     and READ COMMITTED row locking serializes the two UPDATEs, the second
     writer re-evaluating its WHERE (EvalPlanQual) against the first
     writer's committed version. The pin below holds the loop's failure
     UPDATE in flight (the wedged factory keeps the tick's transaction open)
-    while an operator's mid-blip disable AND re-enable both commit on a
+    while an operator's mid-blip disable and re-enable both commit on a
     second connection, then asserts the strike still lands, owned by
     ``'auto'`` (recoverable at the next boot, exactly the state the
     registration pass reverts), never ``'operator'`` (which would strand
@@ -928,7 +928,7 @@ class TestMarkerWriteArmsSerialize:
             await entered.wait()
 
             # The operator's mid-blip disable and immediate re-enable, both
-            # committing INSIDE the tick's window (the failure UPDATE has
+            # committing inside the tick's window (the failure UPDATE has
             # not run yet). The disable stamps 'operator' (the admin/handle
             # shape); the re-enable clears the marker (the enable arm's
             # shape).
@@ -982,7 +982,7 @@ class TestTakeoverRecovery:
     release can revert the disable without a full restart.
 
     Pins: the after-boot repro (old disable, then takeover, then service);
-    the two rows the takeover must NOT touch (operator intent, NULL marker
+    the two rows the takeover must not touch (operator intent, NULL marker
     without the failure fingerprint); the pass surviving a failing pool.
     """
 

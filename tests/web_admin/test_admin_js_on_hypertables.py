@@ -6,7 +6,7 @@ the routes answer identically on a converted schema. This module extends the
 proof to the layer the operator and the integrator actually touch: the pages'
 JavaScript behaviour and the ``/jobs/api/...`` wire surface — driven against
 pages SERVED from a hypertable-converted schema and compared, surface by
-surface, against the SAME pages served from a vanilla schema. Both engines are
+surface, against the same pages served from a vanilla schema. Both engines are
 seeded IDENTICALLY (one seed plan, applied twice) on one TimescaleDB container,
 so every differential is exact and every JS assertion has the DOM as its
 oracle. The JS itself is driven under Node with the browser stubbed — the
@@ -108,13 +108,13 @@ _TIMESCALE_IMAGE = (
 # Same pin as test_admin_on_hypertables.py: the current compose-stack Redis.
 _REDIS_IMAGE = "redis:8.10.2"
 
-# Every seeded timestamp derives from this FIXED instant (the differential
+# Every seeded timestamp derives from this fixed instant (the differential
 # requires both engines to seed byte-identical rows).
 _BASE = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
 
 # The running job's progress state, seeded as jsonb: it carries the shapes
 # the JS fingerprint machine must treat identically on both engines — a
-# timestamptz TEXT render (PG's own spelling) and the null patterns (a null
+# timestamptz text render (PG's own spelling) and the null patterns (a null
 # field, and nulls inside a nested list) the UI's data can hold.
 _R_STATE = (
     '{"percent": 42, "step": "upload", '
@@ -123,9 +123,9 @@ _R_STATE = (
 )
 _T1_STATE = '{"percent": 100, "step": "finalize", "detail": null}'
 
-# The archived-tab population: the newest 50 rows all finish inside ONE
+# The archived-tab population: the newest 50 rows all finish inside one
 # day-chunk, the oldest 5 inside a different, older day-chunk — so the
-# page-size-50 pagination boundary IS a chunk boundary (pinned on the
+# page-size-50 pagination boundary is a chunk boundary (pinned on the
 # converted schema's chunk inventory in the chunk test).
 _N_NEW = 50  # the admin page size is 50: these fill page 1 exactly
 _N_OLD = 5  # these are page 2, on the older chunk
@@ -134,7 +134,7 @@ _N_ARCHIVE = _N_NEW + _N_OLD
 _PAGE_SIZE = 50
 
 
-# ── The seed plan (built ONCE, applied to BOTH engines identically) ──────
+# ── The seed plan (built once, applied to both engines identically) ──────
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +155,7 @@ class _SeedPlan:
     terminal_progress: uuid.UUID  # live, succeeded, progress_state, seq 12
     terminal_null: uuid.UUID  # live, succeeded, progress_state NULL, seq 3
     # live, running at seed; the terminal-render test flips it terminal
-    # mid-test on both engines (a terminal state the page has NOT rendered
+    # mid-test on both engines (a terminal state the page has not rendered
     # is the only one the render can be pinned on).
     late_terminal: uuid.UUID = None  # type: ignore[assignment]
     archive: list[_ArchiveRow] = field(default_factory=list)
@@ -170,7 +170,7 @@ def _build_plan() -> _SeedPlan:
         late_terminal=new_job_id(),
     )
     for i in range(_N_ARCHIVE):
-        if i < _N_OLD:  # the OLDEST rows: the other side of the chunk boundary
+        if i < _N_OLD:  # the oldest rows: the other side of the chunk boundary
             finished = _BASE - timedelta(days=3) + timedelta(minutes=10 * i)
         else:  # the newest 50: page 1 of the archived tab, one chunk
             finished = _BASE - timedelta(days=1) + timedelta(minutes=10 * (i - _N_OLD))
@@ -197,7 +197,7 @@ async def _seed_schema(conn: asyncpg.Connection, schema: str, plan: _SeedPlan) -
     )
 
     # The live census: running (with the rich progress state), succeeded
-    # WITH a progress state, succeeded with a NULL one (the null pattern),
+    # with a progress state, succeeded with a NULL one (the null pattern),
     # and a second running job the terminal-render test flips terminal
     # mid-test.
     await conn.execute(
@@ -351,11 +351,11 @@ class _Lab:
 
 @pytest.fixture(scope="module")
 async def lab(ts_dsn: str, redis_broker: Any) -> AsyncIterator[_Lab]:
-    """Both engines, built once: migrate BOTH schemas, convert one to
+    """Both engines, built once: migrate both schemas, convert one to
     hypertables (a 4-day archive retention sizes the chunk interval at one
     day — the boundary the pagination test walks), seed both identically,
     and mount the real admin app on each — with and without Redis (the
-    progress stream's two configurations). The dev-env trio is set HERE
+    progress stream's two configurations). The dev-env trio is set here
     because ``create_router`` loads settings at module-fixture time."""
     mp = pytest.MonkeyPatch()
     mp.setenv("TASKQ_ENVIRONMENT", "dev")
@@ -468,7 +468,7 @@ def _diff(label: str, van: Any, ht: Any) -> None:
     assert van == ht, f"the engines disagree on {label}:\nvanilla={van!r}\nhypertable={ht!r}"
 
 
-# ── Extraction: the page data the JS consumes, read off the SERVED html ──
+# ── Extraction: the page data the JS consumes, read off the served html ──
 
 _BADGE_RE = re.compile(r'class="taskq-badge[^"]*"\s*data-mode="([^"]*)">([^<]*)<')
 _CONFIG_RE = re.compile(r"(window\.__taskqJobConfig = \{.*?\};)", re.DOTALL)
@@ -483,7 +483,7 @@ _BASE_PATH_RE = re.compile(r'window\.TASKQ_BASE_PATH = "([^"]*)"')
 # The relative-time prose two requests milliseconds apart can disagree on
 # at a humanize boundary — stripped before whole-page differentials so the
 # comparison tests structure, not wall-clock prose (the sibling module's
-# _stable_html contract, minus the absolute stamps: those stay IN). The
+# _stable_html contract, minus the absolute stamps: those stay in). The
 # duration cell belongs here too: the job table renders `running_for_ms` —
 # "elapsed since started_at, measured against the database clock at render
 # time" (job_table.html) — through duration_fmt's compact arms, and the
@@ -579,8 +579,8 @@ def _diff_served_page(label: str, van_html: str, ht_html: str) -> None:
 # disk, the browser surface is stubbed with logging stubs, timers are
 # virtual, and the log — requests and DOM mutations — is the assertion. The
 # one extension: the seed data (config script, section attributes, scripted
-# poll bodies, SSE frames, the served HX fragment) arrives as a JSON page
-# argument captured from the SERVED pages, so the same JS runs against
+# poll bodies, SSE frames, the served hx fragment) arrives as a JSON page
+# argument captured from the served pages, so the same JS runs against
 # vanilla-served and hypertable-served data.
 
 
@@ -617,8 +617,8 @@ def _run_node(
     return json.loads(result.stdout)
 
 
-# The admin.js driver: the jobs-page component against the SERVED config
-# script and the SERVED HX table fragment. The container's outerHTML swap is
+# The admin.js driver: the jobs-page component against the served config
+# script and the served hx table fragment. The container's outerHTML swap is
 # the poll's whole DOM outcome; the served rows are the only tr's the row
 # lookup can find; the EventSource stub emits what the scenario scripts.
 _ADMIN_HARNESS = r"""
@@ -773,8 +773,8 @@ main();
 
 
 # The realtime.js driver: the job-detail progress machine against the
-# SERVED section seed (the exact cursor + state the template rendered), the
-# SERVED poll bodies (real endpoint responses, 304s included) and scripted
+# served section seed (the exact cursor + state the template rendered), the
+# served poll bodies (real endpoint responses, 304s included) and scripted
 # SSE frames. The DOM stub logs every mutation — the render/dedup contract
 # lives in that log.
 _REALTIME_HARNESS = r"""
@@ -1077,7 +1077,7 @@ async def test_served_jobs_page_configures_the_component_identically(lab: _Lab) 
     assert state["tab"] == "live" and state["liveOn"] is True
     assert state["basePath"] == "/admin"
     # The config's own census agrees with the served fragment's rows (the
-    # row count moves when other tests enqueue; the AGREEMENT is the pin).
+    # row count moves when other tests enqueue; the agreement is the pin).
     assert state["totalRows"] == len(ht["rows"])
     assert state["pollIntervalMs"] > 0
     assert _verdict(log) == {"polling": True, "sse": True}
@@ -1086,7 +1086,7 @@ async def test_served_jobs_page_configures_the_component_identically(lab: _Lab) 
 async def test_a_stalled_broker_leaves_the_poll_carrying_identical_swaps(lab: _Lab) -> None:
     """Operator question (the #487 contract): when the events broker stalls,
     does my table keep updating calmly — and identically? The SSE error must
-    NOT close the EventSource (the browser's own reconnect carries it back;
+    not close the EventSource (the browser's own reconnect carries it back;
     closing made a proxy idle timeout permanent), the poll must keep
     fetching, and every swap must write the same served rows — no churn,
     engine-identical."""
@@ -1119,7 +1119,7 @@ async def test_status_change_events_render_identically(lab: _Lab) -> None:
     ht = await _served_jobs_page(lab.ht.app)
     first_row_id = ht["rows"][0][0]
 
-    # Local apply: a payload WITH status patches the row's own nodes and
+    # Local apply: a payload with status patches the row's own nodes and
     # fetches nothing.
     notify = {"job_id": first_row_id, "status": "failed"}
     van_log = _run_node(
@@ -1136,7 +1136,7 @@ async def test_status_change_events_render_identically(lab: _Lab) -> None:
         "a payload the client can apply locally must not fetch"
     )
 
-    # Server refresh: a payload WITHOUT status fetches the truth and swaps.
+    # Server refresh: a payload without status fetches the truth and swaps.
     notify = {"type": "cancel", "job_id": first_row_id}
     van_log = _run_node(
         _ADMIN_HARNESS, ADMIN_JS, "serve-and-idle", _admin_page(van, ticks=1, notify=notify)
@@ -1154,7 +1154,7 @@ async def test_status_change_events_render_identically(lab: _Lab) -> None:
 async def test_live_refresh_delivers_new_rows_through_the_poll_swap(lab: _Lab) -> None:
     """Operator question: when a new job is enqueued while I watch the live
     table, does it reach the RENDERED table through the poll's swap? A new
-    row is inserted into BOTH engines (identical id, identical fixed
+    row is inserted into both engines (identical id, identical fixed
     stamps); each engine's fresh HX fragment is captured and fed to the
     harness as the poll response; the swap must carry the new row,
     engine-identically. This is the test that was RED against the stock
@@ -1181,7 +1181,7 @@ async def test_live_refresh_delivers_new_rows_through_the_poll_swap(lab: _Lab) -
     van = await _served_jobs_page(lab.vanilla.app)
     ht = await _served_jobs_page(lab.ht.app)
 
-    # The new row must be IN the served fragments (the server half of the
+    # The new row must be in the served fragments (the server half of the
     # claim), newest-first on the live tab.
     assert (str(new_id), "pending") == ht["rows"][0], (
         f"the new row must lead the live tab: {ht['rows'][:2]}"
@@ -1206,7 +1206,7 @@ async def test_live_refresh_delivers_new_rows_through_the_poll_swap(lab: _Lab) -
 
 
 async def _set_running_progress(lab: _Lab, seq: int, state_text: str) -> None:
-    """Advance the running job's durable cursor on BOTH engines identically
+    """Advance the running job's durable cursor on both engines identically
     (the worker-side re-flush, from the test's God view)."""
     for engine in (lab.vanilla, lab.ht):
         conn = await asyncpg.connect(lab.dsn)
@@ -1238,7 +1238,7 @@ async def test_the_progress_cadence_on_served_bodies_is_calm_and_identical(lab: 
     base_seq = int(ht_page["seq"])
     assert base_seq == 7
 
-    # Poll 1: the page's own cursor is current — the REAL endpoint answers
+    # Poll 1: the page's own cursor is current — the real endpoint answers
     # 304 (captured, not assumed).
     r304 = await _get(
         lab.ht.app,
@@ -1247,7 +1247,7 @@ async def test_the_progress_cadence_on_served_bodies_is_calm_and_identical(lab: 
     )
     assert r304.status_code == 304
 
-    # Poll 2: the worker re-flushes the SAME snapshot with a bumped seq (a
+    # Poll 2: the worker re-flushes the same snapshot with a bumped seq (a
     # durable UPDATE on both engines); the real 200 body is the tick's input
     # and the fingerprint gate must drop it before any DOM work.
     await _set_running_progress(lab, base_seq + 1, _R_STATE)
@@ -1287,7 +1287,7 @@ async def test_the_progress_cadence_on_served_bodies_is_calm_and_identical(lab: 
         "a re-flushed identical snapshot must be dropped by the fingerprint "
         "gate before any DOM work — zero writes"
     )
-    # The first ACCEPTED-and-changed tick is poll 3: it builds the entry
+    # The first accepted-and-changed tick is poll 3: it builds the entry
     # once (the appends) and patches exactly the nodes the change feeds.
     poll3 = _seg(ht_log, "poll:3")
     assert any(e.startswith("timeline-append:") for e in poll3)
@@ -1346,7 +1346,7 @@ async def test_frames_render_dedup_and_gate_identically(lab: _Lab) -> None:
         {"id": str(boot_seq + 2), "data": envelope(boot_seq + 2, ts="2026-09-20T13:00:59Z")},
         # 3: a real change patches.
         {"id": str(boot_seq + 3), "data": envelope(boot_seq + 3, percent=70, step="index")},
-        # 4: a TRAILING sequence (the reconnect replay behind the cursor) —
+        # 4: a trailing sequence (the reconnect replay behind the cursor) —
         # the BigInt gate drops it before any DOM work.
         {"id": str(boot_seq + 2), "data": envelope(boot_seq + 2, percent=1, step="poison")},
     ]
@@ -1361,7 +1361,7 @@ async def test_frames_render_dedup_and_gate_identically(lab: _Lab) -> None:
 
     assert any(e.startswith("timeline-append:") for e in _seg(ht_log, "frame:1"))
     assert _seg(ht_log, "frame:2") == [], "a duplicate fingerprint must write nothing"
-    # The meta line renders the frame's own ts (excluded from the FINGERPRINT,
+    # The meta line renders the frame's own ts (excluded from the fingerprint,
     # not from the render): percent · step · the frame's clock.
     # The B3 structure: width + the percent readout (span5), the step
     # (span7), and the frame's own clock (span9, locale-rendered).
@@ -1377,7 +1377,7 @@ async def test_the_terminal_body_stops_the_machine_identically(lab: _Lab) -> Non
     terminal body the endpoint serves, identically? A terminal row always
     answers 200 (the downloaded terminal status is what stops the client's
     poll loop); the transition is performed mid-test on both engines so the
-    terminal state is one the page has NOT already server-rendered."""
+    terminal state is one the page has not already server-rendered."""
     van_page = await _served_detail_page(lab.vanilla.app, lab.plan.late_terminal)
     ht_page = await _served_detail_page(lab.ht.app, lab.plan.late_terminal)
     _diff(
@@ -1387,7 +1387,7 @@ async def test_the_terminal_body_stops_the_machine_identically(lab: _Lab) -> Non
     )
     assert ht_page["state"]["percent"] == 10
 
-    # The job finishes under the open page: a durable terminal write on BOTH
+    # The job finishes under the open page: a durable terminal write on both
     # engines, identically (status, finished_at, progress percent 100).
     terminal_state = '{"percent": 100, "step": "finalize"}'
     for engine in (lab.vanilla, lab.ht):
@@ -1433,14 +1433,14 @@ async def test_the_terminal_body_stops_the_machine_identically(lab: _Lab) -> Non
         "the terminal transition must render through the poll"
     )
     # Three ticks ran (the stub repeats the scripted poll), but the machine
-    # stood down on the FIRST downloaded terminal body: exactly one fetch.
+    # stood down on the first downloaded terminal body: exactly one fetch.
     assert ht_log["net"].count(f"fetch:/admin{state_url}") == 1, ht_log["net"]
 
 
 async def test_the_empty_progress_terminal_writes_nothing_and_stops_identically(lab: _Lab) -> None:
     """Operator question: the common terminal shape — a job that finished
-    with NO progress at all (``progress_state`` = the empty jsonb object the
-    column's NOT NULL default holds, the null-pattern body the endpoint
+    with no progress at all (``progress_state`` = the empty jsonb object the
+    column's not NULL default holds, the null-pattern body the endpoint
     serves) — must stop the machine cleanly and write NOTHING (an empty
     state has no fingerprint to render), identically."""
     van_body = (
@@ -1534,7 +1534,7 @@ async def test_the_bigint_cursor_boundary_renders_identically(lab: _Lab) -> None
 async def test_the_state_endpoint_is_engine_identical(lab: _Lab) -> None:
     """Integrator question: is the poll-state wire contract — the snapshot
     body, the 304/ETag conditional semantics (and the terminal rows' honest
-    exception: a terminal body ALWAYS answers 200, because the downloaded
+    exception: a terminal body always answers 200, because the downloaded
     terminal status is what stops the client's poll loop), the 404 for an
     archived id, the 503 degrade without a broker, and the 400 for a
     malformed reconnect cursor — engine-identical?"""
@@ -1563,7 +1563,7 @@ async def test_the_state_endpoint_is_engine_identical(lab: _Lab) -> None:
     assert van304.status_code == ht304.status_code == 304
     _diff("304 etag", van304.headers["etag"], ht304.headers["etag"])
 
-    # The terminal exception: a MATCHING etag on a terminal row still
+    # The terminal exception: a matching etag on a terminal row still
     # answers 200 with the full body — on both engines.
     terminal = lab.plan.terminal_progress
     van_t = await _get(lab.vanilla.app, f"/admin/jobs/api/job/{terminal}/state")
@@ -1670,10 +1670,10 @@ async def test_the_progress_stream_is_engine_identical(lab: _Lab) -> None:
     van_frames = _strip_keepalives(van_buf)
     ht_frames = _strip_keepalives(ht_buf)
     _diff("stream bytes", van_frames, ht_frames)
-    # The snapshot frame: the jsonb TEXT as PG wrote it — keys jsonb-sorted,
+    # The snapshot frame: the jsonb text as PG wrote it — keys jsonb-sorted,
     # single spaces, the timestamptz spelling and the nulls intact. (The
     # percent value itself is whatever the durable cursor last carried —
-    # other tests re-flush it; its PRESENCE in the PG spelling is the pin.)
+    # other tests re-flush it; its presence in the PG spelling is the pin.)
     assert b"event: progress" in ht_frames
     assert b'"eta": "2026-09-20 12:34:56.789012+00:00"' in ht_frames
     assert b'"note": null' in ht_frames
@@ -1811,9 +1811,9 @@ async def _stream_request(
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
     }
-    # The leak baseline: every task alive BEFORE the app task exists - the
+    # The leak baseline: every task alive before the app task exists - the
     # caller's own machinery is in it, so the drain below can never sweep
-    # a task the caller owns - only tasks the STREAM minted.
+    # a task the caller owns - only tasks the stream minted.
     baseline = set(asyncio.all_tasks())
     messages: asyncio.Queue[Any] = asyncio.Queue()
     disconnected = asyncio.Event()
@@ -1863,7 +1863,7 @@ async def _stream_request(
         # stream's exit under the disconnect cancellation detaches its own
         # bounded close tail as a background task, and a task minted by the
         # test but left to the loop is the hygiene guard's definition of a
-        # leak. Await the tail HERE, keyed to its actual completion, with
+        # leak. Await the tail here, keyed to its actual completion, with
         # the same documented bound (2 * CLOSE_TIMEOUT_SECS + poll slack).
         await _drain_stream_tail(baseline)
     return buf
@@ -1900,8 +1900,8 @@ async def test_the_archived_tab_paginates_across_the_chunk_boundary_identically(
     finally:
         await conn.close()
 
-    # The chunk premise: page 1's rows live in a DIFFERENT chunk than page
-    # 2's — the pagination boundary IS a chunk boundary.
+    # The chunk premise: page 1's rows live in a different chunk than page
+    # 2's — the pagination boundary is a chunk boundary.
     def _chunk_of(ts: datetime) -> Any:
         for c in chunks:
             if c["range_start"] <= ts < c["range_end"]:
@@ -1916,7 +1916,7 @@ async def test_the_archived_tab_paginates_across_the_chunk_boundary_identically(
     )
 
     # The walk, both engines, row-identical; the oracle order (finished_at
-    # DESC NULLS LAST, id DESC — every seeded row carries a finished_at).
+    # desc nulls last, id desc — every seeded row carries a finished_at).
     async def _walk(app: FastAPI) -> list[str]:
         seen: list[str] = []
         path: str | None = "/admin/jobs?tab=archived"
@@ -1946,7 +1946,7 @@ async def test_the_archived_tab_paginates_across_the_chunk_boundary_identically(
         "page 2 must be exactly the older chunk's rows"
     )
 
-    # Page 2 — the rows on the OLDER chunk — rendered through the JS swap:
+    # Page 2 — the rows on the older chunk — rendered through the JS swap:
     # the served fragment drives refreshTable's swap, engine-identically.
     page1_van = await _html(lab.vanilla.app, "/admin/jobs?tab=archived")
     page1_ht = await _html(lab.ht.app, "/admin/jobs?tab=archived")
@@ -1954,7 +1954,7 @@ async def test_the_archived_tab_paginates_across_the_chunk_boundary_identically(
     next_ht = _NEXT_LINK_RE.search(page1_ht)
     assert next_van is not None and next_ht is not None, "55 rows must paginate"
     _diff("next cursor", next_van.group(1), next_ht.group(1))
-    # The fragment the JS's own refresh fetch receives: the HX partial.
+    # The fragment the JS's own refresh fetch receives: the hx partial.
     page2_van = await _html(lab.vanilla.app, next_van.group(1), headers={"HX-Request": "true"})
     page2_ht = await _html(lab.ht.app, next_ht.group(1), headers={"HX-Request": "true"})
     _diff_served_page("page-2 fragment", page2_van, page2_ht)
@@ -2044,7 +2044,7 @@ async def test_the_orphaned_attempt_window_surfaces_nowhere(lab: _Lab, ts_dsn: s
         resp = await _get(app, f"/admin/jobs/api/job/{orphan_parent}/state")
         assert resp.status_code == 404, f"{label}: {resp.status_code}"
 
-    # The archived detail page still renders its OWN attempts — with the
+    # The archived detail page still renders its own attempts — with the
     # null error_class pattern — identically.
     parent = lab.plan.archive[0]
     van_detail = await _html(lab.vanilla.app, f"/admin/jobs/{parent.id}")
@@ -2052,7 +2052,7 @@ async def test_the_orphaned_attempt_window_surfaces_nowhere(lab: _Lab, ts_dsn: s
     _diff_served_page("orphan-window detail", van_detail, ht_detail)
     assert "Attempt History" in ht_detail
 
-    # The JS angle: the canonicalize/fingerprint machine fed the SERVED
+    # The JS angle: the canonicalize/fingerprint machine fed the served
     # running-job state (the timestamptz spelling + the null patterns) must
     # dedup a re-flushed identical snapshot to zero writes — identically, in
     # the world where the orphan row exists.

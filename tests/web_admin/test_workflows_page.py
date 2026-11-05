@@ -15,7 +15,7 @@ The pins (each with its rejected variant named in the docstring):
   reads as a healthy zero reds);
 - the SSE replay: the first frame arrives immediately, frames are
   revisioned FULL snapshots, and the Last-Event-ID cursor continues —
-  the reconnect NEVER loses state (the snapshot subsumes the gap);
+  the reconnect never loses state (the snapshot subsumes the gap);
 - the typed door: a resolve without the mounted WorkflowApp answers
   501 (no untyped deliver surface ships); with it, the wrong payload is
   the named pydantic refusal and the RIGHT one delivers + lands its
@@ -75,9 +75,8 @@ async def _map_source_body(ctx: Any, params: Ingest) -> list[str]:
 
 
 async def _map_item_body(ctx: Any, doc_id: str) -> str:
-    # THE DOOMED CHILD (the README's observation): armed on the FIRST
-    # attempt only — its attempt walks 1 → 2 while the siblings never
-    # re-run.
+    # armed on the first attempt only — its attempt walks 1 → 2 while the
+    # siblings never re-run.
     if doc_id == "doc-doomed" and ctx.attempt < 2:
         raise RuntimeError("the armed transient failure")
     return f"done:{doc_id}"
@@ -127,7 +126,7 @@ def demo_app_module() -> Iterator[types.ModuleType]:
         items = map_source(src, _map_item_body, max_attempts=3)
         return build(items)
 
-    # THE RERUN PINS' FLOWS (the rerun affordances' real rows):
+    # the rerun pins' flows (the rerun affordances' real rows):
     @app_obj.workflow("admin_doomed_flow")
     def doomed_flow() -> Promise[object]:
         src = step(_ok_body, Ingest(doc_id="d1"), key="src")
@@ -206,8 +205,7 @@ async def test_run_page_renders_the_rows_alone_graph_and_suppresses_refresh(
         resp = await client.get(f"/workflows/{run_id}")
     assert resp.status_code == 200
     html = resp.text
-    # THE META-REFRESH KILLER (the dragon, pinned): the page MUST NOT
-    # carry the meta refresh — it destroys the live SVG.
+    # the page must not carry the meta refresh — it destroys the live SVG.
     assert 'http-equiv="refresh"' not in html
     # The boot JSON: the rows-alone mermaid + the state.
     assert 'id="wf-boot"' in html
@@ -220,13 +218,12 @@ async def test_run_page_renders_the_rows_alone_graph_and_suppresses_refresh(
     # The held node's state rides the snapshot (the amber pin's data).
     node_states = {n["key"]: n for n in boot["state"]["nodes"]}
     assert node_states["review"]["hold"] is True
-    # The hold's context (the WAITING-ON state + the schema + the example).
+    # The hold's context (the waiting-on state + the schema + the example).
     assert "editorial approval" in html
     assert "declared payload schema" in html
-    # THE DEADLINE FACE (the hold card's W1 line): the hold's id is the
-    # seeded run's own wf_signals row (one hold on this run), the card
-    # from its data-hold-id li — the page's stable markers, never an
-    # HTML regex. A seeded hold WITH a deadline (the wait's timeout_s
+    # the hold's id is the seeded run's own wf_signals row (one hold on this
+    # run), the card from its data-hold-id li — the page's stable markers,
+    # never an HTML regex. A seeded hold with a deadline (the wait's timeout_s
     # arm) renders the row's own instant.
     hold_id = await clean_pg_conn.fetchval(
         f'SELECT id FROM "{schema}".wf_signals WHERE workflow_id = $1',
@@ -243,9 +240,8 @@ async def test_run_page_renders_the_rows_alone_graph_and_suppresses_refresh(
         "the WITH-deadline face needs the row's own instant"
     )
     assert f"deadline: {row_expires_at.isoformat()}" in hold_card, hold_card
-    # THE NONE FACE: a hold WITHOUT a deadline renders the W1 warning —
-    # the honest line for a run that waits forever on a human, never a
-    # blank field.
+    # a hold without a deadline renders the W1 warning — the honest line for a
+    # run that waits forever on a human, never a blank field.
     await clean_pg_conn.execute(
         f'UPDATE "{schema}".wf_signals SET expires_at = NULL WHERE id = $1',
         uuid.UUID(hold_id),
@@ -267,7 +263,7 @@ async def test_run_page_zero_holds_is_the_defined_state(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """The states matrix (1): a run with NO holds renders the DEFINED
+    """The states matrix (1): a run with no holds renders the DEFINED
     healthy-zero line — never a blank section that reads as a healthy
     zero (the #673 rule; the blank-region variant reds this pin). A
     resolved hold renders as a DECISION (the rows-alone audit), which is
@@ -310,7 +306,7 @@ async def test_runs_list_empty_schema_is_the_defined_empty_state(
         resp = await client.get("/workflows")
     assert resp.status_code == 200
     assert "No workflow runs yet" in resp.text
-    assert "__flow__" in resp.text  # the source is NAMED
+    assert "__flow__" in resp.text  # the source is named
 
 
 async def test_runs_list_links_the_runs(
@@ -398,8 +394,8 @@ async def test_sse_reconnect_last_event_id_continues_the_cursor(
     run_id = await _seed_run(module_pg_pool, schema)
     frames = await _stream_frames(module_pg_schema, run_id)
     last_seq = frames[0]["seq"]
-    # THE RECONNECT: the cursor resumes at the last SEEN id; the next
-    # frame's seq is strictly greater AND the state is complete.
+    # the cursor resumes at the last seen id; the next frame's seq is strictly
+    # greater and the state is complete.
     replayed = await _stream_frames(module_pg_schema, run_id, last_event_id=str(last_seq))
     assert replayed, "the reconnect must replay promptly"
     assert replayed[0]["seq"] > last_seq
@@ -433,7 +429,7 @@ async def test_resolve_without_mounted_definitions_is_the_501_residual(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """The no-untyped-door pin: a router mounted WITHOUT the workflow
+    """The no-untyped-door pin: a router mounted without the workflow
     definitions answers 501 — the resolve refuses to deliver untyped."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_run(module_pg_pool, schema)
@@ -467,7 +463,7 @@ async def test_resolve_through_the_typed_door_delivers_and_audits(
     (hold,) = await client.list(run_id)
     app = _make_admin_app(module_pg_pool, schema, wf_app=sys.modules[MODULE_NAME].app)  # type: ignore[attr-defined]
 
-    # THE WRONG PAYLOAD: the named refusal, the hold SURVIVES.
+    # the named refusal, the hold survives.
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as http:
@@ -484,7 +480,7 @@ async def test_resolve_through_the_typed_door_delivers_and_audits(
     assert "pydantic refused the payload" in bad.json()["detail"]
     assert len(await client.list(run_id)) == 1, "the refused resolve moved nothing"
 
-    # THE RIGHT PAYLOAD: delivered + the audit row.
+    # delivered + the audit row.
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as http:
@@ -531,7 +527,7 @@ async def test_node_panel_addresses_map_children_by_step_and_map_index(
     the panel addresses a CHILD by (step, ``map_index``). The demo's
     signature observation — ``watch doc-doomed's attempt go 1 → 2`` —
     is (step, map_index)-addressable, not step-key-arbitrary: the bare
-    read lands on the FIRST child in map order + carries the children
+    read lands on the first child in map order + carries the children
     census, and ``?map_index=N`` reads THAT child."""
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("admin_map_flow")  # type: ignore[attr-defined]
@@ -548,18 +544,18 @@ async def test_node_panel_addresses_map_children_by_step_and_map_index(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        # THE BARE READ: the FIRST child in map order + the children
-        # census (one row per child, in map order — the click-through).
+        # the first child in map order + the children census (one row per
+        # child, in map order — the click-through).
         bare = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item")
         assert bare.status_code == 200
         body = bare.json()
         assert body["map_index"] == 0
         assert [c["map_index"] for c in body["children"]] == [0, 1, 2]
 
-        # THE DOOMED CHILD, BY (step, map_index): its attempt walked
-        # 1 → 2 (the ladder re-ran IT alone), and the ledger carries the
-        # two attempts; a SIBLING's attempt stayed 1 — the reads are
-        # per-child, never an arbitrary row of the shared step key.
+        # step, map_index. its attempt walked 1 → 2 (the ladder re-ran it
+        # alone), and the ledger carries the two attempts; a sibling's attempt
+        # stayed 1 — the reads are per-child, never an arbitrary row of the
+        # shared step key.
         doomed = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item?map_index=2")
         assert doomed.status_code == 200
         doomed_body = doomed.json()
@@ -571,7 +567,7 @@ async def test_node_panel_addresses_map_children_by_step_and_map_index(
         sibling_body = sibling.json()
         assert sibling_body["attempt"] == 1, sibling_body
 
-        # AN OUT-OF-RANGE child is the named 404, never a neighbor's row.
+        # an out-of-range child is the named 404, never a neighbor's row.
         missing = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item?map_index=9")
         assert missing.status_code == 404
         negative = await client.get(f"/api/runs/{flow_id}/nodes/ingest.item?map_index=-1")
@@ -594,7 +590,7 @@ async def test_run_page_renders_the_audit_trail_after_a_resolve(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as http:
-        # THE EMPTY TRAIL (the defined state):
+        # the empty trail (the defined state):
         before = await http.get(f"/workflows/{run_id}")
         assert "No operator actions recorded" in before.text
         # The resolve (the action):
@@ -613,11 +609,11 @@ async def test_run_page_renders_the_audit_trail_after_a_resolve(
             },
         )
         assert good.status_code == 200, good.text
-        # THE TRAIL RENDERS THE ROW:
+        # the trail renders the row:
         after = await http.get(f"/workflows/{run_id}")
         html = after.text
         assert "hitl.resolve" in html
-        # THE APOSTROPHE IS ESCAPED (Jinja's autoescape — the raw form
+        # the apostrophe is escaped (Jinja's autoescape — the raw form
         # never renders).
         assert "the trail pin&#39;s resolve" in html or "the trail pin's resolve" in html
         assert "anonymous" in html  # the dev path's named subject
@@ -692,8 +688,7 @@ async def test_g7_rows_equal_the_rendered_state(
     boot = json.loads(
         html.split('<script id="wf-boot" type="application/json">')[1].split("</script>")[0]
     )
-    # THE ROWS==DOM CHECK: every node row's status appears on the page's
-    # snapshot, node for node.
+    # every node row's status appears on the page's snapshot, node for node.
     rendered = {n["key"]: n["status"] for n in boot["state"]["nodes"]}
     rows = {n.key: n.status for n in view.nodes}
     assert rendered == rows
@@ -755,16 +750,16 @@ def test_the_page_js_carries_the_keyboard_contract() -> None:
 async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
     module_pg_pool: Any, module_pg_schema: Any
 ) -> None:
-    """The uninstalled degrade: a schema with ONLY the vanilla tables (a
+    """The uninstalled degrade: a schema with only the vanilla tables (a
     pre-workflow migration state) renders the NOTICE (both pages), never
-    a 500. THE THROWAWAY SCHEMA: the module's migrated schema is shared
+    a 500. the THROWAWAY SCHEMA: the module's migrated schema is shared
     per module — the drop here would break the family; the fresh schema
     applies the migrations then drops the workflow series' two tables."""
     import httpx as _httpx
 
     schema = module_pg_schema.schema_name + "_nowf"
     # The DDL is SCHEMA-scoped — the throwaway schema lives in the
-    # module's OWN database (the old "/taskq" hardcode assumed the
+    # module's own database (the old "/taskq" hardcode assumed the
     # lane's own container's default db; the cluster's admin db is
     # wherever the DSN points, the fixture owns that lifecycle).
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -777,8 +772,8 @@ async def test_the_pages_degrade_when_the_workflow_tables_are_absent(
     await bare.execute(f'DROP TABLE "{schema}".wf_edge')
     await bare.close()
     app = _make_admin_app(module_pg_pool, schema)
-    # THE DETAIL PAGE is the degrade's real surface (its reads touch the
-    # workflow tables); the LIST page reads only jobs (the roots live
+    # the detail page is the degrade's real surface (its reads touch the
+    # workflow tables); the list page reads only jobs (the roots live
     # there) — its uninstalled branch is the pre-vanilla state, unreachable
     # once jobs exists.
     async with _httpx.AsyncClient(
@@ -811,7 +806,7 @@ async def test_the_run_page_degrades_when_the_run_exists_but_the_tables_dropped(
     await apply_pending(bare, schema=schema)
     await bare.close()
 
-    # A REAL run (the root + the nodes exist), then the workflow tables drop.
+    # A real run (the root + the nodes exist), then the workflow tables drop.
     run_pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
     compiled = sys.modules[MODULE_NAME].app.get("admin_hold_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, run_pool, schema)
@@ -862,7 +857,7 @@ async def test_node_retry_route_reopens_a_failed_node_and_audits(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """The node rerun pin: the POST route rides the ENGINE'S OWN
+    """The node rerun pin: the POST route rides the ENGINE'S own
     manual-resume verb (``retry_workflow_node``) — the failed node
     re-pends (the CAS), the blocked downstream clears (the closure's
     reset), the terminal-FAILED flow re-opens, and the verb's
@@ -871,7 +866,7 @@ async def test_node_retry_route_reopens_a_failed_node_and_audits(
     the next claim one more attempt, it never resets the ladder."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_doomed_run(module_pg_pool, schema)
-    # THE SEEDED CONTRACT: the run failed, mid terminal-failed, tail blocked.
+    # the run failed, mid terminal-failed, tail blocked.
     root_before = await module_pg_pool.fetchval(
         f'SELECT status FROM "{schema}".jobs WHERE id = $1', uuid.UUID(run_id)
     )
@@ -894,7 +889,7 @@ async def test_node_retry_route_reopens_a_failed_node_and_audits(
         assert r.headers["location"] == f"/workflows/{run_id}"
         page = await http.get(r.headers["location"])
         assert page.status_code == 200
-        # THE TRAIL RENDERS THE ROW (the verb's same-tx audit):
+        # the trail renders the row (the verb's same-tx audit):
         assert "workflow.retry_node" in page.text
         assert "the rerun pin" in page.text
     mid_after = await _node_row(module_pg_pool, schema, run_id, "mid")
@@ -940,7 +935,7 @@ async def test_node_retry_refusals_land_the_named_banner(
         transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
     ) as http:
         await http.get("/queues")
-        # A SUCCEEDED node: the CAS grants nothing.
+        # A succeeded node: the CAS grants nothing.
         r = await http.post(
             f"/api/runs/{run_id}/nodes/src/retry", data={"csrf_token": _csrf_of(http)}
         )
@@ -949,14 +944,14 @@ async def test_node_retry_refusals_land_the_named_banner(
         page = await http.get(r.headers["location"])
         assert page.status_code == 200
         assert "Rerun not applied" in page.text
-        # AN UNKNOWN node key: the same defined refusal.
+        # an unknown node key: the same defined refusal.
         r = await http.post(
             f"/api/runs/{run_id}/nodes/not-a-node/retry", data={"csrf_token": _csrf_of(http)}
         )
         assert r.status_code == 303
         assert "error=rerun-not-applied" in r.headers["location"]
 
-    # THE CANCELLED RUN: the engine's deliberate-closure refusal.
+        # the engine's deliberate-closure refusal.
     held_run = await _seed_run(module_pg_pool, schema)
     from taskq.backend._protocol import JobId
     from taskq.workflows import cancel_workflow_run
@@ -984,7 +979,7 @@ async def test_rerun_routes_are_csrf_guarded_and_actions_gated(
     """The guards' pin (the resolve/cancel routes' own discipline): both
     rerun routes refuse a POST without the CSRF token (403), a POST
     with a mismatched token (403), and every POST on a deployment that
-    disabled actions (403, the config message — declared BEFORE the
+    disabled actions (403, the config message — declared before the
     token check)."""
     schema = module_pg_schema.schema_name
     run_id = await _seed_doomed_run(module_pg_pool, schema)
@@ -1001,7 +996,7 @@ async def test_rerun_routes_are_csrf_guarded_and_actions_gated(
             assert bare.status_code == 403, f"{post_url} without a token must refuse"
             forged = await http.post(post_url, data={"csrf_token": "not-the-token"})
             assert forged.status_code == 403, f"{post_url} with a wrong token must refuse"
-        # THE ACTIONS KNOB (fail-closed): the disabled deployment refuses.
+            # fail-closed. the disabled deployment refuses.
         disabled_app = _make_admin_app(module_pg_pool, schema)
         disabled_app.state.settings.admin_actions_enabled = False
         async with httpx.AsyncClient(
@@ -1023,19 +1018,19 @@ async def test_run_rerun_route_rearms_the_failed_nodes(
     clean_pg_conn: asyncpg.Connection,
     demo_app_module: Any,
 ) -> None:
-    """The run rerun pin: the POST route composes the ENGINE'S OWN
+    """The run rerun pin: the POST route composes the ENGINE'S own
     per-node resume verb over the run's terminal-FAILED step keys (the
     rows' census) — the failed node re-pends, the blocked downstream
-    clears, the flow re-opens, the audit rows land. THE SCOPE, HONEST:
-    the engine has NO run-level re-enqueue verb (a cancelled run or a
+    clears, the flow re-opens, the audit rows land. the SCOPE, HONEST:
+    the engine has no run-level re-enqueue verb (a cancelled run or a
     fresh input is a NEW run) — the route invents none.
 
-    THE MAP CENSUS ARM: a collapsed map child is not a row on the page,
-    but the route reads EVERY failed row — the doomed child's step key
+    A collapsed map child is not a row on the page,
+    but the route reads every failed row — the doomed child's step key
     re-arms (the CAS flips every failed row of the key) while the
     succeeded siblings stay untouched."""
     schema = module_pg_schema.schema_name
-    # THE CHAIN ARM: exactly one failed step key ('mid').
+    # exactly one failed step key ('mid').
     run_id = await _seed_doomed_run(module_pg_pool, schema)
     app = _make_admin_app(module_pg_pool, schema)
     async with httpx.AsyncClient(
@@ -1065,8 +1060,8 @@ async def test_run_rerun_route_rearms_the_failed_nodes(
     )
     assert audit and int(audit) == 1, "the verb's own audited row, one per failed key"
 
-    # THE MAP ARM: the failed child re-arms THROUGH its step key; the
-    # siblings (succeeded) and the source stay put.
+    # the failed child re-arms through its step key; the siblings (succeeded)
+    # and the source stay put.
     compiled = sys.modules[MODULE_NAME].app.get("admin_map_doomed_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
     map_run = str((await runner.create_flow()).flow_id)
@@ -1144,8 +1139,8 @@ async def test_the_run_graph_boot_carries_every_node_and_edge(
     module_pg_schema: ModulePgSchema,
     demo_app_module: Any,
 ) -> None:
-    """The graph view pin: the boot JSON's Mermaid text carries EVERY
-    rendered node line and EVERY edge of the run's collapsed projection
+    """The graph view pin: the boot JSON's Mermaid text carries every
+    rendered node line and every edge of the run's collapsed projection
     (the rows-alone emission), the page's server-rendered node table
     carries every rendered node key (the graph's second renderer — the
     degrade text's promise), and the legend declares the held + skipped
@@ -1169,7 +1164,7 @@ async def test_the_run_graph_boot_carries_every_node_and_edge(
     boot = json.loads(
         html.split('<script id="wf-boot" type="application/json">')[1].split("</script>")[0]
     )
-    # THE BASE_PATH LAW (the boot carries the mounted prefix; the stream
+    # the BASE_PATH law (the boot carries the mounted prefix; the stream
     # URL is server-built absolute-with-base-path).
     assert boot["basePath"] == ""
     assert boot["streamUrl"] == f"/api/runs/{run_id}/stream"
@@ -1184,7 +1179,7 @@ async def test_the_run_graph_boot_carries_every_node_and_edge(
             assert f"{parent} --> {node.key}" in mermaid, (
                 f"the edge {parent!r} → {node.key!r} missing from the boot mermaid"
             )
-    # THE LEGEND's fills (the closed vocabulary the stream paints —
+    # the legend's fills (the closed vocabulary the stream paints —
     # held + skipped joined, then cancelled/crashed/abandoned/scheduled).
     assert "wf-st-held-fill" in html
     assert "wf-st-skipped-fill" in html
@@ -1215,7 +1210,7 @@ async def test_the_rerun_forms_render_on_the_failed_rows(
     assert f'action="/api/runs/{run_id}/rerun"' in html
     assert 'data-wf-form="rerun-run"' in html
     assert "data-confirm=" in html  # the confirm dialog's declaration
-    # The succeeded row carries NO rerun form (the affordance is the
+    # The succeeded row carries no rerun form (the affordance is the
     # failed rows'; the CAS would refuse the rest).
     src_row = html.split('data-wf-node-row="src"')[1].split("</tr>")[0]
     assert "rerun-node" not in src_row
@@ -1273,7 +1268,7 @@ async def test_the_node_panel_masks_the_wired_input(
 ) -> None:
     """The redact law at the display (the hold-context discipline's own
     pipeline): the wired args pass the engine's chain → token-head pass
-    BEFORE the panel serves them — a canary credential in the wiring
+    before the panel serves them — a canary credential in the wiring
     reads masked, never raw."""
     schema = module_pg_schema.schema_name
     compiled = sys.modules[MODULE_NAME].app.get("admin_secret_flow")  # type: ignore[attr-defined]
@@ -1301,7 +1296,7 @@ async def test_the_node_panel_honors_the_capture_policies(
 ) -> None:
     """The capture discipline's pin (two arms):
     * errors-only (the default): a failed node's capture — the engine's
-      OWN redacted + truncated write — rides the panel AS WRITTEN;
+      own redacted + truncated write — rides the panel AS WRITTEN;
     * ``none``: the policy captured NOTHING and the panel says so
       (``capture_suppressed``) — it never substitutes raw rows for a
       suppressed capture (the io block carries no error payload of its
@@ -1309,7 +1304,7 @@ async def test_the_node_panel_honors_the_capture_policies(
       always were)."""
     schema = module_pg_schema.schema_name
 
-    # ARM 1 — the default policy's capture, as the engine wrote it:
+    # arm 1 — the default policy's capture, as the engine wrote it:
     compiled = sys.modules[MODULE_NAME].app.get("admin_map_doomed_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
     map_run = str((await runner.create_flow()).flow_id)
@@ -1324,11 +1319,11 @@ async def test_the_node_panel_honors_the_capture_policies(
         assert io["capture"] is not None, io
         assert "permanent failure" in io["capture"]["error"], io["capture"]
         assert io["capture_suppressed"] is False
-        # A FAILED node carries no result face (the failure path's
+        # A failed node carries no result face (the failure path's
         # output is the capture — never an empty-envelope lie).
         assert io["result"] is None
 
-    # ARM 2 — the declared ``none`` policy: suppressed, and named.
+    # arm 2 — the declared ``none`` policy: suppressed, and named.
     compiled = sys.modules[MODULE_NAME].app.get("admin_nocapture_flow")  # type: ignore[attr-defined]
     runner = FlowRunner(compiled, module_pg_pool, schema)
     nc_run = str((await runner.create_flow()).flow_id)

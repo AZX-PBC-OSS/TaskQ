@@ -338,7 +338,7 @@ async def test_transactional_snooze_re_enqueue_failure_routes_to_failure() -> No
 
     assert result == "failed"
     assert len(backend.mark_failed_or_retry_calls) == 1
-    # mark_snoozed was NOT called because the RuntimeError superseded the Snooze.
+    # mark_snoozed was not called because the RuntimeError superseded the Snooze.
     assert len(backend.mark_snoozed_calls) == 0
     # The re-enqueue attempt was made (and failed).
     assert len(backend.enqueue_calls) == 1
@@ -393,7 +393,7 @@ async def test_transactional_success_with_sub_enqueue_error_still_succeeds() -> 
 async def test_cancel_with_abandon_pending_re_raises_without_mark_cancelled() -> None:
     """When ``cancel_phase >= ABANDON_PENDING`` is observed during a
     CancelledError, the error is re-raised immediately and ``mark_cancelled``
-    is NOT called (the abandonment path owns the terminal write)."""
+    is not called (the abandonment path owns the terminal write)."""
     active_jobs = ActiveJobRegistry()
     backend = _TxBackend()
     clk: Clock = FakeClock(_NOW)

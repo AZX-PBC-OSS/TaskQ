@@ -342,7 +342,7 @@ async def test_pg_fallback_disabled_re_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """when rate_limit_pg_fallback_enabled=False, Redis errors
-    propagate; PG path is NOT called."""
+    propagate; PG path is not called."""
     import redis as _redis_mod
 
     tb = _redis_bucket(name="fallback-off")
@@ -419,7 +419,7 @@ async def test_acquire_redis_works_without_python_clock() -> None:
     assert r.allowed is True
 
 
-# ── Redis fake: ARGV order, key format, register_script once ─────────
+# ── Redis fake: argv order, key format, register_script once ─────────
 
 
 class _FakeAsyncScript:
@@ -450,7 +450,7 @@ class _FakeRedisClient:
         self.hmget_return: list[object] | None = None
         self.hmget_calls: list[tuple[str, list[str]]] = []
         self.deleted_keys: list[str] = []
-        # TIME-domain clock served to redis_time_seconds(); defaults to
+        # time-domain clock served to redis_time_seconds(); defaults to
         # _START's epoch so ts-vs-now deltas are exactly zero unless a
         # test overrides it.
         self.time_return: list[int] = [int(_START.timestamp()), 0]
@@ -573,7 +573,7 @@ async def test_redis_argv_order_and_key_format() -> None:
     key = call["keys"][0]
     assert key == "taskq:taskq_test:rl:tb:{my_bucket}"
 
-    # ARGV carries no clock: the script reads redis TIME for now.
+    # argv carries no clock: the script reads redis time for now.
     argv = call["args"]
     assert len(argv) == 4
     assert argv[0] == 100.0
@@ -664,7 +664,7 @@ def test_token_bucket_reexported() -> None:
 
 
 async def test_refund_restores_tokens() -> None:
-    """In-memory refund adds count tokens back (refund amount = count, NOT decision.remaining)."""
+    """In-memory refund adds count tokens back (refund amount = count, not decision.remaining)."""
     tb = _bucket(capacity=100, refill=10)
     clock = FakeClock(_START)
 
@@ -934,7 +934,7 @@ async def test_refund_redis_dispatches_to_refund_script() -> None:
     assert len(script_obj.calls) == 1
     call = script_obj.calls[0]
     assert call["keys"][0] == "taskq:taskq_test:rl:tb:{refund-redis}"
-    # ARGV carries no clock: the script reads redis TIME for now.
+    # argv carries no clock: the script reads redis time for now.
     assert call["args"] == [5, 100.0, 10.0]
 
 
@@ -1211,7 +1211,7 @@ async def test_acquire_pg_defensive_row_none_denies_never_admits() -> None:
 # decode, the denial's positive retry_after under refill, the rewind-refill).
 # The peek/reset/fixed-quota arms had no real sibling; they converted there
 # (peek-exhausted, peek-no-row, reset-delete, fixed-quota retry_after None).
-# The defensive no-RETURNING-row arm STAYS as the fault injection it is (a
+# The defensive no-RETURNING-row arm stays as the fault injection it is (a
 # trigger swallowing RETURNING is not a state real rows can produce).
 
 

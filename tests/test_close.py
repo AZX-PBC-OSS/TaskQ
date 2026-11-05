@@ -31,10 +31,10 @@ from taskq._close import close_conn_bounded, close_pool_bounded, close_redis_bou
 class _FakePool:
     """Minimal asyncpg.Pool fake: close() that can raise; terminate tracking.
 
-    Real-semantics error path (asyncpg 0.31 ``Pool.close()``): on ANY close
+    Real-semantics error path (asyncpg 0.31 ``Pool.close()``): on any close
     error the pool calls ``self.terminate()`` and sets ``self._closed = True``
     in the ``finally`` before re-raising - so a raising close still leaves
-    the pool terminated AND closed. ``terminate_calls`` counts only EXTERNAL
+    the pool terminated and closed. ``terminate_calls`` counts only EXTERNAL
     terminate() invocations, so tests can still pin "the helper never
     terminates on the error path".
     """
@@ -77,7 +77,7 @@ class _FakeConn:
         self.close_calls += 1
         await self.close_wait.wait()
         if self.close_error is not None:
-            # Mirrors asyncpg 0.31 Connection.close(): on ANY close error it
+            # Mirrors asyncpg 0.31 Connection.close(): on any close error it
             # calls self._abort() before re-raising, so is_closed() is True
             # afterwards - a raising close still leaves the conn closed.
             self.closed = True
@@ -140,7 +140,7 @@ async def test_close_redis_bounded_propagates_cancelled_error() -> None:
 
 async def test_close_conn_bounded_mid_run_timeout_logs_conn_close_family() -> None:
     """A hung mid-run conn close is terminated after the bound and logs the
-    ``conn-close-*`` family - NOT ``conn-teardown-close-*`` - so a conn so
+    ``conn-close-*`` family - not ``conn-teardown-close-*`` - so a conn so
     dead that even close() hung while the worker is alive stays
     distinguishable in log alerts."""
     conn = _FakeConn()
@@ -167,7 +167,7 @@ async def test_close_conn_bounded_mid_run_timeout_logs_conn_close_family() -> No
 
 async def test_close_conn_bounded_teardown_timeout_logs_teardown_family() -> None:
     """A hung conn close on the default (final-teardown) path is terminated
-    after the bound and logs the ``conn-teardown-close-*`` family - NOT the
+    after the bound and logs the ``conn-teardown-close-*`` family - not the
     mid-run ``conn-close-*`` family - so final-teardown noise never
     masquerades as a mid-run close failure in log alerts."""
     conn = _FakeConn()

@@ -17,7 +17,7 @@ The same seam carries :class:`LoopIdleWindow`: the watchdog thread
 classifies every poll of the event-loop thread as parked-in-the-idle-
 selector or not, the heartbeat drains the window once per tick and
 publishes the fraction beside the stall tally. Cumulative counts alone
-cannot say whether a worker is stalling NOW - a worker that stalled once
+cannot say whether a worker is stalling now - a worker that stalled once
 yesterday reads the same as one stalling on every beat - so the tally's
 metadata value carries a windowed delta beside the cumulative counts, and
 the idle fraction is windowed by construction.
@@ -119,7 +119,7 @@ class LoopIdleWindow:
     poll; the fraction of a window's samples classified parked is the
     published ``idle_fraction``.
 
-    WHAT IT DOES NOT MEASURE, stated honestly:
+    WHAT IT DOES not MEASURE, stated honestly:
 
     - It is a SAMPLED PROPORTION, not an integral: two samples per second
       at the default poll interval, each a binary parked/not-parked
@@ -137,7 +137,7 @@ class LoopIdleWindow:
       read: the zero-timeout select ``_run_once`` makes with ready
       callbacks queued (a hot ``call_soon`` spinner sits inside it for
       nearly all its wall time - shape-only classification read such a
-      loop as ~100% parked) is classified NOT parked via the
+      loop as ~100% parked) is classified not parked via the
       ``_run_once`` frame's ``timeout`` local; the residual over-report
       window is one sample where that local cannot be read.
 
@@ -286,7 +286,7 @@ class StallAttributionTally:
 
         Empty while this process has attributed nothing, so the heartbeat
         merges a no-op and the row carries no key. Once anything has been
-        attributed, every subsequent call carries BOTH the cumulative
+        attributed, every subsequent call carries both the cumulative
         ``loop_stalls`` (unchanged shape; existing consumers keep reading
         it) and ``loop_stalls_window``: the delta since the previous call,
         the per-heartbeat-interval stall rate a healed worker shows as an

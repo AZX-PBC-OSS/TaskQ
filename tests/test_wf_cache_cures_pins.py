@@ -16,12 +16,12 @@ The rejected shapes the pins close:
   identity — the 640-row feed stored; the 60-row feed was served 640
   rows.
 * the UNVERIFIABLE-SOURCE SILENCE: ``cache=True`` accepted at
-  wiring on a source the cache cannot verify, the body running EVERY
+  wiring on a source the cache cannot verify, the body running every
   run, zero cache rows, the only trace a log line.
 * the HIT-FINALIZE FAULT'S TWO SEATS: an InterfaceError inside the
   hit's finalize takes the MACHINERY's seat (the reclaim-eligible
   transport fault) — never ABSORBED by the body ladder: absorbed, the
-  node terminal-FAILED on a ``max_attempts=1`` step whose body NEVER
+  node terminal-FAILED on a ``max_attempts=1`` step whose body never
   ran, the run killed ``UnabsorbedNodeFailure``.
 
 The fix choices are the READS' choices, and the pins hold them:
@@ -135,7 +135,7 @@ async def tenant_body(ctx: StepContext, tenant: str) -> Report:
 
 async def leaking_tenant_body(ctx: StepContext) -> Report:
     """The leaky body (the E18 subject): the tenant rides ``ctx.input`` —
-    which the address NEVER covers."""
+    which the address never covers."""
     CALLS["leaking"] = CALLS.get("leaking", 0) + 1
     flow_input = cast(
         "dict[str, object]", ctx.input
@@ -159,7 +159,7 @@ def _reset_calls() -> None:
     CALLS.clear()
 
 
-# ── FIX 1: THE ROUTE-SOURCE WEDGE'S REFUSAL (E17) ──────────────────────
+# ── fix 1: the route-source wedge's refusal (E17) ──────────────────────
 
 
 def test_route_source_cache_refuses_at_the_route_attachment() -> None:
@@ -187,7 +187,7 @@ def test_route_source_cache_refuses_at_the_route_attachment() -> None:
 
 
 def test_route_source_cache_refuses_at_the_map_dict_form_too() -> None:
-    """The dict form lowers through the SAME attachment — the same
+    """The dict form lowers through the same attachment — the same
     refusal (the two spellings are one machinery, one fence)."""
     from taskq.workflows import map_source
 
@@ -222,7 +222,7 @@ def test_route_source_cache_refused_by_validate_e17() -> None:
         validate_compiled(compiled)
 
 
-# ── FIX 3: THE ctx.input CROSS-TENANT LEAK'S REFUSAL (E18) ────────────
+# ── fix 3: the ctx.input cross-tenant leak's refusal (E18) ────────────
 
 
 def test_ctx_input_cache_refuses_at_the_wiring() -> None:
@@ -302,22 +302,22 @@ async def test_the_wired_param_version_caches_per_value(
     )
     ref_a2 = await _drive(app.get("tenant_a_flow"), "tenant:a2", "tenant-A")
     ref_b2 = await _drive(app.get("tenant_b_flow"), "tenant:b2", "tenant-B")
-    # The SECOND run per tenant HITS (the body ran once per tenant) and
-    # serves THAT tenant's value — the cross-serve is dead.
+    # The second run per tenant hits (the body ran once per tenant) and
+    # serves that tenant's value — the cross-serve is dead.
     assert CALLS["tenant_body"] == 2, (
         f"the cached bodies ran {CALLS['tenant_body']}x — one per tenant, never one per run"
     )
     assert ref_a2 == ref_a1 and ref_b2 == ref_b1, "each tenant's hit serves THAT tenant's own value"
 
 
-# ── AMENDMENT A: THE SOURCE-NODE INPUT BLINDNESS (the refusal's face) ──
+# ── amendment A: the source-node input blindness (the refusal's face) ──
 
 
 def test_source_node_run_input_refused_the_import_probe_shape() -> None:
     """The import probe's #4 (AMENDMENT A): a SOURCE node whose body
     reads the RUN INPUT — the 640→60 stale-hit shape — is refused at the
     wiring. The address covers the wired args only; a source node whose
-    only run-varying input is the flow input has NO sound address. The
+    only run-varying input is the flow input has no sound address. The
     refusal teaches the wire-it-in fix (their worked example worked only
     because they had learned to wire the spec in — now the API teaches
     it)."""
@@ -331,7 +331,7 @@ def test_source_node_run_input_refused_the_import_probe_shape() -> None:
         app.get("feed_wedge_flow")
 
 
-# ── AMENDMENT B: THE UNVERIFIABLE-SOURCE PRECONDITION (E20) ────────────
+# ── amendment B: the unverifiable-source precondition (E20) ────────────
 
 
 def test_unverifiable_source_cache_refuses_at_the_wiring() -> None:
@@ -342,7 +342,7 @@ def test_unverifiable_source_cache_refuses_at_the_wiring() -> None:
     the face from a MISSING HIT: the precondition refuses here, by
     name."""
     ns: dict[str, object] = {"Report": Report, "StepContext": StepContext}
-    exec(  # noqa: S102  # Why: the exec'd body IS the pin's subject — the unverifiable source the refusal rejects.
+    exec(  # noqa: S102  # Why: the exec'd body is the pin's subject — the unverifiable source the refusal rejects.
         """
 async def ghost_body(ctx: StepContext, d: Report) -> Report:
     return Report(ref=d.ref)
@@ -370,7 +370,7 @@ def test_unverifiable_source_refused_by_validate_e20() -> None:
     from taskq.workflows.api._validate import validate_compiled
 
     ns: dict[str, object] = {"Report": Report, "StepContext": StepContext}
-    exec(  # noqa: S102  # Why: the exec'd body IS the pin's subject — the unverifiable source the refusal rejects.
+    exec(  # noqa: S102  # Why: the exec'd body is the pin's subject — the unverifiable source the refusal rejects.
         """
 async def ghost_body(ctx: StepContext, d: Report) -> Report:
     return Report(ref=d.ref)
@@ -391,14 +391,14 @@ async def ghost_body(ctx: StepContext, d: Report) -> Report:
         validate_compiled(compiled)
 
 
-# ── FIX 6b: THE Exit NO-OP'S REFUSAL (E19) ────────────────────────────
+# ── fix 6b: the Exit no-op's refusal (E19) ────────────────────────────
 
 
 def test_exit_body_cache_refuses_at_the_wiring() -> None:
     """The no-op's door (FIX 6b): cache=True on an Exit-returning body
     is the silent no-op — the sentinel terminalizes through the exit
     finalize, which the success-only store never sees. Refused (the
-    picked door), bare AND inside a union (the union face is the next
+    picked door), bare and inside a union (the union face is the next
     pin)."""
     app = WorkflowApp()
 
@@ -446,19 +446,19 @@ def test_exit_body_cache_refused_by_validate_e19() -> None:
         validate_compiled(compiled)
 
 
-# ── FIX 6a: THE HIT-FINALIZE FAULT'S ONE SEAT ──────────────────────────
+# ── fix 6a: the hit-finalize fault's one seat ──────────────────────────
 
 
 @pytest.mark.integration
 async def test_hit_finalize_fault_is_infra_never_a_body_failure(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
-    """ONE FAULT, ONE SEAT (FIX 6a): a transient blip escaping the HIT
+    """one FAULT, one SEAT (FIX 6a): a transient blip escaping the HIT
     path's finalize is the MACHINERY's seat — the same seat the MISS
     path's finalize faults own (the escape-point contract: the
     classifier reads WHERE the error escaped). A body-ladder seat routes
     the blip through the body ladder: the node terminal-FAILED on a
-    max_attempts=1 step whose body NEVER ran (the red receipt — the
+    max_attempts=1 step whose body never ran (the red receipt — the
     live repro's exact shape). The fix: the blip ESCAPES the claim tail
     (the reclaim-eligible transport fault — the ledger says crashed, the
     ladder unburned, no error record, the node reclaimable)."""
@@ -485,8 +485,8 @@ async def test_hit_finalize_fault_is_infra_never_a_body_failure(
 
     runner2._finalize_success = blipping_finalize  # type: ignore[method-assign,assignment]
 
-    # THE ESCAPE: the fault propagates out of the drive (the machinery
-    # boundary's own seat) — never absorbed as a body failure.
+    # the fault propagates out of the drive (the machinery boundary's own seat)
+    # — never absorbed as a body failure.
     with pytest.raises(_asyncpg.exceptions.InterfaceError):
         await runner2.drive(claim2.flow_id)
 
@@ -511,7 +511,7 @@ async def test_hit_finalize_fault_is_infra_never_a_body_failure(
     )
 
 
-# ── FIX 4a: THE INPUT-SENSITIVITY PIN ──────────────────────────────────
+# ── fix 4a: the input-sensitivity pin ──────────────────────────────────
 
 
 @pytest.mark.integration
@@ -520,7 +520,7 @@ async def test_two_different_inputs_two_addresses_no_cross_serve(
 ) -> None:
     """The input-sensitivity pin (FIX 4a — the strengthened pack): the
     pack feeds TWO DIFFERENT inputs to one body — different addresses,
-    different results, NO cross-serve. (A pack without a pin feeding
+    different results, no cross-serve. (A pack without a pin feeding
     feeding distinct inputs through one cached body: the mutation (an
     address that ignores the input) SURVIVED it — the amendment's
     640→60 red is that mutation's live face. Here the pin dies only if
@@ -560,7 +560,7 @@ async def test_two_different_inputs_two_addresses_no_cross_serve(
     assert ref_a1 != ref_b1, "the two inputs' results differ"
 
 
-# ── FIX 4b: THE CAS-FRESHNESS PIN ──────────────────────────────────────
+# ── fix 4b: the CAS-FRESHNESS pin ──────────────────────────────────────
 
 
 @pytest.mark.integration
@@ -570,14 +570,14 @@ async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
     """The CAS-freshness pin (FIX 4b — the strengthened pack): the TWO
     SEMANTICS distinguished, both arms provable.
 
-    * FIRST-WINNER-KEEPS: a store against a FRESH row LOSES (the
+    * first-WINNER-KEEPS: a store against a FRESH row LOSES (the
       last-writer-wins shape is dead — a fresh winner never loses its
       row, so a racing loser's late fill can never overwrite the winner
       the lookups already read);
-    * LAST-WRITER-WINS ON THE CORPSE ONLY: a store against an EXPIRED
+    * last-WRITER-WINS ON the CORPSE only: a store against an EXPIRED
       row WINS (the re-fill — the freshness leg's own arm);
-    * THE RACE: two concurrent stores against one backdated corpse —
-      exactly ONE winner (the loser's DO UPDATE re-checks the freshness
+    * the RACE: two concurrent stores against one backdated corpse —
+      exactly one winner (the loser's DO UPDATE re-checks the freshness
       leg against the row the winner just made fresh and yields).
     """
     from taskq.workflows._cache import store_step_cache
@@ -594,7 +594,7 @@ async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
             ttl_s=3600.0,
         )
 
-    # ── arm 1: FIRST-WINNER-KEEPS (the fresh row) ──
+    # ── arm 1: first-winner-keeps (the fresh row) ──
     assert await _store("addr:fresh", "winner-1") is True, (
         "the first store on an empty address WINS"
     )
@@ -612,7 +612,7 @@ async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
     )
     assert still == "winner-1", "the loser's write NEVER landed — the winner's payload stands"
 
-    # ── arm 2: the EXPIRED CORPSE is RE-FILLED (last-writer-wins, corpse only) ──
+    # ── arm 2: the expired corpse is re-filled (last-writer-wins, corpse only) ──
     assert await _store("addr:corpse", "first") is True
     backdated = await wf_conn.execute(
         f'UPDATE "{wf_schema}".wf_step_cache '
@@ -629,7 +629,7 @@ async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
     )
     assert refilled == "refiller", "the corpse carries the REFILLER's payload"
 
-    # ── arm 3: THE RACE — two concurrent stores on one backdated corpse ──
+    # ── arm 3: the race — two concurrent stores on one backdated corpse ──
     assert await _store("addr:race", "corpse") is True
     await wf_conn.execute(
         f'UPDATE "{wf_schema}".wf_step_cache '
@@ -655,7 +655,7 @@ async def test_cas_freshness_first_winner_keeps_expired_corpse_refills(
     assert final_row in ("racer-a", "racer-b"), "the race's row carries ONE racer's payload"
 
 
-# ── FIX 5: THE EVICTION FACE'S PINS (the CLI) ──────────────────────────
+# ── fix 5: the eviction face's pins (the CLI) ──────────────────────────
 
 
 @pytest.fixture
@@ -718,7 +718,7 @@ async def test_cache_evict_dry_run_default_then_yes(
 
 async def test_cache_list_shows_rows_and_receipts(cache_cli_env: Any) -> None:
     """The hit observability (FIX 5's other half): ``wf cache list``
-    shows the cache rows AND the hits' wf_cache_hit receipts — the
+    shows the cache rows and the hits' wf_cache_hit receipts — the
     receipt already existed on the node rows; the surface folds it into
     the operator's one command."""
     result = await to_thread(CliRunner().invoke, cli_app, ["wf", "cache", "list"])

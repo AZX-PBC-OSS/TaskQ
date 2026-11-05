@@ -104,7 +104,7 @@ def probe_the_route_promise_type(app: WorkflowApp) -> None:
                 AudioItem: RouteArm(body=process_audio),
             },
         )
-        return routed  # the promise IS the join's — the route's return IS the terminal
+        return routed  # the promise is the join's — the route's return is the terminal
 
     build_fn()
 
@@ -153,6 +153,6 @@ def probe_the_homogeneous_barrier_type(app: WorkflowApp) -> None:
                 ImageDoc: RouteArm(body=ocr_text),
             },
         )
-        return routed  # the solve's pin: R must BE ExtractedText exactly
+        return routed  # the solve's pin: R must be ExtractedText exactly
 
     build_fn()

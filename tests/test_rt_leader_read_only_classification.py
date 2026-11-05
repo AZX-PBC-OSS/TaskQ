@@ -2,7 +2,7 @@
 
 During a PG failover the surviving primary is briefly read-only: every pure read
 succeeds (the leader watchdog's ``SELECT 1`` probes, the election loop's probe -
-leader.py ``SELECT 1`` sites) while EVERY leader write (the election upsert, the
+leader.py ``SELECT 1`` sites) while every leader write (the election upsert, the
 cron tick's transaction, the sweeps) fails with ``asyncpg.ReadOnlySQLTransactionError``
 (SQLSTATE 25006, read_only_sql_transaction).  The leader loops therefore keep
 probing green while all their work fails - the watchdog cannot see the condition,

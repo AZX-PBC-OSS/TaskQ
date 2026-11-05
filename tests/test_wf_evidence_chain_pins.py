@@ -8,7 +8,7 @@ could GREEN while its effective (terminal) claim was stale or a ghost,
 the rot hidden one hop behind a resolving link (the round-four sin's
 shape, at the registry's own door).
 
-THE COUNTEREXAMPLE (built below, one pin per shape): stem A's live
+COUNTEREXAMPLE (built below, one pin per shape): stem A's live
 claim is marked ``superseded_by`` a capture whose file EXISTS — the old
 law's whole check — while the chain's END is a history entry recorded
 on a stale head, or a ghost, or the chain never terminates at all. The
@@ -26,7 +26,7 @@ fresh on-disk terminal) stays GREEN.
 from __future__ import annotations
 
 import json
-import subprocess  # Why: the verifier's verdict is its exit code — the script IS the subject (the pin's own shape).
+import subprocess  # Why: the verifier's verdict is its exit code — the script is the subject (the pin's own shape).
 import sys
 from pathlib import Path
 
@@ -35,10 +35,10 @@ import pytest
 _REPO = Path(__file__).resolve().parent.parent
 _VERIFIER = _REPO / "scripts" / "verify_evidence_heads.py"
 
-#: A head sha that is STALE by construction: the repo's root commit — an
+#: A head sha that is stale by construction: the repo's root commit — an
 #: ancestor with the whole tree's source changes since, the off-by-one
 #: rule can never call it fresh.
-_STALE_SHA = subprocess.run(  # Why: fixed argv, no shell; git resolves on the dev/CI PATH exactly as the repo's own scripts invoke it.
+_STALE_SHA = subprocess.run(  # Why: fixed argv, no shell; git resolves on the dev/CI path exactly as the repo's own scripts invoke it.
     ["git", "rev-list", "--max-parents=0", "HEAD"],  # noqa: S607  # Why: as above.
     cwd=_REPO,
     capture_output=True,
@@ -59,7 +59,7 @@ def _head() -> str:
 
 def _estate(tmp_path: Path, claims: list[dict[str, str]], ghosts: tuple[str, ...] = ()) -> Path:
     """Write the synthetic registry: *claims* is the manifest's array;
-    *ghosts* names capture files deliberately LEFT OFF DISK."""
+    *ghosts* names capture files deliberately LEFT off DISK."""
     runs = tmp_path / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     files = {c["file"] for c in claims} - set(ghosts)
@@ -101,18 +101,18 @@ def test_the_stale_terminal_one_hop_reds(tmp_path: Path) -> None:
             _e("proof", "proof.txt", _STALE_SHA, "t1"),
             _e(
                 "proof", "proof-fresh.txt", HEAD, "t2"
-            ),  # the stem's LIVE entry is fresh — the old law saw only this
+            ),  # the stem's live entry is fresh — the old law saw only this
         ],
     )
     proc = _verify(runs)
     assert proc.returncode == 1, "the stale terminal must red the verifier"
     assert "TERMINAL claim proof.txt is stale" in proc.stdout
-    assert "scenario" in proc.stdout  # the stem whose EFFECTIVE claim is red
+    assert "scenario" in proc.stdout  # the stem whose effective claim is red
 
 
 def test_the_stale_terminal_two_hops_reds(tmp_path: Path) -> None:
     """The walk is to the end: A → mid (fresh-looking, superseded) →
-    terminal (stale). The verdict must name the chain's LAST entry —
+    terminal (stale). The verdict must name the chain's last entry —
     a one-hop check would have stopped at the resolving first link."""
     runs = _estate(
         tmp_path,
@@ -130,8 +130,8 @@ def test_the_stale_terminal_two_hops_reds(tmp_path: Path) -> None:
 
 
 def test_the_ghost_terminal_reds(tmp_path: Path) -> None:
-    """CONTENT AT THE END: the chain lands on a registry entry whose
-    capture is NOT ON DISK. Every link resolves; the effective claim is
+    """CONTENT AT the END: the chain lands on a registry entry whose
+    capture is not ON DISK. Every link resolves; the effective claim is
     a ghost. (The ghost file is built by the estate builder and then
     deliberately left off disk.)"""
     claims = [
@@ -148,7 +148,7 @@ def test_the_ghost_terminal_reds(tmp_path: Path) -> None:
 
 
 def test_the_cycling_chain_reds(tmp_path: Path) -> None:
-    """NO TERMINAL, NO CLAIM: two live claims supersede each other — the
+    """no TERMINAL, no CLAIM: two live claims supersede each other — the
     chain re-enters itself and never terminates. A chain with no end has
     no effective claim; a two-link law reads the chain green)."""
     runs = _estate(
@@ -164,7 +164,7 @@ def test_the_cycling_chain_reds(tmp_path: Path) -> None:
 
 
 def test_the_dangling_chain_reds(tmp_path: Path) -> None:
-    """The dangling chain: the link's target file exists on disk but NO
+    """The dangling chain: the link's target file exists on disk but no
     registry entry claims it — the chain exits the index and lands on a
     capture that does not exist to the verdict (the manifest is the
     estate's only index)."""
@@ -174,7 +174,7 @@ def test_the_dangling_chain_reds(tmp_path: Path) -> None:
             _e("dangler", "d.txt", HEAD, "t0", superseded_by="runs/orphan.txt"),
         ],
     )
-    (runs / "orphan.txt").write_text("# an unindexed capture\n")  # on disk, claimed by NO entry
+    (runs / "orphan.txt").write_text("# an unindexed capture\n")  # on disk, claimed by no entry
     proc = _verify(runs)
     assert proc.returncode == 1, "the dangling chain must red"
     assert "NO registry entry claims it" in proc.stdout
@@ -197,10 +197,10 @@ def test_the_honest_chain_stays_green(tmp_path: Path) -> None:
 
 
 def test_the_stale_terminal_is_never_saved_by_its_stems_fresh_tail(tmp_path: Path) -> None:
-    """The hole's edge: the stale terminal's OWN stem carries a fresh
+    """The hole's edge: the stale terminal's own stem carries a fresh
     live claim — the old law saw the fresh tail and greened the estate
     while the CHAIN (pointing at the history entry behind it) proved
-    nothing. The chain's walk indexes EVERY entry, history included:
+    nothing. The chain's walk indexes every entry, history included:
     the verdict stands."""
     runs = _estate(
         tmp_path,
@@ -217,7 +217,7 @@ def test_the_stale_terminal_is_never_saved_by_its_stems_fresh_tail(tmp_path: Pat
 
 @pytest.mark.parametrize("ghost", [True, False])
 def test_the_cited_import_terminal_is_history_by_declaration(tmp_path: Path, ghost: bool) -> None:
-    """The CITED-IMPORT escape applies WHERE THE CHAIN LANDS: a terminal
+    """The CITED-IMPORT escape applies WHERE the CHAIN LANDS: a terminal
     declared ``kind: CITED-IMPORT…`` is history by its own declaration —
     never re-recordable — so the chain greens through it (stale is
     honest for an imported provenance record), while a ghost terminal is

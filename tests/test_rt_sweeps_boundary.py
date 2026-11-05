@@ -12,7 +12,7 @@ critical SQL mechanics whose degenerate values are silently wrong:
   bound parameter (that reading holds only for a negative LIMIT
   *literal*) - the server rejects it with SQLSTATE 2201W
   (``InvalidRowCountInLimitClauseError``), a data error the leader's
-  transient-error classification deliberately does NOT treat as
+  transient-error classification deliberately does not treat as
   transient, so it burns the unexpected-error budget and can tear the
   sweep loop down.
 * ``SET LOCAL statement_timeout = 0`` DISABLES the server-side timeout -

@@ -72,7 +72,7 @@ _SCHEMA_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Scratch table asserted on as ground truth for invocation, fan-out,
 # rate-limit spread, and double-execution absence. Created per module schema
-# by the e2e_schema fixture - NOT by TaskQ migrations.
+# by the e2e_schema fixture - not by TaskQ migrations.
 _E2E_EFFECTS_DDL = """
 CREATE TABLE "{schema}".e2e_effects (
     seq      BIGSERIAL PRIMARY KEY,
@@ -86,7 +86,7 @@ CREATE TABLE "{schema}".e2e_effects (
 """
 
 # FK-safe DELETE order for the per-test reset, mirroring truncate_schema's
-# list. DELETE (ROW EXCLUSIVE) does not deadlock with the worker's
+# list. DELETE (row exclusive) does not deadlock with the worker's
 # FOR UPDATE SKIP LOCKED dispatch the way TRUNCATE (ACCESS EXCLUSIVE) would.
 # job_events and job_attempts cascade from jobs; job_attempts_archive cascades
 # from jobs_archive. workers / actor_config / queues stay - they hold worker
@@ -339,7 +339,7 @@ def _build_wheel() -> Path:
         raise RuntimeError(msg)
     scratch_wheel = wheels[-1]
     digest = hashlib.sha256(scratch_wheel.read_bytes()).hexdigest()[:16]
-    # The digest rides in a content-addressed SUBDIR, not in the filename:
+    # The digest rides in a content-addressed subdir, not in the filename:
     # pip validates wheel filenames (distribution-version-py-abi-plat)
     # against the wheel's own metadata, so the file must keep its canonical
     # name - which also keeps the image's ``pip install`` instruction
@@ -358,7 +358,7 @@ def e2e_worker_image() -> Iterator[BuiltImage]:
     PID-OWNED repository name, and remove it in teardown.
 
     Wheel install validates the shipped artifact (packaging, entry points,
-    dependency metadata). ``tests/e2e`` is copied LAST so actor edits bust
+    dependency metadata). ``tests/e2e`` is copied last so actor edits bust
     only the cheap final layer. The stable content-addressed wheel path
     (see ``_build_wheel``) keeps the content hash - and therefore BuildKit's
     layer cache - stable across runs; the per-session repository name
@@ -366,7 +366,7 @@ def e2e_worker_image() -> Iterator[BuiltImage]:
     re-tags, so a repeat run re-exports in seconds instead of re-installing.
 
     Why pid ownership: an image tagged under the shared name
-    ``taskq-e2e-worker:sha-<content hash>`` is NEVER removed by teardown
+    ``taskq-e2e-worker:sha-<content hash>`` is never removed by teardown
     (which deletes only the wheel dir), stranding one ~277 MB image per unique
     source content (in practice one per run). Under a pid-owned name this
     session's tag is exclusively its own - no concurrent session can be
@@ -378,7 +378,7 @@ def e2e_worker_image() -> Iterator[BuiltImage]:
 
     Teardown removal is best-effort (a Docker hiccup is reported on one
     ``[TaskQ]`` line, never raised); the leftover then falls to the next
-    session-start sweep. The cached wheel entry is NOT torn down - it is the
+    session-start sweep. The cached wheel entry is not torn down - it is the
     cross-run build cache.
     """
     from containerspec import DockerTarget, ImageSpec
@@ -409,7 +409,7 @@ def e2e_worker_image() -> Iterator[BuiltImage]:
 
 # One logical DB per test module; the container runs --dbnum 128 and DB 0 is
 # reserved for ad-hoc use. Never reused within a session: sharing a DB would
-# let one module's FLUSHDB wipe another's mid-run state.
+# let one module's flushdb wipe another's mid-run state.
 _redis_db_index = 0
 
 
@@ -487,7 +487,7 @@ async def e2e_schema(
     # Timing knobs: shortened so tests stay fast while preserving the
     # validated invariants - lock_lease (8.0) >= 4 * heartbeat_interval
     # (2.0); cancellation (1.0) + cleanup (1.0) grace < min(lock_lease,
-    # termination_grace - 5) - EXCEPT the lease, widened from 3.0 for
+    # termination_grace - 5) - except the lease, widened from 3.0 for
     # stall margin (see the knob comment below).
     worker_env = {
         "TASKQ_PG_DSN": e2e_pg.network_dsn,
@@ -513,7 +513,7 @@ async def e2e_schema(
         # reproduction of the drain-test flake, a replacement worker
         # booted into a loaded runner, exceeded the 0.1 s budget on 4
         # consecutive ticks (~2 s of scheduling lag across the tick's
-        # BEGIN-to-COMMIT round trips), and self-isolated: isolate_self
+        # begin-to-COMMIT round trips), and self-isolated: isolate_self
         # cancelled its in-flight job mid-sleep, the row at attempt ==
         # max_attempts terminalised through the isolate template's
         # MaxAttemptsExceeded arm, and no worker was left to re-run it,
@@ -522,12 +522,12 @@ async def e2e_schema(
         # beat even counts as failed.
         "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.5",
         # 8 s, widened from 3.0 for the same reason test_pg_restart_chaos
-        # widened its own module-local lease to 10 s: the lease IS the
+        # widened its own module-local lease to 10 s: the lease is the
         # loop-stall budget for in-flight jobs. Every 0.5 s heartbeat tick
         # re-records lock_expires_at = now + lease for running jobs, and
         # the leader sweep (2 s interval) reclaims any running job whose
         # lock expired - so a transient worker-loop stall longer than the
-        # lease (full-tier Docker load) reclaims the LIVE attempt mid-run.
+        # lease (full-tier Docker load) reclaims the live attempt mid-run.
         # At 3.0 s that burned test_sigkill_crash_recovery to retry
         # exhaustion in a loaded full-tier run (2026-09-03, passing in
         # isolation). 8 s matches the lease the watchdog modules already
@@ -666,14 +666,14 @@ async def running_worker(
     # Ownership labels: Ryuk is disabled process-wide, so a crashed session's
     # worker containers must stay sweepable via the e2e sweep (the
     # ``taskq-e2e-worker`` image prefix makes them sweep candidates; the
-    # labels let the sweep remove RUNNING leftovers once their owner pids
+    # labels let the sweep remove running leftovers once their owner pids
     # die, instead of keeping them for the 24h backstop).
     container.with_kwargs(labels=creator_labels())
     container.with_network(network).with_network_aliases(alias)
     for key, value in env.items():
         container.with_env(key, value)
 
-    # Gate on THIS container's heartbeat: a sibling worker already beating
+    # Gate on this container's heartbeat: a sibling worker already beating
     # on the schema must not satisfy the gate for one that has not booted.
     known_workers = await fresh_worker_ids(pg_pool, schema.schema_name)
     await asyncio.to_thread(container.start)
@@ -841,7 +841,7 @@ async def clean_e2e_state(request: pytest.FixtureRequest) -> AsyncIterator[None]
 
     # F1: the idle gate cannot distinguish "drained" from "dead worker" -
     # verify the container is still alive before the DELETEs. The lazy
-    # getfixturevalue runs ONLY when the test requested e2e_worker itself:
+    # getfixturevalue runs only when the test requested e2e_worker itself:
     # booting the module worker lazily from inside this running async
     # fixture would drive the sync e2e_worker_image body (asyncio.run)
     # inside an already-running loop and raise. Tests with their own

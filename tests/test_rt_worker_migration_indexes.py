@@ -3,7 +3,7 @@
 The migration header documents each index's partial WHERE clause as
 critical: the active-status predicates keep terminal rows out of the
 bulk-cancel key ranges (and out of index maintenance), and the
-``worker_id IS NOT NULL`` predicate follows the RI-trigger convention
+``worker_id IS not NULL`` predicate follows the RI-trigger convention
 that lets the parameterized probe use the index. Existence and validity
 are already pinned in tests/test_index_audit.py; what nothing pins is
 that the indexes actually carry the DOCUMENTED predicates and key
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.integration
 
 #: (migration index name, table, documented definition body) - the body
 #: is exactly what the migration header documents for each index, minus
-#: the name the CREATE statement carries.
+#: the name the create statement carries.
 _AUDIT_INDEXES: tuple[tuple[str, str, str], ...] = (
     (
         "jobs_queue_active_idx",
@@ -131,10 +131,10 @@ async def test_audit_indexes_present_after_full_migration_run(pg_dsn: str) -> No
             f"applied: {applied_keys}"
         )
         # Ledger order is the runner's contract: a fresh schema's run must
-        # end on the ledger's LAST migration - the lexicographically
+        # end on the ledger's last migration - the lexicographically
         # greatest discovered version - so the audit migration's table
         # dependencies (created by earlier versions) are always in place.
-        # Pinned DYNAMICALLY against discover()'s own ordering so the next
+        # Pinned dynamically against discover()'s own ordering so the next
         # added migration cannot stale this assert the way the hard-coded
         # "01.00.06_01 applies last" did once 01.00.07/01.00.08 landed.
         discovered_keys = [m.key for m in migrate_mod.discover()]

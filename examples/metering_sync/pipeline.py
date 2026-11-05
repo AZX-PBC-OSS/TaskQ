@@ -40,7 +40,7 @@ from .actors import (
 
 # ---------------------------------------------------------------------------
 # The source feed (a stand-in for whatever a real pipeline scans: a vendor
-# API, an SFTP drop, another database). Deterministic per run so the drills
+# API, an sftp drop, another database). Deterministic per run so the drills
 # can hash it.
 # ---------------------------------------------------------------------------
 
@@ -91,7 +91,7 @@ def feed_checksum(readings: list[MeterReadingPayload]) -> str:
 
 @dataclass
 class OverlapReceipt:
-    """THE EAGER-OVERLAP PROOF, measured."""
+    """the EAGER-OVERLAP PROOF, measured."""
 
     first_consumed_at: datetime | None = None
     producer_finished_at: datetime | None = None
@@ -277,7 +277,7 @@ async def run_pipeline(
 
             progress_task = asyncio.create_task(capture_progress())
 
-            # Also ride one WORKER job's stream: the per-item progress the
+            # Also ride one worker job's stream: the per-item progress the
             # worker pushes while the run is still in flight.
             worker_events: list[dict[str, object]] = []
 
@@ -315,7 +315,7 @@ async def run_pipeline(
             finally:
                 await db.release(conn)
 
-            # ---- the SUCCESS face: a typed receipt, not an exit code ------
+            # ---- the success face: a typed receipt, not an exit code ------
             receipt = await finalize_handle.wait(timeout=120.0)
             admin_views.append(await _admin_view(tq, UUID(batch_id), "terminal"))
             progress_task.cancel()
@@ -386,7 +386,7 @@ async def _admin_view(tq: TaskQ, batch_id: UUID, moment: str) -> AdminSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# The plain example: one sync, end to end, whose LAST line is the typed
+# The plain example: one sync, end to end, whose last line is the typed
 # success receipt. Run with a worker up:
 #
 #   taskq worker --actors examples.metering_sync.actors:registry &
@@ -410,7 +410,7 @@ async def _main() -> int:
     print("progress events captured:", len(result.progress_events))
     for view in result.admin_views:
         print(f"admin view ({view.moment}): {len(view.nodes)} nodes visible")
-    # THE LAST LINE IS THE PROOF: the typed receipt with the exact counts.
+        # the typed receipt with the exact counts.
     print(result.receipt.model_dump_json())
     assert result.receipt.is_complete, f"sync incomplete: {result.receipt}"
     return 0

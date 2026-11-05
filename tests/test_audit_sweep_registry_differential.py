@@ -95,7 +95,7 @@ class ScriptedBackend:
     """Backend double whose per-sweep scripts are popped per call.
 
     A script entry is an ``int`` (the batch's row count) or a
-    ``BaseException`` instance to raise. The LAST entry repeats, so a
+    ``BaseException`` instance to raise. The last entry repeats, so a
     drained sweep's ``[7, 0]`` script yields 7 rows to the first call
     and 0 to the drain's single follow-up.
     """
@@ -165,7 +165,7 @@ class ScriptConn:
         # composition pin strips them with the wf events; a legacy call
         # never matches — the strip stays conservative). The jobs-table
         # workflow statements (the nodeless-root reap) carry no wf_ table
-        # — the flow-root marker they filter on IS the classifier.
+        # — the flow-root marker they filter on is the classifier.
         if "wf_" in sql or "__flow__" in sql:
             self.stream.append(("call", "wf_stmt"))
             return "UPDATE 0"
@@ -178,12 +178,12 @@ class ScriptConn:
         return item
 
     async def fetchval(self, sql: str, *args: object) -> int:
-        # The SAME wf_ classification the execute path carries (the ring
+        # The same wf_ classification the execute path carries (the ring
         # prune's owner count is the first wf statement on this channel —
         # an unclassified fetchval would ride the stale_batches script's
         # deque and shift a 7 into the wrong arm's verdict). The
         # jobs-table workflow statements (the nodeless-root reap) carry
-        # no wf_ table — the flow-root marker IS the classifier.
+        # no wf_ table — the flow-root marker is the classifier.
         if "wf_" in sql or "__flow__" in sql:
             self.stream.append(("call", "wf_stmt"))
             return 0
@@ -310,8 +310,8 @@ def _success_scripts() -> dict[str, deque[int | BaseException]]:
 def _fault_scripts(faulted: str, exc: BaseException) -> dict[str, deque[int | BaseException]]:
     """The faulted sweep raises on its first call; every sibling is benign.
 
-    Benign siblings return 0, so NO drain engages in fault scenarios:
-    every sweep — drained or not — makes exactly ONE call per tick.
+    Benign siblings return 0, so no drain engages in fault scenarios:
+    every sweep — drained or not — makes exactly one call per tick.
     """
     scripts: dict[str, deque[int | BaseException]] = {name: deque([0]) for name in SWEEPS}
     scripts[faulted] = deque([exc])
@@ -354,7 +354,7 @@ async def _run_one_tick(
     def sink(entry: Any) -> None:
         events.append(entry)
 
-    # Backend/conn call events land in the SAME stream, in call order.
+    # Backend/conn call events land in the same stream, in call order.
     if isinstance(backend, ScriptedBackend):
         backend.stream = events
     conn.stream = events
@@ -441,7 +441,7 @@ async def test_audit_success_tick_event_streams_identical(
         "stale_batches",
         "stale_batches",
     ]
-    # The sample discipline is IN the stream: duration always; rows +
+    # The sample discipline is in the stream: duration always; rows +
     # success only when the call returned (non-empty on this path).
     for name in SWEEPS:
         assert ("metric_duration", name) in new_events
@@ -462,10 +462,10 @@ async def test_audit_success_tick_event_streams_identical(
         ("stale_workers", asyncpg.DeadlockDetectedError("d"), True),
         ("stale_batches", asyncpg.DeadlockDetectedError("d"), True),
         # The pre-migration tolerances are per-sweep: the spec's
-        # extra_except must cover EXACTLY the old blocks' extras ...
+        # extra_except must cover exactly the old blocks' extras ...
         ("keyed_row_reclaim", asyncpg.exceptions.UndefinedColumnError("col"), True),
         ("stale_batches", asyncpg.exceptions.UndefinedTableError("tbl"), True),
-        # ... and must NOT leak into the sibling sweeps: these propagate
+        # ... and must not leak into the sibling sweeps: these propagate
         # into the unexpected-error backstop, aborting the tick.
         ("expired_locks", asyncpg.exceptions.UndefinedColumnError("col"), False),
         ("leaked_slots", asyncpg.exceptions.UndefinedTableError("tbl"), False),
@@ -544,7 +544,7 @@ async def test_audit_fault_event_streams_identical(
 async def test_audit_warn_once_unimplemented_arm_holds_across_ticks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sweeps 1/2's NotImplementedError arm warns ONCE per loop, both."""
+    """Sweeps 1/2's NotImplementedError arm warns once per loop, both."""
 
     def scripts() -> dict[str, deque[int | BaseException]]:
         out: dict[str, deque[int | BaseException]] = {name: deque([0]) for name in SWEEPS}
@@ -633,16 +633,16 @@ async def test_audit_hasattr_gate_keeps_sweeps_off_in_memory_backend(
 
 # ── The workflow arms' own expectations (the capability-gated appends) ────
 #
-# The differential above audits the REFACTOR equivalence: the vendored
+# The differential above audits the refactor equivalence: the vendored
 # eight-sweep module vs the spec-driven one, on doubles that implement the
-# LEGACY maintenance surface. The workflow arms (the dispatch-claim band  are NOT part of that
+# legacy maintenance surface. The workflow arms (the dispatch-claim band  are not part of that
 # claim — they registered later, admitted through the same hasattr seam on
-# their OWN capability marker (``workflow_sweeps_capable`` — the
+# their own capability marker (``workflow_sweeps_capable`` — the
 # backend's declaration; the arms never borrow another sweep's method
-# name). These pins hold the registration's COMPOSITION SHAPE, so the
+# name). These pins hold the registration's composition shape, so the
 # arms are load-bearing here too: without the capability the arms
 # contribute NOTHING (the legacy loop the differential audits is
-# unchanged); with it, the arms are pure APPENDS after the legacy block —
+# unchanged); with it, the arms are pure appends after the legacy block —
 # never a reorder, a rename, or a legacy-event mutation.
 
 _WF_ARMS = (
@@ -678,7 +678,7 @@ def _is_wf_event(entry: Any) -> bool:
 
 
 def _until_wf_arms_sampled(legacy_calls: int) -> Callable[[list[Any]], bool]:
-    """The legacy block's calls are in AND all three arms have sampled
+    """The legacy block's calls are in and all three arms have sampled
     their duration (the tick reached the table's tail)."""
     return lambda events: (
         len(_calls(events)) >= legacy_calls
@@ -732,7 +732,7 @@ async def test_audit_wf_arms_are_pure_appends_after_the_legacy_block(
         until=_until_wf_arms_sampled(_all_success_calls()),
     )
     assert [e for e in capable_events if not _is_wf_event(e)] == legacy_events
-    # The arms really ran, in table order, under the SAME sample
+    # The arms really ran, in table order, under the same sample
     # discipline as every legacy sweep (duration always; rows + success
     # when the call returned — 0 rows here, the double's world is empty).
     wf_names = [

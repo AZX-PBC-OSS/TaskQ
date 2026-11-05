@@ -1,6 +1,6 @@
 """The background Redis drain must be bounded, including its failure path.
 
-`_drain_old_redis` retried `aclose()` with NO timeout after the bounded attempt
+`_drain_old_redis` retried `aclose()` with no timeout after the bounded attempt
 had already timed out:
 
     except TimeoutError:

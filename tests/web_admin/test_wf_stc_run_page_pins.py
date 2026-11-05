@@ -128,7 +128,7 @@ async def test_run_page_renders_the_declared_bound(
 ) -> None:
     """The usefulness pin: the run page's node table renders the
     declared bound on the step that carries one (``deadline 30s``), and
-    a step whose row declares no bound renders NO line."""
+    a step whose row declares no bound renders no line."""
     schema = module_pg_schema.schema_name
     flow_id = await _seed_running_run(module_pg_pool, schema)
     app = _make_admin_app(module_pg_pool, schema)
@@ -138,15 +138,15 @@ async def test_run_page_renders_the_declared_bound(
         resp = await client.get(f"/workflows/{flow_id}")
     assert resp.status_code == 200
     html = resp.text
-    # THE BOUND WHERE DECLARED: the deadline line on the declared step's
-    # row (the run terminalized — the label is the bound's plain face).
+    # the deadline line on the declared step's row (the run terminalized — the
+    # label is the bound's plain face).
     declared_row = html.split('data-wf-node-row="declared"')[1].split("</tr>")[0]
     assert "data-wf-node-deadline" in declared_row, (
         "the declared step's row must render the deadline line (the "
         "operator's 'what is this step's deadline' answer)"
     )
     assert "deadline 30s" in declared_row, declared_row
-    # THE ABSENT FACE: a step whose row declares no bound renders none.
+    # a step whose row declares no bound renders none.
     plain_row = html.split('data-wf-node-row="plain"')[1].split("</tr>")[0]
     assert "data-wf-node-deadline" not in plain_row
 
@@ -158,7 +158,7 @@ async def test_the_running_face_renders_the_deadline_reality(
 ) -> None:
     """The deadline's reality (the claim's instant's use): a RUNNING
     node's label carries the time left (the claim's instant + the
-    bound); a non-running node's label is the bound alone. THE CLOCK
+    bound); a non-running node's label is the bound alone. the CLOCK
     ARBITER (the single-arbiter doctrine — the label reads the database
     clock): the
     remaining/age is the READ's own ``clock_timestamp()`` computation
@@ -173,17 +173,16 @@ async def test_the_running_face_renders_the_deadline_reality(
 
     from taskq.web.admin._wf_rows import RunNode
 
-    # THE DB IS TWO MINUTES AHEAD (the skew fixture's own shape): the
-    # DB-written started_at reads two minutes in the FUTURE against the
-    # app clock. The remaining is the DB's OWN arithmetic — the label
-    # derives from IT, never from the app clock.
+    # the DB-written started_at reads two minutes in the future against the app
+    # clock. The remaining is the DB's own arithmetic — the label derives from
+    # it, never from the app clock.
     db_started = datetime.now(UTC) + timedelta(minutes=2)
     running = RunNode(
         key="n",
         status="running",
         start_to_close_s=30.0,
         started_at=db_started.isoformat(),
-        deadline_remaining_s=25.0,  # the READ's own clock_timestamp() product
+        deadline_remaining_s=25.0,  # the read's own clock_timestamp() product
     )
     label = running.deadline_label
     assert label is not None and "30s" in label and "25s left" in label, label
@@ -192,8 +191,8 @@ async def test_the_running_face_renders_the_deadline_reality(
         f"instant against the app clock (the 2-min-ahead skew "
         f"self-contradiction), got {label!r}"
     )
-    # THE EXPIRED FACE: the READ's negative remaining names the expiry's
-    # age (its own arithmetic, never the app clock's).
+    # the read's negative remaining names the expiry's age (its own arithmetic,
+    # never the app clock's).
     expired = RunNode(
         key="n",
         status="running",
@@ -202,8 +201,8 @@ async def test_the_running_face_renders_the_deadline_reality(
         deadline_remaining_s=-15.0,
     ).deadline_label
     assert expired is not None and "expired 15s ago" in expired, expired
-    # THE UNREADABLE FACE: a row dict predating the column (no computed
-    # remaining) degrades to the bound alone — never a 500.
+    # a row dict predating the column (no computed remaining) degrades to the
+    # bound alone — never a 500.
     unreadable = RunNode(
         key="n",
         status="running",
@@ -211,16 +210,15 @@ async def test_the_running_face_renders_the_deadline_reality(
         started_at=db_started.isoformat(),
     ).deadline_label
     assert unreadable == "deadline 30s", unreadable
-    # THE BARE FACE: a non-running node renders the bound alone.
+    # a non-running node renders the bound alone.
     pending = RunNode(key="n", status="pending", start_to_close_s=30.0).deadline_label
     assert pending == "deadline 30s", pending
-    # THE SUB-SECOND FACE (the 0.25s bound — the honest floor): a
-    # sub-second bound reads ``<1s``. ``0s`` (the whole-seconds round)
-    # reads as NO bound at all — the useless face — and ``0.3s`` is a
-    # precision the row never declared.
+    # a sub-second bound reads ``<1s``. ``0s`` (the whole-seconds round) reads
+    # as no bound at all — the useless face — and ``0.3s`` is a precision the
+    # row never declared.
     subsecond = RunNode(key="n", status="pending", start_to_close_s=0.25).deadline_label
     assert subsecond == "deadline <1s", subsecond
-    # THE ABSENT FACE: no bound — no line.
+    # no bound — no line.
     assert RunNode(key="n", status="running").deadline_label is None
 
 
@@ -253,9 +251,7 @@ async def test_a_genuinely_running_row_reads_the_deadline_reality(
     runner = FlowRunner(compiled, module_pg_pool, schema)
     flow_id = str((await runner.create_flow(input=Ingest(doc_id="d1"))).flow_id)
 
-    # THE FLEET'S CLAIM (the production path — the dispatch's
-    # ``started_at = clock_timestamp()`` is the claim instant the CASE
-    # reads): the actor configs + the worker row, then the dispatch.
+    # the actor configs + the worker row, then the dispatch.
     for config in project_workflow_actor_configs():
         await module_pg_pool.execute(
             f'INSERT INTO "{schema}".actor_config (actor, queue) VALUES ($1, $2) '
@@ -281,8 +277,8 @@ async def test_a_genuinely_running_row_reads_the_deadline_reality(
         )
     assert len(dispatched) == 1, dispatched
 
-    # THE GENUINELY RUNNING ROW: the execution runs the 3s body far
-    # inside the 30s bound — the reads below observe it mid-flight.
+    # the execution runs the 3s body far inside the 30s bound — the reads below
+    # observe it mid-flight.
     task = asyncio.create_task(
         execute_flow_job(
             pool=module_pg_pool,
@@ -293,8 +289,7 @@ async def test_a_genuinely_running_row_reads_the_deadline_reality(
         )
     )
     try:
-        # THE READ (the page's own — a real connection, the shared
-        # grouped read): the deadline's reality rides the row.
+        # the deadline's reality rides the row.
         async with module_pg_pool.acquire() as conn:
             view = await fetch_run_view(conn, schema, _uuid.UUID(flow_id))
         assert view is not None, "the run's read must assemble"
@@ -305,15 +300,15 @@ async def test_a_genuinely_running_row_reads_the_deadline_reality(
         assert node.deadline_remaining_s is not None and node.deadline_remaining_s > 0, (
             node.deadline_remaining_s
         )
-        # THE LABEL RENDERS THE REMAINING FACE (the shared spelling — the
+        # the label renders the remaining face (the shared spelling — the
         # bound, the read's own remaining).
         assert node.deadline_label is not None and "left" in node.deadline_label, (
             node.deadline_label
         )
         assert "deadline 30s" in node.deadline_label, node.deadline_label
 
-        # THE SSE FRAME (the same read's second renderer): the snapshot's
-        # node entry carries the remaining face to the live patch.
+        # the snapshot's node entry carries the remaining face to the live
+        # patch.
         from taskq.web.admin._wf_actions import _stream_generator
 
         pool = await asyncpg.create_pool(module_pg_schema.pg_dsn, min_size=1, max_size=2)
@@ -330,10 +325,9 @@ async def test_a_genuinely_running_row_reads_the_deadline_reality(
             frame_node["deadline_label"] is not None and "left" in frame_node["deadline_label"]
         ), frame_node["deadline_label"]
     finally:
-        # THE PIN'S OWN REAP: the execution is cancelled (the enforcement
-        # forwards the cancel to the body task and detaches it tracked)
-        # and every tracked unwind is awaited — no 3s hang leaks past
-        # the pin.
+        # the execution is cancelled (the enforcement forwards the cancel to
+        # the body task and detaches it tracked) and every tracked unwind is
+        # awaited — no 3s hang leaks past the pin.
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         from taskq.worker._watchdog import live_tracked_actor_handles

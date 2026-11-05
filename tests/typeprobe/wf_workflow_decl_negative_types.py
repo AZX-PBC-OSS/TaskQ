@@ -1,7 +1,7 @@
 """NEGATIVE TYPE PROBES — the workflow DECLARATION door (the typed
 decorator's outermost face).
 
-The typed-doors law's FIRST line: the type story cannot die at the first
+The typed-doors law's first line: the type story cannot die at the first
 line the user writes. ``@app.workflow``'s parameter is
 ``Callable[[], Promise[R]]`` — :class:`Promise` is COVARIANT, so every
 ``Promise[X]`` satisfies the door (R carried intact through the generic),
@@ -11,7 +11,7 @@ site, on both pinned checkers. The probes:
 
 * ``probe_object_decl`` — the fleet's pre-door shape, ``def f() ->
   object`` while actually returning ``build(...)``'s ``Promise[R]``: the
-  erasure is refused AT THE DECORATION (pyright ``reportArgumentType``,
+  erasure is refused AT the DECORATION (pyright ``reportArgumentType``,
   ty ``invalid-argument-type`` — the decorator line).
 * ``probe_object_decl_direct`` — the same lie through the direct-call
   form (the decorator returned, then applied): the parameter's type is
@@ -52,7 +52,7 @@ def probe_object_decl_refused() -> None:
     """The recorded finding: the fleet's ``-> object`` decl declares the
     erasure while the body returns ``build(...)``'s ``Promise[R]`` — the
     decorator refuses it at the decoration site (the marker trails the
-    decorator line, the line BOTH checkers name)."""
+    decorator line, the line both checkers name)."""
     app = WorkflowApp()
 
     @app.workflow(

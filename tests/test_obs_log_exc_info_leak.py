@@ -1,4 +1,4 @@
-"""Exception text must be scrubbed before the LogRecord reaches ANY handler.
+"""Exception text must be scrubbed before the LogRecord reaches any handler.
 
 ``setup_logging`` installs its handler on the **root** logger, and
 ``worker_main`` calls it unconditionally. Azure Monitor's

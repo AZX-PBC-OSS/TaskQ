@@ -14,7 +14,7 @@ pinned here, all enforced by ``_enforce_start_to_close``:
    never as a deadline hit (the #791 conflation: the time-limit
    machinery's internal use of ``TimeoutError`` absorbing the body's own);
 2. the deadline is not absorbable: a body that catches the expiry's
-   cancellation and returns does NOT succeed past its own time limit;
+   cancellation and returns does not succeed past its own time limit;
 3. the deadline is not deferrable: a hostile or incompetent ``finally``
    (``await asyncio.shield(cleanup())``) cannot hold the attempt (the
    slot, the row) hostage; the body unwinds detached and tracked, and the
@@ -99,7 +99,7 @@ class _AtomicGuardConn:
         self._execute_delay = execute_delay
         # None (the default): every statement takes the delay. A set: only
         # those statements take it and the rest are instant -- this
-        # shape needs SAVEPOINT and ROLLBACK instant while the hostile
+        # shape needs savepoint and ROLLBACK instant while the hostile
         # unwind's own statement stays in flight past the budget.
         self._delayed_queries = delayed_queries
         self._busy = False
@@ -190,7 +190,7 @@ async def _consume(
 async def test_deadline_fires_inside_the_bodys_own_transaction(
     transactional: bool,
 ) -> None:
-    """A body mid-flight in its OWN database transaction (its own pool
+    """A body mid-flight in its own database transaction (its own pool
     connection, not taskq's) when the time limit fires: the uncertain-
     commit shape, the zombie class from the body side.
 
@@ -276,7 +276,7 @@ async def test_reclaim_fence_stands_against_the_zombie(transactional: bool) -> N
         transaction_conn=_FakeConnection() if transactional else None,  # pyright: ignore[reportArgumentType]
     )
     assert outcome == "scheduled"
-    # The failure write carried THIS attempt's identity: the fence keys
+    # The failure write carried this attempt's identity: the fence keys
     # the re-pend to the attempt the deadline killed, so a later reclaim
     # (a newer epoch) owns the row alone.
     write = backend.mark_failed_or_retry_calls[0]
@@ -287,7 +287,7 @@ async def test_reclaim_fence_stands_against_the_zombie(transactional: bool) -> N
 
 
 @pytest.mark.parametrize("transactional", [True, False], ids=["transactional", "autonomous"])
-# load_sensitive (PR #695's ruling): this file's elapsed-measuring family.
+# load_sensitive (pr #695's ruling): this file's elapsed-measuring family.
 # The load-bearing teeth are the two tx-unwind window pins below — elapsed
 # must land inside [_TX_UNWIND_WAIT_BUDGET, _TX_UNWIND_WAIT_BUDGET + 3.0) —
 # and a window that tight measures the packing before it measures the code
@@ -768,7 +768,7 @@ async def test_tx_rollback_waits_out_the_unwind_before_touching_the_conn(
     were lost with it.
 
     The obligation: the tx path bound-waits the unwind (the exit-wait
-    budget) BEFORE the marker propagates into ``__aexit__`` -- the
+    budget) before the marker propagates into ``__aexit__`` -- the
     rollback runs on a quiesced connection, the unwind's cleanup completes
     untouched, and the row is the truthful deadline hit with its log line
     and its metric."""
@@ -789,7 +789,7 @@ async def test_tx_rollback_waits_out_the_unwind_before_touching_the_conn(
         try:
             await asyncio.Event().wait()
         finally:
-            # The unwind's cleanup awaits ON the transaction connection,
+            # The unwind's cleanup awaits on the transaction connection,
             # in flight when the marker reaches the __aexit__.
             await tx_conn.execute("CLEANUP")
 
@@ -877,7 +877,7 @@ async def test_tx_hostile_finally_holding_the_conn_past_the_budget_records_the_t
 ) -> None:
     """The residual: the hostile ``finally``
     holds the SHARED transaction connection ITSELF -- a SHIELDED conn
-    execute that outlives the deadline AND the exit-wait budget. At budget
+    execute that outlives the deadline and the exit-wait budget. At budget
     expiry the marker proceeds, the transaction ``__aexit__``'s ROLLBACK
     collides with the still-in-flight statement on asyncpg's
     one-operation-at-a-time guard, and the collision's ``InterfaceError``
@@ -885,7 +885,7 @@ async def test_tx_hostile_finally_holding_the_conn_past_the_budget_records_the_t
     the truthful ``TimeoutError``, the ``job_timeout`` log and the
     timeouts metric lost with it.
 
-    The obligation: on the deadline path the row is ALWAYS the truthful
+    The obligation: on the deadline path the row is always the truthful
     ``TimeoutError`` -- the capture boundary translates our own rollback's
     collision back to the deadline disposition -- the ``job_timeout`` log
     and the timeouts metric land, the attempt stays bounded (deadline +
@@ -903,8 +903,8 @@ async def test_tx_hostile_finally_holding_the_conn_past_the_budget_records_the_t
     backend = FakeBackend()
     # The hostile statement never finishes inside the test: it is still
     # in flight (the guard's busy flag held) when the budget expires and
-    # the __aexit__'s ROLLBACK collides with it. Only the hostile CLEANUP
-    # is delayed; the tx machinery's own SAVEPOINT/ROLLBACK are instant.
+    # the __aexit__'s ROLLBACK collides with it. Only the hostile cleanup
+    # is delayed; the tx machinery's own savepoint/ROLLBACK are instant.
     tx_conn = _AtomicGuardConn(execute_delay=3600.0, delayed_queries={"CLEANUP"})
     held_ops: list[asyncio.Task[object]] = []
 
@@ -912,7 +912,7 @@ async def test_tx_hostile_finally_holding_the_conn_past_the_budget_records_the_t
         try:
             await asyncio.Event().wait()
         finally:
-            # The hostile cleanup: a SHIELDED statement on the SHARED
+            # The hostile cleanup: a shielded statement on the shared
             # transaction connection, outliving deadline + budget.
             op: asyncio.Task[object] = asyncio.ensure_future(tx_conn.execute("CLEANUP"))
             held_ops.append(op)
@@ -972,7 +972,7 @@ class _BodyOpFailsConn(_AtomicGuardConn):
 async def test_body_caused_interface_error_outside_the_deadline_window_stays_interfaceerror(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The honest-InterfaceError case: a body whose OWN conn op raises a
+    """The honest-InterfaceError case: a body whose own conn op raises a
     genuine ``InterfaceError`` while the deadline (150ms) is nowhere near.
     The collision re-label keys on the deadline window alone -- it must
     never launder a body-caused ``InterfaceError`` into a deadline hit:

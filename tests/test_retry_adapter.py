@@ -351,7 +351,7 @@ async def test_hook_coroutine_raises_after_await_is_swallowed() -> None:
 
 # ── classifier has no clock frame ───────────────────────────────
 #
-# The two former tests here pinned the REMOVED Python deadline arbiter
+# The two former tests here pinned the removed Python deadline arbiter
 # (the classifier's clock-frame opinion of schedule_to_close) - exactly
 # the C2 hazard: a worker clock disagreeing with the server killed live
 # jobs or voided backoff.  classify() now takes neither a deadline nor a

@@ -687,7 +687,7 @@ class _StarvablePool:
 async def test_ensure_slots_forwards_the_acquire_timeout() -> None:
     """ensure_slots must forward the caller's budget to pool.acquire.
 
-    The dispatcher pool's per-query command_timeout does NOT bound a pool
+    The dispatcher pool's per-query command_timeout does not bound a pool
     ACQUIRE, the bare acquire is the unbounded wait pinned. The
     forward is the whole bound; the kwarg's arrival is the contract.
     """
@@ -849,7 +849,7 @@ async def test_denial_when_every_slot_is_held_carries_the_earliest_live_expiry()
 
 
 async def test_denial_with_no_live_expiry_falls_back_to_the_default_backoff() -> None:
-    """Denying when NO slot carries a live expiry (the anomalous
+    """Denying when no slot carries a live expiry (the anomalous
     job_id-set / lease-NULL shape the nullable schema permits): the hint
     is ``DEFAULT_RESERVATION_BACKOFF``, not a zero or negative draw.
 

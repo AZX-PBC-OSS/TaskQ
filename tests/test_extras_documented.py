@@ -8,7 +8,7 @@ they drift: an extra added to pyproject silently has no docs (an operator
 cannot discover it), and a doc row naming an extra pyproject does not have is
 an install command that resolves to nothing.
 
-This pins BOTH directions: every pyproject extra is named in each table, and
+This pins both directions: every pyproject extra is named in each table, and
 every extra the tables name exists in pyproject.
 """
 
@@ -23,8 +23,8 @@ import pytest
 _REPO_ROOT = Path(__file__).parent.parent
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 
-# README's table uses the bare-extra spelling (``[redis]``); the mkdocs pages
-# use ``taskq-py[redis]``. Accept either so the pin constrains PRESENCE, not
+# readme's table uses the bare-extra spelling (``[redis]``); the mkdocs pages
+# use ``taskq-py[redis]``. Accept either so the pin constrains presence, not
 # house spelling.
 _BARE_EXTRA = re.compile(r"\[(?P<name>[a-z]+)\]")
 _QUALIFIED_EXTRA = re.compile(r"taskq-py\[(?P<name>[a-z]+)(?:,[a-z]+)*\]")
@@ -38,7 +38,7 @@ def _pyproject_extras() -> dict[str, list[str]]:
 def _documented_extras(page: Path) -> set[str]:
     text = page.read_text(encoding="utf-8")
     names = {m.group("name") for m in _QUALIFIED_EXTRA.finditer(text)}
-    # Bare ``[name]`` spellings only count inside table rows (README's extras
+    # Bare ``[name]`` spellings only count inside table rows (readme's extras
     # table); outside tables the bare brackets are markdown link text
     # (``[uv](https://...)``), not extras.
     table_lines = (line for line in text.splitlines() if line.lstrip().startswith("|"))

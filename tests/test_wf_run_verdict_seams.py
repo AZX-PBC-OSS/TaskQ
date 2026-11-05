@@ -1,7 +1,7 @@
 """The run-verdict seams: what the packaged run door and the runner's read
 face report when a run ends on an edge the adoption cures just made loud.
 
-* a FRESH run's failure carries NO claim verdict — ``claim_verdict`` is the
+* a FRESH run's failure carries no claim verdict — ``claim_verdict`` is the
   replay face's marker (``"existing-terminal"``), never a label every raise
   wears;
 * a cancel landing between the read's status poll and its terminal-row
@@ -221,13 +221,13 @@ async def test_a_succeeded_terminal_beside_a_failed_sink_branch_still_raises_the
     runner = FlowRunner(app.get("terminal_ok_side_branch_failed"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"
-    # The precondition: the run itself derived FAILED (the side branch is
+    # The precondition: the run itself derived failed (the side branch is
     # unabsorbed) even though the terminal node row succeeded.
     run_status = await runner._flow_status(flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: the run's derived status is the precondition this pin reads; the read face's own verdict is the assertion.
     assert run_status == "failed", (
         f"the side branch's failure did not terminalise the run: {run_status!r}"
     )
-    # The terminal payload is NON-NULL and decodable: the failure verdict
+    # The terminal payload is non-null and decodable: the failure verdict
     # must win over it, never decode and return it.
     payload = await wf_pool.fetchval(
         f'SELECT result FROM "{wf_schema}".jobs WHERE step_key = $1 '
@@ -264,10 +264,9 @@ async def test_the_verdict_names_the_unabsorbed_failure_not_the_absorbed_one(
 
     flow_id = await seed_flow(wf_pool, wf_schema, status="failed")
 
-    # THE ABSORPTION RECORD: the collected branch's edge to the join
-    # declares 'collect', and the join FIRED (succeeded — the absorption
-    # RAN; the fence's blocked-pending join shapes are what keep a
-    # failure unabsorbed).
+    # the collected branch's edge to the join declares 'collect', and the join
+    # fired (succeeded — the absorption ran; the fence's blocked-pending join
+    # shapes are what keep a failure unabsorbed).
     join_id = await seed_join(wf_pool, wf_schema, flow_id, step_key="collector", deps=1)
     await wf_pool.execute(
         f'UPDATE "{wf_schema}".jobs SET status = $2, finished_at = now() WHERE id = $1',
@@ -295,8 +294,8 @@ async def test_the_verdict_names_the_unabsorbed_failure_not_the_absorbed_one(
         absorbed_id,
         flow_id,
     )
-    # THE ORDER: the ABSORBED failure is the run's newest failed row —
-    # the newest-failed selection reads IT first.
+    # the absorbed failure is the run's newest failed row — the newest-failed
+    # selection reads it first.
     await wf_pool.execute(
         f'UPDATE "{wf_schema}".jobs SET status = $2, error_class = $3, '
         "error_message = $4, finished_at = now() WHERE id = $1",
@@ -314,9 +313,8 @@ async def test_the_verdict_names_the_unabsorbed_failure_not_the_absorbed_one(
         "the open branch failed",
     )
 
-    # THE PRECONDITION (the record, not a heuristic): the derivation's
-    # own absorption read marks the collected branch absorbed and the
-    # open one not — the scenario's shape is the real one.
+    # the derivation's own absorption read marks the collected branch absorbed
+    # and the open one not — the scenario's shape is the real one.
     rows = await wf_pool.fetch(runner.wsql.workflow_nodes, flow_id)
     absorbed_by_key = {r["step_key"]: r["absorbed"] for r in rows}
     assert absorbed_by_key["collected"] is True, absorbed_by_key
@@ -370,8 +368,8 @@ async def test_a_cancelled_run_whose_terminal_succeeded_still_raises_cancelled(
     runner = FlowRunner(app.get("terminal_ok_run_cancelled"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id, until="held", max_ticks=10) == "held"
-    # THE HONEST None: the run is genuinely live (held), so the read
-    # answers None — the same None a cancelled run must never be handed.
+    # the honest None: the run is genuinely live (held), so the read answers
+    # None — the same None a cancelled run must never be handed.
     assert await runner.result(flow_id) is None
     # The terminal payload is present and decodable; the cancel must win.
     payload = await wf_pool.fetchval(

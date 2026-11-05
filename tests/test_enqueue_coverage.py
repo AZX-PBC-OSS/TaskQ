@@ -131,7 +131,7 @@ class _FakeEnqueueConn:
     arms this pack owns (the legacy-index violation retry ladder, the
     poisoned-insert retry points, the injected UniqueViolationError/
     InternalClientError raises) - branches a real PG cannot reach
-    deterministically. Its statement routing is NOT the assertion
+    deterministically. Its statement routing is not the assertion
     surface: the SQL-semantics arms converted to the real-PG packs
     (tests/test_postgres_unique_for.py, tests/test_singleton.py,
     tests/test_postgres_enqueue.py, tests/test_postgres_enqueue_max_pending_lock.py)."""
@@ -373,7 +373,7 @@ async def test_enqueue_accepts_clean_tags() -> None:
 
 # ── Batch serialization: per-item NUL attribution ────────────────────────
 #
-# The batch build loops serialize every item BEFORE any SQL runs, so a NUL
+# The batch build loops serialize every item before any SQL runs, so a NUL
 # in any item raised a bare ValueError(NUL_JSONB_ERROR) that named neither
 # the item nor the field. Pydantic validation failures get per-item
 # annotation via _item_payload_error in the client layer
@@ -461,7 +461,7 @@ async def test_enqueue_batch_fast_nul_payload_names_item_and_field() -> None:
 
 async def test_memory_enqueue_batch_nul_payload_annotated_and_atomic() -> None:
     """InMemoryBackend parity: the batch mirror rejects a NUL-bearing item
-    with the same per-item annotation AND the same all-or-nothing
+    with the same per-item annotation and the same all-or-nothing
     admission as PG. A per-item loop admits items 0..k-1
     before item k raised a bare, unattributed ValueError."""
     backend = InMemoryBackend(clock=FakeClock(_NOW))
@@ -691,17 +691,17 @@ async def test_enqueue_with_conn_legacy_violation_converts_without_retry() -> No
 
 # ── _enqueue under the dead-connection retry guard ────────────────
 #
-# The retry wrapper must absorb the dead-on-acquire race WITHOUT ever
+# The retry wrapper must absorb the dead-on-acquire race without ever
 # re-running a write that was already acknowledged. Three orderings:
 #
-# 1. The connection is poisoned BEFORE the INSERT is sent: the statement
+# 1. The connection is poisoned before the INSERT is sent: the statement
 #    fails locally (nothing reached the server), no write is durable, the
 #    retry runs and succeeds. The wrapper's original purpose.
-# 2. The INSERT is acknowledged (committed, autocommit) and the RELEASE's
+# 2. The INSERT is acknowledged (committed, autocommit) and the release's
 #    reset then fails (the parked-error-consume connection): the guard's
 #    checkout swallows the release failure, the caller gets the row, and
 #    no second INSERT is issued.
-# 3. The INSERT is acknowledged and a LATER statement of the same attempt
+# 3. The INSERT is acknowledged and a later statement of the same attempt
 #    (the keyed arm's follow-up SELECT) fails with InternalClientError:
 #    the guard's mark refuses the retry; the error propagates and the
 #    INSERT count stays one.
@@ -731,7 +731,7 @@ class _CountingInsertConn(_FakeEnqueueConn):
 
 class _ParkedBeforeInsertConn(_CountingInsertConn):
     """The dead-on-acquire case: the pooled connection was poisoned before
-    handout, so the FIRST statement (the plain arm's INSERT) fails locally
+    handout, so the first statement (the plain arm's INSERT) fails locally
     with the driver's state error -- nothing was sent, nothing committed."""
 
     async def fetchrow(self, sql: str, *args: object) -> object | None:
@@ -872,7 +872,7 @@ async def test_enqueue_batch_mid_transaction_error_allows_the_safe_retry() -> No
     batch rolled back server-side when the server died. The retry is
     therefore provably safe, and it MUST run: re-executing the batch
     atomically on a fresh connection is how the drain survives the
-    interruption. (Contrast the refused path: a failure AFTER the COMMIT
+    interruption. (Contrast the refused path: a failure after the COMMIT
     acknowledgement would propagate: that arm is pinned by the
     release-failure and post-INSERT tests above.)"""
 
@@ -946,7 +946,7 @@ async def test_enqueue_batch_with_conn_legacy_violation_converts_without_retry()
 
 
 class _PoolCtx:
-    """asyncpg.PoolAcquireContext stand-in: BOTH awaitable and async-CM,
+    """asyncpg.PoolAcquireContext stand-in: both awaitable and async-CM,
     the real surface's documented dual shape (``await pool.acquire()`` /
     ``async with pool.acquire()``). The retry guard's checkout uses the
     await form plus an explicit ``pool.release(conn, timeout=...)``."""

@@ -5,7 +5,7 @@ Covers:
   dedupes globally exactly as before.
 - Same idempotency_key with DIFFERENT idempotency_scope values → both
   enqueue as distinct jobs.
-- Same idempotency_key AND same idempotency_scope → dedupes (second
+- Same idempotency_key and same idempotency_scope → dedupes (second
   returns first job).
 """
 
@@ -179,14 +179,14 @@ class TestEnqueueBatchScopeParity:
 
 
 class TestInBatchCrossActorDuplicateRefusedAtomically:
-    """Two items of ONE enqueue_batch call sharing an
+    """Two items of one enqueue_batch call sharing an
     (idempotency_scope, idempotency_key) pair across actors.
 
     Postgres' bulk tier is one INSERT in one transaction: the second item's
     pair conflicts inside the statement, the dedup resolution finds the
     first item's job, and the cross-actor refusal withdraws the whole
     INSERT. Nothing from the batch is stored. The mirror's preflight must
-    refuse with the identical typed error BEFORE its first insert, never
+    refuse with the identical typed error before its first insert, never
     store the good prefix and raise at the offending item's index.
     """
 
@@ -298,11 +298,11 @@ class TestConcurrentPairMidBatchRefusesAtomically:
         assert await backend.get(stored_by_intruder[0].id) is not None
 
 
-# ── Same key AND same scope → dedupes ──────────────────────────
+# ── Same key and same scope → dedupes ──────────────────────────
 
 
 class TestSameKeySameScope:
-    """Same idempotency_key AND same idempotency_scope → dedupes
+    """Same idempotency_key and same idempotency_scope → dedupes
     (second returns first job)."""
 
     async def test_same_scope_dedupes(self) -> None:

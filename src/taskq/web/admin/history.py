@@ -60,17 +60,17 @@ _SELECT_COLS_LIVE = (
 )
 
 # The walk's sort key, stated once: the ORDER BY and the keyset cursor
-# predicate must be the SAME tuple or the seam is not a seam -- the row-wise
+# predicate must be the same tuple or the seam is not a seam -- the row-wise
 # comparison can only describe "strictly after the last row shown" when it
 # covers every column the ordering uses. The finished NULL range is pinned
 # to the walk's top by the same COALESCE ceiling the cursor compares, so a
 # NULL-finished row can never sit on the far side of a seam its cursor
-# cannot describe. Ordering by a status_priority CASE the
+# cannot describe. Ordering by a status_priority case the
 # cursor never carried, dropping created_at from the predicate entirely,
 # would replay the previous page and skip
 # rows no page ever served: id order and created_at order disagree
 # wherever a worker's clock is skewed (id is the
-# ENQUEUING worker's UUIDv7 clock, created_at is the DATABASE clock).
+# enqueuing worker's UUIDv7 clock, created_at is the database clock).
 #
 # The ordering cannot sit as a bare ORDER BY over the UNION ALL --
 # PostgreSQL rejects an ORDER BY that is not an output column of the set
@@ -81,10 +81,10 @@ _SELECT_COLS_LIVE = (
 # The wrapper sort is also where the naive walk's cost lives: a sort
 # over a set operation cannot be served by index order (the planner does
 # not propagate pathkeys through computed set-operation output columns),
-# so sorting the union directly makes EVERY page turn read and top-N
+# so sorting the union directly makes every page turn read and top-N
 # sort every matching row of the
 # archive, 18 ms at a 100k-row archive and growing linearly with
-# retention. The walk therefore sorts and limits EACH BRANCH (the
+# retention. The walk therefore sorts and limits each branch (the
 # per-branch ORDER BY is the same tuple over a bare table, which the
 # seam indexes 01.00.20_01 serves as an index scan that starts at the
 # seam and stops at the branch limit) and the outer sort only merges the
@@ -95,8 +95,8 @@ _HISTORY_SEAM_PREDICATE = (
     "created_at, id) < ($4, $5, $6)"
 )
 
-# The prev walk's arms: the REVERSED seam and ordering (the walk moves
-# from the cursor toward the top of the DESC display order), the wrapper
+# The prev walk's arms: the reversed seam and ordering (the walk moves
+# from the cursor toward the top of the desc display order), the wrapper
 # re-sorted into the display order - the same direction-aware pair the
 # jobs page walks with.
 _HISTORY_SEAM_PREDICATE_BACKWARD = (
@@ -135,12 +135,12 @@ UNION ALL
 {order_by}
 LIMIT {limit}"""
 
-# The backward (prev) fetch: each branch takes the rows NEAREST the
-# cursor in the reversed order ({branch_order_by} ASC), and the WRAPPER
+# The backward (prev) fetch: each branch takes the rows nearest the
+# cursor in the reversed order ({branch_order_by} asc), and the wrapper
 # re-sorts into the display (newest-first) order ({wrapper_order_by}
-# DESC) - two different orders, bound separately. No outer limit: the
+# desc) - two different orders, bound separately. No outer limit: the
 # branches are already limited to the fetch, and the display truncation
-# takes the page from the END of the re-sorted list (the overfetch row is
+# takes the page from the end of the re-sorted list (the overfetch row is
 # the one nearest the cursor).
 _HISTORY_UNION_TEMPLATE_BACKWARD = """\
 SELECT * FROM (
@@ -312,7 +312,7 @@ def register(router: APIRouter) -> None:
                     detail=f"cursor_id is not a valid UUID: {cursor_id!r}",
                 ) from None
 
-        # The walk resolves ONCE: a cursor-less request is the unpaged
+        # The walk resolves once: a cursor-less request is the unpaged
         # first page and walks forwards whatever the query string said (a
         # reversed unpaged query would serve the tail as page one).
         backward = parsed_at is not None and cursor_dir == "prev"
@@ -339,9 +339,9 @@ def register(router: APIRouter) -> None:
 
         overfetched = len(rows) > _PAGE_SIZE
         # Direction-aware display truncation (the jobs page's
-        # _display_slice shape): a forward fetch serves its FIRST page
-        # worth of rows; a backward fetch is the rows NEAREST the cursor
-        # in display order, so the page is the LAST page-worth of the
+        # _display_slice shape): a forward fetch serves its first page
+        # worth of rows; a backward fetch is the rows nearest the cursor
+        # in display order, so the page is the last page-worth of the
         # fetch. Backward fetches arrive re-sorted into display order by
         # the wrapper.
         display_rows = list(rows[:_PAGE_SIZE] if not backward else rows[-_PAGE_SIZE:])

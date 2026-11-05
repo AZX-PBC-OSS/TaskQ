@@ -128,7 +128,7 @@ class _AbortConn:
 
 async def test_flip_under_a_held_row_times_out_bounded_and_writes_nothing() -> None:
     """A batches row held past the budget: the abort returns 0 bounded,
-    issues ONE flip attempt (no retry loop behind an unbounded holder),
+    issues one flip attempt (no retry loop behind an unbounded holder),
     runs no member page (the drain must not proceed behind a
     still-'active' row), and logs the delay so it stays traceable."""
     conn = _AbortConn(nested=False, flip_raises=True)
@@ -151,7 +151,7 @@ async def test_flip_under_a_held_row_times_out_bounded_and_writes_nothing() -> N
 
 
 async def test_flip_timeout_inside_a_caller_transaction_skips_the_guc_restore() -> None:
-    """On the timeout path the prior ``lock_timeout`` is NOT restored: the
+    """On the timeout path the prior ``lock_timeout`` is not restored: the
     savepoint's rollback already discarded the SET LOCAL, and the restore
     statement would land in an aborted scope (a raw 55P03 leaves the
     transaction failed even when caught). The wrapper's linear structure
@@ -170,7 +170,7 @@ async def test_flip_timeout_inside_a_caller_transaction_skips_the_guc_restore() 
 
 async def test_uncontended_flip_inside_a_caller_transaction_restores_the_budget() -> None:
     """Success inside a caller's transaction: the flip runs in its own
-    savepoint-scoped wait BEFORE any drain page, and the caller's prior
+    savepoint-scoped wait before any drain page, and the caller's prior
     ``lock_timeout`` is restored before the savepoint releases (a skipped
     restore would leak the wait bound onto every later statement)."""
     page = {

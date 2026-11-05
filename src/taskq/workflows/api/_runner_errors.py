@@ -38,19 +38,19 @@ class WorkflowRunCancelledError(WorkflowRunError):
 
 
 class VanishedNodeError(WorkflowRunError):
-    """THE VANISHED-NODE REDEPLOY WEDGE (the structural redeploy):
+    """
     a deploy renamed or removed a node while
     a run was in flight, and the run's pending row's step key now
     resolves NOWHERE in the new process — not in the compiled graph, not
     in the registered definition.
 
-    THE REGISTRY-IS-TRUTH LAW (D1): the registered definition is the
-    ONLY body source. A key the registry does not carry has no body —
+    The registered definition is the
+    only body source. A key the registry does not carry has no body —
     no re-run, no retry, no later tick can ever resolve it: the failure
     is DETERMINISTIC BY CONSTRUCTION (the ladder's deterministic route
     — the retry budget is never spent on it).
 
-    THE REMEDY IS CANCEL-THEN-RESTART: cancel this run
+    Cancel this run
     (``taskq flows cancel <run_id>``) and restart the work on the new
     deploy under a fresh run key. The run terminal-FAILS LOUDLY with
     this class on the record — the run's own rows tell the operator the

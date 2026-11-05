@@ -102,7 +102,7 @@ def session_gate(
             )
         except TimeoutError:
             # A verifier that outlives its bound is an unknown session
-            # state, not a pass: fail closed, and say WHY -- a hung
+            # state, not a pass: fail closed, and say why -- a hung
             # verifier (wedged IdP introspection call) wedging the
             # stream is a different incident from a revoked session.
             log.warning(
@@ -184,8 +184,8 @@ async def release_after[GenT](
     the semaphore's release performs.
     """
     try:
-        # Deterministic close of the wrapped generator on EVERY exit: a
-        # disconnect closes THIS generator (CancelledError at the yield /
+        # Deterministic close of the wrapped generator on every exit: a
+        # disconnect closes this generator (CancelledError at the yield /
         # an explicit aclose), never the inner one, and without the
         # aclosing the ``async for`` abandons *gen* suspended mid-iteration.
         # The inner generator's cleanup then waits on the GC's asyncgen

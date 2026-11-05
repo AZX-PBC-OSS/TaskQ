@@ -18,8 +18,8 @@ The findings (each rejected live at the pin head):
 * ``apply_pending`` takes a raw ``asyncpg.Connection``; a
   Pool arrives at the first statement's convenience method and dies
   the untyped ``AttributeError`` (the Pool has no ``transaction()``).
-* THE E2-ANALOG HOLE IN THE GATE WIRING: a DECLARED gate the
-  body never waits on, and a body's ``wait_signal`` with NO declared
+* the E2-ANALOG HOLE IN the GATE WIRING: a DECLARED gate the
+  body never waits on, and a body's ``wait_signal`` with no declared
   gate, both validate CLEAN — the compile-visible gate seat and the
   bodies' waits are never walked against each other (E2 walks the
   promise wiring; the gate wiring has no walk).
@@ -29,7 +29,7 @@ The findings (each rejected live at the pin head):
   entry-point help advertises verbs the ``-m`` path dies on.
 * the ``schema`` param carries TWO conventions among the
   read-face siblings: keyword-only on ``HitlClient``, positional on
-  ``FlowRunner`` / ``run()`` (the majority). ONE convention: positional
+  ``FlowRunner`` / ``run()`` (the majority). one convention: positional
   (``HitlClient`` is unreleased — the fix is free).
 * ``FlowRunner.result()`` on a FAILED run returns the
   terminal node's empty read — failed and running indistinguishable at
@@ -48,7 +48,7 @@ The findings (each rejected live at the pin head):
   declaration, and the two sources never cross-checked where they are
   cross-checkable (both literals, disagreeing) — plus the ``GateDecl``
   docstring's stale raise-face text.
-* the loop's shape law ("a loop body declares ONE wait per
+* the loop's shape law ("a loop body declares one wait per
   iteration") is DOCSTRING-ENFORCED: a conditional-interior
   ``wait_signal`` in a loop body mis-indexes the answer cursor (the
   the expiry-as-value review's the is the same question) and nothing names it.
@@ -60,7 +60,7 @@ becomes the green guard) in the same commit.
 from __future__ import annotations
 
 import inspect
-import subprocess  # Why: the -m pin IS a subprocess question — the -m path only exists in a fresh interpreter.
+import subprocess  # Why: the -m pin is a subprocess question — the -m path only exists in a fresh interpreter.
 import sys
 import textwrap
 from typing import Any
@@ -113,17 +113,17 @@ class _Carry(BaseModel):
 
 def _compile_quietly(app: WorkflowApp, name: str) -> Any:
     """The validator's own probe seam (``WorkflowApp._compile``): compile
-    WITHOUT the registration door — the pins read the DIAGNOSTICS (the
+    without the registration door — the pins read the DIAGNOSTICS (the
     W-rules' faces), which the door's raise-on-error hides."""
     return app._compile(name)
 
 
-# ── the gate wiring's E2-analog (THE HEADLINE) ────────────────
+# ── the gate wiring's E2-analog (the headline) ────────────────
 
 
 def test_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> None:
     """E14 (the gate-wiring walk — E2's analog): a node declaring a
-    ``GateDecl`` whose body carries NO ``wait_signal`` reference AT ALL
+    ``GateDecl`` whose body carries no ``wait_signal`` reference AT ALL
     is the provable wiring lie — the compile-visible hold seat with no
     waiter (work that waits for nobody). The refusal is at BUILD, like
     E2's produced-never-consumed."""
@@ -147,12 +147,12 @@ def test_4a_a_declared_gate_the_body_never_waits_is_a_build_refusal() -> None:
 
 def test_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
     """E14's other face — re-partitioned at the merge (the hold
-    evidence won it): a wait with NO declared gate is NOT the lie (the
+    evidence won it): a wait with no declared gate is not the lie (the
     wait site is SELF-DESCRIBING — the payload models + the timeout ride
     the call; the hold row is real; the listener, the resolve door and
     the broadcast all work). What is lost is the COMPILE visibility —
     the Mermaid hold node, W1's timeout read — so this face is the
-    WARNING: validate() reports it, the build does NOT refuse. The
+    WARNING: validate() reports it, the build does not refuse. The
     DANGEROUS face (the gate declared, the body never waits) stays the
     error: that one ships 'we have an approval step' with no approval in
     it."""
@@ -171,7 +171,7 @@ def test_4b_a_wait_with_no_declared_gate_is_a_build_refusal() -> None:
         p = step(approver, _Ingest(doc_id="d"))
         return build(p)
 
-    compiled = app.get("-4b-wait-never-declare")  # the build does NOT refuse
+    compiled = app.get("-4b-wait-never-declare")  # the build does not refuse
     diagnostics = validate_compiled(compiled)
     e14 = [d for d in diagnostics if d.rule == "E14-gate-wiring"]
     assert e14, "the compile-invisible hold lost its warning — the face went dark"
@@ -246,7 +246,7 @@ async def test_7_a_failed_run_s_result_read_names_the_failure(
 
 
 def test_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
-    """``python -m taskq.cli --help`` must advertise EVERY verb the
+    """``python -m taskq.cli --help`` must advertise every verb the
     imported app registers (the console script's face): the __main__
     block runs main() mid-module, so every command registered after it
     is dead on the -m path while the group help (the fully-loaded
@@ -275,11 +275,11 @@ def test_5_the_dash_m_path_serves_the_whole_verb_inventory() -> None:
     )
 
 
-# ── ONE schema convention ──────────────────────────────────────
+# ── one schema convention ──────────────────────────────────────
 
 
 def test_6_the_schema_param_carries_one_convention() -> None:
-    """The read-face siblings carry the schema param under ONE
+    """The read-face siblings carry the schema param under one
     convention — POSITIONAL (the majority: ``FlowRunner``,
     ``run()``). ``HitlClient``'s keyword-only seat is the minority
     convention (and the class is unreleased — the fix is free)."""
@@ -331,7 +331,7 @@ async def test_2_the_packaged_run_names_the_unmigrated_schema(
 
 
 async def test_3_apply_pending_names_the_connection_it_refuses() -> None:
-    """``apply_pending`` takes ONE ``asyncpg.Connection`` (the caller's
+    """``apply_pending`` takes one ``asyncpg.Connection`` (the caller's
     transaction scope); a POOL is the typed refusal naming the
     Connection — never the untyped ``AttributeError`` the Pool's
     missing ``transaction()`` dies with at the first statement."""
@@ -345,7 +345,7 @@ async def test_3_apply_pending_names_the_connection_it_refuses() -> None:
         await pool.close()
 
 
-# ── the stamper reads the wrapper's INNER fn ──────────────────
+# ── the stamper reads the wrapper's inner fn ──────────────────
 
 
 @pytest.mark.integration
@@ -372,7 +372,7 @@ async def test_8_the_actor_wrapped_bodies_stamp_their_own_code(
     @app.workflow("-8-inner-stamp")
     def build_wf() -> (
         Promise[object]
-    ):  # the handle's call face erases R (the actor wrapper's __call__ returns object) — the STAMPS are the pin's subject, not the generic
+    ):  # the handle's call face erases R (the actor wrapper's __call__ returns object) — the stamps are the pin's subject, not the generic
         a = step(alpha_body, _Ingest(doc_id="1"))
         p = step(beta_body, _Ingest(doc_id="2"))
         sink(a)
@@ -388,7 +388,7 @@ async def test_8_the_actor_wrapped_bodies_stamp_their_own_code(
     )
     stamps = {r["step_key"]: r["code_version"] for r in rows}
     assert set(stamps) == {"alpha_body", "beta_body"}, f"the run's nodes: {sorted(stamps)}"
-    # THE CANON IS THE DEDENTED SLICE (own_source's face — the hash of a
+    # the canon is the dedented slice (own_source's face — the hash of a
     # body is independent of its nesting depth; the pin spells the canon
     # explicitly, never calling the stamper's own helper to derive it).
     expected = {
@@ -417,7 +417,7 @@ async def test_8_the_actor_wrapped_bodies_stamp_their_own_code(
     )
 
 
-# ── the hold's reason — ONE home ───────────────────────────────
+# ── the hold's reason — one home ───────────────────────────────
 
 
 @pytest.mark.integration
@@ -508,13 +508,13 @@ def test_10_the_gate_timeout_sources_agree_or_the_drift_is_named() -> None:
 
 def test_10b_the_gate_decl_docstring_names_the_union_face() -> None:
     """The declaration's own documentation states the UNION face: what
-    ``GateDecl.timeout_s`` feeds (the compile surfaces) AND what arms
+    ``GateDecl.timeout_s`` feeds (the compile surfaces) and what arms
     the runtime (the wait site's value) — the stale raise-face text is
     rewritten, the precedence readable where the author declares."""
     doc = GateDecl.__doc__ or ""
     import re
 
-    # The union face, BOTH directions: what the Decl's timeout_s feeds
+    # The union face, both directions: what the Decl's timeout_s feeds
     # (the compile surfaces) and what arms the runtime (the wait site's
     # own value) — either alone is the stale half-face.
     feeds_compile = re.search(r"compile surfaces|Mermaid|W1", doc) is not None
@@ -533,7 +533,7 @@ def test_10b_the_gate_decl_docstring_names_the_union_face() -> None:
 
 
 def test_12_a_conditional_loop_wait_is_a_named_warning() -> None:
-    """The loop's shape law ("ONE wait per iteration") as a NAMED W-rule:
+    """The loop's shape law ("one wait per iteration") as a NAMED W-rule:
     a loop body whose ``wait_signal`` sits in a CONDITIONAL interior
     mis-indexes the answer cursor (the mis-index — the iteration
     counter is the cursor, so an iteration that does not wait drifts the
@@ -615,7 +615,7 @@ def test_12b_the_unconditional_loop_wait_stays_clean() -> None:
     )
 
 
-# ── map_source's can-only-error param is GONE ─────────────────
+# ── map_source's can-only-error param is gone ─────────────────
 
 
 def test_1_map_source_takes_no_key_param() -> None:

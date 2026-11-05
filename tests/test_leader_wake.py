@@ -3,11 +3,11 @@
 The graceful stop already bounded handover at ``heartbeat_interval`` plus
 one round trip: the resign deletes the lease row and the next follower
 election tick wins it. This module adds the proactive path on top - the
-resigner broadcasts the vacancy on ``leader_wake_channel(schema)`` AFTER
+resigner broadcasts the vacancy on ``leader_wake_channel(schema)`` after
 the delete commits (the cron tick's commit-gate discipline, trivially
 satisfied: the DELETE is a single autocommit statement and the NOTIFY is
 a separate statement behind it), and a follower that hears it re-runs the
-SAME fenced elect immediately, damped by ``leader_wake_jitter``.
+same fenced elect immediately, damped by ``leader_wake_jitter``.
 
 Every pin here guards one half of the doctrine:
 
@@ -246,7 +246,7 @@ class TestFollowerPark:
         leader, _deps, _backend, _conn, _pool, _shutdown = await _unit_leader()
         leader._deps.settings.leader_wake_jitter = 0.0
         wake = asyncio.Event()
-        leader._wake_event = wake  # the merged shape: ONE wake event, the subscription re-points it at the backend's for the run; the park consumes this object.
+        leader._wake_event = wake  # the merged shape: one wake event, the subscription re-points it at the backend's for the run; the park consumes this object.
         loop = asyncio.get_running_loop()
 
         async def _arrive() -> None:
@@ -305,7 +305,7 @@ class TestFollowerPark:
 
     async def test_wake_arriving_before_the_park_is_not_lost(self) -> None:
         """A wake that lands while the loop is mid-cycle stays set and wakes
-        the NEXT park immediately - not lost, at most one extra fenced elect."""
+        the next park immediately - not lost, at most one extra fenced elect."""
         leader, _deps, _backend, _conn, _pool, _shutdown = await _unit_leader()
         leader._deps.settings.leader_wake_jitter = 0.0
         wake = asyncio.Event()
@@ -320,7 +320,7 @@ class TestFollowerPark:
         """MUTATION PIN - the consume-door refusal (``or self._stopping()``).
 
         A wake that lands in the same step as the stop signal must never
-        be damped into a fast re-elect, EVEN IF the arm door
+        be damped into a fast re-elect, even IF the arm door
         (``wake_election``'s refusal) were bypassed: the wake event is
         set directly here, so the arm door never runs and the park's own
         consume-door refusal is the only tooth under test. The wake and
@@ -339,7 +339,7 @@ class TestFollowerPark:
 
         async def _race() -> None:
             # Let the park settle into its wait, then land the stop and
-            # the peer wake in the SAME step: the wake wins
+            # the peer wake in the same step: the wake wins
             # ``_wait_next_tick``'s race, the stop must win the park's.
             await asyncio.sleep(0.05)
             deps.shutdown_start_event.set()
@@ -351,7 +351,7 @@ class TestFollowerPark:
         elapsed = loop.time() - start
         await racer
         # The damped re-elect the jitter sleep schedules never fires: the
-        # refusal returned the park BEFORE the (pinned, deterministic)
+        # refusal returned the park before the (pinned, deterministic)
         # damped delay elapsed, so no election attempt can be reaching
         # for the row inside the jitter window.
         assert elapsed < 0.14, (
@@ -444,7 +444,7 @@ async def test_lw1_wake_driven_handover_is_sub_second(pg_dsn: str) -> None:
     raw = await asyncpg.connect(pg_dsn)
     try:
         channel = leader_wake_channel(settings.schema_name)
-        # BOTH pods' production routing on the raw conn (each pod's own
+        # both pods' production routing on the raw conn (each pod's own
         # echo filter decides whose park may move - the resigner's own
         # wake is dropped), plus a recording tap for the latency
         # measurement.
@@ -472,12 +472,12 @@ async def test_lw1_wake_driven_handover_is_sub_second(pg_dsn: str) -> None:
 
             t_stop = asyncio.get_running_loop().time()
             winner_shutdown.set()
-            # run()'s TaskGroup drains NATURALLY on the shutdown event (the
+            # run()'s TaskGroup drains naturally on the shutdown event (the
             # body completes; TaskGroup cancels nothing), so the resign waits
             # out each loop's current sleep - the pre-existing teardown tail
             # the published SLA never counted (its bound is phrased on the
             # resign: "the resign deletes the row; the next election wins
-            # it"). The feature's claim is measured from the WAKE, below.
+            # it"). The feature's claim is measured from the wake, below.
             await asyncio.wait_for(
                 winner_task, timeout=_WATCHDOG_INTERVAL + float(settings.heartbeat_interval) + 3
             )
@@ -492,9 +492,9 @@ async def test_lw1_wake_driven_handover_is_sub_second(pg_dsn: str) -> None:
             t_wake, _payload = received[0]
             stop_to_leader = t_leader - t_stop
             wake_to_leader = t_leader - t_wake
-            # THE feature pin: from the wake (the instant the resign's
+            # the feature pin: from the wake (the instant the resign's
             # broadcast landed, i.e. after the delete committed) to the
-            # follower ASSUMING - well inside HALF a heartbeat tick, where
+            # follower assuming - well inside half a heartbeat tick, where
             # the old tick path's wake-up alone was uniform over the whole
             # tick. Measured runs: 37-110ms against a 1.0s tick.
             assert wake_to_leader < 0.5 * float(settings.heartbeat_interval), (
@@ -572,7 +572,7 @@ async def test_lw2_the_broadcast_names_the_kind_the_resigner_and_the_dead_term(
             # Either-signal: the wait resolves exactly when the broadcast
             # lands - the tap sets the event inside the delivery callback,
             # no poll cadence between the payload arriving and the assert.
-            # The timeout only bounds FAILURE, and it funds the same drain
+            # The timeout only bounds failure, and it funds the same drain
             # the resigner task's completion wait below funds: run()'s
             # TaskGroup drains naturally on the stop (the body completes,
             # nothing is cancelled), so the resign - and the NOTIFY behind
@@ -599,8 +599,8 @@ async def test_lw2_the_broadcast_names_the_kind_the_resigner_and_the_dead_term(
             dead_term = datetime.fromisoformat(msg["elected_at"])  # the term, parseable
             # Ordering: the delete committed before the notify was sent, so
             # a receiver holding the payload can rely on the row it names
-            # being gone - the row a SUCCESSOR re-won since (the follower's
-            # next tick legitimately claims the vacancy) carries a FRESH
+            # being gone - the row a successor re-won since (the follower's
+            # next tick legitimately claims the vacancy) carries a fresh
             # elected_at, never the resigned one.
             row = await _leader_row(raw, settings.schema_name)
             assert row is None or row["elected_at"] > dead_term, (
@@ -626,7 +626,7 @@ async def test_lw3_wake_lost_keeps_the_tick_bound(pg_dsn: str) -> None:
     """The drop shape: a follower that never hears the wake still takes over
     on the tick - the published bound, unregressed.
 
-    The follower's backend has NO leadership wake subscription (the
+    The follower's backend has no leadership wake subscription (the
     disabled-listener shape, the same degradation a dropped NOTIFY or a
     poll-fallback worker rides): the park sleeps the full tick, the next
     elect wins, and the fleet never waits a lease.
@@ -702,7 +702,7 @@ async def test_lw4_a_stale_wake_costs_one_fenced_noop(pg_dsn: str) -> None:
 
     raw = await asyncpg.connect(pg_dsn)
     try:
-        # BOTH pods' production routing on one raw conn: whichever pod is
+        # both pods' production routing on one raw conn: whichever pod is
         # the follower has its park driven by the real wire, and each
         # pod's own-echo filter keeps the holder's park deaf to wakes.
         await raw.add_listener(
@@ -722,10 +722,10 @@ async def test_lw4_a_stale_wake_costs_one_fenced_noop(pg_dsn: str) -> None:
                 description="one pod won the initial election",
                 timeout=5 * _HEARTBEAT_INTERVAL + 3,
             )
-            # The holder is whoever won; the stale wake goes to the OTHER
+            # The holder is whoever won; the stale wake goes to the other
             # pod, whose production routing is the listener wired above
             # (backend_b's, so when B is the holder the wake must reach it
-            # through A's backend instead - wire BOTH, each pod's own echo
+            # through A's backend instead - wire both, each pod's own echo
             # filter decides whose park may move).
             holder_deps = deps_a if deps_a.is_leader.is_set() else deps_b
             follower_deps = deps_b if deps_a.is_leader.is_set() else deps_a
@@ -916,7 +916,7 @@ async def test_lw6_eight_electors_woken_at_once_crown_exactly_one(pg_dsn: str) -
                 "SET expires_at = clock_timestamp() - interval '1 hour', "
                 "last_seen_at = clock_timestamp() - interval '1 hour'"
             )
-            # Each (conn, worker) pair re-elects AS ITSELF: a winner from
+            # Each (conn, worker) pair re-elects as itself: a winner from
             # the first race may be any worker, including the one whose
             # conn owns the shared handle - the pairing must follow the
             # pairs, not the list slice, or an elect rides a foreign
@@ -946,7 +946,7 @@ async def test_lw7_the_graceful_bound_table_holds_on_the_real_wire(pg_dsn: str) 
 
     * wake delivered: stop-to-assumed sub-second (lw1's assertion,
       re-measured here on a second schema for the report's number);
-    * the crash bound is NOT this code path: a killed leader emits no
+    * the crash bound is not this code path: a killed leader emits no
       resign and no wake, and the fleet still recovers on the tick -
       pinned by test_leader_chaos (tc1) and unchanged by this feature.
     """
@@ -969,7 +969,7 @@ async def test_lw7_the_graceful_bound_table_holds_on_the_real_wire(pg_dsn: str) 
 
     raw = await asyncpg.connect(pg_dsn)
     try:
-        # BOTH pods' production routing: whichever pod loses the initial
+        # both pods' production routing: whichever pod loses the initial
         # race is the follower whose park the wake must move, and each
         # pod's own-echo filter keeps the resigner deaf to its own
         # broadcast.
@@ -1041,10 +1041,10 @@ async def test_lw7_the_graceful_bound_table_holds_on_the_real_wire(pg_dsn: str) 
 
 # ── The scheduled-wake loop's failure arms ────────────────────────────
 #
-# The scheduled-wake iteration awaits PG twice under ONE deadline (the
-# scheduled_to_pending sweep, then the WAKE NOTIFY's dispatcher-pool
+# The scheduled-wake iteration awaits PG twice under one deadline (the
+# scheduled_to_pending sweep, then the wake NOTIFY's dispatcher-pool
 # acquire). The two failure sites must not be accounted the same: a sweep
-# that COMPLETED and only lost its notify is a healthy sweep whose wake
+# that completed and only lost its notify is a healthy sweep whose wake
 # failed (logged, retried next tick; the producer's poll interval covers
 # the missed NOTIFY), while a sweep cut short by the deadline is a
 # sweep-timeouts increment. Counting the former as the latter pages the
@@ -1138,7 +1138,7 @@ async def test_wake_notify_failure_does_not_count_completed_sweep_as_timeout() -
     """MUTATION PIN - the ``rows is None`` guard.
 
     The sweep returned rows (the deadline casualty was the WAKE NOTIFY,
-    not the sweep): the sweep-timeouts counter must NOT increment, the
+    not the sweep): the sweep-timeouts counter must not increment, the
     failure must still be logged, and the completed sweep must still be
     counted a success. Mutating the guard off (recording every transient
     as a timeout) reds this: a pool exhaustion or notify timeout would

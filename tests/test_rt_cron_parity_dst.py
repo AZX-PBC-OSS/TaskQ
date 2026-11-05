@@ -2,7 +2,7 @@
 
 The singleton parity change deliberately deviates from the client enqueue
 path in one place: a cron fire whose ``dst_strategy='allof'`` slot falls
-inside a DST overlap (a repeated local hour) enqueues only ONE job - the
+inside a DST overlap (a repeated local hour) enqueues only one job - the
 second occurrence of the repeated hour is deferred, with the planning
 code claiming the schedule's own ``next_fire_at`` machinery delivers it
 later: "next_fire_at lands on the first occurrence, and the repeated hour
@@ -73,9 +73,9 @@ _SINGLETON_ACTOR = "rt_parity_dst_singleton"
 _OPEN_ACTOR = "rt_parity_dst_open"
 _CAPPED_ACTOR = "rt_parity_dst_capped"
 
-# America/New_York falls back on 2026-11-01 (02:00 EDT → 01:00 EST), so the
-# local 01:30 of the yearly expression below occurs at BOTH 05:30Z (fold 0)
-# and 06:30Z (fold 1).  2027-11-01 is NOT an overlap date (fall-back 2027 is
+# America/New_York falls back on 2026-11-01 (02:00 edt → 01:00 est), so the
+# local 01:30 of the yearly expression below occurs at both 05:30Z (fold 0)
+# and 06:30Z (fold 1).  2027-11-01 is not an overlap date (fall-back 2027 is
 # Nov 7), so the next yearly match after the overlap is 2027-11-01 05:30Z.
 _OVERLAP_YEARLY = "30 1 1 11 *"
 _OVERLAP_TZ = "America/New_York"
@@ -98,10 +98,10 @@ _FOLD1_TICKS_UTC = [
 
 # The scenario's injected "now": every seed and every tick clock in the
 # pre-overlap scenarios below reads this explicit instant. It is a control
-# point far from any DST transition (Saturday mid-afternoon UTC, the day
+# point far from any dst transition (Saturday mid-afternoon UTC, the day
 # before the 2026 fall-back) and 9.5 hours before the fold-0 occurrence, so
 # a slot seeded 5 minutes "overdue" against it is a within-window catch-up
-# whose walk answers the overlap PAIR - the pre-overlap shape the
+# whose walk answers the overlap pair - the pre-overlap shape the
 # assertions encode. The first version of these scenarios read this instant
 # from the live server clock (``server_now() - 5min``) and ran the
 # pre-overlap tick on the live clock: correct only while the wall clock
@@ -238,7 +238,7 @@ class TestSingletonDstOverlap:
         clean_pg_conn: asyncpg.Connection,
         module_pg_schema: ModulePgSchema,
     ) -> None:
-        """The tick BEFORE the overlap (the deviation's stated shape): one
+        """The tick before the overlap (the deviation's stated shape): one
         catch-up fire, no second-occurrence enqueue, ``next_fire_at`` on the
         first occurrence, and the deferral logged naming the deferred
         instant."""
@@ -297,7 +297,7 @@ class TestSingletonDstOverlap:
     ) -> None:
         """The attack. Across the full tick sequence - pre-overlap catch-up,
         the first occurrence's tick (unblocked), the second occurrence's
-        tick (unblocked) - a singleton actor must end up with a job for BOTH
+        tick (unblocked) - a singleton actor must end up with a job for both
         occurrences of the repeated hour. Today the first occurrence's tick
         advances ``next_fire_at`` straight to next year, so the second
         occurrence never fires: the deferral promise is broken and the
@@ -711,7 +711,7 @@ class TestNonSingletonAllofOutageInsideOverlap:
         assert await count_jobs(clean_pg_conn, schema, _OPEN_ACTOR) == 1
 
         # The injected clock reaches the fold-1 occurrence: it fires on its own
-        # tick (nothing pre-scheduled it - this tick IS its delivery).
+        # tick (nothing pre-scheduled it - this tick is its delivery).
         second = await _tick(
             clean_pg_conn,
             settings,
@@ -737,15 +737,15 @@ class TestSteadyStateMinutelyFoldTraversal:
     A minutely ``allof`` schedule crossing the fall-back fold owes every
     slot twice - once per pass.  The fold-1 pass is delivered by the twin
     chain: during the fold-0 pass each tick pre-schedules a twin job for
-    the NEXT slot's fold-1 occurrence (the pair answer's second member), so
+    the next slot's fold-1 occurrence (the pair answer's second member), so
     by the time the last fold-0 slot fires, every fold-1 slot already has a
     queued job.  The schedule's next fire after the last fold-0 slot is
     therefore the slot PAST the repeated range (02:00 local = 07:00 UTC).
     ``_skip_already_delivered_overlap_twins`` exists precisely to advance
     past such covered instants - but at the time it only engaged when the
-    computation's answer equalled the row's OWN twin.
+    computation's answer equalled the row's own twin.
 
-    The newest branch answers the fold-1 pass's FIRST match once the fold-0
+    The newest branch answers the fold-1 pass's first match once the fold-0
     pass is spent - for a minutely schedule that is 01:00 fold-1 (06:00
     UTC), which was never the current slot's twin, so the skip never
     engaged.  The fix rewrote the skip as a coverage-prefix walk: any plan
@@ -754,7 +754,7 @@ class TestSteadyStateMinutelyFoldTraversal:
     red: the
     06:00 UTC tick fires the schedule for a slot whose twin job is already
     queued (double delivery), the walk from the fold-1 seed then answers
-    with a pair whose first member is IN THE PAST, and from there the
+    with a pair whose first member is IN the PAST, and from there the
     schedule sits due every tick, re-firing already-played fold-0 slots and
     double-scheduling every twin (duplicate jobs at 06:01, 06:02, ...).
     """
@@ -804,7 +804,7 @@ class TestSteadyStateMinutelyFoldTraversal:
         )
 
         # The fold-1 pass ticks: the twins deliver those slots, the schedule
-        # must NOT fire them a second time.
+        # must not fire them a second time.
         for due in _FOLD1_TICKS_UTC:
             fired = await _tick(clean_pg_conn, settings, schema, no_policies, due_as_of=due)
             assert fired == 0, (
@@ -936,7 +936,7 @@ class TestSingletonMinutelyFoldTraversal:
     fold-0 slot it returns the fold-1 pass's first match (01:00 fold-1 =
     06:00 UTC).  But the singleton ``elif`` then in ``_plan_fire`` (since
     deleted - the computation now owns the fold handoff) overrode
-    ``next_fire`` with the fired slot's OWN twin (01:59 fold-1 = 06:59
+    ``next_fire`` with the fired slot's own twin (01:59 fold-1 = 06:59
     UTC) whenever the fired slot was any fold-0 occurrence of a repeated
     wall time.  Its premise - "the next slot the walk finds is a full
     cadence away (for a yearly schedule, a year)" - held only for
@@ -1006,21 +1006,21 @@ class TestSingletonMinutelyFoldTraversal:
 
 
 class TestTwinCoverageIsPerSchedule:
-    """FINDING (fixed): the coverage walk counted ANY
+    """FINDING (fixed): the coverage walk counted any
     job at an in-range instant as delivered - including another
     schedule's.
 
     ``_skip_already_delivered_overlap_twins`` scoped its coverage query
     to the ACTOR (``j.actor = a.actor``), not to the schedule whose plan
     it was adjusting - yet twins are per-schedule by construction: each
-    schedule's fold-0 ticks pre-schedule THEIR OWN next-slot twins.
+    schedule's fold-0 ticks pre-schedule THEIR own next-slot twins.
     Two schedules on one actor are independent everywhere else in the
     system - both fire the same instant and both jobs coexist (no
     dedup) - so each owes its own delivery of every occurrence.
 
     The composition that exposed the granularity: schedule A crosses
     the fold normally and holds a twin at every fold-1 slot; schedule
-    B, same actor and same expression, is seeded on the LAST fold-0
+    B, same actor and same expression, is seeded on the last fold-0
     slot - it has no twins and owes the entire fold-1 pass.  Measured
     on this exact drive while red: at the last fold-0 tick B's
     ``next_fire_at`` jumped from 06:00 straight to 07:00 UTC - the walk
@@ -1062,7 +1062,7 @@ class TestTwinCoverageIsPerSchedule:
             cron_expr=_MINUTELY,
             timezone=_OVERLAP_TZ,
             dst_strategy="allof",
-            # B's first slot is the LAST fold-0 slot: no earlier tick, so
+            # B's first slot is the last fold-0 slot: no earlier tick, so
             # no twin chain - B owes the whole fold-1 pass itself.
             next_fire_at=_LAST_FOLD0_TICK_UTC,
             identity_key="fold-granularity-b",
@@ -1128,7 +1128,7 @@ class TestTwinCoverageIsPerSchedule:
         NULL (the ``create_schedule`` signature defaults
         ``identity_key=None``, and multiple schedules per actor are a
         documented feature).  This is the discriminating case: a
-        regression that scoped the coverage walk on ``identity_key IS NOT
+        regression that scoped the coverage walk on ``identity_key IS not
         DISTINCT FROM`` would pass the named-key test (the keys differ)
         while still stealing here (NULL matches NULL).  Only the
         ``cron_schedule_id`` provenance stamp keeps default-configured
@@ -1260,7 +1260,7 @@ class TestTwinCoverageIsPerSchedule:
 class TestTwinCoverageSurvivesBeyondPendingScheduled:
     """FINDING (red until fixed, GH issue #462): the coverage walk counts a
     fold-1 twin only while it is ``pending``/``scheduled``, so any twin
-    that has left that pair by the time the walk runs DROPS OUT of the
+    that has left that pair by the time the walk runs DROPS out of the
     covered prefix and the schedule re-fires its instant.
 
     ``_skip_already_delivered_overlap_twins`` scoped its coverage query
@@ -1278,7 +1278,7 @@ class TestTwinCoverageSurvivesBeyondPendingScheduled:
     (the twins are pre-scheduled about an hour ahead of the fold-0 ticks
     that create them), but a stall that drags ``next_fire_at`` through the
     twin's own instant can: tick-budget exhaustion advances a suppressed
-    schedule one cadence per suppressed tick WITHOUT consulting twin
+    schedule one cadence per suppressed tick without consulting twin
     coverage (the suppression UPDATE writes ``next_fire_at`` directly,
     cron_loop's tick-budget arm), so the walk can arrive at an instant
     whose twin a worker claimed or finished in the meantime - and the
@@ -1411,7 +1411,7 @@ class TestTwinCoverageSurvivesBeyondPendingScheduled:
 
         no_policies: Mapping[str, ActorFirePolicy] = {}
         # Ticks 06:00..06:04 fire the uncovered 01:00..01:04 fold-1
-        # occurrences; the 06:04 tick's walk must advance THROUGH the
+        # occurrences; the 06:04 tick's walk must advance through the
         # transformed twin's instant to the first instant nothing holds.
         for minute in range(5):
             due = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
@@ -1487,7 +1487,7 @@ class TestTwinCoverageSurvivesBeyondPendingScheduled:
             f"twin - a second enqueue there is a re-fired occurrence, got "
             f"{[dict(r) for r in at_instant]}"
         )
-        # 'cancel-running' is the protocol's phase-1 stamp: the row STAYS
+        # 'cancel-running' is the protocol's phase-1 stamp: the row stays
         # 'running' (cancel_running's contract) until the drain lands it.
         expected_status = "running" if transform == "cancel-running" else transform
         assert at_instant[0]["status"] == expected_status, (
@@ -1507,7 +1507,7 @@ class TestTerminalNotDeliveredTwinKeepsTheOwedRefire:
 
     ``_skip_already_delivered_overlap_twins`` counts six statuses as
     coverage and deliberately leaves out ``failed`` and ``crashed``: both
-    are terminal-NOT-delivered (``VALID_TRANSITIONS`` gives each an empty
+    are terminal-not-delivered (``VALID_TRANSITIONS`` gives each an empty
     transition set - no recovery path ever re-pends a row resting there;
     the only re-pend writers, the reclaim sweeps and ``retry_job``, move
     ``scheduled_at`` forward when they re-pend, and the sweep re-pends
@@ -1515,7 +1515,7 @@ class TestTerminalNotDeliveredTwinKeepsTheOwedRefire:
     ``crashed``).  A fold-1 twin resting on either status owns NOTHING:
     no retry will ever deliver its instant, so the instant stays
     uncovered and the schedule's own later fire is the only deliverer
-    left - the walk must stay OFF that instant and every later tick must
+    left - the walk must stay off that instant and every later tick must
     re-fire the range's remainder, one cadence each.
 
     If a future change widens the predicate to count a terminal-not-
@@ -1603,10 +1603,10 @@ class TestTerminalNotDeliveredTwinKeepsTheOwedRefire:
         )
 
         # The re-fired schedule jobs are enqueued for immediate delivery
-        # (a fire's own job carries the SERVER clock as its scheduled_at,
+        # (a fire's own job carries the server clock as its scheduled_at,
         # not the occurrence instant - only pre-scheduled twins carry the
         # fold instant), so a fire census cannot separate fires from twins
-        # by comparing a live server stamp against a PINNED bound: that
+        # by comparing a live server stamp against a pinned bound: that
         # comparison re-arms the wall-calendar bomb the injected clocks
         # exist to defuse (it armed when the real clock crossed the fold-1
         # pass's first slot, 2026-11-01 06:00Z). The wall-immune
@@ -1688,7 +1688,7 @@ class TestTwinAtRangeEndIsNotCoverage:
             identity_key="twin-at-range-end",
         )
         # The covered prefix 01:05..01:59 fold-1 plus the synthetic twin
-        # exactly AT the range's exclusive end (02:00 local = 07:00 UTC).
+        # exactly at the range's exclusive end (02:00 local = 07:00 UTC).
         for minute in range(5, 60):
             instant = _FOLD1_TICKS_UTC[0] + timedelta(minutes=minute)
             await _seed_scheduled_twin(clean_pg_conn, schema, _OPEN_ACTOR, instant, schedule_id)
@@ -1825,7 +1825,7 @@ class TestFoldParityBeyondNewYork:
     - **America/Havana** falls back AT local midnight (01:00 DST ->
       00:00 standard): the repeated range ``[00:00, 01:00)`` starts exactly
       on a local date boundary, so the fold-0 pass crosses local midnight
-      and both passes' walls carry the SAME local date.
+      and both passes' walls carry the same local date.
     - **America/Santiago** falls back at 24:00 -> 23:00: the repeated range
       ``[23:00, 00:00)`` ENDS exactly on a local date boundary, so the
       range's end is the next local date's first wall.
@@ -1836,7 +1836,7 @@ class TestFoldParityBeyondNewYork:
       repeated range ``[01:30, 02:00)``): a non-hour repeat width - 30 fold
       slots per pass, not 60.
 
-    Every drive dates its instants from the zone's OWN transition,
+    Every drive dates its instants from the zone's own transition,
     discovered from the installed zoneinfo over a fixed window. A hardcoded
     calendar date is a premise about a zone RULE, and a rule is the zone
     database's fact: vintages disagree (Cuba stopped returning to standard
@@ -2103,7 +2103,7 @@ class TestFoldParityBeyondNewYork:
         """America/Santiago falls back at 24:00 -> 23:00, so the repeated
         range ``[23:00, 00:00)`` ENDS exactly on the local date boundary:
         both passes' walls carry the earlier local date and the range's end
-        is the NEXT local date's first wall. The walk must land
+        is the next local date's first wall. The walk must land
         ``next_fire_at`` on that midnight boundary, not stall short of it or
         step past the date."""
         fold = _first_midnight_ending_fallback("America/Santiago")

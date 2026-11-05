@@ -3,7 +3,7 @@ tier.
 
 Same shape as :mod:`tests.system_e2e._worker_entry` (the production
 bootstrap, env-configured like a pod, the health socket as readiness)
-with ONE addition: the march flows' app module is imported BEFORE the
+with one addition: the march flows' app module is imported before the
 bootstrap, so the process's registry holds the apps and the boot stamps
 ``workflow_execution: true`` into the workers row's metadata (the
 dispatch fence's capability leg) and projects the (actor, queue)
@@ -22,7 +22,7 @@ import sys
 from taskq.settings import WorkerSettings
 from taskq.worker.run import _main
 from tests.system_e2e import (
-    _wf_app as _wf_app_module,  # Why: the import IS the capability — the app registry observes it, the boot's projection compiles the flows.
+    _wf_app as _wf_app_module,  # Why: the import is the capability — the app registry observes it, the boot's projection compiles the flows.
 )
 from tests.system_e2e.actors import ACTORS
 

@@ -140,7 +140,7 @@ class FakeConn:
         self.close_wait.set()  # close() completes instantly by default
         self.terminated = False
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface - the watchdog closes
+        # surface; the event is the wait surface - the watchdog closes
         # leader-owned conns on its own task, and a test that needs
         # "closed" can await this instead of polling a fixed interval
         # that races the close under load (same convention as the fakes
@@ -177,7 +177,7 @@ class FakeConn:
         if self._on_execute is not None:
             self._on_execute()
         # Why a DELETE tag for the resign: the command tag is the delete
-        # COUNT, and resign() now reads it to decide whether the row was
+        # count, and resign() now reads it to decide whether the row was
         # actually handed back: a double answering "UPDATE 1" here would
         # report every resign as a no-op (the same class of lie as the
         # fetchval doubles answering lease statements with a bool: the
@@ -418,7 +418,7 @@ async def test_election_win_sets_is_leader(monkeypatch: Any) -> None:  # type: i
     )  # type: ignore[method-assign]  # Why: test-only instrumentation to observe OTel counter calls.
 
     task = asyncio.create_task(leader._election_loop(shutdown))
-    # is_leader IS an asyncio.Event - a bounded event wait (never a
+    # is_leader is an asyncio.Event - a bounded event wait (never a
     # sleep-poll that races the election under load).
     await wait_for_leader(deps)
     shutdown.set()
@@ -474,7 +474,7 @@ async def test_election_loop_degrades_when_advisory_lock_privilege_is_refused(
         monkeypatch=monkeypatch,
     )
 
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the degradation path under test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop is the degradation path under test.
 
     crashed: BaseException | None = None
     try:
@@ -485,7 +485,7 @@ async def test_election_loop_degrades_when_advisory_lock_privilege_is_refused(
         await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
     except TimeoutError:
         pass
-    except BaseException as exc:  # Why: capturing the crash IS the assertion below, not letting pytest report it as an unhandled task exception.
+    except BaseException as exc:  # Why: capturing the crash is the assertion below, not letting pytest report it as an unhandled task exception.
         crashed = exc
     finally:
         shutdown.set()
@@ -529,7 +529,7 @@ async def test_election_loop_degrades_when_advisory_lock_probe_fails_transiently
         monkeypatch=monkeypatch,
     )
 
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the degradation path under test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop is the degradation path under test.
     try:
         await wait_for_leader(deps)
     finally:
@@ -571,7 +571,7 @@ async def test_advisory_lock_refusal_logs_once_per_refusal_streak(
     )
 
     with structlog.testing.capture_logs() as captured:
-        assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]  # Why: the courtesy probe IS the unit under test.
+        assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]  # Why: the courtesy probe is the unit under test.
         assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]
 
     refusals = [e for e in captured if e["event"] == "leader-advisory-lock-refused"]
@@ -587,7 +587,7 @@ async def test_advisory_lock_refusal_logs_once_per_refusal_streak(
     refusing_conn.refuse = False
     assert await leader._try_election_lock() is True  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
 
-    # ...so a LATER refusal is news and logs again.
+    # ...so a later refusal is news and logs again.
     refusing_conn.refuse = True
     with structlog.testing.capture_logs() as captured_after_rearm:
         assert await leader._try_election_lock() is False  # pyright: ignore[reportPrivateUsage]  # Why: same as above.
@@ -621,7 +621,7 @@ async def test_lease_gauge_is_stamped_on_election_and_each_renewal(
     )
     lease = deps.settings.resolved_leader_lease
 
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the elect arm under test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop is the elect arm under test.
     await wait_for_leader(deps)
 
     # Elect arm.
@@ -636,11 +636,11 @@ async def test_lease_gauge_is_stamped_on_election_and_each_renewal(
 
     from taskq.worker._transient import UnexpectedLoopErrorGuard
 
-    # The REAL renew statement, not a placeholder: the renewal rides the
+    # The real renew statement, not a placeholder: the renewal rides the
     # lease statement's shape (the fail-closed double answers only named
     # shapes - the lease family's, by schema).
     renew_sql = build_leader_lease_sql(deps.settings.schema_name)[1]
-    should_sleep = await leader._renew_term(  # pyright: ignore[reportPrivateUsage]  # Why: driving the renew arm directly IS the test.
+    should_sleep = await leader._renew_term(  # pyright: ignore[reportPrivateUsage]  # Why: driving the renew arm directly is the test.
         term, renew_sql, UnexpectedLoopErrorGuard("test")
     )
 
@@ -842,7 +842,7 @@ async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any
 
     deps.leader_conn_factory = fake_factory  # type: ignore[assignment]
 
-    # open_dedicated_conn must NOT be called when a factory is set - fail loud
+    # open_dedicated_conn must not be called when a factory is set - fail loud
     # if the watchdog falls back to the DSN path instead of the factory.
     import taskq.worker.leader as leader_mod
 
@@ -866,7 +866,7 @@ async def test_watchdog_reopen_uses_leader_conn_factory_not_dsn(monkeypatch: Any
     shutdown.set()
     await task
 
-    # leader_conn_factory backs leader_conn AND the leader's other dedicated
+    # leader_conn_factory backs leader_conn and the leader's other dedicated
     # connections (leader_monitor_conn, cron_conn) - all must route through
     # it, never through the raw-DSN open_dedicated_conn path.
     assert len(factory_calls) >= 1
@@ -886,7 +886,7 @@ async def test_reload_credentials_rebuilds_leader_monitor_and_cron_conns(
     downstream effect: _election_loop's re-election path, triggered by
     leader_conn becoming None while is_leader is still set, also rebuilds
     the leader's other dedicated connections (_leader_monitor_conn,
-    _cron_conn) via the SAME leader_conn_factory - so a hot-reloaded leader
+    _cron_conn) via the same leader_conn_factory - so a hot-reloaded leader
     doesn't keep querying with monitor/cron connections opened under a
     stale credential until they separately fail.
     """
@@ -904,14 +904,14 @@ async def test_reload_credentials_rebuilds_leader_monitor_and_cron_conns(
 
     deps.leader_conn_factory = fake_factory  # type: ignore[assignment]
 
-    # Drive the election loop through a REAL election first (is_leader=True
+    # Drive the election loop through a real election first (is_leader=True
     # at construction is an artificial state _election_loop's re-election
     # path never produces - genuine leadership always flows through
     # `if got_lock:`, which is what populates _leader_monitor_conn /
     # _cron_conn in the first place).
     task = asyncio.create_task(leader._election_loop(shutdown))
-    # The election loop opens BOTH dedicated conns before it sets
-    # is_leader (leader.py: UPSERT → monitor conn → cron conn → set), so
+    # The election loop opens both dedicated conns before it sets
+    # is_leader (leader.py: upsert → monitor conn → cron conn → set), so
     # the is_leader event wait subsumes polling the conn attributes -
     # and it is a bounded wait on the event itself, never a sleep-poll.
     await wait_for_leader(deps)
@@ -1126,7 +1126,7 @@ async def test_pg_notify_issued_after_promotion(monkeypatch: Any) -> None:  # ty
     assert len(pg_notify_calls) == 1
 
 
-# ── pg_notify NOT issued when count is 0 ────────────────────────────
+# ── pg_notify not issued when count is 0 ────────────────────────────
 
 
 async def test_pg_notify_not_issued_when_zero(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
@@ -1388,7 +1388,7 @@ async def test_prune_loop_gates_on_is_leader() -> None:
 
 
 async def test_scheduled_wake_passes_no_clock_to_sweep() -> None:
-    """_scheduled_wake_loop drives scheduled_to_pending with NO clock
+    """_scheduled_wake_loop drives scheduled_to_pending with no clock
     value - the backend's own clock is the arbiter (seam removal: a
     caller-supplied ``now`` was ignored by PG and honored by InMemory, so
     the two backends never exercised the same contract)."""
@@ -1419,7 +1419,7 @@ async def test_scheduled_wake_passes_no_clock_to_sweep() -> None:
 
 
 async def test_sweep_loop_passes_no_clock_to_sweeps() -> None:
-    """_sweep_loop drives reclaim_expired_locks and deadline_sweep with NO
+    """_sweep_loop drives reclaim_expired_locks and deadline_sweep with no
     clock value - the backend's own clock is the arbiter (same seam
     removal as the scheduled-wake loop)."""
     clock = FakeClock(datetime(2025, 1, 1, tzinfo=UTC))
@@ -1514,7 +1514,7 @@ async def test_build_retention_per_status_crashed_uses_abandoned() -> None:
 
 
 # NOTE (the mock-subtraction cure): the _load_actor_retention_overrides fake
-# arms rode the OLD positional contract (the actor-config fetch consuming the
+# arms rode the old positional contract (the actor-config fetch consuming the
 # next scripted batch — the probe-ate-a-batch shape). They converted to the
 # real fixture in tests/test_leader_prune.py, where the invalid-row isolation
 # contract already had its real-PG anchor
@@ -1580,7 +1580,7 @@ class _FakeConnForPrune(FakeConn):
         if "current_setting" in sql:
             return [_FakeRecord({"current_setting": "0"})]
         if "actor_config" in sql:
-            # NAMED shape, never the scripted batches: the config read
+            # named shape, never the scripted batches: the config read
             # answers its own scripted rows, or the empty table (a
             # legitimate server state) - the old positional contract
             # (fall through and consume the next scripted batch) was the
@@ -1672,7 +1672,7 @@ class _FakeConnForPrune(FakeConn):
 
 class _SpacedCroniter:
     """The croniter stand-in whose two-fire SPACING is configurable: the
-    loop's own fire computation calls get_next ONCE per wake (the next
+    loop's own fire computation calls get_next once per wake (the next
     fire — ``spacing`` seconds away, so the loop wakes immediately in
     tests); ``_sub_daily``'s lane probe calls it TWICE on its own
     instance, and the second call adds ``lane_spacing`` days — the
@@ -1694,7 +1694,7 @@ class _SpacedCroniter:
 
 async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """The DAILY lane: _prune_loop skips when last_pruned_date == today
-    (UTC) — AND THE SKIP IS SURFACED (the D2 soak's P1 fix (a): the
+    (UTC) — and the SKIP IS SURFACED (the D2 soak's P1 fix (a): the
     latch's deferral is a NAMED event, never silence — 80+ minutes of
     ``*/5`` fires deferred silently read as "nothing to prune" while 88k
     eligible rows sat unpruned)."""
@@ -1717,7 +1717,7 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
     )
 
     class _DailyCroniter(_SpacedCroniter):
-        lane_spacing_days = 2.0  # the fake's two-fire interval: 2 days → DAILY lane
+        lane_spacing_days = 2.0  # the fake's two-fire interval: 2 days → daily lane
 
     monkeypatch.setattr(croniter_mod, "croniter", _DailyCroniter)
 
@@ -1751,8 +1751,8 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    # THE SURFACED LATCH: the deferral is named — the loop's own log
-    # states WHEN the latch deferred and WHAT it deferred to.
+        # the deferral is named — the loop's own log states when the latch deferred
+    # and what it deferred to.
     latched = [e for e in captured if e["event"] == "prune-skipped-day-latch"]
     assert latched, (
         "the day-latch deferred the second fire SILENTLY — the D2 soak's "
@@ -1765,7 +1765,7 @@ async def test_prune_loop_date_guard_prevents_double_run(monkeypatch: Any) -> No
 async def test_prune_loop_sub_daily_retention_lane_checks_every_tick(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """The retention-check lane (the D2 soak's P1 fix (b) — the
     at-most-daily class is DEAD): a SUB-DAILY prune cron with a 180 s
-    retention and rows past retention is CHECKED EVERY LEADER TICK — the
+    retention and rows past retention is CHECKED every LEADER TICK — the
     arm attempts (and prunes) on successive wakes within the observation
     window, the deleted count DROPS with each check, and the day-latch
     never gates it. The D2 shape (a ``*/5`` cron + 180 s retention + 88k
@@ -1775,7 +1775,7 @@ async def test_prune_loop_sub_daily_retention_lane_checks_every_tick(monkeypatch
     import croniter as croniter_mod
 
     # Every attempt answers one prunable batch: the eligible rows exist
-    # (the D2's 88k class), so a LIVE arm drains on every wake.
+    # (the D2's 88k class), so a live arm drains on every wake.
     leader_conn = _FakeConnForPrune(
         batch_rows=[[_FakeRecord({"actor": "a", "status": "succeeded", "cnt": 500})]],
         fetchval_result=True,
@@ -1813,8 +1813,8 @@ async def test_prune_loop_sub_daily_retention_lane_checks_every_tick(monkeypatch
         "day-latch converted a */5 retention policy to at-most-daily (the "
         "D2 soak's P1, kept failing on purpose by this pin)"
     )
-    # THE COUNT DROPS (measured): each attempt drained its batch — the
-    # archive write consumed the eligible window.
+    # measured. each attempt drained its batch — the archive write consumed the
+    # eligible window.
     assert any("WITH locked AS MATERIALIZED" in sql for sql, _ in leader_conn.fetch_calls), (
         "the retention check never ran an archive batch — nothing pruned"
     )
@@ -1839,7 +1839,7 @@ async def test_archive_expiry_loop_date_guard_prevents_double_run(monkeypatch: A
     )
 
     class _DailyCroniter(_SpacedCroniter):
-        lane_spacing_days = 2.0  # the fake's two-fire interval: 2 days → DAILY lane
+        lane_spacing_days = 2.0  # the fake's two-fire interval: 2 days → daily lane
 
     monkeypatch.setattr(croniter_mod, "croniter", _DailyCroniter)
 
@@ -1873,7 +1873,7 @@ async def test_archive_expiry_loop_date_guard_prevents_double_run(monkeypatch: A
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    # THE SURFACED LATCH (the same named-deferral event as the prune
+    # the surfaced latch (the same named-deferral event as the prune
     # loop's — one policy scaffold, one operator signal).
     assert any(e["event"] == "archive-expiry-skipped-day-latch" for e in captured), (
         "the archive expiry's day-latch deferred the second fire SILENTLY "
@@ -1964,7 +1964,7 @@ class _HookedExpiryBatchConn(_FakeConnForPrune):
 
 async def test_prune_timeout_latches_sizer_and_degrades_next_attempt() -> None:
     """A server-side batch abort (QueryCanceledError) counts against the
-    breaker: the sizer latches and the NEXT attempt's windows run at the
+    breaker: the sizer latches and the next attempt's windows run at the
     reduced tier - the degradation that makes a loaded database drainable
     under a timeout smaller than its backlog."""
 
@@ -2008,7 +2008,7 @@ async def test_prune_timeout_latches_sizer_and_degrades_next_attempt() -> None:
 
 
 def _soon_then_far_croniter() -> type:
-    """A croniter double whose FIRST fire is immediate and every later one
+    """A croniter double whose first fire is immediate and every later one
     an hour out: within a test window, any attempt after the first can
     only be a failure backoff retry, never a scheduled fire. Fresh state
     per call (the loop constructs a new croniter each iteration, so the
@@ -2182,7 +2182,7 @@ async def test_prune_loop_demotion_cut_arms_ladder_instead_of_stamping_the_day(
 
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_INITIAL_SECS", 0.02)
     monkeypatch.setattr(_leader_sweeps_mod, "_PRUNE_RETRY_BACKOFF_CAP_SECS", 0.2)
-    # _leader_sweeps binds the croniter MODULE (``import croniter as cr``),
+    # _leader_sweeps binds the croniter module (``import croniter as cr``),
     # so patching the attribute on the module itself reaches the loop
     # without a private-import report on ``_leader_sweeps_mod.cr``.
     import croniter as croniter_mod
@@ -2332,7 +2332,7 @@ async def test_prune_loop_drain_stops_on_shutdown_and_ticks_liveness(
 
     task = asyncio.create_task(leader._prune_loop(shutdown))
     # No cancel, no suppress: a shutdown-responsive drain lets the loop
-    # task COMPLETE on its own - the property the TaskGroup hang lacked.
+    # task complete on its own - the property the TaskGroup hang lacked.
     await asyncio.wait_for(task, timeout=5.0)
 
     assert leader_conn.batches == 3, (
@@ -2519,7 +2519,7 @@ async def test_prune_loop_wakes_on_shutdown() -> None:
     shutdown.set()
     task = asyncio.create_task(leader._prune_loop(shutdown))
     # The loop observes the pre-set shutdown immediately - awaiting the
-    # task IS the bounded wait for its exit (and it re-raises if the loop
+    # task is the bounded wait for its exit (and it re-raises if the loop
     # died of an error instead of exiting cleanly).
     await asyncio.wait_for(task, timeout=2.0)
     lock_calls = [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
@@ -2544,7 +2544,7 @@ async def test_archive_expiry_loop_wakes_on_shutdown() -> None:
     shutdown.set()
     task = asyncio.create_task(leader._archive_expiry_loop(shutdown))
     # The loop observes the pre-set shutdown immediately - awaiting the
-    # task IS the bounded wait for its exit (and it re-raises if the loop
+    # task is the bounded wait for its exit (and it re-raises if the loop
     # died of an error instead of exiting cleanly).
     await asyncio.wait_for(task, timeout=2.0)
     lock_calls = [sql for sql, _ in leader_conn.fetchval_calls if "pg_try_advisory_lock" in sql]
@@ -2831,14 +2831,14 @@ async def test_archive_expiry_loop_survives_unlock_failure(monkeypatch: Any) -> 
 
 class _FakeProviderError(RuntimeError):
     """Stand-in for azure/hvac/botocore credential-fetch failures, which are
-    NOT asyncpg.PostgresConnectionError subclasses (and neither is
+    not asyncpg.PostgresConnectionError subclasses (and neither is
     asyncpg.InvalidPasswordError - a fresh-but-rejected token)."""
 
 
 async def test_election_reopen_retries_on_provider_exception(monkeypatch: Any) -> None:  # type: ignore[reportUnknownParameterType]
     """A leader_conn_factory raising a provider-style exception once (IdP
     outage) then succeeding must be retried by the election loop - the
-    exception must NOT escape and crash the worker TaskGroup."""
+    exception must not escape and crash the worker TaskGroup."""
     leader, deps, _backend, _, _, shutdown = await _make_leader(monkeypatch=monkeypatch)
     deps.leader_conn = None
     deps.is_leader.clear()
@@ -2935,7 +2935,7 @@ async def test_watchdog_does_not_close_caller_owned_leader_conn(monkeypatch: Any
     election_task = asyncio.create_task(leader._election_loop(shutdown))
 
     # Wait for the watchdog failure path to run. failing_monitor.closed_event
-    # is the stable witness: _close_leader_owned_conns closes it AFTER the
+    # is the stable witness: _close_leader_owned_conns closes it after the
     # leader_conn close/abandon in the same handler, so once it is set the
     # caller-conn decision has definitely been made (and unlike the
     # is_leader flip, it never flips back under a racing re-election).
@@ -2945,7 +2945,7 @@ async def test_watchdog_does_not_close_caller_owned_leader_conn(monkeypatch: Any
     assert caller_conn.close_calls == 0
 
     # Election loop re-acquires leadership through the factory. The
-    # election loop assigns deps.leader_conn from the factory BEFORE it
+    # election loop assigns deps.leader_conn from the factory before it
     # wins the lock and sets is_leader (leader.py), so the event wait
     # implies the factory-conn check asserted below.
     await wait_for_leader(deps)
@@ -3018,7 +3018,7 @@ async def test_close_leader_owned_conns_terminates_hung_close(
     monitor.close_wait.clear()  # close() blocks forever from now on
 
     # Why the outer timeout: unguarded, this awaits conn.close() unbounded, so
-    # the RED state would hang forever instead of failing fast.
+    # the red state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         await leader._close_leader_owned_conns()
 
@@ -3056,7 +3056,7 @@ class _CloseEntryConn(FakeConn):
     """FakeConn that signals when close() has been ENTERED (not completed).
 
     Used to observe in-flight closes: the hang gate (close_wait) parks the
-    close AFTER entry, so close_entered marks the exact window in which a
+    close after entry, so close_entered marks the exact window in which a
     dead-PG close is in progress.
     """
 
@@ -3090,16 +3090,16 @@ async def test_close_leader_owned_conns_clears_is_leader_before_closes_complete(
     cron.close_wait.clear()  # both close()s block forever from now on
     monitor.close_wait.clear()
 
-    # Why the outer timeout: unguarded, the clear runs only after BOTH bounded
-    # closes finish, so the RED state's assertion window is bounded by the
+    # Why the outer timeout: unguarded, the clear runs only after both bounded
+    # closes finish, so the red state's assertion window is bounded by the
     # 0.05s shrink seam; the guard keeps a regression from hanging.
     async with asyncio.timeout(5):
         task = asyncio.create_task(leader._close_leader_owned_conns())
-        # Wait until BOTH close()s have been ENTERED (not completed)...
+        # Wait until both close()s have been entered (not completed)...
         await cron.close_entered.wait()
         await monitor.close_entered.wait()
-        # ...then, while the closes are still parked, the flag must ALREADY
-        # be clear. Unguarded it stays set until both closes finish → RED.
+        # ...then, while the closes are still parked, the flag must already
+        # be clear. Unguarded it stays set until both closes finish → red.
         assert not monitor.is_closed()
         assert not deps.is_leader.is_set()
         await task
@@ -3115,7 +3115,7 @@ async def test_close_leader_owned_conns_mid_run_false_logs_teardown_family(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Final teardown is not a mid-run emergency: called with mid_run=False,
-    a hung close logs the ``conn-teardown-close-*`` family and NEVER the
+    a hung close logs the ``conn-teardown-close-*`` family and never the
     mid-run ``conn-close-*`` family, so an ordinary shutdown does not page
     as an unexpected mid-run close timeout (review N6)."""
     import taskq.worker.leader as leader_mod
@@ -3235,7 +3235,7 @@ async def test_drop_leader_conn_terminates_hung_taskq_owned_close(
     leader_conn.close_wait.clear()  # close() blocks forever from now on
 
     # Why the outer timeout: unguarded, this awaits conn.close() unbounded, so
-    # the RED state would hang forever instead of failing fast.
+    # the red state would hang forever instead of failing fast.
     async with asyncio.timeout(5):
         await leader._drop_leader_conn(reason="test_hung_close")
 
@@ -3374,7 +3374,7 @@ async def test_step_down_stops_leading_before_the_lock_can_be_released(
         monkeypatch=monkeypatch,
     )
 
-    # TaskQ-owned, so standing down CLOSES the conn (releasing the courtesy
+    # TaskQ-owned, so standing down closes the conn (releasing the courtesy
     # lock) rather than abandoning a caller's handle.
     deps.owns_leader_conn = True
 
@@ -3438,7 +3438,7 @@ async def test_renew_term_with_spent_trust_steps_down_without_touching_the_datab
     from taskq.worker._transient import UnexpectedLoopErrorGuard
 
     with structlog.testing.capture_logs() as captured:
-        should_sleep = await leader._renew_term(  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact trust-spent branch IS the test.
+        should_sleep = await leader._renew_term(  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact trust-spent branch is the test.
             term, "renew-sql", UnexpectedLoopErrorGuard("test")
         )
 
@@ -3593,7 +3593,7 @@ async def test_persistent_dedicated_conn_failure_hands_the_won_lease_back(
         leader_lease=1.0,
     )
 
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the policy under test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop is the policy under test.
     try:
         with structlog.testing.capture_logs() as captured:
             await wait_for_condition(
@@ -3641,7 +3641,7 @@ async def test_persistent_dedicated_conn_failure_hands_the_won_lease_back(
 async def test_transient_dedicated_conn_failure_keeps_the_lease_and_recovers(
     monkeypatch: Any,  # type: ignore[reportUnknownParameterType]
 ) -> None:
-    """The blip half of the budget: ONE failed conn open inside the
+    """The blip half of the budget: one failed conn open inside the
     episode's trust window must not resign: the own-row arm's cheap
     route back (the case: a credential reload, a momentary
     ``TooManyConnections``) is exactly the re-win this window preserves,
@@ -3676,7 +3676,7 @@ async def test_transient_dedicated_conn_failure_keeps_the_lease_and_recovers(
         # inside the budget and must never reach the resign.
     )
 
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the recovery path under test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop is the recovery path under test.
     try:
         with structlog.testing.capture_logs() as captured:
             await wait_for_leader(deps)
@@ -3738,7 +3738,7 @@ async def test_escaped_assume_failure_also_hands_the_won_lease_back(
         _probe_conn_dying_mid_courtesy_lock,
     )
 
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the escaped-failure path under test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop is the escaped-failure path under test.
     try:
         with structlog.testing.capture_logs() as captured:
             await wait_for_condition(
@@ -3752,7 +3752,7 @@ async def test_escaped_assume_failure_also_hands_the_won_lease_back(
 
     assert not deps.is_leader.is_set()
     # Same fence invariant as the caught-failure pin: the resign fences on
-    # the CURRENT win, which the escaped failure could not have carried
+    # the current win, which the escaped failure could not have carried
     # anywhere but _resign_fence.
     last_elect: datetime | None = None
     resigned = 0
@@ -3802,7 +3802,7 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
 
     Sequence: a broken episode hands the lease back at its trust horizon;
     a peer takes the row; this pod later wins again (the peer's lease
-    ended) and hits ONE failed dedicated-conn open. The stale anchor,
+    ended) and hits one failed dedicated-conn open. The stale anchor,
     cleared only by a successful assume in the code under review, is
     long spent, so that single blip resigned the fresh term immediately:
     the per-blip leadership thrash the design explicitly rejected,
@@ -3812,7 +3812,7 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
     A lost election is the observable end of an episode (a peer holds the
     row now), so the anchor must clear there, while the sibling pin
     (``test_persistent_dedicated_conn_failure_hands_the_won_lease_back``)
-    keeps the other rule: a re-win while still broken, with NO peer
+    keeps the other rule: a re-win while still broken, with no peer
     having taken the row in between, hands it straight back.
     """
     import taskq.worker.leader as leader_mod
@@ -3849,7 +3849,7 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
         leader_lease=1.0,
     )
 
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the episode state machine under test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop is the episode state machine under test.
 
     try:
         with structlog.testing.capture_logs() as captured:
@@ -3872,7 +3872,7 @@ async def test_a_blip_after_a_peer_takeover_gets_a_fresh_trust_window(
             )
             warns_after_loss = _warn_count()
 
-            # Phase 3, the pod wins a NEW term (the peer's lease ended)
+            # Phase 3, the pod wins a new term (the peer's lease ended)
             # and hits exactly one conn-open blip on it: the persistent
             # failure is over, one open still refuses.
             state["win"] = 1
@@ -3918,10 +3918,10 @@ async def test_the_hand_back_warn_does_not_fire_when_the_resign_did_not_land(
     _ = shutdown
 
     # A spent anchor (an old episode's budget is long past) and a fenced
-    # term, so the hand-back's resign is due RIGHT NOW.
+    # term, so the hand-back's resign is due right now.
     loop = asyncio.get_running_loop()
     spent = LeaderTerm(elected_at=datetime.now(UTC), trusted_until=loop.time() - 1.0)
-    leader._unassumable_anchor = spent  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact spent-anchor branch IS the test.
+    leader._unassumable_anchor = spent  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact spent-anchor branch is the test.
     leader._resign_fence = spent  # pyright: ignore[reportPrivateUsage]  # Why: the fence the resign would carry.
 
     # No live conn anywhere: resign() has nothing to ride and returns
@@ -3936,7 +3936,7 @@ async def test_the_hand_back_warn_does_not_fire_when_the_resign_did_not_land(
         "the WARN claimed a handed-back lease while no resign could even be issued"
     )
 
-    # A live conn whose DELETE lands: the WARN fires, and the record is
+    # A live conn whose DELETE lands: the warn fires, and the record is
     # true exactly when the row is gone.
     deps.leader_conn = FakeConn(fetchval_result=True)  # type: ignore[assignment]  # Why: FakeConn is a drop-in for asyncpg.Connection in unit tests; the harness in this file assigns it the same way.
     with structlog.testing.capture_logs() as landed:
@@ -4032,7 +4032,7 @@ async def test_reelection_after_conn_loss_never_waits_on_the_courtesy_lock(
         "the lock is attempted once, after the win - never consulted to decide "
         "the election, never retried over"
     )
-    # The rebuilt conn is reused - the factory runs once per conn ROLE
+    # The rebuilt conn is reused - the factory runs once per conn role
     # (leader + monitor + cron), not per attempt.
     assert factory_calls == 3
 
@@ -4082,7 +4082,7 @@ async def test_watchdog_loop_exits_on_shutdown_while_awaiting_leadership() -> No
 # Regression (PG-restart chaos): a maintenance loop that lets an infra
 # connection error escape crashes MaintenanceLeader.run's TaskGroup, which
 # propagates into the worker's TaskGroup and cancels every sibling -
-# WITHOUT setting shutdown_event. The heartbeat is cancelled before it can
+# without setting shutdown_event. The heartbeat is cancelled before it can
 # reach isolate_self, so no job is re-pended and no phase log is written.
 # Every one of these loops must treat PG loss as transient, exactly as
 # their already-guarded siblings do.
@@ -4294,10 +4294,10 @@ async def test_watchdog_loop_forgets_tick_registration_on_demotion() -> None:
     leader._leader_monitor_conn = FakeConn(on_fetchval=_boom)  # type: ignore[assignment]  # Why: FakeConn is the asyncpg.Connection stand-in used throughout this module.
 
     task = asyncio.create_task(leader._watchdog_loop(shutdown))
-    # Poll-asserted, not a bare sleep: the demotion is SYNCHRONOUS on the
+    # Poll-asserted, not a bare sleep: the demotion is synchronous on the
     # first failed probe (the probe raises, _step_down clears is_leader in
     # the same loop turn), so this budget covers loop turns only — 2.0 s of
-    # co-tenancy slack, deliberately NOT a stretch of the 5s
+    # co-tenancy slack, deliberately not a stretch of the 5s
     # _WATCHDOG_INTERVAL_SECS park (0.4x of it): a demotion that ever waited
     # a full probe cadence would false-fail here, and that is the tripwire.
     # The no-demotion regression this pins leaves the flag set, so the poll
@@ -4324,7 +4324,7 @@ async def test_watchdog_loop_forgets_tick_registration_on_demotion() -> None:
 
 async def test_close_leader_owned_conns_identity_guard() -> None:
     """_close_leader_owned_conns must only null the attribute if it still
-    points to the SAME connection object - not a fresh one created by the
+    points to the same connection object - not a fresh one created by the
     election loop during the close suspension.
 
     Simulates the race directly: start the bounded close of the stale
@@ -4507,7 +4507,7 @@ async def test_elect_won_row_after_stop_is_resigned_fenced(
     pod's name is on it) until it is handed back - if the lease were held
     across the drain, the fleet's maintenance plane stalls for a whole
     leader lease while a dying pod drains. The contract, pinned per
-    assert: the resign DELETE rides the SAME conn the winning elect just
+    assert: the resign DELETE rides the same conn the winning elect just
     used (the orchestrator closes that conn only after the phases; a
     resign on any other wire can land after the close) and is fenced on
     ``(worker_id, elected_at)`` of the WON term (a fence on anything else
@@ -4524,10 +4524,10 @@ async def test_elect_won_row_after_stop_is_resigned_fenced(
         leader_conn=conn,
         monkeypatch=monkeypatch,
     )
-    # The double stamps THE event the ``_stopping()`` predicate reads -
+    # The double stamps the event the ``_stopping()`` predicate reads -
     # deps's own default event is a different object.
     deps.shutdown_start_event = stop_event
-    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop IS the stop-race path under test.
+    task = asyncio.create_task(leader._election_loop(shutdown))  # pyright: ignore[reportPrivateUsage]  # Why: the election loop is the stop-race path under test.
     try:
         await wait_for(conn.elect_in_flight, description="the elect statement to go in flight")
         stop_event.set()  # the SIGTERM, mid-elect
@@ -4582,7 +4582,7 @@ async def test_renew_failure_ladder_steps_down_when_trust_spent(
     """``_renew_failed`` with the trust window spent stands down locally.
 
     Past ``trusted_until`` a peer may already hold the row, so the ladder's
-    terminal rung must demote WITHOUT touching the database (issuing a
+    terminal rung must demote without touching the database (issuing a
     resignation or a renewal against a row a peer holds is the
     split-brain the trust window exists to prevent) and return False (the
     loop re-enters as a candidate). The regressions pinned: a ladder that
@@ -4603,7 +4603,7 @@ async def test_renew_failure_ladder_steps_down_when_trust_spent(
     from taskq.worker._transient import UnexpectedLoopErrorGuard
 
     with structlog.testing.capture_logs() as captured:
-        should_sleep = await leader._renew_failed(  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact ladder rung IS the test.
+        should_sleep = await leader._renew_failed(  # pyright: ignore[reportPrivateUsage]  # Why: driving the exact ladder rung is the test.
             term,
             asyncpg.PostgresConnectionError("renew write lost"),
             guard=UnexpectedLoopErrorGuard("test"),
@@ -4633,7 +4633,7 @@ async def test_renew_failure_inside_trust_backs_off_without_demotion(
 ) -> None:
     """The back-off rung: trust remaining → retry inside it, keep leading.
 
-    One transient renew failure inside the window must NOT demote - the
+    One transient renew failure inside the window must not demote - the
     window exists precisely so a PG blip doesn't thrash leadership (the
     step-down hands the row's availability to the next election cycle).
     The return is still False (the caller re-enters immediately rather
@@ -4684,10 +4684,10 @@ async def test_elect_fk_violation_is_fatal_not_transient(
 
     The FK constraint means the maintenance_leader row references a
     workers row that does not exist: this worker never registered (a
-    schema/deploy fault), and NO amount of retrying fixes it - a transient
+    schema/deploy fault), and no amount of retrying fixes it - a transient
     classification would spin elect attempts forever, log-storming a
     permanent fault. The contract: the error event fires once at ERROR
-    level, exactly ONE elect statement is issued, the worker-wide
+    level, exactly one elect statement is issued, the worker-wide
     ``shutdown`` event is set (the TaskGroup siblings unwind), and the
     loop RETURNS (the task completes - a mutation that retries leaves it
     running and this test red on both the attempt count and the join).
@@ -4776,7 +4776,7 @@ async def test_a_failed_resign_retries_fenced_until_it_lands(
     retry that re-enters the election instead of staying attempt-free
     (a stopping worker must never elect again - the shutdown-ordering
     contract). The fence identity is the third pin: every retry fences on
-    the SAME won term, so the moment a successor takes the row the
+    the same won term, so the moment a successor takes the row the
     retries can no longer touch it.
     """
     conn = _FlakyResignConn(resign_failures=2)

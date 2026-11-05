@@ -1,11 +1,11 @@
-"""The deps seam's binding — ONE instance, bound ONCE at the app's door.
+"""The deps seam's binding — one instance, bound once at the app's door.
 
 The bodies never reach through ``ctx`` for services and never touch a
 module global: a body's signature DECLARES ``deps: DocShelfDeps`` and
 the runner hands the app's bound instance in. The pool holder is LAZY:
 the app module imports in every process (the worker's, the tests', the
 docs fences') — import never opens a connection and never demands the
-DSN; the first body that needs the pool resolves the env IN ITS OWN
+DSN; the first body that needs the pool resolves the env IN ITS own
 PROCESS (a worker's TASKQ_PG_DSN is the worker's).
 """
 
@@ -23,7 +23,7 @@ from examples.docshelf.mockapi import MockExtractionAPI
 
 @dataclass(slots=True)
 class DocShelfDeps:
-    """The ONE deps instance: the config, the mock API, the pool holder."""
+    """The one deps instance: the config, the mock API, the pool holder."""
 
     cfg: DocShelfConfig = field(default_factory=DocShelfConfig.load)
     api: MockExtractionAPI = field(init=False)

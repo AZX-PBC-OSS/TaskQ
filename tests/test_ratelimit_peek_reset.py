@@ -297,7 +297,7 @@ async def test_sw_log_peek_fields() -> None:
 
 
 # ════════════════════════════════════════════════════════════════════
-# SlidingWindow - in-memory GCRA peek/reset tests
+# SlidingWindow - in-memory gcra peek/reset tests
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -669,7 +669,7 @@ async def test_reset_nonexistent_key_redis(redis_url: str) -> None:
         },
     )
 
-    # reset on nonexistent key - DEL returns 0, no error
+    # reset on nonexistent key - del returns 0, no error
     await tb.reset(redis_client=client, settings=settings)
 
     # peek still shows full

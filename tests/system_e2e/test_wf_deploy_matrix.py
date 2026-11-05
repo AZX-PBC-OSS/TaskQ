@@ -30,13 +30,13 @@ fiction):
    entry: the v1 deployment) meets a v2 fleet: the dispatch fence never
    hands it a workflow row (no crash loop, no claim, the pod serves
    vanilla work); the additive-only ledger makes the vanilla rollback
-   always safe — the row shapes the old code meets are its OWN.
+   always safe — the row shapes the old code meets are its own.
 4. CONFIG DRIFT — a downstream node re-routed to a queue nothing
    serves: the run stays LIVE (blocked is a live state), the row stays
    claimable, no crash, no silent orphan; the alert the fleet ships
    (``TaskQQueueUnserved``) is the operator's next step, named.
 5. CRON x WORKFLOW — the cron slot firing twice (clock edge, operator
-   re-trigger) yields ONE run (the run-key arbiter's composition, G3).
+   re-trigger) yields one run (the run-key arbiter's composition, G3).
 6. SIGTERM CLEAN-DRAIN — a worker receiving SIGTERM mid-map-child /
    mid-loop-iteration finishes-or-requeues per the termination grace;
    the loop's carry advances exactly once across the requeue (F7).
@@ -91,8 +91,8 @@ pytestmark = [pytest.mark.system, pytest.mark.integration]
 #: invariants' population is this module's own (the tier's convention).
 _TAG = "wf-matrix"
 
-#: The drift cell's hang guard: the unserved node NEVER resolves, so the
-#: cell's observation is a bounded NON-wait (the row's pending shape is
+#: The drift cell's hang guard: the unserved node never resolves, so the
+#: cell's observation is a bounded non-wait (the row's pending shape is
 #: read once the fleet has had one full dispatch round to serve it) —
 #: the bound prices that round, stretched.
 _DRIFT_OBSERVE_BOUND_S = (LOCK_LEASE_S + SWEEP_INTERVAL_S + 5.0) * TIER_LOAD_STRETCH
@@ -137,7 +137,7 @@ async def _tagged_run(
     return flow_id
 
 
-# ── Cell 1: WORKER DEPLOY — the SIGKILLed node, the reclaim, the join ────
+# ── Cell 1: worker deploy — the SIGKILLed node, the reclaim, the join ────
 
 
 @pytest.mark.timeout(600)
@@ -150,7 +150,7 @@ async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_move
     the lease/reclaim machinery (``lock_expired``); the join counter
     never moved while the row was owned by the corpse; a surviving pod
     finishes the work; the per-attempt ``code_version`` record rides
-    BOTH claims (§22.1's per-attempt record)."""
+    both claims (§22.1's per-attempt record)."""
     schema = module_pg_schema.schema_name
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
     fleet: dict[str, WorkerProc] = {}
@@ -158,9 +158,9 @@ async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_move
         fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["w1", "w2"])
         flow_id = await _tagged_run(matrix_pool, schema, "reclaim_target")
 
-        # THE PREMISE: the long node is CLAIMED by some pod (the fence
-        # hands it to a capable worker). The claim is near-instant on a
-        # healthy fleet; the bound prices one poll round, stretched.
+        # the long node is claimed by some pod (the fence hands it to a capable
+        # worker). The claim is near-instant on a healthy fleet; the bound
+        # prices one poll round, stretched.
         claim_bound = (LOCK_LEASE_S + SWEEP_INTERVAL_S + 5.0) * TIER_LOAD_STRETCH
         start = time.monotonic()
         row: dict[str, Any] | None = None
@@ -181,8 +181,8 @@ async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_move
         )
         print(f"[cell-1] claim: measured={time.monotonic() - start:.2f}s bound={claim_bound}s")
 
-        # THE CHAOS: SIGKILL the pod that holds the row (the crash-injection
-        # fixture's shape — the corpse owns a running row).
+        # SIGKILL the pod that holds the row (the crash-injection fixture's
+        # shape — the corpse owns a running row).
         victim = None
         holder_pid = await conn.fetchval(
             f'SELECT pid FROM "{schema}".workers WHERE id = $1::uuid', row["holder"]
@@ -200,10 +200,9 @@ async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_move
         del fleet[victim]
         print(f"[cell-1] SIGKILL -> {victim}")
 
-        # THE PIN: the join counter NEVER moved while the row was a
-        # corpse's — `after` (the downstream join-wait row) keeps
-        # deps_pending = 1 (the counter is decremented by a FINALIZE, and
-        # the corpse's finalize was fenced out).
+        # the join counter never moved while the row was a corpse's — `after`
+        # (the downstream join-wait row) keeps deps_pending = 1 (the counter is
+        # decremented by a finalize, and the corpse's finalize was fenced out).
         after = await conn.fetchrow(
             f"""SELECT deps_pending, status::text AS status, metadata->>'blocking_reason' AS blocking
                 FROM "{schema}".jobs
@@ -214,18 +213,18 @@ async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_move
             f"the join counter moved while its parent was a corpse's running row: {after}"
         )
 
-        # THE RECLAIM: the lapsed lease re-pends the row (lock_expired);
-        # a surviving pod re-claims; the run terminalizes. The bound: the
-        # lease + the sweep + one poll, stretched.
+        # the lapsed lease re-pends the row (lock_expired); a surviving pod
+        # re-claims; the run terminalizes. The bound: the lease + the sweep +
+        # one poll, stretched.
         status, measured = await wait_flow_terminal(conn, schema, flow_id, bound_s=RECLAIM_BOUND_S)
         print(f"[cell-1] terminal: measured={measured:.2f}s bound={RECLAIM_BOUND_S}s")
         assert status == "complete", f"the reclaimed run derived {status!r}, not complete"
 
-        # THE PER-ATTEMPT RECORD: the §22.1 record lives on the ROW
-        # (the enqueue-latency band's code_version, written at claim — each attempt's claim
-        # rewrites it; the attempt LEDGER is the history). The run
-        # terminalized, so the FINAL attempt's record is stamped; the
-        # ledger shows the crashed attempt AND the retry.
+        # the §22.1 record lives on the row (the enqueue-latency band's
+        # code_version, written at claim — each attempt's claim rewrites it;
+        # the attempt ledger is the history). The run terminalized, so the
+        # final attempt's record is stamped; the ledger shows the crashed
+        # attempt and the retry.
         ledger = await conn.fetch(
             f"""SELECT a.attempt, a.error_class FROM "{schema}".job_attempts a
                 JOIN "{schema}".jobs j ON j.id = a.job_id
@@ -243,7 +242,7 @@ async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_move
         )
         assert stamped, "the claimed node carries no code_version record (§22.1's record)"
 
-        # THE INVARIANTS close the cell.
+        # the invariants close the cell.
         await tag_run_rows(matrix_pool, schema, flow_id, _TAG)
         await assert_balanced(sys_ledger, schema, _TAG)
         fires = await join_fires(conn, schema, flow_id)
@@ -254,7 +253,7 @@ async def test_worker_deploy_cell_reclaims_a_killed_node_and_the_join_never_move
         await conn.close()
 
 
-# ── Cell 2: SCHEMA MIGRATION MID-FLIGHT — the held lock, the ladder ─────
+# ── Cell 2: SCHEMA migration mid-flight — the held lock, the ladder ─────
 
 
 @pytest.mark.timeout(600)
@@ -278,8 +277,8 @@ async def test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock(
         flow_id = await _tagged_run(matrix_pool, schema, "doc_ingest_march")
 
         # Wait until the map's children are live (the fleet is executing),
-        # then hold the migration lock (the DEPLOY window: the migration's
-        # ACCESS EXCLUSIVE on jobs) for a bounded stretch — shorter than
+        # then hold the migration lock (the deploy window: the migration's
+        # access exclusive on jobs) for a bounded stretch — shorter than
         # the row's ladder, so the finalize's transient survives it.
         settle = await wait_for_map_children(conn, schema, flow_id)
         print(f"[cell-2] map children live: measured={settle:.2f}s")
@@ -297,7 +296,7 @@ async def test_schema_migration_midflight_cell_the_ladder_heals_the_held_lock(
         print(f"[cell-2] terminal: measured={measured:.2f}s bound={MARCH_SETTLE_BOUND_S}s")
         assert status == "complete", f"the run derived {status!r} under the deploy window"
 
-        # NO STATE CORRUPTION: every join fired exactly once, the ledger
+        # no state corruption: every join fired exactly once, the ledger
         # reconciles, the invariants balance.
         fires = await join_fires(conn, schema, flow_id)
         assert all(f["fires"] == 1 for f in fires), f"double-fired join under the window: {fires}"
@@ -339,7 +338,7 @@ async def test_rollback_cell_the_v1_pod_never_claims_a_flow_row(
     sys_ledger: asyncpg.Connection,
 ) -> None:
     """§22.3: a v1 worker (the VANILLA entry — no workflow capability)
-    meets a v2 fleet mid-run: the dispatch fence NEVER hands it a
+    meets a v2 fleet mid-run: the dispatch fence never hands it a
     workflow row (no crash loop — the pod claims nothing it cannot
     execute); the capable fleet finishes the run; the additive-only
     ledger means the vanilla rollback always safe — the v1 pod's own
@@ -351,9 +350,8 @@ async def test_rollback_cell_the_v1_pod_never_claims_a_flow_row(
     v1: WorkerProc | None = None
     try:
         fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["v2a"])
-        # THE ROLLBACK'S POD: the vanilla entry — the workers row carries
-        # NO workflow_execution stamp (the metadata key is stamped false,
-        # the fence's data leg).
+        # the vanilla entry — the workers row carries no workflow_execution
+        # stamp (the metadata key is stamped false, the fence's data leg).
         v1 = spawn_worker(
             module_pg_schema.pg_dsn,
             schema,
@@ -380,9 +378,9 @@ async def test_rollback_cell_the_v1_pod_never_claims_a_flow_row(
             await asyncio.sleep(0.2)
         assert holder is not None, "the run never got claimed by the capable fleet"
 
-        # THE FENCE'S PIN: the v1 pod NEVER claims a workflow row —
-        # its worker row's metadata says workflow_execution=false, and
-        # every row the fence hands the fleet lands on a capable worker.
+        # the v1 pod never claims a workflow row — its worker row's metadata
+        # says workflow_execution=false, and every row the fence hands the
+        # fleet lands on a capable worker.
         v1_row = await conn.fetchrow(
             f"""SELECT metadata->>'workflow_execution' AS capable, id::text
                 FROM "{schema}".workers WHERE pid = $1""",
@@ -405,11 +403,11 @@ async def test_rollback_cell_the_v1_pod_never_claims_a_flow_row(
         print(f"[cell-3] terminal: measured={measured:.2f}s bound={MARCH_SETTLE_BOUND_S}s")
         assert status == "complete", f"the mixed-version run derived {status!r}"
 
-        # THE MIXED-VERSION LEDGER: both pods' attempts in the ledger —
-        # the v2 records carry code_version (the §22.1 pins).
+        # both pods' attempts in the ledger — the v2 records carry code_version
+        # (the §22.1 pins).
         await tag_run_rows(matrix_pool, schema, flow_id, _TAG)
         await assert_balanced(sys_ledger, schema, _TAG)
-        # The v1 pod is ALIVE and served vanilla work: no crash loop.
+        # The v1 pod is alive and served vanilla work: no crash loop.
         assert v1.proc.poll() is None, "the v1 pod crashed under the mixed fleet"
     finally:
         if v1 is not None:
@@ -419,7 +417,7 @@ async def test_rollback_cell_the_v1_pod_never_claims_a_flow_row(
         await conn.close()
 
 
-# ── Cell 5: CONFIG DRIFT — the unserved queue is named, not orphaned ────
+# ── Cell 5: config drift — the unserved queue is named, not orphaned ────
 
 
 @pytest.mark.timeout(600)
@@ -456,8 +454,8 @@ async def test_config_drift_cell_the_unserved_queue_is_named_not_orphaned(
                 break
             await asyncio.sleep(0.2)
 
-        # THE PIN: the node is pending ON the unserved queue (claimable,
-        # zero live workers on its queue) — the alert's exact join.
+            # the node is pending on the unserved queue (claimable, zero live
+        # workers on its queue) — the alert's exact join.
         drift = await conn.fetchrow(
             f"""SELECT status::text AS status, scheduled_at, queue
                 FROM "{schema}".jobs
@@ -483,11 +481,10 @@ async def test_config_drift_cell_the_unserved_queue_is_named_not_orphaned(
             f"the TaskQQueueUnserved join must hold: depth={depth}, live_workers={live_workers}"
         )
 
-        # THE CONSERVATION: no crash, no orphan — the population is whole
-        # (the run stays live; blocked/pending is a live state). The
-        # settle is OFF: this cell's run NEVER terminalizes (the unserved
-        # node is the design), the LIVE-run variant closes conservation
-        # + the audit trail only.
+        # no crash, no orphan — the population is whole (the run stays live;
+        # blocked/pending is a live state). The settle is off: this cell's run
+        # never terminalizes (the unserved node is the design), the live-run
+        # variant closes conservation + the audit trail only.
         await tag_run_rows(matrix_pool, schema, flow_id, _TAG)
         await assert_balanced(sys_ledger, schema, _TAG, settle=False)
     finally:
@@ -496,7 +493,7 @@ async def test_config_drift_cell_the_unserved_queue_is_named_not_orphaned(
         await conn.close()
 
 
-# ── Cell 7: CRON x WORKFLOW — the slot twice, ONE run (G3) ───────────────
+# ── Cell 7: cron x workflow — the slot twice, one run (G3) ───────────────
 
 
 @pytest.mark.timeout(600)
@@ -506,7 +503,7 @@ async def test_cron_slot_fires_twice_one_run(
     sys_ledger: asyncpg.Connection,
 ) -> None:
     """G3's system-tier pin: the cron entry's slot fires twice (a clock
-    edge, an operator re-trigger) → ONE run — the run-level arbiter
+    edge, an operator re-trigger) → one run — the run-level arbiter
     composes with the cron-slot key. The variant regimes RACE (the two
     creates run concurrently); one row is born."""
     schema = module_pg_schema.schema_name
@@ -518,7 +515,7 @@ async def test_cron_slot_fires_twice_one_run(
         scope = run_idempotency_scope("deep_research")
         print(f"[cell-7] slot={slot} scope={scope}")
 
-        # THE DOUBLE FIRE: two concurrent creations, same slot key.
+        # two concurrent creations, same slot key.
         first, second = await asyncio.gather(
             _tagged_run(matrix_pool, schema, "deep_research", run_key=slot),
             _tagged_run(matrix_pool, schema, "deep_research", run_key=slot),
@@ -528,7 +525,7 @@ async def test_cron_slot_fires_twice_one_run(
             "the arbiter lost the race"
         )
 
-        # The second creation inserted NO second root (one row is born).
+        # The second creation inserted no second root (one row is born).
         roots = await conn.fetchval(
             f"""SELECT count(*) FROM "{schema}".jobs
                 WHERE (metadata->>'flow_id')::uuid = $1::uuid AND step_key = '__flow__'""",
@@ -536,7 +533,7 @@ async def test_cron_slot_fires_twice_one_run(
         )
         assert roots == 1, f"{roots} roots for one slot — the arbiter duplicated the run"
 
-        # And the run LIVES: the fleet executes it to terminal (the
+        # And the run lives: the fleet executes it to terminal (the
         # holds need decisions — resolve them all as they appear).
         resolver = asyncio.create_task(_resolve_holds(matrix_pool, schema, first))
         status, measured = await wait_flow_terminal(conn, schema, first)
@@ -571,7 +568,7 @@ async def _resolve_holds(pool: asyncpg.Pool, schema: str, flow_id: str) -> None:
         await asyncio.sleep(0.3)
 
 
-# ── Cell 8: SIGTERM CLEAN-DRAIN — the carry advances exactly once (F7) ──
+# ── Cell 8: SIGTERM clean-drain — the carry advances exactly once (F7) ──
 
 
 @pytest.mark.timeout(600)
@@ -582,7 +579,7 @@ async def test_sigterm_drain_cell_mid_loop_the_carry_advances_exactly_once(
 ) -> None:
     """F7: a worker receiving SIGTERM MID-LOOP-ITERATION must
     finish-or-requeue per the termination grace; the loop's carry
-    advances EXACTLY ONCE on the requeue (no double-apply, no lost
+    advances EXACTLY once on the requeue (no double-apply, no lost
     iteration) — P3 rule 3's shape under drain."""
     schema = module_pg_schema.schema_name
     conn = await asyncpg.connect(module_pg_schema.pg_dsn)
@@ -591,10 +588,9 @@ async def test_sigterm_drain_cell_mid_loop_the_carry_advances_exactly_once(
         fleet = await spawn_wf_fleet(conn, module_pg_schema.pg_dsn, schema, ["dr1", "dr2"])
         flow_id = await _tagged_run(matrix_pool, schema, "drain_loop")
 
-        # THE DRAIN: once the loop node is claimed, SIGTERM the holder —
-        # the graceful shutdown requeues the mid-flight iteration (the
-        # interruption is not an execution outcome), and the surviving
-        # pod picks it up.
+        # once the loop node is claimed, SIGTERM the holder — the graceful
+        # shutdown requeues the mid-flight iteration (the interruption is not
+        # an execution outcome), and the surviving pod picks it up.
         start = time.monotonic()
         holder_pid: int | None = None
         while time.monotonic() - start < _DRAIN_REQUEUE_BOUND_S:
@@ -625,16 +621,14 @@ async def test_sigterm_drain_cell_mid_loop_the_carry_advances_exactly_once(
         print(f"[cell-8] terminal: measured={measured:.2f}s")
         assert status == "complete", f"the drained run derived {status!r}"
 
-        # THE CARRY ADVANCED EXACTLY ONCE PER ITERATION: the loop's
-        # ITERATION rows are the timeline (the loop node's own row is the
-        # NODE, its `.iterN` rows are the iterations — the node row is
-        # not an iteration). The APPLIED record is the terminal one: a
-        # fenced row is the corpse's claim record (the drain's own
-        # interruption is not an execution outcome — the F7 doctrine),
-        # so the pin counts the SUCCEEDED records: 3 iterations
-        # (carry 0,1,2 → Done at 2), each applied EXACTLY ONCE (no
-        # double-applied carry, no lost one — the resume's memo replay
-        # never re-ran an applied body).
+        # the loop's iteration rows are the timeline (the loop node's own row
+        # is the node, its `.iterN` rows are the iterations — the node row is
+        # not an iteration). The applied record is the terminal one: a fenced
+        # row is the corpse's claim record (the drain's own interruption is not
+        # an execution outcome — the F7 doctrine), so the pin counts the
+        # succeeded records: 3 iterations (carry 0,1,2 → Done at 2), each
+        # applied exactly once (no double-applied carry, no lost one — the
+        # resume's memo replay never re-ran an applied body).
         iterations = await conn.fetch(
             f"""SELECT step_key, count(*)::int AS rows
                 FROM "{schema}".wf_step_ledger

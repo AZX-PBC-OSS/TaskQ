@@ -139,7 +139,7 @@ async def test_slot_conn_repair_returns_when_pool_already_carries_the_hook() -> 
     assert conn.terminated is False
 
 
-# ── the LOOP-scope connection cache's transaction-conn arm ──────────────
+# ── the loop-scope connection cache's transaction-conn arm ──────────────
 
 
 async def test_loop_scope_connection_cache_selects_the_transaction_conn() -> None:
@@ -154,7 +154,7 @@ async def test_loop_scope_connection_cache_selects_the_transaction_conn() -> Non
     registry.register_value(
         asyncpg.Connection,
         Scope.LOOP,
-        sentinel,  # type: ignore[arg-type]  # Why: the registry-trust contract: the value under the asyncpg.Connection key IS the transaction connection, a test double stands in
+        sentinel,  # type: ignore[arg-type]  # Why: the registry-trust contract: the value under the asyncpg.Connection key is the transaction connection, a test double stands in
     )
 
     captured: list[object] = []
@@ -203,7 +203,7 @@ async def test_loop_scope_connection_cache_selects_the_transaction_conn() -> Non
         finally:
             dispatch_mod.consume_one_job = original_consume  # type: ignore[assignment]
 
-    # The cache-backed seam: the LOOP-scope registration is visible to the
+    # The cache-backed seam: the loop-scope registration is visible to the
     # dispatch path's own read, so the consumer gets the connection as
     # the transaction connection (registry-trust, no isinstance).
     assert captured == [sentinel, sentinel]

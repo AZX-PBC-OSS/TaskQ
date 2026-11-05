@@ -372,7 +372,7 @@ async def test_concurrent_member_terminal_writes_complete_the_batch_exactly_once
                     transaction_conn=conn,
                 )
                 # Inside the still-open transaction: if this writer completed
-                # the batch, no OTHER committed member may still be open.
+                # the batch, no other committed member may still be open.
                 status: Any = await conn.fetchval(
                     f'SELECT status FROM "{schema}".batches WHERE id = $1', bid
                 )

@@ -3,7 +3,7 @@
 Each pin holds a gate that exists because a payload-from-hell shape broke
 a mechanism, not a style preference. The inventory:
 
-1. THE PERCENT MONSTER (NaN): the coalesce buffer's retire protocol keys
+1. the PERCENT MONSTER (NaN): the coalesce buffer's retire protocol keys
    on ``==`` equality between the pending state and the flushed snapshot,
    and ``nan != nan`` is True in Python. One ``ctx.progress(percent=nan)``
    call must never enter the buffer: a NaN in the buffer never retires
@@ -11,31 +11,31 @@ a mechanism, not a style preference. The inventory:
    FOREVER — the flush loop re-writes the row every tick for the job's
    remaining lifetime. Refused at the caller-supplied door (finiteness
    only, no range: a percent of 150.0 stays the actor's semantics).
-2. THE WIRE-DIVERGENCE MONSTERS (percent inf / str, step str, detail
+2. the WIRE-DIVERGENCE MONSTERS (percent inf / str, step str, detail
    non-str): pydantic and orjson quietly rewrote these between the two
    progress surfaces - a non-finite float became ``null`` on the wire, a
    string percent coerced onto the Redis event but stored as a string in
    the row. Type-confused inputs are refused at the door instead.
-3. THE NUL MONSTER (the #414 gate's missing rooms): the enqueue door
+3. the NUL MONSTER (the #414 gate's missing rooms): the enqueue door
    refuses a NUL in payload/metadata/tags; the progress door did not. A
    NUL in ``detail`` or ``data`` would poison the buffer exactly like
    the NaN percent: the flush's jsonb guard only SKIPS the row, and the
    loop re-logs the same permanent defect every tick forever, the actor
    none the wiser. Refused at the door (the flush guard stays as
    defense-in-depth for direct buffer writers).
-4. THE SIZE MONSTER (an unbounded detail): ``data`` had
+4. the SIZE MONSTER (an unbounded detail): ``data`` had
    ``progress_data_max_bytes``; ``detail`` had nothing. A multi-megabyte
    detail rode every flush and TOASTed the jobs row's progress_state.
    Same bound, same measurement (serialized bytes), same exception.
-5. THE DEPTH MONSTER (a 10k-deep data dict): orjson's encoder refuses
+5. the DEPTH MONSTER (a 10k-deep data dict): orjson's encoder refuses
    nesting past its recursion limit - the door raise is pinned here, and
    the admin portal's fingerprint machine (the JS canonicalize) is
    depth-capped in realtime.js so no server state can RangeError it.
-6. THE NAME MONSTERS (a 100k-char queue or actor name): both ride btree
+6. the NAME MONSTERS (a 100k-char queue or actor name): both ride btree
    index items bounded at 2704 bytes, and an incompressible name past the
    limit failed the jobs INSERT with an opaque storage-engine error far
    from the declaration that caused it. Bounded at both chokepoints.
-7. THE SEQ MONSTER (2^31 and 2^53): progress_seq is a strict monotone
+7. the SEQ MONSTER (2^31 and 2^53): progress_seq is a strict monotone
    cursor the flush ADVANCES by arithmetic; on an int4 column the
    arithmetic overflowed at INT_MAX (SQLSTATE 22003), the flush errored
    every tick, the terminal write's 22003 was misclassified as transient
@@ -94,7 +94,7 @@ async def _retire_roundtrip(buf: _ProgressBuffer) -> None:
 async def test_percent_nan_is_refused_at_the_door(poison: float) -> None:
     """``percent=nan`` raises at the call: a NaN in pending_state never
     retires (nan != nan), so the buffer stayed dirty forever and the flush
-    loop re-wrote the row EVERY tick - unbounded work from one call."""
+    loop re-wrote the row every tick - unbounded work from one call."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
     buffers: dict[UUID, _ProgressBuffer] = {_JOB_ID: buf}
     ctx = make_progress_context(buffers, _JOB_ID, settings=_SETTINGS)
@@ -123,7 +123,7 @@ async def test_percent_infinity_is_refused_at_the_door(poison: float) -> None:
 
 
 async def test_percent_at_the_door_stays_range_free() -> None:
-    """Finiteness is the ONLY numeric rule: 150.0 and -0.0 pass and land in
+    """Finiteness is the only numeric rule: 150.0 and -0.0 pass and land in
     the buffer - range is the actor's semantics, and -0.0 retires cleanly
     (its == holds, unlike nan's)."""
     buf = _ProgressBuffer(job_id=_JOB_ID, base_seq=0, attempt=1)
@@ -190,7 +190,7 @@ async def test_type_confused_progress_inputs_are_refused(
     ctx = make_progress_context(buffers, _JOB_ID, settings=_SETTINGS)
 
     with pytest.raises(TypeError, match=match):
-        await ctx.progress(**kwargs)  # pyright: ignore[reportArgumentType]  # Why: the parametrize table IS the type-confusion matrix under test.
+        await ctx.progress(**kwargs)  # pyright: ignore[reportArgumentType]  # Why: the parametrize table is the type-confusion matrix under test.
 
     assert buf.pending_seq_delta == 0
     assert buf.dirty is False
@@ -524,7 +524,7 @@ def test_progress_seq_bind_params_are_bigint_in_the_terminal_templates() -> None
 def test_bigint_migration_documents_the_full_rewrite_ops_window() -> None:
     """The migration's header must keep stating the apply cost honestly:
     ALTER TYPE ... TYPE bigint rewrites each table (a fresh relfilenode)
-    and rebuilds EVERY index on it, an ops window an operator budgets
+    and rebuilds every index on it, an ops window an operator budgets
     against the live row count. What it must never claim again is the
     "widens in place" / "no index rebuild" story: that understates the
     lock horizon and hides the rebuild from the ops-window arithmetic."""

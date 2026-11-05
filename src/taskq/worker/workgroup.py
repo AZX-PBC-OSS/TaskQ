@@ -567,7 +567,7 @@ def _validate_config(cfg: WorkgroupConfig) -> None:
             not w.pg_credential_provider or ":" not in w.pg_credential_provider
         ):
             # A provider ref the child CLI could never resolve must die
-            # HERE, at load: forwarded as-is, the child fails at
+            # here, at load: forwarded as-is, the child fails at
             # import-ref resolution before it can register a heartbeat,
             # and the supervisor restart-loops it against the burst budget
             # with the real reason buried in the child's stderr stream.
@@ -729,7 +729,7 @@ async def _child_health_check(
         return False
 
     fresh: bool | None = row["fresh"]
-    if fresh is None:  # last_seen_at IS NULL, never registered a beat
+    if fresh is None:  # last_seen_at is NULL, never registered a beat
         return False
     if not fresh:
         logger.warning(
@@ -1089,7 +1089,7 @@ async def run_forever(config_path: Path) -> None:
     """Load config, spawn children, manage lifecycle until a signal arrives.
 
     Blocks until SIGTERM or SIGINT, then shuts down all children gracefully.
-    SIGHUP is NOT a shutdown signal: it is forwarded to every living child
+    SIGHUP is not a shutdown signal: it is forwarded to every living child
     so each child's credential hot-reload runs (see
     :func:`_forward_sighup_to_children`); without a handler the default
     disposition would terminate the supervisor and orphan every child.

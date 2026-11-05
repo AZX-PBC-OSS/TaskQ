@@ -78,7 +78,7 @@ _SCHEMA = DEFAULT_SCHEMA  # rendered into the reproduced texts only
 
 
 def build_query(filter: JobFilter) -> tuple[str, list[Any]]:
-    """Exact mirror of ``_list_jobs``' assembly (text AND params).
+    """Exact mirror of ``_list_jobs``' assembly (text and params).
 
     Used both to *count* distinct texts and to drive raw ``conn.fetch``
     with consistent (text, params) pairs.
@@ -165,7 +165,7 @@ def enumerate_filter_specs() -> list[tuple[str, JobFilter]]:
         base_label = "+".join(label_parts) or "none"
         specs.append((base_label, JobFilter(**kw)))
         # A NULL seam (empty cursor field on the nullable ordering) renders
-        # "col IS NULL" terms - a distinct text.  Only FINISHED_AT_DESC has a
+        # "col is NULL" terms - a distinct text.  Only FINISHED_AT_DESC has a
         # nullable lead column.
         if ordering_for(ob).columns[0].nullable:
             specs.append(

@@ -2,14 +2,14 @@
 
 Covers:
 - part (a): write_cancel_request writes cancel_requested_at and
-  cancel_phase=1 but does NOT set the local cancel_event.
+  cancel_phase=1 but does not set the local cancel_event.
 - part (b): subsequent tick_cancel_polling() sets the cancel_event
   registered via register_cancel_event.
 - part (c): after FakeClock advances past cancellation_grace_period,
   tick_cancel_polling() writes cancel_phase=2.
 - After advancing past cancellation_grace + cleanup_grace, another call
   marks the row abandoned.
-- tick_cancel_polling MUST NOT call await asyncio.sleep etc.
+- tick_cancel_polling MUST not call await asyncio.sleep etc.
 """
 
 # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
@@ -85,7 +85,7 @@ async def _make_running_job(backend: InMemoryBackend) -> tuple[JobId, UUID]:
 class TestWriteCancelRequestNoEvent:
     async def test_cancel_request_does_not_fire_event(self) -> None:
         """part (a): write_cancel_request writes cancel_requested_at
-        and cancel_phase=1 but does NOT set the local cancel_event.
+        and cancel_phase=1 but does not set the local cancel_event.
         """
         clock = FakeClock(_START)
         backend = _make_backend(clock)
@@ -105,7 +105,7 @@ class TestWriteCancelRequestNoEvent:
         assert row.cancel_requested_at is not None
         assert row.cancel_phase == 1
 
-        # Event is NOT yet set
+        # Event is not yet set
         assert not cancel_event.is_set()
 
 
@@ -196,7 +196,7 @@ class TestEscalationAfterGrace:
 
 class TestTickCancelNoYield:
     async def test_does_not_await(self) -> None:
-        """tick_cancel_polling MUST NOT sleep or yield to the event loop.
+        """tick_cancel_polling MUST not sleep or yield to the event loop.
 
         Proven at runtime, not by inspection: the coroutine is driven by
         hand — one ``.send(None)``. A body that never awaits runs to

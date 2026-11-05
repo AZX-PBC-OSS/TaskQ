@@ -85,10 +85,10 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     silently opened the tier to every ``-m "not integration"`` /
     ``-m "not redis"`` run. Ignoring the directory at collection is
     independent of ``-m``.
-    """
+"""
     # The directory only, never the files inside it: an explicitly passed
     # tier directory (``pytest tests/e2e``) must reach the backstop below,
-    # which REPORTS what it strips through pytest_deselected — ignoring the
+    # which reports what it strips through pytest_deselected — ignoring the
     # files at collection would hide the stripped tier from the summary.
     tier_flag = _opt_in_tier_dir(collection_path)
     if tier_flag is None:
@@ -104,7 +104,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     ``pytest_ignore_collect`` is not consulted for paths passed explicitly
     on the command line (``pytest tests/e2e``), so an explicit-arg run
     without the tier's flag still collects it. Drop those items here.
-    """
+"""
     gated_flags = {
         flag for _dir, flag in _OPT_IN_TIERS if config.getoption(flag.lstrip("-").replace("-", "_"))
     }
@@ -123,10 +123,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 # redis and e2e tiers reach Postgres and Dragonfly through testcontainers, which
 # publishes them on loopback; the unit tier reaches nothing at all. Nothing here
 # is supposed to call a real third-party service. Until this guard existed
-# nothing enforced that, so a mock that stopped matching failed OPEN: the
+# nothing enforced that, so a mock that stopped matching failed open: the
 # request left the box and whatever answered was treated as the fixture.
 #
-# The guard is suite-wide, with NO marker allowlist. That is a decision about
+# The guard is suite-wide, with no marker allowlist. That is a decision about
 # TaskQ's actual lanes rather than a copy of another repo's: `integration` and
 # `redis` mean testcontainers, `e2e` means containers plus an in-process client,
 # and all three reach their infrastructure on addresses the guard already
@@ -154,7 +154,7 @@ class _ForceExitIntercepted(SystemExit):
     the exception for its awaiter to see, and the dump already went to
     fd 2 either way. The pytest process — the thing that must report the
     result — always survives.
-    """
+"""
 
 
 def _intercepted_force_exit(code: int) -> None:
@@ -180,7 +180,7 @@ def _intercepted_force_exit(code: int) -> None:
     calling thread instead. Production semantics are untouched — the
     watchdog still force-exits real workers; tests that pin the exit path
     patch ``os._exit`` themselves and simply layer over this one.
-    """
+"""
     frame = sys._getframe(1)
     site = f"{frame.f_code.co_filename}:{frame.f_lineno} ({frame.f_code.co_name})"
     _WATCHDOG_FORCE_EXITS.append((str(code), site))
@@ -203,8 +203,8 @@ def _is_local_literal(host: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
-    # Multicast is NOT `is_global == False`: 224.0.0.251 (mDNS), 239.255.255.250
-    # (SSDP) and ff02::fb all report is_global True while never leaving the
+    # Multicast is not `is_global == False`: 224.0.0.251 (mdns), 239.255.255.250
+    # (ssdp) and ff02::fb all report is_global True while never leaving the
     # segment. Blocking them would break local service discovery.
     return not ip.is_global or ip.is_multicast
 
@@ -213,13 +213,13 @@ def _is_local_literal(host: str) -> bool:
 def _resolves_only_locally(host: str) -> bool:
     """Whether every address *host* resolves to is local.
 
-    Cached because this runs on EVERY connect: a client that retries asks the
+    Cached because this runs on every connect: a client that retries asks the
     same question hundreds of times in one test, and each miss is a real DNS
     round trip.
 
     A name that cannot be resolved counts as local: it cannot reach anything, so
     it fails on its own with a clearer error than this guard would give.
-    """
+"""
     try:
         resolved = socket.getaddrinfo(host, None)
     except OSError:
@@ -230,7 +230,7 @@ def _resolves_only_locally(host: str) -> bool:
 def _is_local_target(address: object) -> bool:
     """Whether *address* is on this machine or one of its private networks.
 
-    The rule is "not globally routable", NOT "loopback". Docker is the reason: a
+    The rule is "not globally routable", not "loopback". Docker is the reason: a
     container reached directly sits on a bridge address (172.17/16 by default),
     a user-defined compose network lands anywhere in 172.16/12,
     ``host.docker.internal`` resolves to a private address, and a service on the
@@ -247,7 +247,7 @@ def _is_local_target(address: object) -> bool:
     address families are local by the same reasoning. That is what lets the
     testcontainers fixtures talk to /var/run/docker.sock and what lets
     HealthServer bind its AF_UNIX socket.
-    """
+"""
     if not isinstance(address, tuple) or not address:
         return True
     host = address[0]
@@ -283,7 +283,7 @@ def _no_outbound_network(request: pytest.FixtureRequest) -> Iterator[None]:
     """Fail any test that opens a connection to the public internet.
 
     Worked example of why this is structural rather than per-test hygiene.
-    ``taskq[oidc]`` installs BOTH ``httpx`` and ``httpx2``:
+    ``taskq[oidc]`` installs both ``httpx`` and ``httpx2``:
     ``src/taskq/web/admin/auth/oidc.py`` does ``import httpx2 as httpx`` for the
     discovery and JWKS fetches, while authlib's ``AsyncOAuth2Client`` uses
     whichever stack its version binds to. There was a stretch when
@@ -307,11 +307,11 @@ def _no_outbound_network(request: pytest.FixtureRequest) -> Iterator[None]:
 
     Everything not globally routable stays open. See `_is_local_target`.
 
-    The originals are captured HERE rather than at import: another fixture may
+    The originals are captured here rather than at import: another fixture may
     legitimately have patched ``socket.connect`` for this test (chaos injection,
     a stub transport), and restoring the module-level original on the way out
     would silently discard that patch instead of the one this fixture installed.
-    """
+"""
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
 
@@ -347,7 +347,7 @@ def pytest_configure(config: pytest.Config) -> None:
     an ``httpx2`` call could read as mocked while reaching out for real. That
     condition is defeated at the mechanism, so the warning is retired rather
     than fires forever: ``tests/http_mock.py`` registers a respx mocker whose
-    targets include every installed core (``httpcore`` AND ``httpcore2``)
+    targets include every installed core (``httpcore`` and ``httpcore2``)
     behind one route table, and ``tests/test_suite_hygiene.py`` pins both the
     entry point (no bare ``respx.mock``, no httpx/httpx2 client-class bridge)
     and the interception itself (a request on each installed stack must reach
@@ -355,7 +355,7 @@ def pytest_configure(config: pytest.Config) -> None:
     the backstop for anything the pins cannot see. Retiring the warning does
     not weaken any of that; a warning that fired on every run of every leg
     trained the reader to dismiss it.
-    """
+"""
     os._exit = _intercepted_force_exit  # type: ignore[assignment]  # Why: the seam is deliberate (see _intercepted_force_exit); mypy/pyright see a module builtin reassigned.
 
 
@@ -372,7 +372,7 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     a worker and the controller's own list stays empty. ``workeroutput`` is the
     sanctioned channel back; it is absent on the controller and in serial runs,
     where the list is already the right one.
-    """
+"""
     output = getattr(session.config, "workeroutput", None)
     if output is not None:
         output["taskq_blocked_attempts"] = _BLOCKED_ATTEMPTS
@@ -393,7 +393,7 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
 
     Collects the scattered per-test failures into one place, including the ones
     that happened inside xdist workers (see `pytest_sessionfinish`).
-    """
+"""
     if not _BLOCKED_ATTEMPTS:
         return
     terminalreporter.section("outbound connections blocked", red=True)

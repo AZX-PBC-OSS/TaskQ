@@ -10,7 +10,7 @@ Each test docstring states WHAT is pinned and WHICH pending change could
 break it. A pinning test whose purpose is not stated is one a future agent
 deletes.
 
-Scope of this file (and what is deliberately NOT here):
+Scope of this file (and what is deliberately not here):
 
 * The ``max_pending`` exactness-under-concurrency property is already pinned
   by ``tests/test_postgres_enqueue_max_pending_lock.py::
@@ -65,7 +65,7 @@ _GRACE = timedelta(seconds=30)
 _NO_DELAY = timedelta(0)
 
 
-# ── PIN 1 - the crash-reclaim outbox slice ──────────────────────────
+# ── pin 1 - the crash-reclaim outbox slice ──────────────────────────
 
 
 async def test_crash_reclaim_event_reaches_poll_reclaim_events(
@@ -77,7 +77,7 @@ async def test_crash_reclaim_event_reaches_poll_reclaim_events(
 
     WHY IT MATTERS: ``poll_reclaim_events``
     (``src/taskq/backend/_sql_templates.py``) reads a single narrow slice of
-    ``job_events`` - ``kind = 'state_change' AND (detail->>'reason') =
+    ``job_events`` - ``kind = 'state_change' and (detail->>'reason') =
     'lock_expired'`` - and that table is the *only* transport for reclaim
     notifications. The crash-reclaim outbox is the subsystem
     ``.shipwright/initiatives/I-01/rca.md`` was written about.
@@ -87,7 +87,7 @@ async def test_crash_reclaim_event_reaches_poll_reclaim_events(
     the reclaim slice (or that trims before a consumer's trailing watermark
     has cleared) silently drops crash notifications: jobs get reclaimed,
     nobody is told, and nothing fails loudly. This test asserts the row is
-    both written by the sweep AND selected by the reclaim query, with the
+    both written by the sweep and selected by the reclaim query, with the
     ``kind``/``reason`` predicate values spelled out so a change to either
     the writer's or the reader's spelling breaks here.
     """
@@ -124,7 +124,7 @@ async def test_crash_reclaim_event_reaches_poll_reclaim_events(
         f"got events for job ids {[str(e.job_id) for e in events]}"
     )
     event = mine[0]
-    # Spelled out, not derived: these two literals ARE the outbox contract.
+    # Spelled out, not derived: these two literals are the outbox contract.
     assert event.kind == "state_change"
     assert event.detail.get("reason") == "lock_expired"
 
@@ -132,7 +132,7 @@ async def test_crash_reclaim_event_reaches_poll_reclaim_events(
 async def test_reclaim_slice_is_selected_by_kind_and_reason_only(
     clean_jobs_app: JobsApp,
 ) -> None:
-    """PIN: ``poll_reclaim_events`` selects ONLY the ``lock_expired``
+    """PIN: ``poll_reclaim_events`` selects only the ``lock_expired``
     ``state_change`` slice - an unrelated ``job_events`` row of the same
     ``kind`` but a different ``reason`` is not delivered, and its presence
     does not suppress the real reclaim behind it.
@@ -157,7 +157,7 @@ async def test_reclaim_slice_is_selected_by_kind_and_reason_only(
     async with deps.worker_pool.acquire() as conn:
         await create_worker(conn, schema, worker_id)
         decoy_job = await create_running_job(conn, schema, worker_id)
-        # Same kind, different reason - must NOT be in the reclaim slice.
+        # Same kind, different reason - must not be in the reclaim slice.
         await conn.execute(
             f'INSERT INTO "{schema}".job_events (job_id, kind, detail) '
             "VALUES ($1, 'state_change', $2::jsonb)",
@@ -253,7 +253,7 @@ async def _first_reclaim_for(tq: Any, job_id: Any) -> EventRow:
     raise AssertionError("watch_reclaims() ended without delivering the reclaim")
 
 
-# ── PIN 2 - rate_limit_window_entries self-trims ────────────────────
+# ── pin 2 - rate_limit_window_entries self-trims ────────────────────
 
 
 async def test_window_entries_table_is_bounded_by_window_not_history(
@@ -261,12 +261,12 @@ async def test_window_entries_table_is_bounded_by_window_not_history(
     module_pg_pool: asyncpg.Pool,
 ) -> None:
     """PIN: ``rate_limit_window_entries`` self-trims on every acquire, so its
-    row count is bounded by (window width x arrival rate) - NOT by cumulative
+    row count is bounded by (window width x arrival rate) - not by cumulative
     history.
 
     WHY IT MATTERS: ``_acquire_pg_log``
     (``src/taskq/ratelimit/_sliding_window_pg.py``) issues a DELETE of rows
-    older than the window immediately BEFORE its INSERT, and the refund path
+    older than the window immediately before its INSERT, and the refund path
     deletes the specific entry by ``request_id``. This makes the table the
     one rate-limit table that needs no external retention sweep. That
     property is critical and completely implicit: nothing today asserts
@@ -356,12 +356,12 @@ async def _window_entry_count(pool: asyncpg.Pool, schema: str, bucket: str) -> i
     return int(value)
 
 
-# ── PIN 4 - the admin mutating-route surface stays gated ────────────
+# ── pin 4 - the admin mutating-route surface stays gated ────────────
 
 
 @pytest.mark.fastapi
 def test_every_mutating_admin_route_is_gated_by_actions_and_csrf() -> None:
-    """PIN (surface sweep): EVERY state-changing route under
+    """PIN (surface sweep): every state-changing route under
     ``taskq.web.admin`` checks ``settings.admin_actions_enabled`` and depends
     on ``validate_csrf``. A NEW mutating route fails here on arrival.
 
@@ -403,7 +403,7 @@ def test_every_mutating_admin_route_is_gated_by_actions_and_csrf() -> None:
             # Either fail-safe gate counts. `rate_limit_reset` deliberately
             # uses its own `admin_ui_allow_rate_limit_reset` flag (also
             # defaulting to False) rather than the shared one, so the
-            # invariant is "a mutating route consults SOME opt-in flag that
+            # invariant is "a mutating route consults some opt-in flag that
             # defaults off", not "every route reads one specific name".
             # Narrowing this to the shared flag would report a correctly
             # gated route as ungated - a false positive that trains readers
@@ -411,7 +411,7 @@ def test_every_mutating_admin_route_is_gated_by_actions_and_csrf() -> None:
             # The gate either consults the setting in the body (the
             # original shape) or hangs the shared
             # ``require_actions_enabled`` dependency (the B2 wave's shape:
-            # the gate declared BEFORE validate_csrf, so a disabled
+            # the gate declared before validate_csrf, so a disabled
             # deployment's refusal names the knob, never CSRF). Both are
             # the fail-safe opt-in; the dependency is matched by name.
             if not any(
@@ -540,14 +540,14 @@ def _mutating_handlers(tree: ast.AST) -> list[tuple[ast.AsyncFunctionDef, set[st
     return out
 
 
-# ── PIN 5 - unique_for's window and the succeeded state ─────────────
+# ── pin 5 - unique_for's window and the succeeded state ─────────────
 #
 # The default ``unique_states`` covers ``succeeded``: the window means
 # "at most one job for this identity in this period", and a succeeded
 # job is the state that says the work already happened - the precise
 # condition the window exists to detect (the default-side behavior is
 # pinned end to end in test_unique_for_window_covers_success.py). The
-# failure states stay out: they mean the work did NOT happen, so
+# failure states stay out: they mean the work did not happen, so
 # matching them would let one transient failure suppress the identity
 # for the rest of the window. What survives from the narrower reading is
 # the explicit opt-out - spelling the three unfinished states keeps the
@@ -601,7 +601,7 @@ async def test_unique_for_explicit_unfinished_states_do_not_dedupe_onto_a_succee
     first = await backend.enqueue(first_args)
     assert first.id == first_args.id, "fixture: the first enqueue should be a fresh insert"
 
-    # Sanity half of the pin: while still non-terminal, unique_for DOES dedupe.
+    # Sanity half of the pin: while still non-terminal, unique_for does dedupe.
     dup_args = _args()
     dup = await backend.enqueue(dup_args)
     assert dup.id == first.id, (
@@ -627,9 +627,9 @@ async def test_unique_for_explicit_unfinished_states_do_not_dedupe_onto_a_succee
         status = await conn.fetchval(f'SELECT status FROM "{schema}".jobs WHERE id = $1', first.id)
     assert status == "succeeded", f"fixture: expected terminal 'succeeded', got {status!r}"
 
-    # THE PIN: still well inside the 15-minute unique_for window, but the
-    # only prior job is terminal - and the explicit narrow set does not
-    # cover it - so this must be a NEW job.
+    # still well inside the 15-minute unique_for window, but the only prior job
+    # is terminal - and the explicit narrow set does not cover it - so this
+    # must be a new job.
     third_args = _args()
     third = await backend.enqueue(third_args)
 
@@ -661,7 +661,7 @@ def test_unique_states_default_covers_success_excludes_failures() -> None:
     whole point is that adding or removing a state must be a conscious,
     reviewed edit. ``succeeded`` belongs: it is the state that says the
     work already happened, the precise condition the window exists to
-    detect. ``failed``/``cancelled`` do not: they mean the work did NOT
+    detect. ``failed``/``cancelled`` do not: they mean the work did not
     happen, so covering them would let one failure suppress the identity
     for the rest of the window. (The pin asserts
     three-state literal; the default deliberately widened to cover

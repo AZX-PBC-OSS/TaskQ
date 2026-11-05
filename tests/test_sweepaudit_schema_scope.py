@@ -116,7 +116,7 @@ async def test_migration_lock_cross_schema_isolation(pg_dsn: str) -> None:
 async def test_migration_lock_same_schema_still_serializes(pg_dsn: str) -> None:
     """Qualifying the key must not break same-schema serialization.
 
-    The lock exists so two replicas migrating the SAME schema cannot race
+    The lock exists so two replicas migrating the same schema cannot race
     a virgin schema's bare CREATE TABLE. A second migrator for the same
     schema must still fail fast at the wait bound, not run concurrently.
     """

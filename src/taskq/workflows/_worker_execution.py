@@ -1,10 +1,10 @@
-"""THE WORKER-HOSTED EXECUTION SEAM (the execution verdict's gap-1 and
+"""the WORKER-HOSTED EXECUTION SEAM (the execution verdict's gap-1 and
 gap-2 fixes): the machinery that makes a claimed workflow row EXECUTE on
 the worker that claimed it — the queue IS the runtime, in production.
 
 Three faces, one seam:
 
-* **THE APP REGISTRY** — every constructed :class:`~taskq.workflows.api.
+* **the APP REGISTRY** — every constructed :class:`~taskq.workflows.api.
   _app.WorkflowApp` registers here (weakly; the authored apps are
   module-level singletons, the registry never keeps an app alive).
   ``workflow_execution_capable`` reads it: a worker whose process
@@ -14,32 +14,32 @@ Three faces, one seam:
   (``_dispatch_sql``'s execution leg) makes sure it is never HANDED a
   workflow row to fail on.
 
-* **THE BOOT PROJECTION (the visibility law's call site)** —
+* **the BOOT PROJECTION (the visibility law's call site)** —
   :func:`project_workflow_actor_configs` compiles every imported app's
   workflows (which is also what populates the D1 definition registry in
   THIS process — the intercept's ``resolve_step_body`` answers from
   here) and projects the (actor, queue) cohorts the compiled graphs can
   stamp into ``ActorConfig`` rows, the same surface the vanilla
   ``@actor`` refs ride at boot (``sync_actor_config``). One actor name,
-  one queue — the schema's own law. A flow whose declaration gives ONE
+  one queue — the schema's own law. A flow whose declaration gives one
   actor name TWO queues is the refused defect: the split placement is
   expressed with DISTINCT actor names per queue (the chain's gpu step =
   a gpu-named actor) — the cohort conflict error names that fix. The
   override-warning path (one queue silently winning) is dead by
   construction: the conflict refuses, nothing silently drops.
 
-* **THE EXECUTION DOOR** — :func:`execute_flow_job`: a CLAIMED row
+* **the EXECUTION DOOR** — :func:`execute_flow_job`: a CLAIMED row
   (``dispatch_batch`` claimed it — running, attempt incremented, the
   epoch bumped, the lock held by this worker) resolves its body from
   the registered definition (D1 — the flow root's stamped
   ``metadata.workflow`` name, the same durable leg the leader's fire
   arm uses) and executes it through a worker-hosted :class:`FlowRunner`
-  — the runner's OWN ledger-claim + finalize machinery, the same tx1/
-  tx2 and the same fences, NOT a second execution semantics. The
+  — the runner's own ledger-claim + finalize machinery, the same tx1/
+  tx2 and the same fences, not a second execution semantics. The
   in-process driver and this door differ only in WHO CLAIMED: the
   runner's ``run_fleet_claimed_step`` is the door's one leg.
 
-THE IMPORT LAW (the import law): the worker's modules import THIS module lazily,
+The worker's modules import THIS module lazily,
 inside the hook seams that need it — ``import taskq`` never imports the
 workflows package, and a worker that never opens this seam pays nothing.
 """
@@ -102,7 +102,7 @@ logger = get_logger(__name__)
 #: vanilla JobRow has no fields for them) + the flow root's stamped
 #: workflow name + the run's stamped priority override (the wf-priority
 #: fix — ``create_flow(priority=…)`` wrote it; the door's fork builds
-#: resolve it as the precedence law's first level), ONE bounded
+#: resolve it as the precedence law's first level), one bounded
 #: primary-key round trip per claimed flow row (the same cost class the
 #: leader's fire arm pays for the same stamped name).
 _CLAIMED_NODE_READ_SQL_TEMPLATE = """
@@ -125,7 +125,7 @@ _PROJECTION_METADATA: dict[str, object] = {"workflow_actor": True}
 class WorkflowActorQueueConflictError(TypeError):
     """One workflow actor name declared over TWO queues — the estate's
     one-queue-per-actor law (``actor_config`` is keyed by actor), refused
-    wherever the projection computes the cohorts. THE FIX the error
+    wherever the projection computes the cohorts. the FIX the error
     names: the split placement (a source on ``default``, a chain on
     ``gpu``) is expressed with DISTINCT actor names per queue — the
     chain's gpu step = a gpu-named actor."""
@@ -135,7 +135,7 @@ class WorkflowActorCapacityConflictError(TypeError):
     """One workflow actor name declared with TWO different capacity
     terms (``max_concurrent``/``max_pending``/``reservations``/
     ``result_ttl``) — the same one-row-per-actor law, on the capacity
-    axes. The projection refuses wherever it computes the terms. THE
+    axes. The projection refuses wherever it computes the terms. the
     FIX the error names: a node carrying different terms is a
     DIFFERENT actor — give it its own name (the capacity is the
     actor's, not the node's)."""
@@ -145,9 +145,9 @@ class _CapacityTerms(NamedTuple):
     """One workflow actor's declared capacity terms (the node's
     admission declaration, gathered at the projection).
 
-    THE LAW'S FIELD SET: the ROW-CARRIED fields ONLY — the
+    The ROW-CARRIED fields only — the
     ``ActorConfig`` columns the projection seeds. The RESERVATIONS are
-    deliberately NOT here: they have no ``__eq__`` (identity-comparing
+    deliberately not here: they have no ``__eq__`` (identity-comparing
     ``__slots__`` classes), so folding them into this tuple compared
     INSTANCE IDENTITY — equal configs on different instances were false
     conflicts (skip-loudly within a workflow, boot-refusals across
@@ -161,7 +161,7 @@ class _CapacityTerms(NamedTuple):
     the stored capacity operator-owned; "code" projects into the
     ``ActorConfig`` the config sync consumes, whose upsert rewrites the
     cohort's max_concurrent/result_ttl from the literal on every boot.
-    The route arms declare their OWN owner (``RouteArm.capacity_owner``,
+    The route arms declare their own owner (``RouteArm.capacity_owner``,
     default "operator"): an overriding arm's declaration threads
     per-arm onto the arm's effective cohort, and its owner participates
     in the one-cap law's comparison below."""
@@ -205,7 +205,7 @@ class WorkflowQueueUnconsumedError(RuntimeError):
     steps default to ``queue="default"``, and a worker whose consumed set
     excludes a cohort's queue would strand every row that workflow stamps
     there — enqueued fine, pending forever, no error, no log, anywhere
-    (the dispatch claim matches only the worker's own queues). THE BOOT
+    (the dispatch claim matches only the worker's own queues). the BOOT
     REFUSES: :func:`taskq.worker._bootstrap.
     _fail_fast_on_unconsumed_workflow_queues` raises this naming the
     unconsumed queues, the consumed set, and the remedy — the same loud
@@ -257,12 +257,12 @@ def register_app(app: object) -> None:
 
 
 def reset_app_registry_for_tests() -> None:
-    """THE TEST-ISOLATION SEAM for the app registry (the conftest's
+    """the TEST-ISOLATION SEAM for the app registry (the conftest's
     ``_isolate_workflow_app_registry`` autouse fixture drives it around
     every test).
 
-    ``_apps`` is the boot projection's ONLY input (``iter_imported_apps``),
-    and the projection runs at EVERY in-process worker boot — so a
+    ``_apps`` is the boot projection's only input (``iter_imported_apps``),
+    and the projection runs at every in-process worker boot — so a
     WorkflowApp any test module constructed (a module-scoped fixture's
     exec'd doc fence, an imported examples app) keeps projecting its
     actor cohorts into every LATER test's boot on the same xdist worker:
@@ -275,8 +275,8 @@ def reset_app_registry_for_tests() -> None:
     seed — the class is order-dependent by construction, every victim
     green solo.
 
-    Clearing at BOTH ends makes the law explicit: a test's projection
-    sees exactly the apps ITS OWN setup registered (a within-test
+    Clearing at both ends makes the law explicit: a test's projection
+    sees exactly the apps ITS own setup registered (a within-test
     ``WorkflowApp()`` registration happens after the setup clear and
     survives until the teardown clear) — never another module's import
     residue. The WeakSet clear does not destroy any app object: an owner
@@ -320,7 +320,7 @@ def workflow_execution_capable() -> bool:
 
 
 def any_app_declares_strict_queues() -> bool:
-    """THE APP-DECLARED STRICT FACE, read off the registry the projection
+    """the APP-DECLARED STRICT FACE, read off the registry the projection
     itself walks: any still-alive imported app declaring
     ``queues_strict=True`` makes THIS process's queue-trap gate strict —
     the app's own definition carries the contract in code (the fleet
@@ -329,8 +329,8 @@ def any_app_declares_strict_queues() -> bool:
     An undeclared app (the default) changes nothing:
     ``getattr``'s False is today's behavior byte-identically. One strict
     app tightens the gate for the WHOLE projected cohort set — the same
-    aggregated shape the warning arm reports in (the cohorts are ONE
-    projection; the gate is its one door). The faces' OR-law (strict if
+    aggregated shape the warning arm reports in (the cohorts are one
+    projection; the gate is its one door). The faces' or-law (strict if
     EITHER this face or the env is set) is the bootstrap gate's own
     docstring (``_fail_fast_on_unconsumed_workflow_queues``)."""
     return any(getattr(app, "queues_strict", False) for app in _apps)
@@ -346,11 +346,11 @@ def _workflow_cohorts(
     nodes' decls, the map attachments' child placement (``map_queue`` —
     the fork's children ride it), the chains' step rows (every row of a
     chain — the emitted starts and the forked children alike — lands on
-    the chain's own pair), and THE ROUTE ARMS' FORKED COHORTS (the
+    the chain's own pair), and the ROUTE ARMS' FORKED COHORTS (the
     docshelf adoption's finding): the arms' children fork at RUNTIME —
     the source's finalize stamps each arm's effective placement
     (``actor=arm.actor or node.actor, queue=arm.queue or node.map_queue``,
-    the runner's ``_route_fork``) — so the projection walks the SAME
+    the runner's ``_route_fork``) — so the projection walks the same
     effective pairs here. The pre-fix walk read the decls only: an
     arm's rows stamped a cohort the boot never projected — the rows
     STRANDED SILENTLY (no actor_config → no dispatch capacity, the
@@ -358,15 +358,13 @@ def _workflow_cohorts(
     cohorts itself. A boot that strands silently is the defect; the
     projection extends to every cohort the fork can stamp."""
     cohorts: set[tuple[str, str]] = set()
-    # THE CAPACITY TERMS per actor (the node's declared admission
-    # terms — the handle's or the step's own): the one-cap-per-actor
-    # law's raw material. The arms' overridden cohorts (a DIFFERENT
-    # actor name) carry NO terms here — an arm's capacity declaration
-    # is the RouteArm's own field, not the source node's (the arm's
-    # actor is a different cohort; inheriting the source's cap onto a
-    # different actor name would be a silent lie). An arm DECLARING its
-    # own terms (the RouteArm passthrough) carries THOSE onto the arm's
-    # effective cohort.
+    # the capacity terms per actor: the one-cap-per-actor law's raw material.
+    # The arms' overridden cohorts (a different actor name) carry no terms here
+    # — an arm's capacity declaration is the RouteArm's own field, not the
+    # source node's (the arm's actor is a different cohort; inheriting the
+    # source's cap onto a different actor name would be a silent lie). An arm
+    # declaring its own terms (the RouteArm passthrough) carries those onto the
+    # arm's effective cohort.
     caps: dict[str, _CapacityTerms] = {}
     for node in compiled.nodes.values():
         cohorts.add((node.actor, node.queue))
@@ -387,14 +385,11 @@ def _workflow_cohorts(
             cohorts.add((node.actor, node.map_queue))
         if node.map_arms is not None:
             for arm in node.map_arms.values():
-                # THE EFFECTIVE PLACEMENT (the runner's _route_fork's own
-                # arithmetic — one vocabulary): the arm overrides DOWN
-                # from the source, never up.
+                # the arm overrides down from the source, never up.
                 arm_actor = arm.actor or node.actor
                 cohorts.add((arm_actor, arm.queue or node.map_queue))
-                # THE ARM'S OWN DECLARATION (the passthrough): the
-                # arm's terms project onto the arm's effective cohort —
-                # the same one-cap law, the same refusal shape.
+                # the arm's terms project onto the arm's effective cohort — the
+                # same one-cap law, the same refusal shape.
                 arm_terms = _CapacityTerms(
                     getattr(arm, "max_concurrent", None),
                     getattr(arm, "result_ttl", None),
@@ -415,15 +410,14 @@ def _workflow_cohorts(
     for chain in getattr(compiled, "chains", ()):
         for _step_key in chain.steps:
             cohorts.add((chain.actor, chain.queue))
-    # THE LOOP ESCALATION'S COHORT: an ``on_exhausted="escalate"``
-    # loop ENQUEUES its escalation through the outbox, addressed to the
-    # REGISTERED DEFINITION's own (actor, queue) — the WorkflowDef's
-    # placement fields ("workflow"/"default"). The projection never
-    # walked that cohort: the escalation rows parked forever under the
-    # DEFAULT on_exhausted policy (no actor_config row → no dispatch
-    # capacity, the strict-queue worker never listening). The escalation
-    # body's presence is the registered definition's own law (the
-    # enqueue is SKIPPED without one — no body, no rows, no cohort).
+        # an ``on_exhausted="escalate"`` loop enqueues its escalation through the
+    # outbox, addressed to the registered definition's own (actor, queue) — the
+    # WorkflowDef's placement fields ("workflow"/"default"). The projection
+    # never walked that cohort: the escalation rows parked forever under the
+    # default on_exhausted policy (no actor_config row → no dispatch capacity,
+    # the strict-queue worker never listening). The escalation body's presence
+    # is the registered definition's own law (the enqueue is skipped without
+    # one — no body, no rows, no cohort).
     from taskq.workflows.api._loop import ESCALATION_STEP_KEY
     from taskq.workflows.definitions import get_registry
 
@@ -448,8 +442,8 @@ _projection_cache_key: tuple[tuple[int, int], ...] | None = None
 
 
 def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
-    """THE BOOT PROJECTION with its failures' names: the same projection
-    :func:`project_workflow_actor_configs` runs, returning ALSO the
+    """BOOT PROJECTION with its failures' names: the same projection
+    :func:`project_workflow_actor_configs` runs, returning also the
     compile failures (one string per skipped workflow — the app, the
     workflow, the defect) so the boot gate can name WHY nothing
     dispatchable projects. The compiles populate the D1 definition
@@ -457,17 +451,17 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
     from these very compiles), and the compiled graphs' (actor, queue)
     cohorts project into ``ActorConfig`` rows — the same carrier, the
     same ``sync_actor_config`` surface, the same drift guards the vanilla
-    ``@actor`` refs ride at boot. THE VISIBILITY LAW'S CALL SITE: the
+    ``@actor`` refs ride at boot. the VISIBILITY LAW'S CALL SITE: the
     workflow actors are VISIBLE to the estate — the dispatch capacity
     LATERAL sees their cohorts, the drift machinery, the admin page,
     ``TASKQ_QUEUES_STRICT`` — no second, invisible actor population.
 
-    THE ONE-QUEUE LAW: an actor name carrying TWO queues is refused
+    An actor name carrying TWO queues is refused
     (``WorkflowActorQueueConflictError``). TWO granularities, two arms:
-    a workflow whose OWN cohorts conflict — or whose build function
+    a workflow whose own cohorts conflict — or whose build function
     raises, or whose graph fails validation — skips THAT WORKFLOW
     LOUDLY (``workflow-projection-skipped``: the app, the workflow, the
-    defect named) and the healthy workflows still project — ONE broken
+    defect named) and the healthy workflows still project — one broken
     build fn must not refuse the ENTIRE worker's boot (one broken
     build fn must not refuse the healthy apps' boot). The conflict across workflows/apps — two HEALTHY
     declarations projecting the same actor name onto different queues —
@@ -478,10 +472,10 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
     on ``gpu``) is expressed with DISTINCT actor names per queue; the
     override-warning path (one queue silently winning) is dead.
 
-    THE ONE-CAPACITY LAW (the same shape, on the capacity axes): an
+    An
     actor name carrying TWO different capacity terms is refused
     (``WorkflowActorCapacityConflictError``). Two granularities, the
-    same two arms: within ONE workflow the declaration is broken — that
+    same two arms: within one workflow the declaration is broken — that
     workflow skips LOUDLY (the isolation arm above, its cohorts
     unprojected); ACROSS workflows/apps two HEALTHY declarations
     fighting over one actor's terms REFUSES the boot — skipping one
@@ -532,15 +526,15 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
                             "gpu-named actor (e.g. actor='wf-gpu', queue='gpu')."
                         )
             except WorkflowActorCapacityConflictError:
-                #  the CAPACITY conflict is NEVER skippable — the
+                #  the capacity conflict is never skippable — the
                 # isolation arm's skip stranded the conflicted workflow's
                 # rows forever (no cohort projected, nothing claims them,
                 # the queue-trap door never sees the cohort) and the
                 # refusal is the across-apps arm's own semantics. The
-                # OTHER failure classes (a raising build fn, a validation
+                # other failure classes (a raising build fn, a validation
                 # refusal, the queue conflict) keep the skip-loudly arm.
                 raise
-            except Exception as exc:  # Why: the isolation IS the fix — one broken build fn (a raising builder, a validation refusal, the workflow's own queue conflict) must not refuse the worker's whole boot; the failure is the same skip-loudly arm for every shape.
+            except Exception as exc:  # Why: the isolation is the fix — one broken build fn (a raising builder, a validation refusal, the workflow's own queue conflict) must not refuse the worker's whole boot; the failure is the same skip-loudly arm for every shape.
                 failures.append(f"{app_face}.{name}: {type(exc).__name__}: {str(exc)[:200]}")
                 logger.error(
                     "workflow-projection-skipped",
@@ -555,14 +549,13 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
                     ),
                 )
                 continue
-            # THE ACROSS-WORKFLOW CAPACITY MERGE — deliberately OUTSIDE the
-            # isolation above, the across-workflow QUEUE merge's own shape:
-            # two HEALTHY declarations declaring one actor name with
-            # DIFFERENT capacity terms is the drift the guards refuse —
-            # skipping one side silently would project the OTHER side's
-            # terms, and the actor would claim under a capacity nobody
-            # declared (the segfault guard failing OPEN by another door).
-            # Raised, never skipped.
+                # the across-workflow capacity merge — deliberately outside the
+            # isolation above, the across-workflow queue merge's own shape: two
+            # healthy declarations declaring one actor name with different
+            # capacity terms is the drift the guards refuse — skipping one side
+            # silently would project the other side's terms, and the actor
+            # would claim under a capacity nobody declared (the segfault guard
+            # failing open by another door). Raised, never skipped.
             for actor, terms in _caps.items():
                 existing_terms = capacity_totals.get(actor)
                 if existing_terms is not None and existing_terms != terms:
@@ -576,11 +569,10 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
                     )
                 capacity_totals.setdefault(actor, terms)
             if not workflow_cohorts:
-                # THE EMPTY GRAPH'S DIAGNOSTIC: the compile succeeded and
-                # produced nothing dispatchable (the app declares no
-                # workflows, or this workflow's builder wired nothing /
-                # returned None) — a runnable-cohort gate reads this list,
-                # so the state is named, never collapsed into "nothing
+                # the compile succeeded and produced nothing dispatchable (the
+                # app declares no workflows, or this workflow's builder wired
+                # nothing / returned None) — a runnable-cohort gate reads this
+                # list, so the state is named, never collapsed into "nothing
                 # imported".
                 failures.append(
                     f"{app_face}.{name}: the workflow projects no cohorts — "
@@ -605,12 +597,11 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
                 totals[actor] = (next(iter(merged)), merged)
     configured: list[ActorConfig] = []
     for actor, (queue, _seen) in sorted(totals.items()):
-        # THE CAPACITY TERMS (or their unset defaults): an actor whose
-        # nodes declare none projects the all-None row — the same
-        # seed-only shape the vanilla rows carry. RESERVATIONS DO NOT RIDE
-        # THE ROW (ActorConfig has no field for them): their slot rows
-        # materialize through the bootstrap's ensure-slots pass, fed by
-        # :func:`collect_workflow_reservations`.
+        # or their unset defaults. an actor whose nodes declare none projects
+        # the all-None row — the same seed-only shape the vanilla rows carry.
+        # reservations do not ride the row (ActorConfig has no field for them):
+        # their slot rows materialize through the bootstrap's ensure-slots
+        # pass, fed by :func:`collect_workflow_reservations`.
         terms = capacity_totals.get(actor)
         if terms is None:
             terms = _UNSET_CAPACITY_TERMS
@@ -618,17 +609,16 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
             ActorConfig(
                 actor=actor,
                 max_concurrent=terms.max_concurrent,
-                # max_pending is NOT on the wf surface (the engine's
+                # max_pending is not on the wf surface (the engine's
                 # inserts bypass the enqueue admission; the knob was dead):
-                # the row seeds the estate's field UNSET.
+                # the row seeds the estate's field unset.
                 max_pending=None,
                 result_ttl=terms.result_ttl,
                 queue=queue,
                 metadata=dict(_PROJECTION_METADATA),
-                # THE CAPACITY OWNER: the handle's declaration,
-                # carried through the decl's terms — "operator" (the
-                # default) is the estate's seed-only law, unchanged;
-                # "code" is the config sync's deploy-by-code opt-in.
+                # the handle's declaration, carried through the decl's terms —
+                # "operator" (the default) is the estate's seed-only law,
+                # unchanged; "code" is the config sync's deploy-by-code opt-in.
                 capacity_owner=terms.capacity_owner,
             )
         )
@@ -641,7 +631,7 @@ def project_with_failures() -> tuple[list[ActorConfig], list[str]]:
 
 
 def project_workflow_actor_configs() -> list[ActorConfig]:
-    """THE BOOT PROJECTION: every imported app's workflows compile HERE
+    """Every imported app's workflows compile here
     (populating the D1 definition registry in this process — the
     intercept's body resolution answers from these very compiles) and
     the compiled graphs' cohorts project into ``ActorConfig`` rows —
@@ -653,11 +643,11 @@ def project_workflow_actor_configs() -> list[ActorConfig]:
 # ── the boot's rate-limit collection (the admission terms) ────────────────────────────
 
 
-#: The rate-limit buckets' CONFIG FIELDS the duplicate-name law compares
+#: The rate-limit buckets' config fields the duplicate-name law compares
 #: (the ``_same_config`` surface's union — ``TokenBucket``:
 #: capacity/refill_per_second/backend/ttl; ``SlidingWindow``:
 #: limit/window/backend/style/ttl; ``name`` is the registry's key, equal
-#: by construction). The collect's conflict refusal names THESE — never
+#: by construction). The collect's conflict refusal names these — never
 #: a raw ``__slots__`` repr (the reservation face's own fix, mirrored:
 #: the default repr is an address, not a diagnosis).
 _RATE_LIMIT_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
@@ -682,7 +672,7 @@ def _rate_limit_config_diff(existing: object, declared: object) -> str:
 
 
 def _iter_live_recorded_workflows() -> Iterator[tuple[str, str, CompiledWorkflow | None]]:
-    """THE SIBLING COLLECTS' ONE BASE: the LIVE apps' workflow names (:func:`iter_imported_apps`'s
+    """The LIVE apps' workflow names (:func:`iter_imported_apps`'s
     own walk — the reservations collect's base all along), each name
     resolved through the RECORDED compile cache (H-D1's law: the build
     fn is never re-invoked here), yielded as ``(app_face, name,
@@ -695,7 +685,7 @@ def _iter_live_recorded_workflows() -> Iterator[tuple[str, str, CompiledWorkflow
     and a collect walking the dict kept registering an ORPHAN's buckets
     beside the live estate's — a surviving workflow re-declaring the
     same bucket name with a different config then raised the registry's
-    conflict refusal at the collect's register — THE GHOST REFUSED THE
+    conflict refusal at the collect's register — the GHOST REFUSED the
     BOOT. The live-apps walk is the one base both siblings share: the
     orphaned graphs' terms stop registering (the ghosts die), and the
     two collects cannot drift apart again."""
@@ -711,10 +701,10 @@ def _iter_live_recorded_workflows() -> Iterator[tuple[str, str, CompiledWorkflow
 
 
 def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str], list[str]]:
-    """THE BOOT'S COLLECT (the vanilla actors' collection pass's sibling
+    """the BOOT'S COLLECT (the vanilla actors' collection pass's sibling
     — the admission-terms surface): every imported app's compiled
     graphs walk once (the LIVE apps' names — :func:
-    `_iter_live_recorded_workflows`, the reservations sibling's ONE
+    `_iter_live_recorded_workflows`, the reservations sibling's one
     base; the orphan-inclusive ``_compiled`` walk registered the stale
     cache's ghosts — buckets for workflows no live app declares — and
     their refusals broke the boot); each
@@ -722,13 +712,12 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
     ``SlidingWindow`` — on a ``step``, a map_source, or a ``RouteArm``)
     registers into the worker's resolved ``RateLimitRegistry``
     (``register()``'s own idempotency + the ``_same_config`` conflict
-    refusal — the bootstrap's law); every plain-``str`` name that NO
+    refusal — the bootstrap's law); every plain-``str`` name that no
     registry entry backs is REPORTED (the caller's WARNING — W2's own
     register: probably a typo, may be declared on another app the fleet
     serves, never a refusal). The keyed-ref shape cannot reach here
     (the wiring verbs refuse it).
 
-    THE CONFLICT'S RENDER (the reservation face's own fix, mirrored):
     two LIVE workflows declaring one bucket name with different configs
     is the refused defect — the registry's own duplicate-name law — but
     the refusal names the RESOLVED BUCKET and the differing config
@@ -736,7 +725,7 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
     carries (an address is not a diagnosis).
 
     Returns ``(registered_names, unknown_names)`` — the registration
-    log's and the warning's inputs. Call AFTER
+    log's and the warning's inputs. Call after
     :func:`project_workflow_actor_configs` (the compiles are recorded).
     A workflow the projection skipped (a raising build fn, a validation
     refusal, the workflow's own queue conflict) skips LOUDLY here too
@@ -775,11 +764,9 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
                 try:
                     registry.register(entry)
                 except ValueError as exc:
-                    # THE RESOLVED NAMES' REFUSAL (the registry's own message,
-                    # re-rendered with the resolved name):
-                    # the raw-repr message with the
-                    # bucket's own name + the config diff, the original
-                    # chained (``from exc`` — the cause is kept).
+                    # the raw-repr message with the bucket's own name + the
+                    # config diff, the original chained (``from exc`` — the
+                    # cause is kept).
                     try:
                         existing = registry.get_rate_limit(entry.name)
                     except KeyError:
@@ -798,10 +785,9 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
                     ) from exc
                 registered.append(entry.name)
             elif isinstance(entry, KeyedRateLimitRef):
-                # THE KEYED DECLS' COLLECT: the ref registers by
-                # base_name (the same-config idempotent, the different-config
-                # ValueError) — the fork-stamped concrete names resolve back
-                # through it at claim.
+                # the ref registers by base_name (the same-config idempotent,
+                # the different-config ValueError) — the fork-stamped concrete
+                # names resolve back through it at claim.
                 registry.register_keyed_rate_limit_ref(entry)
             elif isinstance(entry, str) and not registry.has_rate_limit(entry):
                 unknown.append(entry)
@@ -811,7 +797,7 @@ def collect_workflow_rate_limits(registry: RateLimitRegistry) -> tuple[list[str]
 def collect_workflow_reservations(
     registry: RateLimitRegistry | None = None,
 ) -> tuple[list[ConcurrencyReservation], list[str]]:
-    """THE WORKFLOW-DECLARED RESERVATIONS' COLLECT (the vanilla actors'
+    """the WORKFLOW-DECLARED RESERVATIONS' COLLECT (the vanilla actors'
     collection pass's sibling — ``_bootstrap``'s ``actor_ref.reservations``
     loop, over the projected graphs): every imported app's RECORDED
     compiled graphs walk once — the collect reads the projection's own
@@ -826,42 +812,42 @@ def collect_workflow_reservations(
     own second slot): the bootstrap warns when no registry entry backs
     the name (probably a typo, may be registered by a vanilla actor —
     never a refusal; the row still stamps the name, the claim-time
-    fail-closed arm remains the enforcer). Call AFTER
+    fail-closed arm remains the enforcer). Call after
     :func:`project_workflow_actor_configs` (the compiles are recorded).
 
     Returns ``(reservations, unknown_names)`` — the registration pass's
     and the warning's inputs.
 
     DEDUP BY NAME, DETERMINISTIC ORDER: the same instance (or an equal
-    config) declared on several nodes is returned ONCE; the return is
+    config) declared on several nodes is returned once; the return is
     name-sorted, so the collection is byte-stable regardless of the app
     registry's iteration order. A name declared with TWO DIFFERENT
     configs is the refused defect (the registry's own
     duplicate-name-different-config law, pre-empted at the collect):
     ``ValueError``, both configs named — one reservation per name.
-    THE DEDUP'S IDENTITY: ``(name, slots, lease, keyed,
+    ``(name, slots, lease, keyed,
     lock_lease)`` — the identity that SURVIVES the rebind. The schema is
     EXCLUDED: the declaration's schema is the import-time default (the
     settings are unknowable there) and the boot's rebind owns the live
     binding — two same-name same-config differing-schema declarations
-    are ONE reservation, not a conflict.
+    are one reservation, not a conflict.
 
     The caller (the bootstrap) registers the returned instances into the
-    resolved rate-limit registry (ONE registry, ONE acquire path) and
-    feeds them to the SAME ensure-slots pass the vanilla reservations
+    resolved rate-limit registry (one registry, one acquire path) and
+    feeds them to the same ensure-slots pass the vanilla reservations
     ride — their slot rows materialize at boot exactly like the vanilla
     ones'. Per-workflow build failures skip LOUDLY (the projection's own
     isolation arm — one broken builder must not refuse the boot; the
-    projection has already named it). THE WALK'S BASE is the sibling
+    projection has already named it). the WALK'S BASE is the sibling
     rate-limit collect's own (:func:`_iter_live_recorded_workflows` —
-    the LIVE apps' names over the recorded cache, ONE base the two
+    the LIVE apps' names over the recorded cache, one base the two
     collects share: the orphaned graphs' terms stop registering, the
     ghosts die)."""
     by_name: dict[str, ConcurrencyReservation] = {}
     unknown: list[str] = []
 
     def _take(entry: object) -> None:
-        """THE DEDUP'S OWN TAKE (one home — the node decls AND the route
+        """the DEDUP'S own TAKE (one home — the node decls and the route
         arms' own declarations (the passthrough) feed the same
         name-keyed law; a plain ``str`` name is GATHERED, never
         silently dropped)."""
@@ -869,11 +855,10 @@ def collect_workflow_reservations(
             existing = by_name.get(entry.name)
             if existing is None:
                 by_name[entry.name] = entry
-            # THE DEDUP'S IDENTITY: the fields that survive the
-            # rebind — the schema is the rebind's own decision, never a
-            # discriminator. A differing keyed/lock_lease is a materially
-            # different bucket (the fleet-reclaim mark, the heartbeat's
-            # extension), refused like any other config drift.
+                # the fields that survive the rebind — the schema is the rebind's
+            # own decision, never a discriminator. A differing keyed/lock_lease
+            # is a materially different bucket (the fleet-reclaim mark, the
+            # heartbeat's extension), refused like any other config drift.
             elif (existing.slots, existing.lease, existing.keyed, existing.lock_lease) != (
                 entry.slots,
                 entry.lease,
@@ -893,11 +878,10 @@ def collect_workflow_reservations(
                     "own reservation."
                 )
         elif isinstance(entry, KeyedReservationRef):
-            # THE KEYED DECLS' COLLECT (the rate-limit twin's own shape):
-            # the ref registers by base_name into the CALLER'S registry
-            # (the parameter is None on the collect-only callers — the
-            # declaration-only walks), where the fork-stamped concrete
-            # names resolve back through it at claim.
+            # the ref registers by base_name into the caller's registry (the
+            # parameter is None on the collect-only callers — the
+            # declaration-only walks), where the fork-stamped concrete names
+            # resolve back through it at claim.
             if registry is not None:
                 registry.register_keyed_reservation_ref(entry)
         elif isinstance(entry, str):
@@ -905,10 +889,10 @@ def collect_workflow_reservations(
 
     for app_face, name, compiled in _iter_live_recorded_workflows():
         if compiled is None:
-            # NOT RECORDED = the projection skipped this workflow (a
+            # not recorded = the projection skipped this workflow (a
             # raising build fn, a validation refusal, the workflow's
             # own queue conflict — the projection's isolation arm
-            # named the defect THERE): the collect's isolation
+            # named the defect there): the collect's isolation
             # matches (skip loudly, H-D1's cache-read shape — the
             # build fn is never re-invoked here to resurrect it),
             # the healthy workflows' reservations still collect.
@@ -931,8 +915,7 @@ def collect_workflow_reservations(
                 _take(entry)
             if node.map_arms is not None:
                 for arm in node.map_arms.values():
-                    # THE ARM'S OWN DECLARATION: the arm's
-                    # reservations collect beside the nodes'.
+                    # the arm's reservations collect beside the nodes'.
                     for entry in getattr(arm, "reservations", ()) or ():
                         _take(entry)
     return [by_name[res_name] for res_name in sorted(by_name)], sorted(set(unknown))
@@ -966,11 +949,10 @@ def _runner_for(
     if cached is not None and cached[0] is pool:
         return cached[1]
     compiled = get_compiled_workflow(name)
-    # THE DEPS SEAM'S DOOR (the DI capability): the compiled carries the
-    # app's bound instance (bound once at WorkflowApp(deps=…)) — the
-    # worker-hosted runner hands the SAME instance to every body
-    # invocation the vanilla door does (the E12 contract checked the
-    # bodies' declarations against THIS binding at the projection's
+    # the compiled carries the app's bound instance (bound once at
+    # WorkflowApp(deps=…)) — the worker-hosted runner hands the same instance
+    # to every body invocation the vanilla door does (the E12 contract checked
+    # the bodies' declarations against this binding at the projection's
     # compile).
     runner = FlowRunner(
         compiled,
@@ -978,11 +960,9 @@ def _runner_for(
         schema,
         worker_id=worker_id,
         deps=compiled.deps if isinstance(compiled, CompiledWorkflow) else None,
-        # THE WORKER'S DEFAULT DEADLINE (the wf start_to_close bound — the
-        # resolution chain's own tail): the worker settings' value,
-        # threaded from the dispatch loop's deps. Process-stable (the
-        # settings load once at boot), and part of the cache KEY — a
-        # changed default builds its own runner, never inherits.
+        # the worker settings' value, threaded from the dispatch loop's deps.
+        # Process-stable (the settings load once at boot), and part of the
+        # cache key — a changed default builds its own runner, never inherits.
         default_start_to_close=default_start_to_close,
     )
     _runners[key] = (pool, runner)
@@ -997,17 +977,17 @@ async def execute_flow_job(
     job: JobRow,
     default_start_to_close: timedelta | None = None,
 ) -> FlowExecution:
-    """Execute ONE claimed workflow row on THIS worker.
+    """Execute one claimed workflow row on THIS worker.
 
     *job* is the row the fleet's dispatch claimed (running, the attempt
     incremented, the epoch bumped, the lock held by *worker_id*). The
     door resolves the body from the REGISTERED definition — the flow
     root's stamped ``metadata.workflow`` name (D1, the same durable leg
     the leader's fire arm uses), one bounded primary-key read for the
-    step identity + the stamp — and runs it through the runner's OWN
+    step identity + the stamp — and runs it through the runner's own
     machinery (:meth:`FlowRunner.run_fleet_claimed_step`): the ledger
     claim, the emitter, the router, the ladder, the two-transaction
-    finalize, the same fences. NOT a second execution semantics.
+    finalize, the same fences. not a second execution semantics.
 
     ``default_start_to_close`` is the WORKER'S DEFAULT DEADLINE (the wf
     start_to_close fix — the resolution chain's own tail): the worker
@@ -1059,11 +1039,10 @@ async def execute_flow_job(
     runner = _runner_for(
         workflow_name, pool, schema, worker_id, default_start_to_close=default_start_to_close
     )
-    # THE RUN-PRIORITY STAMP'S RESOLUTION: the root's stamped override
-    # through the shared parse → domain-clamp → degrade cascade
-    # (``resolve_priority_stamp`` — a stamp a hand-crafted row rendered
-    # unparseable or out-of-domain degrades to NO override, never a door
-    # death).
+    # the root's stamped override through the shared parse → domain-clamp →
+    # degrade cascade (``resolve_priority_stamp`` — a stamp a hand-crafted row
+    # rendered unparseable or out-of-domain degrades to no override, never a
+    # door death).
     raw_priority: object | None = read["wf_priority"]
     run_priority = resolve_priority_stamp(raw_priority)
     row = {
@@ -1072,15 +1051,13 @@ async def execute_flow_job(
         "map_index": read["map_index"],
         "payload": job.payload,
         "trace_id": job.trace_id,
-        # THE ROW'S DECLARED DEADLINE (the wf start_to_close bound): the
-        # dispatch claim's own decode carries the column (the vanilla
-        # JobRow's field — the row IS the truth); the runner's
-        # enforcement resolves it over the worker's default.
+        # the dispatch claim's own decode carries the column (the vanilla
+        # JobRow's field — the row is the truth); the runner's enforcement
+        # resolves it over the worker's default.
         "start_to_close": job.start_to_close,
-        # THE ROW'S OWN METADATA (the admission terms' carrier): the
-        # fork's builders read the source row's already-resolved
-        # reservation names off it — the children ride the source row's
-        # cohort (never a per-item re-derivation).
+        # the fork's builders read the source row's already-resolved
+        # reservation names off it — the children ride the source row's cohort
+        # (never a per-item re-derivation).
         "metadata": job.metadata,
     }
     from taskq.workflows.api._runner_errors import WorkflowRunError
@@ -1094,16 +1071,15 @@ async def execute_flow_job(
             run_priority=run_priority,
         )
     except WorkflowRunError as exc:
-        # THE UNRESOLVABLE STEP's parking shape (the deploy matrix's
-        # fleet-crash fix): a step key this process's graph does not
-        # carry (the root marker row, a version-skewed step) raised the
-        # runner's WorkflowRunError — which ESCAPED the door and killed
-        # the worker (the whole fleet died with it, every live run of
-        # the estate stalled behind the corpse). The runner's OWN ladder
-        # owns execution failures; only the RESOLUTION failure escapes,
-        # and that one is the parking's shape — translate it, the
-        # caller's defined snooze/release handles it (the loud, budget-
-        # free parking, never a crash).
+        # the unresolvable step's parking shape: a step key this process's
+        # graph does not carry (the root marker row, a version-skewed step)
+        # raised the runner's WorkflowRunError — which escaped the door and
+        # killed the worker (the whole fleet died with it, every live run of
+        # the estate stalled behind the corpse). The runner's own ladder owns
+        # execution failures; only the resolution failure escapes, and that one
+        # is the parking's shape — translate it, the caller's defined
+        # snooze/release handles it (the loud, budget- free parking, never a
+        # crash).
         raise WorkflowBodyUnresolvableError(
             f"row {job.id}'s step {read['step_key']!r} is unresolvable in this process: {exc}"
         ) from exc

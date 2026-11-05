@@ -1,13 +1,13 @@
 {# The insights page's polled fragment: the full page and the htmx poll
    both render this partial (the queues page's partial-poll pattern), so
    a poll tick never downloads or re-renders the document around it.
-   Six archive-UNION aggregates re-render every tick — the whole reason
-   this page owns its transport is that the meta refresh ran that UNION
+   Six archive-union aggregates re-render every tick — the whole reason
+   this page owns its transport is that the meta refresh ran that union
    stack every interval in real-time mode too. The wrapper carries the
-   poll attributes ONLY in real-time mode - the poll is the realtime
+   poll attributes only in real-time mode - the poll is the realtime
    transport; polling mode keeps the meta refresh as the page's single
    refresh (both firing at once was the double-fetch), so the attributes
-   must not render there. The poll hx-gets the SAME URL the operator is
+   must not render there. The poll hx-gets the same URL the operator is
    on, so the window and per-actor selections survive every tick. #}
 <div id="insights-body" class="space-y-4"
      {% if realtime_mode | default("polling") == "realtime" %}hx-get="{{ base_path }}/insights?window={{ window }}{% if per_actor %}&amp;per_actor=true{% endif %}"
@@ -20,7 +20,7 @@
     <div class="flex flex-wrap items-center gap-4">
       {# The window picker: exactly the closed set the insights module
          declares (INSIGHTS_WINDOWS). There is no all-time entry by
-         design — on hypertables all-time IS the archive retention. #}
+         design — on hypertables all-time is the archive retention. #}
       <nav class="flex gap-1" aria-label="Insights window">
         {% for w in windows %}
         <a href="{{ base_path }}/insights?window={{ w }}{% if per_actor %}&amp;per_actor=true{% endif %}"

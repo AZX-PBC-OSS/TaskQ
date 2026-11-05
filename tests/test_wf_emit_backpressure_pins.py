@@ -1,7 +1,7 @@
 # ruff: noqa: S608  # Why: the schema is a fixture-derived test identifier; every value is $-bound.
 """The emit BACKPRESSURE's pins — the emit cap's decision.
 
-THE DECLARED HOME (the design law — one home): the max-in-flight bound
+The max-in-flight bound
 is the RUN's admission control — how many non-terminal rows the run may
 materialize — a per-workflow resource question, never one chain's shape
 (a workflow may wire several chain sources; a Chain-level arg would make
@@ -15,14 +15,14 @@ capture/redact/channel:
 default is the shipped ``EMIT_MAX_IN_FLIGHT_DEFAULT`` (1000) — the fence
 is ON for the new surface.
 
-THE MECHANISM (the PoC's proven one — the generator's laziness IS the
+the MECHANISM (the PoC's proven one — the generator's laziness IS the
 pause): before the emit tx, the emit admits its WHOLE page — the
 outstanding non-terminal row count (the ledger's truth, one query) plus
 the page's width must fit under the bound, or the pager BLOCKS (a
 bounded poll; no tx, no connection held while waiting). A stall past the
 wait's deadline is the LOUD refusal (:class:`EmitBackpressureTimeoutError`) —
 and the certified ladder owns it: the source re-pends with backoff, the
-re-claim resumes FROM THE CURSOR, and the blocked page emits fresh (it
+re-claim resumes FROM the CURSOR, and the blocked page emits fresh (it
 never ran — nothing was written). The degradation is the dispatch band's
 latency, never unbounded materialization.
 
@@ -64,7 +64,7 @@ from tests.test_wf_emit_tx_pins import (
 if TYPE_CHECKING:
     from taskq.workflows._sql import WorkflowSql
 
-#: THE BOUND the pins declare (a page of 4 cannot fit twice under it)
+#: the bound the pins declare (a page of 4 cannot fit twice under it)
 BOUND = 6
 PAGE = 4
 _PAGES: list[list[int]] = [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]]
@@ -131,7 +131,7 @@ async def drain_one_chain(pool: asyncpg.Pool, wf_sql: WorkflowSql, flow_id: JobI
     return True
 
 
-# ── THE FENCE: the pager blocks at the declared bound ───────────────────
+# ── the fence: the pager blocks at the declared bound ───────────────────
 
 
 @pytest.mark.integration
@@ -142,11 +142,11 @@ async def test_emit_blocks_at_the_declared_bound(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """A fast source, NO worker: page 0 emits (it fits); page 1 does NOT
+    """A fast source, no worker: page 0 emits (it fits); page 1 does not
     fit under the bound (4 outstanding + 4 wide > 6) — the pager BLOCKS
     (the generator's laziness: the body's next fetch never happens), the
     wait is bounded, the stall is the LOUD refusal — and the blocked emit
-    wrote NOTHING (the block is BEFORE the tx). The outstanding count
+    wrote NOTHING (the block is before the tx). The outstanding count
     never exceeds the bound."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     source_id = await make_source(wf_conn, wf_schema, flow_id, wf_sql)
@@ -167,7 +167,7 @@ async def test_emit_blocks_at_the_declared_bound(
     )
     assert await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id) == PAGE
 
-    # Page 1: does NOT fit — the pager blocks, bounded, loudly.
+    # Page 1: does not fit — the pager blocks, bounded, loudly.
     t0 = time.perf_counter()
     with pytest.raises(EmitBackpressureTimeoutError) as excinfo:
         await emit_batch(
@@ -187,8 +187,7 @@ async def test_emit_blocks_at_the_declared_bound(
     assert elapsed >= 1.0, "the emit must have BLOCKED for the wait's term"
     assert str(BOUND) in str(excinfo.value), "the refusal names the bound"
 
-    # THE BLOCK WROTE NOTHING (the block is before the tx): the count
-    # stayed at page 0's — NEVER over the bound.
+    # the count stayed at page 0's — never over the bound.
     after = await outstanding(module_pg_pool, wf_schema, flow_id, exclude=source_id)
     after_children = await committed_children(wf_conn, wf_schema, source_id)
     redlog.red(
@@ -214,7 +213,7 @@ async def test_backpressure_releases_when_workers_drain(
 ) -> None:
     """The bound is a THROTTLE, not a wall: a slow worker draining beside
     the fast source — every emit waits for its admission, then proceeds;
-    the sampled outstanding count NEVER exceeds the bound through the
+    the sampled outstanding count never exceeds the bound through the
     run; all three pages land (12 chains — the spike's zero-re-emitted /
     zero-lost discipline under the bound)."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -277,7 +276,7 @@ async def test_unbounded_emit_is_the_convicted_red(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """The captured red (DH9's obligation): the SAME fast source with the
+    """The captured red (DH9's obligation): the same fast source with the
     bound REMOVED (``max_in_flight=None`` — the explicit unbounded) blows
     the count the bounded pins hold: two pages back-to-back with no
     worker → 8 outstanding against the 6 the bounded variant never
@@ -321,7 +320,7 @@ async def test_page_wider_than_the_bound_is_refused(
     module_pg_pool: asyncpg.Pool,
     wf_sql: WorkflowSql,
 ) -> None:
-    """An admission that can NEVER succeed (a page wider than the bound)
+    """An admission that can never succeed (a page wider than the bound)
     is refused at the door — the loud config error, never a silent
     starve."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -346,13 +345,13 @@ async def test_page_wider_than_the_bound_is_refused(
 
 
 def test_the_default_is_the_fence_on() -> None:
-    """The shipped default is the fence ON (the author opts OUT loudly —
+    """The shipped default is the fence ON (the author opts out loudly —
     ``max_in_flight=None`` is the explicit unbounded, never a silent
     default)."""
     assert EMIT_MAX_IN_FLIGHT_DEFAULT == 1000
 
 
-# ── THE DECLARED HOME: the workflow-level declare, end to end ───────────
+# ── the declared home: the workflow-level declare, end to end ───────────
 
 
 class BpOutcome(enum.Enum):
@@ -380,7 +379,7 @@ async def bp_source(ctx: Any) -> None:
     """The fast source: pages of 2 against the declared bound 3 — pages 1
     and 2 CANNOT fit while their predecessors are live: the pager stalls,
     the loud refusal rides the certified ladder, the resume continues
-    FROM THE CURSOR."""
+    FROM the CURSOR."""
     from taskq.workflows.chain import chain_start
 
     cursor = await ctx.cursor()
@@ -405,11 +404,11 @@ async def test_max_in_flight_is_declared_at_the_workflow(
     wf_sql: WorkflowSql,
     redlog: RedLog,
 ) -> None:
-    """The declared home, end to end: the workflow declares the bound ONCE
+    """The declared home, end to end: the workflow declares the bound once
     (``@app.workflow(..., max_in_flight=…)``); the compile carries it; the
     runner hands it to every ``ctx.emit_batch``; the fast source's stalls
     ride the certified ladder (the loud refusal → the re-pend → the
-    re-claim resumes FROM THE CURSOR → the blocked page emits fresh);
+    re-claim resumes FROM the CURSOR → the blocked page emits fresh);
     the run completes with every chain row exactly once and terminal."""
     from taskq.workflows import FlowRunner, WorkflowApp, build, chain_source
 
@@ -450,9 +449,8 @@ async def test_max_in_flight_is_declared_at_the_workflow(
             "stalls": len({a for _, a in BP_SOURCE_EMIT_LOG}),
         },
     )
-    # THE LADDER CARRIED THE STALLS: pages 1+ could not fit while their
-    # predecessors were live (the single drive loop) — the source's
-    # attempts advanced past the first.
+    # pages 1+ could not fit while their predecessors were live (the single
+    # drive loop) — the source's attempts advanced past the first.
     assert max(a for _, a in BP_SOURCE_EMIT_LOG) > 1, (
         "the source must have stalled on the ladder at least once (the "
         "bound bit) — the throttle's pause is the certified machine's"

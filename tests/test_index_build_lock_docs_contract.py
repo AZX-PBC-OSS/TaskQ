@@ -90,7 +90,7 @@ async def _wait_writer_blocked(
 ) -> bool:
     """Poll pg_stat_activity until the writer INSERT is waiting on a lock.
 
-    Runs on its OWN dedicated connection: the watcher loop above is a
+    Runs on its own dedicated connection: the watcher loop above is a
     second session polling the same server, and two overlapping
     operations on one asyncpg connection raise ``InterfaceError``. The
     query is scoped to the current database (``pg_stat_activity`` is

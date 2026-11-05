@@ -60,14 +60,14 @@ _CONCURRENCY = 8
 _ROUNDS = 6
 # The in-transaction hold (seconds) each terminal transaction pays after
 # its statements, modeling the fleet's post-hook work (event appends +
-# WAL commit) that keeps the holder's row locks until COMMIT. BOTH arms
+# WAL commit) that keeps the holder's row locks until COMMIT. both arms
 # pay it, so the ratio isolates the batches-row lock queue.
 _HOLD_S = 0.005
 # The cost budget: the hook's per-job contended wall may exceed the bare
 # terminal UPDATE's by at most HOOK_BUDGET_MULTIPLE. Derived arithmetic:
 # the fleet profile measured the reset alone at 24x the terminal UPDATE
 # (the defect); post-fix the hook adds only the guarded no-write probe
-# (~0.05 ms) plus complete_batch's never-waiting SKIP LOCKED probe
+# (~0.05 ms) plus complete_batch's never-waiting skip locked probe
 # (0.032 ms measured) to the terminal write, so a same-run budget of 4x
 # the terminal UPDATE holds with ~6x headroom against the documented 24x
 # defect while tolerating any same-run noise that inflates both arms
@@ -89,7 +89,7 @@ def _member_args(actor: str, batch_id: UUID) -> EnqueueArgs:
 
 
 def _loose_args(actor: str) -> EnqueueArgs:
-    """A job with NO batch - its terminal write is the bare-reference arm."""
+    """A job with no batch - its terminal write is the bare-reference arm."""
     return EnqueueArgs(
         id=new_job_id(),
         actor=actor,
@@ -261,7 +261,7 @@ async def test_hook_per_job_wall_is_terminal_update_class_under_contention(
             for row in jobs:
                 queue.put_nowait(row)
 
-            # One DEDICATED connection per worker, like a fleet worker's
+            # One dedicated connection per worker, like a fleet worker's
             # pool slice: a shared pool's checkout queue would tax both
             # arms' wall equally and dilute the ratio this pin measures.
             conns = [await asyncpg.connect(pg_dsn) for _ in range(_CONCURRENCY)]
@@ -410,7 +410,7 @@ async def test_concurrent_failures_still_increment_and_a_success_resets(
 
 async def test_concurrent_all_succeeded_tail_completes_the_batch(pg_dsn: str) -> None:
     """The invariant the guarded reset's de-serialization exposed: with the
-    batch's terminal writers no longer queued on the batches row, the LAST
+    batch's terminal writers no longer queued on the batches row, the last
     member's completion attempt can skip behind a premature peer's row
     hold - and a single-shot skip left an all-terminal batch 'active' until
     the leader sweep. The bounded re-arbitration must land it: after every
@@ -459,7 +459,7 @@ async def test_concurrent_all_succeeded_tail_completes_the_batch(pg_dsn: str) ->
 
 # ── the adversarial review regression pins: the transactional-caller stuck-batch class ──
 #
-# The tail gate's early return is UNORDERED with its caller's own commit: a
+# The tail gate's early return is unordered with its caller's own commit: a
 # writer whose gate probe saw more open members than the tail bound never
 # touched the batches row, so its commit is sequenced against no attempt at
 # all. Two deterministic shapes left an all-terminal batch 'active' with no
@@ -468,7 +468,7 @@ async def test_concurrent_all_succeeded_tail_completes_the_batch(pg_dsn: str) ->
 # on the row):
 #
 # - the burst: a batch whose members' terminal writes overlap enough that
-#   EVERY gate probe sees > _COMPLETE_TAIL_RECHECK_MAX_OPEN open (an 18-member
+#   every gate probe sees > _COMPLETE_TAIL_RECHECK_MAX_OPEN open (an 18-member
 #   batch behind one barrier - each probe counts 17 open);
 # - the late committer: one writer's gate probe runs while its peers are all
 #   open, then its COMMIT outlives every peer's completion statement.
@@ -478,7 +478,7 @@ async def test_concurrent_all_succeeded_tail_completes_the_batch(pg_dsn: str) ->
 # hole: the reissue tracks the batch's own open-member count, so its snapshot
 # postdates every writer's commit, and the last committer's reissue lands.
 # These pins are the deterministic versions of the free-running tail pin above
-# (which passes on timing spread alone) and fail WITHOUT the reissue.
+# (which passes on timing spread alone) and fail without the reissue.
 
 # The reissue polls the open-member count on an adaptive step; the settle
 # window gives it room without ever invoking the leader sweep.
@@ -514,14 +514,14 @@ async def _assert_completes_without_sweep(backend: Any, schema: str, bid: UUID) 
 
 async def test_burst_drain_wider_than_the_tail_bound_still_completes(pg_dsn: str) -> None:
     """The burst shape: every member's gate probe sees N-1 open (> the tail
-    bound), so EVERY attempt gates out and no attempt is ordered after the
+    bound), so every attempt gates out and no attempt is ordered after the
     last commit. The reissue must land the all-terminal batch."""
     schema = f"reset_hotspot_burst_{new_base62()}".lower()
     stack, deps, backend = await _open_pg_backend(pg_dsn, schema_name=schema)
     try:
         members = _COMPLETE_TAIL_RECHECK_MAX_OPEN + 2
         bid, rows = await _seed_running_batch(deps, backend, schema, members)
-        # A dedicated pool: the barrier parks every writer INSIDE its
+        # A dedicated pool: the barrier parks every writer inside its
         # connection, so the shape needs one conn per member up front - the
         # worker pool's integration-test size would deadlock the barrier.
         writer_pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=members)

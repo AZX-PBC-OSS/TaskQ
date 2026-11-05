@@ -193,7 +193,7 @@ async def test_listen_notify_callback_drops_oldest_on_overflow(
 
 
 # ---------------------------------------------------------------------------
-# 9. Sync actor + LOOP-scoped dependency startup warning
+# 9. Sync actor + loop-scoped dependency startup warning
 # ---------------------------------------------------------------------------
 
 

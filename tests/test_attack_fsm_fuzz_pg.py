@@ -4,7 +4,7 @@ atk/fsm-properties).
 The twin state machine (``test_attack_fsm_fuzz.py``) fuzzes the mirror in
 isolation; this module takes the SERIAL-ORDER subset of the same operation
 alphabet - one queue, fixed tokens, no concurrency - draws random plans
-with Hypothesis, and drives the SAME plan through both backends via the
+with Hypothesis, and drives the same plan through both backends via the
 :class:`tests.test_rt_diff_harness.DiffSide` adapter.  Postgres is the
 contract source: ``assert_mirror`` compares every observable token-for-
 token, and each side's snapshot is additionally checked against the same
@@ -34,7 +34,7 @@ pytestmark = pytest.mark.integration
 # ── The drawn plan alphabet ────────────────────────────────────────────
 # Fixed tokens keep the two sides' observables comparable token-for-token;
 # ops on tokens that hold no row (a draw before its enqueue) record
-# "<absent>" and skip - the SAME skip on both sides is itself an observable.
+# "<absent>" and skip - the same skip on both sides is itself an observable.
 
 _TOKENS = ("j1", "j2", "j3")
 _WORKERS = ("w1", "w2")
@@ -106,7 +106,7 @@ async def _exec_op(side: DiffSide, op: Op) -> Any:
             row = await side.mark_failed_or_retry(token, str(op[2]), retry_delay_s=delay)
         except WorkerOwnershipMismatch:
             # The documented fenced-out signal (stale epoch, wrong worker,
-            # or a row that moved): the typed error IS the observable.
+            # or a row that moved): the typed error is the observable.
             return ("fail", token, "mismatch")
         return ("fail", token, row.status)
     if kind == "retry_after":
@@ -171,22 +171,17 @@ def _assert_snapshot_invariants(obs: dict[str, Any]) -> None:
         # (running, running) event (both backends' _write_cancel_escalation
         # spell it identically, the row stays running).
         #
-        # THE EPOCH RESET (the twin's own watermark rule, projected onto a
-        # trail-only snapshot - the twin pins "a terminal state_change
-        # event is the last event of its EPOCH", test_attack_fsm_fuzz.py's
-        # operator_retry raising event_watermark at each re-run): an
-        # operator re-run (retry_job) re-pends the row WITHOUT a
-        # state_change event (the retry_job template's own contract -
-        # "every state a job can come to rest in is a valid source") and
-        # starts a new epoch above the watermark.  A final snapshot
-        # carries no watermark, but the trail itself proves the re-open:
-        # an event's from_state is the row's TRUE pre-state (the event
-        # rides the row's own gated write), so a state_change whose
-        # from_state is NON-terminal after a terminal event is only
-        # writable when the row IS non-terminal again - the silent
-        # re-pend happened, and the scan resets to the new epoch there.
-        # This reset is sound only while retry_job remains the sole
-        # eventless terminal-source writer.
+        # an operator re-run (retry_job) re-pends the row without a
+        # state_change event (the retry_job template's own contract - "every
+        # state a job can come to rest in is a valid source") and starts a new
+        # epoch above the watermark. A final snapshot carries no watermark, but
+        # the trail itself proves the re-open: an event's from_state is the
+        # row's true pre-state (the event rides the row's own gated write), so
+        # a state_change whose from_state is non-terminal after a terminal
+        # event is only writable when the row is non-terminal again - the
+        # silent re-pend happened, and the scan resets to the new epoch there.
+        # This reset is sound only while retry_job remains the sole eventless
+        # terminal-source writer.
         terminal_seen = False
         for e in job["events"]:
             if e["kind"] != "state_change":
@@ -215,10 +210,10 @@ async def test_diff_fsm_serial_plans_mirror_pg(plan: list[Op], pg_dsn: str) -> N
     """A random serial op-plan lands IDENTICALLY on both backends, and each
     side's final snapshot satisfies the state-machine invariants.
 
-    THE FUZZ IS THE DISCOVERY ENGINE, NOT THE PIN: an xfail(strict) on a
+    An xfail(strict) on a
     fuzz draw is a lie — CI's runner draws different plans, never draws
     the counterexample, and the strict marker XPASSes. The rejected counterexample lives in its
-    OWN deterministic replay below: test_the_convicted_reopen_plan."""
+    own deterministic replay below: test_the_convicted_reopen_plan."""
     mem_obs, pg_obs = await run_differential(_plan_scenario(plan), pg_dsn=pg_dsn)
     _assert_snapshot_invariants(mem_obs)
     _assert_snapshot_invariants(pg_obs)
@@ -238,11 +233,11 @@ async def test_the_convicted_reopen_plan(pg_dsn: str) -> None:
     The red-receipted counterexample
     (.measurements/fsm-red/red-20261010-fsm-mirror.txt) held that this plan
     (enqueue, cancel_request, retry_job, cancel_request) "emits a
-    state_change AFTER a terminal event".  The reads decided in the
+    state_change after a terminal event".  The reads decided in the
     invariant's own favor: the retry-after-cancel path's re-pend is the
     retry_job template's DOCUMENTED contract ("every state a job can come
-    to rest in is a valid source") and it deliberately writes NO event -
-    the trail's second pending->cancelled transition is the FIRST terminal
+    to rest in is a valid source") and it deliberately writes no event -
+    the trail's second pending->cancelled transition is the first terminal
     event of the re-pend's NEW epoch, exactly the shape the twin machine
     pins with its per-epoch event_watermark (test_attack_fsm_fuzz.py's
     operator_retry).  The snapshot invariant now carries that epoch reset
@@ -269,7 +264,7 @@ async def _ceiling_repeat_scenario(side: DiffSide) -> None:
     """The smallint ceiling's claim-clamped repeat epoch, serially.
 
     An ``indefinite`` row reclaimed at ``attempt=32767`` is claimed twice at
-    the SAME (clamped) attempt number - the documented repeat (the dispatch
+    the same (clamped) attempt number - the documented repeat (the dispatch
     claim's ``LEAST(j.attempt + 1, 32767)`` saturation comment).  Between
     the two claims the row defers with a CONSUMING RetryAfter (an
     indefinite row never exhausts, so the re-pend arm owns it), which
@@ -316,8 +311,8 @@ async def _ceiling_repeat_scenario(side: DiffSide) -> None:
 
 async def test_diff_claim_clamped_ceiling_keeps_first_attempt_row(pg_dsn: str) -> None:
     """FENCE/EPOCH: at the smallint ceiling a clamped repeat claim re-uses
-    the attempt number; the attempt ledger keeps the FIRST record for that
-    ``(job_id, attempt)`` key on BOTH backends (PG's ON CONFLICT DO NOTHING
+    the attempt number; the attempt ledger keeps the first record for that
+    ``(job_id, attempt)`` key on both backends (PG's ON CONFLICT DO NOTHING
     doctrine, quoted on every attempt INSERT)."""
     mem, pg = await run_differential(_ceiling_repeat_scenario, pg_dsn=pg_dsn)
     assert pg["records"]["first_claim"] == ["j1"]

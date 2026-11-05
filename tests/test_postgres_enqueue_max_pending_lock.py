@@ -161,7 +161,7 @@ class _ContendedFakeConn:
 
 
 class _BlackHoleFakeConn(_ContendedFakeConn):
-    """Contended tier whose blocking acquire NEVER returns (network black
+    """Contended tier whose blocking acquire never returns (network black
     hole: the server is unreachable, the statement never completes) - only
     the client-side wait_for backstop can bound this."""
 
@@ -225,10 +225,10 @@ class TestMaxPendingLockBoundedWaitUnit:
         assert conn.try_lock_calls == 1
         assert conn.savepoint_opens == 1
         assert conn.blocking_lock_calls == 1
-        # Only the SET ran: the timeout raised before the restore, and the
+        # Only the set ran: the timeout raised before the restore, and the
         # savepoint ROLLBACK undoes the GUC set itself (a restore statement
         # after the failed acquire would hit "current transaction is
-        # aborted") - the restore-before-RELEASE is the SUCCESS path's job.
+        # aborted") - the restore-before-release is the success path's job.
         assert conn.set_config_values == ["100ms"]
 
     async def test_lock_timeout_logs_warning_event_with_budget(
@@ -236,7 +236,7 @@ class TestMaxPendingLockBoundedWaitUnit:
     ) -> None:
         """The ``max-pending-lock-timeout`` log event carries the actor and
         the expired budget - the observability for an exhaustion that must
-        NOT be silently conflated with a cap rejection."""
+        not be silently conflated with a cap rejection."""
         _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=True)
         with (
@@ -285,7 +285,7 @@ class TestMaxPendingLockBoundedWaitUnit:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Happy-path round-trip parity: an uncontended capped enqueue
-        issues exactly ONE advisory-lock statement (the try-lock) and never
+        issues exactly one advisory-lock statement (the try-lock) and never
         touches the savepoint/GUC machinery - identical to the pre-bound
         statement count, so the redesign costs the common case nothing."""
         recorded = _spy_backpressure(monkeypatch)
@@ -310,7 +310,7 @@ class TestMaxPendingLockBoundedWaitUnit:
     ) -> None:
         """``timeout_ms <= 0`` disables the bound (the unguarded behavior),
         matching the ``lock_timeout`` GUC convention used by migrate.py: a
-        plain blocking acquire with NO savepoint and NO GUC statements -
+        plain blocking acquire with no savepoint and no GUC statements -
         only an unbounded server-side wait reaches the admission."""
         recorded = _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=False)
@@ -474,7 +474,7 @@ class TestMaxPendingLockBoundedWait:
                 start = time.monotonic()
                 with pytest.raises(BackpressureError) as exc_info:
                     # Nested, not comma-joined: asyncio.timeout is an async
-                    # CM. An unbounded acquire would trip the 3 s deadline
+                    # cm. An unbounded acquire would trip the 3 s deadline
                     # and TimeoutError would escape pytest.raises.
                     async with asyncio.timeout(3.0):
                         await _enqueue(
@@ -558,11 +558,11 @@ class TestMaxPendingLockBoundedWait:
                     f"contended acquire must set then restore lock_timeout, saw {counting.sql_log!r}"
                 )
                 # The GUC reads back as the session default inside the
-                # SAME transaction (restore happened before RELEASE).
+                # same transaction (restore happened before release).
                 current = await pool_conn.fetchval("SELECT current_setting('lock_timeout')")
                 assert current == "0", f"stale lock_timeout leaked: {current!r}"
 
-                # Second acquire in the SAME transaction, on a key held
+                # Second acquire in the same transaction, on a key held
                 # for 300 ms > first_budget_ms: with the stale 200 ms
                 # bound this would raise 55P03 at ~200 ms; restored, it
                 # succeeds at ~300 ms.
@@ -586,7 +586,7 @@ class TestMaxPendingLockBoundedWait:
 
     async def test_happy_path_statement_count_parity(self, clean_jobs_app: JobsApp) -> None:
         """Happy-path round-trip parity on real Postgres: an uncontended
-        capped enqueue issues exactly ONE advisory-lock statement (the
+        capped enqueue issues exactly one advisory-lock statement (the
         try-lock fast path) - no savepoint, no GUC round trips - the same
         count as before the bounded-wait redesign."""
         deps = clean_jobs_app.deps

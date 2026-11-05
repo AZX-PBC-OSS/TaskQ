@@ -6,13 +6,13 @@ boundary that had none at all:
 
 - queue names are actually validated where they enter (enqueue and actor
   declaration) - a malformed name silently accepted strands
-  jobs on a queue no worker's ``queue = ANY($1)`` ever matches;
+  jobs on a queue no worker's ``queue = any($1)`` ever matches;
 - the InMemory enqueue mirror rejects a NUL in payload/metadata the same
   way PG's bind-time jsonb guard does, so an app validated against
   InMemory cannot pass a payload the first real PG enqueue rejects;
 - ``JobFilter`` text predicates reject a NUL before they reach a backend
   (``list_jobs`` / ``cancel_where``);
-- ``BatchFilter.limit`` is NOT bounded above (``list_batches`` runs a
+- ``BatchFilter.limit`` is not bounded above (``list_batches`` runs a
   per-batch count join, but ``cursor`` is what reaches a later page);
 - ``ScheduleCreateArgs`` caller text rejects a NUL before the bind;
 - the capacity cache reports ``has_snapshot`` from "has a refresh ever
@@ -63,7 +63,7 @@ async def _hardening_actor(_payload: _Payload) -> None:
 # validation; its only references were static function-parameter
 # annotations, so ``enqueue(..., queue="deafult ")`` or
 # ``@actor(queue=...)`` with a malformed name was silently accepted.
-# The job then landed on a queue no worker's ``queue = ANY($1)`` ever
+# The job then landed on a queue no worker's ``queue = any($1)`` ever
 # matches - stranded pending forever, with no error anywhere.
 
 
@@ -194,7 +194,7 @@ def test_actor_declaration_rejects_colon_in_queue_name() -> None:
 # a ``str`` dataclass field it is documentation - which is exactly how the
 # original bug slipped in. Pin both halves so nobody mistakes the
 # annotation for a chokepoint, and so the alias itself stays wired to the
-# canonical validator when it IS used in a model.
+# canonical validator when it is used in a model.
 
 
 def test_queue_name_annotation_is_inert_on_a_plain_parameter() -> None:
@@ -438,7 +438,7 @@ def test_schedule_create_args_clean_text_still_constructs() -> None:
 
 # ── The capacity cache reports snapshot-ness from refresh success ───────
 #
-# ``has_snapshot = bool(self._rows)`` misread a SUCCESSFUL refresh of an
+# ``has_snapshot = bool(self._rows)`` misread a successful refresh of an
 # empty actor_config table as "no snapshot": the next refresh failure
 # then reported ``has_snapshot=False`` / ``degraded_to_literal=True`` - a
 # false alarm on the metric built to be alertable, and the wrong

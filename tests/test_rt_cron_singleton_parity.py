@@ -335,7 +335,7 @@ class TestSingletonParity:
         the blocker. Both schedules carry the singleton stamp, so without
         the intra-batch gate the batched INSERT would hit
         ``jobs_singleton_uniq`` itself, abort the whole tick and strike
-        BOTH schedules - the trap, re-entered through the batch."""
+        both schedules - the trap, re-entered through the batch."""
         schema = module_pg_schema.schema_name
         settings = cron_settings(schema)
         await seed_actor_config(clean_pg_conn, schema, _SINGLETON_ACTOR)
@@ -512,7 +512,7 @@ class TestMixedBatch:
             next_fire_at=due_slot,
             identity_key="mixed-healthy",
         )
-        # The bootstrap derives a policy for EVERY actor; a flagless policy
+        # The bootstrap derives a policy for every actor; a flagless policy
         # must neither suppress nor stamp anything.
         policies = {
             _SINGLETON_ACTOR: ActorFirePolicy(singleton=True),
@@ -727,7 +727,7 @@ class TestFailureClassification:
 
 
 class TestSuppressionPreservesStreak:
-    """The suppression UPDATE touches ``next_fire_at`` ONLY: a suppressed
+    """The suppression UPDATE touches ``next_fire_at`` only: a suppressed
     slot must neither punish (no strike) nor amnesty (no reset) - a
     schedule carrying a pre-existing failure streak keeps it across a
     suppressed tick, and the streak still counts toward auto-disable."""

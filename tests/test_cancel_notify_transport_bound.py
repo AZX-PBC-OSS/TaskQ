@@ -1,8 +1,8 @@
 """The cancel notify transport's bound — the notify legs and the
 tier's ledger cleanup are bounded client-side.
 
-The law (the same one the HITL listener already declares): THE ROWS ARE
-THE TRUTH, THE NOTIFY IS TRANSPORT — a transport that never answers
+The law (the same one the HITL listener already declares): the ROWS ARE
+the TRUTH, the NOTIFY IS TRANSPORT — a transport that never answers
 must not hold the operator's call, the leader's sweep tick, or the
 tier's own cleanup hostage. The failure class, observed as one
 silently-dead PG socket under a CI runner's weather turning one
@@ -22,9 +22,9 @@ infrastructure event into three failure faces:
    population (tagged, operator-cancel-requested rows) was never
    deleted and the test coroutine never finished.
 3. the sibling scenario — ``ended 'cancelled' (archived=False)``: the
-   zombie rows share the module schema AND the ``sys-req`` tag; the
+   zombie rows share the module schema and the ``sys-req`` tag; the
    successor's leader sweep reclaimed their expired leases and
-   terminalised them with the operator's OWN recorded verdict
+   terminalised them with the operator's own recorded verdict
    (``cancelled``), and the sibling's per-row assert read one of the
    ZOMBIE's rows, not its own.
 
@@ -122,7 +122,7 @@ class _RealThenHangingPool:
     ) -> Any:  # Why: models asyncpg's acquire(timeout=...) signature verbatim - the stand-in doubles the documented dual surface, not a caller's budget knob.
         if self._served < self._real_acquires:
             self._served += 1
-            # asyncpg's acquire() is documented as BOTH awaitable and an
+            # asyncpg's acquire() is documented as both awaitable and an
             # async context manager; the await form is the one
             # _bounded_checkout takes, and the timeout kwarg passes
             # through verbatim either way.
@@ -167,7 +167,7 @@ async def test_write_cancel_request_returns_when_the_notify_transport_never_answ
     try:
         job_id = await create_running_job(conn, schema, new_uuid())
 
-        # The row-write phase (acquire #1) runs against the REAL pool;
+        # The row-write phase (acquire #1) runs against the real pool;
         # the NOTIFY transport's checkout (acquire #2) never answers.
         # The backend's pool accessor is a property over the deps' pool
         # (the hot-reload seam), so the wrapper rides the deps.
@@ -180,7 +180,7 @@ async def test_write_cancel_request_returns_when_the_notify_transport_never_answ
                 timeout=_PIN_WAIT_S,
             )
         finally:
-            clean_jobs_app.deps.worker_pool = real_pool  # type: ignore[reportAttributeAccessIssue]  # Why: the fixture's teardown closes the REAL pool; the wrapper must not survive the test.
+            clean_jobs_app.deps.worker_pool = real_pool  # type: ignore[reportAttributeAccessIssue]  # Why: the fixture's teardown closes the real pool; the wrapper must not survive the test.
         elapsed = time.monotonic() - started
 
         assert committed is True, "the row write committed - the call must report it"
@@ -191,14 +191,14 @@ async def test_write_cancel_request_returns_when_the_notify_transport_never_answ
         await conn.close()
 
 
-# ── pin 2: the tier's settle read fails DESIGNED, never hangs ──────────
+# ── pin 2: the tier's settle read fails designed, never hangs ──────────
 
 
 @pytest.mark.timeout(180)
 async def test_wait_running_fails_designed_when_the_ledger_never_answers() -> None:
     """The hang class under the tier's own settle reads (the front half
     of leg F): a ledger connection that never answers must end at the
-    helper's OWN cap with the DESIGNED assertion ("fewer than N jobs
+    helper's own cap with the DESIGNED assertion ("fewer than N jobs
     claimed"), never consume the scenario's 240s pytest-timeout budget
     on a single unbounded fetch. UNCURED the read hangs forever; FIXED
     every fetch is bounded and the cap decides."""
@@ -227,7 +227,7 @@ async def test_tagged_population_deleted_even_when_the_ledger_conn_died(
     UNBOUNDED cleanup hangs the test's finally (the zombie task) or
     dies with it, and the zombie population (same module schema, same
     tag) contaminates the SIBLING scenario's own population. FIXED the
-    cleanup is bounded and, on a dead ledger connection, retries ONCE
+    cleanup is bounded and, on a dead ledger connection, retries once
     on a FRESH connection: the rows the scenario owns are deleted, and
     the sibling's population stays clean."""
     import asyncpg
@@ -243,7 +243,7 @@ async def test_tagged_population_deleted_even_when_the_ledger_conn_died(
             await create_running_job(conn, schema, worker_id, with_events=False) for _ in range(2)
         ]
         # The helper seeds the row's shape, not its tag; the tag is what
-        # delete_tagged's population IS.
+        # delete_tagged's population is.
         for job_id in seeded:
             await conn.execute(
                 f'UPDATE "{schema}".jobs SET tags = ARRAY[$2::text] WHERE id = $1::uuid',  # noqa: S608  # Why: schema is the fixture's validated identifier; the rest is $-bound.

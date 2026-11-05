@@ -1,17 +1,17 @@
 """The admin surface's edges' pins — the hold surface's
 residues on the admin surface, each fixed and pinned:
 
-- THE WALK BUDGET'S UNIT: ``_bounded_io_projection``'s size budget
+- the WALK BUDGET'S UNIT: ``_bounded_io_projection``'s size budget
   counts the SERVED size (keys + structure + values — the
   json-serialized length's honest proxy), not the string VALUES alone
   (a key-heavy doc's keys rode free: the served text ran ~46k for a
   claimed 1,023, and the panel's own truncation arm fired on top of
   the walk's); the note's number IS that accounting.
-- THE MARKER'S COLLISION: the dict walk's budget-out marker landed on
+- the MARKER'S COLLISION: the dict walk's budget-out marker landed on
   a FIXED key — a doc whose own entry's key equals the marker string
   was OVERWRITTEN; the marker disambiguates with an ordinal suffix
   until unique (the masked-key collision law's own shape).
-- THE LOGOUT CSRF'S REMEDY: the logout 403's detail names the same
+- the LOGOUT CSRF'S REMEDY: the logout 403's detail names the same
   reload remedy the action doors' CSRF refusals carry (the 403 loop's
   other carrier: submit → 403 → submit → 403, forever).
 """
@@ -63,7 +63,7 @@ def test_the_walk_budget_counts_the_served_size_key_heavy_doc() -> None:
 
 
 def test_the_prune_marker_never_overwrites_a_legit_entry() -> None:
-    """The marker's collision: a doc whose OWN entry's key equals the
+    """The marker's collision: a doc whose own entry's key equals the
     marker string keeps that entry — the dict walk's budget-out marker
     disambiguates with an ordinal suffix until unique (the masked-key
     collision law's own shape), never overwrites. Pre-fix red: the
@@ -90,12 +90,12 @@ def test_the_prune_marker_never_overwrites_a_legit_entry() -> None:
     assert _wf_actions._WALK_PRUNED_MARKER + "[2]" in suffixed, suffixed
 
 
-# ── the logout CSRF's remedy (R3, the session door) ──────────────────────
+# ── the logout csrf's remedy (R3, the session door) ──────────────────────
 
 
 def test_the_logout_csrf_403_names_the_reload_remedy() -> None:
     """The 403 loop's other carrier: the logout door's token refusal
-    names the SAME remedy the action doors' CSRF refusals carry — a
+    names the same remedy the action doors' CSRF refusals carry — a
     stale page's only fix is a fresh one, so the 403 self-describes it
     instead of reading as a bug (submit → 403 → submit → 403, forever).
     Pre-fix red: the detail named the mismatch and no remedy."""

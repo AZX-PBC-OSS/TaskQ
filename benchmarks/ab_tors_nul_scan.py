@@ -5,7 +5,7 @@ write. tors is a core dependency (first-party, same org), and the scan IS
 ``tors.contains_unescaped`` (Rust, zero-copy, GIL-released) -- one code
 path. The pure-Python implementation that preceded it is spelled below as
 the timing baseline: carrying tors is justified only while it keeps
-winning against that baseline. This script times BOTH in one process --
+winning against that baseline. This script times both in one process --
 the pure baseline directly and the shipped scan -- so the pair is
 interpreter-fair and the parity of the two verdicts is asserted on every
 timed payload (a speedup on a different answer is worthless).
@@ -40,7 +40,7 @@ import time
 import tors
 
 # pyright: reportPrivateUsage=false
-# Why: the A/B target IS the private seam -- _encoded_has_nul (the shipped
+# Why: the A/B target is the private seam -- _encoded_has_nul (the shipped
 # scan) and _NUL_ESCAPE_BYTES (the needle) are TaskQ's internals.
 from taskq._json import _NUL_ESCAPE_BYTES
 from taskq._json import _encoded_has_nul as _tors_scan

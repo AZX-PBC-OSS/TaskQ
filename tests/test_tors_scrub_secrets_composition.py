@@ -6,7 +6,7 @@ PRE-PASS before its own regex chain, gated on the
 measured differential (``docs/design/tors-adoption-map.md``) cut both
 ways: tors's rule set covers token families TaskQ's chain has no pattern
 for (AWS access keys, Slack/Stripe tokens, GitHub tokens, PEM blocks) --
-but it has NO rule for the shapes TaskQ's chain owns (DSN userinfo and
+but it has no rule for the shapes TaskQ's chain owns (DSN userinfo and
 password parameters, bearer JWTs, OAuth-named tokens, the PG DETAIL
 block), and on those it LEAKS. So the pre-pass can never replace the
 chain; it widens the covered families at ~5 us/op against a ~60 ms
@@ -32,7 +32,7 @@ import pytest
 
 from taskq.obs import _redact_exc as rx
 
-# The combined shape: BOTH layers' families in one exception text - the
+# The combined shape: both layers' families in one exception text - the
 # realistic payload (an actor failing inside boto3 while holding a DSN).
 _COMBINED = (
     "boto3 failed: credentials AKIAIOSFODNN7EXAMPLE rejected; "
@@ -133,7 +133,7 @@ def test_prefilter_arms_on_each_registered_family_head() -> None:
 def test_pem_generic_pkcs8_header_is_a_stated_limit() -> None:
     """tors's PEM rule anchors the KEYED OpenSSL headers (RSA/EC PRIVATE
     KEY); the GENERIC PKCS#8 header (``-----BEGIN PRIVATE KEY-----``,
-    the most common modern export shape) is NOT covered - the pass arms
+    the most common modern export shape) is not covered - the pass arms
     (the prefilter fires) but changes nothing. Pinned as a STATED LIMIT,
     the homoglyph precedent: the day tors covers the generic header,
     this pin flips and the limit's note in the adoption map goes stale

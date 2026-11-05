@@ -57,7 +57,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
         # Backend: without one, the backend-mediated mutation buttons
         # (job cancel, job retry, schedule run-now) render but every one
         # answers 503 "Backend not configured". The client is constructed
-        # against the SAME pool (caller-owned; close() will not close it),
+        # against the same pool (caller-owned; close() will not close it),
         # so the sidecar adds no second connection pool.
         tq = await stack.enter_async_context(
             TaskQ(
@@ -74,12 +74,10 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
             auth_dependency=None,
             base_path="/admin",
             backend=tq.backend,
-            # THE TYPED DOOR'S WITNESS (the demo dead-resolve attack's
-            # cure): the demo's workflow definitions mount so the run
-            # page's Resolve form DELIVERS the typed ReviewDecision.
-            # Without it the resolve endpoints answer 501 — a sidecar
-            # that cannot resolve is a demo that cannot perform its own
-            # central action.
+            # the demo's workflow definitions mount so the run page's Resolve
+            # form delivers the typed ReviewDecision. Without it the resolve
+            # endpoints answer 501 — a sidecar that cannot resolve is a demo
+            # that cannot perform its own central action.
             workflow_app=wf_app,
         )
         setup_admin_state(application, bundle)

@@ -2,7 +2,7 @@
 
 A Deployment's init container runs on every new pod DURING a rolling
 update, while old pods still serve. A bare ``taskq migrate up`` applies
-pre AND post phases together, and post-phase migrations remove structures
+pre and post phases together, and post-phase migrations remove structures
 the old release still needs - reproduced live: after
 ``01.00.03_01:post`` drops the old single-column idempotency index, every
 enqueue from a not-yet-upgraded pod fails with

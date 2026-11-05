@@ -97,12 +97,12 @@ async def _run_until_ready(
     coro_factory: Any,
     ready: Any,
     *,
-    timeout: float = _BOOT_POLL_TIMEOUT,  # noqa: ASYNC109  # Why: the timeout is the poll deadline's bound, not an async-with timeout pattern — the poll loop IS the condition wait.
+    timeout: float = _BOOT_POLL_TIMEOUT,  # noqa: ASYNC109  # Why: the timeout is the poll deadline's bound, not an async-with timeout pattern — the poll loop is the condition wait.
 ) -> None:
     """Run ``_main``-wrapping coroutine until ``ready()`` answers truthy —
     the boot-race fix: poll the CONDITION, never the clock.
 
-    THE BOOT-RACE CLASS: a boot test that
+    A boot test that
     sleeps a fixed 2-4s and then asserts the boot's durable effects (the
     actor_config sync, the worker registration) is sized on a
     quiet box; under a loaded one — a parallel battery, the 10-container
@@ -228,7 +228,7 @@ async def test_metadata_drift_refuses_start(pg_dsn: str) -> None:
     """Metadata drift still refuses startup.
 
     Metadata is the remaining structural field - no operator surface can
-    move it, so any mismatch is a bug. The queue assignment is NOT the
+    move it, so any mismatch is a bug. The queue assignment is not the
     oracle here: it is operator-owned once a row exists (moved by
     `taskq actor-config move-queue`) and a differing literal boots with a
     warning instead - see test_capacity_drift_does_not_block_start and
@@ -416,7 +416,7 @@ async def test_empty_registry_starts_cleanly(pg_dsn: str) -> None:
 
 @pytest.mark.asyncio
 async def test_pool_provider_preregistered_skips_registration(pg_dsn: str) -> None:
-    """When asyncpg.Pool is already registered, _main must NOT attempt to
+    """When asyncpg.Pool is already registered, _main must not attempt to
     register it again - ``register_value`` raises ``ValueError`` on a
     duplicate registration, so a clean bootstrap here proves the guard
     at ``if not registry.has_provider(asyncpg.Pool)`` took the skip path."""
@@ -468,7 +468,7 @@ async def test_ratelimit_sync_failures_logged_and_bootstrap_continues(
     await _cleanup_schema_for(pg_dsn, schema)
 
 
-# ── Clock type guard - non-Clock value registered at PROCESS scope ───
+# ── Clock type guard - non-Clock value registered at process scope ───
 
 
 @pytest.mark.asyncio
@@ -585,7 +585,7 @@ async def test_cancelling_main_terminates_the_worker(pg_dsn: str) -> None:
             await _main(settings)
 
     task = asyncio.create_task(_run())
-    # The cancel must land on a PARKED, fully-booted worker — the pre-cancel
+    # The cancel must land on a parked, fully-booted worker — the pre-cancel
     # state the pin is about. Poll the boot registration (the workers row)
     # instead of a fixed sleep: the fixed 4s window expired before the boot
     # finished under a loaded box, cancelling mid-bootstrap and failing on a

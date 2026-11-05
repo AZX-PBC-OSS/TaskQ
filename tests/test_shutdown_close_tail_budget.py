@@ -260,7 +260,7 @@ def test_release_park_lease_capped_warning_is_silent_at_the_defaults() -> None:
 def test_disown_floor_warning_fires_at_the_defaults_with_the_arithmetic() -> None:
     """The disown residue: 63 needed, 60 shipped: surfaced, not enforced.
 
-    The double-write-failure shape (the RELEASING write AND the consumer's
+    The double-write-failure shape (the RELEASING write and the consumer's
     both failing) leaves the row to lease expiry, and the earliest reclaim
     (last heartbeat + lease) must stay behind the deadline trip + exit
     tail where an outlived actor dies. At the defaults that demands 63

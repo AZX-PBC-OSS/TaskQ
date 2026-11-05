@@ -355,7 +355,7 @@ def _topo_sort_for_actor(
     for root in root_deps:
         _post_order_dfs(root, adjacency, visited, post_order)
 
-    # Why: post-order DFS on "depends-on" edges already produces
+    # Why: post-order dfs on "depends-on" edges already produces
     # dependency-first order (leaf deps first, dependents last);
     # no reversal needed, the "reverse" instruction
     # assumes edges point from deps to dependents, but our adjacency
@@ -477,13 +477,13 @@ def run_validation(
             )
 
     # Why: actors run inside build_actor_scope which creates a
-    # per-invocation TRANSIENT container, the actor body is
-    # TRANSIENT-scoped by construction. Direction rule
+    # per-invocation transient container, the actor body is
+    # transient-scoped by construction. Direction rule
     # applied uniformly: no actor→provider edge can ever raise
-    # ScopeViolation because TRANSIENT (value 3) is the narrowest
+    # ScopeViolation because transient (value 3) is the narrowest
     # scope (DoD item 5).
 
-    # Phase 4b, sync actor + LOOP-scoped dependency advisory warning
+    # Phase 4b, sync actor + loop-scoped dependency advisory warning
     if actors is not None:
         _warn_sync_actor_loop_deps(actors, providers)
 

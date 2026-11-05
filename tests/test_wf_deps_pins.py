@@ -1,11 +1,11 @@
 """The deps seam's pins (the DI capability — SAI migration blocker #1).
 
-The seam's law: bodies need dependencies WITHOUT reaching through ``ctx``
-or module globals. A ``Deps`` dataclass is declared PER APP and bound ONE
+The seam's law: bodies need dependencies without reaching through ``ctx``
+or module globals. A ``Deps`` dataclass is declared PER APP and bound one
 instance at the door — ``WorkflowApp(deps=…)`` (the authoring door) or
 ``FlowRunner(…, deps=…)`` (the direct door; ``run(…, deps=…)`` inherits
 the compiled's binding). A step body OPTS IN by declaring one parameter
-beyond ``ctx`` + the wired sources — the SAME arity discipline E10 owns,
+beyond ``ctx`` + the wired sources — the same arity discipline E10 owns,
 extended honestly: the extra parameter receives the app's bound deps
 instance, and ``validate()``'s E12-deps-contract rule checks the
 DECLARATION against the app's binding at build:
@@ -17,14 +17,14 @@ DECLARATION against the app's binding at build:
 * a true arity mismatch (two params beyond the wiring, no deps shape)
   stays E10's.
 
-The bound instance is THE instance: the step bodies, the map's item
+The bound instance is the instance: the step bodies, the map's item
 children, the loop driver's bodies, and the hold-wake's re-execution all
-receive the SAME object (bound once at the door, never re-minted per
+receive the same object (bound once at the door, never re-minted per
 claim). The runner never inspects it — ``object`` through the runner, the
 TYPING proven at the decoration (E12's isinstance), no ``Any``, no
 getattr-strings.
 
-THE LANDMINE (named, test-scope): the InMemoryBackend has NO workflow
+LANDMINE (named, test-scope): the InMemoryBackend has no workflow
 execution surface — the deps seam's test face is the REAL ``FlowRunner``
 against the pg fixtures (the zero-workflow-surfaces fact stays named here
 so a future in-memory workflow runner inherits the seam's law, not a
@@ -115,7 +115,7 @@ async def test_happy_path_di_the_bound_instance_flows(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """A step body declaring ``(ctx, params, deps)`` receives the app's
-    bound instance — THE instance (identity), never a copy, never a
+    bound instance — the instance (identity), never a copy, never a
     re-mint — and the run terminals with the body's typed result."""
     SEEN.clear()
     deps = EnrichDeps(marker="happy")
@@ -134,7 +134,7 @@ async def test_happy_path_di_the_bound_instance_flows(
 
 
 async def test_map_child_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.Pool) -> None:
-    """The map's item children receive the SAME deps instance (the app's,
+    """The map's item children receive the same deps instance (the app's,
     bound once) — every child, every re-run."""
     SEEN.clear()
     deps = EnrichDeps(marker="map")
@@ -155,7 +155,7 @@ async def test_map_child_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.P
 
 
 async def test_loop_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.Pool) -> None:
-    """The loop driver's body receives the SAME deps instance — every
+    """The loop driver's body receives the same deps instance — every
     iteration."""
     SEEN.clear()
     deps = EnrichDeps(marker="loop")
@@ -173,7 +173,7 @@ async def test_loop_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.Pool) 
 
 async def test_hold_wake_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.Pool) -> None:
     """The hold's resume RE-EXECUTES the body from the top — the wake's
-    execution receives the SAME deps instance the first attempt saw."""
+    execution receives the same deps instance the first attempt saw."""
 
     class Approval(BaseModel):
         verdict: str
@@ -210,7 +210,7 @@ async def test_hold_wake_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.P
     assert holds
     resolved = await client.resolve(holds[0].hold_id, {"verdict": "approve"})
     assert resolved.status == "delivered"
-    # the wake re-executed the body with the SAME instance — and the
+    # the wake re-executed the body with the same instance — and the
     # wake's Report terminalizes the run (drive to terminal).
     assert await runner.drive(flow_id) == "terminal"
     assert [deps, deps] == SEEN
@@ -220,7 +220,7 @@ async def test_hold_wake_di_the_same_instance(wf_schema: str, wf_pool: asyncpg.P
 
 
 def test_e12_refuses_deps_declared_where_the_app_binds_none() -> None:
-    """A body declaring the deps shape where the app binds NO deps is
+    """A body declaring the deps shape where the app binds no deps is
     the E12 refusal AT BUILD — the message names the fix."""
     app = WorkflowApp()  # no deps bound
 
@@ -255,9 +255,9 @@ def test_e12_refuses_the_type_mismatch() -> None:
 
 
 def test_e10_still_owns_the_true_arity_mismatch() -> None:
-    """Two params beyond the wiring is NOT a deps shape — E10's refusal
-    stands (the deps contract is ONE extra parameter, the last; an
-    unsatisfied ONE-param-extra declaration is E12's mismatch, not
+    """Two params beyond the wiring is not a deps shape — E10's refusal
+    stands (the deps contract is one extra parameter, the last; an
+    unsatisfied one-param-extra declaration is E12's mismatch, not
     E10's)."""
 
     async def too_many(ctx: StepContext, params: Ingest, extra: str, more: str) -> Report:
@@ -276,7 +276,7 @@ def test_e10_still_owns_the_true_arity_mismatch() -> None:
 
 
 def test_e12_owns_the_unsatisfied_single_extra_param() -> None:
-    """ONE param beyond the wiring whose declared type the bound
+    """one param beyond the wiring whose declared type the bound
     instance does not satisfy — E12's mismatch (the deps shape read),
     never E10's count."""
 
@@ -343,7 +343,7 @@ async def test_runner_door_binds_deps_and_overrides_the_binding(
         a = step(_deps_body, Ingest(doc_id="d1"), key="a")
         return build(a)
 
-    # WITHOUT any binding at the app: the E12 refusal at the get() door
+    # without any binding at the app: the E12 refusal at the get() door
     # (covered by its own pin) — the compile never reaches a runner.
     bare = WorkflowApp()
 
@@ -355,7 +355,7 @@ async def test_runner_door_binds_deps_and_overrides_the_binding(
     with pytest.raises(WorkflowValidationError, match="E12-deps-contract"):
         bare.get("deps_runner_bare_flow")
 
-    # WITH the runner's explicit binding: the door's instance wins.
+    # with the runner's explicit binding: the door's instance wins.
     runner = FlowRunner(app.get("deps_runner_door_flow"), wf_pool, wf_schema, deps=runner_deps)
     flow_id = (await runner.create_flow()).flow_id
     assert await runner.drive(flow_id) == "terminal"

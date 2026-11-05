@@ -3,7 +3,7 @@ pins (integration: real PG, the real engine surfaces).
 
 The soak's evidence (REPORT-D2-soak): a SIGKILL during a HELD loop leaves
 a node row pending + ``metadata.hold`` stamped whose hold row is no longer
-``'held'`` — the claimable fence ``AND NOT metadata ? 'hold'`` then
+``'held'`` — the claimable fence ``and not metadata ? 'hold'`` then
 excludes it FOREVER; TWENTY runs sat wedged at close, unclaimable,
 undetected, unnamed. And the delivered ``wf_outbox`` population grew
 monotonically forever — no retention law touched it.
@@ -137,7 +137,7 @@ async def _plant_wedge(
     assert stamped, "fixture broken: the wedge's node row is not pending+stamped"
 
 
-# ── the wedge's paths: every path lands in a NAMED state ────────────────
+# ── the wedge's paths: every path lands in a named state ────────────────
 
 
 async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
@@ -154,7 +154,7 @@ async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
     )
     await _plant_wedge(wf_pool, wf_schema, node_id, hold_id, signal_status="delivered")
 
-    # RED shape on the ungated row: the claimable fence excludes it.
+    # red shape on the ungated row: the claimable fence excludes it.
     claimable = await wf_pool.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND status IN ('pending','scheduled') "
@@ -166,8 +166,8 @@ async def test_delivered_hold_stamp_is_cleared_and_the_run_completes(
     with structlog.testing.capture_logs() as captured:
         cleared = await sweep_hold_stamps(wf_pool, render_workflow_sql(wf_schema))
     assert cleared == 1
-    # THE LOUDNESS LAW: the heal is a NAMED event (nothing detects or
-    # names them — was the soak's half-complaint).
+    # the heal is a named event (nothing detects or names them — was the soak's
+    # half-complaint).
     assert any(e["event"] == "wf-hold-stamp-reclaimed" for e in captured)
 
     verdict = await runner.drive(flow_id, until="terminal", max_ticks=400, tick=0.01)
@@ -265,7 +265,7 @@ async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
 ) -> None:
     """The 20-wedge repro (the soak's own receipt): twenty runs planted in
     the exact wedged end state — mixed delivered (10) / abandoned (5) /
-    absent hold (5) — and ONE reconcile pass leaves ZERO of them in the
+    absent hold (5) — and one reconcile pass leaves ZERO of them in the
     wedge; every run then reaches its named state (resumed-and-completed,
     resumed-and-completed, terminal-failed) and nothing is left pending +
     stamped with a dead hold."""
@@ -286,8 +286,7 @@ async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
     cleared = await sweep_hold_stamps(wf_pool, render_workflow_sql(wf_schema))
     assert cleared == 20, cleared
 
-    # THE WEDGE IS GONE: no row sits pending/scheduled + stamped with a
-    # dead hold.
+    # no row sits pending/scheduled + stamped with a dead hold.
     wedged = await wf_pool.fetchval(
         f'SELECT count(*) FROM "{wf_schema}".jobs j '
         "WHERE j.metadata ? 'hold' AND j.status IN ('pending','scheduled') "
@@ -296,11 +295,11 @@ async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
     )
     assert wedged == 0, f"{wedged} run(s) remain wedged after the reconcile"
 
-    # EVERY run reaches its named state.
+    # every run reaches its named state.
     for fid, _nid, _hid, runner, kind in runs:
         if kind == "absent":
             # The absent-hold path re-mints: the body's re-execution
-            # registers a FRESH hold (a NEW epoch) — a resolve on it
+            # registers a fresh hold (a new epoch) — a resolve on it
             # resumes the run.
             verdict = await runner.drive(fid, until="held", max_ticks=400, tick=0.01)
             assert verdict == "held", (kind, fid)
@@ -316,7 +315,7 @@ async def test_twenty_wedged_runs_all_land_named_terminal_or_resumed(
         assert verdict == "terminal", (kind, fid)
         status = await wf_pool.fetchval(f'SELECT status FROM "{wf_schema}".jobs WHERE id = $1', fid)
         if kind == "abandoned":
-            assert status == "failed", (kind, status)  # the NAMED timeout face
+            assert status == "failed", (kind, status)  # the named timeout face
         else:
             assert status == "succeeded", (kind, status)  # resumed + completed
 

@@ -173,11 +173,11 @@ async def _count_pending_children_by_queue(
     parent_id: JobId,
 ) -> dict[str, int]:
     """The parent's pending children, exact and grouped by queue (the
-    backpressure read's FAN-OUT half), served by the partial index
+    backpressure read's FAN-out half), served by the partial index
     ``jobs_parent_pending_idx`` whose predicate the count's quals repeat
     verbatim.
 
-    ``parent_id`` is a plain column, NO foreign key (see
+    ``parent_id`` is a plain column, no foreign key (see
     01.00.23_01_pre_jobs_parent_id.sql): a purged or never-existed
     parent is the same defined-empty result, the count never joins to
     the parent row.
@@ -211,7 +211,7 @@ async def _get_actor_queues(
     Actor name -> the queue its stored assignment routes to, one row per
     actor. Consumed through the client-side TTL cache beside
     :func:`_get_actor_max_pending` (the same refresh cadence, never per
-    enqueue) so an enqueue can tell whether ANY registered actor routes
+    enqueue) so an enqueue can tell whether any registered actor routes
     to the queue it is writing: a queue absent from the snapshot is one
     no registration ever served, the enqueue-time half of the stranded-
     jobs detection (the leader sweep's ``unserved_queue`` arm is the

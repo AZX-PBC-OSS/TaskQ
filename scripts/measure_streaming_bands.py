@@ -1,15 +1,15 @@
-"""THE STREAMING SOURCE'S BANDS — the perf evidence, re-measured ON THE BUILT
+"""the STREAMING SOURCE'S BANDS — the perf evidence, re-measured ON the BUILT
 CODE (the spike's §7 protocol, the shipped surfaces):
 
-1. THE EMIT TX per page (40 chain starts + edges + the cursor
-   checkpoint, ONE tx — ``taskq.workflows._emit.emit_batch``).
-2. THE REAL certified dispatch band (the backend's own ``_dispatch_batch``
+1. the EMIT TX per page (40 chain starts + edges + the cursor
+   checkpoint, one tx — ``taskq.workflows._emit.emit_batch``).
+2. the REAL certified dispatch band (the backend's own ``_dispatch_batch``
    — the shipped claim SQL, unchanged) at a 200-CHAIN backlog.
 3. The plain-jobs baseline @ 200 (the same queue mechanics, no workflow
    shape) + the ratio.
 4. The 800-row mixed backlog (the depth-invariance probe).
-5. THE CHAIN-STEP FORK tx (the routed finalize: the fenced terminal mark
-   + ONE child + its edge — ``finalize_node`` with the chain's ForkSpec).
+5. the CHAIN-STEP FORK tx (the routed finalize: the fenced terminal mark
+   + one child + its edge — ``finalize_node`` with the chain's ForkSpec).
 
 Raw output: ``.measurements/t20-streaming-bands.json`` (the capture law:
 every run lands a timestamped file beside it). The script is self-contained:
@@ -158,8 +158,7 @@ async def main() -> int:
             BASELINE_QUEUE,
         )
     source_id = new_uuid()
-    # THE CLAIM VIEW (the emit's cursor checkpoint fences on it): ONE
-    # worker id, minted once, written by the seed AND passed to the emit.
+    # one worker id, minted once, written by the seed and passed to the emit.
     worker = new_uuid()
     async with pool.acquire() as conn:
         await conn.execute(
@@ -173,7 +172,7 @@ async def main() -> int:
             json.dumps({"flow_id": str(flow_id)}),
         )
 
-    # ── 1. THE EMIT TX per page ──────────────────────────────────────
+    # ── 1. the emit tx per page ──────────────────────────────────────
     emit_latencies: list[float] = []
     for page in range(args.pages):
         children = page_children(
@@ -232,7 +231,7 @@ async def main() -> int:
     results["dispatch_band_800_mixed"] = await dispatch_band(pool, schema, CHAIN_QUEUE, args.rounds)
 
     # ── 5. the chain-step fork tx (the routed finalize) ──────────────
-    # One chain row claimed + finalized THROUGH the route's one-child
+    # One chain row claimed + finalized through the route's one-child
     # fork: the fenced terminal mark + the child + the edge (tx1), then
     # the guarded decrement (tx2 — no join; the chain has none).
     from taskq.workflows._types import ChildSpec

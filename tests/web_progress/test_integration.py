@@ -105,22 +105,22 @@ async def pool(pg_dsn: str) -> AsyncIterator[asyncpg.Pool]:
 
 @pytest_asyncio.fixture
 async def redis_client(private_redis_url: str) -> AsyncIterator[aioredis.Redis]:
-    # PRIVATE broker (killable_redis_container + redis_url_for, db 0), not the
-    # shared pair: these pins assert pub/sub FANOUT TIMING - stream frames
+    # private broker (killable_redis_container + redis_url_for, db 0), not the
+    # shared pair: these pins assert pub/sub fanout timing - stream frames
     # delivered within bounded windows (overall_timeout, the disconnect
-    # probe's PUBSUB NUMSUB settle). The shared pair's co-tenancy stall band
+    # probe's pubsub numsub settle). The shared pair's co-tenancy stall band
     # lands on exactly that surface: a sibling test's broker-wide stretch
     # delays the fanout past the window and reds the pin with no defect in
     # the code under test (the historical weather class: subscriber wake,
-    # then the ping pins, then attack478's CLIENT PAUSE - each fixed a
+    # then the ping pins, then attack478's client pause - each fixed a
     # single test and the band found the next). A per-test disposable
     # Dragonfly (~1s boot) ends the class by construction: no co-tenants.
     # socket_timeout explicit: redis-py 8's 5s default fires on a fresh
     # connection's handshake read under a loaded runner; the scenario's
     # real bounds are the tests' own overall_timeouts.
     # socket_connect_timeout=TEST_REDIS_CONNECT_TIMEOUT_SECS: the same
-    # loader's DNS/connect band (one observed red on Python 3.13's connect band) - redis-py's 5s
-    # CONNECT default fired mid-getaddrinfo on this fixture's first
+    # loader's dns/connect band (one observed red on Python 3.13's connect band) - redis-py's 5s
+    # connect default fired mid-getaddrinfo on this fixture's first
     # publish; the connect phase is setup weather, not a pin's subject.
     client = aioredis.from_url(
         private_redis_url,
@@ -209,7 +209,7 @@ async def _reap_stream_teardown_tasks(
     *,
     reap_timeout: float = 5.0,
 ) -> None:
-    """Reap every task the SSE interaction minted, INSIDE the call phase.
+    """Reap every task the SSE interaction minted, inside the call phase.
 
     Streaming one SSE response over ``httpx.ASGITransport`` leaves loop
     tasks the test cannot hold a reference to:
@@ -264,7 +264,7 @@ async def _reap_stream_teardown_tasks(
         reference this function holds (including the completed finalizer
         tasks, whose coroutine pins the generator it just closed) dies
         when this frame returns, so the driver's next ``gc.collect()``
-        sees the chain's NEXT generator actually garbage.
+        sees the chain's next generator actually garbage.
         """
         # The shutdown watcher parks forever; it only finishes cancelled.
         # The finalizer tasks are awaited, never cancelled (see above).
@@ -290,7 +290,7 @@ async def _reap_stream_teardown_tasks(
             raise AssertionError("\n".join(lines))
 
     while True:
-        # Release the PREVIOUS wave's task references first: a completed
+        # Release the previous wave's task references first: a completed
         # finalizer task still pins the generator it closed, and a
         # generator still reachable cannot be finalized, so a collect run
         # under it mints nothing and the loop would report a quiescence
@@ -334,22 +334,22 @@ async def _collect_sse_lines(
             ) as client,
             client.stream("GET", path, headers=headers, timeout=read_timeout) as resp,
         ):
-            # Read to EXHAUSTION, never ``break``: breaking out of
+            # Read to exhaustion, never ``break``: breaking out of
             # ``aiter_lines()`` abandons the suspended httpx generator chain
             # (aiter_lines → aiter_text → aiter_bytes → aiter_raw → the
             # stream), which CPython then finalizes through the loop's
             # asyncgen hook one wave per generator - a cascade of
-            # ``async_generator_athrow`` tasks that lands AFTER this helper
+            # ``async_generator_athrow`` tasks that lands after this helper
             # returns and cannot be fully reaped from inside the call (the
             # last waves mint only once the test's own frame dies). Consumed
-            # to exhaustion the chain closes ITSELF: aiter_raw's tail
+            # to exhaustion the chain closes itself: aiter_raw's tail
             # ``await self.aclose()`` runs, every generator ends closed, no
             # finalization task is ever minted. Under ``ASGITransport`` the
             # body is fully buffered before the response is returned, so a
             # terminal stream always reaches EOF (immediately after
             # ``event: done``) and a non-terminating one never does - that
             # case is this function's ``overall_timeout``, whose
-            # cancellation IS the simulated client disconnect.
+            # cancellation is the simulated client disconnect.
             async for line in resp.aiter_lines():
                 lines.append(line)
                 if len(lines) >= max_lines:

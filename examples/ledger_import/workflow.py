@@ -68,7 +68,7 @@ def _burn(seed: str) -> float:
 
 # ── The crash-injection seam (the resume drill's determinism) ────────────
 # LEDGER_CRASH_AT=<n> makes the Nth apply-batch execution hard-exit the
-# process AFTER its upsert committed — the crash class where the driver
+# process after its upsert committed — the crash class where the driver
 # vanishes with some batches terminal and some in flight. Unset: never.
 _apply_executions = 0
 
@@ -130,7 +130,7 @@ async def read_partition(ctx: StepContext, spec: RunInput) -> list[EntryChunk]:
     The spec is WIRED as the node's payload, so the cache address is
     content-keyed: the same feed content hits the cache, a different
     feed misses it. The body records its execution — a cache hit does
-    NOT re-execute the body, which is how the cache drill counts hits.
+    not re-execute the body, which is how the cache drill counts hits.
     """
     await store.record_body_run("read_partition", ctx.node_key, ctx.map_index, None)
 

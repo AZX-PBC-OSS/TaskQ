@@ -68,7 +68,7 @@ def test_a_second_app_registered_after_the_first_projection_is_seen() -> None:
 
 
 def test_the_reset_seam_clears_the_memo_with_the_registry() -> None:
-    """The reset seam clears the registry AND the memo: after a reset the
+    """The reset seam clears the registry and the memo: after a reset the
     next projection is the honest empty one, never the pre-reset
     cohorts of an app no test owns any more."""
     seam.reset_app_registry_for_tests()
@@ -82,7 +82,7 @@ def test_the_reset_seam_clears_the_memo_with_the_registry() -> None:
 
 
 def test_the_compute_paths_lists_are_the_callers_to_mutate() -> None:
-    """The projection's callers own their lists on BOTH paths: the
+    """The projection's callers own their lists on both paths: the
     compute path returns fresh copies too — mutating the first call's
     return never reaches the cache, and the next read (the memo's hit)
     answers from unmutated rows."""

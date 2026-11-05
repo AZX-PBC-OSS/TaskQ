@@ -9,7 +9,7 @@ loop:
   create_task  current pattern: ``create_task(coro)`` + set add +
                ``add_done_callback(set.discard)`` (coroutine body runs later
                on the loop)
-  queue        put the event on an ``asyncio.Queue`` drained by ONE
+  queue        put the event on an ``asyncio.Queue`` drained by one
                pre-started consumer task (per-event cost = ``put_nowait``)
   inline       ``await coro`` directly (the fallback context.py already has)
 
@@ -27,7 +27,7 @@ import asyncio
 import statistics
 import time
 from uuid import (
-    uuid4,  # noqa: TID251  # Why: throwaway ids for scratch benchmark rows; PK B-tree locality is not the variable under test.
+    uuid4,  # noqa: TID251  # Why: throwaway ids for scratch benchmark rows; pk B-tree locality is not the variable under test.
 )
 
 BATCH = 200  # events per batch → ~1-3 ms per timed region

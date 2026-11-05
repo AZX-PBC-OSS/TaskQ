@@ -12,7 +12,7 @@ What each observable pins:
 
 - **The drain statement** - one batched ``DELETE`` against
   ``"{schema}".rate_limit_buckets`` whose predicate is
-  ``bucket_name = ANY($1)`` over the drain's bounded name slice: the
+  ``bucket_name = any($1)`` over the drain's bounded name slice: the
   same statement shape the reservation twin
   (``_RECLAIM_SLICE_DELETE_SQL_TEMPLATE`` in ``ratelimit/reservation.py``)
   uses for ``reservation_slots``, minus the lease guard - a bucket row
@@ -23,7 +23,7 @@ What each observable pins:
   pending rate-limit row with no pending reservation must still run the
   drain, or the reclamation never happens in production.
 - **Live buckets** - a name that re-registered since eviction is
-  dropped from the pending set WITHOUT a statement (a re-activated key
+  dropped from the pending set without a statement (a re-activated key
   owns its row again), and a bucket materialized with no PG pool
   published no row, so its eviction records nothing and the drain
   acquires no connection at all.
@@ -158,7 +158,7 @@ async def _materialize(
     *,
     tenant_id: str,
 ) -> str:
-    """Register a keyed bucket and publish its row WITHOUT acquiring."""
+    """Register a keyed bucket and publish its row without acquiring."""
     return await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]  # Why: materializing a keyed bucket without acquiring, matching test_keyed_reservation_drain_rotation.py's pattern.
         ref,
         _TenantPayload(tenant_id=tenant_id),

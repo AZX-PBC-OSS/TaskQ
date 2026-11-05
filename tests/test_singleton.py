@@ -215,7 +215,7 @@ def _pg_singleton_args(
         # None = immediate: the enqueue SQL stamps the server clock and
         # decides status in the same statement. A Python-clock stamp sits
         # ahead of the database clock by the app-to-DB skew, so the status
-        # CASE can land the row 'scheduled' under load - a race this seed
+        # case can land the row 'scheduled' under load - a race this seed
         # has no reason to take.
         scheduled_at=None,
         metadata={"singleton": True},
@@ -240,7 +240,7 @@ def _pg_non_singleton_args(
         # None = immediate: the enqueue SQL stamps the server clock and
         # decides status in the same statement. A Python-clock stamp sits
         # ahead of the database clock by the app-to-DB skew, so the status
-        # CASE can land the row 'scheduled' under load - a race this seed
+        # case can land the row 'scheduled' under load - a race this seed
         # has no reason to take.
         scheduled_at=None,
         idempotency_key=IdempotencyKey(idempotency_key) if idempotency_key is not None else None,
@@ -692,7 +692,7 @@ async def test_property_singleton_invariant_pg(
                             # None = immediate: the enqueue SQL stamps the server clock and
                             # decides status in the same statement. A Python-clock stamp sits
                             # ahead of the database clock by the app-to-DB skew, so the status
-                            # CASE can land the row 'scheduled' under load - a race this seed
+                            # case can land the row 'scheduled' under load - a race this seed
                             # has no reason to take.
                             scheduled_at=None,
                             metadata={"singleton": True},
@@ -750,7 +750,7 @@ async def test_singleton_collision_retry_after_arms_on_real_pg(
 ) -> None:
     """The singleton preflight collision's retry_after, on the REAL
     preflight: a blocking row with a future schedule_to_close yields a
-    positive retry_after near the deadline; a blocking row with NO
+    positive retry_after near the deadline; a blocking row with no
     deadline yields retry_after=None - there is no recovery time to
     report.
 

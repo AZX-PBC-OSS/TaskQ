@@ -423,12 +423,12 @@ async def test_resolve_keyed_ref_str_enum_key_uses_member_value_not_repr() -> No
         assert name in reg.reservations
 
 
-# ── acquire_for_actor: AND-composition with keyed reservations ──
+# ── acquire_for_actor: and-composition with keyed reservations ──
 
 
 async def test_acquire_for_actor_composes_static_and_keyed_reservations() -> None:
     """A static name and a KeyedReservationRef in the same reservations list are
-    both acquired - AND-composition holds for mixed static/keyed lists.
+    both acquired - and-composition holds for mixed static/keyed lists.
 
     The dynamic reservation is pre-registered here with a FakeClock so that
     resolution reuses it via the existing idempotent-register path (register()
@@ -478,7 +478,7 @@ async def test_acquire_for_actor_composes_static_and_keyed_reservations() -> Non
 
 
 async def test_acquire_for_actor_keyed_only_still_and_composes_with_rate_limit() -> None:
-    """A KeyedReservationRef alongside a rate limit still AND-composes: both acquired."""
+    """A KeyedReservationRef alongside a rate limit still and-composes: both acquired."""
     from taskq.ratelimit.token_bucket import TokenBucket
 
     clock = FakeClock(_START)
@@ -646,7 +646,7 @@ async def test_eviction_reclaims_the_denial_retry_release_wake_event(
         )
         parked[name] = reg.bucket_release_event(name)
 
-    # A fresh (recently used) key denies too: its event must SURVIVE the
+    # A fresh (recently used) key denies too: its event must survive the
     # eviction pass, the pop is scoped to the evicted names, not global.
     fake_time = 1100.0  # 100s later - the s* keys are now idle-stale
     await reg._resolve_reservation_name(
@@ -665,7 +665,7 @@ async def test_eviction_reclaims_the_denial_retry_release_wake_event(
     assert reg._reservation_release_events["session-cap:fresh"] is fresh_event  # pyright: ignore[reportPrivateUsage]
 
     # Public-surface observable: a post-eviction denial on an evicted name
-    # parks on a FRESH event, never the evicted bucket's stale one.
+    # parks on a fresh event, never the evicted bucket's stale one.
     assert reg.bucket_release_event("session-cap:s0") is not parked["session-cap:s0"], (
         "the evicted bucket's stale release-wake event came back: the dict "
         "entry was never reclaimed, every denial on every key ever seen "
@@ -854,7 +854,7 @@ async def test_resolve_typed_res_ref_wrong_model_type_re_validates() -> None:
 
 
 async def test_resolve_typed_res_ref_same_model_type_zero_cost_passthrough() -> None:
-    """A BaseModel payload of the SAME type as ref.payload_type is passed
+    """A BaseModel payload of the same type as ref.payload_type is passed
     directly to key_fn without re-validation - the exact same object (identity
     check)."""
     reg = RateLimitRegistry()

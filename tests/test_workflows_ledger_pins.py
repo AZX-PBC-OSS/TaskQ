@@ -4,8 +4,8 @@ contract, driven against a live Postgres through the REAL engine.
 Method: every pin's rejected variant is made to manifest its dragon (the
 double-run, the two-transaction claim, the replay that launches a second
 run), the red output recorded to ``.measurements/ledger-pin-reds.json``,
-the shipped shape green. The contract the pins state: EXACTLY-ONCE for
-DB-local effects (the ledger claim + the ON CONFLICT path), AT-LEAST-ONCE
+the shipped shape green. The contract the pins state: EXACTLY-once for
+DB-local effects (the ledger claim + the ON CONFLICT path), AT-LEAST-once
 for external effects with the ledger dedup — join/reducer bodies covered
 by the same boundary (a raising reducer rolls tx2 back and the body
 RE-RUNS on re-fire).
@@ -45,7 +45,7 @@ async def test_pin_1_double_run_red_and_memoized_green(
     ledger_redlog: RedLog,
 ) -> None:
     """A step re-delivered gets the recorded result rather than
-    re-executing — the memoized replay through the SHIPPED claim path. THE
+    re-executing — the memoized replay through the SHIPPED claim path. the
     RED is a real mutation of the engine: the memoized lookup's statement
     mutated to return nothing (the replay lookup broken — the ledger
     forgets) and the re-delivery RE-EXECUTES through the very same shipped
@@ -55,10 +55,9 @@ async def test_pin_1_double_run_red_and_memoized_green(
     node_id = new_uuid()
     executions = 0
 
-    # THE SHIPPED CLAIM PATH (the body is guarded by the memoized lookup):
     # the first execution claims (running), the node terminalizes (the
-    # ledger-terminal write rides the finalize), and the re-delivery
-    # returns the recorded result — ONE execution, ever.
+    # ledger-terminal write rides the finalize), and the re-delivery returns
+    # the recorded result — one execution, ever.
     async def claimed_body() -> Any:
         nonlocal executions
         memo = await memoized_step_result(
@@ -88,12 +87,11 @@ async def test_pin_1_double_run_red_and_memoized_green(
     assert replay == {"v": 42}, "the recorded result returns"
     assert executions == 1, "the memoized replay must not re-execute"
 
-    # THE RED — A REAL ENGINE MUTATION: the memoized-lookup statement
-    # mutated to match nothing (the replay lookup broken), the SAME body
-    # re-delivered re-EXECUTES: the double-run dragon, on the shipped path.
-    # The mutated statement rides a copy of the rendered bundle (the
-    # dataclass replace — the engine consumes the same frozen bundle
-    # shape the shipped build returns), the render seam unpatched.
+    # the memoized-lookup statement mutated to match nothing (the replay lookup
+    # broken), the same body re-delivered re-executes: the double-run dragon,
+    # on the shipped path. The mutated statement rides a copy of the rendered
+    # bundle (the dataclass replace — the engine consumes the same frozen
+    # bundle shape the shipped build returns), the render seam unpatched.
     mutated = wf_sql.ledger_memoized.replace(
         "AND status IN ('succeeded', 'failed')", "AND status IN ('no-such-status')"
     )
@@ -123,7 +121,7 @@ async def test_pin_1_double_run_red_and_memoized_green(
     )
 
 
-# ── Pin 2: LOST-COMPLETION-WINDOW (crash between effect and finalize) ───
+# ── Pin 2: lost-completion-window (crash between effect and finalize) ───
 
 
 @pytest.mark.integration
@@ -132,7 +130,7 @@ async def test_pin_2_lost_completion_window(
 ) -> None:
     """Crash between the side-effect and the finalize: the retry CLAIMS
     (the ledger's terminal row is the memoized answer), never re-executes.
-    The re-claim of the SAME (flow, step, attempt) rides the ON CONFLICT
+    The re-claim of the same (flow, step, attempt) rides the ON CONFLICT
     path — one round trip, the same row, the PK blocking every duplicate."""
     flow_id = new_uuid()
     node_id = new_uuid()
@@ -146,9 +144,8 @@ async def test_pin_2_lost_completion_window(
         attempt=1,
     )
     assert claim.status == "running"
-    # THE CRASH: the side effect landed; the finalize (and its ledger
-    # terminal write) did not. The retry re-claims the SAME key 30x
-    # concurrently — one ledger row.
+    # the side effect landed; the finalize (and its ledger terminal write) did
+    # not. The retry re-claims the same key 30x concurrently — one ledger row.
     reclaims = await asyncio.gather(
         *[
             claim_step_ledger(
@@ -172,7 +169,7 @@ async def test_pin_2_lost_completion_window(
     assert all(r.status == "running" for r in reclaims)
 
 
-# ── Pin 3: CONCURRENT-CLAIM (30 reps x 10 concurrent, one winner) ───────
+# ── Pin 3: concurrent-claim (30 reps x 10 concurrent, one winner) ───────
 
 
 @pytest.mark.integration
@@ -211,7 +208,7 @@ async def test_pin_3_concurrent_step_claims_one_winner(
         assert all(c.status == "running" for c in claims)
 
 
-# ── Pin 4: RUN-KEY-REPLAY (G2's arbiter is the rememberer) ──────────────
+# ── Pin 4: run-key-replay (G2's arbiter is the rememberer) ──────────────
 
 
 @pytest.mark.integration
@@ -224,22 +221,21 @@ async def test_pin_4_run_key_replay_one_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two concurrent ``run(key=k)`` — and the sequential replay — produce
-    ONE run row; every caller gets the EXISTING run's id. The '202 + a new
+    one run row; every caller gets the EXISTING run's id. The '202 + a new
     run' variant (the founding incident's rejected shape) reds."""
     flow = FlowStandIn()
     key = "nightly:2026-10-07T03:00:00Z"  # the cron-slot key (G3)
 
-    # THE SHIPPED ARBITER: 10 racing inserts, one key — ONE run row; every
-    # caller gets the same id.
+    # 10 racing inserts, one key — one run row; every caller gets the same id.
     results = await asyncio.gather(
         *[insert_flow_run(module_pg_pool, wf_sql, entry=flow, run_key=key) for _ in range(10)]
     )
     ids = {str(r.flow_id) for r in results}
     created = [r for r in results if r.created]
     assert len(created) == 1, f"exactly one creator, got {len(created)}"
-    assert len(ids) == 1, ids  # every caller sees the SAME run id
+    assert len(ids) == 1, ids  # every caller sees the same run id
 
-    # The SEQUENTIAL replay returns the existing run, never a new one.
+    # The sequential replay returns the existing run, never a new one.
     replay = await insert_flow_run(wf_conn, wf_sql, entry=flow, run_key=key)
     assert not replay.created
     assert replay.flow_id == results[0].flow_id
@@ -251,18 +247,17 @@ async def test_pin_4_run_key_replay_one_run(
     )
     assert int(rows) == 1, "one run row, forever"
 
-    # THE RED — A REAL ENGINE MUTATION: the arbiter's scope reverted to the
-    # bare GLOBAL 'workflow-run' (the pre-F4 shape, the founding incident's
-    # scope): a DIFFERENT flow with the same key is silently deduped onto
-    # THIS flow's run — created=False, someone else's run id, nothing
-    # launched. The shipped per-flow scope greens it (the attack file
-    # keeps the same contract:
+    # the arbiter's scope reverted to the bare global 'workflow-run' (the
+    # pre-F4 shape, the founding incident's scope): a different flow with the
+    # same key is silently deduped onto this flow's run — created=False,
+    # someone else's run id, nothing launched. The shipped per-flow scope
+    # greens it (the attack file keeps the same contract:
     # tests/attack_wf_runkey_scope_collision.py).
     import taskq.workflows.ledger as ledger_module
 
     other = FlowStandIn(name="nightly-prune")
     other.actor = "prune-b"
-    drill_key = "nightly:slot-2"  # a fresh key: BOTH runs must sit under the MUTATED (global) scope for the collision to manifest
+    drill_key = "nightly:slot-2"  # a fresh key: both runs must sit under the mutated (global) scope for the collision to manifest
     monkeypatch.setattr(ledger_module, "run_idempotency_scope", lambda name=None: "workflow-run")
     first_global = await insert_flow_run(wf_conn, wf_sql, entry=flow, run_key=drill_key)
     assert first_global.created
@@ -281,13 +276,13 @@ async def test_pin_4_run_key_replay_one_run(
         "the global-scope mutation must silently dedup the other flow's run "
         "— the red comparator is broken (the scope is load-bearing)"
     )
-    # The SHIPPED scope namespaces per flow: the same key, the OTHER flow,
-    # creates ITS OWN run.
+    # The shipped scope namespaces per flow: the same key, the other flow,
+    # creates its own run.
     shipped = await insert_flow_run(wf_conn, wf_sql, entry=other, run_key=drill_key)
     assert shipped.created, "the per-flow scope lets another flow's run claim its own key"
 
 
-# ── Pin 5: LEDGER-CLAIM-ATOMIC  ───────────────────────────
+# ── Pin 5: ledger-claim-atomic  ───────────────────────────
 
 
 @pytest.mark.integration
@@ -301,23 +296,23 @@ async def test_pin_5_ledger_claim_atomic(
     """The claim and the attempt's ledger ``running`` row in SEPARATE
     transactions — a cancel landing in the window fences NOTHING (the
     attempt isn't on the record yet) and the row appears POST-CANCEL as a
-    phantom ``running``. THE CONTRACT: claim + ledger insert = ONE statement
+    phantom ``running``. the CONTRACT: claim + ledger insert = one statement
     (the shipped shape — the ledger row IS the claim; the phantom the
     window produced is reconciled by the reaper arm, pin 15). The
     two-transaction variant reds."""
     flow_id = await seed_flow(wf_conn, wf_schema)
     node_id = new_uuid()
 
-    # THE CANCEL LANDS FIRST (the flow terminal — the two-transaction
+    # the cancel lands first (the flow terminal — the two-transaction
     # variant's dispatch already committed its node flip; only the ledger
     # write follows, post-cancel).
     await wf_conn.execute(
         f"UPDATE \"{wf_schema}\".jobs SET status = 'cancelled' WHERE id = $1",
         flow_id,
     )
-    # THE REJECTED SHAPE: the post-cancel ledger write lands a 'running'
-    # row on a TERMINAL flow — the phantom (the attempt is on the record
-    # too late to be fenced by the cancel's own scan).
+    # the post-cancel ledger write lands a 'running' row on a terminal flow —
+    # the phantom (the attempt is on the record too late to be fenced by the
+    # cancel's own scan).
     phantom = await claim_step_ledger(
         wf_conn,
         wf_sql,
@@ -338,9 +333,9 @@ async def test_pin_5_ledger_claim_atomic(
     )
     assert flow_status == "cancelled", "the flow terminalized before the ledger write"
 
-    # THE SHIPPED REAPER reconciles the phantom: the record is rows-alone
-    # reconstructible again. The CLAIM's own atomicity (ONE statement: the
-    # ledger row IS the claim — no window to land in) is what prevents NEW
+    # the shipped reaper reconciles the phantom: the record is rows-alone
+    # reconstructible again. The claim's own atomicity (one statement: the
+    # ledger row is the claim — no window to land in) is what prevents new
     # phantoms; the concurrency pin (pin 3) drives that shape 30x10.
     reaped = await reap_phantom_ledger(module_pg_pool, wf_sql)
     assert reaped >= 1, "the phantom is reaped; the record reconciles"
@@ -352,7 +347,7 @@ async def test_pin_5_ledger_claim_atomic(
     assert ledger_status == "fenced", ledger_status
 
 
-# ── Pin 6: LEDGER-TERMINAL-ATOMIC  ────────────────────────
+# ── Pin 6: ledger-terminal-atomic  ────────────────────────
 
 
 @pytest.mark.integration
@@ -365,7 +360,7 @@ async def test_pin_6_ledger_terminal_atomic(
 ) -> None:
     """The ledger's terminal-outcome write OUTSIDE the finalize TX — a
     cancel between the node flip and the ledger write leaves
-    node=succeeded with ledger=running. THE CONTRACT: the ledger terminal write
+    node=succeeded with ledger=running. the CONTRACT: the ledger terminal write
     is IN the finalize TX (the shipped shape: ``_run_tx1`` co-locates
     them). The split-write variant reds."""
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -379,8 +374,8 @@ async def test_pin_6_ledger_terminal_atomic(
         str(flow_id),
     )
 
-    # THE SHIPPED SHAPE: the node's finalize tx1 carries the ledger's
-    # terminal — node and ledger agree, atomically.
+    # the node's finalize tx1 carries the ledger's terminal — node and ledger
+    # agree, atomically.
     claim = await claim_step_ledger(
         wf_conn,
         wf_sql,
@@ -422,7 +417,7 @@ async def test_pin_6_ledger_terminal_atomic(
         "the shipped tx1 co-locates the ledger terminal with the node's"
     )
 
-    # ...the split variant is a REAL ENGINE MUTATION: the ledger's
+    # ...the split variant is a real engine mutation: the ledger's
     # terminal statement mutated to update NOTHING (the write lost — the
     # cancel ate the window); the node terminalized, the ledger did not.
     # The shipped statement greens it (the tx1 co-location above). The
@@ -490,16 +485,16 @@ async def test_pin_6_ledger_terminal_atomic(
     )
 
 
-# ── Pin 7: THE LEDGER PK'S MAP CHILDREN (the arbiter keys map_index) ────
+# ── Pin 7: the ledger PK's map children (the arbiter keys map_index) ────
 
 
 @pytest.mark.integration
 async def test_pin_7_map_children_own_ledger_rows(
     wf_conn: asyncpg.Connection, wf_schema: str, module_pg_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
-    """Two map children of ONE step key (map_index 0 and 1, first attempt
-    each) claim DIFFERENT ledger rows and terminalize WITHOUT overwrite:
-    each replay returns ITS OWN child's result (the iteration ledger's key contract; the
+    """Two map children of one step key (map_index 0 and 1, first attempt
+    each) claim DIFFERENT ledger rows and terminalize without overwrite:
+    each replay returns ITS own child's result (the iteration ledger's key contract; the
     contract — an arbiter omitting map_index — is the RED scenario, the
     shipped statements are what the scenario mutates)."""
     flow_id = new_uuid()
@@ -514,7 +509,7 @@ async def test_pin_7_map_children_own_ledger_rows(
     assert claim_0.ledger_id is not None and claim_1.ledger_id is not None
     assert claim_0.ledger_id != claim_1.ledger_id, "one claim row per map child"
 
-    # Each child's finalize keys the terminal write by ITS OWN claim's
+    # Each child's finalize keys the terminal write by its own claim's
     # RETURNING id (the strongest form) — the outcomes cannot cross.
     for claim, node, res in (
         (claim_0, node_0, {"child": 0}),
@@ -556,9 +551,8 @@ async def test_pin_7_map_children_own_ledger_rows(
     assert replay_0 is not None and replay_0.result == {"child": 0}
     assert replay_1 is not None and replay_1.result == {"child": 1}
 
-    # THE MAP-AWARE FALLBACK (the arbiter-tuple keying): a finalize without
-    # the claim id still keys COALESCE(map_index, -1) — the fallback write
-    # hits ITS OWN map child's row, never the sibling's.
+    # a finalize without the claim id still keys COALESCE(map_index, -1) — the
+    # fallback write hits its own map child's row, never the sibling's.
     node_2 = new_uuid()
     claim_2 = await claim_step_ledger(
         wf_conn, wf_sql, flow_id=flow_id, job_id=node_2, step_key="enrich", map_index=2, attempt=1

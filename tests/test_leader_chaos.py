@@ -290,7 +290,7 @@ async def test_tc2_partition_leader_via_monitor_conn(pg_dsn: str) -> None:
                 deadline = asyncio.get_running_loop().time() + partition_timeout
                 # Why latch on the leadership_lost event instead of polling
                 # is_leader: both watchdog demote branches clear is_leader
-                # and drop the leader conn BEFORE logging, but the election
+                # and drop the leader conn before logging, but the election
                 # loop can re-claim the just-released lock within one
                 # heartbeat, so the is_leader=False window can close between
                 # 0.05s samples under load (observed under -n 4). The log
@@ -369,7 +369,7 @@ async def test_tc3_pg_primary_failover() -> None:
     end), a fresh connection can acquire it, and the maintenance_leader
     row can be UPSERTed.
 
-    The cancel happens AFTER the container stop but BEFORE the restart
+    The cancel happens after the container stop but before the restart
     so that:
     1. The container stop kills the leader's connection (the event
        being tested), releasing the advisory lock.
@@ -438,7 +438,7 @@ async def test_tc3_pg_primary_failover() -> None:
                 await asyncio.to_thread(own_container.stop)
                 await asyncio.sleep(5)
 
-                # Cancel the leader DURING the downtime window - after
+                # Cancel the leader during the downtime window - after
                 # the container stop killed its connection (releasing
                 # the advisory lock) but before the restart, so the
                 # election loop cannot reconnect and re-acquire the
@@ -623,7 +623,7 @@ async def test_tc5_lock_name_collision_never_blocks_election(pg_dsn: str) -> Non
     The lease row is the authority, so a session holding the schema's
     courtesy advisory lock - a stranger on the same name, or a dead peer's
     lingering session - must not stop a pod electing: acquires
-    pg_try_advisory_lock on a raw connection BEFORE starting the leader,
+    pg_try_advisory_lock on a raw connection before starting the leader,
     starts MaintenanceLeader.run, and the pod must still win within a
     heartbeat-scale window, with the courtesy miss logged rather than
     waited on. Releasing the stranger's lock afterwards changes nothing.

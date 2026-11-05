@@ -1,4 +1,4 @@
-"""ATTACK: the poison pill - a job whose EVERY attempt executes fully but
+"""ATTACK: the poison pill - a job whose every attempt executes fully but
 whose TERMINAL write always fails at the last instant.
 
 The poison is one row: the actor body completes (fast, side-effect-free),
@@ -78,7 +78,7 @@ class _PoisonBackend(InMemoryBackend):
     """The injection: the terminal write of the poisoned rows dies with an
     infrastructure error (the connection-drops-mid-commit family,
     ``OSError``, a member of the consumer's
-    ``_TERMINAL_WRITE_INFRA_EXCEPTIONS``) on EVERY call, forever. Every
+    ``_TERMINAL_WRITE_INFRA_EXCEPTIONS``) on every call, forever. Every
     other job - and every non-terminal method of the poisoned rows -
     delegates untouched: the poison is exactly the terminal write."""
 
@@ -289,7 +289,7 @@ async def _drive_to_ceiling(
     row must terminalise within the ceiling, and any more cycles than
     that IS the defect.
     """
-    clock = cast(FakeClock, backend._clock)  # pyright: ignore[reportPrivateUsage]  # Why: the twin's clock is the one every sibling attack test drives; the FakeClock IS the deterministic harness, and `advance` is its own method, not the Clock protocol's.
+    clock = cast(FakeClock, backend._clock)  # pyright: ignore[reportPrivateUsage]  # Why: the twin's clock is the one every sibling attack test drives; the FakeClock is the deterministic harness, and `advance` is its own method, not the Clock protocol's.
     max_cycles = 2 * max(len(worker_ids), 1) + 2
     for cycles, worker_id in enumerate(worker_ids * max_cycles, start=1):
         if cycles > max_cycles:
@@ -565,7 +565,7 @@ async def test_recovery_truth_source_is_the_row_not_a_done_event() -> None:
         e.kind == "state_change" and e.detail.get("to_state") == "succeeded" for e in events
     ), "the forge must be in the event stream for this pin to be non-vacuous"
 
-    # The recovery answers: the ROW is the truth source.
+    # The recovery answers: the row is the truth source.
     clock.advance(_LEASE + timedelta(seconds=1))
     reclaimed = await backend.reclaim_expired_locks(_GRACE, _GRACE)
     assert reclaimed == 1, (
@@ -649,7 +649,7 @@ async def test_fleet_of_100_poison_pills_terminates_bounded_and_healthy() -> Non
         clock.advance(_LEASE + timedelta(seconds=1))
         # The fleet drains a bounded batch at a time, exactly like
         # production: repeat calls until the sweep reports the backlog
-        # drained. The cap is a tripwire: every call moves rows OUT of
+        # drained. The cap is a tripwire: every call moves rows out of
         # 'running', so the drain must end in two calls (the batch
         # default far exceeds 100 rows), never loop.
         for _ in range(4):

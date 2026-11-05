@@ -110,12 +110,12 @@ async def e2e_schema(
         "TASKQ_HEARTBEAT_COMMAND_TIMEOUT": "0.1",
         # 8 s, widened from 3.0 for the same reason the fleet conftest
         # widened its lease (and pg_restart_chaos its own to 10 s): the
-        # lease IS the loop-stall budget for in-flight jobs. Every 0.5 s
+        # lease is the loop-stall budget for in-flight jobs. Every 0.5 s
         # heartbeat tick re-records lock_expires_at = now + lease for
         # running jobs, and the leader sweep (2 s interval) reclaims any
         # running job whose lock expired - so a transient worker-loop
         # stall longer than the lease (full-tier Docker load) reclaims
-        # the LIVE attempt mid-run. Here each capped_worker job sleeps
+        # the live attempt mid-run. Here each capped_worker job sleeps
         # ~1 s and the five jobs run as 3 waves (~3 s of in-flight
         # work), and the strict count assertions below (started == 5,
         # finished == 5) cannot tolerate a mid-run reclaim: a reclaimed

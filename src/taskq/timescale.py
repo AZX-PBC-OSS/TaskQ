@@ -41,7 +41,7 @@ Three tables, each partitioned on its own time column:
   cannot survive (same hypertable rule), so it becomes
   ``UNIQUE (id, finished_at)``. The re-archive guarantee the old primary
   key enforced by accident of uniqueness ("a job id is archived at most
-  once") is enforced instead by an explicit ``NOT EXISTS`` guard in the
+  once") is enforced instead by an explicit ``not EXISTS`` guard in the
   archive write itself (:mod:`taskq.worker._leader_shared`), which is
   what keeps the prune's ghost semantics identical in both modes.
 * ``job_attempts_archive`` on ``started_at``, primary key widened to
@@ -125,14 +125,14 @@ cursor walk) or direct SQL carries the shape in. No production write
 produces one (every terminal arm stamps ``finished_at``, and the prune's
 archive COPY requires it non-NULL in both its candidate and lock-time
 predicates), and TimescaleDB cannot convert the table while they exist:
-the partition column must be NOT NULL, and ``create_hypertable`` with
+the partition column must be not NULL, and ``create_hypertable`` with
 ``migrate_data => TRUE`` aborts on them with NotNullViolationError —
 mid-conversion, after the primary-key drops and the foreign-key drop
 have already committed (the conversion's statements run one per
 transaction on the deploy connection's autocommit), stranding a
 half-converted schema whose archive has no primary key.
 
-So the enable path runs a pre-flight census BEFORE any DDL and refuses
+So the enable path runs a pre-flight census before any DDL and refuses
 loudly with the row count and both remediations (complete the rows —
 ``finished_at = archived_at`` — or discard them), leaving the schema
 byte-identical. The rows are debris, never converted silently: the
@@ -221,13 +221,13 @@ class StorageMode(StrEnum):
     * ``vanilla``: no ``timescaledb`` extension installed. Plain tables;
       retention is TaskQ's row-level sweeps alone. The default mode, and
       fully supported.
-    * ``timescale-tsl``: the extension installed AND the server's
+    * ``timescale-tsl``: the extension installed and the server's
       ``timescaledb.license`` grants the Timescale-license features. The
       full mode: hypertables, the archive tables' columnstore, and the
       policy-driven chunk-drop retention.
     * ``timescale-apache``: the extension installed but the license GUC is
       ``apache`` (either an Apache-2-edition build, or a TSL-capable build
-      configured down to Apache features). Hypertables convert, but BOTH
+      configured down to Apache features). Hypertables convert, but both
       the chunk-drop policies and the columnstore are Timescale-license
       features and are refused by the server — measured on 2.30.1:
       ``add_retention_policy`` and any ``timescaledb.compress*`` option
@@ -241,7 +241,7 @@ class StorageMode(StrEnum):
     TIMESCALE_TSL = "timescale-tsl"
 
 
-#: The capability consequences per mode, ONE line each: the same text
+#: The capability consequences per mode, one line each: the same text
 #: ``taskq doctor`` renders as its first finding family and the seed of
 #: the docs' support matrix. Kept beside the detection code so a change
 #: to a mode's capability (an :func:`enable_hypertables` branch moving,
@@ -383,12 +383,12 @@ async def probe_timescale_capability(conn: asyncpg.Connection) -> TimescaleCapab
         # Measured on PG18 (the 2.30.1 image): examining this GUC is
         # restricted to the pg_read_all_settings role - a restricted
         # role's read raises, missing_ok or not, because the setting
-        # EXISTS. The preload FACT is then unknown, and the guard it
+        # EXISTS. The preload fact is then unknown, and the guard it
         # feeds is advisory: it exists to convert create_hypertable's
         # confusing error into a named one, and the DDL's own error is
         # the loud backstop when the preload really is missing. Reading
         # the unknown as "loaded" keeps the doctor's mode detection (the
-        # mode needs only installed + license - both PUBLIC reads,
+        # mode needs only installed + license - both public reads,
         # measured) working for unprivileged operators, and never blocks
         # a deployment on a privilege gap the DDL would name anyway.
         preload = _TIMESCALE_EXTENSION_NAME
@@ -410,12 +410,12 @@ async def detect_storage_mode(conn: asyncpg.Connection) -> StorageMode:
     matrix both cite, in order:
 
     1. The extension is not installed in this database — ``vanilla``.
-       (Availability is deliberately NOT consulted: a server that offers
+       (Availability is deliberately not consulted: a server that offers
        the extension but has not created it IS a vanilla server to every
        runtime path.)
     2. ``timescaledb.license`` = ``'apache'`` — ``timescale-apache``. This
        is the authoritative signal: the GUC is the extension's own
-       statement of which feature set is in force, and it covers BOTH
+       statement of which feature set is in force, and it covers both
        Apache-edition builds and TSL-capable builds configured down to
        Apache features (``ALTER SYSTEM SET timescaledb.license =
        'apache'``; the GUC cannot be changed inside a running session).
@@ -458,7 +458,7 @@ async def probe_registered_policy_jobs(conn: asyncpg.Connection, schema: str) ->
     they now FAIL on every background run (``sqlerrcode 0A000``, retried
     forever), and the row-level sweeps defer the aged end to them (the
     retention-policy floor), so rows older than their horizon strand. The
-    healthy apache mode registers nothing, so ANY answer here on an
+    healthy apache mode registers nothing, so any answer here on an
     apache-licensed server is downgrade debris. Never raises: a probe or
     permission failure degrades to ``()`` - the doctor is a diagnostic
     and must not crash for it (the disable path's own loud check, which
@@ -493,7 +493,7 @@ def _chunk_interval(retention: timedelta) -> timedelta:
 def _add_unique_constraint_sql(schema: str, table: str, name: str, columns: str) -> str:
     """Idempotent ``ADD CONSTRAINT ... UNIQUE``: no transaction wrapper, so
     every statement of the conversion is independently re-runnable, and
-    Postgres has no ``ADD CONSTRAINT IF NOT EXISTS``."""
+    Postgres has no ``ADD CONSTRAINT IF not EXISTS``."""
     return (
         # Why: schema is _IDENT_RE-validated in enable_hypertables; the table,
         # constraint and column names are module-owned constants, never input.
@@ -530,7 +530,7 @@ async def enable_hypertables(
     re-asserted interval shapes future chunks only: existing chunks keep
     the interval they were created with.
 
-    One data-state refusal runs before ANY DDL (see
+    One data-state refusal runs before any DDL (see
     :func:`_refuse_null_archive_tail`): an archive holding rows whose
     ``finished_at`` is NULL — legacy debris no production write produces —
     is refused loudly with the row count and the remediation, because
@@ -570,7 +570,7 @@ async def enable_hypertables(
     if not _IDENT_RE.match(schema):
         raise ValueError(f"invalid schema name {schema!r}")
     if not settings.timescaledb_hypertables:
-        # The flag gate is the ZERO-SQL contract: a vanilla deployment
+        # The flag gate is the zero-sql contract: a vanilla deployment
         # never reaches the probe below.
         return HypertableReport(converted=(), retention_policies=())
 
@@ -631,7 +631,7 @@ async def enable_hypertables(
     await _convert_archive_tables(conn, schema, settings, converted)
 
     # The mode decides the policy arms, not the other way round. The
-    # full TSL mode adopts the chunk-drop retention AND the columnstore;
+    # full tsl mode adopts the chunk-drop retention and the columnstore;
     # the apache mode cannot adopt either (the server refuses every
     # policy/compression API under its license — measured on 2.30.1),
     # so its hypertables convert bare and retention stays with the
@@ -709,7 +709,7 @@ async def _to_hypertable(
     )
     if is_hypertable:
         # Convergence, not a rewrite: this re-asserts the interval from the
-        # current settings and returns. The interval shapes FUTURE chunks
+        # current settings and returns. The interval shapes future chunks
         # only - existing chunks keep the interval they were created with.
         await conn.execute(
             "SELECT set_chunk_time_interval($1::regclass, $2::interval)",
@@ -729,7 +729,7 @@ async def _to_hypertable(
 
 
 async def _refuse_null_archive_tail(conn: asyncpg.Connection, schema: str) -> None:
-    """The pre-flight census: refuse the conversion BEFORE any DDL when
+    """The pre-flight census: refuse the conversion before any DDL when
     ``jobs_archive`` holds rows whose ``finished_at`` is NULL.
 
     Why this census exists (the NULL tail): ``jobs_archive.finished_at``
@@ -758,16 +758,16 @@ async def _refuse_null_archive_tail(conn: asyncpg.Connection, schema: str) -> No
     would mean inventing a finish timestamp, a silent data-semantics
     rewrite. The house doctrine is a loud refusal: the operator decides
     whether to complete or discard the rows, and the message names the
-    count and both remediations. The census runs before ANY statement of
+    count and both remediations. The census runs before any statement of
     the conversion (see the stranded-state rationale on the raise below)
     so the refusal leaves the schema byte-identical to what the operator
     arrived with. The other two partition columns need no census: both
-    are NOT NULL in the bundled schema, so the NULL shape is
+    are not NULL in the bundled schema, so the NULL shape is
     structurally impossible there.
 
     The stranded-state rationale: the conversion's statements run one per
     transaction on the deploy connection's autocommit. Without this
-    census, the failure surfaced mid-``create_hypertable`` — AFTER the
+    census, the failure surfaced mid-``create_hypertable`` — after the
     foreign-key drop, both primary-key drops, and both unique-constraint
     adds had committed, and after ``job_events`` had converted whole.
     A NotNullViolationError from ``migrate_data`` therefore stranded a
@@ -780,7 +780,7 @@ async def _refuse_null_archive_tail(conn: asyncpg.Connection, schema: str) -> No
     if not await _table_exists(conn, schema, "jobs_archive"):
         return
     if await _is_hypertable(conn, schema, "jobs_archive"):
-        # Already converted: the partition column is NOT NULL now, so the
+        # Already converted: the partition column is not NULL now, so the
         # NULL shape cannot exist and the count query would only scan the
         # archive on every converging re-run. Skip it.
         return
@@ -862,7 +862,7 @@ async def _convert_archive_tables(
     the cascade, see the module docstring. ``jobs_archive``'s PK on ``id``
     widens to ``UNIQUE (id, finished_at)``; the re-archive guarantee the
     bare PK enforced is re-implemented as the archive write's explicit
-    ``NOT EXISTS`` guard, so the prune's ghost semantics do not change.
+    ``not EXISTS`` guard, so the prune's ghost semantics do not change.
 
     Lock windows and one honest gap, same shape as
     :func:`_convert_job_events`: the FK drop and the two pkey drops take
@@ -924,12 +924,12 @@ async def _register_retention_policies(
     ``archive_retention_period`` / ``event_retention_period`` is honored on
     the next deploy instead of leaving the first-registered interval in
     force. ``event_retention_period = timedelta(0)`` is that setting's
-    disable sentinel: keep every event, expressed as NO policy, so the
+    disable sentinel: keep every event, expressed as no policy, so the
     sweep family's zero-means-off polarity carries over.
 
     Two boundaries worth stating where the registration happens:
 
-    * The FIRST registration arms the mid-life backlog: every chunk older
+    * The first registration arms the mid-life backlog: every chunk older
       than the retention interval is drop-eligible immediately, so the
       first background policy run drops the whole aged tail in one sweep
       (potentially GBs of IO) where vanilla mode would have expired it row
@@ -938,7 +938,7 @@ async def _register_retention_policies(
       signal does not cover: migration 01.00.20_02's watermark contract
       (``job_events_prune_state.pruned_through_id``, advanced by the two
       sweep deleters in the same statement that deletes) is not kept here -
-      a chunk drop removes event ids WITHOUT advancing the watermark, so a
+      a chunk drop removes event ids without advancing the watermark, so a
       consumer cursor below the dropped ids reads as safe and loses them
       silently. No watermark advance exists on this path; keep
       ``watch_reclaims`` cursors strictly inside ``event_retention_period``
@@ -1189,7 +1189,7 @@ async def _remove_registered_policies(
     mode: StorageMode,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Remove every registered policy (retention on all three tables,
-    compression on the two archives), idempotently, BEFORE any table
+    compression on the two archives), idempotently, before any table
     surgery; a policy left behind would dangle or re-fire mid-swap.
 
     Returns ``(retention, compression)`` report entries for the policies
@@ -1223,10 +1223,10 @@ async def _remove_registered_policies(
             """,
             schema,
         )
-    except Exception as exc:  # Why: fail-open on the REPORT read only — vanilla Postgres and permission gaps degrade the report, never block the removal.
+    except Exception as exc:  # Why: fail-open on the report read only — vanilla Postgres and permission gaps degrade the report, never block the removal.
         logger.debug("disable_policy_read_failed", schema=schema, error=repr(exc))
         jobs = []
-    # Removal is hypertable-scoped: ``if_exists`` guards a missing POLICY,
+    # Removal is hypertable-scoped: ``if_exists`` guards a missing policy,
     # not a plain TABLE (a second disable run finds plain tables here and
     # must skip them — remove_retention_policy on one errors loudly). The
     # trash name is checked too: a crash between the rename-first swap's
@@ -1274,11 +1274,11 @@ async def _remove_registered_policies(
     if remaining:
         left = [(r["proc_name"], r["hypertable_name"]) for r in remaining]
         if mode is StorageMode.TIMESCALE_APACHE:
-            # The apache-mode arm: the removals above were SKIPPED, never
+            # The apache-mode arm: the removals above were skipped, never
             # attempted - under this license every removal API refuses
             # (measured on 2.30.1), which is also why nothing could have
             # been removed here. The surviving policies are a license
-            # DOWNGRADE's debris (converted under the full TSL license,
+            # downgrade's debris (converted under the full tsl license,
             # then downgraded), and the honest refusal names that: the
             # license is why they are still there, and the license restore
             # is the only way out - nothing under apache can remove them.
@@ -1315,23 +1315,23 @@ async def _remove_registered_policies(
     return retention, compression
 
 
-# The per-table vanilla behavior restores that run UNCONDITIONALLY and
+# The per-table vanilla behavior restores that run unconditionally and
 # idempotently after (or without) a swap, so a disable that crashed
 # mid-swap converges on the re-run. Each guards its own work: the enum
 # retype only when the column still points at the staging schema's type,
-# the sequence re-anchor only to GREATEST(existing state, max(id)) —
+# the sequence re-anchor only to greatest(existing state, max(id)) —
 # never backward past a production sequence's own position.
 
 #: The trash name the rename-first swap gives the retired hypertable
 #: (``ALTER TABLE ... RENAME TO``): metadata-only and instant, and the
-#: moment the rows exist in TWO places. The trash survives — twin-verified
+#: moment the rows exist in two places. The trash survives — twin-verified
 #: — until the swap's last statement, so no crash order strands rows in a
 #: table whose only copy is about to be destroyed.
 _TRASH_SUFFIX = "__hypertable_trash"
 
 #: The per-table natural key deciding whether an orphan copy's rows are
 #: all accounted for in the live table (aliased ``o`` = orphan, ``l`` =
-#: live). A full twin match is the ONLY license the disable path has to
+#: live). A full twin match is the only license the disable path has to
 #: drop a table holding rows.
 _TWIN_MATCH: dict[str, str] = {
     "jobs_archive": "l.id = o.id",
@@ -1340,7 +1340,7 @@ _TWIN_MATCH: dict[str, str] = {
 }
 
 #: The vanilla primary key the restored table will enforce, whose columns
-#: the twin guard keys on. The hypertable's WIDENED uniqueness admits rows
+#: the twin guard keys on. The hypertable's widened uniqueness admits rows
 #: vanilla cannot hold (same id, different partition-column value), so the
 #: swap refuses loudly — before any name moves — when the source carries
 #: duplicates the restored table could never accept.
@@ -1381,13 +1381,13 @@ async def _restore_vanilla_behaviors(conn: asyncpg.Connection, schema: str) -> N
     is the staging one — fresh, never incremented), and the two foreign
     keys (LIKE/move machinery and the drop both leave them off; nothing
     may reference the staging schema that is about to be dropped)."""
-    # jobs_archive.status: the moved table's type must be THIS schema's
+    # jobs_archive.status: the moved table's type must be this schema's
     # enum (identical labels, created from the same migration), or the
     # staging drop would take the column's type with it.
     await _retype_archive_status_if_needed(conn, schema)
     # job_events.id: re-anchor past the restored maximum — forward-only,
     # so a healthy production sequence never regresses. One honest limit
-    # (pinned in _anchor_event_id_sequence): on an EMPTY restored table
+    # (pinned in _anchor_event_id_sequence): on an empty restored table
     # the anchor re-issues the anchor value itself, and a production
     # sequence can sit past the restored max(id) — ids below it that
     # retention already deleted. The next issued id can reuse one
@@ -1398,7 +1398,7 @@ async def _restore_vanilla_behaviors(conn: asyncpg.Connection, schema: str) -> N
     # anchoring forward-only against a table that cannot say which ids
     # below the sequence's own position were already issued and reaped.
     await _anchor_event_id_sequence(conn, schema, floor_table="job_events")
-    # The two foreign keys, byte-exact vanilla names, idempotent DO
+    # The two foreign keys, byte-exact vanilla names, idempotent do
     # blocks (the constraint-name guards are scoped to this schema and
     # table — another schema's same-named constraint must not skip it).
     await conn.execute(
@@ -1421,7 +1421,7 @@ async def _retype_archive_status_if_needed(conn: asyncpg.Connection, schema: str
     idempotent (a no-op when the column already types it, or the table is
     absent).
 
-    This must run BEFORE any ``DROP SCHEMA "{staging}" CASCADE`` that a
+    This must run before any ``DROP SCHEMA "{staging}" CASCADE`` that a
     disable's crash convergence precedes: a crash between the moved-in
     table's arrival and its retype leaves the live ``jobs_archive`` typing
     its ``status`` column with the STAGING schema's enum, and the type
@@ -1451,7 +1451,7 @@ async def _anchor_event_id_sequence(
     GREATEST of the sequence's own state and the floor table's ``max(id)`` —
     forward-only, never backward past a production sequence's own position —
     with the anchor's ``is_called`` flag derived from the floor table's
-    emptiness. The swap calls it BEFORE the rows return (the moved-in table's
+    emptiness. The swap calls it before the rows return (the moved-in table's
     sequence is the staging twin's — fresh, starting at 1, exactly where the
     trash's ids start: a worker's insert in that window would collide) and
     the behavior restore calls it again after (idempotent, forward-only).
@@ -1492,7 +1492,7 @@ async def _refuse_vanilla_key_duplicates(
     (:data:`_VANILLA_KEY`) collides — rows the hypertable's widened
     uniqueness admitted and the restored table's primary key cannot.
 
-    Runs BEFORE the trash rename (before any name moves): the widened
+    Runs before the trash rename (before any name moves): the widened
     constraint is the disable's one unrecoverable mismatch — no ordering
     fixes it, only choosing which of the colliding rows to keep, and that
     choice is the operator's, never a silent dedupe.
@@ -1516,22 +1516,22 @@ async def _absorb_orphan_rows(
     conn: asyncpg.Connection, schema: str, table: str, orphan: str
 ) -> None:
     """Move every *orphan*-table row the live ``{schema}.{table}`` is
-    missing into it, verify EVERY orphan row then has a live twin (the
+    missing into it, verify every orphan row then has a live twin (the
     per-table natural key — :data:`_TWIN_MATCH`), and only then drop the
     orphan.
 
-    The disable path's ONE drop rule: never destroy a table containing
+    The disable path's one drop rule: never destroy a table containing
     rows whose live twin is missing. The insert is twin-guarded, so a
     re-run converges instead of duplicating; the post-insert re-check is
     the proof that turns the drop into a no-loss statement. The proof is
     serialized: an ``IN EXCLUSIVE MODE`` lock on the orphan is taken
-    BEFORE the final twin check, in the same transaction as the check and
+    before the final twin check, in the same transaction as the check and
     the drop, so a worker commit cannot land on the orphan between the
     count and the drop (renames do not rebind OIDs — see the inline
     comment).
     """
     # The live table may have moved in moments ago still typing jobs_archive's
-    # status with the staging schema's enum; the orphan's rows carry THIS
+    # status with the staging schema's enum; the orphan's rows carry this
     # schema's type. The retype is idempotent and must precede the insert.
     if table == "jobs_archive":
         await _retype_archive_status_if_needed(conn, schema)
@@ -1545,14 +1545,14 @@ async def _absorb_orphan_rows(
         f'SELECT count(*) FROM "{schema}"."{orphan}" o '  # noqa: S608
         f'WHERE NOT EXISTS (SELECT 1 FROM "{schema}"."{table}" l WHERE {twin})'
     )
-    # The count-then-drop above and below is a TOCTOU window otherwise: a
-    # worker transaction that opened the orphan BEFORE the trash rename can
+    # The count-then-drop above and below is a toctou window otherwise: a
+    # worker transaction that opened the orphan before the trash rename can
     # COMMIT a row into it at any moment (renames do not rebind OIDs — the
     # in-flight writer's relation lock outlives the rename), and a commit
-    # landing between the final twin count and the DROP destroys the row.
-    # ``LOCK TABLE ... IN EXCLUSIVE MODE`` closes it: it conflicts with
+    # landing between the final twin count and the drop destroys the row.
+    # ``lock TABLE ... in exclusive mode`` closes it: it conflicts with
     # ROW EXCLUSIVE (the INSERT/UPDATE/DELETE writers) but not ACCESS SHARE
-    # (readers), and it WAITS OUT any writer already in flight — so once
+    # (readers), and it waits out any writer already in flight — so once
     # held, no commit can land on the orphan between the final count and
     # the drop. Lock, re-check, and drop share one transaction: the disable
     # runs statement-per-transaction on the deploy connection (see
@@ -1584,7 +1584,7 @@ async def _absorb_orphan_rows(
 async def _converge_crashed_swaps(
     conn: asyncpg.Connection, schema: str, staging: str
 ) -> tuple[str, ...]:
-    """Complete any earlier run's crashed per-table swap — BEFORE the
+    """Complete any earlier run's crashed per-table swap — before the
     staging schema is dropped and rebuilt, and before any ``DROP SCHEMA
     CASCADE`` can touch a dependency a crash left dangling.
 
@@ -1641,11 +1641,11 @@ async def _converge_crashed_swaps(
             converged.append(table)
             continue
         if await _table_exists(conn, schema, heap):
-            # No trash: the pre-rename-first ordering died between its DROP
-            # and its SET SCHEMA. The vanilla shape is still in the staging
+            # No trash: the pre-rename-first ordering died between its drop
+            # and its set SCHEMA. The vanilla shape is still in the staging
             # schema when the crash left it there — move it in, drop the
             # staging foreign keys that traveled nowhere yet, absorb the
-            # heap. Without a staging table the heap IS the recovery: it
+            # heap. Without a staging table the heap is the recovery: it
             # renames into place (rows preserved, shape degraded loudly).
             if await _table_exists(conn, staging, table):
                 await conn.execute(f'ALTER TABLE "{staging}"."{table}" SET SCHEMA "{schema}"')
@@ -1751,9 +1751,9 @@ async def _restore_vanilla_table(
 ) -> bool:
     """Swap one hypertable back to its vanilla self. True when swapped.
 
-    RENAME-FIRST, so no order of death loses rows. The vanilla shape is
+    RENAME-first, so no order of death loses rows. The vanilla shape is
     never re-typed: the staging schema holds a fresh application of the
-    bundled migrations, and the swap moves the migrations' OWN table into
+    bundled migrations, and the swap moves the migrations' own table into
     place (``SET SCHEMA`` carries its indexes, constraints, defaults, and
     owned sequence across). The stages:
 
@@ -1767,13 +1767,13 @@ async def _restore_vanilla_table(
        order can strand the table missing anymore.
     3. The migration-built table moves into the freed name, *post_move*
        runs, and the event id sequence re-anchors past the trash's
-       ``max(id)`` BEFORE the rows return (the moved-in sequence is the
+       ``max(id)`` before the rows return (the moved-in sequence is the
        staging twin's — fresh, starting at 1, exactly where the trash's
        ids start; a worker's insert in the window would collide).
-    4. The rows return FROM THE TRASH — the superset: a row committed
+    4. The rows return FROM the TRASH — the superset: a row committed
        between the count-verify and the rename landed in the trash, and
        the twin-guarded insert catches it too — twin-verified against the
-       trash AND the heap (every row must have a live twin), and only
+       trash and the heap (every row must have a live twin), and only
        then are both copies dropped. A crash anywhere in stages 2-4
        leaves every row in at least two places, and the next disable's
        crash convergence (:func:`_converge_crashed_swaps`) finishes the
@@ -1873,7 +1873,7 @@ async def disable_hypertables(
 
     Crash safety is structural, not procedural: a crashed run leaves every
     row in at least two places (the trash and the heap, or the trash and
-    the live table), and the NEXT disable's first act — before any ``DROP
+    the live table), and the next disable's first act — before any ``DROP
     SCHEMA CASCADE``, the one statement that could ever destroy a
     dependency a crash left dangling — is
     :func:`_converge_crashed_swaps`, which finishes every crashed table's
@@ -1893,7 +1893,7 @@ async def disable_hypertables(
         raise ValueError(f"invalid schema name {schema!r}")
     if settings.timescaledb_hypertables:
         # The flag gate, mirrored: the operator flips the flag off
-        # FIRST. A zero-statement no-op, like enable's flag-off path.
+        # first. A zero-statement no-op, like enable's flag-off path.
         return HypertableReport()
 
     capability = await probe_timescale_capability(conn)
@@ -1913,7 +1913,7 @@ async def disable_hypertables(
     )
 
     staging = _vanilla_staging_schema(schema)
-    # Crash convergence FIRST — before any DROP SCHEMA CASCADE (the one
+    # Crash convergence first — before any drop SCHEMA CASCADE (the one
     # statement that could destroy a dependency a crash left dangling, the
     # staging enum type a half-moved jobs_archive still types its status
     # with) and before the migrations rebuild the staging schema: every
@@ -1923,11 +1923,11 @@ async def disable_hypertables(
     # A crashed earlier run's leftovers go last; the convergence above
     # guarantees nothing of value depends on the staging schema (its
     # tables are the migrations' own rowless output — the rows always
-    # live in the trash/heap/live tables of THIS schema). The migrations
+    # live in the trash/heap/live tables of this schema). The migrations
     # rebuild the staging schema from zero below.
     await conn.execute(f'DROP SCHEMA IF EXISTS "{staging}" CASCADE')
     await apply_pending(conn, schema=staging)
-    # The staged tables' foreign keys point at the STAGING schema's own
+    # The staged tables' foreign keys point at the staging schema's own
     # jobs / jobs_archive; dropped here so the moved-in tables carry no
     # reference into a schema that is about to be dropped. The real ones
     # come back against this schema's tables in the behavior restore.

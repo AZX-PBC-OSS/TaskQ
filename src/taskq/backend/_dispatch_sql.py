@@ -20,12 +20,12 @@ UPDATE's join were planned as hash joins over a Seq Scan of every
 pending row, measured 1.04 ms at a 1k backlog degrading to 55.8 ms at
 200k, O(depth) in both time and buffers) and, in the round-robin
 variant, a third time (the candidates lateral's ``ROW_NUMBER`` window
-ran over EVERY due row of the (actor, queue) pair before the
+ran over every due row of the (actor, queue) pair before the
 ``fairness_rank <= residual * oversample`` filter could drop the excess
 , a window function cannot short-circuit, so the WindowAgg paid full
 backlog depth every tick).  The shipped bounds also rendered as
 ``(SELECT ... FROM params)`` subquery LIMITs, which the planner cannot
-fold into row estimates in ANY plan (custom or generic), so the
+fold into row estimates in any plan (custom or generic), so the
 candidate chain was estimated at the whole index range and the estimate
 cascade is what made those whole-backlog hash joins look affordable.
 
@@ -62,7 +62,7 @@ The geometry below pins each stage to the round's own constants:
   two bounds coincide exactly, and a capped actor with residual above
   limit_n is bound by the round's own limit first (its tail drains on
   later rounds, the depth contract's standing rule). The rank cut sits
-  BEFORE identity_dedup deliberately: the shipped window counted
+  before identity_dedup deliberately: the shipped window counted
   identity-duplicate rows, so a post-dedup cut would silently widen it.
 * the per-cohort probes' ordered-walk-vs-bitmap choice is an ESTIMATE
   comparison, and it stays honest only while the cohort-key expression
@@ -90,7 +90,7 @@ The geometry below pins each stage to the round's own constants:
   JIT cascade above), which is why the fix ships as statistics rather
   than as SQL. Pinned by
   tests/test_dispatch_backlog_depth_bound.py's re-pended regime oracle.
-* ``top_ids`` finalizes the LIMIT-ed id set BEFORE the statement
+* ``top_ids`` finalizes the LIMIT-ed id set before the statement
   touches the heap a second time, and ``locked`` then drives ``jobs``
   by primary key through a correlated LATERAL, a materialized CTE is an
   optimization fence: the planner may otherwise choose a nested loop over
@@ -100,11 +100,11 @@ The geometry below pins each stage to the round's own constants:
 * every actor_config readback outside the two capacity CTEs
   (``capped_ranked``, ``sliding_locked``, ``eligible_candidates``, and
   the ``stamp`` UPDATE) is a correlated primary-key LATERAL or a
-  one-shot ``ANY(ARRAY(SELECT ...))`` InitPlan, never a plain join the
+  one-shot ``any(ARRAY(SELECT ...))`` InitPlan, never a plain join the
   planner can serve as a Seq Scan + hash over the whole registry.
 * the per-actor RUNNING count is
   precomputed once per round in the ``capped_running`` CTE over the
-  round's OWN live actors and only those declaring
+  round's own live actors and only those declaring
   ``max_concurrent`` (the driver is ``pa_actors`` plus the re-pended
   arm's ``rr_tail_keys`` actors, never a scan of actor_config), and all
   three former count sites (both capacity CTEs' residuals and
@@ -112,7 +112,7 @@ The geometry below pins each stage to the round's own constants:
   value. The gate is the CASE branch inside ``capped_running``: a
   branch subquery is evaluated only when its branch is taken, so an
   uncapped fleet materializes an empty CTE and does ZERO running-row
-  work per round, and a capped fleet pays ONE bounded count per capped
+  work per round, and a capped fleet pays one bounded count per capped
   live actor (a scan over that actor's running-row partial indexes, the
   planner picks ``jobs_actor_running_idx`` or the
   ``jobs_locked_by_worker_running_idx`` partial at its own cost
@@ -122,7 +122,7 @@ The geometry below pins each stage to the round's own constants:
   running-index rows at caps 5/25/50/100, ~cap/2 after this CTE).
   Pinned by tests/test_dispatch_running_rows_scope_bound.py.
 * the terminal UPDATE re-finds its rows through
-  ``j.id = ANY(ARRAY(SELECT id FROM eligible))``, the id array
+  ``j.id = any(ARRAY(SELECT id FROM eligible))``, the id array
   materializes once as an InitPlan and the ScalarArrayOp is served
   either as a Bitmap Index Scan on the primary key (deep backlogs) or
   as a scan-level filter (shallow ones); both carry at most ``limit_n``
@@ -152,7 +152,7 @@ without a bound, see :data:`DISPATCH_CLAIMABLE_PROBE_SQL`.
 Fairness contract (cross-actor rotation): within a round, selection is
 ``pending_rank`` first, every actor's head job before any actor's
 second, then priority. Across rounds, the remaining tie is broken by
-``actor_config.last_claimed_at ASC NULLS FIRST`` (never-claimed actors
+``actor_config.last_claimed_at ASC NULLS first`` (never-claimed actors
 first, then least-recently-claimed), a durable per-actor stamp the
 claim statement's own ``stamp`` CTE writes for every admitted actor
 (its SKIP LOCKED driver keeps the claim wait-free, a peer mid-claim
@@ -217,7 +217,7 @@ actor on one tenant's saturation.
 Routing contract (the running-job-tail fix for
 :func:`taskq.actor_config_ops.move_actor_queue`): a pending row's
 dispatch routing queue is decided by its ORIGIN.  A row a producer
-placed (``assignment_routed`` false) routes by its OWN ``jobs.queue``
+placed (``assignment_routed`` false) routes by its own ``jobs.queue``
 label, producer placement governs, so a stale producer's post-move
 enqueue to a retired source queue stays served by that queue's
 consumers, and an explicit ``enqueue(queue=...)`` override keeps its
@@ -282,27 +282,27 @@ __all__ = [
 logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 
-# ── THE DISPATCH FENCE (P3 rule 4's second leg) ────────────────────
+# ── the dispatch fence (P3 rule 4's second leg) ────────────────────
 # Cancel = one transaction — the flow flip is the linearization point, and
 # every other statement re-checks flow status inside its own statement.
-# THREE legs ship: the fire guard's flow-status EXISTS, the FINALIZE fence
-# (the terminal-mark CAS), and THIS — the claim's leg. A pending workflow
-# child of a CANCELLED flow (the common population at cancel time: the
+# three legs ship: the fire guard's flow-status EXISTS, the finalize fence
+# (the terminal-mark CAS), and this — the claim's leg. A pending workflow
+# child of a cancelled flow (the common population at cancel time: the
 # fork's children, the not-yet-fired consumers) must not be claimed and
-# must not EXECUTE on a dead flow; ``AND deps_pending = 0`` alone fenced
+# must not execute on a dead flow; ``and deps_pending = 0`` alone fenced
 # only the join-wait rows.
 #
-# THE ASYMMETRY DOCTRINE (why the leg and not a cancel-time re-pend): the
-# leg REFUSES cleanly and the sweep re-derives the truth — a refused claim
+# the asymmetry doctrine (why the leg and not a cancel-time re-pend): the
+# leg refuses cleanly and the sweep re-derives the truth — a refused claim
 # is re-derivable by the maintenance arms, a claimed one is not un-runnable;
-# a cancel TX that re-pended/killed children would over-reject (it would
+# a cancel tx that re-pended/killed children would over-reject (it would
 # have to guess which rows a concurrent fork is about to write) and would
 # widen the cancel transaction's write set. Refusal is the cheap,
 # recoverable direction; that is the asymmetry the doctrine prefers.
 #
-# PLAN SHAPE (serviceable, EXPLAIN-verified): the leg short-circuits
-# on the step_key probe — vanilla rows (step_key IS NULL, the fleet's whole
-# population in the depth oracles) evaluate NO subplan, so the candidate
+# plan shape (serviceable, EXPLAIN-verified): the leg short-circuits
+# on the step_key probe — vanilla rows (step_key is NULL, the fleet's whole
+# population in the depth oracles) evaluate no subplan, so the candidate
 # chain's row-visit counts and the depth contract are unchanged; workflow
 # rows pay one primary-key EXISTS probe each (a bounded per-row probe, the
 # same cost class as the reservation-headroom fold's pkey laterals).
@@ -378,9 +378,9 @@ _WF_DISPATCH_FENCE_TEMPLATE = """\
 """
 
 
-#: The claimable probe's P3-only fence: the probe statement has NO worker
+#: The claimable probe's P3-only fence: the probe statement has no worker
 #: identity (its params are the queue list alone), so the execution leg
-#: has nothing to read — the probe answers "does ANY routable row remain"
+#: has nothing to read — the probe answers "does any routable row remain"
 #: for the round-expansion loop, whose bounded wasted expansions on a
 #: flow row a fenced worker will not claim are the accepted transient the
 #: probe's own docstring already prices (``bound_wasted_work_on_a_
@@ -421,7 +421,7 @@ def _wf_dispatch_fence(alias: str) -> str:
     # and that set), never caller input; every user-controlled value in
     # the statement is $n-bound by the templates this composes into. The
     # escalation step key is the constants home's own (backend and
-    # workflows read ONE constant — the exemption cannot drift from the
+    # workflows read one constant — the exemption cannot drift from the
     # step the loop registers).
     terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
     return (
@@ -436,7 +436,7 @@ def _wf_probe_fence(alias: str) -> str:
     # set renders from statemachine.TERMINAL_STATUSES (the same
     # derivation _wf_dispatch_fence applies — a table alias and that
     # set, never caller input); the escalation-kind exemption renders
-    # from the SAME constant (the two fences may not disagree).
+    # from the same constant (the two fences may not disagree).
     terminal = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
     return (
         _WF_PROBE_FENCE_TEMPLATE.replace("__WF_ALIAS__", alias)
@@ -445,24 +445,20 @@ def _wf_probe_fence(alias: str) -> str:
     )
 
 
-# THE EXECUTION FENCE'S DATA LEG (the capability CTE, named once): the
-# dispatch template composes it after params (the token
-# __WF_EXEC_CAPABLE_CTE__), and the EXPLAIN pins' wrappers compose the
-# SAME constant verbatim — the pins' lateral fragments reference it, and
-# a literalized stand-in in the wrapper would let the pin's plan drift
-# from the production one.
-#
-# THIS round's worker's workflow-execution capability: the workers row's
-# own metadata, stamped at boot by the registration projection's sync
-# (``workflow_execution: true`` iff the process imported flow
-# definitions). One primary-key probe per round, evaluated once as an
-# InitPlan; the read is the VALUE (::boolean), never the key-existence
-# probe (``?``) — the metadata key is stamped on EVERY worker's row
-# (``false`` for the vanilla deployment), so the key's existence proves
-# nothing; the value is the capability. The COALESCE answers the
-# unregistered edge (a row the staleness sweep reaped mid-flight) with
-# the SAFE default — a worker the fleet cannot vouch for is not
-# admitted workflow rows.
+# the dispatch template composes it after params (the token
+# __WF_EXEC_CAPABLE_CTE__), and the EXPLAIN pins' wrappers compose the same
+# constant verbatim — the pins' lateral fragments reference it, and a
+# literalized stand-in in the wrapper would let the pin's plan drift from the
+# production one. this round's worker's workflow-execution capability: the
+# workers row's own metadata, stamped at boot by the registration projection's
+# sync (``workflow_execution: true`` iff the process imported flow
+# definitions). One primary-key probe per round, evaluated once as an InitPlan;
+# the read is the value (::boolean), never the key-existence probe (``?``) —
+# the metadata key is stamped on every worker's row (``false`` for the vanilla
+# deployment), so the key's existence proves nothing; the value is the
+# capability. The COALESCE answers the unregistered edge (a row the staleness
+# sweep reaped mid-flight) with the safe default — a worker the fleet cannot
+# vouch for is not admitted workflow rows.
 _WF_EXEC_CAPABLE_CTE = """\
 wf_exec_capable AS (
   SELECT COALESCE(
@@ -1367,19 +1363,19 @@ RETURNING j.*;
 # recursion replaces it: the seed reads the first cohort key in index
 # order, and each step seeks the next strictly-greater
 # (actor, queue, key) triple with a row-compare Index Cond -- one
-# bounded index seek per DISTINCT COHORT, so the enumeration's work is
+# bounded index seek per DISTINCT cohort, so the enumeration's work is
 # proportional to the number of fairness cohorts in the table, never
 # to any cohort's depth.
 #
 # The recursive term cannot be correlated and cannot reference another
-# CTE, but it CAN read the round's bound parameters, and $1 is the
+# CTE, but it can read the round's bound parameters, and $1 is the
 # queue list -- so the walk scopes itself to the round's own queues
 # rather than enumerating the whole table's cohorts. That scoping is
 # essential, not an optimization: an unscoped walk takes one
 # enumeration step per pending cohort anywhere in the fleet, so a
 # round's cost grows with other teams' cohort counts and every queue's
 # dispatch latency couples to fleet-wide backlog. The predicate also
-# narrows to producer-placed rows (NOT assignment_routed), because this
+# narrows to producer-placed rows (not assignment_routed), because this
 # enumeration feeds only the label-routed arm; re-pended cohorts are
 # walked by rr_tail_keys. The candidates lateral below still joins the
 # result down to each probe's own (actor, queue) pair -- in-memory
@@ -1387,11 +1383,11 @@ RETURNING j.*;
 # own cohort count.
 #
 # COALESCE(fairness_key, '__null__') is the partition identity the
-# whole round-robin path shares (window PARTITION BY, probe equality,
-# and this walk): every unkeyed job forms ONE cohort with any job
+# whole round-robin path shares (window PARTITION by, probe equality,
+# and this walk): every unkeyed job forms one cohort with any job
 # literally keyed '__null__', matching the shipped window semantics
-# exactly. The expression is IMMUTABLE and the index repeats it
-# VERBATIM -- an expression index serves a query only when the query
+# exactly. The expression is immutable and the index repeats it
+# verbatim -- an expression index serves a query only when the query
 # carries the identical expression.
 _RR_KEYS_CTE = """\
 rr_keys AS (
@@ -1427,17 +1423,17 @@ rr_keys AS (
 # recursive loose index scan geometry as rr_keys, at (queue, actor)
 # grain instead of (actor, queue, cohort) grain, riding
 # jobs_queue_actor_dispatch_idx. The queue-leading key order is what
-# makes the walk fleet-clean here: queue = ANY($1) is a ScalarArrayOp
-# on the index's LEADING column, so Postgres drives one index range per
+# makes the walk fleet-clean here: queue = any($1) is a ScalarArrayOp
+# on the index's leading column, so Postgres drives one index range per
 # round queue, and each step's (queue, actor) > (cur.queue, cur.actor)
 # row-compare is an Index Cond within those ranges, one bounded seek
-# per distinct (queue, actor) pair on the ROUND's queues, with zero
+# per distinct (queue, actor) pair on the round's queues, with zero
 # entries visited for queues the round does not poll. (The
 # actor-leading indexes cannot do this: with actor first, the queue
 # predicate degrades to a per-entry filter and the walk reads every
 # fleet actor's index entries between matches.)
 #
-# The index is partial on (status = 'pending' AND NOT
+# The index is partial on (status = 'pending' and not
 # assignment_routed), exactly this walk's population (the label-routed
 # set per_actor_capacity drives from), so a queue holding only
 # re-pended rows costs the walk nothing; re-pended actors enter the
@@ -1471,9 +1467,9 @@ pa_keys AS (
 
 # Two-clock split (same doctrine as taskq.backend._sweeps): the
 # row-selection bounds in the candidates laterals use statement_timestamp()
-# (STABLE) so the planner can serve them as index-level conditions on
+# (stable) so the planner can serve them as index-level conditions on
 # jobs_unrouted_actor_dispatch_idx /
-# jobs_unrouted_round_robin_probe_idx. A VOLATILE
+# jobs_unrouted_round_robin_probe_idx. A volatile
 # clock_timestamp() bound is only ever a post-scan Filter, and a Filter
 # walks every not-yet-due pending row at the head of the index order
 # before it can collect LIMIT due rows: measured on a 20k-row
@@ -1482,7 +1478,7 @@ pa_keys AS (
 # (~5.1 ms) where the stable bound terminates at the range boundary
 # (10 buffers, ~0.04 ms). statement_timestamp() is the statement-start
 # wall clock, for a LIMIT-ed, sub-second snap it is semantically
-# clock_timestamp() evaluated once. The WRITTEN values in the UPDATE
+# clock_timestamp() evaluated once. The written values in the UPDATE
 # (started_at / last_heartbeat_at / lock_expires_at) stay
 # clock_timestamp(): they must stay co-monotonic with the rows this
 # statement writes.
@@ -1557,7 +1553,7 @@ __WF_FENCE__
               WHERE qc.actor = pac.actor AND qc.queue = sq.queue_name)
           ) * $5::int""".replace("__WF_FENCE__", _wf_dispatch_fence("j2"))
 
-# The plain render's candidates lateral: the hole resolved EXACTLY as
+# The plain render's candidates lateral: the hole resolved exactly as
 # DISPATCH_STRICT_FIFO_SQL resolves it (empty), by the same replace the
 # render runs - never a restated resolution. The EXPLAIN pins that probe
 # the standalone fragment against a live planner
@@ -1697,8 +1693,8 @@ __WF_FENCE__
 # sort over every due re-pended row of the actor -- depth-proportional
 # work the depth contract forbids.
 #
-# The two-bound split is the label-routed arm's doctrine: the SCAN bound
-# ($2 * $5) is a foldable parameter expression so the plan's ESTIMATED
+# The two-bound split is the label-routed arm's doctrine: the scan bound
+# ($2 * $5) is a foldable parameter expression so the plan's estimated
 # cost stops tracking the backlog depth (an unfoldable LIMIT is
 # estimated as a fixed fraction of the scanned range, which is what
 # pushed this statement past jit_above_cost at depth), and the outer
@@ -1749,7 +1745,7 @@ __WF_FENCE__
 # bounded probe union exactly as the label-routed arm's does -- one
 # partition per cohort, ranks computed within the cohort, so a
 # re-pended row gets its cohort turn beside never-claimed rows instead
-# of sorting behind them. A cohort carrying BOTH populations produces
+# of sorting behind them. A cohort carrying both populations produces
 # two rank series (the label-routed arm ranks its own probe's rows, this
 # arm ranks its own); ties interleave by priority in the downstream
 # eligible order, and every cohort's rows from both populations are
@@ -1837,9 +1833,9 @@ def _render_dispatch_sql(
     ``cursor_bound`` is the claim cursor's id lower bound fragments: "" for
     the plain renders (byte-identical to the pre-cursor statements, so
     the shipped plan shapes carry zero risk from the cursor's existence)
-    and the ``AND <j2|j>.id >= $6::uuid`` pair for the strict-FIFO cursor
+    and the ``and <j2|j>.id >= $6::uuid`` pair for the strict-FIFO cursor
     render (see DISPATCH_STRICT_FIFO_CURSOR_SQL). The substitutions run
-    LAST so the tokens the fragments carry (the strict candidates
+    last so the tokens the fragments carry (the strict candidates
     lateral's innermost probe, the shared template's has_pending probe)
     resolve in the ASSEMBLED statement, wherever the fragment sat.
 
@@ -1864,7 +1860,7 @@ def _render_dispatch_sql(
         .replace("__QUEUE_CAP_PREFIX_LEN__", str(len(QUEUE_CONCURRENCY_PREFIX)))
         .replace("__QUEUE_CAP_QUEUE_START__", str(len(QUEUE_CONCURRENCY_PREFIX) + 1))
         # The dispatch fence (P3 rule 4's second leg): the laterals arrive
-        # PRE-FENCED (baked at their definitions — the index pins execute
+        # pre-fenced (baked at their definitions — the index pins execute
         # the fragments raw); the template's own sites are the lock steps
         # (alias j2) and the terminal race guard (alias j).
         .replace("__WF_FENCE_J2__", _wf_dispatch_fence("j2"))
@@ -1888,19 +1884,19 @@ DISPATCH_STRICT_FIFO_SQL: str = _render_dispatch_sql(
     eligible_candidates_order_by="l.priority DESC, l.scheduled_at",
 )
 
-# The strict-FIFO claim WITH the claim cursor's id lower bound (the
-# worker-side half of the MVCC-horizon hygiene pair). Identical to
+# The strict-FIFO claim with the claim cursor's id lower bound (the
+# worker-side half of the mvcc-horizon hygiene pair). Identical to
 # DISPATCH_STRICT_FIFO_SQL except the two __CLAIM_CURSOR_BOUND__ sites:
 # the label-routed candidates lateral's innermost probe and the
 # has_pending admission probe both gain `AND j2.id >= $6::uuid` / `AND
 # j.id >= $6::uuid`, where $6 is the worker's per-queue high-water mark
-# of successfully-claimed ids (the OLDEST live cursor among the round's
+# of successfully-claimed ids (the oldest live cursor among the round's
 # queues - one scalar, because the seek only materializes from a
 # plan-constant bound; measured: a per-lateral COALESCE(var) bound stays
 # an Index Cond but loses the Index Searches positioning and lands at
 # naive cost). Re-pended rows and round-robin queues are deliberately
-# EXEMPT: re-pended ids predate the cursor (bounding them would burst
-# every snooze/retry path into per-window batches) and RR cohort
+# exempt: re-pended ids predate the cursor (bounding them would burst
+# every snooze/retry path into per-window batches) and rr cohort
 # fairness is id-order-blind by design. The stranding the bound can
 # cause is bounded by the jitter reset (backend/_claim_cursor.py) and
 # pinned end-to-end in tests/test_dispatch_claim_cursor_pg.py.
@@ -1930,10 +1926,10 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 
 
 # Empty-round arbiter for the window-expansion loop in
-# taskq.backend._dispatch: does ANY pending, dispatch-routable row
+# taskq.backend._dispatch: does any pending, dispatch-routable row
 # remain on the round's queues? The claim statement's candidate window
 # is deliberately bounded (residual * oversample per cohort probe) and
-# its SKIP LOCKED slide ranges only within that materialized window, so
+# its skip locked slide ranges only within that materialized window, so
 # a round whose whole window is row-locked by peers returns empty while
 # deeper rows sit unlocked. Re-running the claim with a widened window
 # is only worth its round trips when rows actually remain, and this
@@ -1941,13 +1937,13 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 # (false, the round stays one statement) versus a locked-out window
 # (true, expand and re-claim).
 #
-# The probe mirrors the candidacy ROUTING contract exactly (the same
+# The probe mirrors the candidacy routing contract exactly (the same
 # two populations the candidates CTE's two arms serve: never-claimed
 # rows matched by their own queue label against the round's
 # subscription, re-pended rows matched by their actor's current
 # assignment) and it shares per_actor_capacity's "has pending" probe
 # semantics: existence of pending rows, nothing more. It deliberately
-# does NOT re-derive admission, no residual arithmetic, no identity
+# does not re-derive admission, no residual arithmetic, no identity
 # anti-join, no due-window predicate. Admission is the claim
 # statement's own job; a probe that re-implemented it would be a second
 # copy of the candidacy logic, and its per-row subqueries would turn
@@ -1958,7 +1954,7 @@ DISPATCH_ROUND_ROBIN_SQL: str = _render_dispatch_sql(
 # before returning empty, bounded wasted work on a transient state,
 # never an unbounded scan.
 #
-# Depth contract: actor_config is read in one pass per EMPTY round
+# Depth contract: actor_config is read in one pass per empty round
 # (bounded by the registered-actor count, and only ever paid by a round
 # that already admitted nothing, the claim statement proper does not
 # scan the registry at all; see per_actor_capacity) and every inner
@@ -2011,8 +2007,8 @@ LIMIT 1
 """.replace("__WF_FENCE_J__", _wf_probe_fence("j"))
 
 
-# The claimable probe WITH the claim cursor's id lower bound: the
-# window-expansion loop's arbiter must see the SAME world the
+# The claimable probe with the claim cursor's id lower bound: the
+# window-expansion loop's arbiter must see the same world the
 # cursor-bounded claim just failed to claim from, or a round whose
 # candidates all sit below the cursor (the bounded-stranding state) would
 # read as a locked-out window, burn its expansion budget re-claiming the
@@ -2089,7 +2085,7 @@ async def dispatch_batch(
     backend-shaped types and is unit-testable in isolation.
 
     *claim_cursor* is the claim cursor's id lower bound for the round;
-    it is ONLY legal when *sql* is a cursor render (the statements that
+    it is only legal when *sql* is a cursor render (the statements that
     carry the ``$6::uuid`` bound), and the caller is responsible for the
     pairing - a mismatch fails fast here rather than silently claiming
     unbounded or mis-binding a statement.
@@ -2132,7 +2128,7 @@ async def dispatch_batch(
             record_dispatch_failure(queue_attr)
             # Why redacted: this text leaves the trust boundary for whatever
             # telemetry backend is configured. str() of an asyncpg
-            # PostgresError appends the server's DETAIL line, which quotes the
+            # PostgresError appends the server's detail line, which quotes the
             # offending row values -- idempotency_key / identity_key /
             # fairness_key are all caller-supplied.
             record_exception_text(span, render_exception(exc))
@@ -2142,11 +2138,11 @@ async def dispatch_batch(
         span.set_status(StatusCode.OK)
         # An empty round is the common case on a quiet fleet (every NOTIFY
         # wake runs at least one claim round, and the cooldown caps those at
-        # ~20 per second per worker): logging it at INFO writes one full
+        # ~20 per second per worker): logging it at info writes one full
         # structlog render per idle round to the same loop that runs the
         # producer and consumers, and log aggregation sees
         # N_workers x 20 lines/sec of count=0 noise under load. A round
-        # that claimed something is the auditable event and stays at INFO.
+        # that claimed something is the auditable event and stays at info.
         log_dispatch = logger.info if returned_count else logger.debug
         log_dispatch(
             "dispatch",
@@ -2159,9 +2155,9 @@ async def dispatch_batch(
             limit_n=limit_n,
         )
 
-    # The claim statement's OWN latency, success and failure alike: the
-    # degradation-ratio gauges (obs/_claim_health.py) are the MVCC-horizon
-    # predictor and must describe THIS statement, not the round's other
+    # The claim statement's own latency, success and failure alike: the
+    # degradation-ratio gauges (obs/_claim_health.py) are the mvcc-horizon
+    # predictor and must describe this statement, not the round's other
     # stages (those ride taskq.dispatch.duration's histogram).
     record_claim_latency(queue_attr, elapsed)
     record_dispatch_duration(queue_attr, elapsed)

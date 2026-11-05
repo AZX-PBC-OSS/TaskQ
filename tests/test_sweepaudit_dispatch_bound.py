@@ -14,7 +14,7 @@ EXPLAIN ANALYZE BUFFERS, this file's seed shape):
 * volatile bound: Index Scan with ``Filter: (scheduled_at <=
   clock_timestamp())``, ``Rows Removed by Filter: 20000``, 20,172
   buffers, ~5.1 ms - the whole backlog walked to admit 10 due rows;
-* stable bound: ``Index Cond: (... AND scheduled_at <=
+* stable bound: ``Index Cond: (... and scheduled_at <=
   statement_timestamp())`` on jobs_actor_dispatch_idx, 10 buffers,
   ~0.04 ms - the scan terminates at the range boundary.
 
@@ -46,7 +46,7 @@ from taskq.backend._dispatch_sql import (
     _ROUND_ROBIN_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: pinning the production lateral, not a copy; a copy could drift from the SQL that actually runs.
     _STRICT_FIFO_CANDIDATES_LATERAL,  # pyright: ignore[reportPrivateUsage]  # Why: same as above - the static shape pins read the template fragment.
     _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN,  # pyright: ignore[reportPrivateUsage]  # Why: the live-planner pin must EXPLAIN the text production dispatches (the hole resolved as the plain render resolves it), never the template's raw hole.
-    _WF_EXEC_CAPABLE_CTE,  # pyright: ignore[reportPrivateUsage]  # Why: the wrapper composes the PRODUCTION capability CTE verbatim (the lateral's fence references it) — the plan the pin explains is the plan the dispatch runs.
+    _WF_EXEC_CAPABLE_CTE,  # pyright: ignore[reportPrivateUsage]  # Why: the wrapper composes the production capability CTE verbatim (the lateral's fence references it) — the plan the pin explains is the plan the dispatch runs.
     DISPATCH_ROUND_ROBIN_SQL,
     DISPATCH_STRICT_FIFO_SQL,
 )
@@ -62,7 +62,7 @@ _BOTH_LATERALS = (
 )
 
 
-# ── 1. SQL shape: STABLE row-selection bounds ─────────────────────────
+# ── 1. SQL shape: stable row-selection bounds ─────────────────────────
 
 
 @pytest.mark.parametrize(("variant", "lateral"), _BOTH_LATERALS, ids=[v for v, _ in _BOTH_LATERALS])
@@ -203,14 +203,14 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
     conn = await asyncpg.connect(pg_dsn)
     try:
         lateral = (
-            # The PLAIN render's fragment, not the raw template: the
+            # The plain render's fragment, not the raw template: the
             # fragment carries the claim-cursor hole, and a raw hole in an
             # EXPLAIN is a PostgresSyntaxError (the CI red this constant
             # exists to fix).
             _STRICT_FIFO_CANDIDATES_LATERAL_PLAIN.format(schema=dispatch_schema)
         )
         # Mirrors the production candidates CTE's FROM shape
-        # (pac CROSS JOIN LATERAL sq CROSS JOIN LATERAL (<lateral>) j) so
+        # (pac cross JOIN lateral sq cross JOIN lateral (<lateral>) j) so
         # the lateral's outer references resolve exactly as at dispatch
         # time; only the outer producers are literalized. The params CTE
         # is the production one verbatim: the lateral's LIMIT bound is
@@ -221,13 +221,13 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
         # literalized producer (the lateral's LIMIT probe selects from
         # it): the empty relation is the uncapped-pair shape this
         # pin has always exercised, where the scalar probe yields NULL
-        # and LEAST ignores it, leaving the residual bound untouched.
+        # and least ignores it, leaving the residual bound untouched.
         wrapped = (
             "WITH params AS (SELECT $1::text[] AS queues, $2::int AS limit_n, "
             "$3::uuid AS worker_id, $4::interval AS lock_lease, "
             "$5::int AS oversample), "
             # The execution fence's capability CTE: the lateral's fence
-            # references it, so the wrapper composes the PRODUCTION
+            # references it, so the wrapper composes the production
             # constant verbatim (the plan the pin explains is the plan
             # the dispatch runs).
             + _WF_EXEC_CAPABLE_CTE.format(schema=dispatch_schema)
@@ -247,21 +247,20 @@ async def test_dispatch_lateral_scheduled_at_bound_is_index_served(
             2,
         )
 
-        # THE INDEX-SERVED PROPERTY, not the index NAME (F2-6): the
-        # doctrine this pin owns is "the scheduled_at bound is index-
-        # SERVED" — an Index Cond, never a Filter. Which index the
-        # planner NAMES is stats- and catalog-dependent (the planner may
-        # serve the probe from ANY index whose key order delivers the
-        # per-(actor, queue) prefix plus the priority/scheduled_at order
-        # — the shipped twins jobs_actor_dispatch_idx /
-        # jobs_unrouted_actor_dispatch_idx today, a renamed or rebuilt
-        # index tomorrow): asserting the name would make the pin a
-        # catalog snapshot, planner-fragile in exactly the way that
-        # fails on a healthy estate. The property: (1) NO Seq Scan of
-        # jobs serves the lateral (a walk of the whole backlog — the
-        # depth-proportional shape this module exists to forbid), and
-        # (2) the scheduled_at bound appears in an Index Cond (the bound
-        # rides the index's own order, never a post-scan Filter).
+        # the INDEX-SERVED property, not the index name (F2-6): the doctrine
+        # this pin owns is "the scheduled_at bound is index- served" — an Index
+        # Cond, never a Filter. Which index the planner names is stats- and
+        # catalog-dependent (the planner may serve the probe from any index
+        # whose key order delivers the per-(actor, queue) prefix plus the
+        # priority/scheduled_at order — the shipped twins
+        # jobs_actor_dispatch_idx / jobs_unrouted_actor_dispatch_idx today, a
+        # renamed or rebuilt index tomorrow): asserting the name would make the
+        # pin a catalog snapshot, planner-fragile in exactly the way that fails
+        # on a healthy estate. The property: (1) no Seq Scan of jobs serves the
+        # lateral (a walk of the whole backlog — the depth-proportional shape
+        # this module exists to forbid), and (2) the scheduled_at bound appears
+        # in an Index Cond (the bound rides the index's own order, never a
+        # post-scan Filter).
         assert "Seq Scan on jobs" not in plan, (
             "the lateral's probe degraded to a Seq Scan of jobs — the "
             f"depth-proportional walk the bound exists to forbid:\n{plan}"
@@ -286,7 +285,7 @@ _LIVE_ACTORS = 1
 @pytest.fixture(scope="module")
 async def prefilter_schema(pg_dsn: str) -> Any:
     """Throwaway schema, migrations applied, seeded into the shape that
-    exposes the fan-out: many registered actors with NO pending rows (the
+    exposes the fan-out: many registered actors with no pending rows (the
     idle fleet - actor_config is synced from every worker's registry, so
     hundreds of idle actors is the production shape) plus one live actor
     with a handful of due pending rows on the round's queue - and, on that

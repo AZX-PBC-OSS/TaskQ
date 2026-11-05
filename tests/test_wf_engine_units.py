@@ -1,4 +1,4 @@
-"""The in-process engine pins: pin 10 (the seam-only generation grep), pin 11 (REDACT-BEFORE-PERSIST), pin 12 (CANONICAL-HASH), pin 14 (the deadlock-retry budget), pin 16 (BODY-FROM-DEFINITION).
+"""The in-process engine pins: pin 10 (the seam-only generation grep), pin 11 (REDACT-before-PERSIST), pin 12 (CANONICAL-HASH), pin 14 (the deadlock-retry budget), pin 16 (BODY-FROM-DEFINITION).
 
 Driven against a live Postgres through the REAL engine; the shared seed
 helpers + fixtures live in ``tests/_wf_fixtures.py`` (the composed-fixture
@@ -28,13 +28,13 @@ from taskq.workflows.engine import (
 )
 from tests._wf_fixtures import RedLog
 
-# ── Pin 10: THE SEAM-ONLY GENERATION PIN ────────────────────────────────
+# ── Pin 10: the seam-only generation pin ────────────────────────────────
 
 
 def test_pin_10_seam_only_generation() -> None:
     """``grep -rnE 'gen_random_uuid|uuid4' src/taskq/workflows/`` reports
-    ZERO hits — the seam is the ONLY generation site (TID251)."""
-    import subprocess  # Why: the pin IS the ticket's grep shape.
+    ZERO hits — the seam is the only generation site (TID251)."""
+    import subprocess  # Why: the pin is the ticket's grep shape.
 
     result = subprocess.run(  # Why: fixed argv, the repo's own package.
         ["/usr/bin/grep", "-rnE", "gen_random_uuid|uuid4", "src/taskq/workflows/"],
@@ -52,29 +52,29 @@ def test_pin_10_seam_only_generation() -> None:
     assert "new_uuid()" in inspect.getsource(engine), "the engine must mint ids through the seam"
 
 
-# ── Pin 11: REDACT-BEFORE-PERSIST (the canary never lands) ──────────────
+# ── Pin 11: redact-before-persist (the canary never lands) ──────────────
 
 
 def test_pin_11_redact_before_persist(
     engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A canary in the fixture payload, the ``redact=fn`` hook configured,
-    the node fails → the capture row must contain NO canary. The hook
-    composes AFTER the chain (chain → hook, unconditional). THE NEGATIVE
+    the node fails → the capture row must contain no canary. The hook
+    composes after the chain (chain → hook, unconditional). the NEGATIVE
     ARM (TORS-REV-0.16 §G1): a hook that tries to WIDEN visibility is not
     refused — intent is undetectable — it is structurally powerless on its
-    OWN input (already scrubbed), and the pin asserts the chain's masks
+    own input (already scrubbed), and the pin asserts the chain's masks
     are present on the persisted capture REGARDLESS of an honest hook's
-    return. THE RED is a real mutation of the shipped pipeline: the
-    chain→hook composer mutated to HOOK-ONLY (the writer variant that lets
+    return. the RED is a real mutation of the shipped pipeline: the
+    chain→hook composer mutated to HOOK-only (the writer variant that lets
     the hook run instead of the chain) — the canary reaches the row."""
     import taskq.workflows._capture as capture_module
 
-    canary = "AKIAIOSFODNN7EXAMPLE"  # the canonical AWS access-key example
+    canary = "AKIAIOSFODNN7EXAMPLE"  # the canonical aws access-key example
 
-    # THE RED — A REAL ENGINE MUTATION: the composer runs the hook INSTEAD
-    # OF the chain (the rejected writer); the capture is built through the
-    # SHIPPED build_capture with the mutation in place — the canary lands.
+    # the composer runs the hook instead of the chain (the rejected writer);
+    # the capture is built through the shipped build_capture with the mutation
+    # in place — the canary lands.
     def hook_only(text: str, *, redact: Callable[[str], str] | None = None) -> str:
         return text if redact is None else redact(text)
 
@@ -97,7 +97,7 @@ def test_pin_11_redact_before_persist(
         "comparator is broken (the chain must be load-bearing)"
     )
 
-    # THE SHIPPED PIPELINE: chain → hook, on every field.
+    # chain → hook, on every field.
     honest = build_capture(
         policy="errors-only",
         node_input=f"payload with {canary}",
@@ -106,18 +106,18 @@ def test_pin_11_redact_before_persist(
     )
     assert honest is not None
     dumped = json.dumps(honest)
-    assert canary not in dumped, dumped  # NO canary reaches the row
-    # A mask LANDED: the chain's output differs from its input (the tors
+    assert canary not in dumped, dumped  # no canary reaches the row
+    # A mask landed: the chain's output differs from its input (the tors
     # correlation-token form <head>~<digest>, or the regex masks).
     assert honest["input"] != f"payload with {canary}", dumped
 
 
-# ── Pin 12: CANONICAL-HASH (dict-ordering must not matter) ──────────────
+# ── Pin 12: canonical-hash (dict-ordering must not matter) ──────────────
 
 
 def test_pin_12_canonical_hash(engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A dict-ordering mutation of the same args must NOT change the
-    code-version hash (a false invalidation is the silent failure). THE
+    """A dict-ordering mutation of the same args must not change the
+    code-version hash (a false invalidation is the silent failure). the
     RED is a real mutation of the shipped hash site: the module's
     serializer swapped for a non-canonical one (json.dumps,
     insertion-ordered) — the same args under a different insertion order
@@ -135,7 +135,7 @@ def test_pin_12_canonical_hash(engine_redlog: RedLog, monkeypatch: pytest.Monkey
     def non_canonical(payload: object) -> str:
         return hashlib.sha256(json.dumps(payload).encode()).hexdigest()
 
-    # The same LOGICAL payload under two insertion orders, through the
+    # The same logical payload under two insertion orders, through the
     # module's (mutated) serializer site.
     monkeypatch.setattr(version_module, "content_hash", non_canonical)
     left = version_module.content_hash({"module": "m", "qualname": "f"})
@@ -155,16 +155,16 @@ def test_pin_12_canonical_hash(engine_redlog: RedLog, monkeypatch: pytest.Monkey
     assert content_hash({"a": "1", "b": "2"}) == content_hash({"b": "2", "a": "1"})
 
 
-# ── Pin 16: BODY-FROM-DEFINITION (D1) ───────────────────────────────────
+# ── Pin 16: body-from-definition (D1) ───────────────────────────────────
 
 
 def test_pin_16_body_from_definition(
     engine_redlog: RedLog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two overlapping dispatches of one pending node — one with a MUTATED
-    per-call body map — must resolve BOTH bodies from the REGISTERED
+    per-call body map — must resolve both bodies from the REGISTERED
     definition (the claim-CAS loser runs the defined body, never the
-    per-call variant). THE RED is a real mutation of the shipped resolver:
+    per-call variant). the RED is a real mutation of the shipped resolver:
     the dispatch's body resolution swapped for a per-call MAP lookup (the
     D1 hazard) — the loser of the claim CAS runs the WRONG body."""
     import taskq.workflows.definitions as definitions_module
@@ -182,15 +182,14 @@ def test_pin_16_body_from_definition(
 
     get_registry().register(WorkflowDef(name="pin16-flow", bodies={"step_a": defined_body}))
 
-    # THE SHIPPED RESOLVER: BOTH dispatches resolve from the registry — a
-    # per-call map, had it existed, would double-task the pending node.
+    # both dispatches resolve from the registry — a per-call map, had it
+    # existed, would double-task the pending node.
     winner = resolve_step_body("pin16-flow", "step_a")
     loser = resolve_step_body("pin16-flow", "step_a")
     assert winner is defined_body and loser is defined_body
 
-    # THE RED — A REAL ENGINE MUTATION: the dispatch's body resolution
-    # reads a per-call map (the rejected shape) — the CAS loser runs the
-    # WRONG body.
+    # the dispatch's body resolution reads a per-call map (the rejected shape)
+    # — the CAS loser runs the wrong body.
     per_call_map: dict[str, Any] = {"step_a": mutated_body}
     monkeypatch.setattr(
         definitions_module, "resolve_step_body", lambda name, key: per_call_map[key]
@@ -208,7 +207,7 @@ def test_pin_16_body_from_definition(
     )
 
 
-# ── Pin 14: DEADLOCK-RETRY (the budget + the linearization-preserving shape)
+# ── Pin 14: deadlock-retry (the budget + the linearization-preserving shape)
 
 
 def test_pin_14_deadlock_retry_budget(engine_redlog: RedLog) -> None:

@@ -5,7 +5,7 @@ Covers:
   dedupes globally exactly as before.
 - Same idempotency_key with DIFFERENT idempotency_scope values → both
   enqueue as distinct jobs.
-- Same idempotency_key AND same idempotency_scope → dedupes.
+- Same idempotency_key and same idempotency_scope → dedupes.
 - Concurrent enqueue: asyncio.gather fires 2+ enqueue calls with same
   actor/scope/key; exactly one job is created (both return same id).
 """
@@ -113,11 +113,11 @@ class TestSameKeyDifferentScope:
         assert row1.id != row2.id
 
 
-# ── Same key AND same scope → dedupes ──────────────────────────
+# ── Same key and same scope → dedupes ──────────────────────────
 
 
 class TestSameKeySameScope:
-    """Same idempotency_key AND same idempotency_scope → dedupes
+    """Same idempotency_key and same idempotency_scope → dedupes
     (second returns first job)."""
 
     async def test_same_scope_dedupes(self, clean_jobs_app: JobsApp) -> None:

@@ -42,7 +42,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 # Production's documented bounds for the notify factory call and the
 # LISTEN execute, shrunk so a production-side bound fires well inside the
 # test budget below: an open that applies them raises within ~0.5s, while
-# an open that does not parks forever and the TEST budget is what fires.
+# an open that does not parks forever and the test budget is what fires.
 _PROD_BOUND_SECS = "0.5"
 # 10x the configured production bound - generous. This budget firing is
 # the red result: production never bounded the bootstrap open on its own.
@@ -154,7 +154,7 @@ def _make_conn_factory(fake: _FakeConn) -> Any:
 
 
 async def test_bootstrap_notify_factory_call_is_bounded() -> None:
-    """The FIRST notify factory() call during the bootstrap open completes
+    """The first notify factory() call during the bootstrap open completes
     or raises within the configured bound. A credential provider that
     accepts the call and never returns must fail the open - the reconnect
     loop already bounds its identical factory call with
@@ -185,7 +185,7 @@ async def test_bootstrap_notify_factory_call_is_bounded() -> None:
     except TimeoutError:
         # The factory was entered (asserted below) and never returns, so a
         # TimeoutError here can only be a bound production applied to the
-        # hung call. If it is the TEST budget that fired instead, the open
+        # hung call. If it is the test budget that fired instead, the open
         # never returns on its own: bootstrap hangs.
         assert factory_entered.is_set(), "open failed before reaching the notify factory call"
         if budget.expired():
@@ -232,7 +232,7 @@ async def test_bootstrap_notify_listen_execute_is_bounded() -> None:
     except TimeoutError:
         # LISTEN was issued (asserted below) and never returned, so a
         # TimeoutError here can only be a bound production applied to the
-        # hung execute. If it is the TEST budget that fired instead, the
+        # hung execute. If it is the test budget that fired instead, the
         # open never returns on its own: bootstrap hangs.
         assert any(sql.startswith("LISTEN") for sql in notify.executed), (
             "open failed before reaching the bootstrap LISTEN execute"

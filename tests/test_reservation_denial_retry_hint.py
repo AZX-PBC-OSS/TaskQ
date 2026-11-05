@@ -8,7 +8,7 @@ denied again, the denial-heavy loop measured at 12.3:1 denial:success.
 The acquire already visits the held rows; the denial branch now reports
 the earliest held lease's expiry as the ``retry_after`` hint (plus
 :data:`RESERVATION_RETRY_HINT_MARGIN`), computed against the same
-server clock that stamps the leases, folded into the SAME acquire
+server clock that stamps the leases, folded into the same acquire
 statement so the round-trip count is unchanged. With no live-held rows
 to read (every row free but row-locked by a peer acquire - the SKIP
 LOCKED case - or the anomalous held-without-lease state) the hint is

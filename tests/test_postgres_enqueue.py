@@ -112,7 +112,7 @@ class TestIdempotencyKeyDedupViaEnqueue:
 
 
 class TestPayloadNotOverwrittenOnConflict:
-    """enqueue with a duplicate key does NOT overwrite the stored
+    """enqueue with a duplicate key does not overwrite the stored
     payload - the original payload is preserved."""
 
     async def test_conflict_preserves_original_payload(self, clean_jobs_app: JobsApp) -> None:
@@ -139,7 +139,7 @@ class TestPayloadNotOverwrittenOnConflict:
 
 
 class TestNotify:
-    """pg_notify is issued on a new INSERT but NOT on a conflict-returns-existing
+    """pg_notify is issued on a new INSERT but not on a conflict-returns-existing
     path."""
 
     async def test_notify_on_new_insert(self, clean_jobs_app: JobsApp) -> None:
@@ -207,7 +207,7 @@ class TestNotify:
             args2 = make_enqueue_args(idempotency_key=key, payload={"value": 2})
             await backend.enqueue(args2)
 
-            # Assert NO notification arrives within a short timeout
+            # Assert no notification arrives within a short timeout
             with pytest.raises(asyncio.TimeoutError):
                 await asyncio.wait_for(notify_event.wait(), timeout=0.5)
         finally:

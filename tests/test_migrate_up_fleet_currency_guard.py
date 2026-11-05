@@ -95,7 +95,7 @@ async def _old_release_enqueue(conn: asyncpg.Connection, schema: str, key: str) 
 
     Mirrors `01.00.03_01_post_idempotency_scope_drop_old_index.sql`'s own
     header comment verbatim: `ON CONFLICT (idempotency_key) WHERE
-    idempotency_key IS NOT NULL`. Postgres resolves the ON CONFLICT arbiter
+    idempotency_key IS not NULL`. Postgres resolves the ON CONFLICT arbiter
     index at PLAN time, so this is what fails once the old index is gone,
     regardless of whether the key value actually collides.
     """
@@ -258,7 +258,7 @@ class TestPostPhaseApplyHasNoReleaseAwareFleetSignal:
     The `workers` table (populated at pod startup, heartbeated, swept by the
     leader per docs/guides/workers.md) carries liveness only: no release or
     schema-version column. A live row is therefore ambiguous - it is what a
-    fully-upgraded fleet looks like during the documented close-out AND what
+    fully-upgraded fleet looks like during the documented close-out and what
     a half-rolled-out fleet looks like mid-rollout. The runner cannot
     distinguish them, which is precisely why applying the post phase is the
     operator's decision (see the module docstring and
@@ -273,7 +273,7 @@ class TestPostPhaseApplyHasNoReleaseAwareFleetSignal:
 
         Sequence mirroring the documented deploy: the manifest's `--phase
         pre` runs, pods (old and new alike) heartbeat, and the operator's
-        explicit `--phase post` then applies WITHOUT being refused. A guard
+        explicit `--phase post` then applies without being refused. A guard
         keyed on live heartbeats would break exactly this - the shipped
         close-out runs while the upgraded fleet is heartbeating - which is
         the core reason the demand for a liveness-based refusal was dropped.
@@ -297,7 +297,7 @@ class TestPostPhaseApplyHasNoReleaseAwareFleetSignal:
 
         # Tripwire: if a release-aware fleet-currency guard ever ships on
         # taskq.migrate, this pin's premise changes - wire it into the CLI's
-        # documented paths and REWRITE this assertion (do not just delete
+        # documented paths and rewrite this assertion (do not just delete
         # it): with a real release signal, a guard could finally distinguish
         # the mid-rollout state from the close-out state.
         assert not hasattr(migrate_mod, "assert_safe_to_apply_post_phase"), (

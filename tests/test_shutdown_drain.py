@@ -83,7 +83,7 @@ def _worker_settings_no_validate(schema_name: str = "taskq") -> WorkerSettings:
     construction instead.
 
     That is the point of these tests: they assert the shutdown path performs its
-    OWN `_IDENT_RE` check rather than trusting settings. That defence in depth
+    own `_IDENT_RE` check rather than trusting settings. That defence in depth
     is what keeps the settings-level guard from being a single point of failure,
     so it still needs proving.
     """
@@ -341,11 +341,11 @@ async def test_drain_exclusion_captures_a_take_that_lands_during_the_pool_acquir
     between the helper's entry and its statement, and on a contended pool it
     parks the drain for as long as the contention lasts - exactly the window
     a consumer's take (mark_claimed) or registration lands in. A capture
-    taken BEFORE the acquire binds a stale exclusion: the UPDATE re-pends the
+    taken before the acquire binds a stale exclusion: the UPDATE re-pends the
     row under its live consumer, the consumer's terminal write fences out
-    (the fence requires status='running' AND locked_by_worker, both cleared
+    (the fence requires status='running' and locked_by_worker, both cleared
     by the re-pend), and the row is stranded 'pending' with its body
-    mid-flight. The capture must therefore happen AFTER the acquire,
+    mid-flight. The capture must therefore happen after the acquire,
     immediately before the bind: the bound exclusion carries the intent the
     acquire's park let land.
 

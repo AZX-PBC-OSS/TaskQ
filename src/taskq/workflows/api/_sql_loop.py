@@ -1,11 +1,11 @@
 """The loop's statement constants — the budget columns' reads and
 writes, the atomic carry-advance + cap guard, and the named-exhaustion
-terminalization. The schema identifier is the ONLY interpolated value
+terminalization. The schema identifier is the only interpolated value
 (validated at :meth:`WorkflowSql.build`'s callers); every
 caller-controlled value uses ``$N`` parameter binding. See ``_sql.py``
 for the bundle law and the JSONB-landmine rule.
 
-THE CLOCK DOCTRINE: every wall comparison is against PG's
+Every wall comparison is against PG's
 ``clock_timestamp()`` — the app clock is skewable (+1h under the skew
 fixture), PG's clock is the truth (the BUDGET-DB-CLOCK pin's subject).
 """
@@ -20,7 +20,7 @@ __all__ = ["render_loop_sql"]
 
 
 def render_loop_sql(template: str, schema: str) -> str:
-    """Render one loop statement for *schema* — the SAME substitution
+    """Render one loop statement for *schema* — the same substitution
     every statement family rides (the shared render's law: the schema
     identifier is validated before anything renders; the
     ``{terminal}`` token is the terminal-status SQL set — the bundle's
@@ -38,8 +38,8 @@ def render_loop_sql(template: str, schema: str) -> str:
     )
 
 
-#: The loop node's INIT (the claim-time write): the budget deadline is
-#: computed FROM PG'S CLOCK (`now() + $2 seconds`) — never the app's.
+#: The loop node's init (the claim-time write): the budget deadline is
+#: computed FROM PG'S clock (`now() + $2 seconds`) — never the app's.
 #: The metadata carries the loop's kind marker (the sweep arm's target),
 #: the iteration counter (the cap wall's truth) and the carry.
 LOOP_INIT_SQL = """\
@@ -62,36 +62,31 @@ WHERE id = $1
 RETURNING id
 """
 
-#: THE ADVANCE STATEMENT — the carry advanced EXACTLY ONCE per
-#: iteration, ATOMIC with THE CAP GUARD: advancing TO iteration i+1
-#: admits iteration i+1's spawn, so the guard refuses the advance that
-#: would START spawn #max_iterations+2 (the cap bounds TOTAL SPAWNS):
-#: the guard lets the advance reach EXACTLY the cap
-#: (``i+1 <= max``), so the FINAL iteration runs and the metadata's
-#: counter reaches ``max`` — the state the crash window (a worker death
-#: after the final advance, before the driver's top-of-loop cap check)
-#: leaves on a RUNNING row, which is what makes the SWEEP's
-#: ``iteration >= max`` predicate REACHABLE in production (the vacuous
-#: arm's fix: the shipped ``i+1 < max`` guard topped the counter at
-#: ``max-1`` FOREVER — the sweep's trigger state was unconstructible).
-#: The driver's top-of-loop cap check exhausts the live path; a refused
-#: advance (a concurrent terminal) stays the backstop exhaustion.
-#: This one-statement atomicity is the CARRY-OPTIMISTIC guard: a
-#: carry advanced at hold/retry time (outside this statement) is the
-#: double-apply/lost-apply variant, kept RED forever.
-#:
-#: THE CLAIM IDENTITY'S FENCE (the one-tx-finalize doctrine's
-#: terminal-write law, on the advance — the unguarded statement was the
-#: doctrine's BACK DOOR): worker + attempt + claim_epoch, the SAME legs
-#: the terminal-mark CAS carries. A zombie driver (its claim lapsed, the
-#: loop reclaimed at a fresh attempt + epoch) is REFUSED — its stale
-#: payload can never move the iteration counter BACKWARD, and the
-#: reclaimed loop's own driver advances exactly once. The
-#: NULL-tolerant form on the worker leg (``IS NOT DISTINCT FROM``): a
-#: reclaimed/never-claimed row (``locked_by_worker IS NULL``) is
-#: refuse-all for a live identity, and the sweep's under-lock identity
-#: read matches it exactly; attempt/claim_epoch are NOT NULL columns, so
-#: the form is plain equality for them.
+#: the advance statement — the carry advanced exactly once per iteration,
+#: atomic with the cap guard: advancing to iteration i+1 admits iteration i+1's
+#: spawn, so the guard refuses the advance that would start spawn
+#: #max_iterations+2 (the cap bounds total spawns): the guard lets the advance
+#: reach exactly the cap (``i+1 <= max``), so the final iteration runs and the
+#: metadata's counter reaches ``max`` — the state the crash window (a worker
+#: death after the final advance, before the driver's top-of-loop cap check)
+#: leaves on a running row, which is what makes the sweep's ``iteration >=
+#: max`` predicate reachable in production (the vacuous arm's fix: the shipped
+#: ``i+1 < max`` guard topped the counter at ``max-1`` forever — the sweep's
+#: trigger state was unconstructible). The driver's top-of-loop cap check
+#: exhausts the live path; a refused advance (a concurrent terminal) stays the
+#: backstop exhaustion. This one-statement atomicity is the carry-optimistic
+#: guard: a carry advanced at hold/retry time (outside this statement) is the
+#: double-apply/lost-apply variant, kept red forever. the claim identity's
+#: fence (the one-tx-finalize doctrine's terminal-write law, on the advance —
+#: the unguarded statement was the doctrine's back door): worker + attempt +
+#: claim_epoch, the same legs the terminal-mark CAS carries. A zombie driver
+#: (its claim lapsed, the loop reclaimed at a fresh attempt + epoch) is refused
+#: — its stale payload can never move the iteration counter backward, and the
+#: reclaimed loop's own driver advances exactly once. The NULL-tolerant form on
+#: the worker leg (``is not DISTINCT FROM``): a reclaimed/never-claimed row
+#: (``locked_by_worker is NULL``) is refuse-all for a live identity, and the
+#: sweep's under-lock identity read matches it exactly; attempt/claim_epoch are
+#: not NULL columns, so the form is plain equality for them.
 LOOP_ADVANCE_SQL = """\
 UPDATE {schema}.jobs
 SET metadata = metadata || $2::jsonb
@@ -104,24 +99,20 @@ WHERE id = $1
 RETURNING (metadata->>'iteration')::int AS iteration
 """
 
-#: THE NAMED EXHAUSTION + THE FLOW TERMINALIZES IN THE SAME TRANSACTION
-#: (STRANDED-FLOW): the loop node gets the ``iteration_cap_exhausted``
-#: state (the metadata's ``iteration_state`` + the typed failure class on
-#: the row) and the flow root FLIPS TERMINAL in the same statement — a
-#: wedged ``running`` flow that ticks forever is the
-#: rejected variant, kept RED forever. Idempotent: a terminal loop row
-#: (or a terminal flow) updates nothing.
-#:
-#: THE CLAIM IDENTITY'S FENCE (the same legs the advance and the
-#: terminal-mark carry — the one-tx-finalize doctrine's BACK DOOR
-#: closed): the exhaust lands only on the row the caller's own claim
-#: identity holds. A zombie driver's exhaust (its claim lapsed, the loop
-#: reclaimed and healthy under a new driver) is REFUSED — it can no
-#: longer kill the reclaimed loop, write its escalation row, or fire the
-#: named state from a stale view. The sweep's arm binds the identity it
-#: read under its own row lock (``FOR UPDATE`` — stable to statement
-#: end); the worker leg's NULL-tolerant form matches a
-#: never-claimed/reclaimed row exactly (see LOOP_ADVANCE_SQL's note).
+#: the loop node gets the ``iteration_cap_exhausted`` state (the metadata's
+#: ``iteration_state`` + the typed failure class on the row) and the flow root
+#: flips terminal in the same statement — a wedged ``running`` flow that ticks
+#: forever is the rejected variant, kept red forever. Idempotent: a terminal
+#: loop row (or a terminal flow) updates nothing. the claim identity's fence
+#: (the same legs the advance and the terminal-mark carry — the one-tx-finalize
+#: doctrine's back door closed): the exhaust lands only on the row the caller's
+#: own claim identity holds. A zombie driver's exhaust (its claim lapsed, the
+#: loop reclaimed and healthy under a new driver) is refused — it can no longer
+#: kill the reclaimed loop, write its escalation row, or fire the named state
+#: from a stale view. The sweep's arm binds the identity it read under its own
+#: row lock (``FOR UPDATE`` — stable to statement end); the worker leg's
+#: NULL-tolerant form matches a never-claimed/reclaimed row exactly (see
+#: LOOP_ADVANCE_SQL's note).
 LOOP_EXHAUST_SQL = """\
 WITH loop_row AS (
     UPDATE {schema}.jobs
@@ -151,28 +142,25 @@ SELECT (SELECT count(*) FROM loop_row) AS loop_exhausted,
        (SELECT count(*) FROM flow_terminal) AS flow_terminalized
 """
 
-#: THE ESCALATION OUTBOX ROW (the ``on_exhausted="escalate"`` arm): the
-#: named state is the record; the escalation actor's enqueue rides the
-#: SAME outbox the fired joins use (no second delivery mechanism).
+#: the named state is the record; the escalation actor's enqueue rides the same
+#: outbox the fired joins use (no second delivery mechanism).
 LOOP_ESCALATION_OUTBOX_SQL = """\
 INSERT INTO {schema}.wf_outbox
     (id, join_job_id, flow_id, consumer_step_key, bindings)
 VALUES ($1, $2, $3, $4, $5::jsonb)
 """
 
-#: THE SET-BASED EXHAUST (the budget sweep arm's own — the DRIVER keeps
-#: the keyed LOOP_EXHAUST_SQL above): the batch's exhaust rows bound as
-#: parallel arrays (the sweep_join_rederive fire arm's shape — one
-#: statement per pass, never one round trip per loop row). The claim
-#: identity's fence rides EVERY row of the batch (the same three legs
-#: the keyed statement carries — worker + attempt + claim_epoch, the
-#: NULL-tolerant IS NOT DISTINCT FROM forms — bound per row), the flow
-#: terminalizes in the SAME statement (the stranded-flow law), and the
-#: refusals (a CAS leg that no longer matches) fall out of the
-#: RETURNING — the sweep's count and escalation arm read the winners
-#: only. The flow root's error class is the FIRST winner's in the
-#: batch's order (DISTINCT ON the flow id by ordinal), the same
-#: first-writer-wins the sequential per-row statements produced.
+#: the batch's exhaust rows bound as parallel arrays (the sweep_join_rederive
+#: fire arm's shape — one statement per pass, never one round trip per loop
+#: row). The claim identity's fence rides every row of the batch (the same
+#: three legs the keyed statement carries — worker + attempt + claim_epoch, the
+#: NULL-tolerant is not DISTINCT FROM forms — bound per row), the flow
+#: terminalizes in the same statement (the stranded-flow law), and the refusals
+#: (a CAS leg that no longer matches) fall out of the RETURNING — the sweep's
+#: count and escalation arm read the winners only. The flow root's error class
+#: is the FIRST winner's in the batch's order (DISTINCT ON the flow id by
+#: ordinal), the same first-writer-wins the sequential per-row statements
+#: produced.
 LOOP_EXHAUST_BATCH_SQL = """\
 WITH batch AS (
     SELECT b.loop_id, b.error_class, b.exhaust_meta, b.message,
@@ -212,28 +200,23 @@ flow_terminal AS (
 )
 SELECT id, flow_id FROM loop_row
 """
-#: THE BUDGET SWEEP ARM (the sweep's exclusivity law + P3 rule 1's
-#: held-row inertness): the arm's HEART is ``AND NOT budget_paused`` —
-#: a loop holding on a human is INVISIBLE to the wall even when its
-#: deadline is forced into the past (the CONSUME-BUDGET guard;
-#: the arm missing the leg is the mutation the pin exercises). The cap wall
-#: rides the same arm (TWO walls, one sweep, different predicates): a
-#: running loop at/over its iteration cap is exhausted by the SWEEP —
-#: an ``if`` in the body would red the crash pin (the worker dies, the
+#: the arm's heart is ``and not budget_paused`` — a loop holding on a human is
+#: invisible to the wall even when its deadline is forced into the past (the
+#: consume-budget guard; the arm missing the leg is the mutation the pin
+#: exercises). The cap wall rides the same arm (two walls, one sweep, different
+#: predicates): a running loop at/over its iteration cap is exhausted by the
+#: sweep — an ``if`` in the body would red the crash pin (the worker dies, the
 #: body never runs, the cap never fires). The clock comparison is PG's
-#: ``clock_timestamp()`` (the DB-clock doctrine). The CLAIM IDENTITY
-#: columns ride the select: the sweep's exhaust binds the identity it
-#: read under this lock (the fence's under-lock read — the exhaust
-#: statement's legs).
-#:
-#: THE WALL COLUMNS AND THE POLICY'S SOURCE RIDE THE DRIVING QUERY: the
-#: which-wall read (iteration vs max_iterations) is a read of the row
-#: THIS statement locked (FOR UPDATE — stable to statement end, so the
-#: separate per-row wall fetch it replaced could never see a different
-#: value), and the workflow name — the registered definition's key — is
-#: the flow root's own metadata, one LEFT JOIN against the root row.
-#: One statement, one round trip: the per-row wall fetch and the
-#: per-row name fetch they replaced were the un-batched shape.
+#: ``clock_timestamp()`` (the DB-clock doctrine). The claim identity columns
+#: ride the select: the sweep's exhaust binds the identity it read under this
+#: lock (the fence's under-lock read — the exhaust statement's legs). the wall
+#: columns and the policy's source ride the driving query: the which-wall read
+#: (iteration vs max_iterations) is a read of the row this statement locked
+#: (FOR UPDATE — stable to statement end, so the separate per-row wall fetch it
+#: replaced could never see a different value), and the workflow name — the
+#: registered definition's key — is the flow root's own metadata, one LEFT JOIN
+#: against the root row. One statement, one round trip: the per-row wall fetch
+#: and the per-row name fetch they replaced were the un-batched shape.
 LOOP_BUDGET_SWEEP_SQL = """\
 WITH loops AS (
     SELECT j.id, (j.metadata->>'flow_id')::uuid AS flow_id, j.step_key,
@@ -264,9 +247,9 @@ SELECT l.id, l.flow_id, l.step_key, l.locked_by_worker, l.attempt, l.claim_epoch
 FROM loops l
 """
 
-#: THE ON-WAKE REMAINING (holds are FREE): computed FROM PG'S CLOCK on
-#: every resume — the deadline is not burning while the loop waits on a
-#: human; the remaining is a READ of the wall, never a carried snapshot.
+#: holds are free. computed FROM PG'S clock on every resume — the deadline is
+#: not burning while the loop waits on a human; the remaining is a read of the
+#: wall, never a carried snapshot.
 LOOP_REMAINING_SQL = """\
 UPDATE {schema}.jobs
 SET budget_remaining_ms = GREATEST(
@@ -278,7 +261,7 @@ WHERE id = $1
 RETURNING budget_remaining_ms
 """
 
-#: The loop node's WALL FACE (the sweep's which-wall read): the iteration
+#: The loop node's wall face (the sweep's which-wall read): the iteration
 #: counter, the cap, the budget columns.
 LOOP_NODE_WALL_SQL = """\
 SELECT (metadata->>'iteration')::int AS iteration,
@@ -290,14 +273,14 @@ WHERE id = $1
 """
 
 #: The loop node's row read (the driver's iteration counter + carry):
-#: jsonb decoded ONCE by the caller (the estate's `_json` seam).
+#: jsonb decoded once by the caller (the estate's `_json` seam).
 LOOP_NODE_STATE_SQL = """\
 SELECT status, metadata, budget_deadline, budget_paused
 FROM {schema}.jobs
 WHERE id = $1
 """
 
-#: The iteration's carried state update is the ADVANCE statement's job —
+#: The iteration's carried state update is the advance statement's job —
 #: this read is the memoized iteration timeline (the §13.3 trace shape:
 #: the iteration index + the Done/Refine kind per iteration).
 LOOP_TIMELINE_SQL = """\
@@ -333,8 +316,7 @@ LOOP_KIND_MARKER: Final[str] = "loop"
 LOOP_ERROR_CAP: Final[str] = "IterationLimitExhausted"
 LOOP_ERROR_BUDGET: Final[str] = "LoopBudgetExhausted"
 LOOP_ERROR_BODY: Final[str] = "LoopBodyFailure"
-#: THE SHAPE ERROR (the ledger's truth law): a body returning neither
-#: Done nor Refine is the TYPED shape error — named at the iteration's
-#: ledger terminal AND in the loop node's diagnosis; never a SUCCEEDED
-#: row the memo replay would re-thread as a Refine.
+#: a body returning neither Done nor Refine is the typed shape error — named at
+#: the iteration's ledger terminal and in the loop node's diagnosis; never a
+#: succeeded row the memo replay would re-thread as a Refine.
 LOOP_ERROR_SHAPE: Final[str] = "LoopBodyShapeError"

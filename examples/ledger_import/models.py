@@ -23,7 +23,7 @@ class RunInput(BaseModel):
 
     The content hash rides the run input so the partition step's
     cross-run cache is content-keyed: a different feed is a different
-    input, never a stale hit. (The run's own key is deliberately NOT
+    input, never a stale hit. (The run's own key is deliberately not
     part of the run input — it varies per run, and the cached step's
     address must not.)
     """

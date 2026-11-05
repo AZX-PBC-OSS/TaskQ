@@ -7,8 +7,8 @@ Four attack lanes against main with every landed fix at once:
    telemetry: rounds failing at acquire/resolve/probe/claim in every
    combination, pool exhaustion and cancellation interleaved. The raise
    must land on exactly the Nth non-transient failure carrying the
-   ORIGINAL exception object, pool waits must land ONLY on
-   ``taskq.dispatch.pool_acquire_duration``, query durations ONLY on
+   ORIGINAL exception object, pool waits must land only on
+   ``taskq.dispatch.pool_acquire_duration``, query durations only on
    ``taskq.dispatch.duration``, the failures counter must count each
    round-stage exactly once, a cancelled round must record a wait and
    not a failure, and the pool must end every scenario with zero leaked
@@ -19,7 +19,7 @@ Four attack lanes against main with every landed fix at once:
    against Postgres.
 3. The JobFilter rename's runtime boundary: positional 11-arg
    construction, the ``active=`` keyword alias, ``replace()`` copies
-   through the list probe and the bulk-cancel sanitizer, exactly ONE
+   through the list probe and the bulk-cancel sanitizer, exactly one
    deprecation warning per construction, identical rendered SQL for both
    spellings, and no bulk-cancel behavior drift on either backend.
 4. An end-to-end soak on real Postgres: a few hundred rounds of mixed
@@ -80,7 +80,7 @@ _TERMINAL = ("succeeded", "failed", "cancelled", "crashed", "abandoned")
 
 
 class _StageConn:
-    """A connection that fails exactly ONE round stage and succeeds the rest.
+    """A connection that fails exactly one round stage and succeeds the rest.
 
     fail-closed-exempt: the staged dispatch fault injection — the named
     statement raises (optionally after a delay) while the resolve and
@@ -274,7 +274,7 @@ async def _drive_producer(
         await real_sleep(0)
         return result
 
-    # run_mod.asyncio IS the global asyncio module; the existing budget
+    # run_mod.asyncio is the global asyncio module; the existing budget
     # pins patch it through the run module's own reference (the attribute
     # exists at runtime, the stub just does not re-export it).
     run_asyncio: Any = run_mod.asyncio  # pyright: ignore[reportAttributeAccessIssue]  # Why: run.py re-exports asyncio for its loops; the stub does not carry it.
@@ -354,7 +354,7 @@ async def test_budget_raises_on_nth_non_transient_with_the_original_object(
     assert isinstance(escaped, ValueError), (
         f"the budget must re-raise, got {escaped!r} after {backend.failures} failed rounds"
     )
-    # The ORIGINAL exception OBJECT, not a copy: identity, not equality.
+    # The original exception object, not a copy: identity, not equality.
     assert escaped is sentinel, (
         "the escaped error must be the original exception object the raise "
         "site threw, not a re-wrapped copy"
@@ -385,8 +385,8 @@ async def test_pool_waits_and_query_durations_stay_on_disjoint_histograms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A slow pool wait followed by an instantly-failing claim must put the
-    wall time ONLY on pool_acquire_duration; a fast pool wait followed by a
-    slow failing claim must put it ONLY on dispatch.duration. Each round
+    wall time only on pool_acquire_duration; a fast pool wait followed by a
+    slow failing claim must put it only on dispatch.duration. Each round
     records exactly one sample per histogram it touches."""
     schema = "taskq"  # opaque to the scripted conns; local per the hygiene ban
     reader_a = setup_meter(monkeypatch)
@@ -499,7 +499,7 @@ async def test_real_pool_mixed_rounds_keep_the_checkout_count_at_baseline(
     pg_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Concurrent dispatch rounds over ONE small real pool, some cancelled
+    """Concurrent dispatch rounds over one small real pool, some cancelled
     mid-flight at staggered instants (in the pool wait, the resolve, and
     the claim): no round crashes on its own, every round's wait lands at
     most once on the wait histogram, only surviving rounds record query
@@ -684,7 +684,7 @@ async def test_twin_atomic_refusal_leaves_no_rows_and_a_clean_index() -> None:
 
 
 async def test_twin_concurrent_batch_refusals_hammer_is_all_or_nothing() -> None:
-    """Twelve concurrent atomic calls racing ONE batch id, with a cancel
+    """Twelve concurrent atomic calls racing one batch id, with a cancel
     racing the storm: exactly one call creates the batch, every refused
     call leaves zero rows, every pair ends disciplined (a repeat dedups
     onto the pair's one live row), and the batch's counts match the live
@@ -764,9 +764,9 @@ async def test_twin_concurrent_batch_refusals_hammer_is_all_or_nothing() -> None
 
 async def test_twin_atomic_refusal_under_injected_interleaving_keeps_the_index_true() -> None:
     """The sharpest rollback attack: a batch call's enqueue seam forced to
-    run an intruder's write mid-loop - the intruder re-enqueues the SAME
+    run an intruder's write mid-loop - the intruder re-enqueues the same
     idempotency pair the batch is about to claim. The refusal's rollback
-    must withdraw only the batch's own rows and must NOT pop the index
+    must withdraw only the batch's own rows and must not pop the index
     entry the intruder's live row owns."""
     backend = _memory_twin()
     batch_id = new_uuid()
@@ -805,7 +805,7 @@ async def test_twin_atomic_refusal_under_injected_interleaving_keeps_the_index_t
     # item stored nothing of its own (it deduped onto the intruder).
     assert await backend.get(a.id) is None, "the batch's keyed row must store nothing"
     assert await backend.get(b.id) is None, "the batch's plain row must be withdrawn"
-    # Index discipline: the pair still resolves to the INTRUDER's row,
+    # Index discipline: the pair still resolves to the intruder's row,
     # which the rollback had no right to touch.
     assert await backend.get(intruder_row.id) is not None, (
         "the intruder's concurrently committed row must survive the rollback"
@@ -903,7 +903,7 @@ async def test_diff_atomic_mid_stream_nul_refusal(pg_dsn: str) -> None:
 
 
 async def _atomic_duplicate_batch_id_refusal(side: DiffSide) -> None:
-    """A second atomic call racing the SAME batch id refuses whole, typed,
+    """A second atomic call racing the same batch id refuses whole, typed,
     and stores nothing of its own."""
     batch_id = new_uuid()
     first = [_batch_item(side, "f1"), _batch_item(side, "f2")]
@@ -1099,7 +1099,7 @@ async def test_rename_replace_copies_through_hot_paths_stay_warning_free() -> No
         f_quiet = JobFilter(unfinished=True, **_RENAME_KWARGS)
 
     with warnings.catch_warnings():
-        # ANY second deprecation warning becomes an error: the copies must
+        # any second deprecation warning becomes an error: the copies must
         # be silent.
         warnings.simplefilter("error", DeprecationWarning)
         probe = dataclasses.replace(f_active, limit=f_active.limit + 1)  # the list probe's copy
@@ -1142,7 +1142,7 @@ async def test_rename_renders_identical_sql_for_both_spellings() -> None:
     assert sql_active.conditions == sql_copy.conditions
     assert sql_active.params == sql_copy.params
 
-    # Sharpness: the differential CAN detect a real difference.
+    # Sharpness: the differential can detect a real difference.
     f_other = JobFilter(unfinished=True, queue="different")
     assert build_filter_conditions(f_other).params != sql_unfinished.params
 
@@ -1150,7 +1150,7 @@ async def test_rename_renders_identical_sql_for_both_spellings() -> None:
 @pytest.mark.integration
 async def test_diff_bulk_cancel_rename_spellings_agree(pg_dsn: str) -> None:
     """Bulk cancel driven with the alias spelling and with the canonical
-    spelling must cancel the same rows with the same counts on BOTH
+    spelling must cancel the same rows with the same counts on both
     backends - no behavior drift through the sanitizer."""
 
     def scenario_factory(spelling: str) -> Any:

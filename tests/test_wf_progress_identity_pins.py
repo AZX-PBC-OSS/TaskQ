@@ -1,19 +1,19 @@
 """The progress read's identity pins —
 the display identity contract): the display's every node entry
 carried the ROW UUID as the only identity — ``status``/``pct``/
-``message``/``error_class`` with NO ``step_key``, NO ``map_index`` — so
+``message``/``error_class`` with no ``step_key``, no ``map_index`` — so
 the cowork-UI holding a display could not say WHICH node any entry
 belonged to without an out-of-band join against the ledger.
 
-THE READ FACE (carries the node's identity):
+READ FACE (carries the node's identity)
 
-* every entry carries ``step_key`` + ``map_index`` — the ROW'S OWN
+* every entry carries ``step_key`` + ``map_index`` — the ROW'S own
   fields, read off the LEDGER (the identity's authority); an entry the
   ledger has not seen yet (a state-channel ghost) carries ``None``
   until the ledger lands (the LEDGER-WINS pass stamps it);
 * the KEYED VIEW (:func:`taskq.workflows._progress_read.keyed_display`)
   — the step_key'd dict, ``{"ocr_node": {"pct": 45, ...}}`` — the
-  consumer's render WITHOUT the out-of-band join. A map's children
+  consumer's render without the out-of-band join. A map's children
   share one step_key (``<src>.item``), so a child's key carries its
   ``map_index`` (``"fetch.item[3]"``) — keying bare would silently
   collapse N children into one entry (last-wins, the lie).
@@ -107,7 +107,7 @@ async def _map_flow(
     return flow_id, runner
 
 
-# ── THE IDENTITY ON EVERY ENTRY ──────────────────────────────────────────
+# ── the identity on every entry ──────────────────────────────────────────
 
 
 async def test_every_display_entry_carries_the_rows_own_identity(
@@ -116,7 +116,7 @@ async def test_every_display_entry_carries_the_rows_own_identity(
     """The identity: after the source forks, ``run_display``'s every
     entry carries ``step_key`` + ``map_index`` — the LEDGER's own fields:
     the source step keyed ``fetch`` (``map_index`` None — not a map
-    child), the children keyed ``fetch.item`` with their OWN
+    child), the children keyed ``fetch.item`` with their own
     ``map_index``. The display a consumer renders is the node's identity
     + its progress, never a uuid it cannot name."""
     flow_id, runner = await _map_flow(wf_schema, wf_pool, children=3, name="identity_map_flow")
@@ -139,7 +139,7 @@ async def test_every_display_entry_carries_the_rows_own_identity(
         "alone, unusable without the out-of-band join"
     )
 
-    # The identity is the ROW'S OWN: the source's fields and the
+    # The identity is the row's own: the source's fields and the
     # children's, read off the ledger.
     by_key = {e.get("step_key"): e for e in entries if e.get("map_index") is None}
     assert by_key.get("fetch") is not None, "the source step's entry is keyed 'fetch'"
@@ -151,7 +151,7 @@ async def test_every_display_entry_carries_the_rows_own_identity(
     )
 
 
-# ── THE KEYED VIEW ───────────────────────────────────────────────────────
+# ── the keyed view ───────────────────────────────────────────────────────
 
 
 async def test_the_keyed_view_is_the_consumers_render_without_the_join(
@@ -160,7 +160,7 @@ async def test_the_keyed_view_is_the_consumers_render_without_the_join(
     """The keyed view: ``keyed_display(run_display(...))`` is the
     step_key'd dict — ``{"fetch": {...}, "fetch.item[0]": {...}}`` — the
     consumer's render keyed by the node's NAME, no out-of-band ledger
-    join. Every entry is the SAME dict the uuid view holds (one display,
+    join. Every entry is the same dict the uuid view holds (one display,
     two keyings — never a second model)."""
     flow_id, runner = await _map_flow(wf_schema, wf_pool, children=2, name="keyed_map_flow")
     await runner.tick(flow_id)
@@ -176,14 +176,14 @@ async def test_the_keyed_view_is_the_consumers_render_without_the_join(
     assert {"status", "pct", "message", "error_class", "step_key", "map_index"} <= set(fetch_entry)
     assert fetch_entry["status"] == "succeeded"
 
-    # The map children: the map_index DISAMBIGUATES (a bare step_key
+    # The map children: the map_index disambiguates (a bare step_key
     # would collapse the siblings last-wins).
     assert "fetch.item[0]" in keyed and "fetch.item[1]" in keyed
     assert "fetch.item" not in keyed, "a bare child key would collapse the siblings — never keyed"
     child0 = keyed["fetch.item[0]"]
     assert child0["pct"] == 50 and child0["message"] == "child 0"
 
-    # ONE display, two keyings: the keyed entries ARE the uuid entries.
+    # one display, two keyings: the keyed entries are the uuid entries.
     uuid_view = {id(v): v for v in disp.values()}
     assert all(id(v) in uuid_view for v in keyed.values())
 
@@ -235,7 +235,7 @@ async def test_keyed_view_omits_the_unnamed_and_keys_children_by_map_index() -> 
 async def test_the_ledger_wins_pass_stamps_the_identity_on_ghost_entries() -> None:
     """The ledger wins (the fence's teeth, extended to the identity): a
     ghost entry born from the state channel — the ledger row MISSED by
-    the first pass — gets its status AND its step_key/map_index stamped
+    the first pass — gets its status and its step_key/map_index stamped
     when the ledger row exists; a display can never render a named lie."""
     ledger = [
         {

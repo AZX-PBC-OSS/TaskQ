@@ -75,7 +75,7 @@ _HEX_32 = re.compile(r"^[0-9a-f]{32}$")
 _HEX_16 = re.compile(r"^[0-9a-f]{16}$")
 
 
-# ── PRODUCER span attributes ────────────────────────────────────
+# ── producer span attributes ────────────────────────────────────
 
 
 class TestProducerSpan:
@@ -469,7 +469,7 @@ class TestMessageIdAttributeGuard:
             yield span  # type: ignore[return-value]  # Why: same structural slice as above.
 
         monkeypatch.setattr(args_mod, "safe_start_span", fake_span)
-        # LOOP-scope wiring like tests/test_consumer_sub_enqueue.py: the
+        # loop-scope wiring like tests/test_consumer_sub_enqueue.py: the
         # enqueuer requires a loop scope (or worker pool) to hand out
         # ctx.jobs at all; the sub-job buffers there, which is fine, the
         # pinned attribute work happens in enqueue() before any of it.
@@ -581,7 +581,7 @@ class TestSpanExceptionSafety:
         assert handle.job_id is not None
 
 
-# ── Property test - every enqueue produces exactly one PRODUCER span ──
+# ── Property test - every enqueue produces exactly one producer span ──
 
 
 class TestProperty:

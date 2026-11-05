@@ -1,6 +1,6 @@
 """Unit tests for RetryClassifier.classify (no PG required).
 
-The classifier decides retry-kind and backoff only - it is NOT a deadline
+The classifier decides retry-kind and backoff only - it is not a deadline
 arbiter.  ``schedule_to_close`` is arbitrated by the SQL guard in
 ``mark_failed_or_retry`` (single arbiter, the backend's clock); the
 deadline-outcome pins live in tests/test_clock_domain_isolation.py and the
@@ -120,7 +120,7 @@ def test_max_attempts_one_immediate_fail() -> None:
 
 
 def test_deadline_is_not_a_classifier_input() -> None:
-    """C2: classify takes NO ``schedule_to_close`` and NO ``now`` parameter -
+    """C2: classify takes no ``schedule_to_close`` and no ``now`` parameter -
     a Python-side deadline pre-check computed from the worker's clock
     disagrees with the SQL guard under app↔DB skew and kills jobs early
     (or rubber-stamps them).  The structural pin keeps the arbiter from
@@ -201,7 +201,7 @@ def test_indefinite_backoff_capped() -> None:
         max_retry_backoff=timedelta(hours=24),
     )
     assert isinstance(decision, Retry)
-    # The band is FITTED under the cap (_capped_jitter_band): the upper
+    # The band is fitted under the cap (_capped_jitter_band): the upper
     # edge is clamped to the cap itself, so the drawn delay never exceeds
     # it. (The historical bound here, cap * (1 + jitter), was weaker than
     # the invariant - a regression leaking the band 20% past the cap
@@ -285,7 +285,7 @@ def test_classify_transient_retry_vs_fail(max_attempts: int, attempt: int) -> No
 @settings(max_examples=200)
 @given(attempt=st.integers(min_value=1, max_value=1000))
 def test_indefinite_retry_invariant(attempt: int) -> None:
-    """indefinite-retry invariant: for ANY attempt (max_attempts is ignored)
+    """indefinite-retry invariant: for any attempt (max_attempts is ignored)
     the decision is Retry with exactly the computed backoff - the tier has
     no budget to exhaust and no deadline opinion (the SQL guard owns the
     deadline; one arbiter per predicate)."""

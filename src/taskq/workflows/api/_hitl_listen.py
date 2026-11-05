@@ -1,25 +1,25 @@
-"""THE HITL LISTENER: the typed, public face over the approval
-broadcast — ONE dedicated connection, LISTEN → BACKFILL → TAIL — fanning
+"""The typed, public face over the approval
+broadcast — one dedicated connection, LISTEN → BACKFILL → TAIL — fanning
 out to N concurrent subscribers.
 
-THE ZERO-WINDOW CONSTRUCTION (the #316 mid-stream re-check pattern
-generalized to the open): the connection LISTENS FIRST, THEN the
+the ZERO-WINDOW CONSTRUCTION (the #316 mid-stream re-check pattern
+generalized to the open): the connection LISTENS first, then the
 backfill snapshot reads the still-``held`` rows. Any hold visible to
-the snapshot either notified BEFORE we listened (no notify will ever
-come — the snapshot is the only witness) or AFTER (its notify is
+the snapshot either notified before we listened (no notify will ever
+come — the snapshot is the only witness) or after (its notify is
 deduped against the snapshot by ``hold_id``). A missed event is
 unrepresentable by construction — not by luck, not by polling.
 
-THE ROW IS STILL THE TRUTH: every event is a POINTER (ids, names, the
+Every event is a POINTER (ids, names, the
 verdict's declared KIND — never the payload's content; the redact law
 holds at the knock). A consumer that misses everything still converges
 by polling ``HitlClient.list(run=…)``; the listener buys LATENCY, never
 correctness.
 
-THE RECONNECT RECONCILE (the fourth union member — the hostile
+the RECONNECT RECONCILE (the fourth union member — the hostile
 contract): a hold RESOLVED or EXPIRED while the listener was down
 never announces its own death (the notify went to no one — the
-connection was not listening). So every (re)backfill ends with ONE
+connection was not listening). So every (re)backfill ends with one
 ``Backfilled(open_hold_ids=…)`` snapshot event: the consumer drops any
 card whose ``hold_id`` the snapshot disowns. This is also the death of
 the STALE events — a dead hold's ``HoldCreated`` still sitting in the
@@ -28,17 +28,17 @@ the same reconcile: the ghost may cross the stream; its card cannot
 survive the snapshot (P6).
 
 The fan-out, not a partition (the product
-shape is ONE backend listener fanning out to N watching users, the
+shape is one backend listener fanning out to N watching users, the
 progress stream's own pub/sub discipline): every subscriber —
 ``async for event in listener``, ``events()``, ``holds(run=…)``,
-``frames()`` — gets its OWN queue and its OWN end-of-stream sentinel;
-two concurrent consumers each see EVERY event (a shared queue would
+``frames()`` — gets its own queue and its own end-of-stream sentinel;
+two concurrent consumers each see every event (a shared queue would
 PARTITION the stream, each consumer stealing the other's events, and a
 single sentinel on stop would strand all but one waiter). A subscriber attaching late replays the bounded event
 history first (the buffer-then-consume behavior — a backfill announced
 before the subscribe is still delivered), then goes live.
 
-THE OPERATIONAL LANDMINES (each one real, named for the operator —
+the OPERATIONAL LANDMINES (each one real, named for the operator —
 the guide's HITL section carries the same four):
 
 1. **PGBouncer**: transaction-pooling modes (the default
@@ -50,8 +50,8 @@ the guide's HITL section carries the same four):
    this: it must be a DIRECT connection (bypass PgBouncer, or run a
    session-pooling port) — a pooler in the path is the #1 real-world
    NOTIFY failure.
-2. **THE CAPACITY TAX**: that dedicated connection is ONE POOL SLOT
-   FOR THE STREAM'S LIFE (not per query — per listener). Size the pool
+2. **the CAPACITY TAX**: that dedicated connection is one POOL SLOT
+   FOR the STREAM'S LIFE (not per query — per listener). Size the pool
    for the listeners you run; an SSE face holding a listener per
    browser tab spends one slot per tab until the tab closes.
 3. **FORK SAFETY**: the dedicated connection is an asyncio transport
@@ -61,12 +61,11 @@ the guide's HITL section carries the same four):
    ``--preload`` master) must start the listener IN EACH WORKER after
    the fork — never inherit a parent's live listener.
 4. **EXPIRY PRECISION IS AT-LEAST**: the deadline fires on the DB clock
-   at the FIRST leader-sweep pass at-or-after it — the real bound is
+   at the first leader-sweep pass at-or-after it — the real bound is
    ``timeout_s`` + the sweep interval (+ a leader failover's gap).
    Never promise a precise 120 s: the expiry is a floor, and the
    fail-close is the guarantee, not the stopwatch.
 
-THE CHANNELS ARE GLOBAL; THE SCHEMA RIDES THE PAYLOAD (the read:
 ``pg_notify`` is per-database and the schema-per-module estate shares
 one database across many schemas — the listener filters by the
 payload's ``schema`` field, never by channel arithmetic; that payload
@@ -93,7 +92,7 @@ from taskq.workflows.api._hitl import (
 )
 from taskq.workflows.api._listen_pump import (
     DEFAULT_QUEUE_MAXSIZE,
-    _BroadcastListener,  # pyright: ignore[reportPrivateUsage]  # Why: the shared LISTEN→BACKFILL→TAIL body; the listener keeps only its own face (the channels, the snapshot, the decode, the log names).
+    _BroadcastListener,  # pyright: ignore[reportPrivateUsage]  # Why: the shared LISTEN→backfill→tail body; the listener keeps only its own face (the channels, the snapshot, the decode, the log names).
     _Conn,  # pyright: ignore[reportPrivateUsage]  # Why: the pool's two faces, one union — the pump's own alias.
 )
 
@@ -111,21 +110,21 @@ logger: structlog.stdlib.BoundLogger = get_logger(__name__)
 
 #: The broadcast legs (the listener's LISTEN set — the create leg, the
 #: resolve leg, the expiry leg; the legacy ``taskq_wf_holds`` pointer
-#: knob is NOT here: its shape is pinned separately and it carries no
+#: knob is not here: its shape is pinned separately and it carries no
 #: schema, so a listener on it could not filter).
 BROADCAST_CHANNELS: frozenset[str] = frozenset(
     {HOLD_CREATED_CHANNEL, HOLD_RESOLVED_CHANNEL, HOLD_EXPIRED_CHANNEL}
 )
 
 #: The listener's own queue bound (the same tradeoff the admin's
-#: ``_listen.py`` made: a slow consumer drops the OLDEST event — the
+#: ``_listen.py`` made: a slow consumer drops the oldest event — the
 #: row is the truth, the poll converges). Bounds the raw queue, every
 #: subscriber queue, and the late-subscriber replay history alike.
 _QUEUE_MAXSIZE = DEFAULT_QUEUE_MAXSIZE
 
 
 class HoldCreated(BaseModel):
-    """A hold NOW EXISTS (the approval is owed): from the start
+    """A hold now EXISTS (the approval is owed): from the start
     backfill (``source="backfill"``) or a live create
     (``source="notify"``)."""
 
@@ -165,8 +164,8 @@ class HoldExpired(BaseModel):
 
 
 class Backfilled(BaseModel):
-    """THE RECONNECT-RECONCILE SNAPSHOT (the fourth union member —
-    the reconcile event's contract): emitted after EVERY (re)backfill, carrying
+    """the RECONNECT-RECONCILE SNAPSHOT (the fourth union member —
+    the reconcile event's contract): emitted after every (re)backfill, carrying
     the OPEN hold ids the ROWS witness right now (this schema's still-
     ``held`` rows). The consumer drops any open card the snapshot
     disowns — a hold resolved or expired during a listener outage never
@@ -175,13 +174,13 @@ class Backfilled(BaseModel):
     ``HoldCreated`` replayed from the pre-outage history announces a
     hold the rows have moved past — its card cannot survive the
     snapshot; the reconcile contract). The ``holds(run=…)`` filter passes this member
-    through: every consumer reconciles its OWN cards against it."""
+    through: every consumer reconciles its own cards against it."""
 
     event: Literal["backfilled"] = "backfilled"
     open_hold_ids: list[str]
 
 
-#: The TYPED event union (the discriminated kind — the SSE frame's
+#: The typed event union (the discriminated kind — the SSE frame's
 #: ``event: hold`` carries the union's JSON; the consumer re-narrows on
 #: the literal): the three NOTIFY legs + the reconcile snapshot.
 HoldEvent = Annotated[
@@ -190,7 +189,7 @@ HoldEvent = Annotated[
 
 
 class HitlListener(_BroadcastListener[HoldEvent]):
-    """THE TYPED LISTENER (public — the SSE face and programmatic
+    """the TYPED LISTENER (public — the SSE face and programmatic
     consumers share it), DIRECTLY ASYNC-ITERABLE (the amendment — no
     ceremony between the author and the events):
 
@@ -203,16 +202,16 @@ class HitlListener(_BroadcastListener[HoldEvent]):
     ...             case HoldExpired(): ...
     ...             case Backfilled(): ...  # the reconcile: drop cards not in open_hold_ids
 
-    ONE dedicated connection from the pool for the stream's life
+    one dedicated connection from the pool for the stream's life
     (LISTEN is session-scoped — a pooled round-robin would UNLISTEN on
     every release; see the module docstring's PgBouncer landmine);
     automatic reconnect with the admin feed's backoff discipline; the
     backfill re-runs on every (re)connect and each backfill ends with
     the :class:`Backfilled` reconcile snapshot. The plain ``async for
     event in listener`` (or ``listener.events()``) is the unfiltered
-    typed stream; :meth:`holds` filters to ONE run; :meth:`frames` is
+    typed stream; :meth:`holds` filters to one run; :meth:`frames` is
     the SSE face's keepalive form (yields ``None`` on the keepalive
-    tick). EVERY subscriber gets its own queue and its own end sentinel
+    tick). every subscriber gets its own queue and its own end sentinel
     — the fan-out, never a partition (P7)."""
 
     _log = logger
@@ -255,14 +254,14 @@ class HitlListener(_BroadcastListener[HoldEvent]):
     # ── the surfaces ─────────────────────────────────────────────────
 
     def __aiter__(self) -> AsyncGenerator[HoldEvent, None]:
-        """THE CEREMONY-FREE FORM: ``async for event
+        """``async for event
         in listener:`` — the typed stream directly; no ``.events()``
         lookup between the author and the events. The keepalive form
         stays on :meth:`frames` (the SSE face's)."""
         return self.events()
 
     async def events(self) -> AsyncGenerator[HoldEvent, None]:
-        """THE NAMED FORM of the same surface: ``async for event in
+        """NAMED FORM of the same surface: ``async for event in
         listener.events():`` — every yield is a :data:`HoldEvent` (the
         keepalive sentinel is filtered out; a direct consumer just
         awaits)."""
@@ -271,8 +270,8 @@ class HitlListener(_BroadcastListener[HoldEvent]):
                 yield event
 
     async def holds(self, run: JobId | str) -> AsyncGenerator[HoldEvent, None]:
-        """THE TYPED FILTER (the amendment): one run's events —
-        ``listener.holds(run=flow_id)`` — the approval stream for ONE
+        """One run's events —
+        ``listener.holds(run=flow_id)`` — the approval stream for one
         flow, typed. The id binds through its canonical form (the same
         spelling the list/get doors accept — a braced or uppercase
         spelling yields this run's holds); a spelling that does not
@@ -280,7 +279,7 @@ class HitlListener(_BroadcastListener[HoldEvent]):
         list doors' named-refusal class, never a silent empty stream.
         The unfiltered stream still flows (the raw tail's
         surface: every schema-routed event reaches it). The
-        :class:`Backfilled` reconcile passes EVERY run's filter (it
+        :class:`Backfilled` reconcile passes every run's filter (it
         carries no ``run_id`` — the snapshot is the SCHEMA's open-hold
         set, and every consumer reconciles its own cards against it)."""
         run_id = str(_as_hold_id(run))
@@ -291,7 +290,7 @@ class HitlListener(_BroadcastListener[HoldEvent]):
                 yield event
 
     async def frames(self) -> AsyncGenerator[HoldEvent | None, None]:
-        """THE SSE FACE'S FORM: typed events + ``None`` keepalives (the
+        """Typed events + ``None`` keepalives (the
         admin feed's own discipline — a quiet stream must still say
         something, or the proxies eat it)."""
         async for event in self._iterate(self._keepalive):
@@ -300,30 +299,30 @@ class HitlListener(_BroadcastListener[HoldEvent]):
     # ── the listener's own halves of the pump ────────────────────────
 
     async def _backfill(self, conn: _Conn) -> None:
-        """The OPEN holds, FROM THE ROWS (the snapshot the zero-window
+        """The OPEN holds, FROM the ROWS (the snapshot the zero-window
         law leans on): every still-``held`` row in the schema becomes a
         ``HoldCreated(source="backfill")`` — including a hold created
-        BEFORE this listener existed. The snapshot's ids
+        before this listener existed. The snapshot's ids
         enter the dedup set: their own (already-queued) notifies yield
         nothing. The reconcile (the fourth member):
-        after the snapshot's creations, ONE :class:`Backfilled` event
+        after the snapshot's creations, one :class:`Backfilled` event
         carries the OPEN ids — the consumer drops any card the rows
         disown (a hold resolved/expired during the outage never
         announces its own death)."""
         rows = await conn.fetch(
             f"SELECT id, workflow_id, node_key, signal_name, created_at "  # noqa: S608 — the f-string's only interpolation is the require_schema-validated schema identifier; values never interpolate.
             f"FROM \"{self._schema}\".wf_signals WHERE status = 'held' "
-            # The timer's exclusion (the reserved prefix's ONE
+            # The timer's exclusion (the reserved prefix's one
             # mechanism, applied at this face too):
-            # the snapshot is the pending-APPROVALS read — a timer hold
-            # is the clock's, never a human's decision (the SAME split
+            # the snapshot is the pending-approvals read — a timer hold
+            # is the clock's, never a human's decision (the same split
             # HitlClient.list's SQL keeps; the create broadcast skips
             # the prefix at the source, this filter covers the rows that
             # predate any listener).
             "AND NOT starts_with(signal_name, '__timer__') "
             "ORDER BY id"
         )
-        # The dedup set is PER-CONNECTION (the LISTEN→snapshot race's
+        # The dedup set is per-connection (the LISTEN→snapshot race's
         # witness): reset on every (re)backfill — a previous
         # connection's announced ids would suppress nothing valid, and
         # a stale set could never shrink.
@@ -360,15 +359,14 @@ class HitlListener(_BroadcastListener[HoldEvent]):
             return None
         doc = cast("dict[str, object]", parsed)  # pyright: ignore[reportUnknownVariableType]  # Why: the notify payload's jsonb walk — the isinstance guard above is the runtime shape check.
         if doc.get("schema") != self._schema:
-            return None  # ANOTHER SCHEMA'S EVENT (global channels — the payload routes; the isolation IS this filter, P8)
+            return None  # another SCHEMA'S event (global channels — the payload routes; the isolation is this filter, P8)
         hold_id = doc.get("hold_id")
         run_id = doc.get("run_id") or doc.get("flow_id")
         if not isinstance(hold_id, str) or not isinstance(run_id, str):
             return None
         if channel == HOLD_CREATED_CHANNEL:
-            # THE DEDUP (the zero-window's other half): a hold the
-            # backfill already announced yields nothing — one id, ONE
-            # created event per connection (the snapshot's dedup leg).
+            # a hold the backfill already announced yields nothing — one id,
+            # one created event per connection (the snapshot's dedup leg).
             if hold_id in self._backfilled:
                 self._backfilled.discard(hold_id)
                 return None

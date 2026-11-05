@@ -164,8 +164,8 @@ def _make_config(
 
 @pytest.mark.asyncio
 async def test_the_default_sync_keeps_its_single_operator_statement() -> None:
-    """The write-shape law, count-shaped: a sync with NO code-owned
-    rows runs EXACTLY ONE upsert (one statement per sync — the boot's
+    """The write-shape law, count-shaped: a sync with no code-owned
+    rows runs EXACTLY one upsert (one statement per sync — the boot's
     write amplification stays at one). The statement's OUTCOME (the
     stored capacity and queue surviving a changed literal) is the
     real-PG pins' law below."""
@@ -193,7 +193,7 @@ async def test_code_owned_capacity_divergence_logs_the_code_change_event(
     WARNING that announces the deploy (the retry contract's own event
     shape): the upsert is about to overwrite the stored value with the
     literal — visible, never silent. The same actor's max_pending
-    mismatch stays the operator-override INFO (it is NOT code-owned)."""
+    mismatch stays the operator-override INFO (it is not code-owned)."""
     fake_conn = FakeAsyncpgConnection()
     fake_conn.set_select_rows(
         [_make_record("X", max_concurrent=5, max_pending=100, queue="default")]
@@ -305,7 +305,7 @@ def test_the_vanilla_surface_rejects_the_wrong_shapes(bad: object) -> None:
     ``ValueError`` at the decoration site, never a silent anything."""
     with pytest.raises(ValueError, match="capacity_owner"):
 
-        @actor(capacity_owner=bad)  # type: ignore[arg-type]  # Why: the REFUSED shapes are the pin's subject — the checker's own refusal and the runtime door agree.
+        @actor(capacity_owner=bad)  # type: ignore[arg-type]  # Why: the refused shapes are the pin's subject — the checker's own refusal and the runtime door agree.
         async def refused(payload: _Probe) -> str:
             return payload.doc_id  # pragma: no cover
 
@@ -344,7 +344,7 @@ def test_the_wf_surface_rejects_the_wrong_shapes(bad: object) -> None:
     app = WorkflowApp()
     with pytest.raises(ValueError, match="capacity_owner"):
 
-        @app.actor(capacity_owner=bad)  # type: ignore[arg-type]  # Why: the REFUSED shapes are the pin's subject.
+        @app.actor(capacity_owner=bad)  # type: ignore[arg-type]  # Why: the refused shapes are the pin's subject.
         async def refused(ctx: StepContext, params: Ingest) -> str:
             return params.doc_id  # pragma: no cover
 
@@ -471,7 +471,7 @@ async def test_code_owned_capacity_change_deploys_after_first_boot(
     pg_conn: asyncpg.Connection,
 ) -> None:
     """The core pin: a code-owned actor's capacity change
-    deploys by code AFTER first boot. Boot 1 seeds the row from the
+    deploys by code after first boot. Boot 1 seeds the row from the
     literal; boot 2 carries a CHANGED literal — the stored row READS the
     new values. A set-clause-less upsert leaves the row at boot 1's values
     forever: editing code silently did nothing."""
@@ -518,7 +518,7 @@ async def test_default_actor_row_is_untouched_by_a_code_change(
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_the_seed_insert_path_is_unchanged(pg_conn: asyncpg.Connection) -> None:
-    """A code-owned actor's FIRST sync seeds every column from the
+    """A code-owned actor's first sync seeds every column from the
     literal — the same INSERT list, the same seed-only shape as the
     default actor's. And a convergence boot (same literal) leaves the
     row untouched-and-equal."""
@@ -542,7 +542,7 @@ async def test_the_seed_insert_path_is_unchanged(pg_conn: asyncpg.Connection) ->
     assert row["queue"] == "gpu"
     assert row["result_ttl"] == 45.0
 
-    # The seed is the DEFAULT actor's seed too: a default actor's first
+    # The seed is the default actor's seed too: a default actor's first
     # boot seeds identically (one law, one INSERT list).
     await sync_actor_config(
         pg_conn,
@@ -561,9 +561,9 @@ async def test_code_owned_queue_and_max_pending_changes_do_not_deploy(
     pg_conn: asyncpg.Connection,
 ) -> None:
     """The exclusions hold on real PG: a code-owned actor's changed queue
-    and max_pending literals stay OUT of the SET clause — the stored
+    and max_pending literals stay out of the SET clause — the stored
     queue (the move-queue law) and the stored backlog cap (the
-    producer-side admission's lever) are the operator's, for BOTH
+    producer-side admission's lever) are the operator's, for both
     owners."""
     schema = f"tacs_{new_base62()}".lower()
     await _ensure_schema(pg_conn, schema)
@@ -598,10 +598,10 @@ async def test_the_conflict_arm_deploys_the_code_families_and_keeps_the_operator
 
     * the operator families (the queue assignment, ``max_pending``) keep
       the STORED values — the move-queue law and the producer-side
-      admission's lever hold for BOTH owners;
+      admission's lever hold for both owners;
     * the code families (the retry contract: ``max_attempts`` +
       ``retry_kind``) rewrite from the literal on every boot — the
-      declaration of record wins, for BOTH owners;
+      declaration of record wins, for both owners;
     * metadata rewrites from the registered value under ``force=True``
       (the structural family's own overwrite path);
     * the capacity columns follow the row's owner (stored for the
@@ -689,7 +689,7 @@ async def test_converged_code_owned_boot_is_quiet(
     structlog_capture: list[structlog.types.EventDict],
 ) -> None:
     """The review's 4(b): a CONVERGED code-owned boot (the stored row
-    already reads the literal) emits NO ``actor-config-capacity-code-change``
+    already reads the literal) emits no ``actor-config-capacity-code-change``
     event — the deploy warning is DIVERGENCE-GATED (it announces a change,
     and a converged boot changes nothing). A boot that warned on every
     converge would be noise about nothing."""
@@ -720,7 +720,7 @@ async def test_code_owned_uncapping_deploys_null_and_warns(
     """The NULL-out (the re-review's residual 2): a code-owned actor
     whose literal UNCAPS (a numeric cap → ``None``) deploys the NULL —
     the code-owned SET assigns unconditionally (the declaration-of-
-    record-wins law) — AND the deploy announces itself: the
+    record-wins law) — and the deploy announces itself: the
     ``actor-config-capacity-code-change`` warning carrying
     ``registered=None`` against the STORED old value, one event per
     field. A cap-blind sync leaves the stored cap at its

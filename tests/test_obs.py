@@ -375,7 +375,7 @@ def test_slot_pool_occupancy_gauge_tolerates_a_broken_pool_source() -> None:
 
 
 def test_slot_pool_occupancy_gauge_is_label_free() -> None:
-    """``taskq.worker.slot_pool.connections_in_use`` carries NO dimensions -
+    """``taskq.worker.slot_pool.connections_in_use`` carries no dimensions -
     a single process-level number. The pool is named in the instrument and
     there is exactly one per worker process; adding a dimension here (the
     worker_id temptation especially - a fresh UUID per process on
@@ -605,7 +605,7 @@ def test_record_election_attempt_loss(otel_reader: InMemoryMetricReader) -> None
 
 def test_record_election_attempt_disabled(otel_reader: InMemoryMetricReader) -> None:
     """The disabled contract is a no-op (see the cron twin for the shape):
-    delta 0 on BOTH election instruments while disabled, +1 enabled as the
+    delta 0 on both election instruments while disabled, +1 enabled as the
     live-reader control."""
     otel_mod.set_otel_enabled(False)
     obs_mod.record_election_attempt("worker-1", won=True)
@@ -787,7 +787,7 @@ class _StubCounter:
 
 
 def test_get_meter_is_memoized() -> None:
-    """``get_meter`` must hand back ONE meter object for the process.
+    """``get_meter`` must hand back one meter object for the process.
 
     With no SDK installed (the default deployment - taskq never installs
     a MeterProvider), ``metrics.get_meter`` mints a fresh ``_ProxyMeter``
@@ -809,7 +809,7 @@ def test_get_meter_is_memoized() -> None:
 def test_lazy_recorder_memoizes_its_instrument_per_meter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A lazy recorder called N times must mint its counter ONCE, keyed on
+    """A lazy recorder called N times must mint its counter once, keyed on
     the CURRENT meter.
 
     The lazy recorders resolve their instrument at call time (see

@@ -100,7 +100,7 @@ def test_object_shaped_reservation_survives_the_real_json_renderer() -> None:
     registry = {"alpha": _make_actor_ref(name="alpha", reservations=[reservation])}
 
     # Real production JSON renderer (taskq._json.structlog_serializer, the
-    # same serializer setup_logging wires into JSONRenderer) bound through a
+    # same serializer setup_logging wires into jsonrenderer) bound through a
     # minimal structlog pipeline, rather than mutating the process-global
     # structlog.configure() that setup_logging performs once and guards
     # idempotently - this keeps the test isolated while still exercising the

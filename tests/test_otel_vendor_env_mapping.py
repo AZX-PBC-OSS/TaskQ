@@ -49,7 +49,7 @@ def _find_spec(name: str) -> bool:
         return False
 
 
-# The full-mode scenarios build the real OTLP exporter inside the subprocess;
+# The full-mode scenarios build the real otlp exporter inside the subprocess;
 # an SDK without the exporter dist (extras-isolation legs that install the
 # dev group's SDK transitively but not [otel]) fails at the entry point, so
 # the guard below needs both, not the SDK alone.
@@ -61,7 +61,7 @@ _AGENT_SITE_ENV = "DD_SITE"
 _AGENT_KEY_ENV = "DD_API_KEY"
 
 #: A realistic connection string for the connection-string vendor: an
-#: instrumentation key GUID and a regional ingest host. The ``.invalid`` TLD
+#: instrumentation key guid and a regional ingest host. The ``.invalid`` tld
 #: is deliberate; nothing may reach it, and nothing does.
 _CONNECTION_STRING = (
     "InstrumentationKey=00000000-0000-0000-0000-000000000000;"
@@ -80,7 +80,7 @@ def _ingestion_endpoint(connection_string: str) -> str:
     return fields["IngestionEndpoint"]
 
 
-# ── the local OTLP/HTTP stub receiver ────────────────────────────────────
+# ── the local otlp/HTTP stub receiver ────────────────────────────────────
 
 _received_paths: list[str] = []
 _received_lock = threading.Lock()
@@ -256,7 +256,7 @@ def test_connection_string_ingestion_endpoint_is_the_otlp_base() -> None:
     """
     endpoint = _ingestion_endpoint(_CONNECTION_STRING)
     assert endpoint == "https://otelvalidation.region.in.applicationinsights.example.invalid/"
-    # Both vendor blocks' endpoint is a BASE: the per-signal paths are the
+    # Both vendor blocks' endpoint is a base: the per-signal paths are the
     # exporter's job, never spelled into the variable.
     assert endpoint.rstrip("/").count("/") == 2
 

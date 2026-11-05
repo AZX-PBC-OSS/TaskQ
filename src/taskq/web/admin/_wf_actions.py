@@ -81,17 +81,17 @@ from taskq.web.admin._wf_rows import (
 
 logger = structlog.get_logger("taskq.web.admin.wf_actions")
 
-#: The refusal banner KEYS the redirect-carrying action routes hand back
+#: The refusal banner keys the redirect-carrying action routes hand back
 #: (the closed vocabulary the detail page's ``REFUSAL_BANNERS`` maps to a
-#: copy — the refused-op contract: the operator lands on the DEFINED
-#: refused state, never a 400 wall). Defined HERE (the routes' home) so
+#: copy — the refused-op contract: the operator lands on the defined
+#: refused state, never a 400 wall). Defined here (the routes' home) so
 #: a route and its banner copy cannot drift apart silently.
 CANCEL_NOT_APPLIED_BANNER: Final[str] = "cancel-not-applied"
 RERUN_NOT_APPLIED_BANNER: Final[str] = "rerun-not-applied"
 RERUN_REFUSED_BANNER: Final[str] = "rerun-refused"
 #: The deadlock's named banner: the retry faces catch the
-#: SAME named pair the cancel/resolve CLI verbs carry and answer the
-#: audited refusal + THIS banner (the race's loser and the remedy
+#: same named pair the cancel/resolve CLI verbs carry and answer the
+#: audited refusal + this banner (the race's loser and the remedy
 #: named).
 RERUN_RACED_BANNER: Final[str] = "rerun-raced"
 #: The deadlock's refusal text (the named pair's shared copy): the audit
@@ -176,7 +176,7 @@ _NODE_PANEL_CHILD_SQL = (
 )
 
 #: The map's children census (the panel's addressing surface): one row
-#: per child, in map order — the operator clicks THROUGH to a child.
+#: per child, in map order — the operator clicks through to a child.
 #: (The statement lives below, beside the render cap it serves.)
 
 _NODE_PARENT_SQL = (
@@ -213,7 +213,7 @@ _NODE_IO_CAPTURE_SQL = (
 #: read is (step, map_index)-addressable).
 _PANEL_CHILDREN_CAP: Final[int] = 200
 
-#: The children census read: the cap bounds the rows; ``count(*) OVER ()``
+#: The children census read: the cap bounds the rows; ``count(*) over ()``
 #: carries the total in the same statement (one read, no second count).
 _NODE_CHILDREN_SQL = (
     "SELECT map_index, status, attempt, max_attempts, error_class, "
@@ -250,11 +250,11 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
 
 
-#: The panel's display cap (CHARS): error_message / error_traceback /
-#: metadata->>'error' render bounded — the full detail stays in the ROWS
-#: (the recorded failure-down fetch reads the same rows; the cap is the DISPLAY's:
+#: The panel's display cap (chars): error_message / error_traceback /
+#: metadata->>'error' render bounded — the full detail stays in the rows
+#: (the recorded failure-down fetch reads the same rows; the cap is the display's:
 #: engine-written rows carry the write-side caps,
-#: but a row written by ANY other path — or a hostile DB write — served
+#: but a row written by any other path — or a hostile DB write — served
 #: unbounded through this endpoint, a 15MB response from a foreign row).
 _PANEL_FIELD_CAP_CHARS: Final[int] = 10_000
 _PANEL_SUFFIX_RESERVE: Final[int] = 80
@@ -293,7 +293,7 @@ def _panel_truncated(texts: list[str | None]) -> bool:
 #: comma, and braces its JSON render needs) beside its content's
 #: length — the json-serialized length's honest proxy. Escape
 #: inflation can still render longer (a kept head's escaped bytes);
-#: the panel's own cap remains the BACKSTOP for that, never the first
+#: the panel's own cap remains the backstop for that, never the first
 #: bound a budgeted doc meets. The budget sits under the display cap
 #: with room for the masks (the served text stays post-redaction —
 #: the honesty law).
@@ -302,15 +302,15 @@ _WALK_NODE_BUDGET: Final[int] = 2_048
 _WALK_CHAR_BUDGET: Final[int] = 8_000
 _WALK_PRUNED_MARKER: Final[str] = "…walk budget exceeded — the rest is not shown…"
 #: The string render's own quote pair — a kept string's served length
-#: is its characters PLUS the two quotes it renders with.
+#: is its characters plus the two quotes it renders with.
 _WALK_STRING_QUOTES: Final[int] = 2
 #: The JSON punctuation a node's own render can carry (quotes, colon,
 #: comma, braces) — the flat per-node charge the served-size accounting
 #: adds beside each node's content length.
 _WALK_NODE_SYNTAX_CHARS: Final[int] = 4
 #: The worst cut's own served render (the marker riding a dict entry's
-#: key AND value, quoted and coloned, plus the nodes' syntax frames) —
-#: the char budget RESERVES it so a cut always lands the census at or
+#: key and value, quoted and coloned, plus the nodes' syntax frames) —
+#: the char budget reserves it so a cut always lands the census at or
 #: under the budget: the census is the served size's honest count,
 #: never an overshoot itself.
 _WALK_CUT_RESERVE: Final[int] = 2 * len(_WALK_PRUNED_MARKER) + 4 * _WALK_NODE_SYNTAX_CHARS
@@ -391,7 +391,7 @@ def _bounded_io_projection(doc: object) -> tuple[object, str | None, dict[str, i
             if rendered > remaining:
                 # The cut is named at its own site (the same marker
                 # _bound_for_panel's suffix carries): the kept head rides
-                # WITH the marker — a partial value never reads as whole,
+                # with the marker — a partial value never reads as whole,
                 # and a token cut mid-body carries no secret (the body is
                 # the cut part; the head still meets the mask below). The
                 # head is sized so the census lands at/under the budget.
@@ -409,11 +409,11 @@ def _bounded_io_projection(doc: object) -> tuple[object, str | None, dict[str, i
             for k, v in cast("dict[str, object]", value).items():
                 state["nodes"] += 1
                 # The key's served render: the key node's syntax frame
-                # PLUS the key's own characters (keys charge too).
+                # plus the key's own characters (keys charge too).
                 state["chars"] += _WALK_NODE_SYNTAX_CHARS + len(k)
                 if _budget_out():
                     # The cut replaces this entry: the marker rides as
-                    # the key (collision-safe, above) AND the value —
+                    # the key (collision-safe, above) and the value —
                     # both contents charge (the frames already have).
                     state["chars"] += len(_WALK_PRUNED_MARKER)
                     out[_marker_key(out)] = _mark()
@@ -463,7 +463,7 @@ def _jsonb_doc(raw: object) -> object:
     return raw
 
 
-#: The node payload's keys that ARE the wired input (the runner's own
+#: The node payload's keys that are the wired input (the runner's own
 #: envelope vocabulary — api/_sql_runner's INPUT_KEY/WF_ARGS_KEY/ITEM_KEY).
 #: Every other payload key is engine bookkeeping and stays off the display.
 _WF_PAYLOAD_INPUT_KEYS: Final[frozenset[str]] = frozenset({"wf_input", "wf_args", "wf_item"})
@@ -758,7 +758,7 @@ async def _validated_through_gates_audited(
     reason: Any,
 ) -> dict[str, object]:
     """The typed door + the audit-on-refusal: validate through the
-    bound gates; a 422 refusal lands its audit row FIRST, then
+    bound gates; a 422 refusal lands its audit row first, then
     propagates. The success path is exactly ``_validate_through_gates``."""
     try:
         return _validate_through_gates(wf_app, hold, decision)
@@ -962,7 +962,7 @@ def register_actions(router: APIRouter) -> None:
 
         The map-index addressing: a map's children share one step key —
         the panel addresses a child by (step, ``map_index``); the bare
-        read lands on the FIRST child in map order and carries the
+        read lands on the first child in map order and carries the
         ``children`` census, so the operator can click through to the
         child whose story they are watching (the demo README's
         observation: ``watch doc-doomed's attempt go 1 → 2``)."""
@@ -1014,7 +1014,7 @@ def register_actions(router: APIRouter) -> None:
                 root_status = await conn.fetchval(_ROOT_STATUS_SQL.format(schema=schema), run_id)
                 capture_pruned = root_status in TERMINAL_STATUSES
             # The children's render cap (bounded read): the first
-            # cap rows + the total (count(*) OVER ()) — a 10k fan-out
+            # cap rows + the total (count(*) over ()) — a 10k fan-out
             # ships 200 rows, never 10k; the "N more" arm names the rest.
             siblings = await conn.fetch(
                 _NODE_CHILDREN_SQL.format(schema=schema), node_key, run_id, _PANEL_CHILDREN_CAP
@@ -1045,7 +1045,7 @@ def register_actions(router: APIRouter) -> None:
             # The read-side bound: the display-capped
             # delivery — a foreign/hostile row's 5MB error fields render
             # bounded with the dropped-count named; the full detail
-            # stays in the ROWS (the CLI/SQL surface reads them
+            # stays in the rows (the CLI/SQL surface reads them
             # uncapped).
             "error_message": _bound_for_panel(node["error_message"]),
             "error_traceback": _bound_for_panel(node["error_traceback"]),

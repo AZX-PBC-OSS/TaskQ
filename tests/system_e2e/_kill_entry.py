@@ -3,29 +3,29 @@
 Invoked via ``sys.executable -m tests.system_e2e._kill_entry`` by
 ``tests/system_e2e/test_kill9_chaos.py``. Loads ``WorkerSettings`` from the
 environment, runs the production ``_main`` bootstrap with the FULL system
-registry, and honours ONE fault-injection switch:
+registry, and honours one fault-injection switch:
 
 ``TASKQ_KILL9_SEAM`` - which seam the process dies on, every death by
 ``os.kill(os.getpid(), SIGKILL)`` (no cleanup, no flush drain, no publish:
 the OS reaps the process the way an operator's ``kill -9`` does):
 
 ``after_claim``
-    ``PostgresBackend.dispatch_batch`` dies AFTER the claim statement has
-    committed (one autocommit UPDATE...RETURNING) and BEFORE the body can
+    ``PostgresBackend.dispatch_batch`` dies after the claim statement has
+    committed (one autocommit UPDATE...RETURNING) and before the body can
     start: the row is running, locked, its lease live, no body ran.
 ``before_terminal``
     ``PostgresBackend.mark_succeeded_with_conn`` / ``mark_succeeded`` die
-    BEFORE the terminal write is attempted: the row stays running with a
+    before the terminal write is attempted: the row stays running with a
     live lease while the body's effects are already durable - the
     uncommitted side of the terminal-write window.
 ``after_terminal``
-    The same writes die AFTER they commit (the fused statement has landed
-    status + result + attempt row + event) and BEFORE the state-change
+    The same writes die after they commit (the fused statement has landed
+    status + result + attempt row + event) and before the state-change
     publish / result fanout can run - the committed side of the window,
     and exactly the "between the ledger write and the heartbeat" gap.
 ``after_heartbeat``
     The worker dies after a beat that actually EXTENDED an in-flight
-    job's lease has committed: the row is running with a JUST-extended
+    job's lease has committed: the row is running with a just-extended
     lease (the kill lands inside the visibility window at its widest).
 
 Without the switch the harness is a plain worker on the full registry.
@@ -50,7 +50,7 @@ from tests.system_e2e.actors import ACTORS as GRACEFUL_ACTORS
 
 #: The full worker-side registry: the graceful scenarios' actors (the keyed
 #: slot scenario kills a holder of ``sys_keyed``'s tenant slot) plus the
-#: kill9 campaign's own shapes. The seams below patch BACKEND/module seams,
+#: kill9 campaign's own shapes. The seams below patch backend/module seams,
 #: so they land regardless of which actor the worker is executing.
 REGISTRY: dict[str, Any] = {**GRACEFUL_ACTORS, **KILL9_ACTORS}
 
@@ -59,7 +59,7 @@ _SEAM = os.environ.get("TASKQ_KILL9_SEAM", "")
 _orig_dispatch_batch = PostgresBackend.dispatch_batch
 _orig_mark_succeeded = PostgresBackend.mark_succeeded
 _orig_mark_succeeded_with_conn = PostgresBackend.mark_succeeded_with_conn
-# The runtime patch target is heartbeat's OWN module global (its tick
+# The runtime patch target is heartbeat's own module global (its tick
 # reads the name on every renewal tick) — pyright's private-import flag
 # is the cross-module read being deliberate.
 _orig_parse_rowcount = _heartbeat_module.parse_rowcount  # pyright: ignore[reportPrivateImportUsage]
@@ -105,9 +105,9 @@ async def _mark_succeeded_then_sigkill(self: Any, *args: Any, **kwargs: Any) -> 
 
 def _parse_rowcount_then_sigkill(tag: Any) -> int:
     n = _orig_parse_rowcount(tag)
-    # The heartbeat loop reads the renewal tag here on the SUCCESS path,
+    # The heartbeat loop reads the renewal tag here on the success path,
     # after tx.commit() has returned (worker/heartbeat.py's
-    # ``jobs_extended`` debug field). A positive count IS a beat that just
+    # ``jobs_extended`` debug field). A positive count is a beat that just
     # extended an in-flight job's lease; an idle beat (0 rows) is not a
     # mid-heartbeat kill, so only a real renewal dies.
     if n > 0 and not _killed:
@@ -126,10 +126,10 @@ elif _SEAM == "after_terminal":
     PostgresBackend.mark_succeeded = _mark_succeeded_then_sigkill  # type: ignore[assignment]
     PostgresBackend.mark_succeeded_with_conn = _mark_succeeded_with_conn_then_sigkill  # type: ignore[assignment]
 elif _SEAM == "after_heartbeat":
-    # Why the module-global patch: the heartbeat loop does NOT ride
+    # Why the module-global patch: the heartbeat loop does not ride
     # ``PostgresBackend.heartbeat_jobs`` - it issues the renewal SQL
     # directly on its pool connection inside the tick's own transaction
-    # (and the renewal is THRESHOLD-GATED: only rows whose remaining lease
+    # (and the renewal is threshold-gated: only rows whose remaining lease
     # fell under the threshold are re-stamped). The loop reads
     # ``parse_rowcount`` as a module global on each successful tick, so
     # patching the name here intercepts exactly the post-commit renewal

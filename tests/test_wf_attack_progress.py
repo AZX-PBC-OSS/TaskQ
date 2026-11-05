@@ -12,10 +12,10 @@ storage).
 * ``ProgressEmitter.submit()`` is public and validates
   NOTHING: ``submit(999, …)`` persists ``pct=999``; the migration's
   comment claims pct's smallint is "the storage-domain twin" of the
-  0..100 bound but NO CHECK constraint exists.
+  0..100 bound but no CHECK constraint exists.
 * the auto-class path (``project_auto_event``) discards the
   ring-trim's drop count: only user-class flushes write the
-  ``__stream__`` counters — "dropped ON THE RECORD" is a
+  ``__stream__`` counters — "dropped ON the RECORD" is a
   user-class-only promise.
 * an uncaught ``ProgressRefusedError`` (a deterministic
   authoring defect) is laddered as TRANSIENT and burns all attempts
@@ -57,7 +57,7 @@ class _PageDecl(BaseModel):
     page: int
 
 
-# ── the gate validates lax and stores the PRE-VALIDATION dict ──
+# ── the gate validates lax and stores the pre-validation dict ──
 
 
 async def test_f_prog_1_the_stored_payload_is_the_validated_dump(
@@ -68,8 +68,8 @@ async def test_f_prog_1_the_stored_payload_is_the_validated_dump(
     never the raw pre-validation dict. Rejected shape: the gate's own
     return carries the string '42' and the undeclared extra; the stored
     ``wf_node_progress.data`` row carries them too."""
-    # THE GATE: the return must be the validated dump — the coerced int,
-    # the extras stripped.
+    # the return must be the validated dump — the coerced int, the extras
+    # stripped.
     _pct, _msg, data = validate_emission(50, "m", {"page": "42"}, _PageDecl)
     assert data == {"page": 42}, (
         f"The gate validated LAX and handed back the PRE-VALIDATION dict "
@@ -82,7 +82,7 @@ async def test_f_prog_1_the_stored_payload_is_the_validated_dump(
         "the validated dump strips extras"
     )
 
-    # THE RECORD: through the real emitter, the stored row is the dump.
+    # through the real emitter, the stored row is the dump.
     flow = await seed_flow(wf_conn, wf_schema)
     node = await seed_running_node(wf_conn, wf_schema, flow)
     emitter = ProgressEmitter(wf_pool, wf_sql, flow_id=flow, node_id=node, schema_decl=_PageDecl)
@@ -130,9 +130,9 @@ async def test_f_prog_2a_out_of_domain_pct_refused_and_check_constrained(
     )
     assert stored is None, "a refused emission must write nothing"
 
-    # THE STORAGE'S OWN TEETH — or the claim's correction. The migration's
+    # the storage's own teeth — or the claim's correction. The migration's
     # comment (01.00.28) claims the smallint column is "the storage-domain
-    # twin" of the 0..100 bound; a claim without a CHECK is prose.
+    # twin" of the 0..100 bound; a claim without a check is prose.
     from pathlib import Path
 
     import taskq.migrations
@@ -187,7 +187,7 @@ async def test_f_prog_3_auto_path_trims_are_counted_on_the_record(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """DH2's fence is class-blind: the dropped counter is the honest
-    emitted-vs-delivered pair for THE STREAM, not for one class of it.
+    emitted-vs-delivered pair for the STREAM, not for one class of it.
     Drive the ring past its bound with AUTO-class events alone; the
     record must show the trims exactly as the user path's flush shows
     them (the ``__stream__`` channel's dropped counter)."""
@@ -235,7 +235,7 @@ async def test_f_prog_4_the_refusal_classifies_permanent(
     authoring refusal cannot. The pin drives a real workflow whose body
     violates its own declared ``progress_schema`` (the recorded repro
     shape): the refusal IS on the record (loud — not the finding); the
-    finding is the BURN — a permanent class terminal-fails on the FIRST
+    finding is the BURN — a permanent class terminal-fails on the first
     attempt, exactly one failed ledger leg."""
 
     class _Decl(BaseModel):
@@ -243,8 +243,8 @@ async def test_f_prog_4_the_refusal_classifies_permanent(
 
     async def violating(ctx: StepContext) -> str:
         await ctx.progress(10, "fine", {"page": 1})
-        # THE VIOLATION: data the declared schema refuses — deterministic,
-        # an authoring defect, never transient.
+        # data the declared schema refuses — deterministic, an authoring
+        # defect, never transient.
         await ctx.progress(50, "lying", {"page": "not-an-int-at-all"})
         return "done"
 
@@ -264,7 +264,7 @@ async def test_f_prog_4_the_refusal_classifies_permanent(
         flow_id,
     )
     assert row is not None
-    # The refusal IS loud and terminal (NOT the finding — the finding is the burn).
+    # The refusal is loud and terminal (not the finding — the finding is the burn).
     assert row["status"] == "failed"
     assert row["error_class"] == "ProgressRefusedError"
     failed_legs = await wf_conn.fetchval(
@@ -280,14 +280,14 @@ async def test_f_prog_4_the_refusal_classifies_permanent(
     )
 
 
-# ── THE GUARDS (the recorded repros of laws that HELD — green, forever) ──
+# ── the guards (the recorded repros of laws that held — green, forever) ──
 
 
 async def test_guard_progress_writes_never_block_the_finalize(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool, wf_sql: WorkflowSql
 ) -> None:
     """The finalize-unaffected law (decision e — the asymmetry, the
-    front's battery B1): a node whose EVERY flush fails still
+    front's battery B1): a node whose every flush fails still
     terminalizes normally — the failures are counted on the record
     (``write_errors``), the first loss warned, never raised into the
     node path. The failure shape here: the emitter's statements rendered
@@ -330,10 +330,10 @@ async def test_guard_the_progress_lie_never_flips_the_terminal_state(
 ) -> None:
     """The progress-lie fence (DH4/DH7, the battery's finding E1): a body
     reports pct=100 'done!' and the node then FAILS — the record shows
-    FAILED with the 100% rendered INSIDE it, never 100%-running; a
+    FAILED with the 100% rendered inside it, never 100%-running; a
     STRAGGLER emission landing after the terminal (the aclose race's
     shape) updates freshness only — the LEDGER's status can never flip
-    back. Pinned on BOTH faces: the connect-shape read (``run_display``)
+    back. Pinned on both faces: the connect-shape read (``run_display``)
     and the replay fold (``rebuild_display``)."""
     flow = await seed_flow(wf_conn, wf_schema)
     node = await seed_running_node(wf_conn, wf_schema, flow)
@@ -342,7 +342,7 @@ async def test_guard_the_progress_lie_never_flips_the_terminal_state(
     await emitter.emit(100, "done!", None)
     await emitter.aclose()
 
-    # The node FAILS at 100% (the ledger is the truth).
+    # The node fails at 100% (the ledger is the truth).
     worker_id, attempt, epoch = await claim_view(wf_conn, wf_schema, node)
     await finalize_node(
         wf_pool,
@@ -357,11 +357,11 @@ async def test_guard_the_progress_lie_never_flips_the_terminal_state(
         error_class="Boom",
         error_message="the body failed at 100%",
     )
-    # THE STRAGGLER: a late emission lands after the terminal (the aclose race).
+    # a late emission lands after the terminal (the aclose race).
     await emitter.emit(100, "really done", None)
     await emitter.aclose()
 
-    # FACE 1 — the connect shape: failed, with the 100% inside it.
+    # face 1 — the connect shape: failed, with the 100% inside it.
     display = await run_display(wf_pool, wf_sql, flow)
     d = display[str(node)]
     assert d["status"] == "failed", (
@@ -371,7 +371,7 @@ async def test_guard_the_progress_lie_never_flips_the_terminal_state(
         "the last progress (the straggler's) renders INSIDE the terminal state (advisory)"
     )
 
-    # FACE 2 — the replay fold: the LEDGER wins the status at every fold.
+    # face 2 — the replay fold: the ledger wins the status at every fold.
     events = await wf_conn.fetch(wf_sql.progress_replay_node, 0, node, 1000)
     ledger = await wf_conn.fetch(wf_sql.workflow_nodes, flow)
     rebuilt = rebuild_display([dict(r) for r in ledger], [], [dict(e) for e in events])

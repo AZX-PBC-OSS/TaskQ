@@ -16,7 +16,7 @@ The surfaces the probes guard:
   * MAX_FAN_IN_PER_JOIN (the fan-in bound's bound — an int Final, the probe defends
     its misuse as a string join target).
 
-THE EVIDENCE-INTEGRITY ROUND'S REPAIR (wire-or-delete, no zombie
+the EVIDENCE-INTEGRITY ROUND'S REPAIR (wire-or-delete, no zombie
 corpus): this file had ROTTED off the gate — the signatures moved
 (``ErrorInfo`` grew the required ``error_traceback``, ``WorkflowSql``
 became a fully-rendered bundle constructed by
@@ -26,7 +26,7 @@ remaining parameters went keyword-only-required, ``JobId`` is
 (pyright's vocabulary is ``reportAttributeAccessIssue``, not
 ``reportAttributeAccess``; ty's is ``invalid-argument-type``). Every
 marker here is re-derived against the CURRENT signatures; the rule-id
-declarations name BOTH checkers' vocabularies.
+declarations name both checkers' vocabularies.
 
 Run:  pyright --project tests/typeprobe/pyrightconfig.json tests/typeprobe/attack2_wf_phase2_types.py
       ty check tests/typeprobe/attack2_wf_phase2_types.py
@@ -63,7 +63,7 @@ def probe_failure_info_envelope() -> None:
         map_index=None,
         error=ErrorInfo(error_class="ValueError", error_message="boom", error_traceback=None),
         attempts=(),
-        policy="fail_closed",  # MUST_ERROR(reportArgumentType, invalid-argument-type): the policy marker is the TYPED absorbing vocabulary (collect|maybe); a fail_closed edge absorbs nothing, the envelope cannot claim it
+        policy="fail_closed",  # MUST_ERROR(reportArgumentType, invalid-argument-type): the policy marker is the typed absorbing vocabulary (collect|maybe); a fail_closed edge absorbs nothing, the envelope cannot claim it
     )
     _ = lie
 
@@ -98,7 +98,7 @@ def probe_workflow_status_vocabulary() -> None:
         pass
     number = len(
         next_state
-    )  # NOT a type error — a WorkflowStatus IS a str union; recorded as a (mild) type-law note
+    )  # not a type error — a WorkflowStatus is a str union; recorded as a (mild) type-law note
     _ = number
 
 
@@ -130,7 +130,7 @@ async def probe_fan_in_skip_signature() -> None:
 def probe_bound_is_an_int() -> None:
     bound: int = MAX_FAN_IN_PER_JOIN
     _ = bound
-    usage = "x" * MAX_FAN_IN_PER_JOIN  # type-correct (an int IS a repeat count)
+    usage = "x" * MAX_FAN_IN_PER_JOIN  # type-correct (an int is a repeat count)
     _ = usage
     MAX_FAN_IN_PER_JOIN.join(
         ""

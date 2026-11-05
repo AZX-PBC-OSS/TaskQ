@@ -20,7 +20,7 @@ the shape: a leader-gated, batched ``DELETE`` by ``occurred_at`` -
 ``TASKQ_`` prefix.
 
 One carve-out is a hard constraint, not a preference: the
-``kind='state_change' AND detail->>'reason' = 'lock_expired'`` slice of
+``kind='state_change' and detail->>'reason' = 'lock_expired'`` slice of
 ``job_events`` is the crash-reclaim outbox that ``poll_reclaim_events``
 and ``TaskQ.watch_reclaims()`` consume under a trailing-watermark
 protocol. An age sweep that deletes that slice races the watermark and
@@ -256,7 +256,7 @@ async def test_event_retention_preserves_the_reclaim_outbox_slice(
     module_pg_schema: ModulePgSchema,
     clean_pg_conn: asyncpg.Connection,
 ) -> None:
-    """``kind='state_change' AND reason='lock_expired'`` events are the
+    """``kind='state_change' and reason='lock_expired'`` events are the
     crash-reclaim outbox (``poll_reclaim_events`` /
     ``TaskQ.watch_reclaims()``). However old they are, the age sweep must
     not delete them - racing the trailing watermark silently corrupts

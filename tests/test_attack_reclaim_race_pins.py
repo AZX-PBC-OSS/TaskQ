@@ -261,7 +261,7 @@ class TestLiveRenewalVsReclaim:
         assert n == 0, "the sweep took a row the renewal held locked"
         await tx.commit()
 
-        # The renewal committed a FUTURE lease; the sweep must now see a
+        # The renewal committed a future lease; the sweep must now see a
         # future lease and leave the row alone.
         n = await PostgresBackend.sweep_expired_locks(clean_pg_conn, _GRACE, _GRACE, schema=schema)
         assert n == 0, (

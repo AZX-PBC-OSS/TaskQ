@@ -181,7 +181,7 @@ def test_stats_sql_unions_the_live_terminal_population() -> None:
 
 
 def test_stats_sql_window_bounds_both_sides_with_a_stable_clock() -> None:
-    """A window bounds BOTH sides by finished_at, bound once as ``$1`` and
+    """A window bounds both sides by finished_at, bound once as ``$1`` and
     referenced twice, and anchored to ``statement_timestamp()`` (STABLE),
     not ``clock_timestamp()`` (VOLATILE): an aggregate has no LIMIT to
     hide a post-scan Filter behind, and a VOLATILE bound cannot be a
@@ -196,7 +196,7 @@ def test_stats_sql_window_bounds_both_sides_with_a_stable_clock() -> None:
         "Filter over the whole archive population"
     )
     # The archive side composes its own WHERE; the live side already
-    # filters terminal statuses, so the window rides as an AND.
+    # filters terminal statuses, so the window rides as an and.
     assert "job_attempts_archive a ON a.job_id = j.id\n    WHERE j.finished_at >=" in sql
     assert "status IN ('abandoned', 'cancelled', 'crashed', 'failed', 'succeeded')\n" in sql
     assert "    AND j.finished_at >=" in sql
@@ -204,7 +204,7 @@ def test_stats_sql_window_bounds_both_sides_with_a_stable_clock() -> None:
 
 def test_stats_sql_last_error_class_takes_the_most_recent_non_null() -> None:
     """last_error_class is the actor's most recent row that carries one,
-    ordered by finished_at DESC NULLS LAST so a pathological NULL-
+    ordered by finished_at DESC NULLS last so a pathological NULL-
     finished_at row cannot shadow a stamped one."""
     sql = _build_stats_sql("taskq", per_queue=False)
     assert "ORDER BY u.finished_at DESC NULLS LAST" in sql

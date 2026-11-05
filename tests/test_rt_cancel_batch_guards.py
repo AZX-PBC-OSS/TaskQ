@@ -13,7 +13,7 @@ Three guards, each with a test that goes red if the guard is removed:
     drain whose window never fills past a zero cap never terminates (the
     infinite-drain shape), while ``statement_timeout_ms=0`` disables the
     batch's safety net outright.  Both must be rejected at the typed
-    boundary, BEFORE any database access.
+    boundary, before any database access.
 2.  **Statement-timeout enforcement on the cancel drain** - the batch
     transaction runs under ``SET LOCAL statement_timeout``, so a batch whose
     driving statement exceeds the bound is aborted server-side
@@ -54,7 +54,7 @@ class _TouchRaisesConn:
     """A connection stand-in whose every use is a test failure.
 
     For the boundary-validation pins: the guards must reject degenerate
-    bounds BEFORE any database access, so any method call reaching this
+    bounds before any database access, so any method call reaching this
     object means validation did not run first.
     """
 

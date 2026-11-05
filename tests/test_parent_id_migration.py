@@ -2,7 +2,7 @@
 
 The fan-out ledger's exact-count half stands on this column: children
 carry the parent's job id, the pending-children aggregate reads it
-through one partial index. These pins hold WITHOUT a database (the
+through one partial index. These pins hold without a database (the
 file-content contract); the applied-to-PG behavior is pinned by the
 integration legs in tests/test_children_count_parity.py.
 """
@@ -15,7 +15,7 @@ from taskq.backend._sql_templates import COPY_FROM_COLUMNS
 
 MIGRATION_DIR = Path("src/taskq/migrations")
 MIGRATION_NAME = "01.00.23_01_pre_jobs_parent_id.sql"
-# The shipped 23_01 is BYTE-FROZEN with the index still in it: the
+# The shipped 23_01 is byte-frozen with the index still in it: the
 # upgrade-path gate builds its base database from the merge base's own
 # chain, whose ledger holds that file's checksum — any rewrite of the
 # version key's bytes (the consolidation's split attempt
@@ -63,13 +63,13 @@ def test_migration_index_serves_the_pending_children_count() -> None:
     prove its predicate from the query's own quals). The shipped 23_01 is
     byte-frozen WITH the index (the upgrade-path law outranks the split
     for a file deployed ledgers already applied); 23_07 carries the
-    index's IF NOT EXISTS record — the single-lock-class law's form for
+    index's IF not EXISTS record — the single-lock-class law's form for
     files not yet shipped."""
     index_sql = (MIGRATION_DIR / INDEX_MIGRATION_NAME).read_text()
     assert "jobs_parent_pending_idx" in index_sql
     assert "WHERE status IN ('pending', 'scheduled') AND parent_id IS NOT NULL" in index_sql
     # The shipped file still carries the index too (byte-frozen as
-    # shipped, warts included): the pin holds BOTH sites.
+    # shipped, warts included): the pin holds both sites.
     assert "jobs_parent_pending_idx" in _migration_sql()
 
 
@@ -105,14 +105,14 @@ def test_migration_creates_index_non_concurrently() -> None:
 
 
 def test_copy_from_columns_carries_parent_id() -> None:
-    """The trailing law: parent_id is COPY_FROM_COLUMNS' LAST member.
+    """The trailing law: parent_id is COPY_FROM_COLUMNS' last member.
 
     The list is the single source the archive CSVs and the enqueue COPY
-    both derive from, and the record builder writes parent_id LAST (the
+    both derive from, and the record builder writes parent_id last (the
     ARITY pin's coherence — the batch record's trailing member matches
     the list's trailing member). The position DIED in the consolidation
     (the budget trio appended past it) and was RESTORED (93b255ff's
-    resolution, carried here): the trio sits BEFORE parent_id, the
+    resolution, carried here): the trio sits before parent_id, the
     archive-mirror parity intact. This pin holds the position — both
     omission-set comments cite it as the trailing law's enforcement;
     membership alone would let the trio's next append strand the

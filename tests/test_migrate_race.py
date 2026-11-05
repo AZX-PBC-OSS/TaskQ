@@ -3,7 +3,7 @@
 migrator-vs-traffic races against the REAL ``taskq migrate`` subprocess.
 
 ``tests/test_timescaledb_hypertables.py`` pins the LOCK TABLE EXCLUSIVE
-serialization for ONE concurrent writer; the migration advisory lock
+serialization for one concurrent writer; the migration advisory lock
 (:func:`taskq.migrate.migration_advisory_lock`) claims to serialize the
 deploy step. Nothing has PROVEN migrator-vs-migrator or
 migrator-vs-traffic. This module attacks, every migration invocation a
@@ -31,7 +31,7 @@ CLI imported into the test's process):
 * there is no ``migrate down`` — forward-only by design (the module
   docstring of ``taskq/migrate.py``), so the rollback-shaped operator
   path is ``migrate disable-hypertables``; it is raced against
-  ``migrate up`` on the SAME advisory lock under the same honesty
+  ``migrate up`` on the same advisory lock under the same honesty
   contract.
 
 Residue discipline: every test drops its own schema in ``finally``;
@@ -73,14 +73,14 @@ _TIMESCALE_IMAGE = os.environ.get("TASKQ_TEST_TIMESCALEDB_IMAGE") or _TIMESCALE_
 # ── Timeout arithmetic (derived, not vibes) ──────────────────────────────
 # DEFAULT_MIGRATION_LOCK_TIMEOUT (imported, so a production retune of the
 # lock wait re-derives every budget here instead of silently drifting):
-# each pod's bounded WAIT for the advisory lock. A fresh-schema apply of
+# each pod's bounded wait for the advisory lock. A fresh-schema apply of
 # the bundled chain measured single digits of seconds on CI containers;
 # _APPLY_MARGIN_PER_POD = 60s is an
 # order of magnitude above it. Pods queue on the lock, so a pod's total
 # lifetime is bounded by its own lock wait + its own apply:
 #   per-pod budget = 120 + 60 = 180s; n pods, n x 180s.
 # The gates (mid-run join, ledger rows, SIGKILL lock release) wait on the
-# PODS' OWN lifecycle — a pod's cold start (interpreter + imports) and its
+# pods' own lifecycle — a pod's cold start (interpreter + imports) and its
 # apply are both inside the gated window, and both stretch with runner
 # weather (a 2-core co-tenancy pin stretches the subprocess lifecycle ~4x).
 # So a gate gets the pods' full budget, not a flat constant: the join gate
@@ -106,7 +106,7 @@ _GATE_BUDGET_SECS: float = _pod_budget(2)
 #: The mid-run join pin's re-drive rounds. The join window (winner's apply
 #: vs loser's arrival — see the pin's docstring) closes under hard CPU
 #: compression with ~1/3 probability per round; 5 rounds put the residual
-#: at ~0.4%. A lock mutant shows the queueing instant in NO round, so the
+#: at ~0.4%. A lock mutant shows the queueing instant in no round, so the
 #: re-drive costs it nothing: still deterministically red.
 _JOIN_ATTEMPTS: int = 5
 
@@ -199,7 +199,7 @@ async def _assert_ledger_converged(conn: asyncpg.Connection, schema: str) -> Non
 
 async def _gate_on_ledger_rows(dsn: str, schema: str, *, minimum: int) -> int:
     """Poll until the ledger records at least ``minimum`` rows (the
-    mid-run gate: the first migrator is provably INSIDE the chain), and
+    mid-run gate: the first migrator is provably inside the chain), and
     return the count seen. Bounded by the same budget a queued pod gets."""
     conn = await asyncpg.connect(dsn)
     try:
@@ -232,9 +232,9 @@ async def _gate_on_queued_join(
 
     So the gate demands a POSITIVE observation, sampled in one instant,
     that the serialization actually engaged: the ledger already carries
-    rows (pod A provably inside the chain) AND at least one session is
+    rows (pod A provably inside the chain) and at least one session is
     BLOCKED on the migration advisory lock (``pg_locks``: locktype
-    'advisory', NOT granted, keyed on the migration lock key's two 32-bit
+    'advisory', not granted, keyed on the migration lock key's two 32-bit
     halves — B queueing
     behind A). Every ``migrate up`` acquires the lock before reading the
     ledger, even a no-op one, so on correct code B must queue whenever it
@@ -549,7 +549,7 @@ async def test_five_pods_migrate_up_storm(pg_dsn: str, race_schema: str) -> None
 async def test_second_migrator_joins_mid_first_run(pg_dsn: str, race_schema: str) -> None:
     """Not concurrently-launched-and-hoped: the join must be PROVEN mid-run.
     Pod B launches alongside pod A and ``_gate_on_queued_join`` then demands
-    one sampled instant showing the ledger mid-chain AND one pod blocked
+    one sampled instant showing the ledger mid-chain and one pod blocked
     behind the advisory lock — the loser provably queued on the lock while
     the winner's chain applied, never apply-over-it. Spawn order does not
     buy the lock: either pod may win, so the outcome contract is "exactly
@@ -562,18 +562,18 @@ async def test_second_migrator_joins_mid_first_run(pg_dsn: str, race_schema: str
     the same t=0 (the boots run in PARALLEL, so the loser's arrival costs
     one boot, not boot-plus-A's-elapsed-apply): winner's apply ~0.8-3s,
     loser's boot ~0.8-1.5s idle — an overlap of ~1-2s, sampled at 25ms.
-    Both stretch under co-tenancy weather, and NOT proportionally: the
+    Both stretch under co-tenancy weather, and not proportionally: the
     apply is PG-round-trip bound (the container is not on the pinned
     cores), the boot is import-CPU bound (it is), so a hard enough CPU
     compression inverts the ordering — the loser arrives to a finished
-    chain and NO queueing instant exists to see. That inversion (not a
+    chain and no queueing instant exists to see. That inversion (not a
     product defect: the five-pod storm and the SIGKILL-convergence pins
     hold under the same weather) is what the 2-core-pinned soak of
     2026-09-27 caught, masked for a full autopsy by the old reaper's
     ProcessLookupError. The re-drive is the same doctrine as the TTL herd
     pin (dd4572ff): weather may eat a ROUND; the contract is proven on a
     round that lands. A lock mutant (barge / early-release / private key)
-    shows the instant in NO round — deterministically red — while a correct
+    shows the instant in no round — deterministically red — while a correct
     lock shows it with probability ~1 per round idle and ~2/3 under the
     harshest observed compression — 5 rounds: residual (1/3)^5 ≈ 0.4%
     (census on 2026-09-27: 10 rounds at 2 cores + 2 hog loops measured
@@ -602,12 +602,12 @@ async def test_second_migrator_joins_mid_first_run(pg_dsn: str, race_schema: str
                 )
             except BaseException as gate_error:
                 # The gate failed (or the collect did) with both pods
-                # possibly still alive: reap them BEFORE the DROP SCHEMA,
+                # possibly still alive: reap them before the drop SCHEMA,
                 # which otherwise deadlocks against a live migrator's
                 # schema locks. The reap must be race-safe: a pod that
                 # exited between the gate's last sample and this kill has
                 # a closed transport, and kill() on it raises
-                # ProcessLookupError — which would REPLACE the real
+                # ProcessLookupError — which would replace the real
                 # diagnosis (that masking is how the loaded-soak red of
                 # 2026-09-27 hid its cause for the whole autopsy). Kill
                 # only provably-live pods and tolerate the exited rest.
@@ -770,7 +770,7 @@ async def test_two_pods_flag_on_race_ends_converted(race_ts_dsn: str, race_schem
 async def test_disable_hypertables_races_migrate_up(race_ts_dsn: str, race_schema: str) -> None:
     """There is no ``migrate down`` (forward-only by design), so the
     rollback-shaped operator path is ``migrate disable-hypertables``. It
-    and ``migrate up`` claim the SAME advisory lock: run them
+    and ``migrate up`` claim the same advisory lock: run them
     concurrently — both must exit honestly and the final state must be
     internally consistent (whichever ran last owns the shape; nothing
     half-converted)."""

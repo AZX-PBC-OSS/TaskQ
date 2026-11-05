@@ -4,7 +4,7 @@
 
 SQL-audit F3: the heartbeat loop's gated jobs-lock renewal
 (``UPDATE_JOBS_LOCK_RENEWAL_SQL_TEMPLATE``) was O(the worker's running
-fleet) per beat - the OR'd threshold predicate defeated every index, so
+fleet) per beat - the or'd threshold predicate defeated every index, so
 the statement visited every held row to decide that most rows need
 nothing, and it rides the tick path. The fix restructures the gate as a
 row-shortlist CTE whose arms are each index-bound (the expiry arm drives
@@ -14,7 +14,7 @@ condition at all, the same trade backend/_sweeps.py's reclaim sweep
 documented). These pins hold the two safety properties the bound risks:
 
 * the non-reclaim invariant (the risk row): a job whose consumer is
-  alive but whose renewal was DEFERRED by the gate must NOT be
+  alive but whose renewal was DEFERRED by the gate must not be
   reclaimed - the sweep's lease arm only takes rows whose
   ``lock_expires_at`` has actually passed, and the gate's whole sizing
   contract (``_lease_renewal_threshold``) is that a deferred row's
@@ -56,7 +56,7 @@ from taskq.worker.heartbeat import _lease_renewal_threshold
 pytestmark = pytest.mark.integration
 
 #: The pinned regime: a lease the gate can actually defer under (the
-#: threshold must sit BELOW the lease for any row to ever be deferred;
+#: threshold must sit below the lease for any row to ever be deferred;
 #: at the 60s default lease the gate is inert - the floor 58s eats the
 #: slack - so these pins use 6s, where the fast-suite arithmetic gives
 #: threshold 3.0s and a two-beat defer-then-renew cycle).
@@ -197,7 +197,7 @@ async def test_deferred_renewal_row_is_not_reclaimed(
     )
     worker_id, job_id = await _seed_worker_and_running_job(clean_pg_conn, schema, expires_in=_LEASE)
 
-    # Walk the row past its ORIGINAL lease deadline: 12 steps of one
+    # Walk the row past its original lease deadline: 12 steps of one
     # tick's decay (0.6s) age it 7.2s against a lease of 6.0s. A
     # consumer alive this whole time holds a running job the whole
     # time - any reclaim inside the walk is the spurious-reclaim bug.
@@ -269,7 +269,7 @@ async def test_deferred_row_is_picked_up_by_a_later_beat(
 
     # Age the row between beats, server-side: the deferred regime's
     # normal decay, compressed to test time. The remaining lease stays
-    # strictly positive - this is NOT a lapse, the gate is never
+    # strictly positive - this is not a lapse, the gate is never
     # surprised by an expired row.
     await clean_pg_conn.execute(
         f'UPDATE "{schema}".jobs SET lock_expires_at = lock_expires_at - $2::interval '
@@ -313,7 +313,7 @@ async def test_renewal_plan_is_index_bound_at_depth(
     rows held by one worker, every lease fresh (the deferred regime -
     nothing due), every scan node in the gated renewal's plan is an
     index scan, and the expiry arm's Index Cond is the threshold range
-    on ``jobs_running_lock_expires_idx`` - the index bound the OR'd
+    on ``jobs_running_lock_expires_idx`` - the index bound the or'd
     spelling could never produce (its plan was a Seq Scan over the
     whole jobs table, measured on this same seed).
     """

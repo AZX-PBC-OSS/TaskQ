@@ -12,17 +12,17 @@ The three configurations:
 
 * ``timescale-tsl`` — ``timescale/timescaledb:2.30.1-pg18``, the flag on:
   hypertables + columnstore + policy-driven chunk-drop retention;
-* ``timescale-apache`` — the SAME image started with
+* ``timescale-apache`` — the same image started with
   ``postgres -c timescaledb.license=apache`` (the license GUC cannot be
   changed inside a running session; the server command line is the
   documented way): hypertables convert (the conversion itself is
-  Apache-licensed) but BOTH the retention policies and the columnstore
+  Apache-licensed) but both the retention policies and the columnstore
   are Timescale-license features the server refuses — measured
   ``FeatureNotSupportedError`` — so the deploy registers nothing and
   retention stays with the row-level sweeps;
 * ``vanilla`` — plain ``postgres:18``, the flag off: plain tables, the
   row-level sweeps own all of retention. The repo's default mode, bound
-  into the matrix explicitly by running the SAME lifecycle on it.
+  into the matrix explicitly by running the same lifecycle on it.
 
 Per phase, the mode-documented behavior:
 
@@ -30,7 +30,7 @@ Per phase, the mode-documented behavior:
    migrated schema carries the mode's shape — three hypertables on both
    Timescale modes (the apache mode's conversion succeeds; refusing the
    policies is not refusing the feature), plain tables on vanilla, and
-   the policy families registered ONLY on the TSL mode.
+   the policy families registered only on the TSL mode.
 2. **Operate**: live claims and terminal folds through the REAL
    ``prune_terminal_jobs`` move — the prune→archive write path works on
    every mode's schema, and folds the same rows to the same counts.
@@ -39,7 +39,7 @@ Per phase, the mode-documented behavior:
    a row whose ``expire_at`` is still far in the future (the documented
    partition-clock trade) — while the sweep still expires an in-window
    row whose ``expire_at`` passed (row-exact inside young chunks); on
-   apache and vanilla there are no policies, and the SAME
+   apache and vanilla there are no policies, and the same
    ``archive_expiry_sweep`` that TSL bounds below its policy floor owns
    the whole range and deletes the aged row exactly on ``expire_at``.
 4. **Disable round-trip**: the converted schemas return to plain tables
@@ -93,7 +93,7 @@ _TIMESCALE_IMAGE = (
 )
 
 #: The retention settings the lifecycle runs with: short enough that the
-#: TSL policy's chunk interval clamps to the 1-day floor and the aged
+#: tsl policy's chunk interval clamps to the 1-day floor and the aged
 #: seeds (3.5 days) sit a full chunk clear of the 2-day drop boundary —
 #: the sibling retention-interplay module's arithmetic, reused.
 _TEST_ARCHIVE_RETENTION = timedelta(days=2)
@@ -127,7 +127,7 @@ def tsl_container() -> Iterator[Any]:
 
 @pytest.fixture(scope="module")
 def apache_container() -> Iterator[Any]:
-    """The apache-license mode: the SAME image, the license set at boot
+    """The apache-license mode: the same image, the license set at boot
     (the GUC cannot change inside a running session, so the server
     command line is the documented mechanism)."""
     skip_test_without_docker()
@@ -172,7 +172,7 @@ def timescale_apache_dsn(apache_container: Any) -> str:
     inside a running session, so the dedicated module container is
     configured down with ALTER SYSTEM + reload (measured: after the
     reload, NEW sessions see ``apache`` — and the server refuses the
-    retention policies AND the compression APIs alike)."""
+    retention policies and the compression APIs alike)."""
     import asyncio
 
     dsn = _dsn(apache_container)
@@ -278,17 +278,16 @@ async def test_full_lifecycle_on_each_of_the_three_modes(mode: StorageMode, mode
         # The compression family's first run fires seconds after the TSL
         # deploy registered it; defer it before any more DML, so no phase
         # below races it for a chunk (see _defer_compression_policies).
-        # THE RETENTION FAMILY JOINS THE DEFERRAL (the hold round red, fixed
-        # 2026-10-08): the retention policy's first run fires seconds after
-        # registration exactly like the compression one — and phase 3's
-        # row-exactness window (the aged row must SURVIVE the row-level
-        # sweep before the forced policy run takes it) closes the moment
-        # an un-deferred retention job fires mid-test and drops the aged
-        # seed's chunk ahead of its own script (count 0 != 1, the
-        # partition clock beating the test's). Deferred here, pulled back
-        # to now ONLY by _force_retention_policies_now at the phase's
-        # own drop step — the drop belongs to the phase, never to the
-        # background scheduler's arrival time.
+        # the retention policy's first run fires seconds after registration
+        # exactly like the compression one — and phase 3's row-exactness window
+        # (the aged row must survive the row-level sweep before the forced
+        # policy run takes it) closes the moment an un-deferred retention job
+        # fires mid-test and drops the aged seed's chunk ahead of its own
+        # script (count 0 != 1, the partition clock beating the test's).
+        # Deferred here, pulled back to now only by
+        # _force_retention_policies_now at the phase's own drop step — the drop
+        # belongs to the phase, never to the background scheduler's arrival
+        # time.
         if mode is StorageMode.TIMESCALE_TSL:
             await _defer_retention_policies(conn, schema)
             await _defer_compression_policies(conn, schema)
@@ -339,7 +338,7 @@ async def test_full_lifecycle_on_each_of_the_three_modes(mode: StorageMode, mode
                 jid,
             )
 
-        # ── Post-round-trip: all three modes are now the SAME mode ──
+        # ── Post-round-trip: all three modes are now the same mode ──
         # One more expired row, drained by the one mechanism every mode
         # shares: the row-level sweep, exact on expire_at, watermark kept.
         await _seed_expired_archive_row(conn, schema)
@@ -354,7 +353,7 @@ async def test_full_lifecycle_on_each_of_the_three_modes(mode: StorageMode, mode
 
 
 async def _detect(dsn: str) -> StorageMode:
-    """The mode the container actually presents — asserted BEFORE the
+    """The mode the container actually presents — asserted before the
     lifecycle runs: a drift in the images or the license mechanics is a
     DETECTION failure, never a confusing downstream shape mismatch."""
     conn = await asyncpg.connect(dsn)
@@ -383,7 +382,7 @@ async def _assert_phase_one_schema(
         return
 
     # Both Timescale modes convert the three tables — the conversion is
-    # Apache-licensed; refusing the POLICIES (apache mode) is not
+    # Apache-licensed; refusing the policies (apache mode) is not
     # refusing the feature.
     assert await _hypertables(conn, schema) == {
         "job_events",
@@ -396,7 +395,7 @@ async def _assert_phase_one_schema(
             ("jobs_archive", "policy_retention"),
             ("job_attempts_archive", "policy_retention"),
             # The 2.30.1 image: the compression policy registers under
-            # the LEGACY name (the deploy code's measured probe —
+            # the legacy name (the deploy code's measured probe —
             # add_columnstore_policy errors, add_compression_policy
             # lands), so the proc_name the catalogs report is
             # policy_compression.
@@ -478,12 +477,12 @@ async def _assert_phase_three_drain(
     expired_jid = await _seed_expired_archive_row(conn, schema)
     aged_jid = new_uuid()
     now = datetime.now(UTC)
-    # The aged seed's expire_at is MODE-DELIBERATE. On TSL it is far
+    # The aged seed's expire_at is mode-deliberate. On tsl it is far
     # future: the row is 3.5 days past the policy's 2-day partition
-    # boundary, so if it drains at all it is the POLICY that took it —
+    # boundary, so if it drains at all it is the policy that took it —
     # never the expire_at sweep. On apache/vanilla there is no policy;
     # the row-level sweep takes rows exactly on expire_at, so the aged
-    # seed must actually BE expired to be drainable.
+    # seed must actually be expired to be drainable.
     aged_expire_at = (
         now + timedelta(days=365)
         if mode is StorageMode.TIMESCALE_TSL
@@ -518,9 +517,9 @@ async def _assert_phase_three_drain(
         )
         # The policy drain: the aged row's chunk is a full interval older
         # than the 2-day boundary (3.5 days back, 1-day chunks). Force a
-        # REAL retention-policy run (the alter_job next_start knob, the
+        # real retention-policy run (the alter_job next_start knob, the
         # sibling module's sanctioned pattern) and poll for the policy's
-        # own committed effect — on the DERIVED budget (see the
+        # own committed effect — on the derived budget (see the
         # constants' block above the helper): the recorded first-tick
         # artifact gives 3 executions, the sibling's 60s the per-dispatch
         # bound, the cancel-storm doctrine the 20x co-tenancy stretch.
@@ -531,10 +530,10 @@ async def _assert_phase_three_drain(
             timeout_secs=_POLICY_DROP_BUDGET_SECS,
         )
     else:
-        # apache + vanilla: no policies exist, the sweep owns the WHOLE
+        # apache + vanilla: no policies exist, the sweep owns the whole
         # range — the aged row goes exactly on expire_at.
         if mode is StorageMode.TIMESCALE_APACHE:
-            # The apache mode HAS the information views; the policy set
+            # The apache mode has the information views; the policy set
             # is provably empty. (Vanilla has no views at all — its
             # no-extension state was phase 1's pin.)
             assert await _policy_rows(conn, schema) == set(), f"no policy can exist on {mode.value}"
@@ -638,8 +637,8 @@ async def _defer_compression_policies(conn: asyncpg.Connection, schema: str) -> 
     retention-interplay module's documented discipline (``_schedule_policies``
     defers ``policy%`` wholesale; the compression policy is not these
     phases' subject). Measured on this box: a fresh container's
-    compression jobs make their FIRST run seconds after registration, and
-    that run races the forced retention run for the SAME chunk (compress
+    compression jobs make their first run seconds after registration, and
+    that run races the forced retention run for the same chunk (compress
     vs drop — the retention job's ``drop_chunks`` blocks on the
     compression job's transaction, or the conversion fails outright);
     the loser's retry clock (5 minutes for a retention job, 1 hour for a
@@ -682,21 +681,21 @@ async def _force_retention_policies_now(conn: asyncpg.Connection, schema: str) -
         )
 
 
-#: The TSL policy-drop wait budget, DERIVED from the repo's own measured
+#: The tsl policy-drop wait budget, derived from the repo's own measured
 #: artifacts — never a guess:
 #:
 #: * The recorded first-tick artifact (``benchmarks/results/timescale-
 #:   compression.json``'s ``first_tick_probe``, produced by
 #:   ``benchmarks/timescale_compression.py`` Shape 7 and cited by
 #:   ``docs/guides/ops.md``'s watch list): on a compressed-chunk
-#:   hypertable the DML path trails the chunk's compression state by ONE
-#:   EXECUTION — the recorded worst shapes deleted ``[12, 28, 0]`` (mixed:
+#:   hypertable the dml path trails the chunk's compression state by one
+#:   execution — the recorded worst shapes deleted ``[12, 28, 0]`` (mixed:
 #:   12 young + 28 compressed of the 40 qualifying) and ``[0, 40, 0]``
 #:   (all-compressed: the first tick deletes 0 outright), with the bare
 #:   ``DELETE`` contrast deleting all 40 on the first execution — the
-#:   skip is statement-shape-dependent. So the policy's first EFFECTIVE
-#:   run can be its SECOND dispatch, and convergence plus the confirming
-#:   settled tick take THREE. The expired 60s budget baked in the
+#:   skip is statement-shape-dependent. So the policy's first effective
+#:   run can be its second dispatch, and convergence plus the confirming
+#:   settled tick take three. The expired 60s budget baked in the
 #:   single-dispatch assumption — that assumption is the red.
 #: * One dispatch's bound: 60.0s — the sibling retention-interplay
 #:   module's ``_wait_for`` default, the single-dispatch bound every
@@ -708,15 +707,15 @@ async def _force_retention_policies_now(conn: asyncpg.Connection, schema: str) -
 #:
 #: The full product (3 executions x 60s x 20 = 3600s) can never fire:
 #: the harness's global per-test guillotine (``--timeout=300``,
-#: ``pyproject.toml`` addopts) executes the TEST first — a wait budget
+#: ``pyproject.toml`` addopts) executes the test first — a wait budget
 #: beyond it is decoration, and this module's own gate runs under
 #: ``-n 2`` with siblings measured exactly that death (the poll still
 #: sleeping at the 300s kill). The bound actually honored is therefore
 #: the cap: 300 - 60 = 240s, where 60s is the leg's measured cost
-#: OUTSIDE the wait (the migrate subprocess, the fold, the sweeps, the
+#: outside the wait (the migrate subprocess, the fold, the sweeps, the
 #: disable round-trip — the solo leg runs 23s end to end). The budget
-#: bounds FAILURE only: a healthy policy lands the drop in seconds and
-#: the poll pays nothing, while a never-dropping policy must still RED
+#: bounds failure only: a healthy policy lands the drop in seconds and
+#: the poll pays nothing, while a never-dropping policy must still red
 #: (the teeth leg below pins exactly that — it passes its own short
 #: bound, because with the policy job disabled no dispatch can ever
 #: land the drop, so any positive budget proves the red).
@@ -732,7 +731,7 @@ _POLICY_DROP_BUDGET_SECS = min(
     _DERIVED_DROP_BUDGET_SECS, _HARNESS_GUILLOTINE_SECS - _LEG_OVERHEAD_SECS
 )  # 240s
 
-#: The teeth leg's bound (the mutation there makes ANY budget red).
+#: The teeth leg's bound (the mutation there makes any budget red).
 _NEVER_DROPS_TEETH_BUDGET_SECS = 10.0
 
 
@@ -757,18 +756,18 @@ async def _wait_for(
 async def test_tsl_policy_job_disabled_the_drop_wait_still_reds(
     timescale_tsl_dsn: str,
 ) -> None:
-    """The policy-drop wait's TEETH: a policy that NEVER drops must red
+    """The policy-drop wait's TEETH: a policy that never drops must red
     the wait, never green it — the lifecycle leg's green must always be
     the policy's own committed effect, not the wait's patience.
 
     The mutation: every ``policy_retention`` job in the schema is
-    DISABLED (``alter_job(scheduled => FALSE)``) BEFORE the aged row even
+    DISABLED (``alter_job(scheduled => FALSE)``) before the aged row even
     exists — so even the deploy's ~now-scheduled first policy run had
     nothing aged to drop, and after the disable no background-worker
     dispatch can ever take the chunk. The wait is then required to RAISE
     on its own bound, and the row must still be there. The teeth budget
     is short by construction (``_NEVER_DROPS_TEETH_BUDGET_SECS``): with
-    the job disabled ANY positive budget proves the red — the full
+    the job disabled any positive budget proves the red — the full
     derived :data:`_POLICY_DROP_BUDGET_SECS` is the lifecycle leg's to
     pay, never this leg's.
     """
@@ -778,7 +777,7 @@ async def test_tsl_policy_job_disabled_the_drop_wait_still_reds(
 
     conn = await asyncpg.connect(timescale_tsl_dsn)
     try:
-        # The mutation FIRST — the aged seed does not exist yet.
+        # The mutation first — the aged seed does not exist yet.
         jobs = await conn.fetch(
             "SELECT job_id, scheduled FROM timescaledb_information.jobs "
             "WHERE hypertable_schema = $1 AND proc_name = 'policy_retention'",
@@ -796,14 +795,14 @@ async def test_tsl_policy_job_disabled_the_drop_wait_still_reds(
         )
         assert still_scheduled == [], "the mutation must take: no scheduled policy remains"
 
-        # The IDENTICAL prey the lifecycle's TSL leg drops: 3.5 days back,
+        # The identical prey the lifecycle's tsl leg drops: 3.5 days back,
         # a full chunk clear of the 2-day boundary, expire_at far future
         # (only a policy's partition clock can take it).
         aged_jid = new_uuid()
         await _seed_fully_aged_archive_row(
             conn, schema, aged_jid, expire_at=datetime.now(UTC) + timedelta(days=365)
         )
-        # The force is deliberately STILL applied: a disabled job must
+        # The force is deliberately still applied: a disabled job must
         # not run merely because its next_start says now.
         await _force_retention_policies_now(conn, schema)
 
@@ -813,7 +812,7 @@ async def test_tsl_policy_job_disabled_the_drop_wait_still_reds(
                 what="the TSL retention policy to drop the fully-aged chunk",
                 timeout_secs=_NEVER_DROPS_TEETH_BUDGET_SECS,
             )
-        # And the prey SURVIVED the whole window: nothing but the policy
+        # And the prey survived the whole window: nothing but the policy
         # could have taken it, and the policy was disabled.
         assert not await _row_gone(conn, schema, aged_jid)(), (
             "the aged row must survive the never-drops window: the red above "
@@ -879,7 +878,7 @@ async def test_doctor_reports_the_detected_mode_on_real_containers(
     assert result.returncode == 0, f"doctor failed on {mode.value}: {result.stderr}"
     assert f"storage mode: {mode.value} - " in plain_cli_output(result.stdout), result.stdout
 
-    # The vanilla leg's red arm: run it again with the flag ON (the env
+    # The vanilla leg's red arm: run it again with the flag on (the env
     # contradicting the server) — the drift finding names the refusal.
     if mode is StorageMode.VANILLA:
         drifted = _invoke_doctor(mode_dsn, schema, flag=True)
@@ -895,7 +894,7 @@ async def test_doctor_reports_the_detected_mode_on_real_containers(
         assert "storage mode drift" not in plain_cli_output(result.stdout)
 
 
-# ── The attack legs: mode flips, the TSL-call census, doctor-vs-reality ──
+# ── The attack legs: mode flips, the tsl-call census, doctor-vs-reality ──
 
 
 async def _set_license(dsn: str, license: str) -> None:
@@ -928,7 +927,7 @@ async def test_tsl_to_apache_downgrade_disable_refuses_with_the_license_remedy(
     tsl_container: Any, timescale_tsl_dsn: str
 ) -> None:
     """The operator's real downgrade path: convert under the full TSL
-    license, THEN downgrade the license to apache (ALTER SYSTEM + reload).
+    license, then downgrade the license to apache (ALTER SYSTEM + reload).
     The conversion-era policies are still registered - and measured on
     2.30.1 they now fail on every background run - while every removal
     API refuses under the downgraded license. The disable must refuse
@@ -944,7 +943,7 @@ async def test_tsl_to_apache_downgrade_disable_refuses_with_the_license_remedy(
 
         # The converging re-deploy under the downgraded license: exits 0
         # (the conversion is Apache-licensed, nothing to re-convert) - and
-        # the five TSL-era policies STAY (nothing under apache can remove
+        # the five tsl-era policies stay (nothing under apache can remove
         # them; measured: they fail on every background run).
         up2 = _run(timescale_tsl_dsn, schema, ["migrate", "up"], flag=True)
         assert up2.returncode == 0, up2.stderr
@@ -1022,7 +1021,7 @@ async def test_downgrade_strands_aged_rows_and_doctor_names_it(
                 now,
                 now + timedelta(hours=1),
                 now - _AGED_FINISHED_AT,  # older than the 2-day policy horizon
-                now - timedelta(minutes=1),  # expire_at HAS passed
+                now - timedelta(minutes=1),  # expire_at has passed
             )
             sweep = await archive_expiry_sweep(conn, schema=schema)
             survivors = await conn.fetchval(
@@ -1085,7 +1084,7 @@ async def test_apache_to_tsl_upgrade_adopts_policies_on_the_next_migrate(
         finally:
             await conn.close()
 
-        # The UPGRADE, then the next deploy: the policies are adopted.
+        # The upgrade, then the next deploy: the policies are adopted.
         await _set_license(timescale_tsl_dsn, "timescale")
         assert await _live_license(timescale_tsl_dsn) == "timescale"
         up2 = _run(timescale_tsl_dsn, schema, ["migrate", "up"], flag=True)
@@ -1134,14 +1133,14 @@ async def test_apache_mode_issues_zero_tsl_only_statements(
     apache_container: Any, timescale_apache_dsn: str
 ) -> None:
     """The exhaustive TSL-call census, run on the apache-license server
-    with the server's OWN statement log (``log_statement = all`` — the
+    with the server's own statement log (``log_statement = all`` — the
     capture that records every ATTEMPTED statement, including ones an
     error aborts). One full lifecycle — migrate up (the enable), operate
     (the real prune→archive fold), the row-level drain, the disable
     round-trip — bracketed by a unique marker statement, then the log is
     swept end to end: ZERO TSL-only statements may be attempted anywhere
     in the window. The census is negative by absence: the enable path
-    must branch BEFORE the policy APIs (not call-and-catch them), the
+    must branch before the policy APIs (not call-and-catch them), the
     disable path must skip the removals (not call-and-ignore), the
     decompression-budget probe must not run (no columnstore was adopted),
     and the sweeps' floor probe must stay on the Apache-legal information
@@ -1160,7 +1159,7 @@ async def test_apache_mode_issues_zero_tsl_only_statements(
     finally:
         await conn.close()
     try:
-        # The marker, its own logged statement: everything AFTER it in the
+        # The marker, its own logged statement: everything after it in the
         # server's statement log is the census window.
         conn = await asyncpg.connect(timescale_apache_dsn)
         try:
@@ -1230,11 +1229,11 @@ async def test_apache_mode_issues_zero_tsl_only_statements(
     )
 
 
-# ── The doctor's capability lines against the server's MEASURED truth ────
+# ── The doctor's capability lines against the server's measured truth ────
 
 
 async def _measure_policy_capability(dsn: str) -> str:
-    """The server's OWN verdict on the one capability the mode matrix
+    """The server's own verdict on the one capability the mode matrix
     turns on: can this license register a retention policy at all? A
     scratch hypertable (the conversion itself is Apache-licensed), one
     ``add_retention_policy`` attempt, everything dropped after. Vanilla
@@ -1309,7 +1308,7 @@ async def test_doctor_capability_lines_match_measured_reality(
             "the server just ACCEPTED a retention policy - the doctor would "
             "be lying in the other direction"
         )
-        # The apache line must promise rowstore, and must NOT promise the
+        # The apache line must promise rowstore, and must not promise the
         # columnstore or the policies.
         assert "rowstore" in output
         assert "columnstore on the archive tables" not in output
@@ -1317,8 +1316,8 @@ async def test_doctor_capability_lines_match_measured_reality(
     else:
         assert measured == "refused"  # vanilla: no extension, nothing to accept
         assert "no hypertables, no columnstore" in output
-    # The honest edge, every mode: detection reads the SERVER, never the
-    # flag - with the flag OFF the mode line still renders the server's
+    # The honest edge, every mode: detection reads the server, never the
+    # flag - with the flag off the mode line still renders the server's
     # capability (the flag-off deployment is supported on every mode), and
     # no drift arm fires for that alignment.
     quiet = _invoke_doctor(mode_dsn, schema, flag=False)
@@ -1341,7 +1340,7 @@ async def test_detection_needs_no_privilege_and_never_lies_vanilla(
     * a RESTRICTED role (no superuser, no extension privileges - just
       CONNECT) detects the same mode. Measured on PG18/2.30.1: every
       probe read is PUBLIC - the catalogs, ``timescaledb.license`` (its
-      value reads fine restricted), ``to_regproc`` - except ONE:
+      value reads fine restricted), ``to_regproc`` - except one:
       examining ``shared_preload_libraries`` raises
       ``InsufficientPrivilegeError`` for a restricted role (the setting
       exists, so missing_ok does not apply). The probe reads that one
@@ -1356,7 +1355,7 @@ async def test_detection_needs_no_privilege_and_never_lies_vanilla(
       (vanilla is a real mode with its own retention semantics - guessing
       it from a failed probe would be the one lie the family cannot
       tell)."""
-    # The restricted role: CONNECT only.
+    # The restricted role: connect only.
     conn = await asyncpg.connect(timescale_tsl_dsn)
     try:
         await _drop_restricted_role(conn)
@@ -1371,7 +1370,7 @@ async def test_detection_needs_no_privilege_and_never_lies_vanilla(
         f"probe is a PUBLIC catalog read (got {detected})"
     )
     # ... and the license value itself reads fine restricted - the GUC the
-    # mode DECIDES on is not among the PG18-examination-restricted ones.
+    # mode decides on is not among the PG18-examination-restricted ones.
     restricted = await asyncpg.connect(restricted_dsn)
     try:
         assert (
@@ -1387,7 +1386,7 @@ async def test_detection_needs_no_privilege_and_never_lies_vanilla(
         await conn.close()
 
     # The fail-loud edge: a probe failure outside the one known privilege
-    # shape PROPAGATES - it must never classify as vanilla (the unit-tier
+    # shape propagates - it must never classify as vanilla (the unit-tier
     # pin of the arm's honesty).
     class _BrokenConn:
         async def fetchval(self, query: str, *args: Any) -> Any:

@@ -159,7 +159,7 @@ class JobIdCollisionBackend(PostgresBackend):
     """Backend whose batched enqueue genuinely fails with a server-side
     ``UniqueViolationError`` (``jobs_pkey``) on the caller's connection.
 
-    Before the FIRST batched INSERT, the first planned arg's job id is
+    Before the first batched INSERT, the first planned arg's job id is
     committed by a SECOND connection - the client write that won the race
     to that id in production - then the real ``enqueue_batch`` INSERT runs
     and genuinely violates ``jobs_pkey`` for real, with no asyncpg
@@ -359,7 +359,7 @@ class FrozenClockConn:
 
 
 class InjectedClockConn:
-    """Delegates to a real connection with the tick's EVERY clock read injected.
+    """Delegates to a real connection with the tick's every clock read injected.
 
     A scenario whose instants are FIXED calendar values - the DST overlap
     family's 2026-11-01 fold - is wall-calendar-immune only when every clock
@@ -385,7 +385,7 @@ class InjectedClockConn:
       instant, so a live clock past the pinned fold silently demotes the
       future twin to 'pending'.
 
-    FrozenClockConn is the narrower sibling: it pins ONLY the planning clock
+    FrozenClockConn is the narrower sibling: it pins only the planning clock
     and leaves the due bound live - the right shape for scenarios whose
     instants are derived from the live server clock each run (relative
     boundary pins). This class is the right shape for scenarios whose
@@ -580,7 +580,7 @@ def next_ten_min_boundary(after: datetime) -> datetime:
     return floored if floored > after else floored + timedelta(minutes=10)
 
 
-# ── DST fall-back discovery: the drives' dates from the zone's own rules ──
+# ── dst fall-back discovery: the drives' dates from the zone's own rules ──
 
 
 @dataclass(frozen=True, slots=True)
@@ -701,7 +701,7 @@ def fallback_transitions(zone: str, first_year: int, last_year: int) -> list[Fal
     inside the fixed window ``[first_year, last_year)``, discovered from the
     installed zoneinfo.
 
-    The DST drives date their instants from a zone's OWN rules rather than
+    The DST drives date their instants from a zone's own rules rather than
     hardcoded calendar dates: a zone's rule is a fact of the installed zone
     database, and that database moves between vintages - a rule change can
     remove a transition a hardcoded date was built on, leaving the drive's

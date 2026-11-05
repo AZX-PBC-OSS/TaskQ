@@ -19,7 +19,7 @@ face, the join's decode face.
   must surface at the wiring, not only at the worker's boot: the actor,
   both queues, and the distinct-actor remedy named; the map's EXPLICIT
   ``queue=`` knob (the doc-ingest guide's Shape-4 wiring) stays silent.
-* the FAN-IN BOUND'S ESCAPE ON THE MAP FACE: the
+* the FAN-IN BOUND'S ESCAPE ON the MAP FACE: the
   1000-parent bound is real (``FanInBoundExceededError`` at 2335
   chunks) and the child-driven escape rides
   ``child_driven=`` on ``map_source`` / ``route`` (one machinery, both
@@ -84,7 +84,7 @@ async def _arm_audio(ctx: Any, item: Audio) -> Report:
 def test_f2_the_route_arms_forked_cohorts_project_at_boot() -> None:
     """The arms' rows are claimable rows: a route whose arms declare
     their own placements (the per-arm queue, the arm's DISTINCT actor —
-    the one-queue law's remedy) must see BOTH arms' forked cohorts in
+    the one-queue law's remedy) must see both arms' forked cohorts in
     the boot projection, beside the source's own and the derived join's.
     A walk that reads the declared nodes only leaves the arms' cohorts
     absent — the arm rows strand silently until the app
@@ -106,8 +106,8 @@ def test_f2_the_route_arms_forked_cohorts_project_at_boot() -> None:
             return build(routed)
 
         configs = [(c.actor, c.queue) for c in seam.project_workflow_actor_configs()]
-        # THE SOURCE'S OWN + THE DERIVED JOIN'S cohorts (the declared
-        # nodes) — and THE ARMS' FORKED cohorts (the fix's subjects).
+        # the source's own + the derived JOIN'S cohorts (the declared
+        # nodes) — and the arms' forked cohorts (the fix's subjects).
         assert ("wf", "default") in configs, (
             f"the source's own cohort vanished from the projection: {configs}"
         )
@@ -126,11 +126,11 @@ def test_f2_the_route_arms_forked_cohorts_project_at_boot() -> None:
 
 def test_f2_the_conflicting_arm_shape_skips_loud_never_silent() -> None:
     """The other honest face (the pin's complement): an arm spelling a
-    SECOND queue on the source's OWN actor (the one-queue-law breach)
+    SECOND queue on the source's own actor (the one-queue-law breach)
     must go LOUD at boot — the workflow's cohorts project NOTHING and
     the defect is named (the projection-skipped arm) — never the silent
-    silent stranding. The projection does NOT raise
-    for a workflow's OWN conflict (the isolation law — one broken build
+    silent stranding. The projection does not raise
+    for a workflow's own conflict (the isolation law — one broken build
     fn must not refuse the worker's whole boot); the READ is: no cohort
     of the broken workflow projects."""
     seam.reset_app_registry_for_tests()
@@ -222,7 +222,7 @@ def test_f3_the_taught_map_knobs_split_stays_silent() -> None:
 
 def test_f3_the_taught_heterogeneous_shape_stays_clean_at_the_error_severity() -> None:
     """The severity's guard (the doc-ingest guide's own wiring): the
-    heterogeneous placement under ONE actor (the map's children on
+    heterogeneous placement under one actor (the map's children on
     'enrich', the downstream steps on 'cpu'/'io') is the estate's
     TAUGHT shape — the dev-loop door honors it, so the validate must
     never REFUSE it: the validate() raising face stays clean (the
@@ -282,7 +282,7 @@ def test_f6_the_child_driven_escape_is_exposed_on_the_map_face() -> None:
         "the raw JoinSpec, the authoring face silent)"
     )
 
-    # THE DEFAULT STAYS THE BOUNDED SHAPE.
+    # the default stays the bounded shape.
     app2 = WorkflowApp()
 
     @app2.workflow("dsc_f6_default")
@@ -298,7 +298,7 @@ def test_f6_the_child_driven_escape_is_exposed_on_the_map_face() -> None:
 def test_f6_the_child_driven_escape_is_exposed_on_route() -> None:
     """The route's own spelling (the dict form IS map_source — one
     machinery): ``route(source, arms, child_driven=True)`` carries the
-    same declaration to the SAME join."""
+    same declaration to the same join."""
     app = WorkflowApp()
 
     @app.workflow("dsc_f6_route_cd")
@@ -342,7 +342,7 @@ async def test_f9_the_multi_parent_join_body_receives_the_declared_models(
 ) -> None:
     """The decode face at the join, held: a multi-parent fan-in's body —
     the step consuming SEVERAL promises — receives the parents' results
-    DECODED INTO THE DECLARED MODELS (the same R3 face the rest of the
+    DECODED into the DECLARED MODELS (the same R3 face the rest of the
     machinery honors), never the jsonb round-trip's raw dicts. The
     docshelf team's F9 observed raw dicts at this face; the re-probe
     against this branch found the decode HONEST (the docshelf face not

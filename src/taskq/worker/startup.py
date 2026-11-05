@@ -27,7 +27,7 @@ SELECT actor, max_concurrent, max_pending, queue, result_ttl, metadata,
 
 # ── The upserts' shared body ────────────────────────────────────────────
 # ONE INSERT…SELECT…unnest statement (the 12-position bind list included)
-# with a ``{capacity_set}`` slot for the ``DO UPDATE SET`` clause's
+# with a ``{capacity_set}`` slot for the ``do UPDATE set`` clause's
 # capacity assignments — the two faces below render the same body, so
 # their bind lists cannot drift. The slot is filled by token replacement
 # (the house convention, never ``.format``): the body keeps ``{schema}``
@@ -56,7 +56,7 @@ ON CONFLICT (actor) DO UPDATE SET
 """
 
 # ``max_concurrent``, ``max_pending``, ``result_ttl``, and ``queue`` are
-# deliberately absent from the ``DO UPDATE SET`` clause: Postgres leaves an
+# deliberately absent from the ``do UPDATE set`` clause: Postgres leaves an
 # unlisted column at its current value on conflict, so an existing row's
 # capacity fields and queue assignment survive every subsequent startup
 # untouched no matter what the ``@actor(...)`` literal says. The capacity
@@ -71,7 +71,7 @@ ON CONFLICT (actor) DO UPDATE SET
 # registered value, which is safe because `sync_actor_config` has already
 # raised (or the caller passed ``force=True``) for metadata drift before
 # this statement runs.
-# ``max_attempts`` and ``retry_kind`` are the opposite family: CODE-owned
+# ``max_attempts`` and ``retry_kind`` are the opposite family: code-owned
 # on every boot, always re-written from the ``@actor(...)`` literal. They
 # decide how many attempts a server-side fire gets and which retry family
 # it belongs to (cron fires and the admin run-now build their EnqueueArgs
@@ -84,7 +84,7 @@ ON CONFLICT (actor) DO UPDATE SET
 # ``actor-config-retry-contract-change`` (emitted by `sync_actor_config`
 # below) is what makes the win visible instead of silent.
 #: The two faces' ``{capacity_set}`` slot fills: the operator face
-#: assigns nothing beyond the shared body's own SET clause; the
+#: assigns nothing beyond the shared body's own set clause; the
 #: code-owned face adds exactly the two capacity assignments (the
 #: module's own render inputs — the smoke guard's ``_render_extra``
 #: resolves the slot from here, never a copy).
@@ -97,31 +97,26 @@ _UPSERT_ACTOR_CONFIG_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.replace(
     "{capacity_set}", _OPERATOR_CAPACITY_SET
 ).strip()
 
-# THE CODE-OWNED CAPACITY UPSERT (the ``capacity_owner="code"`` opt-in): the SAME statement as
-# ``_UPSERT_ACTOR_CONFIG_SQL`` except the ``DO UPDATE SET`` clause also
-# rewrites ``max_concurrent`` and ``result_ttl`` from the declared
-# literal — the retry contract's own law, on the capacity axes. It runs
-# ONLY for the actors that opted in (``@actor(capacity_owner="code")`` /
-# ``@app.actor(capacity_owner="code")``): a changed literal deploys by
-# code on every boot instead of silently doing nothing after first boot.
-# The default rows never touch this statement — the operator statement
-# above is byte-identical for them (the operator-owns law holds).
-#
-# Deliberately still ABSENT from the SET clause, for both owners:
-# * ``queue`` — the assignment is the operator's rolling move
-#   (`taskq actor-config move-queue`): old-literal workers boot beside
-#   the move and a code literal must not flip the row back (the
-#   ``actor-config-queue-override`` warning's own subject). The
-#   capacity_owner declaration moves WHO owns capacity, not WHO owns
-#   placement.
-# * ``max_pending`` — its enforcement is the PRODUCER-side enqueue
-#   admission, which reads the STORED row through a TTL-bounded cache;
-#   the backlog cap is the operator's lever on the producers exactly
-#   like the queue is (``taskq actor-config set``), and a code flip
-#   would retune live admission out from under producers still holding
-#   the cached cap. The claim-side cannot bound a backlog (claiming is
-#   the only drain), so the stored row is the only
-#   enforcement seat there is.
+# the same statement as ``_UPSERT_ACTOR_CONFIG_SQL`` except the ``do UPDATE
+# set`` clause also rewrites ``max_concurrent`` and ``result_ttl`` from the
+# declared literal — the retry contract's own law, on the capacity axes. It
+# runs only for the actors that opted in (``@actor(capacity_owner="code")`` /
+# ``@app.actor(capacity_owner="code")``): a changed literal deploys by code on
+# every boot instead of silently doing nothing after first boot. The default
+# rows never touch this statement — the operator statement above is
+# byte-identical for them (the operator-owns law holds). Deliberately still
+# absent from the set clause, for both owners: * ``queue`` — the assignment is
+# the operator's rolling move (`taskq actor-config move-queue`): old-literal
+# workers boot beside the move and a code literal must not flip the row back
+# (the ``actor-config-queue-override`` warning's own subject). The
+# capacity_owner declaration moves who owns capacity, not who owns placement. *
+# ``max_pending`` — its enforcement is the producer-side enqueue admission,
+# which reads the stored row through a TTL-bounded cache; the backlog cap is
+# the operator's lever on the producers exactly like the queue is (``taskq
+# actor-config set``), and a code flip would retune live admission out from
+# under producers still holding the cached cap. The claim-side cannot bound a
+# backlog (claiming is the only drain), so the stored row is the only
+# enforcement seat there is.
 _UPSERT_CODE_OWNED_CAPACITY_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.replace(
     "{capacity_set}", _CODE_OWNED_CAPACITY_SET
 ).strip()
@@ -132,7 +127,7 @@ _UPSERT_CODE_OWNED_CAPACITY_SQL = _ACTOR_CONFIG_UPSERT_BODY_SQL.replace(
 # stored value wins and a differing literal is *expected*, not an error.
 # The queue assignment belongs to this family too, moved by
 # `taskq actor-config move-queue`, never by a boot, but is surfaced at
-# WARNING (`actor-config-queue-override`) rather than info, because cron
+# warning (`actor-config-queue-override`) rather than info, because cron
 # fires follow the stored queue while producers enqueue by their own
 # literal: the disagreement is real drift to surface. The check is written
 # out explicitly below rather than joined to this tuple so that
@@ -146,7 +141,7 @@ _CAPACITY_FIELDS = ("max_concurrent", "max_pending", "result_ttl")
 _STRUCTURAL_FIELDS = ("metadata",)
 
 # The capacity fields a ``capacity_owner="code"`` actor hands to the
-# declaration: the code-owned upsert's SET clause rewrites exactly these
+# declaration: the code-owned upsert's set clause rewrites exactly these
 # from the literal on every boot. ``max_pending`` is deliberately not
 # here (see ``_UPSERT_CODE_OWNED_CAPACITY_SQL`` — the producer-side
 # admission reads the stored row; the operator keeps the backlog cap),
@@ -246,7 +241,7 @@ async def sync_actor_config(
            UPSERT overwrites the stored pair with the registered value —
            a changed literal deploys by code on every boot instead of
            silently doing nothing after first boot. The queue and
-           ``max_pending`` stay operator-owned for BOTH owners (the
+           ``max_pending`` stay operator-owned for both owners (the
            move-queue law; the producer-side enqueue admission reads the
            stored row).
       3. Upsert all registered rows via ``INSERT ... ON CONFLICT (actor)
@@ -316,13 +311,12 @@ async def sync_actor_config(
                         cfg.capacity_owner == CAPACITY_OWNER_CODE
                         and field in _CODE_OWNED_CAPACITY_FIELDS
                     ):
-                        # THE CODE DEPLOY IS VISIBLE: the code-owned
-                        # actor's literal is about to WIN — the upsert's
-                        # SET clause below rewrites this field from the
-                        # declaration. Warning, never silent: the stored
+                        # the code-owned actor's literal is about to win — the
+                        # upsert's set clause below rewrites this field from
+                        # the declaration. Warning, never silent: the stored
                         # capacity is about to change by code, the same
-                        # visibility the retry contract's own change
-                        # event carries.
+                        # visibility the retry contract's own change event
+                        # carries.
                         logger.warning(
                             "actor-config-capacity-code-change",
                             actor=cfg.actor,
@@ -349,7 +343,7 @@ async def sync_actor_config(
                 # disagreement is real drift to surface, but refusing boot
                 # here is exactly what made a queue move need lockstep
                 # coordination. The newest assignment (the stored row)
-                # wins, and the UPSERT below preserves it.
+                # wins, and the upsert below preserves it.
                 logger.warning(
                     "actor-config-queue-override",
                     actor=cfg.actor,
@@ -367,7 +361,7 @@ async def sync_actor_config(
             }
             if retry_contract_values != registered_retry_contract:
                 # Warning, never an error: max_attempts/retry_kind are
-                # code-owned and the UPSERT below overwrites the stored
+                # code-owned and the upsert below overwrites the stored
                 # pair with the registered literal on every boot. No
                 # operator surface can write these columns, so the stored
                 # value differing means either the code literal changed
@@ -456,9 +450,9 @@ async def sync_actor_config(
         code_owned_configs = [
             cfg for cfg in actor_configs if cfg.capacity_owner == CAPACITY_OWNER_CODE
         ]
-        # THE DEFAULT PATH IS BYTE-IDENTICAL: no code-owned rows → the
-        # operator statement alone, exactly as before this opt-in
-        # existed (same SQL text, same arrays, same single execute).
+        # no code-owned rows → the operator statement alone, exactly as before
+        # this opt-in existed (same SQL text, same arrays, same single
+        # execute).
         statements: list[tuple[str, list[ActorConfig]]] = [
             (_UPSERT_ACTOR_CONFIG_SQL, operator_configs)
         ]

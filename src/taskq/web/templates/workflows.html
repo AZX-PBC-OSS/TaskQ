@@ -28,11 +28,9 @@
                 <td class="px-4 py-2.5 text-sm">{{ r.workflow }}</td>
                 <td class="px-4 py-2.5 text-sm">
                     {{ r.root_status }}
-                    {# THE RUN-LEVEL DEFERRAL BADGE (the visibility
-                       gap's guard): a pathologically deferring run is
-                       visible from the inventory — the sitting nodes'
-                       count, the next fire, the deferral depth (the
-                       rows' own aggregated truth; the detail page's
+                    {# a pathologically deferring run is visible from the inventory — the sitting
+                       nodes' count, the next fire, the deferral depth
+                       (the rows' own aggregated truth; the detail page's
                        deferral line is the per-step face). #}
                     {% if r.deferring %}
                     <span class="ml-2 text-xs text-amber-700 dark:text-amber-300" data-wf-run-deferring title="nodes sitting on a live deferral">⏰ {{ r.deferring }} deferred · next fire {{ r.next_fire }} · snooze #{{ r.snooze_count }}</span>
@@ -48,7 +46,7 @@
 <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Showing the {{ page_size }} most recent runs.</p>
 {% endif %}
 {% else %}
-{# THE EMPTY STATE (#673's rule): a schema with no workflow runs yet is
+{# the empty state (#673's rule): a schema with no workflow runs yet is
    state, not an error — the page says so and names the next step. #}
 <div class="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-6 text-sm text-slate-600 dark:text-slate-300">
     <p class="font-medium">No workflow runs yet.</p>

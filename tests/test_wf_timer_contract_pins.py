@@ -6,67 +6,67 @@ Each pin asserts the SAFE behavior.
 
 The behaviors held:
 
-* THE TROJAN PREFIX: a payload model named
+* the TROJAN PREFIX: a payload model named
   ``__timer__Approval`` mints a "human hold" that is INVISIBLE to
   ``HitlClient.list()`` (the _LIST_SQL's prefix exclusion), UNANSWERABLE
   (the boundary refuses the hand-delivered answer as a forgery of the
-  clock), NEVER fail-closes (the expiry arm excludes the prefix), and
+  clock), never fail-closes (the expiry arm excludes the prefix), and
   SELF-FIRES at the deadline — the timer arm resolves it with the
   ``TimerWake`` receipt, the wait site's revalidation against the
   trojan model fails, and the run dies ``error_class='SignalPayloadError'``
-  (every leg observed live). THE PIN: ``wait_signal`` refuses a model
+  (every leg observed live). the PIN: ``wait_signal`` refuses a model
   whose name carries the reserved prefix — the mint-time refusal NAMING
   the rule (build door or wait site), never the self-fire death.
-* THE BROADCAST LEAK: durable timers surface as pending HUMAN
+* the BROADCAST LEAK: durable timers surface as pending HUMAN
   holds on the expiry-as-value broadcast + backfill: the hold-create notify is
   unconditional (``register_hold``'s create leg), and the listener's
   backfill (``_hitl_listen.py`` — ``WHERE status = 'held'``) carries no
   prefix filter (observed: ``HoldCreated(signal='__timer__leak')`` on
-  BOTH the notify and the backfill legs; ``Backfilled.open_hold_ids``
-  carries the timer id). THE PIN: the broadcast + the backfill never
+  both the notify and the backfill legs; ``Backfilled.open_hold_ids``
+  carries the timer id). the PIN: the broadcast + the backfill never
   surface a timer hold as a HUMAN hold (the filter fix; a typed
   TimerScheduled event distinct from HoldCreated also satisfies —
   recorded here).
-* THE 10K-TIMER TAIL: ``sweep_due_timers`` is one bounded batch
+* the 10K-TIMER TAIL: ``sweep_due_timers`` is one bounded batch
   (``batch_size=100``, no drain) at the 30s default cadence → 10k due
-  timers drain in ~50 minutes (observed: 1500 seeded due, ONE pass fired
-  exactly 100, 1400 left held; no ``drain=`` knob exists); and NO index
+  timers drain in ~50 minutes (observed: 1500 seeded due, one pass fired
+  exactly 100, 1400 left held; no ``drain=`` knob exists); and no index
   leads the due-scan (the wf_signals indexes are ``(id, status)`` and
-  ``(workflow_id, status, id)`` — the ``status='held' AND
-  signal_name LIKE '__timer__%' AND expires_at <= now ORDER BY
-  expires_at`` scan is a seq scan + sort per tick). THE PIN: (a) the
+  ``(workflow_id, status, id)`` — the ``status='held' and
+  signal_name LIKE '__timer__%' and expires_at <= now ORDER BY
+  expires_at`` scan is a seq scan + sort per tick). the PIN: (a) the
   arm DRAINS (``drain=True`` semantics — one call cascade loops until
-  the due-set empties): 1500 due timers all resolve within ONE cascade
+  the due-set empties): 1500 due timers all resolve within one cascade
   in a handful of seconds; (b) a static pin: a migration carries an
   index covering the due-scan (``expires_at`` on ``wf_signals``, the
   held-partial or equivalent).
-* THE EXPLORER'S FALSE AFFORDANCE: the admin run page renders the
+* the EXPLORER'S FALSE AFFORDANCE: the admin run page renders the
   human RESOLVE form on a TIMER hold row (``workflow_detail.html``'s
   ``{% if h.status == 'held' and actions_enabled %}`` — any held row;
   observed at render level: a ``__timer__`` hold row renders
-  ``data-wf-form="resolve"`` exactly like a human hold's). THE PIN:
+  ``data-wf-form="resolve"`` exactly like a human hold's). the PIN:
   timer rows never render the human-resolve form (the template branch;
   the render-level pin keeps the HUMAN affordance intact).
-* THE DRIFT-INVISIBLE OPERATOR: zero ``code_version`` references
+* the DRIFT-INVISIBLE OPERATOR: zero ``code_version`` references
   in the CLI/admin surfaces — a run redeployed mid-flight (two distinct
   §22.1 hashes on one run's rows — the stamps EXIST,
   ``jobs.code_version``) is flagged nowhere (observed: the mixed-version
   run's ``taskq flows status <run>`` output carries no version line at
-  all). THE PIN: ``flows status <run>`` surfaces the version drift when
+  all). the PIN: ``flows status <run>`` surfaces the version drift when
   a run's node rows carry >1 distinct ``code_version``.
-* THE STRUCTURAL-REDEPLOY WEDGE: rename a node in a redeploy →
+* the STRUCTURAL-REDEPLOY WEDGE: rename a node in a redeploy →
   the in-flight run's pending row at that key is unresolvable in the new
   process (observed: the new-process drive RAISES
   ``WorkflowRunError: step 'second' is not in workflow ... compiled
   graph nor in its registered definition`` raw out of ``drive()``; the
-  row stays ``pending``, the root stays ``running`` — NEVER terminal;
+  row stays ``pending``, the root stays ``running`` — never terminal;
   the fleet's face parks it budget-free at the snooze cadence with only
-  the stranded-detector's log — nothing surfaces ON THE RUN). THE PIN
+  the stranded-detector's log — nothing surfaces ON the RUN). the PIN
   (the house's loud law — direction recorded here): the run whose
   pending node's key vanished from the registry TERMINAL-FAILS LOUDLY
   with a NAMED error class, never an eternal zombie.
 
-THE RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
+the RESIDUAL-FIXES LANE'S RECONCILED FLIPS (the adoption-with-flip-
 the pack's acceptance law — each marker left only when its fix landed,
 and the pin's assertion outlives the fix:
 
@@ -77,19 +77,19 @@ and the pin's assertion outlives the fix:
   commits).
 * T3b — the marker is removed WITH the fix (the due-scan index ships:
   ``01.00.34_01_pre_wf_timer_due_index.sql``, the partial index leading
-  ``expires_at`` with the timer predicate — better than asked) AND the
-  matcher is fixed to the honest shape (``IF NOT EXISTS`` — the
+  ``expires_at`` with the timer predicate — better than asked) and the
+  matcher is fixed to the honest shape (``IF not EXISTS`` — the
   original regex choked on the shipped spelling and read the
-  better-than-asked index as NO index).
+  better-than-asked index as no index).
 * T4 — the marker is removed WITH the fix (the template branches
-  ``is_timer`` via the holds projection's enrichment field) AND the
+  ``is_timer`` via the holds projection's enrichment field) and the
   render harness rides the PRODUCTION enrichment (``_normalize_hold``)
   — the raw-dict harness predates the field.
-* T5 — THE CLI DRIFT FACE'S OWN FIX (this lane): ``flows status``
+* T5 — the CLI DRIFT FACE'S own FIX (this lane): ``flows status``
   reads the run's rows' §22.1 stamps and renders the drift line when
   they are >1 distinct — the drifted nodes named with their hashes,
-  ONE coherent drift section with the stranded face.
-* T6 — THE VANISHED-NODE WEDGE'S OWN FIX (this lane): the typed
+  one coherent drift section with the stranded face.
+* T6 — the VANISHED-NODE WEDGE'S own FIX (this lane): the typed
   :class:`VanishedNodeError` (the wedge named, the registry-is-truth
   law, the cancel-then-restart remedy) terminal-fails the run LOUDLY —
   the node claimed then finalized through the ladder's deterministic
@@ -133,7 +133,7 @@ class TDoc(BaseModel):
 
 # ── the pinned graph's bodies (module-level: the annotations must resolve —
 #    the compile's hint resolution + the §22.1 stamper read the body's own
-#    SOURCE, which a function-scope body does not reproducibly carry). ──
+#    source, which a function-scope body does not reproducibly carry). ──
 
 
 async def _t1_trojan_body(ctx: StepContext, params: Nudge) -> str:
@@ -156,7 +156,7 @@ async def _t5_second_v1(ctx: StepContext, params: str) -> str:
 
 
 async def _t5_second_v2(ctx: StepContext, params: str) -> str:
-    # THE REDEPLOY's new body (different source → a different §22.1 stamp).
+    # the redeploy's new body (different source → a different §22.1 stamp).
     return f"second:v2:{params}!"
 
 
@@ -176,14 +176,14 @@ def _install_registry(name: str, bodies: dict[str, Any]) -> None:
     """The redeploy seam (the versioning pins' honest simulation): in
     production a redeploy is a NEW PROCESS whose registry carries the new
     code — the module-level map simply holds the new definition. In-test
-    the same map is replaced under the SAME workflow name (the registry IS
+    the same map is replaced under the same workflow name (the registry IS
     the module-level map; the replacement is the deploy, and nothing else
     in the engine is touched)."""
     from taskq.workflows.definitions import WorkflowDef, get_registry
 
     definition = WorkflowDef(name=name, bodies=bodies)
     registry = get_registry()
-    registry._workflows[name] = definition  # pyright: ignore[reportPrivateUsage]  # Why: the redeploy simulation IS the registry map's replacement — the versioning pins' own seam.
+    registry._workflows[name] = definition  # pyright: ignore[reportPrivateUsage]  # Why: the redeploy simulation is the registry map's replacement — the versioning pins' own seam.
 
 
 @pytest.fixture
@@ -211,7 +211,7 @@ async def _collect(listener: HitlListener, seconds: float) -> list[Any]:
     return events
 
 
-# ── THE TROJAN PREFIX (the mint-time refusal) ─────────────────────
+# ── the trojan prefix (the mint-time refusal) ─────────────────────
 
 
 @pytest.mark.integration
@@ -233,7 +233,7 @@ async def test_wait_signal_refuses_a_timer_prefixed_model(
     try:
         compiled = app.get("troja")
     except (WorkflowBuildError, WorkflowValidationError) as exc:
-        # THE BUILD DOOR's refusal — the rule must be named.
+        # the build door's refusal — the rule must be named.
         message = str(exc)
         assert "__timer__" in message and "reserved" in message.lower(), (
             f"the build refusal does not name the reserved-prefix rule: {message!r}"
@@ -244,11 +244,10 @@ async def test_wait_signal_refuses_a_timer_prefixed_model(
     flow_id = (await runner.create_flow()).flow_id
     outcome = await runner.drive(flow_id, tick=0.02, max_ticks=120)
     assert outcome == "terminal", outcome
-    # THE WAIT-SITE REFUSAL FACE: the node terminal-fails LOUDLY with the
-    # reserved-prefix rule NAMED — and NEVER with the self-fire's
-    # SignalPayloadError (the rejected shape: the trojan hold minted,
-    # invisible + unanswerable, then fired by the clock into the payload
-    # mismatch).
+    # the node terminal-fails loudly with the reserved-prefix rule named — and
+    # never with the self-fire's SignalPayloadError (the rejected shape: the
+    # trojan hold minted, invisible + unanswerable, then fired by the clock
+    # into the payload mismatch).
     node = await wf_conn.fetchrow(
         f'SELECT status::text AS status, error_class, error_message FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'gate'",
@@ -271,7 +270,7 @@ async def test_wait_signal_refuses_a_timer_prefixed_model(
     )
 
 
-# ── THE BROADCAST LEAK (the listener never sees a timer as human) ──
+# ── the broadcast leak (the listener never sees a timer as human) ──
 
 
 @pytest.mark.integration
@@ -279,7 +278,7 @@ async def test_the_broadcast_and_backfill_never_surface_timer_holds(
     wf_conn: asyncpg.Connection, wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """A timer hold is the CLOCK's, never a human's pending card: across
-    the timer's whole lifecycle the listener emits NO ``HoldCreated``
+    the timer's whole lifecycle the listener emits no ``HoldCreated``
     for a ``__timer__`` signal (neither the live notify NOR the
     backfill), and no ``Backfilled`` reconcile carries the timer's id in
     ``open_hold_ids``. (A TYPED ``TimerScheduled``-style event distinct
@@ -294,7 +293,7 @@ async def test_the_broadcast_and_backfill_never_surface_timer_holds(
     runner = FlowRunner(app.get("lea"), wf_pool, wf_schema)
     flow_id = (await runner.create_flow()).flow_id
 
-    # THE NOTIFY LEG: the listener is LIVE when the timer mints.
+    # the listener is live when the timer mints.
     try:
         listener = HitlListener(wf_pool, wf_schema)
         async with listener:
@@ -313,8 +312,8 @@ async def test_the_broadcast_and_backfill_never_surface_timer_holds(
             f"{[(getattr(e, 'signal', None), getattr(e, 'source', None)) for e in timer_creations]}"
         )
 
-        # THE BACKFILL LEG: a listener started AFTER the mint snapshots the
-        # open rows — the timer id must not arrive as a pending human hold.
+        # a listener started after the mint snapshots the open rows — the timer
+        # id must not arrive as a pending human hold.
         hold_id = await wf_conn.fetchval(
             f'SELECT id::text FROM "{wf_schema}".wf_signals WHERE workflow_id = $1',
             flow_id,
@@ -347,7 +346,7 @@ async def test_the_broadcast_and_backfill_never_surface_timer_holds(
         await runner.cancel_workflow(flow_id, reason="the pin's cleanup")
 
 
-# ── THE 10K-TIMER TAIL (the drain + the index) ────────────────────
+# ── the 10k-timer tail (the drain + the index) ────────────────────
 
 
 # Why load_sensitive: the drain ceiling (1500 due timers inside 15 s) is
@@ -390,7 +389,7 @@ async def test_t3a_the_timer_arm_drains_the_due_set_in_one_cascade(
     )
     start = time.monotonic()
     try:
-        await sweep_due_timers(wf_pool, schema=wf_schema, drain=True)  # type: ignore[call-arg]  # Why: the pin is written against the fix's natural face; the head's refusal (TypeError) IS the red.
+        await sweep_due_timers(wf_pool, schema=wf_schema, drain=True)  # type: ignore[call-arg]  # Why: the pin is written against the fix's natural face; the head's refusal (TypeError) is the red.
     except TypeError:
         await sweep_due_timers(wf_pool, schema=wf_schema)
     elapsed = time.monotonic() - start
@@ -429,12 +428,11 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
     statements: list[str] = []
     for path in sorted(migrations.glob("*.sql")):
         statements += re.findall(
-            # THE HONEST MATCHER (the reconciled flip):
-            # the shipped index is the PARTIAL index leading expires_at
-            # with the timer predicate, written CREATE INDEX IF NOT
-            # EXISTS — the original regex's `\w+` choked on the "IF NOT
-            # EXISTS" (matched "IF", demanded "ON", found "NOT") and read
-            # the better-than-asked index as NO index.
+            # the shipped index is the partial index leading expires_at with
+            # the timer predicate, written CREATE INDEX IF NOT EXISTS — the
+            # original regex's `\w+` choked on the "IF NOT EXISTS" (matched
+            # "if", demanded "on", found "not") and read the better-than-asked
+            # index as no index.
             r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+[^;]+",
             path.read_text(),
             re.IGNORECASE,
@@ -450,23 +448,23 @@ def test_t3b_a_due_scan_index_exists_in_the_migrations() -> None:
     )
 
 
-# ── THE EXPLORER'S FALSE AFFORDANCE (the render-level pin) ─────────
+# ── the explorer's false affordance (the render-level pin) ─────────
 
 
 def test_timer_rows_never_render_the_human_resolve_form() -> None:
     """The false affordance dies at the template: render the run page
-    with ONE timer hold + ONE human hold (both 'held', actions on) — the
+    with one timer hold + one human hold (both 'held', actions on) — the
     HUMAN row keeps its resolve form (the affordance's guard), the TIMER
     row renders NONE (the clock is the only resolver; a form that can
     only be refused-as-forgery is a lie on the page). The view-level
     alternative (timer rows never reach the holds projection) is flagged
     in the pin's docstring.
 
-    THE HARNESS RIDES THE PRODUCTION ENRICHMENT (the reconciled flip —
+    the HARNESS RIDES the PRODUCTION ENRICHMENT (the reconciled flip —
     the reconciled flip): the template branches on the ``is_timer``
     field the holds projection enriches (``web/admin/_wf_rows.py``'s
     ``_normalize_hold`` — the row's own truth, derived from the signal
-    name), so the harness passes its hold rows through THE SAME
+    name), so the harness passes its hold rows through the same
     enrichment — the raw dict harness predates the field and rendered
     the timer row's branch off (``h.is_timer`` undefined → the human
     leg's form)."""
@@ -519,10 +517,9 @@ def test_timer_rows_never_render_the_human_resolve_form() -> None:
             "created_at": "",
             "expires_at": "",
         }
-        # THE PRODUCTION ENRICHMENT (the reconciled harness): the same
-        # `_normalize_hold` the run page's holds projection runs — the
-        # is_timer/timer_key/timer_fired_by fields derive from the ROW's
-        # own truth, exactly as production renders them.
+        # the same `_normalize_hold` the run page's holds projection runs — the
+        # is_timer/timer_key/timer_fired_by fields derive from the row's own
+        # truth, exactly as production renders them.
         from taskq.web.admin._wf_rows import _normalize_hold
 
         return _normalize_hold(row)
@@ -552,7 +549,7 @@ def test_timer_rows_never_render_the_human_resolve_form() -> None:
     )
 
 
-# ── THE DRIFT-INVISIBLE OPERATOR (the version-drift surface) ───────
+# ── the drift-invisible operator (the version-drift surface) ───────
 
 
 @pytest.mark.integration
@@ -586,13 +583,13 @@ async def test_flows_status_surfaces_the_version_drift(
     rows = await runner._claimable(flow_id)  # pyright: ignore[reportPrivateUsage]  # Why: the versioning pins' mid-flow stop seam — the claim loop's seam is the behavior under test.
     assert [r["step_key"] for r in rows] == ["first"], rows
     await runner._run_node(flow_id, rows[0])  # pyright: ignore[reportPrivateUsage]  # Why: as above.
-    # THE REDEPLOY: 'second' resolves to v2 from here on.
+    # 'second' resolves to v2 from here on.
     _install_registry(name, {"first": _t5_first_v1, "second": _t5_second_v2})
     outcome = await runner.drive(flow_id)
     assert outcome == "terminal"
     assert await runner.result(flow_id) == "second:v2:first:v1!"
 
-    # THE STAGING's OWN PROOF: the run's rows carry TWO distinct stamps.
+    # the staging's own proof: the run's rows carry two distinct stamps.
     stamps = await wf_conn.fetch(
         f'SELECT step_key, code_version FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key <> '__flow__'",
@@ -617,7 +614,7 @@ async def test_flows_status_surfaces_the_version_drift(
     )
 
 
-# ── THE STRUCTURAL-REDEPLOY WEDGE (the loud terminal) ──────────────
+# ── the structural-redeploy wedge (the loud terminal) ──────────────
 
 
 @pytest.mark.integration
@@ -627,7 +624,7 @@ async def test_a_vanished_node_key_terminal_fails_loudly(
     """The loud law (the house's failure doctrine): a run whose PENDING
     node's key vanished from the registry (the structural redeploy — the
     rename) terminal-FAILS with a NAMED error class — the run's own rows
-    tell the operator the truth — NEVER an eternal zombie (a 'running'
+    tell the operator the truth — never an eternal zombie (a 'running'
     root over a forever-pending node, surfaced only in a detector's
     log). The cancel-then-restart remediation alternative is flagged in
     the recorded gap."""
@@ -646,8 +643,7 @@ async def test_a_vanished_node_key_terminal_fails_loudly(
     assert [r["step_key"] for r in rows] == ["first"], rows
     await runner._run_node(flow_id, rows[0])  # pyright: ignore[reportPrivateUsage]  # Why: as above — 'first' terminal-succeeds, 'second' pends.
 
-    # THE STRUCTURAL REDEPLOY (the new process's face): the registry AND
-    # the compiled graph carry 'renamed', never 'second'.
+    # the registry and the compiled graph carry 'renamed', never 'second'.
     _install_registry(name, {"first": _t6_first, "renamed": _t6_renamed})
     app2 = WorkflowApp()
 
@@ -658,7 +654,7 @@ async def test_a_vanished_node_key_terminal_fails_loudly(
 
     runner2 = FlowRunner(app2.get(name), wf_pool, wf_schema)
     with suppress(Exception):
-        # the raw escape is the REJECTED shape — the pin reads the ROWS.
+        # the raw escape is the rejected shape — the pin reads the rows.
         await runner2.drive(flow_id, tick=0.02, max_ticks=60)
 
     node = await wf_conn.fetchrow(

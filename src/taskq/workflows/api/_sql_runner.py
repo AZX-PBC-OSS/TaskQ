@@ -23,14 +23,11 @@ from taskq.workflows.api._runner_defer import WORKFLOW_CANCELLED_CLASS
 
 __all__ = ["wf_conn_fetchval"]
 
-#: THE TERMINAL-FLOW FENCE'S SET (the fleet's dispatch fence's own
-#: derivation — ``statemachine.TERMINAL_STATUSES`` rendered once at
-#: import, the engine's own vocabulary, never caller input): the two
-#: claim doors may not disagree — the fleet's dispatch refuses a
-#: terminal flow's rows, so the in-process door's claim refuses the
-#: same. Rendered by the same token-replace the fleet's
-#: ``_wf_dispatch_fence`` uses (never ``.format`` — the templates keep
-#: ``{schema}`` for the call-site render).
+#: the two claim doors may not disagree — the fleet's dispatch refuses a
+#: terminal flow's rows, so the in-process door's claim refuses the same.
+#: Rendered by the same token-replace the fleet's ``_wf_dispatch_fence`` uses
+#: (never ``.format`` — the templates keep ``{schema}`` for the call-site
+#: render).
 _TERMINAL_FLOW_SQL_SET: str = "('" + "','".join(sorted(TERMINAL_STATUSES)) + "')"
 
 
@@ -46,15 +43,15 @@ def _render_fence_tokens(template: str) -> str:
 
 
 #: The flow input key on the root row's payload (the input rides
-#: the ROW — a restart between stages reads it back).
+#: the row — a restart between stages reads it back).
 INPUT_KEY = "wf_input"
 
 #: The skip record's result marker (the v1 skip semantics: the node
-#: succeeds WITH the record — the envelope never lies about what ran).
+#: succeeds with the record — the envelope never lies about what ran).
 SKIPPED_RESULT: dict[str, object] = {"skipped": True}
 
 #: The data-args key on the node row's payload (the wiring's plain data
-#: rides the ROW — the restart reads it back; never a closure).
+#: rides the row — the restart reads it back; never a closure).
 WF_ARGS_KEY = "wf_args"
 
 #: The map child's single-arg key (the fork's per-item identity).
@@ -136,41 +133,33 @@ WHERE id = $1
 RETURNING id
 """
 
-# THE DEADLINE'S RE-PEND (the wf start_to_close bound — the expiry's
-# disposition's own write): the ladder's re-pend shape
-# (NODE_REPEND_SQL_TEMPLATE) with THE CANCEL FENCE IN-STATEMENT and THE
-# BUDGET GATE — the vanilla ``mark_retry``'s own arms mirrored (the same
-# shape NODE_DEFER_SQL's deferral arms keep):
-#
-#   * 'repended' — the clean face: the row 'scheduled' at the backoff
-#     (the burn's retry), the cancel columns untouched;
-#   * 'exhausted' — THE BUDGET'S BOUND (the retry kind is ``permanent``,
-#     or the ladder's failed count reached ``max_attempts`` — the caller
-#     prices both into $3): the arm WRITES NOTHING (the wf terminal door
-#     owns every death — the row must still be 'running' for the
-#     terminal mark's fence), the verdict names the caller's route;
-#   * 'cancel_fenced' — THE CANCEL WINS (the vanilla mark_retry's own
-#     law: a phase-carrying row — the wf cancel's metadata mark OR the
-#     vanilla cancel's own column mark — matches NO arm; the deadline's
-#     backoff must never re-queue a row a cancel in flight owns): the
-#     caller routes the node through the wf terminal door, the
-#     deferral's cancel_faced shape;
-#   * None — the ZOMBIE (the claim fence matched nothing, a newer
-#     attempt owns the row): the caller records the ledger's 'fenced',
-#
-# THE CLAIM IDENTITY'S FENCE (the fence legs bind the caller's own claim
-# — the NODE_DEFER_SQL's own shape): the deadline's disposition carries the
-# claim's own identity legs — worker + attempt + claim_epoch, the
-# terminal-mark CAS's full vocabulary. The pre-fix WHERE (id + status +
-# the cancel marks) let a ZOMBIE W1's deadline disposition flip a
-# re-minted LIVE W2 row (the 90s wf lease lapses → the reclaim +
-# re-claim as W2 → W1's timer fires → W2's row to 'scheduled', its
-# ledger phantom-runs, its finalize refuses): the row the fence matches
-# must be the row the CALLER'S OWN CLAIM holds, or every arm refuses and
-# the no-match routes to the zombie face (the ledger's 'fenced' record,
-# keyed on the claim's own instant — the claim-instant shape).
-#
-# Keyed to the ONE claimed node row; the two read arms write nothing.
+# the ladder's re-pend shape (NODE_REPEND_SQL_TEMPLATE) with the cancel fence
+# in-statement and the budget gate — the vanilla ``mark_retry``'s own arms
+# mirrored (the same shape NODE_DEFER_SQL's deferral arms keep): * 'repended' —
+# the clean face: the row 'scheduled' at the backoff (the burn's retry), the
+# cancel columns untouched; * 'exhausted' — the budget's bound (the retry kind
+# is ``permanent``, or the ladder's failed count reached ``max_attempts`` — the
+# caller prices both into $3): the arm writes NOTHING (the wf terminal door
+# owns every death — the row must still be 'running' for the terminal mark's
+# fence), the verdict names the caller's route; * 'cancel_fenced' — the cancel
+# wins (the vanilla mark_retry's own law: a phase-carrying row — the wf
+# cancel's metadata mark or the vanilla cancel's own column mark — matches no
+# arm; the deadline's backoff must never re-queue a row a cancel in flight
+# owns): the caller routes the node through the wf terminal door, the
+# deferral's cancel_faced shape; * None — the zombie (the claim fence matched
+# nothing, a newer attempt owns the row): the caller records the ledger's
+# 'fenced', the claim identity's fence (the fence legs bind the caller's own
+# claim — the NODE_DEFER_SQL's own shape): the deadline's disposition carries
+# the claim's own identity legs — worker + attempt + claim_epoch, the
+# terminal-mark CAS's full vocabulary. The pre-fix WHERE (id + status + the
+# cancel marks) let a zombie W1's deadline disposition flip a re-minted live W2
+# row (the 90s wf lease lapses → the reclaim + re-claim as W2 → W1's timer
+# fires → W2's row to 'scheduled', its ledger phantom-runs, its finalize
+# refuses): the row the fence matches must be the row the caller's own claim
+# holds, or every arm refuses and the no-match routes to the zombie face (the
+# ledger's 'fenced' record, keyed on the claim's own instant — the
+# claim-instant shape). Keyed to the one claimed node row; the two read arms
+# write nothing.
 NODE_DEADLINE_REPEND_SQL = """\
 WITH params AS (
     SELECT $1::uuid AS job_id,
@@ -268,7 +257,7 @@ SELECT id FROM {schema}.jobs WHERE step_key = $1
 
 #: The streaming source's checkpointed cursor read: the key is the
 #: bound EMIT_CURSOR_KEY constant — never an f-string SQL (the S608 rule);
-#: the row is the SOURCE's own.
+#: the row is the source's own.
 SOURCE_CURSOR_SQL_TEMPLATE = """
 SELECT metadata -> $2 FROM {schema}.jobs WHERE id = $1
 """
@@ -324,9 +313,8 @@ WHERE (metadata->>'flow_id')::uuid = $1
 ORDER BY id
 """)
 
-#: THE NODE CENSUS (the create-seam's retry-completion read): the run's
-#: node-row count — a nodeless root (the orphan's signature: pending +
-#: zero nodes, the pre-fix debris shape) counts ZERO. The same
+#: the run's node-row count — a nodeless root (the orphan's signature: pending
+#: + zero nodes, the pre-fix debris shape) counts zero. The same
 #: lineage-and-not-the-root predicate every node read spells.
 FLOW_NODE_CENSUS_SQL_TEMPLATE = """
 SELECT count(*) FROM {schema}.jobs
@@ -335,14 +323,12 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND step_key <> '__flow__'
 """
 
-#: THE ROOT'S PRIORITY-STAMP READ (the priority surface's ADOPTION leg):
-#: ONE bounded primary-key read of the root's
-#: metadata, the fleet door's own SELECT shape
-#: (``_CLAIMED_NODE_READ_SQL_TEMPLATE``'s stamp leg). The arbiter adopted
-#: an EXISTING run — its root stamp is its own truth (the row is the law,
-#: never the echo): the adopting dev door resolves the run's per-call
-#: override from HERE, so a re-drive forks its rows at the same priority
-#: the create stamped (never the declarations — one run, one cohort).
+#: one bounded primary-key read of the root's metadata, the fleet door's own
+#: SELECT shape (``_CLAIMED_NODE_READ_SQL_TEMPLATE``'s stamp leg). The arbiter
+#: adopted an existing run — its root stamp is its own truth (the row is the
+#: law, never the echo): the adopting dev door resolves the run's per-call
+#: override from here, so a re-drive forks its rows at the same priority the
+#: create stamped (never the declarations — one run, one cohort).
 ROOT_PRIORITY_STAMP_SQL_TEMPLATE = """
 SELECT metadata->>'wf_priority' AS wf_priority
 FROM {schema}.jobs WHERE id = $1
@@ -434,14 +420,14 @@ WHERE r.id = $2 AND r.step_key = '__flow__'
 """
 
 #: The failure face: the run's newest
-#: terminal-FAILED NODE row (the root's own row carries the propagation
-#: verdict — UnabsorbedNodeFailure — but the NODE row carries the body's
-#: error class + message: the failed run's first question's ANSWER).
-#: The verdict names the failure that failed the run: the ABSORBED
-#: failures are excluded — the same POLICY-vs-FENCE predicate the
+#: terminal-failed node row (the root's own row carries the propagation
+#: verdict — UnabsorbedNodeFailure — but the node row carries the body's
+#: error class + message: the failed run's first question's answer).
+#: The verdict names the failure that failed the run: the absorbed
+#: failures are excluded — the same policy-vs-fence predicate the
 #: derivation and the maintenance leg read (the three can never drift):
 #: a branch whose failure its join's collect policy absorbed (the join
-#: fired with the typed report) did NOT fail the run, and a newest-first
+#: fired with the typed report) did not fail the run, and a newest-first
 #: selection that read it sent the operator to a failure that was
 #: already collected. When every node failure was absorbed the run did
 #: not fail from a node — the no-row face speaks (the root carries the
@@ -460,10 +446,9 @@ LIMIT 1
 """
 )
 
-#: THE EXIT'S DOWNSTREAM MARK (§17.1): the compiled descendants the exit
-#: resolved — skipped WITH the record (the envelope never lies about the
-#: nodes that didn't get to run), zero ledger rows. Terminal rows and
-#: unspawned rows are untouched.
+#: the compiled descendants the exit resolved — skipped with the record (the
+#: envelope never lies about the nodes that didn't get to run), zero ledger
+#: rows. Terminal rows and unspawned rows are untouched.
 EXIT_SKIP_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
 SET status = 'succeeded',
@@ -474,18 +459,15 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND step_key = ANY($3)
 """
 
-#: THE MANUAL RESUME'S NODE CAS (§17.2): terminal-FAILED → pending — ONE
-#: statement, the only grant; the attempt ordinal untouched (CONTINUES —
-#: the ladder's own count is the budget).
-#:
-#: THE ROOT'S GUARD (H-C1): ``AND step_key <> '__flow__'`` — the run's
-#: own ROOT row is not a node, and a "retry" that matched it flipped the
-#: root failed→pending with the propagation verdict ERASED (the
-#: maintenance rollup never saw the run again — the run bricked, live-
-#: proven). The verb-level guard is the ONE seat: the admin route, the
-#: CLI's ``flows retry``, and the compiled face all ride this statement,
-#: and the root key's re-run is the RUN-rerun's own concern (a fresh run,
-#: or the run-rerun's census — never the per-node CAS).
+#: terminal-failed → pending — one statement, the only grant; the attempt
+#: ordinal untouched (continues — the ladder's own count is the budget). the
+#: root's guard (H-C1): ``and step_key <> '__flow__'`` — the run's own root row
+#: is not a node, and a "retry" that matched it flipped the root failed→pending
+#: with the propagation verdict erased (the maintenance rollup never saw the
+#: run again — the run bricked, live- proven). The verb-level guard is the one
+#: seat: the admin route, the CLI's ``flows retry``, and the compiled face all
+#: ride this statement, and the root key's re-run is the run-rerun's own
+#: concern (a fresh run, or the run-rerun's census — never the per-node CAS).
 RETRY_NODE_CAS_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
 SET status = 'pending',
@@ -501,9 +483,9 @@ WHERE step_key = $2
 RETURNING id
 """
 
-#: THE CLOSURE RE-OPENS: the cascade's blocked rows return to join-wait —
-#: the sweep's re-derive re-derives them from the edge ledger (a stamp is
-#: the cache, never the truth).
+#: the cascade's blocked rows return to join-wait — the sweep's re-derive
+#: re-derives them from the edge ledger (a stamp is the cache, never the
+#: truth).
 RETRY_REOPEN_CLOSURE_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
 SET metadata = jsonb_set(metadata, '{blocking_reason}', '"join"'::jsonb, true)
@@ -513,8 +495,8 @@ WHERE (metadata->>'flow_id')::uuid = $1
   AND status NOT IN ('succeeded','failed','cancelled','crashed','abandoned')
 """
 
-#: THE FLOW RE-OPENS: a terminal-FAILED root returns to running (the
-#: manual resume's own linearization; a CANCELLED root stays closed).
+#: a terminal-failed root returns to running (the manual resume's own
+#: linearization; a cancelled root stays closed).
 RETRY_FLOW_REOPEN_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
 SET status = 'running', finished_at = NULL
@@ -522,21 +504,18 @@ WHERE id = $1
   AND status = 'failed'
 """
 
-#: THE SKIP ENVELOPE'S RE-ARM: the run's exit-skipped rows (the
-#: typed early-exit's downstream mark) return to pending with the
-#: envelope CLEARED. A skip is not an attempt (zero ledger rows) — the
-#: re-arm restores exactly the pre-skip shape: a claimable row whose
-#: next claim is its FIRST attempt. The root's own row is out of the
-#: write set (the root guard's law: the root is not a node).
-#:
-#: THE PREDICATE IS THE ENGINE'S OWN CONTRACT:
-#: ``result @> '{"skipped": true}'::jsonb`` — the shape the exit writer
-#: (``SKIPPED_RESULT``/the EXIT_SKIP mark) actually lands, TRUE with
-#: it. The old ``result ? 'skipped'`` was KEY-EXISTENCE: a foreign
-#: writer's ``{"skipped": false}`` (or any JSON that merely CARRIES the
-#: key) matched and had its result DELETED — the display's false-skip
-#: lie, and a foreign writer's data destroyed. Containment matches the
-#: TRUE envelope only: a false/"no" envelope survives untouched.
+#: the run's exit-skipped rows (the typed early-exit's downstream mark) return
+#: to pending with the envelope cleared. A skip is not an attempt (zero ledger
+#: rows) — the re-arm restores exactly the pre-skip shape: a claimable row
+#: whose next claim is its first attempt. The root's own row is out of the
+#: write set (the root guard's law: the root is not a node). the predicate is
+#: the engine's own contract: ``result @> '{"skipped": true}'::jsonb`` — the
+#: shape the exit writer (``SKIPPED_RESULT``/the EXIT_SKIP mark) actually
+#: lands, true with it. The old ``result ? 'skipped'`` was key-existence: a
+#: foreign writer's ``{"skipped": false}`` (or any JSON that merely carries the
+#: key) matched and had its result deleted — the display's false-skip lie, and
+#: a foreign writer's data destroyed. Containment matches the true envelope
+#: only: a false/"no" envelope survives untouched.
 RETRY_SKIP_REARM_SQL_TEMPLATE = """
 UPDATE {schema}.jobs
 SET status = 'pending',
@@ -563,7 +542,7 @@ async def wf_conn_fetchval(pool: asyncpg.Pool, schema: str, query: str, *args: o
 #: The render's token substitutions (the house token-substitution pattern
 #: — the ``subs`` list's shape, :meth:`WorkflowSql.build <taskq.workflows._sql.WorkflowSql.build>`
 #: being where the other templates' tokens resolve): the templates stay
-#: PLAIN strings — ``render_sql`` never ``.format``\s them (the jsonb
+#: plain strings — ``render_sql`` never ``.format``\s them (the jsonb
 #: shape literals keep their braces, the ``{schema}`` token survives for
 #: the call-site render), and each substitution is a plain ``str.replace``
 #: of an exact token. The wf cancel's own error class is interpolated from

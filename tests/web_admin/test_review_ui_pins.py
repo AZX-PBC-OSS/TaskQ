@@ -6,9 +6,9 @@ produced it served each page and compared what renders against a computed
 oracle). The pins it leaves behind hold the four contracts the review found
 broken or unproven:
 
-1. the refresh-transport matrix: a page renders with EXACTLY ONE refresh
+1. the refresh-transport matrix: a page renders with EXACTLY one refresh
    transport per mode - the meta refresh for the pages with no JS
-   machinery, in EVERY mode (a page with no transport that suppresses the
+   machinery, in every mode (a page with no transport that suppresses the
    meta refresh because the portal badge says "real-time mode" is a frozen
    page wearing a real-time badge), the page's own machinery (admin.js,
    the htmx poll, realtime.js) where one exists;
@@ -77,7 +77,7 @@ class _ClockConn:
 class _ClockPool:
     def __init__(self, conn: _ClockConn) -> None:
         self._conn = conn
-        # The rate-limits page hands registry.peek_all the RAW pool; an
+        # The rate-limits page hands registry.peek_all the raw pool; an
         # empty registry never touches it, so None is a safe placeholder.
         self.pool = None
 
@@ -119,11 +119,11 @@ def _make_client(pool: Any) -> TestClient:
 
 # ── 1. the refresh-transport matrix ──────────────────────────────────────
 #
-# _base.html keyed the meta refresh off the PORTAL badge mode
+# _base.html keyed the meta refresh off the portal badge mode
 # (realtime_mode != "realtime"), but only three surfaces own a JS
 # transport: /jobs (admin.js), /queues (the htmx poll, realtime mode
 # only), and the job detail page (realtime.js, every mode). Every other
-# page served with a healthy Redis rendered with NO refresh transport at
+# page served with a healthy Redis rendered with no refresh transport at
 # all: a frozen page under a "real-time mode" badge - the healthier the
 # deployment, the deader the page. The contract is per-page: the meta
 # refresh is suppressed only where a page declares its own transport
@@ -169,10 +169,10 @@ def test_pages_without_a_js_transport_keep_the_meta_refresh_in_realtime_mode(
 def test_job_detail_runs_exactly_one_refresh_transport_per_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The job detail page's transport is realtime.js in EVERY mode (its own
+    """The job detail page's transport is realtime.js in every mode (its own
     script block says so: polling deployments would otherwise have a
     progress section nothing ever updated). The meta refresh alongside it is
-    the #337 double-fetch on this page: polling mode must never render BOTH.
+    the #337 double-fetch on this page: polling mode must never render both.
     """
     import taskq.web.admin.jobs as jobs_module
 
@@ -225,7 +225,7 @@ def test_job_detail_runs_exactly_one_refresh_transport_per_mode(
 # ── 2. the render bounds ─────────────────────────────────────────────────
 #
 # The queues overview's 200-row cap is pinned (test_queues.py); the same
-# review found four read-only pages fetching with NO LIMIT at all: a
+# review found four read-only pages fetching with no LIMIT at all: a
 # 50k-row cron_schedules / workers / rate_limit_buckets / reservation_slots
 # population renders every row of it. Every page gets the batches idiom: a
 # LIMIT and a truncation notice that says so.
@@ -361,8 +361,8 @@ def test_held_slots_section_announces_when_its_cap_bites(
 #
 # The rate-limits reset button interpolated the bucket name into an inline
 # onclick="return confirm('... {{ bucket }} ...')". Autoescape's &#39; does
-# NOT protect it: the HTML parser decodes entities in attribute values
-# BEFORE the JS runs, so a bucket name carrying '); breaks the JS string
+# not protect it: the HTML parser decodes entities in attribute values
+# before the JS runs, so a bucket name carrying '); breaks the JS string
 # and executes. The actors page's delegated-listener idiom (data attribute
 # + a submit listener) is the correct shape; this page gets the same.
 
@@ -377,7 +377,7 @@ def test_rate_limit_reset_confirm_never_interpolates_the_bucket_name_into_inline
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
 
     # U5: the reset form renders only for buckets this process's registry
-    # knows, so the hostile name rides a REGISTERED primitive (the pool's
+    # knows, so the hostile name rides a registered primitive (the pool's
     # PG row adds the same name as worker-published state, read-only
     # there - the form is the registry bucket's).
     from datetime import timedelta as _td
@@ -433,7 +433,7 @@ def test_rate_limit_reset_confirm_never_interpolates_the_bucket_name_into_inline
 def test_scripts_serve_alpine_from_the_shipped_static_dir(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The chrome loads Alpine from the SAME local /static dir as htmx: an
+    """The chrome loads Alpine from the same local /static dir as htmx: an
     air-gapped ops deployment (the admin UI's natural habitat) must not
     lose every Alpine-driven control - the dark toggle, the status
     combobox, the jobs page's live machinery - to a CDN unreachable."""
@@ -516,7 +516,7 @@ def test_every_local_url_on_every_page_resolves_under_a_prefix_deployment(
 ) -> None:
     """Deployed under a non-root root_path (uvicorn --root-path behind a
     non-stripping proxy), with base_path carrying the full external
-    prefix, EVERY local URL every page emits must resolve: a 404ing
+    prefix, every local URL every page emits must resolve: a 404ing
     stylesheet or script is a deployment-breaking render."""
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     external_prefix = "/taskq"

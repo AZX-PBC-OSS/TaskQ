@@ -97,8 +97,8 @@ class _FakePool:
         self.kwargs = kwargs
         self.closed = False
         # Why an event alongside the flag: the flag is the assertion
-        # surface; the event is the WAIT surface - reload_credentials
-        # closes OLD resources on background drain tasks, and a test that
+        # surface; the event is the wait surface - reload_credentials
+        # closes old resources on background drain tasks, and a test that
         # needs "drained" can await this instead of sleeping a fixed
         # interval that races the drain under load.
         self.closed_event = asyncio.Event()
@@ -120,7 +120,7 @@ class _FakeConn:
         self.kwargs = kwargs
         self.closed = False
         # Why an event alongside the flag: mirrors _FakePool - the reload
-        # drains OLD dedicated connections on background tasks, and tests
+        # drains old dedicated connections on background tasks, and tests
         # await this event instead of sleeping a fixed interval that races
         # the drain under load.
         self.closed_event = asyncio.Event()
@@ -173,7 +173,7 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
         client.url = url
         client.credential_provider = kwargs.get("credential_provider")
         # Why an event on the fake client: the reload's background drain
-        # acloses the OLD client, and tests await this event instead of
+        # acloses the old client, and tests await this event instead of
         # sleeping a fixed interval that races the drain under load.
         client.closed_event = asyncio.Event()
         client.aclose = AsyncMock(side_effect=lambda: client.closed_event.set())
@@ -232,7 +232,7 @@ async def test_cli_pg_provider_rotates_credentials_on_reload(
     async with open_worker_deps(settings, connections=connections) as deps:
         calls_after_open = PROVIDER.pg_calls
         assert calls_after_open > 0, "provider was never consulted at startup"
-        # Capture the OLD resources: the reload closes them on background
+        # Capture the old resources: the reload closes them on background
         # drain tasks after it returns, and the waits below need handles on
         # exactly those instances.
         old_dispatcher: Any = deps.dispatcher_pool
@@ -256,7 +256,7 @@ async def test_cli_pg_provider_rotates_credentials_on_reload(
     assert PROVIDER.pg_calls > calls_after_open, "reload did not fetch a fresh credential"
 
     # The rebuilt pool authenticates per physical connection through the
-    # provider - awaiting asyncpg's password callable yields a NEW token.
+    # provider - awaiting asyncpg's password callable yields a new token.
     newest_pool = next(p for p in reversed(fake_pg) if isinstance(p, _FakePool))
     password = newest_pool.kwargs["password"]
     token = await password()

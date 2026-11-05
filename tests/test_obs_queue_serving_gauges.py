@@ -13,7 +13,7 @@ import taskq.obs as obs_mod
 import taskq.obs._otel as otel_mod
 from taskq.testing.otel import collect_metrics
 
-_CAP = otel_mod._MAX_QUEUE_LABEL_VALUES  # pyright: ignore[reportPrivateUsage]  # Why: the test asserts behaviour AT the cap; duplicating the constant would let it drift from the thing it guards.
+_CAP = otel_mod._MAX_QUEUE_LABEL_VALUES  # pyright: ignore[reportPrivateUsage]  # Why: the test asserts behaviour at the cap; duplicating the constant would let it drift from the thing it guards.
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ def test_live_workers_gauge_is_capped_like_the_depth_gauge(
     gauge_reader: InMemoryMetricReader,
 ) -> None:
     """Same partition as taskq.queue.depth: the largest ``cap`` queues keep
-    their series, the rest collapse onto ONE ``_other_`` series carrying
+    their series, the rest collapse onto one ``_other_`` series carrying
     their sum, so the two gauges share a label vocabulary and a bound."""
     counts = {f"q-{i}": 1 for i in range(_CAP + 30)}
     counts["busy"] = 9

@@ -10,7 +10,7 @@ presented as three fields an adopter can branch on. The constructor
 (``taskq/exceptions.py::PayloadValidationError.__init__``, around line
 367) accepts ``payload_schema_ver: str | None = None``, and the JobRow
 column it shares a name with
-(``payload_schema_ver int NOT NULL DEFAULT 1`` --
+(``payload_schema_ver int not NULL DEFAULT 1`` --
 ``src/taskq/migrations/01.00.00_01_pre_initial.sql:78,347``) is real,
 threaded, and stored on every row.
 
@@ -219,7 +219,7 @@ def test_docs_implied_contract_is_usable_end_to_end() -> None:
 def test_nul_item_payload_error_has_no_row_context_documented_as_such() -> None:
     """Call site 2: taskq/backend/_records.py:83 --
     _nul_item_payload_error, the per-item NUL-byte rejection guard batch
-    enqueue serialization uses BEFORE any row exists (it fires during
+    enqueue serialization uses before any row exists (it fires during
     jsonb-encoding, pre-INSERT). Unlike the other three sites, there is
     no stored payload_schema_ver to read here -- this is a
     first-principles exception, not a parity gap: a field cannot carry

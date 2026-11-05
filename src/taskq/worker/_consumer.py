@@ -116,7 +116,7 @@ from taskq.worker._watchdog import (  # pyright: ignore[reportPrivateUsage]  # W
 )
 from taskq.worker.cancel import ActiveJobRegistry, _ActiveJob
 from taskq.worker.deps import POOL_INFRA_EXCEPTIONS, WorkerDeps
-from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the consumer's release arm and the RELEASING phase are the two writers of the same interruption release; they must share the one hold computation rather than drift (see _interrupted_actor_hold).
+from taskq.worker.shutdown import (  # pyright: ignore[reportPrivateUsage]  # Why: the consumer's release arm and the releasing phase are the two writers of the same interruption release; they must share the one hold computation rather than drift (see _interrupted_actor_hold).
     ShutdownPhase,
     _release_hold,
 )
@@ -258,7 +258,7 @@ async def _acquire_for_actor_with_denial_retry(
     statement per attempt, the composition's own rollback-on-denial keeps
     every attempt all-or-nothing, and no claim, attempt counter, or snooze
     write moves. When the budget exhausts (genuine saturation: the holders
-    keep their slots for the whole lease because their bodies do), the LAST
+    keep their slots for the whole lease because their bodies do), the last
     denial propagates and the caller's snooze path proceeds exactly as
     before, its hint and doctrine unchanged.
 
@@ -292,12 +292,12 @@ async def _acquire_for_actor_with_denial_retry(
                     attempts=last_attempt,
                     backoff_s=_RESERVATION_DENIAL_RETRY_BACKOFF_S,
                 )
-            # Wake on a local release of THIS bucket when one lands (a
+            # Wake on a local release of this bucket when one lands (a
             # holder's completion frees the slot the retry is waiting
             # for), falling back to the fixed cadence otherwise: a peer
             # worker's release is not visible here, and neither is a
             # bucket that stays held. The event is a wake signal, not a
-            # token: waking guarantees only that a release HAPPENED, the
+            # token: waking guarantees only that a release happened, the
             # next acquire decides.
             release_event = registry.bucket_release_event(exc.bucket_name)
             with contextlib.suppress(TimeoutError):
@@ -359,7 +359,7 @@ def _encode_result(result: object, max_bytes: int = MAX_RESULT_BYTES) -> bytes |
     ``WorkerSettings.result_max_bytes`` and which defaults to
     :data:`~taskq.constants.MAX_RESULT_BYTES`.
 
-    The returned bytes are the result's ONLY serialization: they reach the
+    The returned bytes are the result's only serialization: they reach the
     backend as the ``result_bytes`` terminal-write parameter, which binds
     them decoded and stores ``len`` as ``result_size_bytes`` without
     serializing again.  The NUL guard deliberately does not run here, it
@@ -444,11 +444,11 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
     the heartbeat stops renewing it and lock-lease expiry reclaims it.
     """
     # The terminal double-write seam: every exception-routed terminal write
-    # funnels here. A forked child that resumed mid-body reaches the SAME
+    # funnels here. A forked child that resumed mid-body reaches the same
     # write through the parent's sockets; the guard refuses it before the
     # handler runs, so one job's ledger can never be written by two
     # processes. (The guarded connection classes cover the wire itself;
-    # this check covers the outcome BEFORE the wire can be reached.)
+    # this check covers the outcome before the wire can be reached.)
     assert_own_process(f"worker terminal write (job {job.id})")
     _pbuf = await _pre_terminal_flush(job, worker_id, progress_buffers, worker_pool, settings)
     _pseq, _pstate = _seq_and_state_after_flush_attempt(_pbuf)
@@ -472,7 +472,7 @@ async def _run_terminal_path(  # pyright: ignore[reportUnusedFunction]  # Why: c
         # The dirty clear is gated on the write landing, the same gate the
         # autonomous and transactional success paths apply (they clear only
         # after the fence confirmed the row): a "noop" means the row moved
-        # underneath this attempt — a same-worker reclaim installed the LIVE
+        # underneath this attempt — a same-worker reclaim installed the live
         # attempt's buffer at this key — and clearing it would hide the live
         # attempt's unflushed progress delta from the flush tick (the
         # identity-scoping rule the buffer's exits apply).
@@ -527,7 +527,7 @@ async def _interrupted_actor_hold(
     task is still unwinding its rollback, and an async actor whose body
     task is still unwinding a start_to_close cancel (the deadline
     enforcement runs the body in its own task, see
-    :func:`_enforce_start_to_close`) are NOT exited. Their tracked
+    :func:`_enforce_start_to_close`) are not exited. Their tracked
     handles on *ctx* are the only proof available, so this parks on them:
     bounded by the remaining termination budget minus the release write's
     own retry budget, so the write still fits before the watchdog's
@@ -574,7 +574,7 @@ async def _interrupted_actor_hold(
             _done, still_pending = await asyncio.wait(pending, timeout=wait_budget)
         except asyncio.CancelledError:
             # The park's patience ended early (a second cancel, the group
-            # teardown after RELEASING): stop waiting, keep the release.
+            # teardown after releasing): stop waiting, keep the release.
             still_pending = set(pending)
         if not still_pending:
             _log.info(
@@ -595,7 +595,7 @@ async def _interrupted_actor_hold(
         outcome="held",
         still_alive_handles=sum(1 for t in (still_pending or set(pending)) if not t.done()),
     )
-    return _release_hold(  # pyright: ignore[reportPrivateUsage]  # Why: the one hold computation both release writers share: the consumer arm and the RELEASING phase must never disagree on what "held until this process is provably gone" means.
+    return _release_hold(  # pyright: ignore[reportPrivateUsage]  # Why: the one hold computation both release writers share: the consumer arm and the releasing phase must never disagree on what "held until this process is provably gone" means.
         deps,
         effective_settings,
         loop,
@@ -622,7 +622,7 @@ def _actor_exit_wait_budget(
     (``lock_lease - heartbeat - reserve``, see
     ``WorkerSettings.release_park_lease_cap``) is the exact bound that
     makes the parked consumer's release write land before the earliest
-    reclaim for ANY loadable config: safety by construction rather than
+    reclaim for any loadable config: safety by construction rather than
     by a cross-field rejection, which is why no validator enforces the
     lease/budget pair. Without an anchor or a guaranteed exit (watchdog
     disabled, a bare call, a shutdown that never stamped its start) the
@@ -680,7 +680,7 @@ async def _acquire_rate_limits_or_route_denial(
     )
     _needs_acquire = bool(_rl_limits or _rl_reservations) and rate_limit_registry is not None
 
-    # Resolve the typed model BEFORE rate-limit acquisition: an invalid payload must not
+    # Resolve the typed model before rate-limit acquisition: an invalid payload must not
     # acquire, and non-refundably burn, a rate-limit token for an actor
     # body that can never run. acquire_for_actor then receives the validated
     # BaseModel, so keyed refs either hit the registry's isinstance fast path
@@ -690,7 +690,7 @@ async def _acquire_rate_limits_or_route_denial(
     # from the in-try fallback and as non-dependency acquire-path errors
     # still do (a wiring or programming defect must stay loud): callers
     # (dispatch_one_job's outer except, the in-memory runner's catch) own
-    # the terminal write for pre-actor failures. A STORE-dependency failure
+    # the terminal write for pre-actor failures. A store-dependency failure
     # is the exception, the acquire boundary below fails it closed as the
     # limiter's own denial, because an infrastructure outage is not a job
     # outcome either.
@@ -769,7 +769,7 @@ async def _acquire_rate_limits_or_route_denial(
             )
         except _RATE_LIMIT_DEPENDENCY_EXCEPTIONS as exc:
             # The limiter's store could not answer. This try block wraps
-            # ONLY the acquire composition, so a store-failure-family
+            # only the acquire composition, so a store-failure-family
             # exception here has exactly one provenance, and one
             # response: the limiter's own fail-closed denial, never the
             # actor-failure accounting an escapee falls into (a retry
@@ -785,7 +785,7 @@ async def _acquire_rate_limits_or_route_denial(
             # acquire_dependency_failures counter rises beside the
             # denials counter (an operator scaling a bucket on denials
             # alone would chase an outage with capacity), and the
-            # WARNING is window-gated, a sustained outage denies every
+            # warning is window-gated, a sustained outage denies every
             # rate-limited dispatch, and a warning per denial is a log
             # flood, not a signal.
             #
@@ -893,13 +893,13 @@ async def consume_one_job(
     recording by the caller (``dispatch_one_job``).
 
     ``payload_type`` is the actor's payload model. The typed model is
-    resolved BEFORE rate-limit acquisition: on the dispatch path
+    resolved before rate-limit acquisition: on the dispatch path
     (``dispatch_one_job``), ``validated_payload`` is already set when this
     function is called; a direct caller that passes
     ``validated_payload=None`` gets the fallback
     ``validate_actor_payload`` call, whose
     :class:`~taskq.exceptions.PayloadValidationError` propagates to the
-    caller BEFORE any token is consumed, an invalid payload must not
+    caller before any token is consumed, an invalid payload must not
     acquire (and non-refundably burn) a rate-limit token for an actor body
     that can never run. ``acquire_for_actor`` then receives the validated
     ``BaseModel`` (not the raw row dict): a ``KeyedRateLimitRef`` /
@@ -946,7 +946,7 @@ async def consume_one_job(
     declares ``rate_limits`` or ``reservations``,
     :meth:`RateLimitRegistry.acquire_for_actor` is called before the
     actor body.  On denial (``ReservationUnavailable``), the job is
-    snoozed and the actor body is NOT invoked.  After the actor body
+    snoozed and the actor body is not invoked.  After the actor body
     completes (success, failure, cancellation, or shutdown),
     :meth:`RateLimitRegistry.release_for_actor` is called in the
     ``finally`` block.  Release is best-effort (not shielded) per
@@ -997,7 +997,7 @@ async def consume_one_job(
     # issue-461 class): the buffer is installed eagerly here and the same
     # key can be overwritten by a later attempt's buffer when the lease
     # lapses mid-run and the same worker re-claims the job, so the exits
-    # must remove and flush the entry THIS attempt installed, never a
+    # must remove and flush the entry this attempt installed, never a
     # bare-id pop of whatever the key holds by then.
     _buf: _ProgressBuffer | None = None
 
@@ -1010,7 +1010,7 @@ async def consume_one_job(
     # This attempt's own registration, captured for the exit path below
     # (issue 461): the lease can lapse mid-run, the same worker can
     # re-claim the job, and the re-claimed attempt overwrites the
-    # registry key with ITS entry. The finally must deregister the entry
+    # registry key with its entry. The finally must deregister the entry
     # this attempt registered, never a bare-id pop of whatever the key
     # holds by then, or the stale exit evicts the live attempt's
     # registration and every held_ids() reader misreads the map.
@@ -1028,34 +1028,32 @@ async def consume_one_job(
         # the orchestration's ``loop.time()``.
         _shutdown_started = getattr(deps, "shutdown_started_at", None) if deps is not None else None
         if isinstance(_shutdown_started, float):
-            # THE TAKE-TO-REGISTER SHUTDOWN SEAM. Everything between this
-            # attempt's take (the claim intent) and this line - DI
-            # resolution, payload validation, the slot-pool acquire, and
-            # the reservation-denial retry loop - is a window the shutdown
-            # ladder cannot see: CANCELLING stamps and FORCING cancels
-            # iterate REGISTERED entries only, and this attempt registers
-            # just below. An acquire that lands DURING shutdown makes it
-            # worse than a missed cancel: the ladder's own unwind of a
-            # sibling releases the bucket this retry is parked on, the
-            # wake acquires the slot, and the body STARTS after SIGTERM -
-            # the process's TaskGroup join then waits out the body's full
-            # natural runtime, past the termination grace (observed 30s
-            # bodies under a 15s grace, system-e2e cap-churn). The body
-            # must not start under a shutdown in progress. The observable
-            # is shutdown_started_at, stamped in the same synchronous
-            # block that raises the phase to DRAINING (the orchestrator's
-            # entry), so the two are one signal with no await between
-            # them. This row never reached an actor, so the claim bought
-            # nothing and spends nothing: mark_snoozed's default arm
-            # refunds the attempt increment and releases the row to the
-            # fleet on a short delay - the same bounded, fenced release
-            # the actor-not-found arm applies - and the outer finally
-            # below returns the acquired composition. The claim intent
-            # stays live until the consumer loop's own finally resolves
-            # it, so every hand-back pass keeps excluding the row while
-            # this release is in flight. On an infra failure the row
-            # stays running and is disowned: the lock-lease reclaim is
-            # the backstop, exactly the actor-not-found failure arm.
+            # the take-to-register shutdown seam. Everything between this
+            # attempt's take and this line - di resolution, payload validation,
+            # the slot-pool acquire, and the reservation-denial retry loop - is
+            # a window the shutdown ladder cannot see: cancelling stamps and
+            # forcing cancels iterate registered entries only, and this attempt
+            # registers just below. An acquire that lands during shutdown makes
+            # it worse than a missed cancel: the ladder's own unwind of a
+            # sibling releases the bucket this retry is parked on, the wake
+            # acquires the slot, and the body starts after SIGTERM - the
+            # process's TaskGroup join then waits out the body's full natural
+            # runtime, past the termination grace (observed 30s bodies under a
+            # 15s grace, system-e2e cap-churn). The body must not start under a
+            # shutdown in progress. The observable is shutdown_started_at,
+            # stamped in the same synchronous block that raises the phase to
+            # draining (the orchestrator's entry), so the two are one signal
+            # with no await between them. This row never reached an actor, so
+            # the claim bought nothing and spends nothing: mark_snoozed's
+            # default arm refunds the attempt increment and releases the row to
+            # the fleet on a short delay - the same bounded, fenced release the
+            # actor-not-found arm applies - and the outer finally below returns
+            # the acquired composition. The claim intent stays live until the
+            # consumer loop's own finally resolves it, so every hand-back pass
+            # keeps excluding the row while this release is in flight. On an
+            # infra failure the row stays running and is disowned: the
+            # lock-lease reclaim is the backstop, exactly the actor-not-found
+            # failure arm.
             try:
                 release_outcome = await backend.mark_snoozed(
                     job.id,
@@ -1113,15 +1111,15 @@ async def consume_one_job(
                     )
             return "scheduled"
 
-        # THE SEAM PRECEDES THE INSTALL. The buffer is installed only
-        # after the seam has declined to fire: the guard's return above
-        # would otherwise exit between the install and the inner ``try``
-        # whose ``finally`` is the buffer's only removal (the issue-461
-        # map hygiene - every shutdown-raced dispatch would leak one
-        # ``progress_buffers`` entry, and the flush tick's dirty-scan
-        # would iterate it forever). The guard needs nothing the install
-        # provides - its inputs are the deps' shutdown stamp and the
-        # backend release - so the order is free, and the leak is not.
+        # the seam precedes the install. The buffer is installed only after the
+        # seam has declined to fire: the guard's return above would otherwise
+        # exit between the install and the inner ``try`` whose ``finally`` is
+        # the buffer's only removal (the issue-461 map hygiene - every
+        # shutdown-raced dispatch would leak one ``progress_buffers`` entry,
+        # and the flush tick's dirty-scan would iterate it forever). The guard
+        # needs nothing the install provides - its inputs are the deps'
+        # shutdown stamp and the backend release - so the order is free, and
+        # the leak is not.
         if _progress_buffers is not None:
             # attempt seeds the buffer's flush-fence epoch: a stale flush
             # landing after a same-worker redispatch to a later attempt
@@ -1134,7 +1132,7 @@ async def consume_one_job(
             # so the running publish below, every later ctx.progress call,
             # the flush deltas, and the terminal helpers all stack on it and
             # no later event can repeat the seq it carried. The consumption
-            # rides the next flush delta or the next mark_* absolute SET to
+            # rides the next flush delta or the next mark_* absolute set to
             # the durable row, so the next attempt's buffer seeds past it.
             _consume_state_change_seq(_buf)
 
@@ -1173,7 +1171,7 @@ async def consume_one_job(
             _pending_publish_tasks=_pending_publish_tasks,
         )
 
-        # THE WINDOW GUARD comment lives at the try below; these are the
+        # the window guard comment lives at the try below; these are the
         # no-await computations the guard does not need to cover.
         _completion: object = None
 
@@ -1193,17 +1191,16 @@ async def consume_one_job(
             attributes={"from_state": "pending", "to_state": "running"},
         )
 
-        # THE WINDOW GUARD (the issue-461 map hygiene, second exit). Between
-        # the buffer's install above and the attempt ``try`` below sit two
-        # awaits: the active-jobs registration and the running publish. A
-        # cancellation delivered at either leaves this frame WITHOUT running
-        # the attempt try's ``finally`` — the buffer's only removal and the
-        # registry entry's — exactly the leak the shutdown-seam guard above
-        # closed for its own exit. The guard applies the same identity-scoped
-        # cleanup (the key may already hold a re-claim's live buffer; only
-        # THIS attempt's is removed) and re-raises: the row is still this
-        # attempt's to terminalise, and the cancel arms below are its
-        # writers, so the guard only cleans the maps, never the row.
+        # the window guard . Between the buffer's install above and the attempt
+        # ``try`` below sit two awaits: the active-jobs registration and the
+        # running publish. A cancellation delivered at either leaves this frame
+        # without running the attempt try's ``finally`` — the buffer's only
+        # removal and the registry entry's — exactly the leak the shutdown-seam
+        # guard above closed for its own exit. The guard applies the same
+        # identity-scoped cleanup (the key may already hold a re-claim's live
+        # buffer; only this attempt's is removed) and re-raises: the row is
+        # still this attempt's to terminalise, and the cancel arms below are
+        # its writers, so the guard only cleans the maps, never the row.
         try:
             if active_jobs is not None:
                 task = asyncio.current_task()
@@ -1327,13 +1324,13 @@ async def consume_one_job(
                 and deps is not None
                 and deps.shutdown_phase is not ShutdownPhase.NONE
             ):
-                # A registration that landed after CANCELLING's stamping
-                # pass (a slow slot-pool acquire or DI resolution held the
+                # A registration that landed after cancelling's stamping
+                # pass (a slow slot-pool acquire or di resolution held the
                 # take-to-register window open past every phase snapshot)
                 # is torn down by the worker's own teardown cancellation
                 # with no origin recorded. While the orchestration runs it
                 # is the only canceler that could be driving this task:
-                # stamp SHUTDOWN so the routing below releases the attempt
+                # stamp shutdown so the routing below releases the attempt
                 # back to the fleet instead of terminalising a deploy's
                 # work. The row stays the final arbiter: an operator cancel
                 # already on the row fences the release (cancel_phase != 0)
@@ -1343,7 +1340,7 @@ async def consume_one_job(
                 entry.ctx._set_cancel_origin(CancelOrigin.SHUTDOWN)  # pyright: ignore[reportPrivateUsage]  # Why: the consumer is the designated writer of its own context's origin stamp when it completes the orchestration's missed stamp (set alongside the registry entry's, per the field's contract).
             # Identity-scoped (the issue-461 class, the same fence the
             # deregister below applies): the terminal override reads and
-            # removes THIS attempt's buffer, never a bare-id pop of the
+            # removes this attempt's buffer, never a bare-id pop of the
             # key. A same-worker re-claim overwrote the key with the live
             # attempt's buffer; a stale attempt must neither consume the
             # live attempt's seq as its terminal override nor evict the
@@ -1359,7 +1356,7 @@ async def consume_one_job(
                 # Infrastructure interruption (SIGTERM / drain monitor),
                 # not an operator cancel: release the attempt back to the
                 # fleet instead of terminalising it (the spent attempt
-                # stands; no refund). The hold is EARNED, never assumed:
+                # stands; no refund). The hold is earned, never assumed:
                 # an async actor
                 # has provably unwound by the time this handler runs (the
                 # cancellation propagated through its frames to get
@@ -1370,7 +1367,7 @@ async def consume_one_job(
                 # sync actor still executing in its executor thread
                 # (task.cancel() cancels the await, never the thread) and
                 # a transactional actor still unwinding its rollback are
-                # NOT gone: _interrupted_actor_hold parks on their
+                # not gone: _interrupted_actor_hold parks on their
                 # tracked handles, bounded by the remaining termination
                 # budget, and holds the release behind this process's
                 # exit window when they never finish: the row must not
@@ -1379,7 +1376,7 @@ async def consume_one_job(
                 #
                 # The row is the final arbiter: a "noop" means the fence
                 # declined the release: an operator cancel raced the
-                # deploy onto the row (cancel_phase != 0), the RELEASING
+                # deploy onto the row (cancel_phase != 0), the releasing
                 # phase already released it while this consumer parked,
                 # or the row moved underneath the attempt (a reclaim),
                 # and the attempt falls through to the ordinary cancel
@@ -1412,11 +1409,11 @@ async def consume_one_job(
                 except _TERMINAL_WRITE_INFRA_EXCEPTIONS as infra_exc:
                     # Best-effort, exactly like the cancel write below: the
                     # row stays 'running', disowned so lock-lease expiry
-                    # reclaims it. Do NOT fall through to mark_cancelled ,
+                    # reclaims it. Do not fall through to mark_cancelled ,
                     # the row carries no operator cancel, so a cancel write
                     # here would terminalise an infrastructure interruption.
                     # The infra error is swallowed, never re-raised: a bare
-                    # `raise` here re-raises infra_exc, REPLACING the
+                    # `raise` here re-raises infra_exc, replacing the
                     # CancelledError this handler is handling, so the
                     # interruption escapes consume_one_job as a job
                     # exception and dispatch's generic handler spends the
@@ -1467,7 +1464,7 @@ async def consume_one_job(
                     raise
                 # "noop": the fence declined, an operator cancel landed on
                 # the row first (cancel_phase != 0), or the row already
-                # moved (released by RELEASING, reclaimed, terminalised).
+                # moved (released by releasing, reclaimed, terminalised).
                 # The operator's request owns the terminal state; fall
                 # through to mark_cancelled.
             consumer_span.add_event(
@@ -1484,7 +1481,7 @@ async def consume_one_job(
             # before the shutdown's own release write competes, a fenced
             # write, so at most one of the two lands and the other reads
             # a fence outcome. A second cancel (a forced escalation, the
-            # shutdown's FORCING phase) interrupts a retry wait as a
+            # shutdown's forcing phase) interrupts a retry wait as a
             # CancelledError: no write is in flight then (each attempt is
             # shielded to completion) and the row is still this worker's,
             # so it is disowned before the cancellation propagates.
@@ -1506,7 +1503,7 @@ async def consume_one_job(
                 # Why: the terminal write is best-effort on this path, the
                 # row stays 'running', disowned so lock-lease expiry
                 # reclaims it (identical to the success-path infra
-                # failure). The CancelledError MUST still propagate below:
+                # failure). The CancelledError must still propagate below:
                 # routing the infra error into generic job-failure handling
                 # eats a TaskGroup cancellation and hangs __aexit__ forever.
                 cancel_landed = None
@@ -1559,7 +1556,7 @@ async def consume_one_job(
             # Already logged via _log_terminal_write_failed inside the
             # success path.  The job stays ``running``, disowned here so
             # the heartbeat stops renewing it and lock-lease expiry
-            # reclaims it.  Do NOT re-dispatch into
+            # reclaims it.  Do not re-dispatch into
             # _handle_generic_exception (that would mislabel the infra
             # error as the actor's failure).
             _disown_job(_disowned_jobs, job)
@@ -1576,14 +1573,14 @@ async def consume_one_job(
             # ``BaseException``, not ``Exception``: an actor body that raises a
             # non-Exception BaseException (a custom BaseException subclass from a
             # dependency, ``SystemExit`` from a sync actor calling ``sys.exit`` in
-            # its executor thread) is an ATTEMPT OUTCOME, not worker death. The
+            # its executor thread) is an attempt outcome, not worker death. The
             # two delivery shapes differ, and only together cover the contract:
-            # a BaseException raised in THIS task's frame (an async actor's
+            # a BaseException raised in this task's frame (an async actor's
             # body, or the _ActorSystemExitAttemptError carrier the sync-actor
             # thread boundary raises for a raw thread SystemExit, and the tx
             # task boundary likewise) is delivered into this frame by the
             # awaiting task's normal wakeup and lands here; a raw SystemExit
-            # left inside a TASK's own step would kill the loop before any
+            # left inside a task's own step would kill the loop before any
             # wake-up runs, which is why both task boundaries convert it.
             # The previous breadth let such an exception escape this function,
             # strand
@@ -1594,7 +1591,7 @@ async def consume_one_job(
             # capturing this at the per-job boundary: the failure is recorded
             # truthfully (error_class is the exception's own type name) and the
             # worker survives to run the rest of its fleet. ``KeyboardInterrupt``
-            # is deliberately NOT captured: it is interpreter/operator intent,
+            # is deliberately not captured: it is interpreter/operator intent,
             # never an actor outcome, and swallowing it would break in-process
             # shutdown flows; it re-raises into the loop-level handler, and the
             # stranded row still has the lease-reclaim path as its recovery.
@@ -1625,7 +1622,7 @@ async def consume_one_job(
             # even when the actor raises unexpectedly ().
             if _progress_buffers is not None and _buf is not None:
                 # Identity-scoped crash flush (the issue-461 class): the
-                # buffer leaves the map only when the key still holds THIS
+                # buffer leaves the map only when the key still holds this
                 # attempt's buffer, and the flushed buffer is the one this
                 # attempt installed. A stale attempt whose key a re-claim
                 # overwrote must not evict the live attempt's buffer (the
@@ -1695,17 +1692,17 @@ def _retrieve_body_task_outcome(task: "asyncio.Task[object]") -> None:
 
 class _DeadlineEnforcementCtx(Protocol):
     """The deadline enforcement's ctx face (the machinery's designated
-    write on the ctx it runs) — the ONE contract both carriers satisfy
+    write on the ctx it runs) — the one contract both carriers satisfy
     structurally:
 
     * the vanilla :class:`taskq.context.JobContext` (the consumer's own
       face: the handle the cancel arm / the timeout handler's exit-proof
       hold read);
     * the workflow :class:`taskq.workflows.api._ctx.StepContext` (the wf
-      runner's body seam runs the SAME enforcement — the handle records
+      runner's body seam runs the same enforcement — the handle records
       the detached unwind).
 
-    Structural on purpose: the enforcement is ONE machinery, never a
+    Structural on purpose: the enforcement is one machinery, never a
     second one per carrier (the wf runner imports THIS function — the
     three holes, the unwind budget, the hostile-finally shape
     inherited)."""
@@ -1738,7 +1735,7 @@ async def _enforce_start_to_close(
     Replaces a bare ``asyncio.wait_for(run_actor(...), timeout)``, which
     had three body-side holes this mechanism closes:
 
-    1. THE #791 CONFLATION. ``wait_for`` propagates a body-raised
+    1. the #791 CONFLATION. ``wait_for`` propagates a body-raised
        ``TimeoutError`` and its own deadline expiry through the same
        exception type, so the consumer routed every body ``TimeoutError``
        (a nested ``wait_for``, a socket read, a futures timeout) into the
@@ -1750,14 +1747,14 @@ async def _enforce_start_to_close(
        timeout handler); the body's own ``TimeoutError`` propagates
        unchanged and takes the ordinary generic-failure path.
 
-    2. THE ABSORBABLE DEADLINE. Since 3.12 ``wait_for`` documents: "If the
+    2. the ABSORBABLE DEADLINE. Since 3.12 ``wait_for`` documents: "If the
        task suppresses the cancellation and returns a value instead, that
        value is returned." A body that caught the deadline's cancellation
        and returned was marked SUCCEEDED, past its own time limit. Here
        the deadline is a first-completed race: a body that returns after
        the deadline fired has its result discarded and the marker raised.
 
-    3. THE DEFERRABLE DEADLINE. ``wait_for`` waits out the body's unwind
+    3. the DEFERRABLE DEADLINE. ``wait_for`` waits out the body's unwind
        unboundedly: a ``finally`` that awaits (worse, ``await
        asyncio.shield(cleanup())``) deferred the hard limit for as long as
        it liked while the slot sat occupied. Here the body runs in its own
@@ -1784,7 +1781,7 @@ async def _enforce_start_to_close(
     collision's ``InterfaceError`` instead of the truthful
     ``TimeoutError`` (the ``job_timeout`` log and the timeouts metric
     lost with it). The tx-path caller therefore passes the budget and
-    this enforcement bound-waits the unwind BEFORE the marker
+    this enforcement bound-waits the unwind before the marker
     propagates into the ``__aexit__``: the rollback runs on a quiesced
     connection, and a legitimate ``finally`` on the shared connection
     gets to finish. A hostile unwind outliving the budget proceeds
@@ -1812,7 +1809,7 @@ async def _enforce_start_to_close(
     ctx handle — the tracked-handles park proves the unwind, never the
     assumption that a propagated cancellation unwound the body's frames.
 
-    THE SHARED FACE: the enforcement is ONE machinery for both carriers —
+    The enforcement is one machinery for both carriers —
     the vanilla consumer's call sites (the *job* is the claimed
     :class:`JobRow`) and the workflow runner's body seam (``api/_runner``
     imports THIS function; the *job* is opaque — the runner's closure
@@ -1859,24 +1856,23 @@ async def _enforce_start_to_close(
             return_when=asyncio.FIRST_COMPLETED,
         )
         if expired and unwind_wait is not None and not body_task.done():
-            # THE TRANSACTIONAL PATH'S BOUND UNWIND WAIT. The deadline won
-            # the race and the unwind (the body's except/finally frames)
-            # is still running. On the transactional path that unwind may
-            # await on the SHARED transaction connection, and the marker
-            # raised below reaches the transaction __aexit__'s ROLLBACK:
-            # letting them race once collided on asyncpg's one-operation-
-            # at-a-time guard, the failing ROLLBACK replaced the marker in
-            # __aexit__, and the row recorded InterfaceError instead of
-            # the truthful TimeoutError (the job_timeout log and the
-            # timeouts metric lost with it). Wait the unwind out, up to
-            # the exit-wait budget: a legitimate finally finishes and the
-            # rollback runs on a quiesced connection. At budget expiry the
-            # marker proceeds anyway -- the deadline's win survives,
-            # bounded by the budget -- and the still-hostile unwind is
-            # detached tracked by the finally below.
+            # the transactional path's bound unwind wait. The deadline won the
+            # race and the unwind is still running. On the transactional path
+            # that unwind may await on the shared transaction connection, and
+            # the marker raised below reaches the transaction __aexit__'s
+            # ROLLBACK: letting them race once collided on asyncpg's
+            # one-operation- at-a-time guard, the failing ROLLBACK replaced the
+            # marker in __aexit__, and the row recorded InterfaceError instead
+            # of the truthful TimeoutError (the job_timeout log and the
+            # timeouts metric lost with it). Wait the unwind out, up to the
+            # exit-wait budget: a legitimate finally finishes and the rollback
+            # runs on a quiesced connection. At budget expiry the marker
+            # proceeds anyway -- the deadline's win survives, bounded by the
+            # budget -- and the still-hostile unwind is detached tracked by the
+            # finally below.
             await asyncio.wait({body_task}, timeout=unwind_wait)
     except asyncio.CancelledError:
-        # An external cancellation of THIS task (a shutdown interrupt, an
+        # An external cancellation of this task (a shutdown interrupt, an
         # operator phase 2): re-raise and let the finally below forward
         # the cancellation to the body task, detach it tracked, and leave
         # the unwind proof to the ctx handle the interrupt hold reads.
@@ -1892,7 +1888,7 @@ async def _enforce_start_to_close(
                 body_task.exception()
         else:
             if not expired:
-                # An external cancellation of THIS task (a shutdown
+                # An external cancellation of this task (a shutdown
                 # interrupt, an operator phase 2): the consumer's cancel
                 # arm owns the row now and the body must get the cancel
                 # it owes. The unwind is detached (below), so the arm
@@ -1918,26 +1914,24 @@ async def _enforce_start_to_close(
         # still be unwinding (detached above): either way the attempt is
         # a timeout, never a success, however the body feels about it.
         if unwind_wait is not None:
-            # THE TX PATH'S ROLLBACK-COLLISION WINDOW, OPEN. The marker
-            # raised below is now the exception in flight through the
-            # transaction __aexit__, and the __aexit__'s own ROLLBACK is
-            # the only statement the tx path issues on the SHARED
-            # connection from here. If the unwind still holds that
-            # connection (a shielded conn op past deadline + budget), the
-            # ROLLBACK collides on asyncpg's one-operation-at-a-time
-            # guard and the collision's InterfaceError replaces the
-            # marker -- and the body's own exceptions are confined to its
-            # detached task, unable to cross the capture boundary once
-            # the deadline has fired. So stamp the window: the
-            # transactional consumer's capture boundary re-labels an
-            # InterfaceError arriving under this stamp to the truthful
-            # TimeoutError (the row, the job_timeout log and the metric
-            # all stay the deadline's), and never touches one arriving
-            # without it (a body-caused InterfaceError keeps its own
-            # class). Read the stamp's contract on the tx ctx protocol.
-            # The unwind_wait budget is the tx path's own argument — the
-            # only caller that passes it is the one whose ctx implements
-            # the tx face.
+            # the tx path's ROLLBACK-COLLISION window, open. The marker raised
+            # below is now the exception in flight through the transaction
+            # __aexit__, and the __aexit__'s own ROLLBACK is the only statement
+            # the tx path issues on the shared connection from here. If the
+            # unwind still holds that connection (a shielded conn op past
+            # deadline + budget), the ROLLBACK collides on asyncpg's
+            # one-operation-at-a-time guard and the collision's InterfaceError
+            # replaces the marker -- and the body's own exceptions are confined
+            # to its detached task, unable to cross the capture boundary once
+            # the deadline has fired. So stamp the window: the transactional
+            # consumer's capture boundary re-labels an InterfaceError arriving
+            # under this stamp to the truthful TimeoutError (the row, the
+            # job_timeout log and the metric all stay the deadline's), and
+            # never touches one arriving without it (a body-caused
+            # InterfaceError keeps its own class). Read the stamp's contract on
+            # the tx ctx protocol. The unwind_wait budget is the tx path's own
+            # argument — the only caller that passes it is the one whose ctx
+            # implements the tx face.
             cast("_TxDeadlineEnforcementCtx", ctx)._set_tx_rollback_collision_window()
         raise _StartToCloseExceededError from None
     # The body finished before the deadline: its return value, or its own
@@ -2008,23 +2002,23 @@ async def _consume_transactional(
                 # wait_for left (the #791 TimeoutError conflation, the
                 # absorbable deadline, the deferrable unwind). The
                 # start_to_close cancellation reaches the actor exactly as
-                # on the autonomous path, PLUS the tx path's bound unwind
+                # on the autonomous path, plus the tx path's bound unwind
                 # wait: this actor runs inside
                 # `transaction_conn.transaction()`, whose __aexit__ answers
-                # the marker with a ROLLBACK on the SHARED connection, so
+                # the marker with a ROLLBACK on the shared connection, so
                 # the unwind is waited out (up to _TX_UNWIND_WAIT_BUDGET)
                 # before the marker propagates -- the rollback runs on a
                 # quiesced connection instead of colliding with the
                 # unwind's own statement on the asyncpg one-operation-at-
                 # a-time guard and replacing the marker (the row once
                 # recorded InterfaceError instead of the truthful
-                # TimeoutError). PAST the budget the marker propagates
+                # TimeoutError). past the budget the marker propagates
                 # anyway and the collision can still happen; the capture
                 # boundary at the shield below translates our own
                 # rollback's collision (only it can arrive under the
                 # rollback-collision window the enforcement stamps) back
                 # to the truthful TimeoutError. Transaction integrity is the
-                # OUTER shield's job (`shield(
+                # outer shield's job (`shield(
                 # _run_actor_in_tx())` below): that one decouples EXTERNAL
                 # cancellation from an in-flight commit.  A cancel landing
                 # mid-statement on transaction_conn is safe, asyncpg sends a
@@ -2045,11 +2039,11 @@ async def _consume_transactional(
                 # sits between the actor's return and this assignment, so
                 # the two windows cannot blur.
                 actor_finished = True
-                # Why NO cancel-phase check here: a cancel request observed
+                # Why no cancel-phase check here: a cancel request observed
                 # while the actor ran does not decide the terminal state ,
                 # the actor's own outcome does. The actor returned a value,
                 # so the attempt succeeded; an actor that abandons its unit
-                # of work signals it by RAISING CancelledError (handled by
+                # of work signals it by raising CancelledError (handled by
                 # the outer handler), never by returning. Cancelling a
                 # returned actor here would discard a computed result from
                 # a terminal job nothing re-runs (and roll back the writes
@@ -2093,7 +2087,7 @@ async def _consume_transactional(
                 if not succeeded_landed:
                     # Fenced out: the row moved underneath this attempt
                     # (reclaimed and re-claimed at a newer attempt epoch).
-                    # The actor's writes must NOT join this transaction's
+                    # The actor's writes must not join this transaction's
                     # commit, they are a stale attempt's side effects, and
                     # the live attempt will produce its own. Raising rolls
                     # the transaction back; the buffered sub-enqueues go
@@ -2192,8 +2186,8 @@ async def _consume_transactional(
     # the handle is needed on the cancellation path to retrieve the
     # detached outcome (see _retrieve_detached_outcome).
     #
-    # Why the SystemExit conversion wraps the task body: this coroutine IS
-    # the tx task's step, and CPython's Task.__step re-raises exactly
+    # Why the SystemExit conversion wraps the task body: this coroutine is
+    # the tx task's step, and cpython's Task.__step re-raises exactly
     # (KeyboardInterrupt, SystemExit) bare after set_exception, killing the
     # loop before the shielded await below can run (the same mechanism
     # _run_sync_actor_tracked's thread boundary converts for a sync actor).
@@ -2214,21 +2208,20 @@ async def _consume_transactional(
         try:
             await asyncio.shield(tx_task)
         except asyncpg.exceptions.InterfaceError as exc:
-            # THE CAPTURE BOUNDARY OF THE ROLLBACK-COLLISION WINDOW. Under
-            # the stamp (see the window's opener in _enforce_start_to_close)
-            # the deadline's marker was the exception in flight through the
-            # transaction __aexit__, whose ROLLBACK is the only statement
-            # the tx path issues on the SHARED connection from there: an
-            # InterfaceError arriving now can only be that ROLLBACK
-            # colliding with a body-owned statement still in flight (the
-            # hostile unwind holding the connection past the exit-wait
-            # budget), never the body's own -- the body's exceptions are
-            # confined to its detached task once the deadline has fired.
-            # So re-label the collision to the truthful timeout
-            # disposition: the marker routes to the timeout handler and
-            # the row, the job_timeout log and the timeouts metric all
-            # record the deadline, not the collision. Without the stamp
-            # (no deadline, or the body's own InterfaceError surfacing
+            # the capture boundary of the ROLLBACK-COLLISION window. Under the
+            # stamp (see the window's opener in _enforce_start_to_close) the
+            # deadline's marker was the exception in flight through the
+            # transaction __aexit__, whose ROLLBACK is the only statement the
+            # tx path issues on the shared connection from there: an
+            # InterfaceError arriving now can only be that ROLLBACK colliding
+            # with a body-owned statement still in flight (the hostile unwind
+            # holding the connection past the exit-wait budget), never the
+            # body's own -- the body's exceptions are confined to its detached
+            # task once the deadline has fired. So re-label the collision to
+            # the truthful timeout disposition: the marker routes to the
+            # timeout handler and the row, the job_timeout log and the timeouts
+            # metric all record the deadline, not the collision. Without the
+            # stamp (no deadline, or the body's own InterfaceError surfacing
             # through body_task.result() before the deadline fired) the
             # InterfaceError propagates unchanged: the re-label must never
             # launder a genuine body-caused one. The stamp is taken (and
@@ -2265,7 +2258,7 @@ async def _consume_transactional(
     except asyncio.CancelledError:
         # Why: asyncio.shield decouples outer cancellation from the
         # inner task. If the inner task already completed successfully
-        # (commit happened), do NOT route to mark_cancelled, the row is
+        # (commit happened), do not route to mark_cancelled, the row is
         # already terminal, and a cancel write against it must not land.
         if completion is not _OK:
             if not actor_finished:
@@ -2278,7 +2271,7 @@ async def _consume_transactional(
                 # cancel propagates through wait_for into the actor and
                 # the enclosing transaction rolls back.
                 tx_task.cancel()
-            # The unwind is ASYNCHRONOUS: savepoint rollback, the
+            # The unwind is asynchronous: savepoint rollback, the
             # enclosing transaction's rollback, and, when the actor is
             # a sync def, an executor thread the cancel cannot reach at
             # all. The re-raise below lands in the consumer's
@@ -2393,9 +2386,9 @@ async def _consume_autonomous(
 
     result = await _enforce_start_to_close(run_actor, job, ctx, timeout)
 
-    # Why NO cancel-phase check between the actor's return and the success
+    # Why no cancel-phase check between the actor's return and the success
     # write: the actor returned a value, so the attempt's outcome is
-    # success, a cancel REQUEST observed while it ran is not a verdict
+    # success, a cancel request observed while it ran is not a verdict
     # over the work it completed (cancellation is cooperative: the actor
     # that abandons its unit of work raises CancelledError and lands in
     # the outer handler; the actor that degrades gracefully and returns
@@ -2432,7 +2425,7 @@ async def _consume_autonomous(
     if not succeeded_landed:
         # Fenced out: the row moved underneath this attempt (a lease
         # reclaim re-pended it; a later attempt owns it now). The actor's
-        # result is NOT the job's outcome, no success hook (a hook with
+        # result is not the job's outcome, no success hook (a hook with
         # external side effects would fire once here and once for the
         # attempt that wins the row), no terminal publish, and the
         # outcome reported is "noop" so batch policy and dispatch metrics

@@ -296,7 +296,7 @@ class TestTerminalWritesUpdateRow:
         assert_job_terminal(row, "failed")
 
 
-# ── CHECK constraints fire ─────────────────────────────────────
+# ── check constraints fire ─────────────────────────────────────
 
 
 class TestCheckConstraints:
@@ -1552,7 +1552,7 @@ class TestMarkSucceededResultExpiryFallback:
             finished_at: datetime = row["finished_at"]
             result_expires_at: datetime = row["result_expires_at"]
 
-            # finished_at must be AFTER the sleep, not frozen at txn
+            # finished_at must be after the sleep, not frozen at txn
             # start. If it used now() it would equal txn_start.
             assert finished_at > txn_start + timedelta(seconds=sleep_seconds - 0.5)
 
@@ -1563,7 +1563,7 @@ class TestMarkSucceededResultExpiryFallback:
                 timedelta(seconds=ttl_seconds - 0.5) < skew < timedelta(seconds=ttl_seconds + 0.5)
             )
 
-            # The result must NOT be already expired.
+            # The result must not be already expired.
             clock_now = await conn.fetchval("SELECT clock_timestamp()")
             assert result_expires_at > clock_now
 

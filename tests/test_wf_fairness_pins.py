@@ -3,7 +3,7 @@ run's ``flow_id`` as the ``jobs.fairness_key`` cohort.
 
 The dispatch's round-robin variant partitions candidates by
 ``COALESCE(fairness_key, '__null__')``; every wf row was born with the
-column NULL, so ALL workflow rows on a queue collapsed into ONE FIFO
+column NULL, so ALL workflow rows on a queue collapsed into one FIFO
 cohort and a deep run starved a shallow one exactly the way the vanilla
 starvation finding described. The stamp rides the five claimable-row
 INSERT sites (the static node insert, the fork children, the emit
@@ -129,13 +129,13 @@ def _flow_ids(rows: list[asyncpg.Record]) -> set[str]:
     return out
 
 
-# ── THE INTERLEAVE PIN ───────────────────────────────────────────────────
+# ── the interleave pin ───────────────────────────────────────────────────
 
 
 async def test_a_deep_run_does_not_starve_a_shallow_run_on_round_robin(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """Run A's map forks ~500 pending children; run B holds ONE pending
+    """Run A's map forks ~500 pending children; run B holds one pending
     node; both runs' rows sit on one round_robin queue and A's rows were
     born first (they sort ahead on priority/scheduled_at/id). Dispatching
     with limit=4 must surface B's row within two rounds — the rows'
@@ -193,7 +193,7 @@ async def test_a_deep_run_does_not_starve_a_shallow_run_on_round_robin(
     )
 
 
-# ── THE COHORT PIN ───────────────────────────────────────────────────────
+# ── the cohort pin ───────────────────────────────────────────────────────
 
 
 async def test_wf_rows_carry_their_run_s_cohort_at_birth(
@@ -358,9 +358,9 @@ async def test_the_emit_s_children_carry_the_cohort(
     assert all(str(r["fairness_key"]) == str(flow_id) for r in stamped), (
         "the emit children are born with the run's cohort"
     )
-    # THE SOURCE ROW ITSELF (engine.insert_node's own insert): the row
-    # that emitted the page carries the run's cohort too — the stamp's
-    # write-once law covers every claimable wf row the engine inserts.
+    # engine.insert_node's own insert. the row that emitted the page carries
+    # the run's cohort too — the stamp's write-once law covers every claimable
+    # wf row the engine inserts.
     source_stamp = await wf_conn.fetchval(
         f'SELECT fairness_key FROM "{wf_schema}".jobs WHERE id = $1',  # Why: the schema is the module fixture's validated identifier; every value is $-bound.
         source_id,
@@ -370,7 +370,7 @@ async def test_the_emit_s_children_carry_the_cohort(
     )
 
 
-# ── THE STRICT_FIFO INERTNESS PIN ────────────────────────────────────────
+# ── the STRICT_FIFO inertness pin ────────────────────────────────────────
 
 
 async def test_the_stamp_is_stored_and_ignored_on_strict_fifo(
@@ -407,12 +407,12 @@ async def test_the_stamp_is_stored_and_ignored_on_strict_fifo(
     got = await _dispatch(wf_conn, DISPATCH_STRICT_FIFO_SQL, wf_schema, worker_id, queue, limit=1)
     rows = list(got)
     assert rows, "the strict-FIFO round claimed the stamped rows"
-    # STORED: the stamps ride the dispatched rows.
+    # stored: the stamps ride the dispatched rows.
     for r in rows:
         fid = r["fairness_key"]
         assert fid is not None, "the wf row's stamp is stored"
         assert str(fid) in {str(flow_a), str(flow_b)}
-    # IGNORED: the round admits strictly in birth order — run A's row
+    # ignored: the round admits strictly in birth order — run A's row
     # (born first) takes the single claim and run B's row waits, although
     # it is its own cohort (the round_robin partition surfaces it in
     # round 1).
@@ -431,14 +431,14 @@ async def test_the_stamp_is_stored_and_ignored_on_strict_fifo(
     assert int(pending_b or 0) == 1, "run B's row waits behind run A's (the FIFO order)"
 
 
-# ── THE MIXED-FLEET PIN ──────────────────────────────────────────────────
+# ── the mixed-fleet pin ──────────────────────────────────────────────────
 
 
 async def test_wf_cohorts_interleave_beside_vanilla_keyed_cohorts(
     wf_schema: str, wf_conn: asyncpg.Connection, wf_pool: asyncpg.Pool
 ) -> None:
-    """A round_robin queue serving VANILLA keyed rows AND wf rows: the
-    wf runs' per-run cohorts and the vanilla jobs' declared keys are ONE
+    """A round_robin queue serving VANILLA keyed rows and wf rows: the
+    wf runs' per-run cohorts and the vanilla jobs' declared keys are one
     partition vocabulary — each cohort surfaces within the first
     rounds."""
     queue = "wf-mixed-q"
@@ -448,7 +448,7 @@ async def test_wf_cohorts_interleave_beside_vanilla_keyed_cohorts(
     worker_id = await _capable_worker_row(wf_conn, wf_schema, queue)
 
     # The vanilla keyed rows: two jobs under their own cohort key, born
-    # FIRST (they sort ahead on the FIFO ordering). step_key stays NULL —
+    # first (they sort ahead on the FIFO ordering). step_key stays NULL —
     # the vanilla row's own shape (the fence short-circuits on it).
     for _ in range(2):
         await wf_conn.execute(
@@ -542,9 +542,9 @@ async def test_a_re_pended_row_keeps_its_stamp(
     row = rows[0]
     assert str(row["fairness_key"]) == str(flow_id), "the row was born stamped"
 
-    # THE REAL DEFERRAL WRITE: the backend's mark_snoozed (the claimed
-    # row's own attempt/epoch fences it) — the row goes scheduled with
-    # assignment_routed set, the re-pend shape the repended arm serves.
+    # the backend's mark_snoozed (the claimed row's own attempt/epoch fences
+    # it) — the row goes scheduled with assignment_routed set, the re-pend
+    # shape the repended arm serves.
     settings = WorkerSettings.load_from_dict(
         {
             "PG_DSN": "postgres://u:p@localhost:5432/db",
@@ -582,9 +582,8 @@ async def test_a_re_pended_row_keeps_its_stamp(
     )
     assert routed, "the deferral set the repended arm's discriminator"
 
-    # THE PROMOTION (the leader's own arm): after the deferral elapses,
-    # the due scheduled row comes back pending; the round re-admits it
-    # through the REPENDED arm.
+    # after the deferral elapses, the due scheduled row comes back pending; the
+    # round re-admits it through the repended arm.
     import asyncio
 
     await asyncio.sleep(1.1)

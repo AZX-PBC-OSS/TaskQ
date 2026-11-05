@@ -1,25 +1,25 @@
-"""NEGATIVE TYPE PROBES — the generic wiring mechanism (pyright 1.1.414 +
+"""negative type probes — the generic wiring mechanism (pyright 1.1.414 +
 ty 0.0.85).
 
 Run:  uv run --no-sync python tests/typeprobe/_gate.py
       (the CI `type-probes` job's single step; the corpus is checked under
-      THIS directory's own pyrightconfig.json — NOT the root pyproject)
+      this directory's own pyrightconfig.json — not the root pyproject)
 
-The type-mechanism round's corpus: the SHIPPED signatures carry the
+The type-mechanism round's corpus: the shipped signatures carry the
 probe-proven mechanism — ``step[R](body: Callable[..., Awaitable[R]]) ->
-Promise[R]`` (R INFERRED from the body's declared return),
+Promise[R]`` (R inferred from the body's declared return),
 ``gather[R](promises: list[Promise[R]]) -> Promise[list[R]]`` (the
-element type PRESERVED — no erase to ``Promise[Any]``), and
+element type preserved — no erase to ``Promise[Any]``), and
 ``build[R](result: Promise[R], *residuals: Promise[Never])`` (the
 residual slot refuses every real promise — the covariant handle-flow
-law). Each ``MUST_ERROR(rules)`` marker names the EXACT rule-ids the
+law). Each ``MUST_ERROR(rules)`` marker names the exact rule-ids the
 pinned checkers must emit (the gate asserts the ids, not merely "an
 error" — a stray import error must not satisfy a probe).
 
-THE TWO FACES — what the CHECKER owns vs what ``validate()`` owns (the
+the two faces — what the checker owns vs what ``validate()`` owns (the
 honest boundary, stated so it cannot be misread):
 
-* THE CHECKER'S FACE — the HANDLE flow: the promise as a value threaded
+* the checker's face — the handle flow: the promise as a value threaded
   through the wiring. A typed consumer that declares the handle type
   (``Promise[Config]``) rejects a mismatched handle (``Promise[Report]``)
   — the contravariant-consumer rejection, live because :class:`Promise`
@@ -27,12 +27,12 @@ honest boundary, stated so it cannot be misread):
   every real data handle — an unconsumed promise passed to the terminal
   is the checker's error. ``gather`` preserves the element type, so a
   join's mismatch is caught the same way. ``R``'s inference is checked
-  by the GREEN corpus (the estate's wiring compiles clean under the
+  by the green corpus (the estate's wiring compiles clean under the
   full-tree run).
-* THE VALIDATOR'S FACE — the DECODED-payload flow: the bodies take
+* the validator's face — the decoded-payload flow: the bodies take
   decoded models, not handles, so the wiring call itself is erased
-  (``*args: object``) and the checker CANNOT see the edge's payload.
-  The producer-Report→consumer-Config wiring site is NOT a checker
+  (``*args: object``) and the checker cannot see the edge's payload.
+  The producer-Report→consumer-Config wiring site is not a checker
   error — ``validate()``'s ``E5-incompatible-consumer`` owns it at
   build (the probe below documents the shape; its clean line is
   deliberate). The runtime pin: ``tests/test_wf_validate_pins.py``.
@@ -64,8 +64,8 @@ async def _wants_config(ctx: Any, params: Config) -> Config:
 
 
 def _handle_consumer(p: Promise[Config]) -> object:
-    """A typed consumer that takes the HANDLE (the promise in a
-    contravariant position) — the shape the checker CAN see."""
+    """A typed consumer that takes the handle (the promise in a
+    contravariant position) — the shape the checker can see."""
     return p
 
 
@@ -75,7 +75,7 @@ def _list_consumer(p: Promise[list[Config]]) -> object:
 
 
 def probe_residual_handle_is_the_error() -> None:
-    """CANONICAL WRONG GRAPH (b): an unconsumed data handle passed to the
+    """canonical wrong graph (b): an unconsumed data handle passed to the
     terminal as a residual. ``build``'s residual slot is
     ``Promise[Never]`` — a produces-nothing body's slot (``-> NoReturn``)
     — and covariant ``Promise[Report]`` is not assignable to it. This is
@@ -94,7 +94,7 @@ def probe_residual_handle_is_the_error() -> None:
 
 
 def probe_consumer_handle_mismatch() -> None:
-    """CANONICAL WRONG GRAPH (a) — the HANDLE half: a consumer declaring
+    """canonical wrong graph (a) — the handle half: a consumer declaring
     the handle type ``Promise[Config]`` handed ``Promise[Report]``. The
     contravariant-consumer rejection: covariant ``Promise`` makes the
     mismatch the checker's error (the producer's type threads to the
@@ -112,7 +112,7 @@ def probe_consumer_handle_mismatch() -> None:
 
 
 def probe_gather_element_type_mismatch() -> None:
-    """gather PRESERVES the element type (no erase to ``Promise[Any]``):
+    """gather preserves the element type (no erase to ``Promise[Any]``):
     a join over Report promises is ``Promise[list[Report]]``, so a
     consumer wanting ``Promise[list[Config]]`` reds — the join's element
     type is part of the handle-flow contract."""
@@ -130,14 +130,14 @@ def probe_gather_element_type_mismatch() -> None:
 
 
 def probe_wiring_site_decoded_payload_is_the_validators_face() -> None:
-    """The honest gap — deliberately NOT an asserted probe: the wiring site
-    where the consumer body takes the DECODED payload (``Config``) and
-    the promise carries ``Report``. The checker does NOT flag this call
+    """The honest gap — deliberately not an asserted probe: the wiring site
+    where the consumer body takes the decoded payload (``Config``) and
+    the promise carries ``Report``. The checker does not flag this call
     (the verbs' args are erased — bodies take decoded data, not handles,
-    so the wiring-site payload compat is statically unobservable THERE);
+    so the wiring-site payload compat is statically unobservable there);
     ``validate()``'s ``E5-incompatible-consumer`` owns it at build (the
     runtime pin: ``tests/test_wf_validate_pins.py``). This line must stay
-    CLEAN under both checkers — a red here is the gate's unmarked-error
+    clean under both checkers — a red here is the gate's unmarked-error
     failure, the two-faces boundary enforced."""
     app = WorkflowApp()
 
@@ -146,6 +146,6 @@ def probe_wiring_site_decoded_payload_is_the_validators_face() -> None:
         produced = step(_produces_report, Config(key="k"), key="p")
         return build(
             step(_wants_config, produced, key="c")
-        )  # NOT a checker error — validate()'s E5 face (the two-faces section)
+        )  # not a checker error — validate()'s E5 face (the two-faces section)
 
     _ = app

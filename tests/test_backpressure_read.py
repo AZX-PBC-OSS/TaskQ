@@ -1,7 +1,7 @@
 """The backpressure read: ``await client.backpressure(queues) -> BackpressureSnapshot``.
 
 LIB-2 (issue #670). A read-only typed read mirroring the reader-method
-precedent (``get_row`` / ``list``), NOT an enqueue kwarg: ``enqueue`` is
+precedent (``get_row`` / ``list``), not an enqueue kwarg: ``enqueue`` is
 generic ``JobHandle[R]`` and no flag may flip the reply type.
 
 The pins here are the honest-verdict contract:
@@ -14,12 +14,12 @@ The pins here are the honest-verdict contract:
   smallest-headroom routing actor's own all-queue count is the verdict
   basis) from the ``ActorCapacityCache`` TTL snapshot (stored operator
   cap; the ``@actor`` literal is not visible to this process).
-* FAN-OUT: children of a parent fan-out carry an exact ``parent_id``
+* FAN-out: children of a parent fan-out carry an exact ``parent_id``
   stamp; the pending children OUTSIDE the queried queue are the
   parent's ``children_depth`` inflow (they are the binding actor's own
   rows, so its all-queue load already includes them).
 * FAIL-OPEN: any unavailable half reads as the explicit ``unknown``
-  state with a reason — NEVER a fabricated verdict (the
+  state with a reason — never a fabricated verdict (the
   ``maybe_warn_unserved_queue`` posture).
 """
 
@@ -76,7 +76,7 @@ async def test_depth_counts_admission_statuses_exactly() -> None:
     # A scheduled (future) job also holds a pending slot.
     args = make_enqueue_args(queue="q", scheduled_at=_NOW + timedelta(hours=1))
     await backend.enqueue(args)
-    # A running job does NOT hold a pending slot: dispatch one.
+    # A running job does not hold a pending slot: dispatch one.
     await backend.enqueue(make_enqueue_args(queue="q"))
     await backend.dispatch_batch(
         backend._worker_id, ["q"], limit=1, lock_lease=timedelta(seconds=60)
@@ -111,7 +111,7 @@ async def test_over_and_ok_boundary_is_admission_load_lt_cap() -> None:
 
     # The operator raises the cap: below the boundary flips the verdict
     # (the snapshot re-reads at the next TTL window; invalidate is the
-    # operator-tooling seam that makes the change visible NOW).
+    # operator-tooling seam that makes the change visible now).
     backend.register_actor_config(actor="test_actor", queue="q", max_pending=5)
     client._capacity_cache.invalidate()
     entry = (await client.backpressure(["q"])).queues["q"]
@@ -122,15 +122,15 @@ async def test_over_and_ok_boundary_is_admission_load_lt_cap() -> None:
 
 async def test_tightest_cap_wins_when_multiple_actors_route() -> None:
     """Several actors route to one queue: the BINDING actor (smallest
-    headroom — its OWN count against its OWN cap) is the boundary, the
-    3-valent OR. The seeds' rows belong to the routing actors
+    headroom — its own count against its own cap) is the boundary, the
+    3-valent or. The seeds' rows belong to the routing actors
     themselves: a queue-local count of an UNRELATED actor's rows never
     makes a routing actor over (the corrected semantics — the cap
     governs the actor's all-queue count, not the queue's)."""
     backend = InMemoryBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="a_wide", queue="q", max_pending=100)
     backend.register_actor_config(actor="b_tight", queue="q", max_pending=2)
-    # b_tight's OWN pending rows: 2 of them, at its cap.
+    # b_tight's own pending rows: 2 of them, at its cap.
     for _ in range(2):
         await backend.enqueue(
             make_enqueue_args(actor="b_tight", queue="q", scheduled_at=_NOW - timedelta(seconds=1))
@@ -159,7 +159,7 @@ async def test_queue_local_depth_of_an_unrelated_actor_never_falses_over() -> No
     entry = (await client.backpressure(["q"])).queues["q"]
     assert entry.depth == 3  # the queue-local ops view sees them
     assert entry.binding_actor == "a_wide"
-    assert entry.admission_load == 0  # a_wide's OWN count: the cap governs THIS
+    assert entry.admission_load == 0  # a_wide's own count: the cap governs this
     assert entry.state == "ok"
 
 
@@ -178,7 +178,7 @@ async def test_differential_actor_split_across_queues_is_seen() -> None:
     client = JobsClient(backend)
     entry = (await client.backpressure(["q"])).queues["q"]
     assert entry.depth == 9  # the queue sees only its own 9
-    assert entry.admission_load == 18  # the cap governs ALL of the actor's
+    assert entry.admission_load == 18  # the cap governs all of the actor's
     assert entry.effective_max_pending == 10
     assert entry.state == "over"  # 18 >= 10: the refusal the signal must predict
 
@@ -341,7 +341,7 @@ async def test_fanout_children_outside_the_queue_count_as_children_depth() -> No
     entry = (await client.backpressure(["p"], parent_id=parent_id)).queues["p"]
     assert entry.children_depth == 3  # the parent's pending children outside p
     assert entry.depth == 1
-    assert entry.state == "over"  # the children ARE test_actor rows: load 4 >= cap 2
+    assert entry.state == "over"  # the children are test_actor rows: load 4 >= cap 2
     assert entry.admission_load == 4
     assert entry.reason is None
 
@@ -356,7 +356,7 @@ async def test_children_in_the_queried_queue_are_not_double_counted() -> None:
     backend = InMemoryBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="test_actor", queue="p", max_pending=4)
     parent_id = new_job_id()
-    # 3 pending children of the parent IN p, plus 1 unrelated pending row.
+    # 3 pending children of the parent in p, plus 1 unrelated pending row.
     for _ in range(3):
         args = make_enqueue_args(queue="p")
         await backend.enqueue(replace(args, parent_id=parent_id))
@@ -365,7 +365,7 @@ async def test_children_in_the_queried_queue_are_not_double_counted() -> None:
     client = JobsClient(backend)
     entry = (await client.backpressure(["p"], parent_id=parent_id)).queues["p"]
     assert entry.depth == 4
-    assert entry.children_depth == 0  # all children are IN p already
+    assert entry.children_depth == 0  # all children are in p already
     assert entry.state == "over"  # 4 >= 4, counted once
 
     # The operator raises the cap: the verdict steps down with it (the
@@ -415,7 +415,7 @@ async def test_children_read_is_optional_and_not_verdict_bearing() -> None:
     """A backend built before the staged children read existed:
     children_depth reads None, the VERDICT still computes (the fan-out
     ledger is reported, not verdict-bearing — every pending child already
-    counts toward its OWN actor's cap, the number the admission check
+    counts toward its own actor's cap, the number the admission check
     enforces)."""
     backend = _NoChildrenReadBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="test_actor", queue="q", max_pending=100)
@@ -477,7 +477,7 @@ async def test_actor_body_read_via_the_sub_job_enqueuer() -> None:
 async def test_dangling_parent_reads_as_defined() -> None:
     """A purged / never-existed parent: the count answers 0, the verdict stays well-formed.
 
-    parent_id is a plain column (NO foreign key, the binding constraint:
+    parent_id is a plain column (no foreign key, the binding constraint:
     per-child key-share locks would serialize the hottest table's inserts
     and retention purges must never block on pending children). A parent
     row that is gone while children pend is a DEFINED, harmless state.
@@ -495,18 +495,18 @@ async def test_dangling_parent_reads_as_defined() -> None:
 
 
 # ── The three dangling-parent cases (the oban-pro lesson: missing parents
-#    are first-class STATES, never errors; we PRICE the ambiguity instead
+#    are first-class states, never errors; we price the ambiguity instead
 #    of mopping it up with constraints — nothing in the DB distinguishes
-#    these three, and the snapshot deliberately does NOT try) ────────────
+#    these three, and the snapshot deliberately does not try) ────────────
 
 
 async def test_dangling_parent_never_existed_reads_well_formed() -> None:
-    """Case 1 — parent NEVER EXISTED (a fabricated/stale id): the count counts
+    """Case 1 — parent never EXISTED (a fabricated/stale id): the count counts
     children by parent_id regardless; the verdict is a well-formed ok/over."""
     backend = InMemoryBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="test_actor", queue="q", max_pending=100)
     phantom = new_job_id()  # no row will ever carry this id as its own
-    child = make_enqueue_args(queue="c")  # the child lands in a DIFFERENT queue
+    child = make_enqueue_args(queue="c")  # the child lands in a different queue
     await backend.enqueue(replace(child, parent_id=phantom))
 
     client = JobsClient(backend)
@@ -532,7 +532,7 @@ async def test_dangling_parent_purged_by_retention_reads_well_formed() -> None:
     child = make_enqueue_args(queue="c", scheduled_at=_NOW - timedelta(seconds=1))
     await backend.enqueue(
         replace(child, parent_id=parent_row.id)
-    )  # the child lands in a DIFFERENT queue
+    )  # the child lands in a different queue
 
     # The parent goes terminal and the retention sweep archives it,
     # children pending. The terminal write fences on a claimed row, so
@@ -553,12 +553,12 @@ async def test_dangling_parent_purged_by_retention_reads_well_formed() -> None:
 
 
 async def test_dangling_parent_not_yet_inserted_reads_well_formed() -> None:
-    """Case 3 — parent NOT YET INSERTED (children stamped before the parent's
-    row commits): the count counts what is there NOW, honestly, as of the
+    """Case 3 — parent not YET INSERTED (children stamped before the parent's
+    row commits): the count counts what is there now, honestly, as of the
     read's instant; no waiting, no error, a well-formed verdict."""
     backend = InMemoryBackend(FakeClock(_NOW))
     backend.register_actor_config(actor="test_actor", queue="q", max_pending=100)
-    future_parent = new_job_id()  # its row commits AFTER this read
+    future_parent = new_job_id()  # its row commits after this read
 
     client = JobsClient(backend)
     entry = (await client.backpressure(["q"], parent_id=future_parent)).queues["q"]
@@ -583,7 +583,7 @@ async def test_snapshot_carries_its_own_as_of_story() -> None:
     assert snapshot.as_of.tzinfo is UTC
     assert before <= snapshot.as_of <= after
     # No refresh has succeeded yet on this client: the cap half's age is
-    # None, and the honesty travels WITH the snapshot.
+    # None, and the honesty travels with the snapshot.
     assert snapshot.cap_age_seconds is None or snapshot.cap_age_seconds >= 0.0
 
 
@@ -630,7 +630,7 @@ async def test_retention_sweep_never_touches_pending_children() -> None:
     client = JobsClient(backend)
     entry = (await client.backpressure(["q"], parent_id=parent_row.id)).queues["q"]
     assert entry.depth == 3  # the pending children: untouched by the sweep
-    assert entry.children_depth == 0  # all three are IN q, counted once
+    assert entry.children_depth == 0  # all three are in q, counted once
     assert entry.state == "ok"
 
 
@@ -681,14 +681,14 @@ async def test_cap_age_grows_through_sustained_failures() -> None:
     assert first_age is not None and first_age < 0.05
 
     # Two TTLs of failures: the retry stamp keeps firing (rate bounding)
-    # but the DATA is now > 2 TTLs old and the reported age must say so.
+    # but the data is now > 2 TTLs old and the reported age must say so.
     # asyncio.sleep, not time.sleep (ASYNC251): real time passes either
     # way, and time.monotonic (the cache's stamp) advances with it.
     await asyncio.sleep(0.12)
     await cache.refresh()  # fails, fail-open, retry stamp fires
     await cache.refresh()  # fails again
     age = cache.snapshot_age()
-    assert age is not None and age >= 0.1, age  # > 2 TTLs: stale reported AS stale
+    assert age is not None and age >= 0.1, age  # > 2 TTLs: stale reported as stale
     # The served data is still the last good snapshot (fail-open), and the
     # snapshot's cap half carries the honest age.
     client = JobsClient(backend)

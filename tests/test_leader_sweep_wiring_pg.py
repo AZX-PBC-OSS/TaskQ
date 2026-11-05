@@ -65,7 +65,7 @@ class _RecordingPoolProxy:
             class _RecordingConn:
                 async def execute(self, sql: str, *args: object) -> str:
                     outer.total_statements += 1
-                    # The CTE-form statements open WITH ... DELETE; the
+                    # The CTE-form statements open with ... DELETE; the
                     # plain ones start DELETE. Classified by relation:
                     if "DELETE FROM" in sql and ".job_events" in sql:
                         outer.event_retention_deletes += 1
@@ -75,7 +75,7 @@ class _RecordingPoolProxy:
                         and "last_used_at" in sql
                     ):
                         # the keyed-row-reclaim window (the drain's slice
-                        # DELETE binds bucket_name = ANY, no last_used_at)
+                        # DELETE binds bucket_name = any, no last_used_at)
                         outer.keyed_reclaim_deletes += 1
                     elif "DELETE FROM" in sql and (
                         ".rate_limit_buckets" in sql or ".reservation_slots" in sql

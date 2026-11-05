@@ -1,4 +1,4 @@
-"""Moving an actor between queues is ONE atomic operator action,
+"""Moving an actor between queues is one atomic operator action,
 and worker boot stays consistent at every intermediate state of the rolling
 deploy that ships the matching ``@actor(queue=...)`` literal.
 
@@ -14,7 +14,7 @@ silent. The move therefore is:
 * one operator action in two phases - the actor's pending/scheduled backlog
   is rewritten onto the target queue as bounded committed batches (the
   deregister force-drain doctrine: windowed CTE, per-batch
-  statement_timeout, termination on the window count), then ONE final
+  statement_timeout, termination on the window count), then one final
   transaction locks the assignment row, carries the source queue's
   ``queues`` row (mode + max_concurrent) to the target when the target has
   none, and flips the stored assignment. Running jobs are untouched: their
@@ -179,7 +179,7 @@ async def test_mid_transition_boot_succeeds_and_preserves_assignment() -> None:
             force=False,
         )
 
-    # Booted: the UPSERT ran (no refusal, no force flag needed).
+    # Booted: the upsert ran (no refusal, no force flag needed).
     assert len(fake_conn.execute_calls) == 1
     # The assignment is preserved: the conflict clause never rewrites the
     # stored queue, so a stale-literal worker cannot undo the move.
@@ -341,7 +341,7 @@ class TestMoveActorQueue:
         await set_queue_max_concurrent(conn, _OLD_QUEUE, 4, schema=schema)
 
         # 3 due + 1 scheduled for the actor; one due job is claimed (running)
-        # BEFORE the neighbor's job exists, so the claim is deterministic.
+        # before the neighbor's job exists, so the claim is deterministic.
         await _enqueue(conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, count=3)
         await _enqueue(conn, schema, actor=_ACTOR, queue=_OLD_QUEUE, count=1, scheduled_at=_FUTURE)
         claimed = await _dispatch(conn, schema, [_OLD_QUEUE], 1)
@@ -366,7 +366,7 @@ class TestMoveActorQueue:
         assert row["queue"] == _NEW_QUEUE
         assert row["max_concurrent"] == 3
 
-        # The backlog followed: pending AND scheduled rows now sit on the new
+        # The backlog followed: pending and scheduled rows now sit on the new
         # queue; the claimed (running) job did not; the neighbor's job did not.
         assert (
             await _count_jobs(conn, schema, actor=_ACTOR, queue=_NEW_QUEUE, status="pending") == 2
@@ -440,7 +440,7 @@ class TestMoveActorQueue:
         )
         assert stored == _NEW_QUEUE
 
-        # Old-queue strays drain: a consumer of ONLY the new queue claims the
+        # Old-queue strays drain: a consumer of only the new queue claims the
         # whole moved backlog.
         claimed = await _dispatch(conn, schema, [_NEW_QUEUE], 10)
         assert len(claimed) == 3

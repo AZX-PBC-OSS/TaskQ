@@ -118,7 +118,7 @@ def otel_reader(monkeypatch: pytest.MonkeyPatch) -> InMemoryMetricReader:
     return reader
 
 
-# ── DEFECT 1: per-job heartbeat_timeout is accepted and discarded ─────────
+# ── defect 1: per-job heartbeat_timeout is accepted and discarded ─────────
 
 
 class TestHeartbeatTimeoutIsNotSilentlyDiscarded:
@@ -175,7 +175,7 @@ class TestHeartbeatTimeoutIsNotSilentlyDiscarded:
         assert row.heartbeat_timeout is None
 
 
-# ── DEFECT 2: CLI builds an EMPTY registry from a one-shot iterator ───────
+# ── defect 2: CLI builds an empty registry from a one-shot iterator ───────
 
 
 _ITER_ACTOR_A = _make_actor_ref("iter_actor_a")
@@ -283,14 +283,14 @@ class TestActorRegistryFromOneShotIterator:
         assert "empty" in plain_cli_output(result.stderr).lower()
 
 
-# ── DEFECT 3: enqueue dedup onto a TERMINAL job is silent ─────────────────
+# ── defect 3: enqueue dedup onto a terminal job is silent ─────────────────
 
 
 class TestTerminalDedupIsObservable:
     """Dedup onto a terminal (failed/succeeded/cancelled) job must be loud.
 
     ``enqueue_select_by_key`` (``_sql_templates.py:855``) is
-    ``SELECT * FROM jobs WHERE idempotency_scope = $1 AND idempotency_key = $2``
+    ``SELECT * FROM jobs WHERE idempotency_scope = $1 and idempotency_key = $2``
     - no status predicate, no time window - so a key whose job failed
     weeks ago still dedupes, bounded only by ``DEFAULT_PRUNE_RETENTION``
     (30 days).  The library never distinguishes a terminal target from a
@@ -300,7 +300,7 @@ class TestTerminalDedupIsObservable:
     Scope note: ``JobHandle.was_existing`` and ``handle.row.status`` DO
     exist, so a caller *can* detect this today.  These tests therefore
     assert the missing **observable** (a warning carrying the target's
-    status), not a new handle field.  ``unique_for`` is NOT affected -
+    status), not a new handle field.  ``unique_for`` is not affected -
     ``unique_states`` defaults to ``("pending", "scheduled", "running")``
     - and is deliberately not asserted on here.
     """
@@ -374,7 +374,7 @@ class TestTerminalDedupIsObservable:
             await stack.aclose()
 
 
-# ── DEFECT 4: failure paths that log but never count ──────────────────────
+# ── defect 4: failure paths that log but never count ──────────────────────
 
 
 class TestReservationDenialIsCounted:
@@ -502,7 +502,7 @@ class TestProgressFlushFailureIsCounted:
     job's progress delta is lost) is labeled ``stage='per_job'`` /
     ``kind="progress_flush_error"``. A pool-stage failure - the flush
     loop cannot obtain a pool at all, or the per-job acquire fails -
-    loses EVERY job's progress delta and is labeled ``stage='pool'`` /
+    loses every job's progress delta and is labeled ``stage='pool'`` /
     ``kind="progress_flush_pool_error"``. The two must stay
     distinguishable in an alert rule, which is why the acquire failure
     and the statement failure sit in separate handlers rather than one
@@ -641,14 +641,14 @@ class TestProgressFlushFailureIsCounted:
         )
 
 
-# ── THE SILENT-SWALLOW CLASS (the CancelledError suppress sweep) ────────
+# ── the silent-swallow class (the CancelledError suppress sweep) ────────
 
 
 def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
     """The class pin: ``contextlib.suppress(asyncio.CancelledError)`` is
-    legal in exactly ONE shape — the REAPER (``task.cancel()`` then
+    legal in exactly one shape — the REAPER (``task.cancel()`` then
     ``await reap_cancelled_child(task)``), whose helper suppresses only
-    THE CHILD'S cancel and re-raises the reaper's own (the uncancel
+    the CHILD'S cancel and re-raises the reaper's own (the uncancel
     accounting). Any direct ``suppress(asyncio.CancelledError)`` in
     ``src/`` is the rejected swallow (the swallowed-cancel class: the lifespan's
     cancel eaten, the task alive 12 s later; the run loop's poll that
@@ -667,13 +667,13 @@ def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
         for i, line in enumerate(tl, 1):
             if "suppress(asyncio.CancelledError)" not in line:
                 continue
-            # THE CLASS LAW: a suppress(CancelledError) whose BODY awaits
-            # (the suppress spans an await) swallows whatever cancel
-            # lands DURING that await — the rejected shape — unless the
-            # body (or its immediate tail) RE-RAISES. A suppress whose
-            # body is an INSTANT retrieve (``task.exception()`` — no
-            # await inside) cannot swallow a landing cancel: nothing
-            # yields inside it. The block's extent: until the dedent.
+                # a suppress(CancelledError) whose body awaits (the suppress spans
+            # an await) swallows whatever cancel lands during that await — the
+            # rejected shape — unless the body (or its immediate tail)
+            # re-raises. A suppress whose body is an instant retrieve
+            # (``task.exception()`` — no await inside) cannot swallow a landing
+            # cancel: nothing yields inside it. The block's extent: until the
+            # dedent.
             block = [line]
             for j in range(i, len(tl)):
                 l2 = tl[j]
@@ -689,7 +689,7 @@ def test_no_suppressed_cancellation_outside_the_reaper_helper() -> None:
                 prev.strip().lstrip("#").strip() for prev in tl[max(0, i - 12) : i]
             )
             if "the class-4 sweep's finding" in body or "the class-4 sweep's finding" in preceding:
-                continue  # the HELD-OPEN seat: the fix's behavioral shift owed the worker lane's own verification (the seat's comment carries the finding's name)
+                continue  # the held-open seat: the fix's behavioral shift owed the worker lane's own verification (the seat's comment carries the finding's name)
             offenders.append(f"{path.relative_to(root.parent.parent)}:{i}: {line.strip()}")
     assert not offenders, (
         "the silent-swallow class's seats (a CancelledError suppressed "

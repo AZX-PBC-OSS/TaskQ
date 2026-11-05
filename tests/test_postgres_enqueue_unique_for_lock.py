@@ -8,7 +8,7 @@ three properties:
 1. The lock WAIT is bounded: a racer that cannot acquire the lock within
    its budget gets the typed :class:`UniqueForLockTimeoutError` -- never a
    raw asyncpg error, and never an unbounded block.
-2. Exhaustion is NOT backpressure: the error sits outside the
+2. Exhaustion is not backpressure: the error sits outside the
    ``BackpressureError`` family (the caller's correct response is to
    retry the same enqueue, not to shed load) -- but the refusal is
    COUNTED on ``taskq.backpressure.errors`` under its own bounded kind
@@ -215,10 +215,10 @@ class TestUniqueForLockBoundedWaitUnit:
         assert exc_info.value.timeout_ms == 100.0
         assert elapsed < 2.0, f"budget was 100 ms but the wait took {elapsed:.3f}s"
         # Two-tier shape: one try-lock, then the savepoint tier with the
-        # GUC set to the budget. Only the SET ran - the timeout raised
+        # GUC set to the budget. Only the set ran - the timeout raised
         # before any restore, and the savepoint ROLLBACK undoes the set
         # itself (verified PG savepoint/GUC semantics); the
-        # restore-before-RELEASE belongs to the success path.
+        # restore-before-release belongs to the success path.
         assert conn.try_lock_calls == 1
         assert conn.savepoint_opens == 1
         assert conn.blocking_lock_calls == 1
@@ -309,7 +309,7 @@ class TestUniqueForLockBoundedWaitUnit:
     ) -> None:
         """``timeout_ms <= 0`` disables the bound (the unguarded behavior),
         matching the ``lock_timeout`` GUC convention used by migrate.py: a
-        plain blocking acquire with NO savepoint and NO GUC statements -
+        plain blocking acquire with no savepoint and no GUC statements -
         only an unbounded server-side wait reaches the dedup answer."""
         recorded = _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=False, blocking_times_out=False)
@@ -334,7 +334,7 @@ class TestUniqueForLockBoundedWaitUnit:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Happy-path round-trip parity: an uncontended unique_for enqueue
-        issues exactly ONE advisory-lock statement (the try-lock) and never
+        issues exactly one advisory-lock statement (the try-lock) and never
         touches the savepoint/GUC machinery."""
         recorded = _spy_backpressure(monkeypatch)
         conn = _ContendedFakeConn(try_lock_result=True)
@@ -399,7 +399,7 @@ class TestUniqueForLockBoundedWait:
                 start = time.monotonic()
                 with pytest.raises(UniqueForLockTimeoutError) as exc_info:
                     # Nested, not comma-joined: asyncio.timeout is an async
-                    # CM. An unbounded acquire would trip the 3 s deadline
+                    # cm. An unbounded acquire would trip the 3 s deadline
                     # and TimeoutError would escape pytest.raises.
                     async with asyncio.timeout(3.0):
                         await _enqueue(

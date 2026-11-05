@@ -185,7 +185,7 @@ async def test_postgres_never_touches_redis(
     assert r.backend == "postgres"
 
 
-# ── GCRA PG fallback - burst → denial → retry → row invariant ──────
+# ── gcra PG fallback - burst → denial → retry → row invariant ──────
 
 
 async def test_gcra_pg_fallback_burst_and_deny(
@@ -225,7 +225,7 @@ async def test_gcra_pg_fallback_burst_and_deny(
     assert r.retry_after > timedelta(0)
     assert r.remaining == 0.0
 
-    # GCRA retry_after = emission_interval - elapsed_during_burst.
+    # gcra retry_after = emission_interval - elapsed_during_burst.
     # With 60 PG roundtrips, elapsed time reduces retry below 1.0 s;
     # the invariant is 0 < retry_after <= emission_interval (1.0 s).
     assert r.retry_after.total_seconds() <= 1.0
@@ -362,11 +362,11 @@ async def test_acquire_and_peek_without_clock_on_postgres_backend(
 
 # ── Concurrency pins - first-use and at-limit races ──────────────────
 #
-# Both pins race two acquire transactions on two DEDICATED single-connection
+# Both pins race two acquire transactions on two dedicated single-connection
 # pools, each pre-warmed by a sacrificial acquire. Why the warm-up: asyncpg
 # plans a statement per connection on first use, and a cold plan costs
 # ~1.5 ms - enough to push the losing transaction's decisive statement past
-# the winner's commit and silently SERIALISE the very race these pins
+# the winner's commit and silently serialise the very race these pins
 # assert (observed: cold-second-connection gathers never overlap, warm
 # ones overlap 40/40). Pre-warming both connections makes the unguarded
 # failure deterministic; the guarded serialization (advisory lock / row
@@ -408,7 +408,7 @@ async def _warm_log_pool(pg_dsn: str, settings: WorkerSettings) -> asyncpg.Pool:
 async def test_gcra_pg_concurrent_first_use_admits_exactly_one(
     module_pg_schema: ModulePgSchema,
 ) -> None:
-    """Two concurrent FIRST acquires on a brand-new GCRA bucket (limit=1):
+    """Two concurrent first acquires on a brand-new GCRA bucket (limit=1):
     exactly one is admitted.
 
     ``SELECT ... FOR UPDATE`` cannot lock a row that does not exist yet,

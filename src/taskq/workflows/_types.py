@@ -20,7 +20,7 @@ from taskq.workflows._sql import BLOCKING_REASON_JOIN
 
 
 def duration_seconds(value: timedelta | float | int | None) -> float | None:
-    """ONE normalizer for the second-denominated terms: a
+    """one normalizer for the second-denominated terms: a
     :class:`datetime.timedelta` or a bare number of seconds — the seconds
     float the row stamps and the sweep arithmetic read. ``None`` rides
     (nothing declared). The dual form is accepted at every
@@ -60,35 +60,35 @@ __all__ = [
 ]
 
 #: The map_index ceiling — the wire-format fact the ceiling error
-#: documents: ``jobs.map_index`` is a SMALLINT (the ledger's claim
+#: documents: ``jobs.map_index`` is a smallint (the ledger's claim
 #: arbiter column, 01.00.23_05), so a record's per-run identity tops out
 #: at 32767. Without the door, record #32768 is the raw DataError the
-#: smallint cast raises MID-TRANSACTION, taking the valid page-mates down
+#: smallint cast raises mid-transaction, taking the valid page-mates down
 #: with it (an accidental untyped ceiling — the whole page rolls back
 #: and the raw error ladders as transient). The engine refuses the
-#: poison record AT THE DOOR (:class:`taskq.workflows._emit.
+#: poison record at the door (:class:`taskq.workflows._emit.
 #: MapIndexExhaustedError` — named, loud, the record named): the valid
 #: page-mates COMMIT (the batch semantics — a poison record kills
-#: ITSELF loudly, never its mates), and the deterministic death
+#: itself loudly, never its mates), and the deterministic death
 #: terminalizes the source with the ceiling documented here.
 MAP_INDEX_CEILING: Final[int] = 32767
 
 #: A join edge's declared failure policy (the two semantics):
 #:
-#: * ``fail_closed`` (the default) — a parent's TERMINAL failure fails the
+#: * ``fail_closed`` (the default) — a parent's terminal failure fails the
 #:   join closed: the joined node blocks (``blocking_reason='failed_parent'``
 #:   naming the failed parent), the flow fails (§17.2's cascade), and the
 #:   running peers are peer-cancelled (the record
 #:   ``by='peer_failure', cascade_from=<node>``). The record never shows a
 #:   hanging join.
-#: * ``collect`` — child failures do NOT cascade: each child runs to its
+#: * ``collect`` — child failures do not cascade: each child runs to its
 #:   own terminal; at exhaustion the failure fans in as a
-#:   :class:`FailureInfo` item and the join FIRES with the typed partial
+#:   :class:`FailureInfo` item and the join fires with the typed partial
 #:   result.
 FailurePolicy = Literal["fail_closed", "collect"]
 
 
-#: The ABSORBING policies (the edges whose declared policy absorbs a
+#: The absorbing policies (the edges whose declared policy absorbs a
 #: failure): ``collect`` and ``maybe``. A ``fail_closed``
 #: edge absorbs NOTHING — the cascade owns its resolution — so the
 #: envelope's policy marker can never claim it (the typed door: the
@@ -96,13 +96,13 @@ FailurePolicy = Literal["fail_closed", "collect"]
 AbsorbingPolicy = Literal["collect", "maybe"]
 
 
-#: THE EDGE POLICY (the wiring verbs' ``on_failure=``): the FULL runtime
-#: vocabulary — :data:`taskq.workflows.definitions.FAILURE_POLICIES`, the
-#: build-time validator's own door. The wiring verbs annotate with THIS
-#: (never a bare ``str``): a wrong literal is a checker error at the
-#: call site, not a surprise at build. (``FailurePolicy`` above is the
-#: engine-envelope's subset spelling; ``AbsorbingPolicy`` the absorbing
-#: pair; both are sub-vocabularies of this one.)
+#: the full runtime vocabulary —
+#: :data:`taskq.workflows.definitions.FAILURE_POLICIES`, the build-time
+#: validator's own door. The wiring verbs annotate with this (never a bare
+#: ``str``): a wrong literal is a checker error at the call site, not a
+#: surprise at build. (``FailurePolicy`` above is the engine-envelope's subset
+#: spelling; ``AbsorbingPolicy`` the absorbing pair; both are sub-vocabularies
+#: of this one.)
 EdgeFailurePolicy = Literal["fail_closed", "collect", "maybe"]
 
 
@@ -118,18 +118,18 @@ class ConsumerBinding:
     queue: str
     payload: dict[str, object] | None = None
     map_index: int | None = None
-    #: The CONSUMER's declared incoming-edge failure policy (the map-join
-    #: consumption fix): the fork writes the join→consumer EDGE with it —
-    #: the downstream dispatches through the SAME edge-ledger door as any
+    #: The consumer's declared incoming-edge failure policy (the map-join
+    #: consumption fix): the fork writes the join→consumer edge with it —
+    #: the downstream dispatches through the same edge-ledger door as any
     #: node result (the counter's decrement gates the claim), and the
     #: propagation reads the policy off the ledger when the JOIN itself
     #: terminal-fails.
     failure_policy: str = "fail_closed"
     #: The consumer's declared deadline (the start_to_close bound): the
     #: downstream node's own resolution rides the binding — the join row's
-    #: metadata `consumers` array (jsonb, serialized as SECONDS) → the
+    #: metadata `consumers` array (jsonb, serialized as seconds) → the
     #: fire's outbox bindings → the drain's consumer INSERT stamps the
-    #: row's EXISTING ``jobs.start_to_close`` column. ``None`` = the
+    #: row's existing ``jobs.start_to_close`` column. ``None`` = the
     #: consumer declares none — the row's column NULL (the pre-fix row;
     #: the binding omits the key, the shape byte-identical).
     start_to_close: timedelta | None = None
@@ -139,20 +139,20 @@ class ConsumerBinding:
 class ChildSpec:
     """One fan-out child of a forking node. Ids are minted per fork by the
     engine (uuid7 via the seam) — the wiring lives in ``parent_id`` +
-    ``map_index``, NEVER in a string-shape convention on hand-built ids."""
+    ``map_index``, never in a string-shape convention on hand-built ids."""
 
     step_key: str
     actor: str
     queue: str
     payload: dict[str, object] | None = None
     map_index: int | None = None
-    #: The child's ADMISSION TERMS (the admission-terms surface): the
-    #: buckets' NAMES, stamped onto the child row's metadata — the claim
+    #: The child's admission terms (the admission-terms surface): the
+    #: buckets' names, stamped onto the child row's metadata — the claim
     #: path acquires them through the same registry + the same denial
     #: path the queue-concurrency fence rides. ``()`` = no bucket.
     rate_limits: tuple[str, ...] = ()
-    #: The child's STRICT CAPACITY TERMS (the reservations' own
-    #: ride): the reservation NAMES stamped onto the child row's metadata
+    #: The child's strict capacity terms (the reservations' own
+    #: ride): the reservation names stamped onto the child row's metadata
     #: beside ``rate_limits`` — the claim path resolves them through the
     #: resolved registry (the instances live there) and acquires them
     #: with the same denial discipline. ``()`` = no reservation.
@@ -179,9 +179,9 @@ class EmitChild:
     """One chain-start row a streaming source's emit tx inserts.
 
     The :class:`ChildSpec` shape PLUS the per-record identity stamps the
-    emit owns — BOTH REQUIRED, not defaulted: the refuted-claim
+    emit owns — both REQUIRED, not defaulted: the refuted-claim
     discipline (the measured 198 UniqueViolations). The certified fork's
-    idempotency key AND the step-ledger's arbiter discriminate siblings
+    idempotency key and the step-ledger's arbiter discriminate siblings
     by ``map_index``; the per-record ``trace_id`` is the one-query
     lineage (the recorded failure-down by trace). The fork's ``trace_id`` is
     per-fork; the emit's is per-child — the stamp-at-emit rule."""
@@ -194,10 +194,9 @@ class EmitChild:
     #: fork the chain's steps take (the lineage never forks from the
     #: parent's column).
     trace_id: str
-    #: THE DISCRIMINATOR (load-bearing): the fork's idempotency key and
-    #: the ledger's claim arbiter both ride it — two records' children of
-    #: one step are two rows, two keys, two claims, only when it is
-    #: stamped per record at emit.
+    #: load-bearing. the fork's idempotency key and the ledger's claim arbiter
+    #: both ride it — two records' children of one step are two rows, two keys,
+    #: two claims, only when it is stamped per record at emit.
     map_index: int
 
 
@@ -213,19 +212,19 @@ class JoinSpec:
     queue: str
     payload: dict[str, object] | None = None
     consumers: tuple[ConsumerBinding, ...] = ()
-    #: The SOURCE ROW'S already-resolved reservation names (the run's own
+    #: The source row's already-resolved reservation names (the run's own
     #: cohort — the static insert resolved them from the run's input and
     #: the declared args): the join row's metadata carries them so a
-    #: NESTED fan-out (a map/route over this join) reads the stamp and
+    #: nested fan-out (a map/route over this join) reads the stamp and
     #: the depth-2 children ride the run's cohort — the guarantee is
     #: depth-N, not depth-1.
     reservations: tuple[str, ...] = ()
     #: The declared failure policy recorded on the join's incoming edges
-    #: The declared policy: what a parent's TERMINAL failure does to this join.
+    #: The declared policy: what a parent's terminal failure does to this join.
     failure_policy: FailurePolicy = "fail_closed"
     #: The child-driven escape: the join past the declared fan-in bound
-    #: counts its terminal children FROM THE EDGE LEDGER at fire time (the
-    #: counter-as-cache is never trusted; the choice is RECORDED on the
+    #: counts its terminal children FROM the edge ledger at fire time (the
+    #: counter-as-cache is never trusted; the choice is recorded on the
     #: joined node's metadata — metadata.join_shape). The declared-edge
     #: shape (the default) is the bounded one.
     child_driven: bool = False
@@ -241,16 +240,14 @@ class ForkSpec:
     trace_id: str | None = None
     max_attempts: int = 3
     retry_kind: str = "transient"
-    #: THE JOIN ROW'S PRIORITY (the priority surface): the fork's JOIN is
-    #: the source's own cohort (the placement fields say so), so its row
-    #: lands at the SOURCE's resolution of the precedence law — the arms'
-    #: overrides apply to the arm children, never the join. ``None`` =
-    #: the column default (the insert coalesces it to 0).
+    #: the fork's JOIN is the source's own cohort (the placement fields say
+    #: so), so its row lands at the source's resolution of the precedence law —
+    #: the arms' overrides apply to the arm children, never the join. ``None``
+    #: = the column default (the insert coalesces it to 0).
     priority: int | None = None
-    #: THE JOIN ROW'S DEADLINE (the wf start_to_close bound): the fork's
-    #: JOIN is the source's own cohort — its row lands at the SOURCE's
-    #: resolution (the arms' declarations govern the arm children, never
-    #: the join). ``None`` = nothing declared — the column NULL.
+    #: the fork's JOIN is the source's own cohort — its row lands at the
+    #: source's resolution (the arms' declarations govern the arm children,
+    #: never the join). ``None`` = nothing declared — the column NULL.
     start_to_close: timedelta | None = None
 
 
@@ -259,9 +256,9 @@ class NodeSpec:
     """One workflow node's enqueue (the workflow-row INSERT's spec).
 
     A JOINED node (``deps_pending > 0``) declares its incoming edges in
-    ``parents`` — the edge ledger is the join counter's ONLY truth, and the
+    ``parents`` — the edge ledger is the join counter's only truth, and the
     public path writes them through the bundle's exported edge writer in
-    the SAME call (a join whose edges never land is a stranded invisible
+    the same call (a join whose edges never land is a stranded invisible
     join: the sweep diagnoses it ``orphan_parent``, and the declarative
     API's validators refuse it at build time)."""
 
@@ -272,7 +269,7 @@ class NodeSpec:
     payload: dict[str, object] | None = None
     parent_id: JobId | None = None
     parents: tuple[JobId, ...] = ()
-    #: The failure policy recorded on THIS node's incoming edges when it is
+    #: The failure policy recorded on this node's incoming edges when it is
     #: a joined node (the public join path's declaration).
     failure_policy: FailurePolicy = "fail_closed"
     #: The child-driven escape (recorded on the joined node's metadata).
@@ -285,18 +282,16 @@ class NodeSpec:
     retry_kind: str = "transient"
     idempotency_scope: str = ""
     idempotency_key: str | None = None
-    #: THE ROW'S PRIORITY (the priority surface): the ``jobs.priority``
-    #: column value the insert stamps — the RESOLVED value (the caller's
-    #: own precedence arithmetic: per-call > the declaration > the
-    #: column default 0). The default is the column default's own value,
-    #: so a spec built without it stores exactly the pre-fix row.
+    #: the ``jobs.priority`` column value the insert stamps — the resolved
+    #: value (the caller's own precedence arithmetic: per-call > the
+    #: declaration > the column default 0). The default is the column default's
+    #: own value, so a spec built without it stores exactly the pre-fix row.
     priority: int = 0
-    #: THE ROW'S DECLARED DEADLINE (the wf start_to_close bound): the
-    #: ``jobs.start_to_close`` column value the insert stamps — the
-    #: RESOLVED value (the caller's own precedence arithmetic). The
-    #: default is the column's own NULL (the pre-fix row: the column is
-    #: nullable with no default — migrations/01.00.00_01:85), so a spec
-    #: built without it stores exactly the pre-fix row.
+    #: the ``jobs.start_to_close`` column value the insert stamps — the
+    #: resolved value (the caller's own precedence arithmetic). The default is
+    #: the column's own NULL (the pre-fix row: the column is nullable with no
+    #: default — migrations/01.00.00_01:85), so a spec built without it stores
+    #: exactly the pre-fix row.
     start_to_close: timedelta | None = None
 
 
@@ -310,7 +305,7 @@ class DecrementHit:
 class FailureInfo:
     """One collected child failure (the fan-in item).
 
-    THE ENVELOPE IS THE ESTATE'S, never re-spelled:
+    ENVELOPE IS the ESTATE'S, never re-spelled
     ``error`` IS :class:`taskq.backend._protocol.ErrorInfo` — the same
     typed envelope every terminal write uses, its bound constants
     (``ERROR_CLASS_MAX_CHARS`` et al.) carried as-is. ``attempts`` /
@@ -326,9 +321,9 @@ class FailureInfo:
     map_index: int | None
     error: ErrorInfo
     attempts: tuple[tuple[int, str | None, str | None], ...] = ()
-    #: The edge's OWN declared policy that absorbed this failure (the
+    #: The edge's own declared policy that absorbed this failure (the
     #: the envelope must not lie about which policy ran — 'collect' and
-    #: 'maybe' absorb; the marker is on the item, TYPED to the absorbing
+    #: 'maybe' absorb; the marker is on the item, typed to the absorbing
     #: vocabulary — a fail_closed claim is unconstructible at this door).
     policy: AbsorbingPolicy = "collect"
 
@@ -374,9 +369,9 @@ def _failure_info_from_json(raw: object) -> FailureInfo:
             )
         )
     traceback_raw: Any = err_raw.get("error_traceback")  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]  # Why: same Any-contract walk.
-    # The POLICY is the typed absorbing vocabulary: the walk repairs a
+    # The policy is the typed absorbing vocabulary: the walk repairs a
     # pre-policy item (no policy key → 'collect' — the item predates the
-    # marker) and refuses to carry an OUT-OF-VOCABULARY value through
+    # marker) and refuses to carry an out-of-vocabulary value through
     # (a corrupt item reads as the default, never as a lie).
     policy_raw: Any = decoded.get("policy", "collect")  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]  # Why: same Any-contract walk.
     policy: AbsorbingPolicy = policy_raw if policy_raw in ("collect", "maybe") else "collect"
@@ -413,7 +408,7 @@ class FinalizeResult:
 
 def _jsonb(value: object, *, default: str = "{}") -> str:
     """Encode a jsonb bind value (dict → str; None → *default* — the
-    node-row payload columns are NOT NULL, so an absent payload binds the
+    node-row payload columns are not NULL, so an absent payload binds the
     empty document, never NULL)."""
     if value is None:
         return default
@@ -441,7 +436,7 @@ def _metadata(
 
 
 def _consumer_binding_doc(c: ConsumerBinding) -> dict[str, object]:
-    """ONE consumer binding's jsonb shape (the join row's metadata
+    """one consumer binding's jsonb shape (the join row's metadata
     ``consumers`` array entry — the fire reads them back through
     :func:`_consumer_bindings` and copies them into the outbox
     bindings): the placement + payload + map index, PLUS the declared
@@ -518,7 +513,7 @@ def _consumer_bindings(raw: object) -> tuple[ConsumerBinding, ...]:
 
 def _seconds_or_none(raw: object) -> timedelta | None:
     """The binding's declared SECONDS → the deadline timedelta (the jsonb
-    wire form's ONE parse — :func:`_consumer_binding`'s decode and the
+    wire form's one parse — :func:`_consumer_binding`'s decode and the
     drain's consumer INSERT are its two faces): a non-number or a
     negative degrades to None (a declaration is never a correctness
     input worth a sweep death)."""
@@ -526,7 +521,7 @@ def _seconds_or_none(raw: object) -> timedelta | None:
 
 
 def _consumer_binding(raw: dict[str, Any]) -> ConsumerBinding:
-    """ONE metadata ``consumers`` entry → the typed binding (the walk's
+    """one metadata ``consumers`` entry → the typed binding (the walk's
     own arm): the declared deadline parses back from the binding's
     SECONDS (the jsonb wire form — :func:`_consumer_binding_doc`'s own
     serialization); a malformed value degrades to None (the binding is

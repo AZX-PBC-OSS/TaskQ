@@ -242,7 +242,7 @@ def test_retry_after_non_positive_is_zero() -> None:
 
 
 async def test_refund_script_rebinds_after_a_client_swap() -> None:
-    """A refund script cached on one redis client is NOT reused for the
+    """A refund script cached on one redis client is not reused for the
     next client: the get() closure's client-identity check misses and the
     script re-registers against the live client — the swap-heal contract
     ensure_redis_script's cache-binding rule exists for."""
@@ -265,7 +265,7 @@ def test_lock_budget_defaults_without_settings() -> None:
 
 
 async def test_ensure_redis_script_inner_recheck_returns_cached() -> None:
-    """The waiter that takes the lock AFTER the cache was filled returns
+    """The waiter that takes the lock after the cache was filled returns
     the cached script through the lock's own re-check — the arm that keeps
     a client swap from registering the same script twice against the
     live client.
@@ -407,7 +407,7 @@ def test_resolve_queue_modes_by_queue_refuses_an_invalid_schema() -> None:
 
 def test_resolve_queue_modes_refuses_an_invalid_schema() -> None:
     """Same invariant at the mode-set resolver's own seam — and the guard
-    fires even when NO query would run (empty queues short-circuit after
+    fires even when no query would run (empty queues short-circuit after
     it, the interpolation-reach rule does not depend on the workload)."""
     from taskq.backend._dispatch import _resolve_queue_modes  # pyright: ignore[reportPrivateUsage]
 
@@ -457,7 +457,7 @@ def _pg_ref(base_name: str) -> Any:
 async def test_keyed_bucket_first_pool_bearing_publish_failure_warns_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A keyed bucket materialized WITHOUT a pool publishes on its first
+    """A keyed bucket materialized without a pool publishes on its first
     pool-bearing reuse; a failed publish warns and continues — the row is
     observability metadata, never an acquisition precondition."""
     import sys
@@ -486,7 +486,7 @@ async def test_keyed_bucket_first_pool_bearing_publish_failure_warns_only(
     )
     assert second == first
     assert published == ["attempted"]
-    # The capture rides the RESOLUTION, not the publish's outcome.
+    # The capture rides the resolution, not the publish's outcome.
     assert reg._keyed_rate_limit_row_schemas[first] == "taskq_test"
 
 
@@ -522,7 +522,7 @@ def test_concurrency_reservation_keyed_property() -> None:
     assert reservation.keyed is False
 
 
-# ── the PG state boundary (the row IS the reply) ────────────────────────
+# ── the PG state boundary (the row is the reply) ────────────────────────
 #
 # The redis paths validate every value they read from the store at the
 # trust boundary (the sentinel for lie shapes, _retry_after for advisory

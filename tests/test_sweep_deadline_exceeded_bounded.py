@@ -1,4 +1,4 @@
-"""Sweep 2 (deadline exceeded) must be bounded in statements AND in rows.
+"""Sweep 2 (deadline exceeded) must be bounded in statements and in rows.
 
 ``sweep_deadline_exceeded`` (``src/taskq/backend/_sweeps.py``) sweeps at
 most ``batch_size`` overdue ``pending``/``scheduled`` rows per call, in
@@ -46,7 +46,7 @@ because the driving CTE filters ``status IN ('pending','scheduled')`` and
 carries the pre-UPDATE value out as ``snap.prev_status``. A careless rewrite
 that batches the event INSERT over a bare ``uuid[]`` and hardcodes a single
 ``from_state`` would be silently wrong for half the corpus, so the Layer 2
-tests seed BOTH source statuses and assert each row's event maps back to the
+tests seed both source statuses and assert each row's event maps back to the
 status that row actually had.
 """
 
@@ -176,7 +176,7 @@ async def _seed(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# LAYER 1 - the boundedness contract these tests enforce.
+# layer 1 - the boundedness contract these tests enforce.
 # ══════════════════════════════════════════════════════════════════════
 
 
@@ -370,7 +370,7 @@ async def test_capped_calls_drain_the_whole_backlog(
 
 
 # ══════════════════════════════════════════════════════════════════════
-# LAYER 2 - CORRECTNESS PINNING. The bounded sweep rewrites SQL that
+# layer 2 - correctness pinning. The bounded sweep rewrites SQL that
 # mutates job state, so every observable effect of that SQL is nailed
 # down here.
 # ══════════════════════════════════════════════════════════════════════

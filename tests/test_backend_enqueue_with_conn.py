@@ -153,7 +153,7 @@ class TestPGEnqueueWithConn:
                     raise RuntimeError("simulated rollback")
             except RuntimeError:
                 pass
-            # Verify the row was NOT persisted (rolled back)
+            # Verify the row was not persisted (rolled back)
             stored = await backend.get(args.id)
             assert stored is None
         finally:

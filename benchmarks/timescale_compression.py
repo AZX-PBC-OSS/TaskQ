@@ -1,14 +1,14 @@
 """A/B: columnstore (compression) vs TaskQ's current rowstore hypertable for jobs_archive.
 
 Sibling to ``timescale_tradeoffs.py`` (which measured hypertable-vs-plain and
-left the compression lever UNMEASURED): both engines here are the SAME
+left the compression lever UNMEASURED): both engines here are the same
 ``timescale/timescaledb`` image with TaskQ's own ``enable_hypertables``
 conversion — one left at the current rowstore state, one with a columnstore
 (compression) policy on ``jobs_archive``.  The policy wiring follows the Tiger
 Data segmenting/ordering guidance: ``orderby = 'finished_at DESC'`` (the
 archive tab's newest-first read, and the time column compresses best),
 ``segmentby = 'actor, queue'`` (low-cardinality columns the admin's real
-filters use — the search-by-actor shape).  Deliberately NOT ``id``: a
+filters use — the search-by-actor shape).  Deliberately not ``id``: a
 per-row-unique segmentby key would make every columnstore batch a single row
 and collapse the compression ratio, the docs' explicit anti-pattern.
 
@@ -28,13 +28,13 @@ instant):
 5. the archive expiry sweep: the REAL ``_EXPIRY_CTE_SQL`` batch machinery
    draining the expired cohort interleaved; plus an EXPLAIN (ANALYZE, BUFFERS)
    bare ``DELETE ... WHERE expire_at < statement_timestamp()`` (rolled back,
-   run BEFORE the drain) to see what the 2.21+ batch-deletion fast path does
-   for an expire_at-keyed delete on compressed chunks (expire_at is NOT the
+   run before the drain) to see what the 2.21+ batch-deletion fast path does
+   for an expire_at-keyed delete on compressed chunks (expire_at is not the
    segmentby key: decompress? error? silent row-delete?); plus per-chunk
    sizes before/after the drain to distinguish whole-batch drops from
    row-delete ghosting.
-6. the fold-guard's NOT EXISTS probe by job id: ``SELECT EXISTS (... WHERE
-   id = $1)`` for an id IN a compressed chunk (hit) and for an id NOT in the
+6. the fold-guard's not EXISTS probe by job id: ``SELECT EXISTS (... WHERE
+   id = $1)`` for an id IN a compressed chunk (hit) and for an id not in the
    table (miss — the guard's hot case: the insert proceeds), compressed vs
    rowstore.
 7. the compressed-chunk first-tick skip (the ops.md citation's artifact): 40
@@ -45,11 +45,11 @@ instant):
    compression state by one execution). Controls pin the shape sensitivity:
    the rowstore engine (no compressed chunks — first tick deletes all 40),
    an all-compressed 40-row set (first tick deletes 0 outright), and a bare
-   ``DELETE ... WHERE expire_at < now`` — NOT the CTE/LIMIT shape — which
+   ``DELETE ... WHERE expire_at < now`` — not the CTE/LIMIT shape — which
    deletes all 40 on the first execution. Each sub-probe stages on its own
-   disposable per-engine schema (the SAME real ``apply_pending`` +
-   ``enable_hypertables`` conversion), with the probe rows seeded BEFORE the
-   ``compress_chunk`` aging so the compressed-chunk rows are compressed INTO
+   disposable per-engine schema (the same real ``apply_pending`` +
+   ``enable_hypertables`` conversion), with the probe rows seeded before the
+   ``compress_chunk`` aging so the compressed-chunk rows are compressed into
    the batches — the claim's staging (rows inserted into an already-
    compressed chunk after the fact land in the chunk's live region and
    delete without decompression: no skip, measured); the corpus schema never
@@ -111,7 +111,7 @@ from taskq.web.admin.jobs import (  # pyright: ignore[reportPrivateUsage]  # Why
     _build_paginated_sql,
     _build_where,
 )
-from taskq.worker._leader_shared import (  # pyright: ignore[reportPrivateUsage]  # Why: the REAL expiry sweep SQL + runner, not a hand-copied shape.
+from taskq.worker._leader_shared import (  # pyright: ignore[reportPrivateUsage]  # Why: the real expiry sweep SQL + runner, not a hand-copied shape.
     _EXPIRY_CTE_SQL,
     _run_prune_batch,
 )
@@ -136,7 +136,7 @@ SERVER_FLAGS = [
     "shared_buffers=512MB",
     "-c",
     "max_wal_size=4GB",
-    # UNLIMITED tuple decompression per DML transaction. The DEFAULT (100k)
+    # unlimited tuple decompression per dml transaction. The default (100k)
     # aborts the expiry sweep's first batch on the columnstore engine with
     # ConfigurationLimitExceededError (measured and recorded by
     # bench_expiry_drain's probe below) — the probe documents the default's
@@ -246,7 +246,7 @@ async def setup_engine(dsn: str, *, columnstore: bool, schema: str = SCHEMA) -> 
         out["decompression_guc_warning"] = report.decompression_guc_warning
         # Stop the background workers: no policy may race the measurements
         # (the trade-off bench's determinism rule). The compression policy
-        # enable_hypertables arms on BOTH engines stays dormant — the
+        # enable_hypertables arms on both engines stays dormant — the
         # columnstore difference comes from the forced compress_chunk
         # aging below, on this engine only.
         stopped = False
@@ -266,8 +266,8 @@ async def setup_engine(dsn: str, *, columnstore: bool, schema: str = SCHEMA) -> 
 
         # The arming itself is enable_hypertables' now (the measured
         # settings: jobs_archive segmentby (actor, queue), orderby
-        # finished_at DESC; job_attempts_archive segmentby job_id,
-        # orderby started_at DESC) — verify it took instead of re-arming.
+        # finished_at desc; job_attempts_archive segmentby job_id,
+        # orderby started_at desc) — verify it took instead of re-arming.
         armed = await conn.fetch(
             "SELECT DISTINCT hypertable_name FROM timescaledb_information.compression_settings "
             "WHERE hypertable_schema = $1",
@@ -293,7 +293,7 @@ async def setup_engine(dsn: str, *, columnstore: bool, schema: str = SCHEMA) -> 
 
 
 async def age_columnstore(dsn: str, schema: str = SCHEMA) -> int:
-    """Force the aging step AFTER seeding: compress every chunk older than
+    """Force the aging step after seeding: compress every chunk older than
     COMPRESS_AFTER — exactly the set the armed policy would convert (the
     background workers are stopped; compress_chunk is the actuation).
     Returns the compressed-chunk count (asserted by the caller)."""
@@ -379,7 +379,7 @@ def _page_sql(where: str, params: list[Any]) -> tuple[str, list[Any]]:
 
 
 async def verify_seed() -> None:
-    """Row count + ordered-sample checksum must agree across engines BEFORE
+    """Row count + ordered-sample checksum must agree across engines before
     any timing is trusted (the house rule)."""
     checksum_sql = (
         "SELECT md5(string_agg(sig, ',' ORDER BY id)) FROM ("  # noqa: S608  # Why: schema is a benchmark-controlled constant.
@@ -530,7 +530,7 @@ def _leading_int(seg: str) -> int:
 
 async def bench_point_lookup(base: datetime) -> dict[str, Any]:
     """Shape 4 + 6: the id point lookup (full row) and the fold-guard's
-    NOT EXISTS witness probe (hit + miss), compressed vs rowstore."""
+    not EXISTS witness probe (hit + miss), compressed vs rowstore."""
     # Seed ordinals: i in 1..10 are 1-10d old (young chunk, rowstore on col);
     # 36100..36124 have i % 360 in 101..125 → 101-125d old (compressed chunks).
     young_ids = [container_id(i) for i in range(1, 10 + 1)]
@@ -550,7 +550,7 @@ async def bench_point_lookup(base: datetime) -> dict[str, Any]:
     }
     conn_row, conn_col = await connected(DSN_ROW), await connected(DSN_COL)
     try:
-        # Correctness first: every probed row exists on BOTH engines and is
+        # Correctness first: every probed row exists on both engines and is
         # byte-identical (the fixed base instant guarantees it).
         for i in (*range(1, 11), *range(36_101, 36_100 + LOOKUP_IDS + 1)):
             jid = container_id(i)
@@ -621,7 +621,7 @@ async def bench_point_lookup(base: datetime) -> dict[str, Any]:
 async def bench_expiry_drain(base: datetime) -> dict[str, Any]:
     """Shape 5: the real expiry sweep drains the expired cohort, interleaved.
 
-    BEFORE the drain, a rolled-back EXPLAIN (ANALYZE, BUFFERS) of the bare
+    before the drain, a rolled-back EXPLAIN (ANALYZE, BUFFERS) of the bare
     expire_at-keyed DELETE records what the 2.21+ batch-deletion machinery
     does on compressed chunks; per-chunk sizes (taken by the caller before
     and after) distinguish whole-batch drops from row-delete ghosting.
@@ -633,12 +633,12 @@ async def bench_expiry_drain(base: datetime) -> dict[str, Any]:
         "WHERE expire_at < statement_timestamp()"
     )
     try:
-        # The plan probes run FIRST and roll back (they would otherwise
+        # The plan probes run first and roll back (they would otherwise
         # consume the cohort the timed drain needs).
         row_plan = await explain_rollback(conn_row, bare_delete)
         col_plan = await explain_rollback(conn_col, bare_delete)
 
-        # Probe: the DEFAULT decompression budget (100k tuples/DML
+        # Probe: the default decompression budget (100k tuples/dml
         # transaction). This is what an operator first flipping the policy
         # on inherits — measured here (rolled back either way: on success it
         # must not consume the cohort, on failure nothing is lost).
@@ -742,7 +742,7 @@ async def explain_rollback(conn: asyncpg.Connection, sql: str) -> list[str]:
 # (198-237d) are >73d apart — never the same 30d chunk.
 FIRST_TICK_YOUNG_AGES = list(range(1, 13))  # 12 rows → the young rowstore chunks
 FIRST_TICK_COMPRESSED_AGES = list(range(100, 128))  # 28 rows → compressed chunks
-FIRST_TICK_ALL_COMPRESSED_AGES = list(range(198, 238))  # 40 rows, ALL compressed-chunk
+FIRST_TICK_ALL_COMPRESSED_AGES = list(range(198, 238))  # 40 rows, all compressed-chunk
 
 # The probe's row shape mirrors the trade-off bench's archive seed (the same
 # columns, the same derived clocks); ids are md5(prefix || i) — disjoint from
@@ -783,7 +783,7 @@ async def _first_tick_cte_ticks(conn: asyncpg.Connection, schema: str, seeded: i
     """Execute the REAL expiry sweep batch once per tick — the
     ``_EXPIRY_CTE_SQL`` shape via ``_run_prune_batch``, not a hand-copied
     DELETE — recording the per-tick deleted count. The sweep stops only when
-    the seeded rows are consumed AND a later tick deleted 0 (the recorded
+    the seeded rows are consumed and a later tick deleted 0 (the recorded
     tail 0 is the confirmation tick the claim cites); the cap keeps a
     pathological run bounded."""
     sql = _EXPIRY_CTE_SQL.format(schema=schema)
@@ -811,10 +811,10 @@ async def _first_tick_stage(
 ) -> None:
     """One sub-probe's staging on one engine: the REAL conversion
     (``apply_pending`` + ``enable_hypertables`` — the same arming the corpus
-    schema got) on a disposable probe schema, the probe rows seeded BEFORE
+    schema got) on a disposable probe schema, the probe rows seeded before
     the compress_chunk aging so the compressed-chunk rows are compressed
-    INTO the batches (the claim's staging: rows inserted into a compressed
-    chunk AFTER compression land in the chunk's live region and delete
+    into the batches (the claim's staging: rows inserted into a compressed
+    chunk after compression land in the chunk's live region and delete
     without decompression — measured: no skip), then the aging on the
     columnstore engine only."""
     await setup_engine(dsn, columnstore=aged, schema=schema)
@@ -833,7 +833,7 @@ async def bench_first_tick_probe(base: datetime) -> dict[str, Any]:
 
     Staging per sub-probe (a fresh disposable schema per engine, so no set's
     chunks are warmed by another set's ticks): the real conversion, the
-    probe rows seeded BEFORE the compress_chunk aging (compressed INTO the
+    probe rows seeded before the compress_chunk aging (compressed into the
     batches), then the REAL expiry sweep machinery (``_EXPIRY_CTE_SQL`` via
     ``_run_prune_batch``) executed one tick at a time.
 
@@ -846,11 +846,11 @@ async def bench_first_tick_probe(base: datetime) -> dict[str, Any]:
     * all-compressed set — 40 qualifying rows entirely inside freshly
       compressed chunks: the first tick deletes 0 outright.
     * bare-DELETE contrast — the same mixed staging consumed by a bare
-      ``DELETE ... WHERE expire_at < statement_timestamp()`` (NOT the
+      ``DELETE ... WHERE expire_at < statement_timestamp()`` (not the
       CTE/LIMIT shape): all 40 on the first execution. The skip is
       statement-shape-dependent, not a chunk-state constant.
 
-    The probe runs AFTER the expiry drain, on its own schemas: the corpus
+    The probe runs after the expiry drain, on its own schemas: the corpus
     schema never holds the probe's rows, so the drain's asserted-empty
     ``remaining`` and the seed-verify asserts are untouched.
     """
@@ -902,7 +902,7 @@ async def bench_first_tick_probe(base: datetime) -> dict[str, Any]:
     }
 
     # (c) The bare-DELETE contrast: same mixed staging, no CTE/LIMIT shape —
-    # the first execution deletes all 40 on BOTH engines.
+    # the first execution deletes all 40 on both engines.
     bare_delete_first_tick: dict[str, str] = {}
     for label, dsn, aged in (("row", DSN_ROW, False), ("col", DSN_COL, True)):
         schema = f"{SCHEMA}_ft_bare_{label}"
@@ -1054,7 +1054,7 @@ async def main() -> None:
     aged = await age_columnstore(DSN_COL)
     print(f"    columnstore engine: aged {aged} chunks into the columnstore", flush=True)
     storage_before = {"row": await chunk_state(DSN_ROW), "col": await chunk_state(DSN_COL)}
-    # Correctness before any timing is trusted: the col engine must ACTUALLY
+    # Correctness before any timing is trusted: the col engine must actually
     # be columnstore now (most chunks compressed, youngest left rowstore), or
     # every number below is measuring nothing.
     assert storage_before["col"]["n_compressed"] > 0, storage_before["col"]["n_compressed"]

@@ -59,7 +59,7 @@ _REGISTRY: Mapping[str, ActorRef[Any, Any]] = {
 }
 _REGISTRY_PATH = "tests.test_cli_doctor:_REGISTRY"
 
-# Writing SQL verbs: any of these appearing as a WORD in a statement the
+# Writing SQL verbs: any of these appearing as a word in a statement the
 # command issued means `doctor` is no longer read-only.  Word-boundary
 # matched: a read selecting `updated_at` is not an UPDATE.
 _WRITE_VERBS = re.compile(r"\b(insert|update|delete|truncate|drop|alter|create)\b", re.IGNORECASE)
@@ -488,7 +488,7 @@ def test_doctor_reports_pending_jobs_whose_actor_has_no_registry_or_config_row(
     elected leader - not something `doctor`, a read-only, on-demand,
     run-anytime command, should depend on.
 
-    Resolving an unknown worker module is NOT silent in the enqueue-time
+    Resolving an unknown worker module is not silent in the enqueue-time
     check a Postgres queue can make: the job is claimed and fails loudly
     with a named error
     rather than sitting unclaimed forever with nothing to say why. TaskQ's
@@ -663,7 +663,7 @@ def test_doctor_reports_unknown_taskq_env_var_naming_the_closest_real_name(
     (``TASKQ_MAX_PENDNG_LOCK_TIMEOUT_MS``, missing the second C) loads
     noiselessly - the settings loader reads only the names it defines -
     and the intended field applies its documented default with no error
-    anywhere. Doctor must name the offender AND the closest real setting
+    anywhere. Doctor must name the offender and the closest real setting
     name, the one-character-drift remedy a typo almost always wants."""
     _patch_db(
         monkeypatch,
@@ -680,7 +680,7 @@ def test_doctor_reports_unknown_taskq_env_var_naming_the_closest_real_name(
     )
     assert "did you mean TASKQ_MAX_PENDING_LOCK_TIMEOUT_MS?" in plain_cli_output(result.output)
     # The consequence is stated, not just the name: the report must tell
-    # the operator WHY an unknown variable is worth acting on.
+    # the operator why an unknown variable is worth acting on.
     assert "a typo applies defaults silently" in plain_cli_output(result.output)
 
 
@@ -754,7 +754,7 @@ def test_doctor_leads_with_the_detected_storage_mode_vanilla(
 ) -> None:
     """The vanilla mode renders its one-glance consequences: plain tables,
     no hypertables, no columnstore, retention owned by the row-level
-    sweeps. It is the FIRST finding in the report - the ground the rest
+    sweeps. It is the first finding in the report - the ground the rest
     of the report's advice stands on."""
     _patch_db(
         monkeypatch,
@@ -807,7 +807,7 @@ def test_doctor_leads_with_the_detected_storage_mode_apache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The apache mode renders the mode's truth in one glance: hypertables
-    yes, columnstore no, chunk-drop policies NO (they are Timescale-license
+    yes, columnstore no, chunk-drop policies no (they are Timescale-license
     features the server refuses under its license), retention back with
     the row-level sweeps."""
     _patch_db(
@@ -865,7 +865,7 @@ def test_doctor_names_the_license_downgrade_drift_apache_with_live_policies(
         "still registered" in result.output
     ), result.output
     # The mechanism, named so the operator believes it: the policies fail on
-    # every run AND the sweeps defer to them - the strand is real, not cosmetic.
+    # every run and the sweeps defer to them - the strand is real, not cosmetic.
     assert "fail on every" in result.output
     assert "strand" in result.output
     # The honest remedy: the license cannot be worked around - the removal
@@ -1023,7 +1023,7 @@ def test_doctor_reports_starved_queue_and_names_the_capacity_levers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A queue whose utilization (depth / effective capacity) blows past the
-    2x threshold AND whose oldest due job has outlived the persistence
+    2x threshold and whose oldest due job has outlived the persistence
     floor holds a full second claim-wave of due work after the first
     drains - a fleet too small for its arrival rate, not a transient
     burst. The remedy must name the levers the product actually has:
@@ -1083,7 +1083,7 @@ def test_doctor_is_silent_on_a_burst_younger_than_the_persistence_floor(
 
 def test_doctor_is_silent_on_a_balanced_queue(monkeypatch: pytest.MonkeyPatch) -> None:
     """Control: utilization at the balanced edge (1.0 - one full wave, the
-    shape any enqueue burst produces transiently) renders NO imbalance
+    shape any enqueue burst produces transiently) renders no imbalance
     finding. A threshold at 1.0 would cry wolf on every burst."""
     _patch_db(
         monkeypatch,
@@ -1146,7 +1146,7 @@ def test_doctor_reports_overprovisioned_queue_with_consolidation_remedy(
     """Live workers on a queue with zero due depth and near-zero
     terminalisations over the whole window: the fleet's payroll outruns
     its work. The remedy is consolidation in the workgroup config -
-    NEVER a destructive suggestion."""
+    never a destructive suggestion."""
     _patch_db(
         monkeypatch,
         actor_rows=[_row("doctor_beta", queue="over_q")],
@@ -1162,7 +1162,7 @@ def test_doctor_reports_overprovisioned_queue_with_consolidation_remedy(
     assert "OVERPROVISIONED" in result.output
     assert "consolidate" in result.output.lower()
     assert "workgroup" in result.output.lower()
-    # The remedy must be non-destructive, and SAY so: no purge/drop
+    # The remedy must be non-destructive, and say so: no purge/drop
     # suggestion, and the explicit nothing-is-deleted disclaimer.
     assert "nothing is deleted" in result.output.lower()
     assert "purge" not in result.output.lower()
@@ -1197,7 +1197,7 @@ def test_doctor_reports_slow_drain_with_eta_and_confidence_caveat(
     has persisted past the persistence floor, means the due depth exceeds
     everything the entire window completed: the operator would not
     recognize the queue as draining by the time the extrapolation says it
-    lands. The finding states the eta AND the has_traffic confidence
+    lands. The finding states the eta and the has_traffic confidence
     caveat."""
     _patch_db(
         monkeypatch,
@@ -1261,7 +1261,7 @@ def test_doctor_reports_cron_lag_naming_schedule_backlog_and_both_remedies(
 ) -> None:
     """A schedule whose fan-out outruns clearance (two consecutive windows,
     or an outstanding backlog above the catch-up window's demonstrated slot
-    capacity) must be named by id, with the backlog size and BOTH honest
+    capacity) must be named by id, with the backlog size and both honest
     remedies: slow the cron, or add workers for the actor."""
     _patch_db(
         monkeypatch,
@@ -1335,7 +1335,7 @@ def test_doctor_cron_lag_requires_demonstrated_clearance_history(
 def test_doctor_is_silent_on_a_first_in_flight_fire_with_no_clearance_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Control (the measured false positive): a brand-new schedule's FIRST
+    """Control (the measured false positive): a brand-new schedule's first
     fire is running right now - fires_window=1, no clearance in either
     window, outstanding=1. With a zero demonstrated capacity the backlog
     arm would read every in-flight fire as an uncatchable backlog; the

@@ -58,7 +58,7 @@ def _handle(row: Any) -> JobHandle[None]:  # type: ignore[type-var]  # Why: JobH
 
 async def test_timeout_reports_last_observed_row_and_context() -> None:
     """RED contract: the RuntimeError must name the row the poll loop last
-    observed (status AND attempt - the reclaim-never-happened vs
+    observed (status and attempt - the reclaim-never-happened vs
     attempt-starved discriminator) and the caller's context dump."""
     handle = _handle(make_job_row(status="running", attempt=1))
 

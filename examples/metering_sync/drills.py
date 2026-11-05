@@ -3,7 +3,7 @@
 Each drill runs the pipeline end to end against a live Postgres and a
 live worker, and writes its receipt (JSON) into ``.measurements/``:
 
-- ``overlap``    — the first consumed item starts BEFORE the producer
+- ``overlap``    — the first consumed item starts before the producer
                    finishes producing (the eager handoff, measured).
 - ``idempotency``— a second full run over the same source data changes
                    nothing (row counts + content hashes identical).
@@ -84,7 +84,7 @@ class Worker:
             TASKQ_SCHEMA_NAME=SCHEMA,
             TASKQ_MAX_CONCURRENCY=WORKER_CONCURRENCY,
         )
-        self.proc = subprocess.Popen(  # noqa: S603 — Why: fixed argv, the worker CLI IS the drill's job
+        self.proc = subprocess.Popen(  # noqa: S603 — Why: fixed argv, the worker CLI is the drill's job
             [
                 taskq_bin,
                 "worker",
@@ -201,7 +201,7 @@ def stamp() -> str:
 
 
 async def drill_overlap() -> None:
-    """THE EAGER-OVERLAP PROOF: the first consumed item starts before the
+    """The first consumed item starts before the
     producer finishes producing."""
     print("[drill] eager overlap")
     run_id = f"ovl-{stamp()}"
@@ -241,7 +241,7 @@ async def drill_overlap() -> None:
 
 
 async def drill_idempotency() -> None:
-    """THE IDEMPOTENCY DRILL: run the whole pipeline twice over the same
+    """Run the whole pipeline twice over the same
     source data; the second run's upserts change nothing."""
     print("[drill] idempotency (two full runs, same data)")
     run_id = f"idem-{stamp()}"
@@ -261,7 +261,7 @@ async def drill_idempotency() -> None:
         )
         await db.release(conn)
 
-        # The SECOND run: same run id, same idempotency keys, same data.
+        # The second run: same run id, same idempotency keys, same data.
         second = await run_pipeline(DSN, run_id, total=300, page_latency=0, observe_overlap=False)
         conn = await db.acquire()
         count_after_second, hash_after_second = await readings_fingerprint(conn, run_id)
@@ -304,7 +304,7 @@ async def drill_idempotency() -> None:
 
 
 async def drill_resume() -> None:
-    """THE RESUME DRILL: SIGKILL the worker mid-run; restart; the run
+    """SIGKILL the worker mid-run; restart; the run
     completes — nothing lost, nothing duplicated."""
     print("[drill] resume after SIGKILL")
     run_id = f"res-{stamp()}"
@@ -396,7 +396,7 @@ async def drill_resume() -> None:
 
 
 async def drill_load() -> None:
-    """THE LOAD FACE: a few thousand items; the throughput, honestly."""
+    """A few thousand items; the throughput, honestly."""
     print("[drill] load (3000 items)")
     run_id = f"load-{stamp()}"
     total = 3000
@@ -429,7 +429,7 @@ async def drill_load() -> None:
 
 
 async def drill_cron() -> None:
-    """THE SCHEDULED FACE: with a worker up, the tick fires on its cadence."""
+    """With a worker up, the tick fires on its cadence."""
     print("[drill] cron face (30s tick)")
     worker = Worker("cron")
     worker.start()
@@ -460,7 +460,7 @@ async def drill_cron() -> None:
 
 
 async def drill_admin_view() -> None:
-    """THE ADMIN VIEW: an operator can SEE the run mid-flight and after."""
+    """An operator can SEE the run mid-flight and after."""
     print("[drill] admin view (mid-run + terminal)")
     run_id = f"adm-{stamp()}"
     worker = Worker("admin")

@@ -1,7 +1,7 @@
 """The flow API — the authoring surface over the DAG engine.
 
 The public surface, behind ``taskq[flows]`` (the import law: ``import
-taskq`` NEVER imports this package). The wiring:
+taskq`` never imports this package). The wiring:
 
     from taskq.workflows import WorkflowApp, gather, step
 

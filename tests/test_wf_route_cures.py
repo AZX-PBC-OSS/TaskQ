@@ -8,7 +8,7 @@ bound's build seam, the arm arity, the E15 arm-param exactness.
   fires, the flow wedges or lies). The contract: the empty list IS the
   typed sum's honest value — the join fires with ``[]``.
 * the >1000 FAN-IN BOUND's BUILD SEAM (the named constant +
-  the E-rule refusal AT BUILD; ``validate_fork``'s raise INTO the
+  the E-rule refusal AT BUILD; ``validate_fork``'s raise into the
   ladder's try).
 * the ARM ARITY — E10/E12's walk extended to the ``map_arms``.
 * E15'S "RELATED" DOOR — the arm-param contract's exactness.
@@ -93,7 +93,7 @@ async def test_f1_the_empty_corpus_run_terminalizes_result_is_the_empty_list(
                 AudioItem: RouteArm(body=process_audio, queue="io"),
             },
         )
-        return build(routed)  # the route's join IS the terminal: result() IS the typed sum
+        return build(routed)  # the route's join is the terminal: result() is the typed sum
 
     runner = FlowRunner(app.get("f1_empty_corpu"), module_pg_pool, wf_schema)  # pyright: ignore[reportArgumentType]  # Why: the object-typed fixtures.
     flow_id = (await runner.create_flow()).flow_id
@@ -105,8 +105,7 @@ async def test_f1_the_empty_corpus_run_terminalizes_result_is_the_empty_list(
     result = await runner.result(flow_id)
     assert result == [], f"the empty corpus's result() must be [], got {result!r}"
     assert result is not None, "result() is None on a succeeded route — the lying empty read"
-    # THE ROWS ARE THE RECEIPT: zero stuck rows — every row of the run
-    # is terminal.
+    # zero stuck rows — every row of the run is terminal.
     rows = await wf_conn.fetch(  # pyright: ignore[reportAttributeAccessIssue]  # Why: the object-typed fixture.
         f'SELECT step_key, status FROM "{wf_schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1",
@@ -173,7 +172,7 @@ def test_f8_the_fan_in_bound_is_a_named_constant() -> None:
 
 def test_f8_the_fan_in_refusal_at_build_names_the_bound_and_the_escape() -> None:
     """The >1000 fan-in refusal fires AT BUILD (the wiring verb's door —
-    E-rule), the message names the bound AND the child_driven escape —
+    E-rule), the message names the bound and the child_driven escape —
     the remedy reachable from the refusal's own text."""
 
     app = WorkflowApp()
@@ -255,7 +254,7 @@ def test_e15_a_superclass_arm_param_refuses_at_build() -> None:
     fields would be dropped (``extra='ignore'``) at the runtime decode.
     The exact union member is the law."""
 
-    async def superclass_arm(ctx: object, item: DocBase) -> ImageResult:  # pyright: ignore[reportUntypedBaseClass]  # Why: the pin's own subject — the superclass IS the rejected shape.
+    async def superclass_arm(ctx: object, item: DocBase) -> ImageResult:  # pyright: ignore[reportUntypedBaseClass]  # Why: the pin's own subject — the superclass is the rejected shape.
         return ImageResult(doc_id=item.doc_id)
 
     async def doc_src(ctx: StepContext) -> list[DocItem]:
@@ -278,7 +277,7 @@ def test_e15_an_unrelated_arm_param_refuses_at_build() -> None:
     refusal (the E-rule, not the raw runtime death)."""
 
     async def unrelated_arm(ctx: object, item: AudioItem) -> ImageResult:
-        return ImageResult(doc_id=item.doc_id)  # type: ignore[arg-type]  # Why: the pin's own subject — the unrelated model IS the rejected shape.
+        return ImageResult(doc_id=item.doc_id)  # type: ignore[arg-type]  # Why: the pin's own subject — the unrelated model is the rejected shape.
 
     async def doc_src(ctx: StepContext) -> list[DocItem]:
         return []
@@ -410,7 +409,7 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
     overwrite): the tag-injectivity refusal at the wiring verb."""
     from taskq.workflows.chain import type_tag
 
-    TwinA = type("Twin", (BaseModel,), {"__module__": "tests.test_wf_route_cures"})  # noqa: N806  # Why: the twin IS the subject — two distinct class objects, one tag.
+    TwinA = type("Twin", (BaseModel,), {"__module__": "tests.test_wf_route_cures"})  # noqa: N806  # Why: the twin is the subject — two distinct class objects, one tag.
     TwinB = type("Twin", (BaseModel,), {"__module__": "tests.test_wf_route_cures"})  # noqa: N806
     assert TwinA is not TwinB
     assert type_tag(TwinA) == type_tag(TwinB)
@@ -418,7 +417,7 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
     async def twin_src(ctx: StepContext) -> list[ImageItem | AudioItem]:
         return []
 
-    async def arm_a(ctx: object, item: TwinA) -> ImageResult:  # pyright: ignore[reportUntypedBaseClass]  # Why: the dynamic twin IS the pin's subject.
+    async def arm_a(ctx: object, item: TwinA) -> ImageResult:  # pyright: ignore[reportUntypedBaseClass]  # Why: the dynamic twin is the pin's subject.
         return ImageResult(doc_id="a")
 
     async def arm_b(ctx: object, item: TwinB) -> AudioResult:  # pyright: ignore[reportUntypedBaseClass]  # Why: the same walk.
@@ -430,7 +429,7 @@ def test_the_same_qualname_twin_refuses_at_build() -> None:
     def twi() -> Promise[object]:
         src_p = step(twin_src, key="media")
         routed = route(
-            src_p,  # type: ignore[arg-type]  # Why: the twin union IS the pin's subject — the arms' keys collapse to one tag.
+            src_p,  # type: ignore[arg-type]  # Why: the twin union is the pin's subject — the arms' keys collapse to one tag.
             {
                 TwinA: RouteArm(body=arm_a),  # type: ignore[dict-item]  # Why: the scenario's union — the twins ride the return annotation's resolution.
                 TwinB: RouteArm(body=arm_b),  # type: ignore[dict-item]  # Why: the same walk.
@@ -453,7 +452,7 @@ async def _waiting_arm(ctx: StepContext, item: ImageItem) -> ImageResult:
 
 
 def test_the_arm_held_hitl_is_compile_visible() -> None:
-    """E14's walk OVER the map_arms: an arm body calling
+    """E14's walk over the map_arms: an arm body calling
     ``ctx.wait_signal`` with no declared gate produces the E14 warning
     NAMING the arm's child key (the per-arm gates' face) — the hold is
     no longer compile-invisible."""
@@ -501,7 +500,7 @@ def test_the_typod_arm_queue_warns_w2() -> None:
         routed = route(
             src_p,
             {
-                ImageItem: RouteArm(body=process_image, queue="gp"),  # the TYPO
+                ImageItem: RouteArm(body=process_image, queue="gp"),  # the typo
                 AudioItem: RouteArm(body=process_audio, queue="io"),
             },
         )
@@ -570,7 +569,7 @@ def test_the_double_attach_lie_is_fixed() -> None:
                 AudioItem: RouteArm(body=process_audio),
             },
         )
-        # THE DOUBLE ATTACH: a MAP over the SAME source the route rides
+        # a map over the same source the route rides
         mapped = map_source(src_p, per_item)
         return build(mapped)
 
@@ -587,7 +586,7 @@ def test_the_cannot_resolve_message_is_truthful() -> None:
     class Local(BaseModel):  # the function-scope model — the annotation cannot resolve
         doc_id: str
 
-    async def local_src(ctx: StepContext) -> list[Local]:  # pyright: ignore[reportUntypedBaseClass]  # Why: the unresolvable annotation IS the pin's subject.
+    async def local_src(ctx: StepContext) -> list[Local]:  # pyright: ignore[reportUntypedBaseClass]  # Why: the unresolvable annotation is the pin's subject.
         return []
 
     async def local_arm(ctx: object, item: ImageItem) -> ImageResult:

@@ -9,10 +9,10 @@ The chain, all on one real PostgreSQL:
    the row ``running``, locked, and held by no in-memory structure.
 3. The heartbeat's claim-loss reconcile (``worker/heartbeat.py``) finds
    the orphan after one full lease on ``started_at`` and disowns it. The
-   ONLY write is the in-memory ``disowned_jobs`` update: nothing refunds
+   only write is the in-memory ``disowned_jobs`` update: nothing refunds
    the claim-time increment.
 4. The lease lapses and Sweep 1 evaluates its budget predicate
-   (``backend/_sweeps.py``: ``WHEN {has_budget} THEN 'pending' ... ELSE
+   (``backend/_sweeps.py``: ``WHEN {has_budget} then 'pending' ... ELSE
    'crashed'``). A ``max_attempts=1`` job (or a ``non_retryable`` one at
    its budget edge) lands terminal ``crashed`` having never executed, and
    the crashed arm writes a ``job_attempts`` row for the charged attempt:
@@ -278,7 +278,7 @@ async def test_reconcile_refunds_the_claim_time_increment_of_a_job_that_never_ra
         "renewed for the worker's lifetime (the #402 defect)"
     )
 
-    # The disown must NOT have charged the attempt: the row stays running,
+    # The disown must not have charged the attempt: the row stays running,
     # locked to this worker (Sweep 1 owns the reclaim), at the attempt the
     # job actually reached, which for a never-executed claim is the
     # pre-claim counter.
@@ -294,7 +294,7 @@ async def test_reconcile_refunds_the_claim_time_increment_of_a_job_that_never_ra
     )
 
     # 4. The lease lapses; the real Sweep 1 reclaims. With the budget
-    #    restored the job must re-pend, NOT terminalise.
+    #    restored the job must re-pend, not terminalise.
     await _age_lock_expiry(clean_pg_conn, schema, job_id)
     count = await PostgresBackend.sweep_expired_locks(
         clean_pg_conn,
@@ -311,10 +311,10 @@ async def test_reconcile_refunds_the_claim_time_increment_of_a_job_that_never_ra
         f"did not happen"
     )
 
-    # The record: the sweep's reclaim ledger must sit at the REFUNDED
-    # attempt - which, the refund having de-charged the increment, is NO
+    # The record: the sweep's reclaim ledger must sit at the refunded
+    # attempt - which, the refund having de-charged the increment, is no
     # attempt row at all. The reclaim's crashed-row INSERT is fenced on
-    # the STANDING CLAIM (the un-stamped started_at is the refund's void
+    # the standing claim (the un-stamped started_at is the refund's void
     # marker): a crashed row at the refunded number would permanentise an
     # epoch the counter no longer carries, and the next claim's re-mint
     # of the number would close the lineage with one more attempt row
@@ -393,7 +393,7 @@ async def test_reconcile_refund_is_exactly_once_across_a_same_id_restart(
     row = await _job_row(clean_pg_conn, schema, job_id)
     assert row["attempt"] == 1, f"the first reconcile must refund once, got {row}"
 
-    # The restart: same worker id, EMPTY disowned set (fresh process
+    # The restart: same worker id, empty disowned set (fresh process
     # memory), the row still running and locked to this id. One more tick.
     deps_after_restart = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
     assert not deps_after_restart.disowned_jobs
@@ -437,7 +437,7 @@ async def test_drain_refunds_the_same_never_started_row_shape(
     )
 
 
-# ── The exactly-once refund invariant ACROSS the two refund writers ─────
+# ── The exactly-once refund invariant across the two refund writers ─────
 
 
 async def _seed_spent_attempt(conn: asyncpg.Connection, schema: str, job_id: UUID) -> None:
@@ -470,8 +470,8 @@ async def test_drain_never_re_refunds_a_row_the_reconcile_refunded(
     reclaim). The shutdown drain's exclusion folds only ``held_ids()``
     (registered consumers + claim intents), so the reconciled row still
     matches the drain's predicate: ``running``, locked to this worker,
-    held by nothing, ``cancel_phase = 0``. The drain re-pends the row AND
-    refunds the SAME claim a second time: the counter the reconcile
+    held by nothing, ``cancel_phase = 0``. The drain re-pends the row and
+    refunds the same claim a second time: the counter the reconcile
     restored is driven one further down, past the epoch a genuine
     execution's ``job_attempts`` row holds, and the row is yanked out of
     the Sweep-1 reclaim the reconcile deliberately preserved.
@@ -500,7 +500,7 @@ async def test_drain_never_re_refunds_a_row_the_reconcile_refunded(
         f"fixture broken: the reconcile must refund once and leave the row running, got {row}"
     )
 
-    # The drain runs (the DRAINING pass, or the producer's exit pass).
+    # The drain runs (the draining pass, or the producer's exit pass).
     # The row is already refunded: the drain must not touch it at all -
     # no re-pend, no second refund. The row stays Sweep 1's.
     drained = await drain_local_queue_to_pending(deps, worker_id)
@@ -602,11 +602,11 @@ async def test_reconcile_disown_does_not_survive_a_failed_tick(
     a cut commit, a dropped connection) rolls the refund back - and the
     disown, applied before the commit, would survive it: the row would
     then match neither the renewal nor the reconcile (the exclusion set
-    folds the disowned), the refund could NEVER re-apply, the lease would
+    folds the disowned), the refund could never re-apply, the lease would
     lapse, and Sweep 1 would reclaim at the CHARGED attempt - issue 458's
     'crashed, never ran' record resurrected by one brownout tick.
 
-    The pin: the failed tick leaves NO disown behind, and the next
+    The pin: the failed tick leaves no disown behind, and the next
     healthy tick re-reconciles the row and refunds it for real."""
     schema = module_pg_schema.schema_name
     worker_id = new_uuid()
@@ -624,10 +624,10 @@ async def test_reconcile_disown_does_not_survive_a_failed_tick(
     deps = _heartbeat_deps(module_pg_schema.pg_dsn, schema, module_pg_pool)
     await _one_tick(deps, worker_id, cancel_controller=_FailingInTxHook())
 
-    # THE PIN: the disown did not survive the rollback. (On the unguarded
-    # code this assertion fails - the disown was applied before the
-    # commit - and the row below is then unreachable by every later
-    # reconcile: the refund is lost permanently.)
+    # the disown did not survive the rollback. (On the unguarded code this
+    # assertion fails - the disown was applied before the commit - and the row
+    # below is then unreachable by every later reconcile: the refund is lost
+    # permanently.)
     assert job_id not in deps.disowned_jobs, (
         "a failed tick's disown survived its rollback: the refund un-applied "
         "but the exclusion stayed - the row can never be re-reconciled, the "

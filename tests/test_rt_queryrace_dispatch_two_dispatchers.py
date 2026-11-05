@@ -10,7 +10,7 @@ before any test was written:
    pac.residual * oversample``) yields a PREFIX of the pending rows in
    exactly the order the dedup uses (``ORDER BY c.actor, c.identity_key,
    c.priority DESC, c.scheduled_at, c.id``), so every dispatcher whose
-   window contains ANY sibling of an identity agrees on the SAME winner -
+   window contains any sibling of an identity agrees on the same winner -
    the globally highest-priority sibling.  The ``locked`` stage then takes
    ``FOR UPDATE OF j SKIP LOCKED`` on that one row: a concurrent holder is
    skipped, and a committed dispatch is dropped by the stage's own
@@ -28,7 +28,7 @@ before any test was written:
 
 2. The oversample x SKIP LOCKED slide - "can the eligible re-cap
    under-select so a job is starved across rounds?"  The lateral window is
-   computed BEFORE the skip, so a dispatcher whose entire
+   computed before the skip, so a dispatcher whose entire
    ``residual * oversample`` window is row-locked by another dispatcher
    takes ZERO jobs for that actor this round even though deeper unlocked
    rows exist.  The ``eligible`` re-cap cannot under-select by itself: it
@@ -384,7 +384,7 @@ async def test_second_dispatcher_claims_deeper_unlocked_rows(pg_dsn: str) -> Non
         limit_n = 10
         backlog = 200
         async with deps.worker_pool.acquire() as conn:
-            # No max_concurrent cap: this isolates the top_ids/SKIP LOCKED
+            # No max_concurrent cap: this isolates the top_ids/skip locked
             # ordering defect from the actor_rank <= residual admission cap
             # exercised by the slide test above.
             await _seed_actor(conn, schema, actor, max_concurrent=None)
@@ -410,8 +410,8 @@ async def test_second_dispatcher_claims_deeper_unlocked_rows(pg_dsn: str) -> Non
                 # conn2 runs in its own transaction/snapshot and cannot see D1's
                 # uncommitted status UPDATE, so the row-lock (not a status change)
                 # is what makes these rows unreachable to D2 -- exactly the
-                # SKIP LOCKED behavior under test. The unlocked remainder behind
-                # D1's held window is every backlog row D2 did NOT just claim.
+                # skip locked behavior under test. The unlocked remainder behind
+                # D1's held window is every backlog row D2 did not just claim.
                 remaining_due = backlog - len(d1_ids | {r["id"] for r in d2})
                 assert remaining_due > 0, (
                     "fixture broken: the unlocked remainder of the backlog must still "

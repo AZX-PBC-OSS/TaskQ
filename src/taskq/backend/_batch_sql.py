@@ -90,7 +90,7 @@ __all__ = [
 # validated against _IDENT_RE by render_batch_sql), keeping the surface
 # free of f-string S608 noise.
 
-# Build the terminal-status NOT IN clause from the canonical
+# Build the terminal-status not in clause from the canonical
 # TERMINAL_STATUSES set so the SQL never drifts when a new status is
 # added to the state machine.
 _TERMINAL_NOT_IN = "NOT IN (" + ",".join(f"'{s}'" for s in TERMINAL_STATUSES) + ")"
@@ -132,11 +132,11 @@ FROM "{schema}".batches
 WHERE id = $1"""
 
 # Both counter writes run on every batched job's terminal write, so the
-# member count they return must not walk the batch: the LATERAL probe is
+# member count they return must not walk the batch: the lateral probe is
 # the open-member predicate, which jobs_batch_open_members_idx serves as
 # one index range over the members still open, never the terminal
 # history, so its cost tracks what remains, not what the batch was.
-# The LATERAL only executes for the rows the UPDATE returned: a batch
+# The lateral only executes for the rows the UPDATE returned: a batch
 # that is missing or no longer active costs one empty-scan of `updated`,
 # never the member probe.
 #
@@ -248,8 +248,8 @@ SET status = 'aborted', completed_at = clock_timestamp()
 WHERE id = $1 AND status = 'active'"""
 
 # The NOT EXISTS guard arbitrates completion server-side, in this
-# statement's own snapshot: the increment/reset counts CTE runs in ITS
-# statement's READ COMMITTED snapshot, which after a batches-row lock
+# statement's own snapshot: the increment/reset counts CTE runs in its
+# statement's read committed snapshot, which after a batches-row lock
 # wait can predate a concurrent member's terminal write, so a count of
 # zero from the caller is never the completion decision. The guard shape is
 # the one complete_stale_batches already uses (worker/_leader_shared.py);
@@ -258,20 +258,20 @@ WHERE id = $1 AND status = 'active'"""
 # jobs_batch_open_members_idx, so the guard costs one index seek however
 # many members the batch has.
 #
-# The statement runs while the CALLER holds the batches row lock
+# The statement runs while the caller holds the batches row lock
 # (complete_batch's bounded handshake) -- it is the guard + completion
 # write, not the whole arbitration body.
 #
 # Why the caller's handshake BLOCKS (bounded) instead of a FOR UPDATE
-# SKIP LOCKED membership CTE: a skip-fast grant does not sequence a
+# skip locked membership CTE: a skip-fast grant does not sequence a
 # batch's terminal writers — the last committer's attempt snapshots
-# BEFORE its peers commit, vetoes on members it saw open, and no attempt
+# before its peers commit, vetoes on members it saw open, and no attempt
 # exists after the final commit, so an all-terminal batch stays 'active'
 # until the sweep (the lost-wakeup hole). The rule "the attempt after
 # the last terminal write is the one that lands" needs the
 # serialization the counter reset's lock handoff provides: grant means
 # every earlier holder committed, so the
-# grantee's guard (this statement's fresh READ COMMITTED snapshot) sees
+# grantee's guard (this statement's fresh read committed snapshot) sees
 # their terminal writes and the tail's last seeker lands. The bounded
 # wait keeps the no-parking constraint the skip enforced: the completer
 # may run inside a caller's open transaction (the ``connection=`` arm,
@@ -280,7 +280,7 @@ WHERE id = $1 AND status = 'active'"""
 # conflict the skip existed for (see _enqueue.py's _lock_batch_membership)
 # -- would hold a terminal write for the appender's whole stream. The
 # bounded wait times out into the same disclosed delay the skip produced;
-# a NOWAIT refusal (raw 55P03) is equally unusable, the enclosing
+# a nowait refusal (raw 55P03) is equally unusable, the enclosing
 # transaction would abort even once caught. The lock is held to the
 # caller's commit, so an appender arriving after the grant serializes
 # behind the completion instead of racing it.
@@ -296,11 +296,11 @@ WHERE id = $1 AND status = 'active'
 RETURNING id"""
 
 # The completion handshake's seat-taking statement: complete_batch holds
-# the batches row from this grant through the completion write's OWN
-# commit -- the grant and _COMPLETE_BATCH_SQL run inside ONE transaction
+# the batches row from this grant through the completion write's own
+# commit -- the grant and _COMPLETE_BATCH_SQL run inside one transaction
 # (the caller's on the transactional-caller shape, the bounded wait's on
-# the autonomous shape), so the write's READ COMMITTED statement
-# snapshot postdates the grant AND no appender can take the row between
+# the autonomous shape), so the write's read committed statement
+# snapshot postdates the grant and no appender can take the row between
 # the two statements — the property the guarded counter reset's queue
 # provides (see _COMPLETE_BATCH_SQL's and
 # complete_batch's docstrings).
@@ -314,18 +314,18 @@ SELECT count(*)::int FROM "{schema}".jobs
 WHERE {open_member}"""
 
 # One grouped aggregation over the member population, joined to the
-# batches rows -- not a per-batch probe. The LATERAL shape this replaced
+# batches rows -- not a per-batch probe. The lateral shape this replaced
 # correlated the member scan onto the batches row
 # (``metadata @> jsonb_build_object('batch_id', b.id::text)``), so every
-# page of the batches list paid one GIN bitmap + heap recheck + aggregate
-# PER BATCH ROW: measured on postgres:18, 500 batches x 24 members cost
+# page of the batches list paid one gin bitmap + heap recheck + aggregate
+# per batch row: measured on postgres:18, 500 batches x 24 members cost
 # ~220 ms and 45 000 buffers, the bitmap searches alone 33 000. Grouping
 # once over ``metadata->>'batch_id'`` and joining the aggregate turns the
 # page into one pass over the member population (a Hash Aggregate joined
 # to the batches scan): the same corpus renders in single-digit
 # milliseconds. The counts and their statuses are unchanged -- ``total``
 # is every member row, ``pending`` the non-terminal ones
-# ({terminal_not_in}), and one FILTER per terminal status -- so no
+# ({terminal_not_in}), and one filter per terminal status -- so no
 # consumer sees a column or value change; batches with no members keep
 # their row via the LEFT JOIN's COALESCE zeros, exactly as the LATERAL's
 # empty aggregate did.
@@ -370,7 +370,7 @@ LEFT JOIN (
 ) j ON j.batch_id = b.id::text
 WHERE 1=1"""
 
-# Bounded batch + MATERIALIZED, the _COMPLETE_STALE_BATCHES_SQL shape
+# Bounded batch + materialized, the _COMPLETE_STALE_BATCHES_SQL shape
 # (worker/_leader_shared.py, same table family, same correlated NOT EXISTS
 # member-probe): LIMIT $2 caps one call's DELETE, and MATERIALIZED stops the
 # planner from inlining the LIMIT-ed CTE into the DELETE in a way that could
@@ -477,12 +477,12 @@ _ABORT_DRAIN_RETRIES: Final = 3
 #: power of two above the fleet profile's 8 concurrent terminal writers;
 #: a tail wider than this falls back to the members' own hooks and the
 #: leader's sweep, the reconciliation the single-shot shape had. The
-#: handshake itself waits on the SAME budget as the counter writes
+#: handshake itself waits on the same budget as the counter writes
 #: (``_BATCH_COUNTER_LOCK_TIMEOUT_MS``): the queue it must outlast is the
 #: tail depth times a holder's commit window -- up to ~16 holders, whose
 #: commits inflate under load (a 100 ms bound measurably expired under a
 #: 2.4x-slower box and left an all-terminal batch 'active') -- and the
-#: appender-hold case it must NOT park for is the same holder class the
+#: appender-hold case it must not park for is the same holder class the
 #: counter writes already disclose on expiry (M7's best-effort loss).
 _COMPLETE_TAIL_RECHECK_MAX_OPEN: Final[int] = 16
 
@@ -712,7 +712,7 @@ async def abort_batch(
     a clean snapshot, its predicate no longer matches rows an earlier
     committed page cancelled, and nothing is counted twice.
 
-    The batches row flips to ``'aborted'`` FIRST, before the drain:
+    The batches row flips to ``'aborted'`` first, before the drain:
     every completion path (the terminal hook's ``complete_batch`` and
     the leader's stale-batch sweep) guards on ``status = 'active'``, so
     the flip is what decides abort-wins-over-complete for the whole
@@ -754,7 +754,7 @@ async def abort_batch(
     try:
         await _bounded_batches_row_wait(conn, lambda: conn.execute(sql.abort_batch_row, batch_id))
     except LockNotAvailableError:
-        # The flip is DELAYED: the row stays 'active', the savepoint
+        # The flip is delayed: the row stays 'active', the savepoint
         # rollback already restored the caller's scope to usable, and
         # the abort must not proceed without the flip (the docstring's
         # flip-first rationale), so the call writes nothing and returns
@@ -801,10 +801,10 @@ async def abort_batch(
                 if attempt == attempts - 1:
                     raise
                 await asyncio.sleep(0.1 * (2**attempt) + random() * 0.05)
-        # Termination keys on the WINDOW count, not the aborted count:
+        # Termination keys on the window count, not the aborted count:
         # a row windowed by the CTE that a dispatcher claims
         # (pending -> running) between the snapshot and the row lock
-        # fails the EPQ re-check and drops out of `aborted`, so an
+        # fails the epq re-check and drops out of `aborted`, so an
         # aborted-count termination could abandon the tail of a full
         # window. A window under the page size is the drained end.
         matched = int(rec["matched_count"]) if rec is not None else 0
@@ -846,7 +846,7 @@ async def complete_batch(
 
     The attempt is TAIL-GATED first: one cheap open-member count, and a
     mid-drain snapshot (more than ``_COMPLETE_TAIL_RECHECK_MAX_OPEN``
-    members open) returns immediately WITHOUT touching the row -- the
+    members open) returns immediately without touching the row -- the
     attempt would veto anyway, and seeking the batches row there would
     re-create the per-job row-lock queue the guarded counter reset
     removed. A gated-out attempt is UNORDERED with its caller's own
@@ -883,7 +883,7 @@ async def complete_batch(
     the handshake is safe inside a caller's open transaction: a lock
     refusal that raised would leave that transaction aborted and roll
     back the terminal write beside it. The lock is held to the
-    completion write's OWN commit -- the lock and the write run inside
+    completion write's own commit -- the lock and the write run inside
     one transaction (the caller's own on the transactional-caller
     shape, the bounded wait's on the autonomous shape), so an appender
     arriving after the grant serializes behind the completion instead
@@ -922,7 +922,7 @@ async def complete_batch(
     async def _lock_then_complete() -> asyncpg.Record | None:
         # The seat-taking grant and the guarded completion write in the
         # wait's own transaction: the row lock spans both statements, so
-        # the write's snapshot postdates the grant AND no appender can
+        # the write's snapshot postdates the grant and no appender can
         # take the row between them (see the docstring's gap paragraph).
         locked: asyncpg.Record | None = await conn.fetchrow(sql.lock_batch_row, batch_id)
         if locked is None:
@@ -1003,7 +1003,7 @@ async def list_batches(
     if filter.cursor is not None:
         # Why a row-wise comparison and not `created_at < $n OR (= AND id <
         # $m)`: one tuple compare is what stays correct once `id` is ordered
-        # WITH the primary column rather than against it, which is the shape
+        # with the primary column rather than against it, which is the shape
         # the admin keyset settled on in 2569da5. `id` is UUIDv7 and
         # therefore time-ordered, so `id DESC` agrees with `created_at DESC`
         # instead of fighting it -- the tiebreaker only decides rows written
@@ -1072,9 +1072,9 @@ async def enqueue_batch_atomic(
 ) -> list[JobRow]:
     """Enqueue all items in a single transaction, stamping each with
     ``metadata.batch_id``.  Optionally insert a batch row and enqueue a
-    finalizer job as the LAST statements.
+    finalizer job as the last statements.
 
-    The finalizer is NOT stamped with ``batch_id`` metadata (deadlock
+    The finalizer is not stamped with ``batch_id`` metadata (deadlock
     prevention, see spec §5.4).
 
     Consumes the iterable lazily in chunks of *chunk_size*, never
@@ -1101,10 +1101,10 @@ async def enqueue_batch_atomic(
                 chunk_raw = list(islice(it, chunk_size))
                 if not chunk_raw:
                     break
-                # The chunk's base in the CALLER's coordinate space: the
-                # consumed prefix BEFORE this chunk. Captured before the
+                # The chunk's base in the caller's coordinate space: the
+                # consumed prefix before this chunk. Captured before the
                 # count bump so the bulk core's per-item annotations (the
-                # jsonb NUL guard) name STREAM-GLOBAL indices, a
+                # jsonb NUL guard) name stream-global indices, a
                 # chunk-local index from inside this loop is unfixable at
                 # the client layer, which cannot know the backend's chunk
                 # base (the streaming boundary's registry can only shift
@@ -1130,7 +1130,7 @@ async def enqueue_batch_atomic(
                     # true aggregate, a default flip must not silently
                     # disarm it.
                     enforce_max_pending=True,
-                    # Why whole-call refusal: every chunk runs inside ONE
+                    # Why whole-call refusal: every chunk runs inside one
                     # shared transaction, so the partition's
                     # insert-then-raise would insert this chunk's admitted
                     # items only for the wrapper's rollback to discard
@@ -1143,7 +1143,7 @@ async def enqueue_batch_atomic(
                 )
                 all_rows.extend(rows)
 
-            # Insert finalizer BEFORE creating the batch row so the returned
+            # Insert finalizer before creating the batch row so the returned
             # row's id can be used for finalizer_job_id (M4: idempotency
             # collision may return a different id than finalizer_args.id).
             finalizer_row: JobRow | None = None

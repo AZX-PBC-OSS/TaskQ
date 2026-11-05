@@ -44,12 +44,12 @@ __all__ = [
 # actually isolate one test from another are per schema.
 #
 # The role is created, never dropped. A teardown that dropped it would
-# break any concurrent worker sitting between a ``SET ROLE`` and the
-# matching ``RESET ROLE``, and the suite's xdist workers share one
+# break any concurrent worker sitting between a ``set role`` and the
+# matching ``reset role``, and the suite's xdist workers share one
 # cluster. Creation itself is safe under that concurrency:
 # :func:`install_row_visit_counter` serialises it with a
 # transaction-scoped advisory lock, because a check-then-create inside a
-# single DO block is atomic per statement but not across connections.
+# single do block is atomic per statement but not across connections.
 ROW_VISIT_COUNTER_ROLE = "taskq_row_visit_probe"
 
 
@@ -95,7 +95,7 @@ DEFAULT_ACTORS: tuple[str, ...] = (
 )
 
 # Tables truncated by truncate_schema() in FK-safe cascade order.
-# job_attempts_archive is listed BEFORE jobs_archive: on vanilla Postgres
+# job_attempts_archive is listed before jobs_archive: on vanilla Postgres
 # the CASCADE from jobs_archive would reach it anyway, but the optional
 # hypertable mode drops that foreign key (no table may reference a
 # hypertable), so the explicit entry keeps the reset complete in both
@@ -116,10 +116,10 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     "wf_signals",
     "wf_node_progress",
     # wf_node_stream (01.00.29_01) is FK-less like its ledger kin — and
-    # it was MISSING from this list once — the gap was live:
+    # it was missing from this list once — the gap was live:
     # a dead node's ring survived the reset, the last test's rows
-    # leaked into the next test's counts. The STREAM channel truncates
-    # with the STATE channel or not at all.
+    # leaked into the next test's counts. The stream channel truncates
+    # with the state channel or not at all.
     "wf_node_stream",
     # The cross-run step cache is FK-less like its ledger kin (the
     # no-FK decision) — the CASCADE never reaches it; a cache-asserting
@@ -129,7 +129,7 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     # test state: a cursor advanced by one test would bias the next
     # test's walk. The migration seeds the per-arm rows; after a
     # truncate a walk answers NULL-cursor = from-the-start and re-seeds
-    # the row through its own UPSERT (the job_events_prune_state
+    # the row through its own upsert (the job_events_prune_state
     # precedent's reset contract).
     "wf_rootless_sweep_state",
     "reservation_slots",
@@ -151,7 +151,7 @@ _TRUNCATE_TABLES: tuple[str, ...] = (
     # pin asserts a cursor reads 0 before its own deleter ran, so the
     # previous test's advanced bound must not leak. The migration seeds the
     # singleton row; after a truncate the read path answers 0 (NULL row)
-    # and the next deleter re-seeds it through its UPSERT.
+    # and the next deleter re-seeds it through its upsert.
     "job_events_prune_state",
 )
 
@@ -195,7 +195,7 @@ async def _reset_triggers(conn: _Conn, schema: str) -> None:
         _migrated_triggers[schema] = frozenset(present)
         return
     extra = sorted(present - migrated)
-    # Validate the whole drop list before issuing any DROP: a reset that
+    # Validate the whole drop list before issuing any drop: a reset that
     # fails halfway leaves the schema in neither state.
     for table, trigger in extra:
         if not _IDENT_RE.match(table) or not _IDENT_RE.match(trigger):
@@ -307,7 +307,7 @@ async def create_running_job(
         # of which stamped attempt and claim_epoch together, so the row's
         # epoch is N and the fences under test are satisfiable by
         # presenting the row's own values. attempt and claim_epoch are
-        # distinct counters that DO diverge in production (the attempt
+        # distinct counters that do diverge in production (the attempt
         # saturates at the smallint ceiling and non-terminal releases
         # refund it; the epoch only ever increments, so the row's epoch is
         # always >= its attempt); the equality fences treat a diverged row
@@ -461,7 +461,7 @@ def _create_role_or_reuse_do_block(role: str) -> str:
     winner's; it re-raises when the role genuinely is absent, so real
     breakage still surfaces.
     """
-    # Why: CREATE ROLE takes no parameters, so the role name must be interpolated; the caller passes this module's own constant or a pin test's scratch name, never external input.
+    # Why: create role takes no parameters, so the role name must be interpolated; the caller passes this module's own constant or a pin test's scratch name, never external input.
     return (
         "DO $$ BEGIN "  # noqa: S608
         f"  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') "
@@ -522,7 +522,7 @@ async def install_row_visit_counter(conn: _Conn, schema: str, table: str = "jobs
     if not _IDENT_RE.match(table):  # pragma: no cover - guards a test-only helper
         raise ValueError(f"invalid table identifier: {table!r}")
     await conn.execute(f'CREATE SEQUENCE IF NOT EXISTS "{schema}".taskq_rows_visited')
-    # VOLATILE with a high COST so the planner never folds it away,
+    # volatile with a high cost so the planner never folds it away,
     # caches it, or hoists it above the scan it is counting.
     await conn.execute(
         f'CREATE OR REPLACE FUNCTION "{schema}".taskq_count_row_visit() RETURNS boolean '
@@ -541,7 +541,7 @@ async def install_row_visit_counter(conn: _Conn, schema: str, table: str = "jobs
     # transaction-scoped advisory lock serialises same-database callers,
     # so a loser that shares the winner's database waits, re-reads the
     # role after the winner commits, and reuses it. Second, the guard is
-    # needed because advisory locks are per-database while CREATE ROLE is
+    # needed because advisory locks are per-database while create role is
     # cluster-wide: two workers on different databases of one cluster are
     # never serialised by the lock, both see the role as absent, and the
     # loser of the index insert dies on pg_authid_rolname_index with
@@ -606,7 +606,7 @@ class RowVisitCounter:
             async def __aenter__(self) -> Any:
                 self._ctx = outer._pool.acquire(**kwargs)
                 self._conn = await self._ctx.__aenter__()
-                # RLS is bypassed for the table owner and for superusers,
+                # rls is bypassed for the table owner and for superusers,
                 # so the counting policy only fires for an ordinary role.
                 await self._conn.execute(f"SET ROLE {ROW_VISIT_COUNTER_ROLE}")
                 return _CountingConnection(self._conn, outer)

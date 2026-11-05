@@ -12,7 +12,7 @@ PG timeout) pair in ``src/``:
    other ledger process-local.
 
 2. The ordering between a Python-side bounded wait and the PG-side
-   timeout it waits on. The conservative contract on EVERY path: the
+   timeout it waits on. The conservative contract on every path: the
    Python bound is strictly greater than the PG bound (so the server's
    typed refusal -- and its counters -- land first), or the PG-timeout-
    fired outcome (``QueryCanceledError`` from a cancelled query, the
@@ -49,7 +49,7 @@ from taskq._advisory import (
 from taskq._ids import new_uuid
 from taskq.backend._protocol import Backend
 from taskq.connections import (
-    _LOCK_BUDGET_COMMAND_TIMEOUT_SHARE,  # pyright: ignore[reportPrivateUsage]  # Why: the ordering contract IS this share; the pin asserts the clamped budget sits strictly under the pool's per-query bound because of it.
+    _LOCK_BUDGET_COMMAND_TIMEOUT_SHARE,  # pyright: ignore[reportPrivateUsage]  # Why: the ordering contract is this share; the pin asserts the clamped budget sits strictly under the pool's per-query bound because of it.
     bounded_lock_budget_ms,
     lock_budget_command_timeout_secs,
 )

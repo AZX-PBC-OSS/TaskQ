@@ -73,7 +73,7 @@ async def listen_with_reconnect(
         on_reconnect=_log_reconnect,
     )
     # The adapter's own finally closes the inner pump: a bare ``async
-    # for`` abandons the inner generator to the GC finalizer when THIS
+    # for`` abandons the inner generator to the GC finalizer when this
     # generator is closed, and the dedicated LISTEN connection's release
     # would wait on garbage collection instead of the close (the
     # deterministic-release contract the SSE teardown pins hold).

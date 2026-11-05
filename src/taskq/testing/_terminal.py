@@ -134,8 +134,8 @@ def _fenced(
     claim_epoch: int | None,
 ) -> bool:
     """True when *row* fails the terminal-write fence: the SQL arms'
-    ``status = 'running' AND locked_by_worker = ... AND attempt = ...
-    AND claim_epoch = ...`` conjuncts (the ``JOB_FENCE_SQL`` fragment in
+    ``status = 'running' and locked_by_worker = ... and attempt = ...
+    and claim_epoch = ...`` conjuncts (the ``JOB_FENCE_SQL`` fragment in
     backend/_sql_fragments.py, the bound spelling's ``JOB_FENCE_BOUND_SQL``
     single-row form).
 
@@ -271,7 +271,7 @@ async def _mark_succeeded(
         status="succeeded",
         finished_at=now,
         # The terminal success write clears the lock holder and lease exactly
-        # like PG's mark_succeeded SET clause (_sql_templates.py: locked_by_worker
+        # like PG's mark_succeeded set clause (_sql_templates.py: locked_by_worker
         # = NULL, lock_expires_at = NULL): a succeeded row must not keep
         # matching every locked_by_worker-scoped reader.
         locked_by_worker=None,
@@ -363,7 +363,7 @@ async def _mark_failed_or_retry(
         raise WorkerOwnershipMismatch(job_id, worker_id, None)
 
     # The attempt-epoch conjunct mirrors the PG fence's
-    # ``AND j.attempt = (SELECT attempt FROM params)``: a mismatched
+    # ``and j.attempt = (SELECT attempt FROM params)``: a mismatched
     # epoch raises the same WorkerOwnershipMismatch the PG rowcount-0
     # path raises (safe_mark_failed_or_retry converts it to the None the
     # handlers treat as a no-op), and ``attempt=None``, a caller that
@@ -382,7 +382,7 @@ async def _mark_failed_or_retry(
     if retry_delay is not None:
         # The cancel fence (the SQL retried and deadline_failed arms'
         # `cancel_phase = 0` conjunct, the sibling deferral arms'
-        # semantics): an operator cancel in flight WINS over the failure
+        # semantics): an operator cancel in flight wins over the failure
         # retry. Both arms of the retry below reset or overwrite state a
         # cancel in flight owns (the retried arm resets the cancel
         # columns; the deadline arm stamps DeadlineExceeded), so a
@@ -393,7 +393,7 @@ async def _mark_failed_or_retry(
         # a wrong-worker retry raises (the handler's no-op), and the
         # worker's cancel ladder terminalises it. On a clean row the
         # check is trivially false and the retry semantics are
-        # unchanged. The TERMINAL fail path below is deliberately NOT
+        # unchanged. The terminal fail path below is deliberately not
         # fenced: it writes no re-pend and keeps the cancel columns as
         # the audit trail, the doctrine every terminal cancel path
         # carries.
@@ -404,14 +404,14 @@ async def _mark_failed_or_retry(
         # The failure-retry arm's deferral floor, the same bound
         # mark_snoozed and the non-consuming retry-after arm apply, and the
         # same bound PG's mark_retry template pins in its params CTE
-        # (``GREATEST($3::interval, MIN_DEFERRAL_INTERVAL) AS
+        # (``greatest($3::interval, MIN_DEFERRAL_INTERVAL) as
         # effective_delay``, _sql_templates.py): a zero/now delay would
         # park the job at the head of the dispatch order and make it
         # instantly re-claimable, one claim/refund round trip per cycle
-        # monopolising a worker slot. The floored delay is the SINGLE
+        # monopolising a worker slot. The floored delay is the single
         # effective delay: the status branch and the deadline comparison
         # below both use it, the conservative direction, mirroring the SQL
-        # arm's GREATEST. (The decision layer floors too, retry.py's
+        # arm's greatest. (The decision layer floors too, retry.py's
         # RetryClassifier, the same two-layer defense-in-depth shape the
         # deferral family ships.)
         effective_delay = max(retry_delay, MIN_DEFERRAL_INTERVAL)
@@ -588,7 +588,7 @@ async def _mark_cancelled(
 
     now = self._clock.now()
     merged_progress = _merge_progress(row.progress_state, progress_state)
-    # Twin of the PG template's CASE: an actor stopped while still only
+    # Twin of the PG template's case: an actor stopped while still only
     # asked (phase 1, a request on the row) stopped cooperatively; one
     # interrupted at phase 2 was forced; and a row carrying neither
     # evidence (phase 0, no request) was cancelled by the worker's
@@ -767,7 +767,7 @@ async def _retry_job(self: "InMemoryBackend", job_id: JobId) -> bool:
         return False
     # Monotonic attempt with the ceiling raised just enough to open
     # the budget gates, mirroring the PG statement's
-    # LEAST(GREATEST(max_attempts, attempt + 1), 32767): the attempt
+    # least(greatest(max_attempts, attempt + 1), 32767): the attempt
     # counter never resets across retries. A re-run climbs to fresh
     # attempt numbers, the twin's dispatch claim stamps attempt + 1 ,
     # so no attempt-row writer can revisit a spent epoch's key. At the
@@ -789,7 +789,7 @@ async def _retry_job(self: "InMemoryBackend", job_id: JobId) -> bool:
         assignment_routed=True,
         cancel_phase=CancelPhase.NONE,
         # The whole cancel trail goes with the spent epoch, mirroring
-        # the PG SET clause's cancel_requested_at = NULL: the TERMINAL
+        # the PG set clause's cancel_requested_at = NULL: the terminal
         # writes deliberately keep the cancel columns as the audit
         # trail of why the job ended, and a re-run must not inherit
         # that trail, the next attempt's cancel protocol starts at
@@ -799,7 +799,7 @@ async def _retry_job(self: "InMemoryBackend", job_id: JobId) -> bool:
         error_message=None,
         error_traceback=None,
         scheduled_at=now,
-        # Twin of the PG SET clause's CASE: an already-elapsed
+        # Twin of the PG set clause's case: an already-elapsed
         # schedule_to_close is a spent epoch's artifact, the twin's own
         # dispatch claim (_dispatch.py) admits a row only when its
         # deadline is NULL or strictly in the future, so re-pending with
@@ -872,22 +872,22 @@ async def _mark_snoozed(
     # job 'pending' at the head of the dispatch order and make it
     # instantly re-claimable, one claim/refund round trip per cycle
     # monopolising a worker slot. A positive delay is required to prevent
-    # this thrashing. The floored delay is the SINGLE effective delay: the
+    # this thrashing. The floored delay is the single effective delay: the
     # deadline comparison below uses it too, the conservative direction,
-    # mirroring the SQL arms' GREATEST().
+    # mirroring the SQL arms' greatest().
     effective_delay = max(delay, MIN_DEFERRAL_INTERVAL)
     new_scheduled_at = now + effective_delay
 
     # Two arms only, deadline → snooze here against the fused SQL's
     # snoozed → deadline: observably equivalent, since the SQL snooze
     # arm's own deadline guard excludes every past-deadline row before
-    # the deadline arm sees it. The deadline is a deferral's ONLY
+    # the deadline arm sees it. The deadline is a deferral's only
     # terminal exit for a clean row, nothing about admission decides a
     # job's outcome.
     if row.schedule_to_close is not None and new_scheduled_at > row.schedule_to_close:
         deadline_merged_progress = _merge_progress(row.progress_state, progress_state)
         # Cancel-first arbitration inside the deadline arm, the twin of
-        # the SQL deadline_cancelled arm (and of _SWEEP_1_SQL's CASE
+        # the SQL deadline_cancelled arm (and of _SWEEP_1_SQL's case
         # ordering): operator intent outranks the deadline, so a
         # phase-carrying row whose schedule_to_close lapsed at deferral
         # time terminalises 'cancelled', never 'failed:DeadlineExceeded'
@@ -960,7 +960,7 @@ async def _mark_snoozed(
             # it, and with no per-occurrence rows the aggregate is its
             # only record, counting it here makes the terminal row show
             # the deadline was reached while the job was starving for
-            # admission.  An actor-requested deferral is NOT counted:
+            # admission.  An actor-requested deferral is not counted:
             # snooze_count tallies deferrals the job actually took, and
             # this one was rejected outright (mirrors the SQL arm).
             rate_limit_blocked_count=row.rate_limit_blocked_count
@@ -1002,7 +1002,7 @@ async def _mark_snoozed(
     # exhaust a budget only executions spend.
     #
     # The cancel fence (the SQL snoozed arm's `cancel_phase = 0` conjunct,
-    # mark_interrupted's semantics): an operator cancel in flight WINS
+    # mark_interrupted's semantics): an operator cancel in flight wins
     # over the deferral. A phase-carrying row must never be rescheduled
     # the reset below would launder the operator's request mid-flight (the
     # bulk-cancel drain would then report the same id from two arms). The
@@ -1030,7 +1030,7 @@ async def _mark_snoozed(
     merged_progress = _merge_progress(row.progress_state, progress_state)
     # A non-terminal snooze/denial writes no attempt/event rows and never
     # touches max_attempts (the ceiling is a bound, not a counter), and
-    # REFUNDS the claim's attempt increment (floored at 0): dispatch
+    # refunds the claim's attempt increment (floored at 0): dispatch
     # stamped attempt+1 to claim the row, and no actor ran, so the gap
     # `max_attempts - attempt` is returned to exactly what it was before
     # the claim.  This holds for every deferral shape, an actor-requested
@@ -1039,7 +1039,7 @@ async def _mark_snoozed(
     # measures only real executions, never how saturated a bucket
     # happened to be while the job waited.  The outcome-keyed counters on
     # the row are the deferral's whole durable record, mirroring the SQL
-    # arms' CASE increments.
+    # arms' case increments.
     self._jobs[job_id] = replace(
         row,
         status=snooze_status,
@@ -1090,21 +1090,21 @@ async def _mark_retry_after(
         return "noop"
 
     now = self._clock.now()
-    # The deferral floor applies only to the NON-consuming arm: a
+    # The deferral floor applies only to the non-consuming arm: a
     # consuming RetryAfter is a real execution choosing to retry
     # immediately, bounded by the budget it spends, so it keeps the raw
     # delay (0 → pending at now).  The non-consuming arm carries
     # mark_snoozed's floor in full, the same single effective delay
     # feeds the deadline comparison below, the conservative direction,
-    # mirroring the SQL arms' GREATEST().
+    # mirroring the SQL arms' greatest().
     effective_delay = delay if consume_budget else max(delay, MIN_DEFERRAL_INTERVAL)
     new_scheduled_at = now + effective_delay
 
     if row.schedule_to_close is not None and new_scheduled_at > row.schedule_to_close:
         deadline_merged_progress = _merge_progress(row.progress_state, progress_state)
         # Cancel-first arbitration inside the deadline arm, the twin of
-        # the SQL deadline_cancelled arm (and of _SWEEP_1_SQL's CASE
-        # ordering): operator intent outranks the deadline AND the
+        # the SQL deadline_cancelled arm (and of _SWEEP_1_SQL's case
+        # ordering): operator intent outranks the deadline and the
         # budget, so a phase-carrying row whose schedule_to_close lapsed
         # at deferral time terminalises 'cancelled', never
         # 'failed:DeadlineExceeded'/'failed:MaxAttemptsExceeded' (which
@@ -1209,8 +1209,8 @@ async def _mark_retry_after(
     #
     # The exhaustion arm is enum-complete over retry_kind (any
     # non-indefinite kind fails at budget, a transient-only predicate
-    # left non_retryable matching no arm) and exists ONLY on the
-    # consuming path: a consuming RetryAfter IS a real execution, so the
+    # left non_retryable matching no arm) and exists only on the
+    # consuming path: a consuming RetryAfter is a real execution, so the
     # budget it spends is real.  A non-consuming RetryAfter is an
     # actor-requested deferral, the deadline check above has already
     # returned past-deadline rows, and everything else reschedules with
@@ -1268,19 +1268,19 @@ async def _mark_retry_after(
 
     # A non-consuming RetryAfter is an actor-requested deferral, not an
     # execution: it writes no attempt/event rows, never touches
-    # max_attempts, REFUNDS the claim's attempt increment (floored at 0,
+    # max_attempts, refunds the claim's attempt increment (floored at 0,
     # so honouring downstream 429s never degrades the budget), and
-    # counts itself on the row's snooze counter.  A consuming one IS a
+    # counts itself on the row's snooze counter.  A consuming one is a
     # real execution: its attempt increment stands and it keeps writing
     # its rows below.
     #
     # The cancel fence (the SQL snoozed arms' `cancel_phase = 0`
     # conjunct, mark_interrupted's semantics): an operator cancel in
-    # flight WINS over the deferral. A phase-carrying row must never be
+    # flight wins over the deferral. A phase-carrying row must never be
     # rescheduled; the reset below would launder the operator's request
     # mid-flight. The fenced-out row stays 'running' carrying its phase,
     # the caller reads back "noop", and the worker's cancel ladder
-    # terminalises it. (A phase-carrying row whose deadline has ALREADY
+    # terminalises it. (A phase-carrying row whose deadline has already
     # lapsed never reaches this fence: the deadline arm's cancel-first
     # split above terminalised it 'cancelled' first.) On a clean row the
     # check is trivially false and the budget semantics are unchanged.
@@ -1369,7 +1369,7 @@ async def _mark_interrupted(
         return "noop"
 
     now = self._clock.now()
-    # The hold floor mirrors the params CTE's CASE: a positive hold is
+    # The hold floor mirrors the params CTE's case: a positive hold is
     # floored at the non-consuming deferral floor; a zero hold stays zero
     # so the release lands pending immediately (the row is genuinely free
     # and the actor is gone, the floor exists to stop deferral loops and
@@ -1414,7 +1414,7 @@ async def _mark_interrupted(
         )
         return "failed:DeadlineExceeded"
 
-    # The release arm. The claim's attempt increment is NOT refunded: the
+    # The release arm. The claim's attempt increment is not refunded: the
     # attempt did start executing, so its increment stands; refunding it
     # would re-create the exact epoch the interrupted (zombie) handler
     # still holds, and the zombie's later terminal write would land on

@@ -62,7 +62,7 @@ _POLLED_ACTORS = ("registry_polled_actor_a", "registry_polled_actor_b")
 _OWN_COHORTS_PER_QUEUE = 3
 _OWN_ROWS_PER_COHORT = 20
 
-# Registered actors with NO pending work and NO subscription overlap
+# Registered actors with no pending work and no subscription overlap
 # with the polled queues -- pure actor_config bloat. This is the axis
 # test_dispatch_fleet_scope_bound.py cannot vary: its fixture seeds
 # exactly two actor_config rows at every fleet size.

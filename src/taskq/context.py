@@ -145,7 +145,7 @@ class JobContext[P: BaseModel]:
         actor code.
 
         ``object.__setattr__`` because the dataclass is frozen: the origin
-        is process state that arrives AFTER construction (the registry
+        is process state that arrives after construction (the registry
         entry's), exactly as the ``cancel_event``/``_abort_requested``
         fields mutate through their own methods rather than assignment.
         """
@@ -312,14 +312,14 @@ class JobContext[P: BaseModel]:
         :func:`taskq.progress._publish._publish_progress_event_coalesced`
         for the full residual.
         """
-        # Numeric type-and-finiteness gates FIRST, before any serialization
+        # Numeric type-and-finiteness gates first, before any serialization
         # or buffer mutation (the established no-mutation-on-raise contract
         # this call's other guards hold): the buffer's retire protocol keys
         # on ``==`` equality between the pending state and the flushed
         # snapshot, and ``nan != nan`` is True in Python, so a single
         # ``percent=float("nan")`` call would never retire its pending
         # entry - the buffer stays dirty forever and the flush loop
-        # re-writes the row EVERY tick for the job's remaining lifetime
+        # re-writes the row every tick for the job's remaining lifetime
         # (unbounded work a one-line actor bug produces). The same gate
         # keeps the wire honest: orjson and pydantic both silently
         # serialize a non-finite float as ``null``, so today's inf percent
@@ -357,7 +357,7 @@ class JobContext[P: BaseModel]:
             # path's ``model_dump_json``: this is the only
             # ``progress_data_max_bytes`` enforcement in the codebase, and it
             # must raise ``ProgressTooLarge`` synchronously to the actor
-            # BEFORE the oversized dict enters the coalesce buffer (and from
+            # before the oversized dict enters the coalesce buffer (and from
             # there the durable PG jsonb). ``_publish_progress_event`` is
             # fire-and-forget, a failure there is logged, never raised, so
             # the cap cannot move below this call; and pydantic cannot reuse
@@ -379,7 +379,7 @@ class JobContext[P: BaseModel]:
                 # anywhere in ``data`` is refused here exactly as the
                 # enqueue door refuses it in a payload, because downstream
                 # it is the same permanent jsonb defect - the flush's own
-                # guard would only SKIP the row (and re-log the error every
+                # guard would only skip the row (and re-log the error every
                 # tick forever, the actor none the wiser), the durable
                 # progress never landing. Refusal at the call is the
                 # actor-visible failure; the flush guard stays as the
@@ -389,7 +389,7 @@ class JobContext[P: BaseModel]:
             if detail is not None:
                 # The detail string passes through the same publish-time
                 # serialization ``data`` does: an unencodable detail (a lone
-                # surrogate) raises to the actor HERE, before it enters the
+                # surrogate) raises to the actor here, before it enters the
                 # coalesce buffer and detonates at the durable write as a
                 # failure no terminal-write classification answers for. The
                 # settings-wiring condition is the data guard's own: an
@@ -399,8 +399,8 @@ class JobContext[P: BaseModel]:
                 detail_json = dumps(detail)
                 # The same bound ``data`` obeys, measured the same way
                 # (serialized bytes): a detail is unbounded today, and the
-                # coalesce buffer holds the LATEST value only, so a
-                # multi-megabyte detail would ride every flush and TOAST the
+                # coalesce buffer holds the latest value only, so a
+                # multi-megabyte detail would ride every flush and toast the
                 # jobs row's progress_state jsonb at actor call rate.
                 detail_limit = self._worker_settings.progress_data_max_bytes
                 if len(detail_json) > detail_limit:
@@ -427,7 +427,7 @@ class JobContext[P: BaseModel]:
         if buffer is None or buffer.attempt != self.attempt:
             # Epoch-fenced read (the issue-461 class): the buffer at the
             # key is per-attempt, and a same-worker re-claim of the job
-            # seeds a NEW buffer at the same key while this stale
+            # seeds a new buffer at the same key while this stale
             # attempt's context still exists. A stale ctx must neither
             # mix its progress state into the live attempt's buffer nor
             # consume the live attempt's seq: the epoch conjunct no-ops
@@ -462,7 +462,7 @@ class JobContext[P: BaseModel]:
                 # (consumers discard a stale seq), so a call racing a
                 # running publish only latches its event on the buffer and
                 # the running task re-publishes the latch when its round
-                # trip lands. The latch is what keeps the FINAL publish of
+                # trip lands. The latch is what keeps the final publish of
                 # a job from being lost: a trailing call either publishes
                 # directly (gate free) or is drained by the in-flight task
                 # before it releases the gate. Residual, mirrored in

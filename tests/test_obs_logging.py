@@ -94,7 +94,7 @@ def test_unpin_cached_loggers_restores_capture_for_pinned_proxy(
     )
 
     # The inter-test reset the suite guard has always performed: it assigns a
-    # FRESH processor list, orphaning the list instance the pinned proxy's
+    # fresh processor list, orphaning the list instance the pinned proxy's
     # assembled logger still holds by reference - which is exactly why a
     # config-only reset cannot restore capture for it.
     structlog.reset_defaults()
@@ -403,7 +403,7 @@ def test_configured_wrapper_class_is_stdlib_bound_logger() -> None:
     obs_mod.setup_logging()
 
     cfg = structlog.get_config()
-    # A SUBCLASS, not the class itself: `_ExcInfoSafeBoundLogger` overrides
+    # A subclass, not the class itself: `_ExcInfoSafeBoundLogger` overrides
     # `.exception()` so it never reaches `logging.Logger.exception`, which
     # hard-codes `exc_info=True` onto the record for every root handler to
     # read. The stdlib-bridge contract this test guards is the base class.
@@ -1004,7 +1004,7 @@ def test_redact_payload_handles_realistic_payloads() -> None:
 
 def test_log_line_with_redacted_payload_hash_leaks_no_payload_fragments() -> None:
     """The operator-facing contract redaction exists for: a rendered log
-    line that carries the redacted payload hash carries NO fragment of the
+    line that carries the redacted payload hash carries no fragment of the
     payload it stands for. A caller who logs ``payload_hash=redact_payload
     (payload)`` - the only sanctioned way payload-derived data reaches a
     log line - must never see payload content in the rendered output."""

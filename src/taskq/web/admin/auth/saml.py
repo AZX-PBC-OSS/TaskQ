@@ -425,7 +425,7 @@ class _PendingAuthnRequests:
     have been issued by a sibling process -- so the ID's single-use property
     there is enforced by the shared answered-request store instead.
 
-    Deliberately STILL in-process when the replay and answered gates moved to
+    Deliberately still in-process when the replay and answered gates moved to
     Postgres, for three reasons. First, locality here fails CLOSED: the set
     is consulted only on the opt-in cookie-less fallback, where a missing ID
     REFUSES, so a sibling process that never saw the /login rejects more,
@@ -491,7 +491,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
         cookie_path=base_path or "/",
     )
     login_path = f"{base_path}/login"
-    # Scoped to the ACS route alone: the correlation cookie is marked for
+    # Scoped to the acs route alone: the correlation cookie is marked for
     # cross-site delivery, so every path it is offered on is a path a
     # third-party page can cause it to be sent to. It is needed on exactly
     # one.
@@ -544,7 +544,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
         try:
             # Every accepted assertion answers an AuthnRequest this deployment
             # issued, and which gate enforces that depends on what the browser
-            # brought. With a usable correlation cookie, the cookie IS the
+            # brought. With a usable correlation cookie, the cookie is the
             # binding: python3-saml itself compares the response's
             # InResponseTo against the cookie's request_id inside
             # process_response, and the cookie is signed with session_secret
@@ -608,7 +608,7 @@ def create_saml_auth(config: SAMLAuthConfig, *, base_path: str = "") -> AuthBund
             elif config.allow_cookieless_fallback:
                 # Opt-in fallback: the validated InResponseTo must name an
                 # AuthnRequest this process issued and has not spent -- the
-                # spend IS the single-use gate on this path. Nothing binds
+                # spend is the single-use gate on this path. Nothing binds
                 # the response to the browser posting it (login CSRF)
                 # -- the flag's documentation says so, and the default is
                 # off.

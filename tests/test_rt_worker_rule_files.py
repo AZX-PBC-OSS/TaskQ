@@ -1,7 +1,7 @@
 """Drift pins for the alerting rule files and their runbook anchors.
 
 The five new alerts (backlog growth, promotion stall, sweep timeouts,
-sweep degraded tier, lock contention) live in BOTH rule files, and their
+sweep degraded tier, lock contention) live in both rule files, and their
 annotations point at anchors in docs/guides/runbooks.md. Two drift
 shapes nothing pins today: an annotation pointing at a runbook anchor
 that does not exist (the alert pages and the runbook 404s), and an expr
@@ -50,7 +50,7 @@ _OUTAGE_ALERTS = (
 )
 
 #: The outage family's severities: the first two are degradation signals
-#: (work deferred, not lost - warning, like the sweep family); a SUSTAINED
+#: (work deferred, not lost - warning, like the sweep family); a sustained
 #: non-zero zombie-running count means reclaim is not draining while
 #: health probes stay green - that one is the 3am page.
 _OUTAGE_SEVERITIES = {
@@ -105,7 +105,7 @@ _CRON_SKIP_SEVERITIES = {
     "TaskQCronSkippedSlots": "warning",
 }
 
-#: The MVCC-horizon hygiene family: the claim query's degradation ratio
+#: The mvcc-horizon hygiene family: the claim query's degradation ratio
 #: (the live p99 against its rolling 24h baseline - the pinned-horizon
 #: signature an absolute threshold cannot see, a slow fleet being its own
 #: new normal). A degradation signal at warning, like the sweep family.
@@ -152,7 +152,7 @@ def _runbook_anchors(md_path: Path) -> set[str]:
 
 def test_new_alert_annotations_point_at_existing_runbook_anchors() -> None:
     """Every runbook link in the runbooked alerts' annotations must resolve
-    to a real heading anchor in docs/guides/runbooks.md - in BOTH rule
+    to a real heading anchor in docs/guides/runbooks.md - in both rule
     files. And every such alert must CARRY a runbook link: an annotation
     that lost its link entirely would otherwise pass vacuously."""
     assert _RUNBOOKS_MD.exists(), f"runbooks.md not found at {_RUNBOOKS_MD}"
@@ -209,7 +209,7 @@ def test_new_alert_exprs_reference_series_the_bridge_emits() -> None:
 
 def test_sweep_degraded_expr_compares_actual_to_configured_series() -> None:
     """TaskQSweepDegraded must compare the sweep's used batch size against
-    the configured-size series the worker emits - in BOTH rule files.
+    the configured-size series the worker emits - in both rule files.
 
     A hardcoded threshold (any literal) is blind whenever a deployment's
     ``event_writer_batch_size`` is not the default: a worker degraded to
@@ -341,7 +341,7 @@ def test_both_rule_files_carry_the_five_new_alerts() -> None:
 
 
 def test_both_rule_files_carry_the_outage_alerts_at_their_severities() -> None:
-    """The observability-burn alerts live in BOTH rule files at their own
+    """The observability-burn alerts live in both rule files at their own
     severities: the denial-family degradation signals at warning, the
     sustained zombie-running count at critical (work claimed and stuck
     while health probes stay green - the 3am page)."""
@@ -360,7 +360,7 @@ def test_both_rule_files_carry_the_outage_alerts_at_their_severities() -> None:
 
 
 def test_both_rule_files_carry_the_cron_budget_alert_at_warning() -> None:
-    """The tick-budget deferral alert lives in BOTH rule files at warning
+    """The tick-budget deferral alert lives in both rule files at warning
     severity: a deferred fire is retried on a later leader tick, not lost,
     so the alert pages as degradation, never as emergency."""
     for rules_path in (_RULES_YAML, _K8S_RULES_YAML):
@@ -378,7 +378,7 @@ def test_both_rule_files_carry_the_cron_budget_alert_at_warning() -> None:
 
 
 def test_both_rule_files_carry_the_cron_skipped_slots_alert_at_warning() -> None:
-    """The runaway-fan-out alert lives in BOTH rule files at warning
+    """The runaway-fan-out alert lives in both rule files at warning
     severity: a skipped slot is a fire the system dropped BY DESIGN (the
     catch-up window's skip is the admission it lost the race), counted and
     logged -- degradation with data loss the counter makes legible, so it
@@ -454,7 +454,7 @@ def test_unserved_queue_alerts_join_depth_to_live_workers_on_queue() -> None:
 
 
 def test_dimensionless_series_annotations_carry_no_label_references() -> None:
-    """Alerts on series the bridge emits with NO dimensions must not
+    """Alerts on series the bridge emits with no dimensions must not
     reference ``$labels.<dim>`` in their annotations: the rendered alert
     summary would show an empty worker - a 3am page that names nobody.
 
@@ -487,7 +487,7 @@ def test_dimensionless_series_annotations_carry_no_label_references() -> None:
 def test_rule_file_parses_with_expected_alert_count(rules_path: Path) -> None:
     """Both files parse and carry the same alert set - the drift backstop
     the plain/k8s lockstep test in the scrape suite asserts pairwise; this
-    pins the count so a sixth alert added to ONE file fails here too."""
+    pins the count so a sixth alert added to one file fails here too."""
     rules = _rules_from(rules_path)
     names = {r["alert"] for r in rules}
     other = _K8S_RULES_YAML if rules_path == _RULES_YAML else _RULES_YAML
@@ -647,7 +647,7 @@ def test_vector_comparisons_use_compatible_or_modified_label_sets(rules_path: Pa
 @pytest.mark.parametrize("rules_path", [_RULES_YAML, _K8S_RULES_YAML])
 def test_backlog_alerts_make_an_unconsumed_actor_visible(rules_path: Path) -> None:
     """The backlog-growing alert family must be able to name an actor whose
-    jobs accumulate and are never consumed - in BOTH rule files.
+    jobs accumulate and are never consumed - in both rule files.
 
     A worker that can do work never refuses to start, so an actor whose
     queue no child of this supervisor consumes boots with a warning and
@@ -711,12 +711,12 @@ def test_backlog_alerts_make_an_unconsumed_actor_visible(rules_path: Path) -> No
 # ── the registered-instrument pin ────────────────────────────────────────
 # The failure class this closes: a rule file or runbook citing a series
 # name that no code path registers (an alert that can never fire, or a
-# runbook instruction that greps nothing). The oracle is BEHAVIORAL, not
+# runbook instruction that greps nothing). The oracle is behavioral, not
 # source shape: _NAME_MAP is the fixture the scrape tests verify by
 # recording one observation per instrument and reading a real scrape, so
 # "in the map" means "provably served". The expr-only pin above covered
-# the runbooked alerts' exprs; this one covers EVERY taskq_/messaging_
-# mention in exprs AND annotations AND the runbook prose, and validates
+# the runbooked alerts' exprs; this one covers every taskq_/messaging_
+# mention in exprs and annotations and the runbook prose, and validates
 # suffix forms (_total on counters, _bucket/_sum/_count on histograms,
 # bare names on gauges and up-down counters) against the instrument's
 # rendered family.
@@ -742,7 +742,7 @@ def _allowed_series() -> dict[str, str]:
                 allowed[prom_name + suffix] = kind
     # The health socket's three hand-rendered gauges (worker/health.py's
     # /metrics text) are real, served series on a separate surface from the
-    # OTel scrape; they are deliberately not OTel instruments and so not in
+    # otel scrape; they are deliberately not otel instruments and so not in
     # _NAME_MAP.
     allowed.update(
         {

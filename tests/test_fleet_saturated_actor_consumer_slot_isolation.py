@@ -7,7 +7,7 @@ one ``local_queue`` (docs/guides/workers.md "Internal components" -
 ``local_queue``"; src/taskq/worker/run.py's ``producer_loop`` /
 ``di_consumer_loop``). Admission has two layers: the claim (the SQL in
 src/taskq/backend/_dispatch_sql.py, pending -> running) and the per-job
-``acquire_for_actor`` AFTER the claim, inside ``consume_one_job``
+``acquire_for_actor`` after the claim, inside ``consume_one_job``
 (src/taskq/worker/_consumer.py:416-427), which decides whether the claimed
 job can actually spend its declared ``reservations``/``rate_limits`` - on
 denial (``ReservationUnavailable``) the job is rescheduled to ``scheduled``
@@ -15,7 +15,7 @@ denial (``ReservationUnavailable``) the job is rescheduled to ``scheduled``
 capacity computation folds in live ``reservation_slots`` occupancy (the
 ``reservation_holdings`` / ``reservation_headroom`` CTEs), so an actor
 whose held bucket is full is admitted nothing that round. This pin exists
-because the claim was NOT always aware: without the gate, an actor sharing
+because the claim was not always aware: without the gate, an actor sharing
 a queue with a healthy actor whose every job is denied by an exhausted
 reservation still consumes one of the worker's ``max_concurrency``
 consumer-coroutine slots for the (short but nonzero) duration of each
@@ -25,10 +25,10 @@ from every other actor sharing the same worker process's consumer pool --
 not a correctness bug (the healthy actor's jobs still eventually complete)
 but a throughput regression the pin measures directly.
 
-The contrasting architecture gives every queue its OWN producer and its
-OWN worker pool (a queue is a unit of concurrency, not a label on a
+The contrasting architecture gives every queue its own producer and its
+own worker pool (a queue is a unit of concurrency, not a label on a
 shared unit). A queue whose jobs are
-all denied capacity can only ever starve ITS OWN pool's workers -- it
+all denied capacity can only ever starve ITS own pool's workers -- it
 structurally cannot touch a sibling queue's dedicated worker slots.
 TaskQ's single-shared-pool-per-worker-process design is a
 real, documented architectural choice (docs/guides/workers.md's

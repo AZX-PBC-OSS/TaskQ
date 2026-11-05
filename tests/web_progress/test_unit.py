@@ -479,7 +479,7 @@ async def test_in_domain_last_event_id_query_param_still_catches_up() -> None:
 
 
 def test_header_still_wins_over_an_out_of_domain_query_param() -> None:
-    """Real precedence: the header path validates and returns FIRST, so a
+    """Real precedence: the header path validates and returns first, so a
     well-formed header beside an out-of-domain query param is served - the
     param is never consulted, never 400s."""
     request = MagicMock()
@@ -639,7 +639,7 @@ def test_redis_unavailable_returns_503() -> None:
 
 def test_redis_unavailable_logs_degraded_mode_once_per_router() -> None:
     """The 503 arm is the moment the browser is put into polling mode, so
-    the FIRST refused stream logs the degraded mode once (the operator-side
+    the first refused stream logs the degraded mode once (the operator-side
     companion of the factory's ``admin-ui-no-redis-client`` startup
     warning). A per-request warning would be a log flood that gets
     filtered out, which is the same as being silent: later 503s log
@@ -696,7 +696,7 @@ def test_poll_state_answers_304_when_the_client_state_is_current() -> None:
 
 
 def test_poll_state_never_304s_a_terminal_row_at_the_same_seq() -> None:
-    """The 304 x terminal gap: the seq does NOT move on the terminal
+    """The 304 x terminal gap: the seq does not move on the terminal
     transition.
 
     The poll body is ``{status, progress_state, progress_seq}`` and the
@@ -710,7 +710,7 @@ def test_poll_state_never_304s_a_terminal_row_at_the_same_seq() -> None:
     DOWNLOADED terminal status).
 
     The fix: a terminal row always answers 200. The terminal body is the
-    LAST body a poll client needs, the one download that ends the poll
+    last body a poll client needs, the one download that ends the poll
     loop, so the cost is one bounded download per job; the seq-matching
     304 keeps serving the steady non-terminal state (the hot path). A
     client that already rendered the terminal re-downloads it once more,
@@ -724,7 +724,7 @@ def test_poll_state_never_304s_a_terminal_row_at_the_same_seq() -> None:
     client.close()
 
     # The terminal transition leaves the seq at 7 (the terminal write's
-    # GREATEST keeps the flushed progress cursor): the row's status
+    # greatest keeps the flushed progress cursor): the row's status
     # moved, the cursor did not.
     terminal_row = _pg_row(status="succeeded", progress_seq=7)
     _, client = _make_app(terminal_row, None)
@@ -1281,9 +1281,9 @@ async def test_sse_missing_terminal_key_defaults_to_progress() -> None:
 # has no counterexamples. The shrink seam is the same module-global
 # monkeypatch convention as the other teardown tests. Why raising=False on
 # the setattr: unguarded the module has no CLOSE_TIMEOUT_SECS seam, so the
-# RED state must demonstrate the cleanup wedge (outer timeout), not an
+# red state must demonstrate the cleanup wedge (outer timeout), not an
 # AttributeError from the shrink. Why the outer asyncio.timeout(5): unguarded
-# each path awaited pubsub.aclose() unbounded, so the RED state wedges
+# each path awaited pubsub.aclose() unbounded, so the red state wedges
 # instead of failing fast.
 
 
@@ -1329,7 +1329,7 @@ async def test_subscribe_failed_bounds_hung_pubsub_close(
 async def test_pg_error_bounds_hung_pubsub_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """PG-error path (:359): cleanup is bounded AND the original PG error is
+    """PG-error path (:359): cleanup is bounded and the original PG error is
     re-raised (bounded cleanup must not mask the primary exception)."""
     monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
     pubsub = _HungPubSub([])
@@ -1349,7 +1349,7 @@ async def test_pg_error_bounds_hung_pubsub_close(
 async def test_job_not_found_bounds_hung_pubsub_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """404 path (:366): cleanup is bounded AND the 404 HTTPException is
+    """404 path (:366): cleanup is bounded and the 404 HTTPException is
     raised instead of wedging."""
     monkeypatch.setattr(progress_mod, "CLOSE_TIMEOUT_SECS", 0.05, raising=False)
     pubsub = _HungPubSub([])

@@ -23,7 +23,7 @@ magnitude test_clock_domain_isolation.py uses for the enqueue path:
 
 * ``test_renewal_gate_judged_in_the_lease_domain_under_python_clock_skew`` -
   the heartbeat's threshold-gated renewal compares
-  ``lock_expires_at <= clock_timestamp() + threshold`` INSIDE the
+  ``lock_expires_at <= clock_timestamp() + threshold`` inside the
   statement: the same clock that stamps the lease judges it. The seeds
   land each row in the band where a client-side gate (Python now +/- the
   skew, compared against the fetched ``lock_expires_at``) decides the
@@ -68,9 +68,9 @@ from tests._clock_skew import SkewedClock
 
 pytestmark = pytest.mark.integration
 
-#: The skew magnitude under test: two minutes, the VM-step / container-drift
+#: The skew magnitude under test: two minutes, the vm-step / container-drift
 #: order the ops guidance treats as survivable-but-real. Both directions are
-#: run; the two decisions under pin fail in OPPOSITE directions under them.
+#: run; the two decisions under pin fail in opposite directions under them.
 _SKEWS = (timedelta(seconds=-120), timedelta(seconds=0), timedelta(seconds=120))
 
 #: The heartbeat renewal gate's threshold, 30 s: wide enough that the
@@ -126,7 +126,7 @@ async def _pg_now(conn: asyncpg.Connection) -> Any:
 async def _read_lease_with_clock(
     conn: asyncpg.Connection, schema: str, job_id: UUID
 ) -> tuple[Any, Any]:
-    """The row's lease and the server clock, read in ONE statement.
+    """The row's lease and the server clock, read in one statement.
 
     The same single-statement discipline the heartbeat integration file
     uses: the assertion compares two PG-domain values, so the test
@@ -179,7 +179,7 @@ async def test_renewal_gate_judged_in_the_lease_domain_under_python_clock_skew(
     await create_worker(clean_pg_conn, schema, worker_id)
 
     # -120 s and 0 share the "server must renew" seed; +120 s gets the
-    # "server must skip" seed. Both seeds are ABSOLUTE instants read off
+    # "server must skip" seed. Both seeds are absolute instants read off
     # the server clock, so the seeding itself never crosses domains.
     server_renews = skew <= timedelta(0)
     remaining = timedelta(seconds=10) if server_renews else timedelta(seconds=140)
@@ -195,14 +195,14 @@ async def test_renewal_gate_judged_in_the_lease_domain_under_python_clock_skew(
 
     _, jobs_lock_sql, _ = build_heartbeat_sql(schema, renewal_threshold=_THRESHOLD)
     # The mechanism, stated in the rendered text: the threshold is an
-    # INTERVAL bound against the server clock inside the statement, the
+    # interval bound against the server clock inside the statement, the
     # write is stamped by the same clock, and no Python timestamp is
-    # bound anywhere. This shape IS the contract - a gate that compares
+    # bound anywhere. This shape is the contract - a gate that compares
     # against a bound absolute instant (a Python now) flips every
     # verdict above the moment the host's clocks diverge.
     assert "lock_expires_at = clock_timestamp() + $2" in jobs_lock_sql
-    # The gate is an INTERVAL bound against the server clock inside the
-    # statement - statement_timestamp() (STABLE, so it can serve the
+    # The gate is an interval bound against the server clock inside the
+    # statement - statement_timestamp() (stable, so it can serve the
     # expiry arm's index condition on jobs_running_lock_expires_idx),
     # never a bound absolute instant or a Python now.
     assert "lock_expires_at <= statement_timestamp() + $4::interval" in jobs_lock_sql
@@ -317,7 +317,7 @@ async def test_cancel_grace_measured_from_local_observation_not_the_row_stamp(
 
         try:
             # Tick 1: observation only. The row's wall stamp is an hour
-            # old; the ladder's clocks did not start until NOW.
+            # old; the ladder's clocks did not start until now.
             await controller.run_in_tx(clean_pg_conn)
             active = deps.active_jobs.get(job_id)
             assert active is not None
@@ -336,7 +336,7 @@ async def test_cancel_grace_measured_from_local_observation_not_the_row_stamp(
                 "the grace not having elapsed from the local observation."
             )
 
-            # Tick 2: the local grace HAS elapsed (back-date the
+            # Tick 2: the local grace has elapsed (back-date the
             # observation past the 1 s cancel grace, under the 2 s
             # cancel+cleanup sum so the tick escalates without queuing
             # the abandon).

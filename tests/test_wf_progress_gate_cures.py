@@ -3,25 +3,25 @@ the failure-class routing rule.
 
 The contracts, each pinned per class:
 
-* THE VALIDATED DICT: the schema gate's answer IS the record —
+* the VALIDATED DICT: the schema gate's answer IS the record —
   ``{"page": "42"}`` against a
   declared ``page: int`` lands the VALIDATED model's own dump
   (``model_dump(mode="json")``) in the state row and the
   stream ring, never the raw string.
-* THE VALIDATING DOOR: ``ProgressEmitter.submit`` is PRIVATE
+* the VALIDATING DOOR: ``ProgressEmitter.submit`` is PRIVATE
   (``_submit`` —
   the public op is :meth:`emit`/``ctx.progress`` and it validates); a
   ``pct=999`` never reaches the buffer, and the CHECK is REAL
   (``wf_node_progress_pct_domain``, 01.00.32_01).
-* THE AUTO-CLASS RECEIPT: ``project_auto_event``'s
+* the AUTO-CLASS RECEIPT: ``project_auto_event``'s
   counters row rides every projection — the appended==retained+dropped
   discipline is not user-class-only.
-* THE FAILURE-CLASS ROUTING RULE: ``ProgressRefusedError``
+* the FAILURE-CLASS ROUTING RULE: ``ProgressRefusedError``
   (a DETERMINISTIC authoring bug) takes the NAMED terminal (the ladder
   unburned), infra faults reclaim, transient failures ladder — never a
   deterministic bug burning the
   retry budget.
-* THE TWO UNTYPED DEATHS: the divergent-page resume died as the raw
+* the TWO UNTYPED DEATHS: the divergent-page resume died as the raw
   ``UniqueViolationError`` (laddered to death, never named) — now
   :class:`PageDivergedError` (the remedy rides the message); record
   #32768 died as the raw DataError mid-tx (the valid page-mates rolled
@@ -61,7 +61,7 @@ class Ingest(BaseModel):
     doc_id: str
 
 
-# ── THE VALIDATED DUMP IS THE RECORD ────────────────────────────────────
+# ── the validated dump is the record ────────────────────────────────────
 
 
 async def test_the_validated_dump_lands_not_the_pre_validation_dict(
@@ -80,7 +80,7 @@ async def test_the_validated_dump_lands_not_the_pre_validation_dict(
 
     async def lax_body(ctx: StepContext, params: Ingest) -> dict[str, object]:
         # The string is the rejected shape: lax pydantic coerces it —
-        # the RECORD must carry the coercion, never the input.
+        # the record must carry the coercion, never the input.
         await ctx.progress(50, "the lax page", {"page": "42"})
         return {"ok": True}
 
@@ -116,7 +116,7 @@ async def test_the_validated_dump_lands_not_the_pre_validation_dict(
         "the declared schema's coercion must BE the record (the validated "
         "dump, never the raw input)"
     )
-    # The STREAM ring's payload is the same validated dump.
+    # The stream ring's payload is the same validated dump.
     stream_payload = await wf_conn.fetchval(
         f"""SELECT payload FROM "{wf_schema}".wf_node_stream
             WHERE node_id = $1 AND class = 'user' ORDER BY seq DESC LIMIT 1""",
@@ -129,7 +129,7 @@ async def test_the_validated_dump_lands_not_the_pre_validation_dict(
     )
 
 
-# ── THE DOORS: the buffer private, the public op validating, the CHECK ──
+# ── the doors: the buffer private, the public op validating, the check ──
 
 
 def test_the_buffer_door_is_private_the_public_op_validates() -> None:
@@ -150,7 +150,7 @@ def test_the_buffer_door_is_private_the_public_op_validates() -> None:
 
 async def test_the_public_op_refuses_pct_out_of_domain(wf_pool: Any, wf_sql: Any) -> None:
     """The public op's own gate: ``pct=999`` (and ``-1``) is the typed
-    refusal BEFORE the buffer — the emission the gate never saw must
+    refusal before the buffer — the emission the gate never saw must
     never reach the record."""
     emitter = ProgressEmitter(wf_pool, wf_sql, flow_id=JobId(new_uuid()), node_id=JobId(new_uuid()))
     for bad in (999, -1, True, 50.5):
@@ -193,7 +193,7 @@ async def test_the_pct_domain_check_is_real(wf_conn: asyncpg.Connection, wf_sche
         )
 
 
-# ── THE AUTO-CLASS DROP COUNT IS ON THE RECORD ──────────────────────────
+# ── the auto-class drop count is on the record ──────────────────────────
 
 
 async def test_the_auto_class_drop_count_is_on_the_record(
@@ -206,7 +206,7 @@ async def test_the_auto_class_drop_count_is_on_the_record(
     """The discarded receipt, pinned shut: the auto projection's appends
     past the ring bound are COUNTED on the node's STREAM-channel counters
     row (occurrences == the projections, dropped == the trims — the
-    honest appended == retained + dropped pair, BOTH classes). RED (the
+    honest appended == retained + dropped pair, both classes). RED (the
     the discard shape): the drop count was discarded — the auto class had no
     receipt."""
     from tests._wf_fixtures import seed_running_node
@@ -248,7 +248,7 @@ async def test_the_auto_class_drop_count_is_on_the_record(
     )
 
 
-# ── THE FAILURE-CLASS ROUTING RULE (pinned per class) ───────────────────
+# ── the failure-class routing rule (pinned per class) ───────────────────
 
 
 async def _routed_node(
@@ -262,7 +262,7 @@ async def _routed_node(
 ) -> tuple[FlowRunner, dict[str, Any]]:
     """A claimed node row + the runner, for the ladder's own call shape
     (the ledger claim first — the ladder's terminal write updates the
-    claim's OWN row, the arbiter's key)."""
+    claim's own row, the arbiter's key)."""
     from tests._wf_fixtures import claim_view, seed_running_node
 
     node_id = await seed_running_node(wf_conn, wf_schema, flow_id, step_key=step_key)
@@ -280,7 +280,7 @@ async def _routed_node(
             attempt=attempt,
         )
     runner = FlowRunner.__new__(FlowRunner)
-    runner.pool = wf_pool  # type: ignore[attr-defined]  # Why: the pin drives the LADDER's own route (the mixin's host fields), not the driver loop.
+    runner.pool = wf_pool  # type: ignore[attr-defined]  # Why: the pin drives the ladder's own route (the mixin's host fields), not the driver loop.
     runner.wsql = wf_sql  # type: ignore[attr-defined]
     runner.schema = wf_schema  # type: ignore[attr-defined]
     runner._worker_id = worker  # type: ignore[attr-defined]
@@ -323,8 +323,8 @@ async def test_routing_progress_refused_is_the_named_terminal_not_a_flake(
 ) -> None:
     """The routing rule, deterministic leg (pinned per class): a
     ``ProgressRefusedError`` — a DETERMINISTIC authoring bug — finalizes
-    the node on the FIRST attempt with the named class; the ladder is
-    unburned (no re-pends, ONE ledger failed row). RED (the burn shape:
+    the node on the first attempt with the named class; the ladder is
+    unburned (no re-pends, one ledger failed row). RED (the burn shape:
     tree): the deterministic death laddered as transient — three
     identical failures pretending to be a flake, the retry budget spent
     on a bug no retry can fix."""
@@ -428,7 +428,7 @@ async def test_routing_transient_body_failure_still_ladders(
     assert failed_rows == 1, "the attempt's own ledger row is the only failure record"
 
 
-# ── THE TYPED DEATHS: the poison record kills ITSELF, never its mates ───
+# ── the typed deaths: the poison record kills itself, never its mates ───
 
 
 async def test_map_index_poison_record_its_mates_commit(
@@ -475,7 +475,7 @@ async def test_map_index_poison_record_its_mates_commit(
             children=children,
             cursor={"page": 0},
         )
-    # THE MATES SURVIVE: the valid records are ON THE RECORD.
+        # the valid records are on the record.
     mates = await wf_conn.fetch(
         f"""SELECT map_index FROM "{wf_schema}".jobs
             WHERE parent_id = $1 AND step_key = 'screen' ORDER BY map_index""",
@@ -492,7 +492,7 @@ async def test_map_index_poison_record_its_mates_commit(
         f"{[r['map_index'] for r in mates]} — a poison record killed its "
         "mates (the batch semantics broken)"
     )
-    # The cursor checkpoint COMMITTED with the mates (the atomic page).
+    # The cursor checkpoint committed with the mates (the atomic page).
     cursor_raw = await wf_conn.fetchval(
         f"""SELECT metadata->'emit_cursor' FROM "{wf_schema}".jobs WHERE id = $1""",
         source,
@@ -507,7 +507,7 @@ async def test_map_index_all_poison_page_refused_before_work(
     wf_pool: Any,
     wf_sql: Any,
 ) -> None:
-    """An ALL-poison page is refused BEFORE any work — nothing written,
+    """An ALL-poison page is refused before any work — nothing written,
     the ceiling named, no tx opened."""
     from taskq.workflows._emit import MapIndexExhaustedError, emit_batch
     from tests._wf_fixtures import claim_view, seed_running_node

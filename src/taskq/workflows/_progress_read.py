@@ -1,18 +1,18 @@
 """The workflow progress READ surfaces: the faces + the aggregation
 — every face a VIEW over the same rows, no face owns state (decision f).
 
-THE FACES (decision f):
+FACES (decision f)
 * :func:`progress_sse_face` — the SSE face: the seq-cursor replay over
-  the ONE stream, with the NAMED partial mode (the reconnect-after-prune)
-  + the state channel's re-sync payload. THE CONNECT SHAPE (the degraded-mode law
-  applied at EVERY connect, not only after prune): the consumer loads the
+  the one stream, with the NAMED partial mode (the reconnect-after-prune)
+  + the state channel's re-sync payload. the CONNECT SHAPE (the degraded-mode law
+  applied at every connect, not only after prune): the consumer loads the
   display from the STATE channel + the LEDGER first, then applies the
   replayed tail — latest-wins needs no history.
 * :func:`rebuild_display` — the run explorer's display model, the PURE
-  function over (ledger rows, state rows, replayed events). THE
+  function over (ledger rows, state rows, replayed events). the
   PROGRESS-LIE FENCE (the progress-lie fence): the node's STATUS renders from the LEDGER
-  rows — the user progress renders INSIDE the terminal state, never over
-  it; the progress row is ADVISORY. THE LEDGER WINS: the fold's last word
+  rows — the user progress renders inside the terminal state, never over
+  it; the progress row is ADVISORY. the LEDGER WINS: the fold's last word
   on status is the ledger row's, so a projection that missed it cannot
   lie.
 * :func:`map_progress_line` — the map's progress: the certified grouped
@@ -23,8 +23,8 @@ THE FACES (decision f):
   rows (decision c — the dataflow-only fence: the join node is for DATAFLOW; progress
   aggregation is OBSERVABILITY, never a blocking node). Writes nothing.
 
-THE GAUGE'S LAW (the metrics doctrine): per-child progress lives in
-THESE ROWS, read on demand — it is NEVER a metric label series (the
+Per-child progress lives in
+THESE ROWS, read on demand — it is never a metric label series (the
 workflow gauge stays workflow-dimensioned; the pin rejects the
 per-child-label counterfactual).
 """
@@ -61,7 +61,7 @@ __all__ = [
 ]
 
 
-# ── THE SSE FACE (decision f) ────────────────────────────────────────────
+# ── the SSE face (decision f) ────────────────────────────────────────────
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,8 +72,8 @@ class ReplayFace:
       replay alone reconstructs the display.
     * ``mode='partial'`` — NAMED: the cursor predates the ring's
       oldest retained seq (the window was pruned under it). The partial
-      tail is served AND the state channel's latest-wins rows ride along
-      as the re-sync payload — NEVER a silent empty-success (the
+      tail is served and the state channel's latest-wins rows ride along
+      as the re-sync payload — never a silent empty-success (the
       silent-gap shape — full + zero events over a pruned window — is
       structurally impossible: a pruned-past cursor NAMES the mode).
     """
@@ -122,7 +122,7 @@ async def progress_sse_face(
     )
 
 
-# ── THE DISPLAY MODEL (the progress-lie fence, the progress-lie fence) ─────────────────
+# ── the display model (the progress-lie fence, the progress-lie fence) ─────────────────
 
 
 def _empty_entry() -> dict[str, Any]:
@@ -158,8 +158,8 @@ def display_key(step_key: object, map_index: object) -> str | None:
 def keyed_display(display: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """The KEYED VIEW over a display (:func:`run_display` /
     :func:`rebuild_display`'s product): the step_key'd dict —
-    ``{"ocr_node": {"pct": 45, ...}}`` — the consumer's render WITHOUT
-    the out-of-band ledger join. The values are the SAME entry dicts the
+    ``{"ocr_node": {"pct": 45, ...}}`` — the consumer's render without
+    the out-of-band ledger join. The values are the same entry dicts the
     uuid view holds (one display, two keyings — never a second model);
     entries the ledger has not named (``display_key`` → ``None``) are
     omitted, never invented."""
@@ -176,15 +176,15 @@ def rebuild_display(
     state_rows: list[dict[str, Any]],
     events: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """The run explorer's display model, reconstructed FROM THE ROWS — the
+    """The run explorer's display model, reconstructed FROM the ROWS — the
     PURE function (the connect shape and the replay fold are THIS).
 
-    THE FENCE (the progress-lie fence): the node's STATUS renders from the LEDGER rows —
-    the user progress renders INSIDE whatever the state is; it can never
+    The node's STATUS renders from the LEDGER rows —
+    the user progress renders inside whatever the state is; it can never
     flip a terminal state back to running. The progress row is ADVISORY.
 
-    THE IDENTITY (the identity surface): every entry carries
-    ``step_key`` + ``map_index`` — the LEDGER ROW'S OWN fields, stamped
+    Every entry carries
+    ``step_key`` + ``map_index`` — the LEDGER ROW'S own fields, stamped
     at the first pass and again at the LEDGER-WINS pass (a ghost the
     first pass missed still gets named when the ledger lands). The
     keyed view (:func:`keyed_display`) is the consumer's render over
@@ -208,7 +208,7 @@ def rebuild_display(
             "step_key": r.get("step_key"),
             "map_index": r.get("map_index"),
         }
-    # The STATE channel's latest-wins backfill (the pruned-window fix).
+    # The state channel's latest-wins backfill (the pruned-window fix).
     for s in state_rows:
         if s["channel"] != "progress":
             continue
@@ -216,25 +216,24 @@ def rebuild_display(
         if d["pct"] is None:
             d["pct"] = s["pct"]
             d["message"] = s["message"]
-    # The replay, in SEQ ORDER — the seq-cursor law.
+    # The replay, in seq ORDER — the seq-cursor law.
     for e in sorted(events, key=lambda e: int(e["seq"])):
         d = disp.setdefault(str(e["node_id"]), _empty_entry())
         p = e["payload"]
         if isinstance(p, str):
             p = _loads(p)
         if e["class"] == CLASS_USER and e["kind"] == KIND_PROGRESS:
-            # Progress renders INSIDE whatever the state is — the LIE's
+            # Progress renders inside whatever the state is — the lie's
             # fence: an emission can never flip a terminal state back to
             # running (the fold writes pct/message only).
             d["pct"] = p.get("pct", d["pct"])
             d["message"] = p.get("message", d["message"])
         elif e["class"] == "auto" and e["kind"] == "wf.node.terminal":
             d["status"] = p.get("outcome", d["status"])
-    # THE LEDGER WINS (the fence's teeth): where a ledger row exists its
-    # status is the final word — a projection that missed it cannot lie.
-    # The IDENTITY rides the same pass: a ghost named here carries the
-    # row's own step_key/map_index (the named view never renders an
-    # unnamed lie).
+    # where a ledger row exists its status is the final word — a projection
+    # that missed it cannot lie. The identity rides the same pass: a ghost
+    # named here carries the row's own step_key/map_index (the named view never
+    # renders an unnamed lie).
     for r in ledger_rows:
         if str(r["id"]) in disp:
             d = disp[str(r["id"])]
@@ -249,10 +248,10 @@ async def run_display(
 ) -> dict[str, dict[str, Any]]:
     """The run explorer's display READ (the connect shape): the LEDGER +
     the STATE channel — the replayed tail applies on top via
-    :func:`rebuild_display` as the SSE delivers it. THE DISPLAY'S STATE IS
-    LEDGER-DERIVED AT EVERY CONNECT (the ledger-wins law) — a stale progress row
-    costs freshness, never the state. THE DISPLAY'S IDENTITY IS THE
-    ROW'S OWN: every entry carries ``step_key`` +
+    :func:`rebuild_display` as the SSE delivers it. the DISPLAY'S STATE IS
+    LEDGER-DERIVED AT every CONNECT (the ledger-wins law) — a stale progress row
+    costs freshness, never the state. the DISPLAY'S IDENTITY IS the
+    ROW'S own: every entry carries ``step_key`` +
     ``map_index`` off the ledger read; the keyed view
     (:func:`keyed_display`) renders it name-first."""
     async with pool.acquire() as conn:
@@ -261,13 +260,13 @@ async def run_display(
     return rebuild_display([dict(r) for r in ledger_rows], [dict(r) for r in state_rows], [])
 
 
-# ── THE AGGREGATION (decision c — derived at read, the dataflow-only fence) ──────────
+# ── the aggregation (decision c — derived at read, the dataflow-only fence) ──────────
 
 
 @dataclass(frozen=True, slots=True)
 class AggregateRead:
     """One read-side aggregate's outcome (the PoC's measured shape — the
-    fn's time is ON THE RECORD: a read-side user fn runs user code at
+    fn's time is ON the RECORD: a read-side user fn runs user code at
     read time, bounded by the result cap; the GIL/short-input discipline
     is the docs' note)."""
 
@@ -298,12 +297,12 @@ async def read_map_aggregate(
         if fn is None:
             fn = await _resolve_declared_aggregate(conn, wsql, flow_id, parent_id)
 
-    # THE MAP'S ITEMS ARE THE INPUT, never the map's own auto-join: the
-    # join row rides the same parent and its result IS the collected list
-    # (the items again — doubly counted). The items' step key is the
-    # parent's own ``<parent>.item`` (or the typed route's per-arm
+    # the map's items are the input, never the map's own auto-join: the join
+    # row rides the same parent and its result is the collected list (the items
+    # again — doubly counted). The items' step key is the parent's own
+    # ``<parent>.item`` (or the typed route's per-arm
     # ``<parent>.item:<type-tag>``); the fork's join is the parent's
-    # ``<parent>.join`` — excluded BY NAME (the runner's fork names them).
+    # ``<parent>.join`` — excluded by name (the runner's fork names them).
     def _is_item_key(key: str) -> bool:
         return key.endswith(".item") or ".item:" in key
 
@@ -322,7 +321,7 @@ async def read_map_aggregate(
     results: list[Any] = []
     for r in rows:
         # the runner's own envelope ({"value": …}) unwraps — the fn sees
-        # EXACTLY what the body returned, decoded once
+        # exactly what the body returned, decoded once
         raw: Any = _loads(r["result"])
         assert isinstance(raw, dict)  # the Any-contract walk: the envelope's shape
         envelope: dict[str, Any] = {str(k): v for k, v in raw.items()}  # pyright: ignore[reportUnknownArgumentType, reportUnknownVariableType]  # Why: the Any-contract walk's boundary — the parse hands back Unknown members; the assert above is the runtime guard.
@@ -373,7 +372,7 @@ async def map_progress_line(
 ) -> list[dict[str, Any]]:
     """The map's progress LINE (decision c): the certified grouped read —
     done/running/blocked IN the query — LEFT JOINed to the state channel
-    (the children's avg pct). ONE read, never a second instrument, never
+    (the children's avg pct). one read, never a second instrument, never
     a per-child metric series (the fence — per-child progress lives in
     the rows this serves on demand)."""
     async with pool.acquire() as conn:
@@ -381,7 +380,7 @@ async def map_progress_line(
     return [dict(r) for r in rows]
 
 
-# ── THE SSE STREAM GENERATOR (the face's wire shape) ─────────────────────
+# ── the SSE stream generator (the face's wire shape) ─────────────────────
 
 
 async def progress_stream_generator(
@@ -399,18 +398,17 @@ async def progress_stream_generator(
     the testable machine, the seq-cursor law applied to the progress
     stream).
 
-    THE CONNECT SHAPE (the degraded-mode law at EVERY connect): the DISPLAY frame
+    The DISPLAY frame
     first (the ledger + the state channel — the state is ledger-derived,
     never stream-derived), then the replayed tail as ``progress`` frames
     in seq order (``id:`` the seq — the SSE reconnect contract). A cursor
     the ring pruned past yields the NAMED ``resync`` frame (the partial
-    mode + the state payload) BEFORE the tail — never a silent
+    mode + the state payload) before the tail — never a silent
     empty-success. Idle ticks emit nothing (the keepalive is the HTTP
     layer's).
 
-    THE PUSH PRIMARY, THE POLL BELT (the push-primary surface):
     with *listener* wired (a started :class:`ProgressListener` — the
-    SAME LISTEN/NOTIFY transport the HITL broadcast landed), the write's
+    same LISTEN/NOTIFY transport the HITL broadcast landed), the write's
     own knock wakes the replay IMMEDIATELY — sub-poll latency, the
     frames still the seq-cursor read's own (the read is the truth, the
     push buys latency). The poll tick stays as the FALLBACK BELT: a
@@ -428,9 +426,9 @@ async def progress_stream_generator(
     while stop is None or not stop.is_set():
         face = await progress_sse_face(pool, wsql, flow_id=flow_id, last_event_id=cursor)
         if face.mode == "partial":
-            # THE NAMED PARTIAL: the window was pruned under the cursor —
-            # the re-sync rides BEFORE the tail (the display converges
-            # from the state rows; latest-wins needs no history).
+            # the window was pruned under the cursor — the re-sync rides before
+            # the tail (the display converges from the state rows; latest-wins
+            # needs no history).
             yield {
                 "event": "resync",
                 "id": str(cursor),
@@ -451,8 +449,8 @@ async def progress_stream_generator(
                 "id": str(seq),
                 "data": _dumps_str(e),
             }
-        # THE PUSH OR THE BELT: the knock wakes the replay; the timeout
-        # is the poll cadence (a missed knock costs freshness only).
+        # the knock wakes the replay; the timeout is the poll cadence (a missed
+        # knock costs freshness only).
         if listener is None:
             await _asyncio.sleep(poll_s)
         else:

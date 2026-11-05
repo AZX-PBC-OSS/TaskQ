@@ -227,7 +227,7 @@ async def test_sigterm_drains_inflight_job(
     pre_kill_worker_ids = await fresh_worker_ids(e2e_pg_pool, e2e_schema.schema_name)
 
     # Send SIGTERM via the Docker API (``container.kill``) rather than
-    # ``exec_run(["kill", "-TERM", "1"])`` - the Docker daemon delivers
+    # ``exec_run(["kill", "-term", "1"])`` - the Docker daemon delivers
     # the signal directly to PID 1, which is more reliable than spawning
     # a new process inside the container.
     wrapped = e2e_worker.container.get_wrapped_container()
@@ -237,7 +237,7 @@ async def test_sigterm_drains_inflight_job(
     # Poll to the released state (pending/scheduled with the interruption
     # counted and the attempt increment standing) - the test's docstring
     # contract, matching mark_interrupted's merged semantics.
-    # A worker with NO drain orchestration at all (hard SIGTERM death, row
+    # A worker with no drain orchestration at all (hard SIGTERM death, row
     # stuck 'running') cannot satisfy it: the row would sit running until
     # a lease sweep reclaims it with the attempt spent as a crash.
     async def _drained_released() -> bool:
@@ -387,7 +387,7 @@ async def test_graceful_drain_completes_short_job(
     ``succeeded``, proving the shutdown does not corrupt completed jobs.
 
     The ``short_lived_job`` actor sleeps 0.5 s. The test enqueues it,
-    waits for it to reach ``succeeded`` (via ``handle.wait``), THEN
+    waits for it to reach ``succeeded`` (via ``handle.wait``), then
     sends SIGTERM. The shutdown orchestration must not touch
     already-terminal jobs: the job's status, effects, and result must
     remain intact.
@@ -454,7 +454,7 @@ async def test_second_sigterm_escalates(
     With escalation, the CANCELLING phase is cut short, so the job is
     released faster. The assertion is that the job is back with the fleet
     (``pending``/``scheduled``, the spent attempt standing,
-    ``interrupt_count`` bumped) and a ``finished`` effect is NOT recorded
+    ``interrupt_count`` bumped) and a ``finished`` effect is not recorded
     (the actor was cancelled mid-sleep).
     """
     import time
@@ -502,7 +502,7 @@ async def test_second_sigterm_escalates(
         "cancelled mid-sleep by the escalated SIGTERM"
     )
 
-    # With escalation, the CANCELLING phase is cut short. The full
+    # With escalation, the cancelling phase is cut short. The full
     # unescalated path takes >= cancellation_grace (1.0 s) + cleanup_grace
     # (1.0 s) = 2.0 s minimum. Escalation should land faster; allow
     # generous slack for Docker signal delivery latency.
@@ -595,10 +595,10 @@ class _CountingHeartbeatPool:
         return _CountingAcquire(self._pool.acquire(timeout=timeout), self.commands)
 
 
-# The steady-state tick against this fleet: BEGIN, the liveness write, the
+# The steady-state tick against this fleet: begin, the liveness write, the
 # gated lease renewal, the reservation write, the claim-loss reconcile
 # probe (one indexed SELECT - it rides the tick's existing transaction and
-# single command budget, but it IS a round trip), the cancel-hook poll,
+# single command budget, but it is a round trip), the cancel-hook poll,
 # COMMIT.
 _TICK_COMMAND_COUNT = 7
 

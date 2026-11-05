@@ -127,7 +127,7 @@ def workerless_probe() -> Promise[object]:
 ACTORS = {}
 """,
     )
-    # A PREVIOUS import of the same app object can linger in the
+    # A previous import of the same app object can linger in the
     # projection's weak set from another test's module; the module's own
     # import is what matters and it is fresh here.
     registry = _load_actor_registry(_ref(module, "ACTORS"))
@@ -137,7 +137,7 @@ ACTORS = {}
 def test_the_empty_refusal_names_both_dispatch_ingredients(
     module_dir: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A module with an empty registry and NO mounted app genuinely has
+    """A module with an empty registry and no mounted app genuinely has
     nothing to dispatch: the refusal names both ingredients (the actor
     registry and the workflow app), so an operator reading the error
     knows which one to add."""

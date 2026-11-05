@@ -80,8 +80,8 @@ async def test_actors_stats_include_live_terminal_rows_and_respect_the_window(
 
     schema = module_pg_schema.schema_name
     actor = "live-fire-actor"
-    # A fresh LIVE failed row (still inside its prune retention) and an
-    # older ARCHIVED succeeded row for the same actor.
+    # A fresh live failed row (still inside its prune retention) and an
+    # older archived succeeded row for the same actor.
     live_failed = new_uuid()
     archived_succeeded = new_uuid()
     await clean_pg_conn.execute(
@@ -123,13 +123,13 @@ async def test_actors_stats_include_live_terminal_rows_and_respect_the_window(
     assert len(all_time_rows) == 1
     assert len(windowed_rows) == 1
 
-    # All-time: both rows, the live failure AND the archived success.
+    # All-time: both rows, the live failure and the archived success.
     assert all_time_rows[0]["total"] == 2
     assert all_time_rows[0]["failed"] == 1
     assert all_time_rows[0]["succeeded"] == 1
     assert all_time_rows[0]["last_error_class"] == "ValueError"
     # The 24h window keeps the fresh live failure and drops the archived
-    # row: the bound applies to BOTH sides of the UNION.
+    # row: the bound applies to both sides of the union.
     assert windowed_rows[0]["total"] == 1
     assert windowed_rows[0]["failed"] == 1
     assert windowed_rows[0]["succeeded"] == 0

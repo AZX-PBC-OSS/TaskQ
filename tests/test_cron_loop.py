@@ -86,7 +86,7 @@ class _FakeCronConn(FakeConn):
     ``test_cron_lock_contention_obs.py``), the server clock, and the
     disabled-schedule COUNT. ``fetch`` answers the due-schedule SELECT
     from *schedule_rows* (recording that it was read) and the batched
-    ``actor_config`` ``ANY($1)`` SELECT from *actor_config_rows*.
+    ``actor_config`` ``any($1)`` SELECT from *actor_config_rows*.
     ``execute`` records ``(sql, args)`` and returns an UPDATE tag whose
     rowcount satisfies every statement. ``transaction()`` is the
     passthrough the FakeConn base already provides, so tests can honor
@@ -157,7 +157,7 @@ class _FakeCronConn(FakeConn):
             return [_FakeCronRecord({**row.data, "server_now": _NOW}) for row in self.schedule_rows]
         if '"taskq".jobs' in sql:
             # The policy preflights (singleton blockers, max_pending counts)
-            # and the DST overlap-twin probe read the jobs table; this fake
+            # and the dst overlap-twin probe read the jobs table; this fake
             # holds no jobs, so the preflights see none.
             return []
         raise AssertionError(f"unexpected fetch: {sql}")
@@ -208,7 +208,7 @@ def _make_actor_config_row(
     retry_backoff: str | None = None,
     retry_jitter: float | None = None,
 ) -> _FakeCronRecord:
-    """One row of the batched ``actor_config`` ``ANY($1)`` SELECT result.
+    """One row of the batched ``actor_config`` ``any($1)`` SELECT result.
 
     The curve scalars default to NULL: a row predating migration
     01.00.18, so the tick resolves them to the enqueue defaults.  A real
@@ -294,10 +294,10 @@ pytestmark = [pytest.mark.asyncio]
 # (test_ti2_auto_disable_after_3_failures: consecutive_failures == 3 with
 # last_fire_error set and the auto_disabled span; test_ti5_import_error:
 # last_fired_at still NULL after a fire-time failure; test_ti1: the success
-# stamps). The success-tick's ladder RESET has no real sibling, so it
+# stamps). The success-tick's ladder reset has no real sibling, so it
 # converted to the real fixture there
 # (test_success_tick_resets_the_failure_ladder) instead of surviving as a
-# fake arm asserting the UPDATE's SET spelling.
+# fake arm asserting the UPDATE's set spelling.
 
 
 # ── Miss within catch-up window - not skipped ─────────────────────
@@ -354,7 +354,7 @@ async def test_cron_fire_miss_beyond_catch_up_window_skipped() -> None:
     assert next_fire_arg > _NOW, "the recompute seed is the server clock, not the stale slot"
 
 
-# ── PRODUCER span is linked, not parented ──────────────────────────
+# ── producer span is linked, not parented ──────────────────────────
 
 
 async def test_cron_fire_producer_span_linked_not_parented(
@@ -611,9 +611,9 @@ async def test_cron_enqueue_failure_counts_and_autodisables(
 #
 # The policy preflights are advisory: a client enqueue can commit in the
 # window between the preflight SELECT and the batched INSERT (the tick's
-# transaction is READ COMMITTED, so the INSERT's own statement snapshot
+# transaction is read committed, so the INSERT's own statement snapshot
 # sees the newly committed row).  The batched INSERT then violates
-# ``jobs_singleton_uniq`` - and Postgres aborts the WHOLE statement, not
+# ``jobs_singleton_uniq`` - and Postgres aborts the whole statement, not
 # just the offending row.  The strike must land only on the schedule whose
 # fire actually collided; unrelated schedules in the same tick must fire
 # (or at worst keep their counters untouched), because their only defect
@@ -623,7 +623,7 @@ async def test_cron_enqueue_failure_counts_and_autodisables(
 #
 # A transient infra failure of the batched INSERT (statement timeout,
 # connection drop, server shutdown) is not a schedule defect at all and
-# must not strike ANY schedule - the leader's transient handling retries
+# must not strike any schedule - the leader's transient handling retries
 # the whole tick.
 
 
@@ -733,7 +733,7 @@ async def test_singleton_race_between_preflight_and_insert_strikes_only_the_race
 async def test_transient_enqueue_failure_raises_without_striking_schedules() -> None:
     """A TimeoutError from the batched enqueue (statement timeout, conn
     blip) is PG weather, not a schedule defect: the tick re-raises for the
-    leader's transient handling (retry next tick) and NO schedule takes a
+    leader's transient handling (retry next tick) and no schedule takes a
     strike - the caller's rollback discards the tick and no
     consecutive_failures bookkeeping may commit."""
     conn = _FakeCronConn(
@@ -880,18 +880,18 @@ async def test_pkey_violation_strikes_only_the_colliding_row() -> None:
     assert "jobs_pkey" in str(error_texts[0])
 
 
-# ── a transient error AFTER strikes rolls back the strikes - and must
+# ── a transient error after strikes rolls back the strikes - and must
 #    not have exported their telemetry ─────────────────────────────────
 #
-# A strike persists only if the tick's failures UPDATE executes AND the
-# caller's transaction commits.  A TRANSIENT error from any LATER
+# A strike persists only if the tick's failures UPDATE executes and the
+# caller's transaction commits.  A transient error from any later
 # statement of the tick (the successes UPDATE here) re-raises correctly -
 # zero strikes persist, the leader retries - and the strike spans are
 # opened (and exported) at COMMIT time, not at strike time inside
 # _strike_plans: a strike-time span claims schedule failures and
 # auto-disables that the rollback erases.  Trace says schedule X auto-disabled; the DB row says
 # enabled with count 0.  This pins the buffered emission: no failure
-# span, no auto-disable event, no metric delta, unless ALL of the tick's
+# span, no auto-disable event, no metric delta, unless all of the tick's
 # SQL ran.
 
 
@@ -899,7 +899,7 @@ async def test_transient_after_strikes_emits_no_failure_telemetry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The batched enqueue strikes one plan (attributed singleton race),
-    the survivors land, and THEN the successes UPDATE raises TimeoutError:
+    the survivors land, and then the successes UPDATE raises TimeoutError:
     the tick re-raises with zero persisted strikes and zero EXPORTED
     failure telemetry - no error span, no cron.auto_disabled event, no
     record_cron_failure delta."""
@@ -917,7 +917,7 @@ async def test_transient_after_strikes_emits_no_failure_telemetry(
     peer_id = new_uuid()
 
     class _SuccessUpdateTransientConn(_FakeCronConn):
-        """The successes UPDATE - the statement AFTER the strikes were
+        """The successes UPDATE - the statement after the strikes were
         computed - dies with a transient error (server timeout)."""
 
         async def execute(self, sql: str, *args: object) -> str:
@@ -1002,7 +1002,7 @@ async def test_operator_index_violation_is_not_attributed() -> None:
     own constraints.  The gate on ``constraint_name`` sends anything but
     ``jobs_pkey`` / ``jobs_singleton_uniq`` down the per-plan fallback;
     here the raced collision clears before the per-plan retry (READ
-    COMMITTED fresh snapshot), so both schedules fire and NO strike is
+    COMMITTED fresh snapshot), so both schedules fire and no strike is
     written."""
     from taskq.backend._protocol import EnqueueArgs, JobRow
 
@@ -1073,16 +1073,16 @@ async def test_operator_index_violation_is_not_attributed() -> None:
 
 # ── attribution failure modes: every unattributable shape falls back ──
 #
-# The unguarded bug class is the WRONG-SCHEDULE strike: an error the parser
+# The unguarded bug class is the wrong-schedule strike: an error the parser
 # cannot safely map to a plan is either attributed anyway (operator
 # index, above) or never exercised with the shapes that actually reach
 # the parser.  These close the remaining traps: an actor-named detail
-# whose only pending plan is NOT singleton-stamped, and the three
+# whose only pending plan is not singleton-stamped, and the three
 # detail-line degenerate shapes (None, garbage, truncated).
 
 
 async def test_actor_detail_without_singleton_stamp_falls_back() -> None:
-    """``cols == "actor"`` naming a plan that is NOT singleton-stamped:
+    """``cols == "actor"`` naming a plan that is not singleton-stamped:
     the stamp-verification guard (the partial index only covers stamped
     rows) must find no offender, so the violation is unattributable -
     per-plan fallback, no wrong strike.
@@ -1161,7 +1161,7 @@ async def test_degenerate_detail_lines_fall_back(detail: str | None) -> None:
     exists.`` is gone) is unparsable: per-plan fallback, no strike.
 
     The constraint name is faithful (``jobs_singleton_uniq``) so the
-    constraint gate passes and ONLY the detail parser stands between the
+    constraint gate passes and only the detail parser stands between the
     violation and a wrong strike - every existing "unattributable" test
     used a ValueError that never reached the parser at all."""
     from taskq.backend._protocol import EnqueueArgs, JobRow
@@ -1266,13 +1266,13 @@ async def test_operator_index_column_detail_falls_back() -> None:
     assert _failure_updates(conn) == []
 
 
-# ── the retry loop terminates when the RETRY also violates ────────────
+# ── the retry loop terminates when the retry also violates ────────────
 #
 # Attribution strikes at least one plan per pass, so the loop is bounded
 # by the batch size - but every existing fake succeeded on the retry.
 # This pins the second-violation pass: two singleton actors raced
 # externally, the first pass strikes actor A's plan, the survivors' retry
-# violates for actor B, and the THIRD pass lands the survivor.
+# violates for actor B, and the third pass lands the survivor.
 
 
 async def test_second_violation_on_retry_strikes_both_and_exits() -> None:
@@ -1358,7 +1358,7 @@ async def test_second_violation_on_retry_strikes_both_and_exits() -> None:
 # CancelledError is a BaseException: it passes through every ``except
 # Exception`` in the enqueue path (neither TRANSIENT_PG_ERRORS retry
 # semantics nor a per-schedule strike) - but it must still roll the
-# batched enqueue back to ITS savepoint on the way out, leaving the
+# batched enqueue back to its savepoint on the way out, leaving the
 # caller's transaction (the thing the leader rolls back) intact, and
 # with buffered emission it must export nothing.
 
@@ -1433,7 +1433,7 @@ async def test_cancelled_error_mid_savepoint_rolls_back_and_writes_no_strikes(
     )
 
     task = asyncio.create_task(_tick(conn, _cron_settings(), _WedgeInsideSavepointBackend()))
-    await entered.wait()  # the tick is wedged INSIDE the savepoint
+    await entered.wait()  # the tick is wedged inside the savepoint
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -1441,7 +1441,7 @@ async def test_cancelled_error_mid_savepoint_rolls_back_and_writes_no_strikes(
     assert conn.savepoint_log == [
         "savepoint-begin",  # the caller-owned transaction (from _tick)
         "savepoint-begin",  # the batched enqueue's savepoint
-        "savepoint-rollback",  # cancellation rolled back TO the savepoint
+        "savepoint-rollback",  # cancellation rolled back to the savepoint
         "savepoint-rollback",  # and the caller's transaction rolls back too
     ], (
         "cancellation must roll the savepoint back on its way out - the enqueue's partial write cannot survive in the caller's transaction"
@@ -1464,7 +1464,7 @@ async def test_cancelled_error_mid_savepoint_rolls_back_and_writes_no_strikes(
 # leader's whole-tick ``asyncio.timeout``: the outer deadline wins, the
 # tick's transaction rolls back every strike, and the identical batch is
 # re-selected next tick.  A tick whose budget is spent must therefore
-# fund NO further factory wait (None), and the planning loop turns that
+# fund no further factory wait (None), and the planning loop turns that
 # into an immediate, named per-schedule failure.
 
 
@@ -1553,15 +1553,15 @@ class TestFactoryDeadlineMath:
 
 # ── tick-budget exhaustion defers the schedule instead of striking it ──
 #
-# The funded factory budget is FIRST-COME: a schedule whose factory
+# The funded factory budget is first-come: a schedule whose factory
 # consumed the whole grant (it ran, it timed out, it struck) leaves
 # nothing for the factory-backed schedules after it in next_fire_at
-# order.  Those schedules' factories NEVER RAN.  Striking them was the defect:
+# order.  Those schedules' factories never ran.  Striking them was the defect:
 # the failure UPDATE never advances next_fire_at, so the identical batch
 # returned in the identical order every tick and healthy schedules rode
 # a hung neighbour's strikes to auto-disable.  The boundary is crisp:
-# a factory that RAN and raised strikes (its own evidence); a factory
-# the tick could not fund is DEFERRED: next_fire_at advances one leader
+# a factory that ran and raised strikes (its own evidence); a factory
+# the tick could not fund is deferred: next_fire_at advances one leader
 # cadence (not the next cron slot: the slot is still owed, only its
 # funding was missing), consecutive_failures and last_fire_error are
 # untouched, and the schedule retries on the very next tick.
@@ -1607,7 +1607,7 @@ async def test_budget_exhausted_factory_schedule_is_deferred_not_struck(
 
     fired_id = new_uuid()
     deferred_id = new_uuid()
-    # The deferred schedule's owed slot is 10:00:30 on an HOURLY expr, so
+    # The deferred schedule's owed slot is 10:00:30 on an hourly expr, so
     # a skip-to-next-slot regression would write 11:00.  The contract is
     # the one-cadence retry at _NOW + 1s.
     conn = _FakeCronConn(
@@ -1874,7 +1874,7 @@ async def test_the_march_arc_defers_the_peer_quietly_until_the_operator_knob_fre
     auto-disabled, one budget_deferrals count per tick: the quiet-
     starvation shape the counter exists to expose.  Then the operator
     tightens TASKQ_CRON_PAYLOAD_FACTORY_TIMEOUT below the monopolizer's
-    real duration: that same tick the monopolizer takes its FIRST strike
+    real duration: that same tick the monopolizer takes its first strike
     (the knob's intended consequence: its drain begins) while the peer
     is funded a 0.4s grant and fires."""
     monopolizer_id = new_uuid()
@@ -2004,7 +2004,7 @@ async def test_healthy_factory_peer_survives_the_hung_neighbours_drain_and_fires
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The full arc, tick by tick: through three hang-ticks the
-    monopolizer accumulates ITS OWN strikes (auto-disable flips on the
+    monopolizer accumulates ITS own strikes (auto-disable flips on the
     third) while the healthy factory-backed peer behind it is deferred
     every tick and never struck; the tick the monopolizer is gone the
     peer's factory is funded at the full clamp and it fires."""
@@ -2526,7 +2526,7 @@ async def test_commit_gate_suppression_survives_a_fresh_proxy_per_acquire(
 async def test_commit_gate_hooks_each_connection_sharing_a_pid(
     _commit_gate_maps: None,
 ) -> None:
-    """Two sessions reporting the SAME backend pid each get their own
+    """Two sessions reporting the same backend pid each get their own
     termination hook.
 
     The hook guards a connection's lifetime, and the pid does not

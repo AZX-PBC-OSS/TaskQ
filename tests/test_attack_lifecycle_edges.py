@@ -4,7 +4,7 @@
 Four attack families against boot and shutdown, mined from river
 #376/#400/#482/#1118/#63, pg-boss #133, graphile #353, dramatiq #441:
 
-1. THE CONCURRENT BOOT. Eight workers barrier-started against (a) a fresh
+1. the CONCURRENT BOOT. Eight workers barrier-started against (a) a fresh
    empty schema and (b) an established one. The migration advisory lock
    must serialize the appliers (exactly-once ledger, a partition of the
    bundled chain across the winners, no duplicate-key death), a holder
@@ -14,20 +14,20 @@ Four attack families against boot and shutdown, mined from river
    than hang past the startup probe. The leader election runs 8-way and
    yields exactly one winner; LISTEN arms 8 times with no drift and no
    residue.
-2. THE INDEX MIGRATION. The newest plain (non-CONCURRENTLY) CREATE INDEX
+2. the INDEX MIGRATION. The newest plain (non-CONCURRENTLY) CREATE INDEX
    migrations run against a 1M-row pre-existing table in
    CI-representative conditions: the write-blocking lock window is
    measured, the queue-behind-any-reader hazard is proven bounded by
    ``ddl_lock_timeout`` (MigrationLockTimeoutError), and the
    maintenance-window contract the migration files document is pinned.
    The NULL-heavy legacy-data shape (river #63): the assignment_routed
-   ADD COLUMN NOT NULL DEFAULT lands metadata-only (no table rewrite) on
+   ADD COLUMN not NULL DEFAULT lands metadata-only (no table rewrite) on
    old rows, and the backfill drains every legacy NULL.
-3. THE DOUBLE SHUTDOWN. ``orchestrate_shutdown`` called twice
+3. the DOUBLE SHUTDOWN. ``orchestrate_shutdown`` called twice
    concurrently: both return 0, the second call sends nothing on the
    first call's closed leader conn (the river #400 use-after-close
    shape), and a third sequential call still returns 0.
-4. THE ORPHANED SHAPE (dramatiq #441). A boot that fails AFTER the
+4. the ORPHANED SHAPE (dramatiq #441). A boot that fails after the
    workers row is registered (the signal-mid-init window's orderly
    sibling: any startup raise between ``register_worker`` and the
    TaskGroup's deregister finally) must not leave the row behind fresh
@@ -181,7 +181,7 @@ def _assert_exactly_once(outcomes: list[_ApplierOutcome]) -> list[str]:
     return expected
 
 
-# ── attack 1a: the concurrent boot on a FRESH schema ────────────────────
+# ── attack 1a: the concurrent boot on a fresh schema ────────────────────
 
 
 async def test_boot_race_8_appliers_fresh_schema(pg_dsn: str) -> None:
@@ -252,7 +252,7 @@ async def test_boot_race_holder_dies_mid_migration_rest_proceed(pg_dsn: str) -> 
         lock_name = migration_lock_name(schema)
         await conn.execute("SET lock_timeout = '5s'")
         await conn.execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", lock_name)
-        # The holder is mid-FILE: some statements applied inside its
+        # The holder is mid-file: some statements applied inside its
         # transaction, the rest never reached.
         await conn.execute("BEGIN")
         for statement in statements[:2]:
@@ -283,7 +283,7 @@ async def test_boot_race_holder_dies_mid_migration_rest_proceed(pg_dsn: str) -> 
         _assert_exactly_once(outcomes)
 
         # No debris from the killed holder's half-applied file: the ledger
-        # records the FULL chain and nothing before it exists half-built.
+        # records the full chain and nothing before it exists half-built.
         fresh = await asyncpg.connect(pg_dsn)
         try:
             rows = await fresh.fetch(
@@ -496,7 +496,7 @@ async def test_listen_arms_8_concurrent_no_drift_no_residue(pg_dsn: str) -> None
                 await listener
 
         # No drift: every registration left with its context.
-        assert len(backend._wake_subscribers) == 0  # pyright: ignore[reportPrivateUsage]  # Why: the residue IS the assertion; the registry is the backend's private arm-state.
+        assert len(backend._wake_subscribers) == 0  # pyright: ignore[reportPrivateUsage]  # Why: the residue is the assertion; the registry is the backend's private arm-state.
         assert len(backend._wake_queues) == 0  # pyright: ignore[reportPrivateUsage]
     finally:
         await stack.aclose()
@@ -543,7 +543,7 @@ async def test_newest_index_migrations_lock_window_at_1m_rows(pg_dsn: str) -> No
 
     Measures the write-blocking lock window (the migration files' OPS
     NOTE names it) and pins the bounded-refusal contract: the DDL runs
-    transactional, so it queues behind ANY reader of jobs, and
+    transactional, so it queues behind any reader of jobs, and
     ``ddl_lock_timeout`` converts an unbounded park into
     LockNotAvailableError (MigrationLockTimeoutError on the wrapper) with
     nothing applied. The maintenance-window contract (run the
@@ -555,8 +555,8 @@ async def test_newest_index_migrations_lock_window_at_1m_rows(pg_dsn: str) -> No
     try:
         conn = await asyncpg.connect(pg_dsn)
         try:
-            # Stop the chain BEFORE 01.00.17: the migrations under test
-            # must be PENDING, not already applied by the full chain.
+            # Stop the chain before 01.00.17: the migrations under test
+            # must be pending, not already applied by the full chain.
             await apply_pending(conn, schema=schema, target="01.00.16_01")
             await _bulk_load_jobs(pg_dsn, schema, _ROW_TARGET)
 
@@ -564,7 +564,7 @@ async def test_newest_index_migrations_lock_window_at_1m_rows(pg_dsn: str) -> No
             assert count == _ROW_TARGET
 
             # 01.00.17_01 rebuilds jobs_finished_at_idx as the composite
-            # (status, finished_at) INCLUDE (id): a plain transactional
+            # (status, finished_at) include (id): a plain transactional
             # CREATE INDEX over the whole table.
             t0 = time.monotonic()
             applied = await apply_pending(conn, schema=schema, target="01.00.17_01")
@@ -577,7 +577,7 @@ async def test_newest_index_migrations_lock_window_at_1m_rows(pg_dsn: str) -> No
             )
 
             # The bounded-refusal half of the contract: a reader holding
-            # ACCESS SHARE parks the next DDL, and ddl_lock_timeout
+            # access share parks the next DDL, and ddl_lock_timeout
             # converts the park into a lock-timeout failure with the
             # migration rolled back (nothing applied).
             reader = await asyncpg.connect(pg_dsn)
@@ -608,9 +608,9 @@ async def test_newest_index_migrations_lock_window_at_1m_rows(pg_dsn: str) -> No
                     await reader.close()
 
             # Without the reader, the remaining chain (the partial
-            # fence-probe index among them) applies and is VALID. The
+            # fence-probe index among them) applies and is valid. The
             # timed-out run left 01.00.18_01 applied (its DDL matched no
-            # locked table) and 01.00.18_02 pending (its ALTER was the
+            # locked table) and 01.00.18_02 pending (its alter was the
             # one that timed out): the resume applies the difference.
             all_keys = [m.key for m in discover()]
             resume_from = all_keys.index("01.00.18_01:pre") + 1
@@ -639,10 +639,10 @@ async def test_newest_index_migrations_lock_window_at_1m_rows(pg_dsn: str) -> No
 
 
 async def test_migration_over_null_heavy_legacy_data_no_rewrite(pg_dsn: str) -> None:
-    """The river #63 shape: the new NOT NULL/DEFAULT columns over old rows.
+    """The river #63 shape: the new not NULL/DEFAULT columns over old rows.
 
     1M legacy rows predate the assignment_routed column. The ADD COLUMN
-    ... NOT NULL DEFAULT must land metadata-only (PG11+: no table
+    ... not NULL DEFAULT must land metadata-only (PG11+: no table
     rewrite, the relation's physical file unchanged), and the backfill
     migration must drain every legacy unrouted row so dispatch routes
     cleanly afterwards.
@@ -651,7 +651,7 @@ async def test_migration_over_null_heavy_legacy_data_no_rewrite(pg_dsn: str) -> 
     try:
         conn = await asyncpg.connect(pg_dsn)
         try:
-            # Stop the chain BEFORE the assignment_routed columns exist.
+            # Stop the chain before the assignment_routed columns exist.
             await apply_pending(conn, schema=schema, target="01.00.12_04")
             await _bulk_load_jobs(pg_dsn, schema, _ROW_TARGET)
 
@@ -776,7 +776,7 @@ async def _boot_and_fail(settings: WorkerSettings, ref: object) -> int:
 async def test_boot_failure_after_registration_leaves_no_orphaned_worker_row(
     pg_dsn: str,
 ) -> None:
-    """A boot that fails AFTER ``register_worker`` must not strand the row.
+    """A boot that fails after ``register_worker`` must not strand the row.
 
     The signal-mid-init window's orderly sibling: any raise between the
     workers INSERT and the TaskGroup's deregister finally (here, an actor

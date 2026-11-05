@@ -1,11 +1,11 @@
-# ruff: noqa: S608, S603, ASYNC221, TID251, N817  # Why: the dash-named attack4-* module; the cold-process probes run a subprocess with fixed argv; the seeded ledger rows deliberately use uuid4 (a ledger row the arbiter did not mint); BM is the probe corpus's local shorthand.
+# ruff: noqa: S608, S603, ASYNC221, TID251, N817  # Why: the dash-named attack4-* module; the cold-process probes run a subprocess with fixed argv; the seeded ledger rows deliberately use uuid4 (a ledger row the arbiter did not mint); bm is the probe corpus's local shorthand.
 """The coverage residuals (the split owner's gaps, closed by
 these probes' own tests — the pack adds tests, never source).
 
 The captured p4 report's missing-line lists
 (``p4-coverage-split4.txt``: _hitl 68, _loop 80, _ctx 81, _ctx_wait 86,
 engine 87) re-verified RED-line on the certified head (the builder's
-``5ea18be3`` "coverage closers" did NOT close them — the attack's
+``5ea18be3`` "coverage closers" did not close them — the attack's
 baseline re-measurement shows the same lines). What each region IS:
 
 * ``_loop.py`` — the two pure policy/binding fns' None/KeyError/fallback
@@ -25,7 +25,7 @@ baseline re-measurement shows the same lines). What each region IS:
   guard, the reducer body's execution at the fire, the finalize's
   reducer registration.
 
-The NOT-closed (named, per the brief's "or name why"): the partial
+The not-closed (named, per the brief's "or name why"): the partial
 BRANCH arcs (``583->596`` et al.) that exist only as doubled guard
 conditions over one runtime shape — a test can only re-enter the same
 line; and ``_runner.py``'s 901/922-class arms whose setup requires a
@@ -71,7 +71,7 @@ class Item(BaseModel):
 def test_registered_loop_policy_the_unregistered_workflow_fails_closed() -> None:
     """A workflow the registry cannot resolve → the policy is ``fail``
     (no definition, no escalation face — the dead-letter ghost's
-    refusal), for BOTH the None-name and the unknown-name worlds."""
+    refusal), for both the None-name and the unknown-name worlds."""
     from taskq.workflows.api._loop import registered_loop_policy
 
     assert registered_loop_policy(None, "review") == "fail"
@@ -126,7 +126,7 @@ def test_escalation_bindings_the_unregistered_worlds_return_none() -> None:
     }
     assert escalation_bindings(None, "review", **kwargs) is None  # type: ignore[arg-type]
     assert escalation_bindings("attack4_no_such_workflow", "review", **kwargs) is None  # type: ignore[arg-type]
-    # A real workflow WITHOUT an escalation body → None (skip, not ghost).
+    # A real workflow without an escalation body → None (skip, not ghost).
     from taskq.workflows import WorkflowApp, build, step
 
     async def plain(ctx: Any, params: Ingest) -> str:
@@ -176,7 +176,7 @@ def test_model_fits_the_strict_shape() -> None:
     assert not _model_fits(Strict, {})
     # A wrong type: refused.
     assert not _model_fits(Strict, {"verdict": 42})
-    # An ALIASED model: the alias is in the allowed set (the alias form fits).
+    # An aliased model: the alias is in the allowed set (the alias form fits).
     assert _model_fits(Aliased, {"outer": "x"})
 
 
@@ -214,7 +214,7 @@ def test_fits_by_schema_the_full_walk() -> None:
     junk_spec = dict(schema)
     junk_spec["properties"] = {"verdict": {"type": "string"}, "weird": "not-a-dict"}
     assert _fits_by_schema({"verdict": "ok"}, junk_spec)
-    # The CANNOT-JUDGE shapes fit (never a false refusal).
+    # The cannot-judge shapes fit (never a false refusal).
     assert _fits_by_schema({"x": 1}, None)
     assert _fits_by_schema("not a dict", schema)
     assert _fits_by_schema({"verdict": "ok"}, {"$defs": {}})
@@ -231,9 +231,9 @@ _HELD_APP_STATE: dict[str, Any] = {}
 
 @pytest.fixture
 async def held_app(module_pg_pool: Any, module_pg_schema: ModulePgSchema) -> Any:
-    """The D1 registry registers the workflow ONCE per process (a second
+    """The D1 registry registers the workflow once per process (a second
     registration is the refused shadow) — the app lives in module state;
-    each test seeds its OWN flow from the same runner."""
+    each test seeds its own flow from the same runner."""
     schema = module_pg_schema.schema_name
     if not _HELD_APP_STATE:
         app = WorkflowApp()
@@ -283,7 +283,7 @@ async def test_the_deliver_cas_the_noop_and_the_resume_refused_arms(
     flow_id = held_app["flow_id"]
     client = HitlClient(module_pg_pool, schema=schema)
     (hold,) = await client.list(str(flow_id))
-    # THE FIRST deliver (the CAS wins, the node resumes).
+    # the first deliver (the CAS wins, the node resumes).
     first = await deliver_payload(
         module_pg_pool,
         schema=schema,
@@ -293,7 +293,7 @@ async def test_the_deliver_cas_the_noop_and_the_resume_refused_arms(
         payload_json=json.dumps({"verdict": "approve"}),
     )
     assert first.status == "delivered", first
-    # THE SECOND deliver (the same hold): the named no-op.
+    # the second deliver: the named no-op.
     second = await deliver_payload(
         module_pg_pool,
         schema=schema,
@@ -304,7 +304,7 @@ async def test_the_deliver_cas_the_noop_and_the_resume_refused_arms(
     )
     assert second.status == "no-op" and "already delivered" in (second.reason or ""), second
 
-    # THE RESUME-REFUSED arm: a held hold whose node's mark is gone.
+    # the resume-refused arm: a held hold whose node's mark is gone.
     flow2 = (await held_app["runner"].create_flow()).flow_id
     await held_app["runner"].drive(flow2, until="held")
     (hold2,) = await client.list(str(flow2))
@@ -325,9 +325,9 @@ async def test_the_deliver_cas_the_noop_and_the_resume_refused_arms(
     assert third.status == "refused", third
     assert "not resumable" in (third.reason or ""), third
 
-    # THE CANCELLED-HOLD arm (the deliver CAS's refusal half): a hold the
-    # cancel cascade consumed — the CAS misses, the row's status is
-    # 'cancelled' → the named refusal (never the no-op).
+    # the cancelled-hold arm: a hold the cancel cascade consumed — the CAS
+    # misses, the row's status is 'cancelled' → the named refusal (never the
+    # no-op).
     flow3 = (await held_app["runner"].create_flow()).flow_id
     await held_app["runner"].drive(flow3, until="held")
     (hold3,) = await client.list(str(flow3))
@@ -382,8 +382,8 @@ async def test_the_cold_boundary_refuses_by_the_rows_schema_alone(
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
-    # The AMBIGUOUS world: a second schema both-all-optional (the
-    # {"verdict": ...} payload fits BOTH by shape).
+    # The ambiguous world: a second schema both-all-optional (the
+    # {"verdict": ...} payload fits both by shape).
     await module_pg_pool.execute(
         f'UPDATE "{schema}".wf_signals '
         "SET payload_schema = $2::jsonb WHERE workflow_id = $1 AND status = 'held'",
@@ -475,7 +475,7 @@ async def test_the_contexts_null_payload_skips_the_chain(
 async def test_the_context_redact_chain_then_hook(
     module_pg_pool: Any, module_pg_schema: ModulePgSchema, held_app: Any
 ) -> None:
-    """The redact law's composition: the chain runs ALWAYS; a hooked
+    """The redact law's composition: the chain runs always; a hooked
     client receives the CHAIN's output (the hook can only redact more —
     it never sees the raw canary)."""
     from taskq.workflows.api._hitl import HitlClient
@@ -521,14 +521,14 @@ async def test_the_cursors_checkpoint_the_empty_then_the_decoded(
     app = WorkflowApp()
 
     async def src(ctx: Any, params: Ingest) -> list[Item]:
-        # THE EMPTY world: no emit has ever run for this node.
+        # the empty world: no emit has ever run for this node.
         before = await ctx.cursor()
         assert before == {}, f"an un-emitted source's cursor is {before!r}"
         await ctx.emit_batch([Item(n=1).model_dump()], cursor={"page": 1})
         after = await ctx.cursor()
         assert after.get("page") == 1, f"the checkpoint did not read back: {after!r}"
-        # THE STR-DECODE arm (the no-codec connection's world): a RAW
-        # pool's ctx reads the same checkpoint through _json_loads.
+        # the str-decode arm: a raw pool's ctx reads the same checkpoint
+        # through _json_loads.
         raw_pool = await asyncpg.create_pool(module_pg_schema.pg_dsn)
         try:
             raw_ctx = _make_wait_ctx(
@@ -541,7 +541,7 @@ async def test_the_cursors_checkpoint_the_empty_then_the_decoded(
         return [Item(n=1)]
 
     async def child(ctx: Any, n: int) -> dict[str, int]:
-        # The map child's ctx carries ITS map_index (the per-item identity).
+        # The map child's ctx carries its map_index (the per-item identity).
         assert ctx.map_index is not None
         return {"n": n}
 
@@ -576,7 +576,7 @@ def test_the_progress_emission_unwired_is_the_noop() -> None:
         _wsql=WorkflowSql.build("attack4_unwired"),
         _map_index=None,
     )
-    # The unwired emitter: the call RETURNS (the no-op), it does not raise.
+    # The unwired emitter: the call returns (the no-op), it does not raise.
     asyncio.run(ctx.progress(50, "half", None))
 
 
@@ -608,8 +608,8 @@ async def test_the_re_wait_while_a_hold_stands_raises_node_held(
     flow_id = (await runner.create_flow()).flow_id
     await runner.drive(flow_id, until="held")
 
-    # THE RE-WAIT from a NEW body execution's ctx (the same coordinates):
-    # the standing hold is RAISED, not re-minted.
+    # the re-wait from a new body execution's ctx: the standing hold is raised,
+    # not re-minted.
     node_id = await module_pg_pool.fetchval(
         f'SELECT id FROM "{schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'review'",
@@ -669,9 +669,8 @@ async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
 
     async def _wait(ctx: Any, params: Ingest) -> str:
         await ctx.wait_signal((Approval,), timeout_s=120.0, reason="the reader")
-        # THE RESUMED BODY'S ANSWER IDENTITY: the LAST CONSUMED hold's
-        # epoch is on the ctx (None before the consumption — this body
-        # HAS consumed one).
+        # the last consumed hold's epoch is on the ctx (None before the
+        # consumption — this body has consumed one).
         assert ctx.hold_epoch == 1, f"the consumed hold's epoch: {ctx.hold_epoch!r}"
         return str(await ctx.signal("Approval"))
 
@@ -692,8 +691,8 @@ async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
         f"the delivered payload did not ride the row: {result!r}"
     )
 
-    # THE ABSENT arm: a signal name nothing declared/delivered (the
-    # named refusal carries the row's status — 'none' here).
+    # the absent arm: a signal name nothing declared/delivered (the named
+    # refusal carries the row's status — 'none' here).
     node_id = await module_pg_pool.fetchval(
         f'SELECT id FROM "{schema}".jobs '
         "WHERE (metadata->>'flow_id')::uuid = $1 AND step_key = 'review'",
@@ -703,7 +702,7 @@ async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
     with pytest.raises(SignalUnavailableError) as ei:
         await ctx.signal("never_declared")
     assert "none" in str(ei.value), ei.value
-    # THE NON-DELIVERED arm: a row that exists but is not delivered.
+    # the non-delivered arm: a row that exists but is not delivered.
     await module_pg_pool.execute(
         f'INSERT INTO "{schema}".wf_signals '
         "(id, workflow_id, node_key, signal_name, hold_epoch, call_id, payload, "
@@ -723,7 +722,7 @@ async def test_signal_reads_a_delivered_payload_and_refuses_the_rest(
 async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     module_pg_pool: Any, module_pg_schema: ModulePgSchema, clean_pg_conn: Any
 ) -> None:
-    """The FENCED-OUT finalize: a stale claim's finalize writes the
+    """The FENCED-out finalize: a stale claim's finalize writes the
     ledger's fence row (by the ledger id when the attempt carries one, by
     the attempt key when it does not) and tx2 never runs — the row's
     state never moves."""
@@ -736,12 +735,12 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     flow_id = await seed_flow(clean_pg_conn, schema)
     node_id = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="fenced")
 
-    # THE FENCE: a WRONG worker presents the finalize — WITH the claim's
-    # own ledger id (the by-ID fence leg).
+    # a wrong worker presents the finalize — with the claim's own ledger id
+    # (the by-ID fence leg).
     from tests._wf_fixtures import claim_view
 
     worker, attempt, epoch = await claim_view(clean_pg_conn, schema, node_id)
-    # The LEDGER row the claim arbiter would have written at claim (the
+    # The ledger row the claim arbiter would have written at claim (the
     # fence write targets it by (flow, step, attempt, map_index)).
     ledger_id = uuid.uuid4()
     await clean_pg_conn.execute(
@@ -777,8 +776,8 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     )
     assert fence == "fenced", f"the by-ID fence leg did not run: {fence!r}"
 
-    # THE TERMINAL-BY-ID leg: the RIGHT worker's finalize with the
-    # ledger id writes the ledger's terminal THROUGH THE ID.
+    # the terminal-by-id leg: the right worker's finalize with the ledger id
+    # writes the ledger's terminal through the ID.
     res2 = await finalize_node(
         module_pg_pool,
         wsql,
@@ -798,8 +797,8 @@ async def test_the_finalize_fence_writes_the_ledger_by_id_and_by_attempt(
     )
     assert terminal == "succeeded", f"the by-ID terminal leg did not run: {terminal!r}"
 
-    # THE BY-ATTEMPT fence leg: the same fence WITHOUT a ledger id —
-    # the statement keys the arbiter tuple.
+    # the by-attempt fence leg: the same fence without a ledger id — the
+    # statement keys the arbiter tuple.
     node2 = await seed_running_node(clean_pg_conn, schema, flow_id, step_key="fenced2")
     worker2, attempt2, epoch2 = await claim_view(clean_pg_conn, schema, node2)
     ledger2 = uuid.uuid4()
@@ -897,7 +896,7 @@ async def test_the_finalize_registers_the_flow_reducers_for_the_cold_process(
         result={"n": 1},
         reducers={"reg_join": the_reducer},
     )
-    # The registration is visible to the REDUCER RESOLUTION (the same
+    # The registration is visible to the reducer resolution (the same
     # process's registry, keyed by the run's JobId): the memo answers for
     # an anonymous flow (no stamped workflow name).
     resolved = resolve_flow_reducer(flow_id, "reg_join", workflow_name=None)

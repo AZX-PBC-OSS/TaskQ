@@ -1,6 +1,6 @@
-"""THE TIMER + CURSOR DRILL — the nightly re-index on the durable timer:
+"""TIMER + CURSOR DRILL — the nightly re-index on the durable timer
 
-* the schedule fires NO EARLIER than its `next_fire_at` (the tick job's
+* the schedule fires no EARLIER than its `next_fire_at` (the tick job's
   enqueue time is at-or-after the scheduled instant);
 * a worker death mid-timer-wait is survived: the schedule row is
   durable, the fire happens, the flow resumes;
@@ -54,7 +54,7 @@ async def test_timer_and_cursor(
 ) -> None:
     await _disarm(pool, schema)  # the drill controls the fires
 
-    # Seed the shelf with a FIRST batch (the previous night's corpus).
+    # Seed the shelf with a first batch (the previous night's corpus).
     docs_a: list[DocPayload] = make_docs(12, prefix="night-a")
     flow_a_pages = await deliver_batch(
         pool, schema, DeliveryBatch(delivery_id=f"night-a-{secrets.token_hex(4)}", docs=docs_a)
@@ -67,9 +67,9 @@ async def test_timer_and_cursor(
     cursor_before = await store.read_cursor(pool, schema)
     assert cursor_before == 0, "the cursor must not move until the nightly pass"
 
-    # THE FIRE, SCHEDULED +2s: arm it, and kill the worker BEFORE the
-    # fire (mid-timer-wait). The schedule is a durable row: the fire
-    # still happens, no earlier than scheduled.
+    # the fire, scheduled +2s: arm it, and kill the worker before the fire
+    # (mid-timer-wait). The schedule is a durable row: the fire still happens,
+    # no earlier than scheduled.
     worker = await workers.spawn_ready(pool, tag="timer-b", max_concurrency=8)
     scheduled = await _schedule(pool, schema, 2.0)
     await asyncio.sleep(0.5)
@@ -111,7 +111,7 @@ async def test_timer_and_cursor(
         f"the cursor advanced to {cursor_after}, the register's top seq is {max_seq}"
     )
 
-    # ONLY THE INCREMENT: a second night with THREE new documents
+    # only the increment: a second night with three new documents
     # re-processes exactly those three (the register's seq > the cursor).
     docs_b: list[DocPayload] = make_docs(3, prefix="night-b")
     flow_b_pages = await deliver_batch(
@@ -142,7 +142,7 @@ async def test_timer_and_cursor(
     )
     assert report.new_cursor == cursor_mid + 3
 
-    # THE CURSOR NEVER REWINDS (sampled across the drill's kills).
+    # the cursor never rewinds (sampled across the drill's kills).
     cursor_final = await store.read_cursor(pool, schema)
     assert cursor_final >= max(cursor_before, cursor_mid)
 

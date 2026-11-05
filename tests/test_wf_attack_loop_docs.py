@@ -30,13 +30,12 @@ def _evidence_measurements_dir() -> Path:
     return _evidence_mod.evidence_measurements_dir()
 
 
-# THE EXTRACTED ESTATE (the extraction's own): the estate's home is
-# decided by its INDEX (the claims registry), never by the directory's
-# existence — a concurrent writer's redlog-captures dir can exist
-# locally without the estate (the partial-local-dir race). No local
-# registry → the pins walk the EVIDENCE BRANCH's staged copy — the same
-# files, one indirection; the sha cross-check stays the verifier's and
-# the subprocess-seam law.
+# the estate's home is decided by its INDEX (the claims registry), never by the
+# directory's existence — a concurrent writer's redlog-captures dir can exist
+# locally without the estate (the partial-local-dir race). No local registry →
+# the pins walk the evidence branch's staged copy — the same files, one
+# indirection; the sha cross-check stays the verifier's and the subprocess-seam
+# law.
 MEASUREMENTS = (
     REPO / ".measurements"
     if (REPO / ".measurements" / "runs" / "CLAIMS.json").is_file()
@@ -95,16 +94,16 @@ def _parse_json_documents(text: str) -> list[object]:
 
 
 def _measurements_bases() -> list[Path]:
-    """EVERY real capture corpus the law reads — the staged evidence
+    """every real capture corpus the law reads — the staged evidence
     branch's estate PLUS the local tree's own overlay when one exists.
 
-    THE THREE FACES (live under xdist load):
-    the pool was EITHER the staged copy OR the local tree, chosen by
+    THREE FACES (live under xdist load)
+    the pool was EITHER the staged copy or the local tree, chosen by
     which worker resolved first — a writer creating the local
     runs/CLAIMS.json mid-run flipped the other workers' pool to the
     thin fresh set, and the docs' historical figures resolved to
     nothing. The law's own words are "resolves to an artifact in
-    .measurements/" — ANY real capture counts; the pool is the UNION of
+    .measurements/" — any real capture counts; the pool is the UNION of
     both corpora (the local overlaying the staged base on path
     collisions)."""
     bases = [_evidence_measurements_dir()]
@@ -117,7 +116,7 @@ def _measurements_bases() -> list[Path]:
 def _artifact_pool() -> dict[str, list[float]]:
     """Every numeric value in every ``.measurements/**/*.json``
     artifact, per file (bare names, ``runs/`` run-scoped captures, and
-    the dated subdirectories) — across EVERY base corpus (the union
+    the dated subdirectories) — across every base corpus (the union
     law: the staged estate + the local overlay)."""
     pool: dict[str, list[float]] = {}
     for base in _measurements_bases():
@@ -153,7 +152,7 @@ def _resolves(figure: str, unit: str, pool: dict[str, list[float]]) -> str | Non
 #: or row counts (the lookbehind refuses "2,754,895 B"-style matches).
 _FIGURE_RE = re.compile(r"(?<![\w.,])(\d+(?:\.\d+)?)\s*(ms|s)\b")
 
-#: The bound contexts: a BAND is the gate, not a measurement — figures
+#: The bound contexts: a band is the gate, not a measurement — figures
 #: immediately preceded by these tokens are the doc's declared bounds.
 _BOUND_CONTEXT = ("≤", "band", "headroom", "budget")
 
@@ -184,17 +183,17 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
 
     Two layers, one verdict:
 
-    * THE GENERAL NET — every ``N ms``/``N s`` point figure (band/bound
+    * the GENERAL NET — every ``N ms``/``N s`` point figure (band/bound
       contexts excluded) must resolve to a numeric value in some
       artifact at its cited precision. (A pure-number net admits
       coincidences — 477 rides an enqueue band's rounds array; the
       family layer below is the coincidence-proof core.)
-    * THE FAMILY LAYER — the rejected claims, each matched against its
-      OWN artifact family only, so an unrelated metric's coincidence
+    * the FAMILY LAYER — the rejected claims, each matched against its
+      own artifact family only, so an unrelated metric's coincidence
       can never green a lie: the fan-out figure against
       ``fanout-1000-tx-band*``, the join-fire figure against
-      ``join-fire-latency*``, and the sweep's p50/p95 pair against ONE
-      artifact carrying BOTH halves.
+      ``join-fire-latency*``, and the sweep's p50/p95 pair against one
+      artifact carrying both halves.
     """
     text = PERF_DOC.read_text()
     pool = _artifact_pool()
@@ -202,7 +201,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
 
     failures: list[str] = []
 
-    # THE GENERAL NET.
+    # the general net.
     for lineno, figure, unit in _perf_doc_figures(text):
         if _resolves(figure, unit, pool) is None:
             failures.append(
@@ -210,7 +209,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
                 "artifact in .measurements/"
             )
 
-    # THE FAMILY LAYER (the rejected claims).
+    # the family layer (the rejected claims).
     if re.search(r"measured:\s*\*{0,2}51\.8\s*ms", text):
         fanout = {
             name: values
@@ -260,7 +259,7 @@ def test_docs_every_measured_figure_resolves_to_an_artifact() -> None:
 
 def test_docs_the_api_reference_covers_every_shipped_validate_rule() -> None:
     """The validator is the checker-independent contract — the reference
-    must name EVERY shipped rule (a rule the reference omits is a rule a
+    must name every shipped rule (a rule the reference omits is a rule a
     user cannot read about). Shipped set parsed from the source of truth
     (``_validate.py``'s own ``WorkflowValidationError`` literals)."""
     shipped = set(
@@ -364,11 +363,9 @@ def test_docs_the_disposition_counts_agree_across_their_three_homes() -> None:
     for cls in keys:
         if header[cls] != table[cls]:
             drift.append(f"{cls}: the ledger header says {header[cls]}, the table has {table[cls]}")
-    # THE GUIDE'S ONE-HOME LAW (the doc-honesty round's own fix, which
-    # REPLACED this pin's old two-prose-homes contract): the guide
-    # carries NO arithmetic — it POINTS at the ledger (the one home).
-    # The pin now enforces the pointer + the absence: the counts live
-    # in exactly one place.
+        # the guide carries no arithmetic — it points at the ledger (the one home).
+    # The pin now enforces the pointer + the absence: the counts live in
+    # exactly one place.
     if re.search(r"applied\s+\d+\s*/", guide):
         drift.append(
             "the guide carries its own count arithmetic — the one-home law says the ledger is the only home"

@@ -12,7 +12,8 @@
 <div class="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3 text-sm text-yellow-700 dark:text-yellow-300">{{ notice_text }}</div>
 {% elif run %}
 {% if refusal_banner %}
-{# THE REFUSED-OP BANNER (the defined state the redirect lands on — never a 400 wall). #}
+{# the refused-op banner (the defined state the redirect lands on — never a
+   400 wall). #}
 <div class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 text-sm text-red-700 dark:text-red-300 mb-4" role="alert" data-wf="refusal-banner">{{ refusal_banner }}</div>
 {% endif %}
 
@@ -24,18 +25,18 @@
             · derived: <strong data-wf="derived-status">{{ derived }}</strong>
             <span class="text-slate-400">(the §17.5 derivation; the root row is a cache)</span></div>
         {% if run.root_map_children %}
-        {# THE ROOT'S MAP COUNTER (the collapse's run-level face): the SUM across the run's map sources — the SSE snapshot patches it. #}
+        {# the sum across the run's map sources — the SSE snapshot patches it. #}
         <div class="text-xs text-slate-500 dark:text-slate-400 mt-2">Map fan-out: <span class="font-mono" data-wf="map-counter">{{ run.root_map_done }}/{{ run.root_map_children }}</span> done (collapsed per source; the child detail lives in the drill-down)</div>
         {% endif %}
         {% if run.cancel_requested_at %}
         <div class="text-xs text-red-600 dark:text-red-400 mt-2">Cancel in flight (cancel_requested_at is set).</div>
         {% endif %}
         {% if actions_enabled %}
-        {# THE RUN RERUN (the failed work's re-enqueue): the route composes
-           the engine's OWN per-node resume verb over the run's failed
-           step keys — no engine semantics invented (a cancelled run or a
-           fresh input is a NEW run; the banner says so on refusal). The
-           confirm dialog rides the page JS (form[data-confirm]). #}
+        {# the route composes the engine's own per-node resume verb over the run's
+           failed step keys — no engine semantics invented (a cancelled
+           run or a fresh input is a new run; the banner says so on
+           refusal). The confirm dialog rides the page JS
+           (form[data-confirm]). #}
         <form method="post" action="{{ base_path }}/api/runs/{{ run.run_id }}/rerun" data-wf-form="rerun-run"
               data-confirm="Rerun this flow? Every FAILED node re-opens (the attempt ordinals continue), the blocked downstream clears, the exit-skipped branches re-arm (their skip envelopes clear and the cut-short work re-runs), and the run resumes on its next drive. The retry is audited."
               class="mt-3">
@@ -57,12 +58,11 @@
     </div>
 </div>
 
-{# THE FLOW FAMILY (the admin is not child-blind):
-   the parent↔child links are ROW facts (the child flows' records on
-   the parent's node rows; the parent pointer on the child's root) —
-   the identity faces the child line landed, surfaced: the operator can
-   walk the family and see whose join waits (the cancel itself lives on
-   the CLI/API doors — this page renders no cancel affordance). #}
+{# the parent↔child links are row facts (the child flows' records on the
+   parent's node rows; the parent pointer on the child's root) — the
+   identity faces the child line landed, surfaced: the operator can walk
+   the family and see whose join waits (the cancel itself lives on the
+   CLI/API doors — this page renders no cancel affordance). #}
 {% if run.parent_flow_id or run.child_flows %}
 <div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6" data-wf="flow-family">
     <h3 class="text-sm font-semibold mb-2">Flow family</h3>
@@ -97,9 +97,8 @@
     </div>
     <div class="overflow-x-auto" id="wf-graph" data-graph-empty="{{ 'true' if not nodes else 'false' }}">
         {% if not nodes %}
-        {# THE EMPTY STATE: a run whose nodes are not inserted (or a run
-           id that names a root row only) renders the DEFINED state, not
-           a blank region. #}
+        {# a run whose nodes are not inserted (or a run id that names a root row
+           only) renders the defined state, not a blank region. #}
         <p class="text-sm text-slate-500 dark:text-slate-400 p-4">No node rows yet — the run was created but its nodes are not inserted (source: jobs rows by metadata.flow_id).</p>
         {% else %}
         <div id="wf-graph-host" class="min-h-[80px]"></div>
@@ -108,15 +107,13 @@
 </div>
 
 {% if nodes %}
-{# THE NODE TABLE (the graph's second renderer — the rows the JS's
-   degrade text always promised): the SAME collapsed projection the
-   graph renders; the SSE stream patches its chips live. THE RERUN
-   AFFORDANCE lives here: a FAILED node's row carries the retry form
-   (the engine's own manual-resume verb behind it — the confirm dialog
-   rides the page JS). A collapsed map child is not a row: its story is
-   the source's counter + the drill-down panel, and its re-run is the
-   RUN rerun's census (the route reads every failed row, collapsed or
-   not). #}
+{# the same collapsed projection the graph renders; the SSE stream patches
+   its chips live. the rerun affordance lives here: a failed node's row
+   carries the retry form (the engine's own manual-resume verb behind it —
+   the confirm dialog rides the page JS). A collapsed map child is not a
+   row: its story is the source's counter + the drill-down panel, and its
+   re-run is the run rerun's census (the route reads every failed row,
+   collapsed or not). #}
 <div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6" data-wf="node-table"
      {% if actions_enabled %}data-csrf="{{ csrf_token }}"{% endif %}>
     <h3 class="text-sm font-semibold mb-1">Nodes</h3>
@@ -135,21 +132,19 @@
                 <td class="py-1.5 pr-4">
                     <span data-wf-node-chip class="{{ badge_chip_base }}{{ status_chip_classes.get(n.status, status_chip_classes['pending']) }}">{{ n.status }}</span>
                     {% if n.deferral_label %}
-                    {# THE DEFERRAL LINE (the snoozed step's sitting state —
-                       the "why is this step sitting here" answer): the
-                       signal, the next fire time, the deferral count.
-                       The label is the ROW's truth (the deferral stamp's
-                       own discriminator), so a later ladder repend never
-                       reads as a live deferral; the SSE stream
-                       paints/clears the line live. #}
+                    {# the signal, the next fire time, the deferral count. The label is the row's
+                       truth (the deferral stamp's own discriminator), so
+                       a later ladder repend never reads as a live
+                       deferral; the SSE stream paints/clears the line
+                       live. #}
                     <div class="mt-1 text-xs text-amber-700 dark:text-amber-300" data-wf-node-deferral>{{ n.deferral_label }}</div>
                     {% endif %}
                     {% if n.deadline_label %}
-                    {# THE DEADLINE LINE (the wf start_to_close bound — the
-                       bound where declared + the deadline's reality for a
-                       RUNNING node: the claim's instant + the bound, with
-                       the time left or the expiry's age). The row's own
-                       truth; the SSE stream paints/clears the line live. #}
+                    {# the deadline line (the wf start_to_close bound — the bound where declared
+                       + the deadline's reality for a running node: the
+                       claim's instant + the bound, with the time left or
+                       the expiry's age). The row's own truth; the SSE
+                       stream paints/clears the line live. #}
                     <div class="mt-1 text-xs text-slate-500 dark:text-slate-400" data-wf-node-deadline>{{ n.deadline_label }}</div>
                     {% endif %}
                 </td>
@@ -177,10 +172,9 @@
 </div>
 {% endif %}
 
-{# THE HELDS: the WAITING-ON state + the deadline + the DECLARED payload
-   schema + a prefilled valid example — the operator knows WHAT to
-   deliver without reading code. Zero holds renders the DEFINED
-   healthy-zero state. #}
+{# the waiting-on state + the deadline + the declared payload schema + a
+   prefilled valid example — the operator knows what to deliver without
+   reading code. Zero holds renders the defined healthy-zero state. #}
 <div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6">
     <h3 class="text-sm font-semibold mb-2">Holds &amp; decisions</h3>
     {% if not holds %}
@@ -189,11 +183,10 @@
     <ul class="space-y-3">
         {% for h in holds %}
         {% if h.is_timer %}
-        {# THE TIMER'S BRANCH: a timer
-           hold renders AS a timer — the key, the scheduled instant, the
-           clock as the resolver — and NO resolve affordance: the
-           boundary is refuse-only (the clock is the only resolver this
-           hold takes). #}
+        {# a timer hold renders as a timer — the key, the scheduled instant, the
+           clock as the resolver — and no resolve affordance: the boundary
+           is refuse-only (the clock is the only resolver this hold
+           takes). #}
         <li class="border border-slate-200 dark:border-slate-800 rounded p-3 text-sm" data-hold-id="{{ h.hold_id }}">
             <div class="flex flex-wrap items-center gap-2">
                 <span class="font-mono text-xs">{{ h.hold_id }}</span>
@@ -261,7 +254,7 @@
     {% endif %}
 </div>
 
-{# THE AUDIT TRAIL: every operator action on this run is a ROW here. #}
+{# every operator action on this run is a row here. #}
 <div class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6">
     <h3 class="text-sm font-semibold mb-2">Audit trail</h3>
     {% if not events %}
@@ -290,8 +283,8 @@
     {% endif %}
 </div>
 
-{# THE PANEL: the node drill-down (the delegated click listener's host;
-   the loading/empty/error states are the JS contract). #}
+{# the node drill-down (the delegated click listener's host; the
+   loading/empty/error states are the JS contract). #}
 <div id="wf-panel" class="bg-white dark:bg-slate-900 shadow rounded-lg p-4 mb-6 hidden" role="region" aria-label="Node detail">
     <div class="flex items-center justify-between mb-2">
         <h3 class="text-sm font-semibold">Node detail <span class="font-mono text-xs text-slate-500" data-panel="key"></span></h3>
@@ -300,9 +293,9 @@
     <div data-panel="loading" class="text-sm text-slate-500 dark:text-slate-400">loading…</div>
     <div data-panel="error" class="hidden text-sm text-red-600 dark:text-red-400"></div>
     <div data-panel="body" class="hidden text-sm space-y-2"></div>
-    {# THE NODE I/O (the wired input + the decoded output/capture — the
-       JS fills it from the panel fetch; the hidden default is the
-       defined state for a fetch that never landed). #}
+    {# the node I/O (the wired input + the decoded output/capture — the JS fills
+       it from the panel fetch; the hidden default is the defined state
+       for a fetch that never landed). #}
     <div data-panel="io" class="hidden mt-2 space-y-2 border-t border-slate-100 dark:border-slate-800 pt-2"></div>
 </div>
 

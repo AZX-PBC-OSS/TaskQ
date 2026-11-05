@@ -1,5 +1,5 @@
-"""THE FACES: the pushed progress stream captured by a listener; the
-admin/display API's view mid-run AND at terminal; the typed success
+"""The pushed progress stream captured by a listener; the
+admin/display API's view mid-run and at terminal; the typed success
 receipt."""
 
 from __future__ import annotations
@@ -30,15 +30,13 @@ async def test_progress_stream_push_and_display_faces(
     assert claim.kind == "created"
     flow_id = str(claim.flow_id)
 
-    # THE PUSH FACE: a listener captures the typed stream while the run
-    # is live — on ITS OWN pool (a listener owns one dedicated
-    # connection for its life; isolating it keeps the drill's shared
-    # pool clean under cancellation).
+    # a listener captures the typed stream while the run is live — on its own
+    # pool (a listener owns one dedicated connection for its life; isolating it
+    # keeps the drill's shared pool clean under cancellation).
     events: list[ProgressUpdated | object] = []
     capture = asyncio.create_task(_capture_on_own_pool(schema, flow_id, events))
 
-    # THE DISPLAY FACE, MID-RUN: the ledger-derived view shows the run
-    # in flight.
+    # the ledger-derived view shows the run in flight.
     runner = _runner(pool, schema)
     mid = await _mid_run_view(pool, runner, flow_id)
     assert mid, "the mid-run display was empty"
@@ -50,8 +48,8 @@ async def test_progress_stream_push_and_display_faces(
     report = CompletionReport.model_validate(raw)
     assert report.failed == []  # the typed receipt's integrity
 
-    # THE LISTENER SAW THE RUN: the closed union's Updated events
-    # arrived while the run was live (the push transport).
+    # the closed union's Updated events arrived while the run was live (the
+    # push transport).
     await wait_for(
         lambda: len(events) > 0,
         timeout_s=30,
@@ -65,16 +63,15 @@ async def test_progress_stream_push_and_display_faces(
         f"the captured events carry no Update: {[type(e).__name__ for e in events[:5]]}"
     )
 
-    # THE DISPLAY FACE, TERMINAL: every node's ledger-derived state,
-    # keyed BY NAME.
+    # every node's ledger-derived state, keyed by name.
     final = await operator_view(pool, runner.wsql, flow_id)
     assert final["ingest"]["status"] == "succeeded"
     assert final["report"]["status"] == "succeeded"
     children = [k for k in final if k.startswith("ingest.item[")]
     assert len(children) == 120, f"the display's collect: {len(children)} children"
 
-    # THE STREAM CHANNEL: the bodies' own emissions are ON THE RECORD
-    # (the ring): the enrich children's messages ride the payload.
+    # the bodies' own emissions are on the record (the ring): the enrich
+    # children's messages ride the payload.
     rows = await pool.fetch(
         f'SELECT payload FROM "{schema}".wf_node_stream'  # noqa: S608  # Why: the schema identifier only.
         " WHERE flow_id = $1 AND kind = 'progress' AND payload->>'message' LIKE 'enriching %' LIMIT 3",
@@ -82,8 +79,8 @@ async def test_progress_stream_push_and_display_faces(
     )
     assert len(rows) > 0, "the enrich children's progress emissions never landed on the stream"
 
-    # THE ADMIN FACE: the run explorer renders the run (200: the run's
-    # identity + the node keys on the page).
+    # the run explorer renders the run (200: the run's identity + the node keys
+    # on the page).
     app = admin_app(pool, schema)
     from httpx import ASGITransport, AsyncClient
 

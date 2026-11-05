@@ -174,7 +174,7 @@ def test_principal_subject_clean_strings_run_unmasked() -> None:
 def test_typed_subject_is_detected_loudly_but_bound_verbatim() -> None:
     """(#463 round 2) The typed path binds ``.subject`` verbatim (the
     identity contract -- masking honest identity is its own falsification),
-    but NOT silently: a credential-shaped typed subject fires the same
+    but not silently: a credential-shaped typed subject fires the same
     loud event the string path fires, so a dependency that wraps the
     credential in a claims object is never a quiet leak. The warning
     carries no token material itself."""
@@ -256,7 +256,7 @@ def test_schedule_enable_writes_audit_row_in_the_same_transaction(
     assert args[1] == "schedule.enable"
     assert args[2] == "schedule"
     assert args[3] == str(sid)
-    # The audit row was written INSIDE the mutation's transaction block,
+    # The audit row was written inside the mutation's transaction block,
     # not after it: the same-transaction guarantee is the pin.
     assert conn.max_transaction_depth >= 1
 

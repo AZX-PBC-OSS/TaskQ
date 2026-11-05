@@ -1,7 +1,7 @@
 """The router's pins — the typed-outcome Chain/Step/Route surface
 (PROOF.md §3 + §4).
 
-TOTALITY IS THE FENCE, at TWO doors (the asymmetry doctrine — the spike's
+TOTALITY IS the FENCE, at TWO doors (the asymmetry doctrine — the spike's
 §3): the DECLARATION-time refusal (a non-total route is a coding error,
 rejected before any row exists) and the RUNTIME loud refusal
 (``RouterNotTotal`` — the step terminal-FAILS with
@@ -9,7 +9,7 @@ rejected before any row exists) and the RUNTIME loud refusal
 record's chain visibly dies, never silently drops).
 
 The routing RUNS through the certified fork-at-finalize machinery: a
-chain step's finalize forks AT MOST ONE child (no fan-in, no join), the
+chain step's finalize forks AT MOST one child (no fan-in, no join), the
 record's ``map_index`` + trace riding forward — the per-record lineage is
 one query (the drill-down by trace).
 
@@ -102,7 +102,7 @@ def the_chain() -> Chain:
     )
 
 
-# ── DOOR 1: the declaration-time refusal ────────────────────────────────
+# ── door 1: the declaration-time refusal ────────────────────────────────
 
 
 def test_route_not_total_is_refused_at_declaration() -> None:
@@ -118,7 +118,7 @@ def test_route_not_total_is_refused_at_declaration() -> None:
                 "screen": Step(
                     body=screen_app,
                     outcomes=ScreenOutcome,
-                    # the FLAGGED outcome is MISSING:
+                    # the flagged outcome is missing:
                     route=Route({ScreenOutcome.CLEAN: "enrich"}),
                 ),
             },
@@ -131,7 +131,7 @@ def test_route_not_total_is_refused_at_declaration() -> None:
     else:
         raise AssertionError("NOT REFUSED — the totality fence is broken")
 
-    # the flip: an UNKNOWN key is the same refusal's other face.
+    # the flip: an unknown key is the same refusal's other face.
     with pytest.raises(ValueError, match="unknown"):
         Chain(
             name="broken-2",
@@ -151,7 +151,7 @@ def test_route_not_total_is_refused_at_declaration() -> None:
             },
         )
 
-    # the route to a NON-STEP key is refused too (the chain's shape).
+    # the route to a non-step key is refused too (the chain's shape).
     with pytest.raises(ValueError, match="not a step"):
         Chain(
             name="broken-3",
@@ -181,11 +181,11 @@ def test_route_not_total_is_refused_at_declaration() -> None:
     del refusal_record
 
 
-# ── DOOR 2: the runtime loud refusal ────────────────────────────────────
+# ── door 2: the runtime loud refusal ────────────────────────────────────
 
 
 def test_router_not_total_loud_refusal() -> None:
-    """An outcome with NO arm raises :class:`RouterNotTotal` — the runner
+    """An outcome with no arm raises :class:`RouterNotTotal` — the runner
     converts it to a terminal-FAILED finalize carrying
     ``error_class='RouterNotTotal'`` (the integration below pins the ROW).
     The silent-drop variant (a bare KeyError swallowing, a ``None``
@@ -193,13 +193,13 @@ def test_router_not_total_loud_refusal() -> None:
     route = Route({ScreenOutcome.CLEAN: "enrich", ScreenOutcome.FLAGGED: "manual_review"})
     with pytest.raises(RouterNotTotal, match="'corrupted'"):
         route.next_step("corrupted")  # a foreign outcome at runtime
-    # DONE routes end the chain (None — no fork).
+    # done routes end the chain (None — no fork).
     total = Route({EnrichOutcome.OK: DONE, EnrichOutcome.SPARSE: None})
     assert total.next_step("ok") is DONE
     assert total.next_step("sparse") is None
 
 
-# ── THE ROUTE'S DECISION RIDES THE CERTIFIED FORK ───────────────────────
+# ── the route's decision rides the certified fork ───────────────────────
 
 
 @pytest.mark.integration
@@ -212,9 +212,9 @@ async def test_chain_routes_through_the_certified_fork(
 ) -> None:
     """The full conditional-edge walk on the REAL engine: the source emits
     two records' chain starts (clean + flagged); the chain steps' bodies
-    return their typed outcomes; each finalize forks AT MOST ONE child
+    return their typed outcomes; each finalize forks AT MOST one child
     (the route's arm — no join anywhere); the record's map_index + trace
-    ride EVERY row of its chain. The two records end on DIFFERENT routes
+    ride every row of its chain. The two records end on DIFFERENT routes
     (the conditional edge, observed on the rows)."""
     chain = the_chain()
     flow_id = await seed_flow(wf_conn, wf_schema)
@@ -225,7 +225,7 @@ async def test_chain_routes_through_the_certified_fork(
     from taskq.workflows.engine import finalize_node
     from taskq.workflows.ledger import claim_step_ledger
 
-    # THE EMIT: two records' chain starts — clean(1) + flagged(2).
+    # two records' chain starts — clean(1) + flagged(2).
     starts = [
         chain_start(chain, {"app_id": 1, "risk": 0.1}, map_index=1, trace_id="trace-1"),
         chain_start(chain, {"app_id": 2, "risk": 0.95}, map_index=2, trace_id="trace-2"),
@@ -300,7 +300,7 @@ async def test_chain_routes_through_the_certified_fork(
         assert res.applied
         return outcome
 
-    # The two STARTS route DIFFERENTLY (the conditional edge).
+    # The two starts route differently (the conditional edge).
     async with module_pg_pool.acquire() as conn:
         rows = await conn.fetch(
             f'SELECT id, map_index FROM "{wf_schema}".jobs '
@@ -311,7 +311,7 @@ async def test_chain_routes_through_the_certified_fork(
     outcomes = [await run_chain_row(JobId(r["id"]), "screen", screen_app) for r in rows]
     assert outcomes == [ScreenOutcome.CLEAN, ScreenOutcome.FLAGGED]
 
-    # The CHILDREN exist per the ROUTE (one fork each — clean → enrich,
+    # The children exist per the route (one fork each — clean → enrich,
     # flagged → manual_review), the record's identity riding forward.
     children = await wf_conn.fetch(
         f'SELECT id, step_key, map_index, trace_id, idempotency_key FROM "{wf_schema}".jobs '
@@ -339,7 +339,7 @@ async def test_chain_routes_through_the_certified_fork(
         "the record's trace rides the fork"
     )
 
-    # The chain ENDS at DONE (the terminal step finalizes with NO fork —
+    # The chain ends at done (the terminal step finalizes with no fork —
     # zero children of its own).
     enrich_row = next(r for r in children if r["step_key"] == "enrich")
     await run_chain_row(JobId(enrich_row["id"]), "enrich", enrich_app)
@@ -389,7 +389,7 @@ async def test_router_not_total_fails_the_row_loudly(
                 source_id,
             )
         )
-    # THE BODY THAT LIED: 'corrupted' is not a ScreenOutcome.
+        # 'corrupted' is not a ScreenOutcome.
     w = JobId(new_uuid())
     async with module_pg_pool.acquire() as conn:
         rec = await conn.fetchrow(
@@ -419,9 +419,8 @@ async def test_router_not_total_fails_the_row_loudly(
         try:
             chain.next_child("screen", "corrupted", payload={}, map_index=9)
         except RouterNotTotal as exc:
-            # THE RUNNER'S LOUD REFUSAL (the runner's chain path): the
-            # step terminal-FAILS with the defect's name — never a
-            # silent drop.
+            # the step terminal-fails with the defect's name — never a silent
+            # drop.
             await finalize_node(
                 module_pg_pool,
                 wf_sql,
@@ -460,7 +459,7 @@ async def test_router_not_total_fails_the_row_loudly(
     assert "corrupted" in (row["error_message"] or ""), "the refusal names the outcome"
 
 
-# ── THE AUTHOR SURFACE, END TO END (PROOF §4's shape, on the runner) ────
+# ── the author surface, end to end (proof §4's shape, on the runner) ────
 
 
 async def screen_step(ctx: object, item: dict[str, object]) -> ScreenOutcome:
@@ -496,8 +495,8 @@ _ROUTER_PAGE = [
 
 
 async def paged_source(ctx: StepContext) -> None:
-    """The paged source: ONE page, emitted while the source is running
-    (each yield = ONE emit tx — the children + edges + the cursor)."""
+    """The paged source: one page, emitted while the source is running
+    (each yield = one emit tx — the children + edges + the cursor)."""
     await ctx.emit_batch(
         [
             chain_start(
@@ -550,10 +549,10 @@ async def test_chain_end_to_end_through_the_runner(
         "crosses two systems) or a record's chain stranded non-terminal",
         dict(sorted(by_trace.items())),
     )
-    # THE RECORD LINEAGES (the source row itself carries no record trace):
+    # the record lineages (the source row itself carries no record trace):
     record_traces = {k: v for k, v in by_trace.items() if k != "None"}
     assert len(record_traces) == 2, "two records, two traces — the one-query lineage"
-    # app-1 (clean): screen only — DONE ended the chain.
+    # app-1 (clean): screen only — done ended the chain.
     # app-2 (flagged): screen → manual_review — the conditional edge.
     assert sorted(k for k, _ in record_traces["app-1"]) == ["screen"]
     assert sorted(k for k, _ in record_traces["app-2"]) == ["manual_review", "screen"]
@@ -568,7 +567,7 @@ async def test_chain_end_to_end_through_the_runner(
 
 async def lying_screen(ctx: object, item: dict[str, object]) -> ScreenOutcome:
     """The body that lied: returns a raw string — not the declared enum."""
-    return "corrupted"  # type: ignore[return-value]  # Why: the scenario — the foreign outcome IS the runtime door's subject.
+    return "corrupted"  # type: ignore[return-value]  # Why: the scenario — the foreign outcome is the runtime door's subject.
 
 
 LYING_ROUTER_CHAIN = Chain(

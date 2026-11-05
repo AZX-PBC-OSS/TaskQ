@@ -79,12 +79,12 @@ _HANDBACK_BOUND_SECS = 30.0
 _TERMINATE_RECONNECT_WINDOW_SECS = 10.0
 _TERMINATE_RECONNECT_POLL_SECS = 0.5
 
-# Settle = QUIESCENCE DETECTION, not a fixed deadline: the soak exists to
-# catch LOST or LIVELOCKED jobs, and "pending but the runner is slow" is
+# Settle = quiescence detection, not a fixed deadline: the soak exists to
+# catch lost or livelocked jobs, and "pending but the runner is slow" is
 # not a defect. A fixed settle deadline against throughput is a CI lottery
 # (a starved runner with live workers red the soak while the system was
 # healthy). We poll the observable state instead and declare settlement
-# when every job is terminal OR the system is quiescent - see
+# when every job is terminal or the system is quiescent - see
 # ``_settle_quiescent`` for the exact conditions.
 _SETTLE_POLL_SECS = 2.0
 #: K consecutive inert polls declare quiescence. The window must ride out
@@ -171,7 +171,7 @@ def _settings(pg_dsn: str, schema: str) -> WorkerSettings:
             "heartbeat_command_timeout": "0.1",
             # 4.0 is the largest value the lease cascade admits
             # (4.0 + heartbeat_interval 0.5 < lock_lease 5), not the
-            # smallest: the trip is TERMINAL (os._exit), so the budget
+            # smallest: the trip is terminal (os._exit), so the budget
             # must clear the worst legitimate stall, and a saturated
             # -n 4 runner's co-tenancy pushes a poll cycle past several
             # seconds (this soak's own observed pacing: ~2.7s/job). The
@@ -289,8 +289,8 @@ async def _settle_quiescent(
     Settlement is declared when, across ``_SETTLE_QUIESCE_POLLS``
     consecutive polls spaced ``_SETTLE_POLL_SECS`` apart:
 
-    * every seeded job is terminal (the happy end), OR
-    * the system is QUIESCENT - no observable progress AND no pending
+    * every seeded job is terminal (the happy end), or
+    * the system is QUIESCENT - no observable progress and no pending
       progress: the terminal count is unchanged, no attempt rows were
       added (no claim fired), no job is running (workers idle), no
       scheduled job is due-but-unclaimed, and no scheduled job is still
@@ -445,7 +445,7 @@ async def _trial(
         if round_no % 33 == 5:
             # A zero kill has two live explanations: the worker exited (the
             # defect the post-run assertions pin - still red below), or the
-            # worker is mid-RECONNECT: a prior terminate round or a server
+            # worker is mid-reconnect: a prior terminate round or a server
             # blip closed its sessions and the pools are rebuilding. The
             # soak's own notify-conn-error / ConnectionDoesNotExistError
             # trail is that window, and the worker's 50ms poll cadence
@@ -455,7 +455,7 @@ async def _trial(
             # green on retry). The interruption is retried across the
             # window instead: the chaos is still delivered the moment the
             # worker holds a session again, and a worker alive but
-            # session-less for the WHOLE window (a dead reconnect) reds
+            # session-less for the whole window (a dead reconnect) reds
             # exactly as before.
             killed = await _bounded(
                 _kill_worker_connections(schema, dsn), f"round {round_no} terminate"
@@ -484,7 +484,7 @@ async def _trial(
             )
 
         # Real-time pacing: a round every ~100ms keeps the soak's wall
-        # clock near 25s, so the chaos lands ACROSS the worker's recovery
+        # clock near 25s, so the chaos lands across the worker's recovery
         # cycles instead of all inside one reconnect window, and the
         # throughput timeline below has per-round resolution.
         await _bounded(asyncio.sleep(0.1), f"round {round_no} pace")
@@ -500,7 +500,7 @@ async def _trial(
     # ── Settle: quiescence detection, not a fixed deadline ──
     # Not wrapped in the step watchdog as a whole: the loop's legitimate
     # duration now includes retry backoffs maturing and the quiescence
-    # window itself. Every blocking await INSIDE it is individually
+    # window itself. Every blocking await inside it is individually
     # watchdog-bounded ("settle poll", "settle snapshot" - a hang still
     # dumps live tasks), and the total is bounded by the helper's wall
     # cap with its own precise verdict.
@@ -574,16 +574,15 @@ async def _trial(
             "second, so the ledger undercounts the counter) or a claim's "
             "ledger row was lost"
         )
-        # THE EPOCH-LINEAGE CLOSURE: the ledger must reconcile with the
-        # counter for EVERY epoch, not just in count. The ledger's PK
-        # makes its rows distinct, so count == attempt together with
-        # min >= 1 (no row BELOW the first charge: a refund de-charges the
-        # increment, and a reclaim that permanentises the refunded number
-        # mints a phantom epoch the next claim double-counts) and
-        # max <= attempt (no row ABOVE the counter: a charge whose refund
-        # erased the counter leaving its ledger row standing) pins the
-        # rows to exactly {1..attempt}: every recorded epoch was charged,
-        # every charged epoch is recorded.
+        # the ledger must reconcile with the counter for every epoch, not just
+        # in count. The ledger's pk makes its rows distinct, so count ==
+        # attempt together with min >= 1 (no row below the first charge: a
+        # refund de-charges the increment, and a reclaim that permanentises the
+        # refunded number mints a phantom epoch the next claim double-counts)
+        # and max <= attempt (no row above the counter: a charge whose refund
+        # erased the counter leaving its ledger row standing) pins the rows to
+        # exactly {1..attempt}: every recorded epoch was charged, every charged
+        # epoch is recorded.
         assert row["min_attempt"] is None or row["min_attempt"] >= 1, (
             f"job {row['id']}: ledger holds attempt {row['min_attempt']}, "
             f"below the first charge - a refund's de-charge was "
@@ -610,10 +609,10 @@ async def stop_worker_and_reap_bootstrap(
     stop_timeout: float = 120.0,
     reap_timeout: float = 30.0,
 ) -> None:
-    """Stop the soak's worker and reap EVERY task its bootstrap minted.
+    """Stop the soak's worker and reap every task its bootstrap minted.
 
     This is the teardown guarantee the soak owes the module's event loop
-    on EVERY exit path - the settle-assertion failure path (pytest.fail
+    on every exit path - the settle-assertion failure path (pytest.fail
     unwinding through the ``finally``), a hang-watchdog red, and the
     happy path alike.  The module's event loop is module-scoped (the
     suite's pytest-asyncio config), so a bootstrap task left pending here
@@ -625,7 +624,7 @@ async def stop_worker_and_reap_bootstrap(
     1. GRACEFUL STOP: cancel the worker task and await it, bounded by
        *stop_timeout*.  The bound MUST exceed the worker's own exit bound
        (``termination_grace_period`` 85s + its 8s exit tail - hence 120s):
-       the old teardown's 60s ``wait_for`` gave up INSIDE the worker's
+       the old teardown's 60s ``wait_for`` gave up inside the worker's
        own cleanup window, and its timeout-delivered second cancellation
        then interrupted ``_main``'s cleanup ``finally`` mid-way - the
        reap gate abandoned, ``lag_watchdog.stop()`` skipped, the loop-lag
@@ -634,9 +633,9 @@ async def stop_worker_and_reap_bootstrap(
        module later, run 3 of the combined soak->heartbeat proof).  The
        same arithmetic keeps the shutdown watchdog's own trip contained:
        with the watchdog enabled, a drain parked past the deadline is
-       force-``os._exit``ed by the worker's OWN watchdog
+       force-``os._exit``ed by the worker's own watchdog
        (``worker.shutdown_watchdog``) within ``termination_grace_period``
-       + the exit tail - INSIDE this stage's wait, never during stage 2's
+       + the exit tail - inside this stage's wait, never during stage 2's
        reaping, whose awaits would otherwise feed an armed watchdog.  A
        drain that outlasts even this bound raises TimeoutError into
        *this* frame while the bootstrap is still mid-teardown - reachable
@@ -654,7 +653,7 @@ async def stop_worker_and_reap_bootstrap(
     """
     # Stage 1: the graceful stop.  Swallow what the stop itself raises
     # (the give-up TimeoutError, a worker crash, the external-cancel
-    # CancelledError) so the TEST's own failure stays the headline -
+    # CancelledError) so the test's own failure stays the headline -
     # but never KeyboardInterrupt/SystemExit, which must propagate.
     if not worker_task.done():
         worker_task.cancel()
@@ -673,11 +672,11 @@ async def stop_worker_and_reap_bootstrap(
     for task in residue:
         task.cancel()
     _done, pending = await asyncio.wait(residue, timeout=reap_timeout)
-    # Retrieve EVERY completed task's outcome before any raise: a cancel()
-    # delivery is expected here, but a task that died with a REAL exception
+    # Retrieve every completed task's outcome before any raise: a cancel()
+    # delivery is expected here, but a task that died with a real exception
     # is a bootstrap finding, and the raise below must never abandon the
     # remaining outcomes un-retrieved (an un-retrieved exception rots into
-    # a later "exception was never retrieved" warning on a DIFFERENT test).
+    # a later "exception was never retrieved" warning on a different test).
     crashes: list[str] = []
     for task in _done:
         if task.cancelled():
@@ -709,12 +708,12 @@ async def stop_worker_and_reap_bootstrap(
 # 240 paced rounds under a coverage-instrumented, -n 4-starved runner, the
 # settle wall cap (scaled to the job count at the cooldown-throttled
 # rate), the worker's own shutdown grace periods (termination grace 85s),
-# and the handback bound. The outer 2700s mark is PER ITEM - the three
+# and the handback bound. The outer 2700s mark is per item - the three
 # trials are three items, each with its own budget - and bounds only the
-# legitimate total: a livelock reds from the test's OWN inner watchdogs
+# legitimate total: a livelock reds from the test's own inner watchdogs
 # long before it fires (30s per blocking step, 30s completion-stall, the
 # settle's quiescence detection and wall cap, the 30s-capped worker
-# shutdown step, 30s handback) AND the finally's two-stage teardown must
+# shutdown step, 30s handback) and the finally's two-stage teardown must
 # fit inside the same item: stage 1's 120s graceful-stop bound (above the
 # worker's own 85s + 8s exit bound) plus stage 2's 30s residue reap.
 # test_suite_hygiene.py pins this arithmetic against drift
@@ -729,16 +728,16 @@ async def stop_worker_and_reap_bootstrap(
 # moves the three trials to the serial load-sensitive lane, where no xdist
 # sibling starves the settle — the confound that produced the receipt
 # (healthy ~0.2s/job; -n 4 co-tenancy measured 2.7s/job; the slow lane's
-# co-tenancy blew past 4s/job). The cap is NOT scaled instead: surviving
+# co-tenancy blew past 4s/job). The cap is not scaled instead: surviving
 # that starved runner needs a cap above the observed 1944s, and no home
 # could host the scaled bound — the timeout(2700) mark below and every
-# lane's job cap in ci.yaml sit under it, so the honest "NOT SETTLED" red
+# lane's job cap in ci.yaml sit under it, so the honest "not settled" red
 # would become a silent lane-cancel. The documented trade: a runner so
 # starved the settle outlives the load-sensitive lane's own job cap
 # cancels that lane instead of reding at the cap; the serial regime is the
 # bet that this stays rare. The teeth proof
 # (test_settle_quiescence_has_teeth) stays unmarked and in the slow lane:
-# its verdict is quiescence on an INJECTED lost job — deterministic in
+# its verdict is quiescence on an injected lost job — deterministic in
 # seconds — not a settle-duration measurement.
 @pytest.mark.load_sensitive
 @pytest.mark.timeout(2700)
@@ -762,7 +761,7 @@ async def test_lost_job_soak_grand_mixin(
             return await _main(settings, actor_registry=_REGISTRY)
         return 0
 
-    # The reap's baseline: every task pending BEFORE the bootstrap mints
+    # The reap's baseline: every task pending before the bootstrap mints
     # any.  Everything still pending at teardown that is not in this set
     # (and not this frame) is the bootstrap's residue, whatever exit path
     # reached the finally.
@@ -798,11 +797,11 @@ async def test_settle_quiescence_has_teeth(
     assumed.
     """
     schema = module_pg_schema.schema_name
-    # The teeth jobs carry their OWN tag and are deleted on exit: they are
-    # inserted by raw SQL - NO events, NO enqueue trail - so a leftover
+    # The teeth jobs carry their own tag and are deleted on exit: they are
+    # inserted by raw SQL - no events, no enqueue trail - so a leftover
     # control row would count as a zero-state job in every later trial's
     # trail check. The module schema is shared (per xdist worker) and test
-    # order is randomized (pytest-randomly), so teeth can run BEFORE the
+    # order is randomized (pytest-randomly), so teeth can run before the
     # trials; the old fixed _TAG leaked the control job into the trials'
     # zero-state count - "1 jobs carry no events" red on CI (PRs 395/396)
     # exactly when this test preceded a trial in the shuffled order and

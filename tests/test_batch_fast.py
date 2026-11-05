@@ -296,7 +296,7 @@ class TestTU11DuplicateKeyTypedError:
 
     async def test_ambiguous_shape_batch_names_the_repeating_pair(self) -> None:
         """The in-memory analog of the ambiguous-detail integration pins:
-        two distinct pairs that would render to the SAME server violation
+        two distinct pairs that would render to the same server violation
         text (``("a, b", "c")`` and ``("a", "b, c")`` both render
         ``(a, b, c)``), only one of them repeated. The mirror names the
         repeating pair exactly - the same answer the PG path gives, from
@@ -413,7 +413,7 @@ class TestTUBatchTierUniqueForParity:
         ]
 
     async def test_same_identity_items_in_one_batch_both_insert(self) -> None:
-        """Two items with the same (actor, identity_key) in ONE batch
+        """Two items with the same (actor, identity_key) in one batch
         call both insert - the PG unnest INSERT has no per-item
         unique_for logic, so it writes both."""
         backend = _make_backend()
@@ -725,7 +725,7 @@ class TestTI5PerformanceComparison:
             finally:
                 await conn.close()
 
-            # Time UNNEST (regular enqueue_batch)
+            # Time unnest (regular enqueue_batch)
             batch_id_unnest = new_uuid()
             start = time.monotonic()
             handle = await tq.enqueue_batch(items_1k, batch_id=batch_id_unnest)
@@ -779,7 +779,7 @@ class TestTI6PerformanceComparison4000:
             finally:
                 await conn.close()
 
-            # Time UNNEST
+            # Time unnest
             batch_id_unnest = new_uuid()
             start = time.monotonic()
             handle = await tq.enqueue_batch(items_1k, batch_id=batch_id_unnest)
@@ -985,7 +985,7 @@ class TestTIScopeRoundTripThroughCopy:
             await conn.close()
 
     async def test_same_scope_duplicate_key_aborts_batch(self, pg_dsn: str) -> None:
-        """The composite-index analogue of TestTI8: same key AND same
+        """The composite-index analogue of TestTI8: same key and same
         explicit scope within one COPY batch violates
         jobs_idempotency_scope_key_uniq and aborts the whole batch with
         the typed classification."""
@@ -1401,7 +1401,7 @@ class TestInBatchDuplicateAttributionIsExact:
         This pins two things the small (2-3 item) attribution tests do not
         reach: that the pre-scan's O(n) pass over ``args_list`` still finds
         the correct pair at scale (not just in a 3-item toy list), and that
-        PG and the in-memory backend agree on the SAME pair for the SAME
+        PG and the in-memory backend agree on the same pair for the same
         large batch -- the backend-parity obligation the spec calls out,
         exercised at a size close to what an operator would actually submit.
         """

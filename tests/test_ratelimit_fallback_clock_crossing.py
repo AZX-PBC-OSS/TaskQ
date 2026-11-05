@@ -3,7 +3,7 @@
 The rate-limit state machine runs on two store clocks: the Redis paths
 stamp and measure with ``redis.call('TIME')`` (inside the Lua scripts) and
 ``TIME`` (the peek paths' ``redis_time_seconds``); the PG paths - the
-``backend="postgres"`` primitives AND the outage fallback every
+``backend="postgres"`` primitives and the outage fallback every
 ``backend="redis"`` acquire can land on - stamp and measure with
 ``statement_timestamp()``/``clock_timestamp()``. Both are wall clocks.
 The failure mode this file hunts is a STAMP surviving the crossing: a
@@ -13,7 +13,7 @@ refill (the double-spend window); ahead, a wedge (the permanent denial).
 
 Broker tenancy: every Redis-side pin here takes ``private_redis_url`` - a
 per-test disposable Dragonfly, never the shared pair. The skew proxy is a
-test-local TCP front whose upstream is THE test's own broker; fronting the
+test-local TCP front whose upstream is the test's own broker; fronting the
 shared pair would chain every co-tenant's stall band through hand-rolled
 proxy plumbing and expose the pins' default redis-py 8 socket budgets
 (5s) to latency they do not assert on. A private broker ends the class by
@@ -37,7 +37,7 @@ domain - exactly the hypothesized outage residue. The pins:
   lie) rejects it with ``RateLimitStoreCorrupt`` - the behind skew is
   indistinguishable at this boundary from a future-dated reply lie, and a
   lie is never measured, it fails closed;
-* the PG fallback stamps its recovery in ITS OWN domain: a poisoned Redis
+* the PG fallback stamps its recovery in ITS own domain: a poisoned Redis
   stamp (either direction, +/-2 min) cannot move the PG row's ts/TAT one
   microsecond;
 * failover back is symmetric: the Redis paths never read or write the PG
@@ -45,13 +45,13 @@ domain - exactly the hypothesized outage residue. The pins:
   wedge or refill the Redis bucket;
 * every persisted stamp is epoch-scale: no ``monotonic()`` value (the one
   Python clock that leaks into nothing) ever reaches either store;
-* the progress flush crosses NO clock: the seq is the only order, and the
+* the progress flush crosses no clock: the seq is the only order, and the
   flush statement carries no timestamp input at all.
 
 The admitted, bounded divergence a stateless failover cannot avoid (the
 other store starts from its own last state, so admission capacity during
 an outage is bounded by outage duration + window, not eliminated) is
-documented on the acquire docstrings and deliberately NOT pinned here as
+documented on the acquire docstrings and deliberately not pinned here as
 a bug: it is the fallback's contract, not a skew defect.
 """
 
@@ -91,9 +91,9 @@ class _OutageRedis:
     """A Redis client whose every scripted call fails, as in a real outage.
 
     The transient-retry machinery (cc611f09) weathers this family with a
-    bounded retry (3 attempts, 0.25/0.75 s backoffs) BEFORE the fail-closed
+    bounded retry (3 attempts, 0.25/0.75 s backoffs) before the fail-closed
     decision, so every outage acquire below spends that ~1 s budget first
-    and THEN lands on the PG fallback arm - a persistent outage still ends
+    and then lands on the PG fallback arm - a persistent outage still ends
     in the fallback, which is the contract these pins assert; the retry
     only prices the weathering in front of it."""
 
@@ -122,7 +122,7 @@ async def _redis_epoch_s(client: redis_async.Redis) -> float:
     return float(t[0]) + float(t[1]) / 1_000_000
 
 
-# ── Harness validity: the proxy skews TIME and nothing else ──────────
+# ── Harness validity: the proxy skews time and nothing else ──────────
 
 
 async def test_skew_proxy_shifts_time_and_forwards_everything_else(private_redis_url: str) -> None:
@@ -155,7 +155,7 @@ async def test_skew_proxy_shifts_time_and_forwards_everything_else(private_redis
         await direct.aclose()
 
 
-# ── Wire-level acquire pins: client-visible TIME skew cannot flip an admission ──
+# ── Wire-level acquire pins: client-visible time skew cannot flip an admission ──
 
 
 async def test_token_bucket_acquire_ignores_client_visible_time_skew(
@@ -323,7 +323,7 @@ async def test_sliding_window_log_peek_measures_the_client_visible_store_clock(
         f"the +2 min peek's cutoff must age the entry out of its window, got {ahead.remaining}"
     )
 
-    # The behind direction takes the CURRENT fail-closed verdict (see the
+    # The behind direction takes the current fail-closed verdict (see the
     # docstring): the future-dated score is the store-corrupt sentinel,
     # not a stretched-window measurement.
     with pytest.raises(RateLimitStoreCorrupt):
@@ -337,7 +337,7 @@ async def test_sliding_window_gcra_peek_measures_the_client_visible_store_clock(
     CLIENT sees. One admission advances the TAT half a window, then the
     peek rides +/-2 min TIME proxies: +2 min shoves now past the tolerance
     (exhausted, the boundary hint clamps to ~1 ms), -2 min keeps the stored
-    TAT ahead of now (exhausted, hint ~2 min). An unskewed peek is NOT
+    TAT ahead of now (exhausted, hint ~2 min). An unskewed peek is not
     exhausted (1 cell of headroom), so a peek reading a Python clock fails
     the +2 min direction."""
     settings = _redis_settings(private_redis_url, "taskq_fallback_clock")
@@ -367,8 +367,8 @@ async def test_sliding_window_gcra_peek_measures_the_client_visible_store_clock(
             await proxy.stop()
 
     ahead = await peek_through(_SKEW_S)
-    # The clamp (tat = max(tat, now)) puts the TAT on the skewed now, so
-    # the ahead-direction peek sees a FULL window: remaining == limit,
+    # The clamp (tat = max(tat, now)) puts the tat on the skewed now, so
+    # the ahead-direction peek sees a full window: remaining == limit,
     # while the unskewed peek sees one cell of headroom (remaining 1).
     # A peek reading a Python clock measures the unskewed spacing and
     # reports 1.0 here, failing this assert.
@@ -438,7 +438,7 @@ def _upstream_of(broker_url: str) -> tuple[str, int, int]:
     return parsed.hostname or "127.0.0.1", parsed.port or 6379, db
 
 
-# ── The outage-fallback crossing: PG stamps its recovery in ITS OWN domain ──
+# ── The outage-fallback crossing: PG stamps its recovery in its own domain ──
 
 
 @pytest.mark.parametrize("poison_s", [_SKEW_S, -_SKEW_S])
@@ -549,9 +549,9 @@ async def test_pg_fallback_gcra_stamps_fresh_in_pg_domain(
         )
         assert row is not None and row["kind"] == "gcra"
         # The cold-start INSERT arm stamps tat = now + emission_interval;
-        # limit=1 over 60 s puts the fresh TAT one emission interval ahead
-        # of the PG clock that stamped it. This equality IS the poison
-        # discriminator: a PG path that read the Redis TAT would GREATEST
+        # limit=1 over 60 s puts the fresh tat one emission interval ahead
+        # of the PG clock that stamped it. This equality is the poison
+        # discriminator: a PG path that read the Redis tat would greatest
         # into it (either direction puts the candidate at poisoned+60 =
         # redis_epoch+180, 120 s off the fresh stamp) and fail here.
         pg_epoch = await _pg_epoch_s(module_pg_pool)
@@ -795,7 +795,7 @@ async def test_failover_back_log_window_ignores_the_pg_entries(
         assert after.allowed, "an ahead-domain PG entry must not wedge the Redis window"
         assert after.backend == "redis"
         # The outage never wrote Redis (the script failed before the
-        # store), so the healed zset starts empty: the heal is the FIRST
+        # store), so the healed zset starts empty: the heal is the first
         # Redis admission of the window (1 of 2), and the PG residue adds
         # nothing to that count.
         assert after.remaining == pytest.approx(1.0), (
@@ -895,7 +895,7 @@ async def test_persisted_stamps_are_epoch_scale_never_monotonic(
         log_key = f"taskq:{schema}:sw:{{{swlog.name}}}"
         top = await direct.zrange(log_key, -1, -1, withscores=True)
         assert top, "setup: the log window persisted its entry"
-        # The log script's ZADD scores are epoch MILLISECONDS.
+        # The log script's zadd scores are epoch milliseconds.
         score = float(top[0][1])
         score_s = score / 1000.0
         assert redis_epoch - _EPOCH_RANGE_S <= score_s <= redis_epoch + _EPOCH_RANGE_S, (

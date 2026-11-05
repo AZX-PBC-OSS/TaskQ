@@ -1,6 +1,6 @@
 """TaskQ Workflows — the DAG engine (``taskq[flows]``).
 
-THE IMPORT LAW (the import law): ``import taskq`` NEVER imports this package. The
+``import taskq`` never imports this package. The
 only sanctioned entry is a direct ``import taskq.workflows`` (or a
 submodule) by a caller that opted into the ``taskq[flows]`` extra. Nothing
 under ``src/taskq/`` outside this package may import ``taskq.workflows`` at
@@ -10,14 +10,14 @@ The engine is core-deps-only (tors, asyncpg, uuid_utils — all base
 dependencies); the ``flows`` extra carries no requirements of its own and
 exists as the operator-facing opt-in marker.
 
-THE PUBLIC SURFACE IS SMALL ON PURPOSE (§7b's cut): the root re-exports
+PUBLIC SURFACE IS SMALL ON PURPOSE (§7b's cut): the root re-exports
 the AUTHORING verbs + the RUNNER + the PACKAGED RUN (``run`` — the
 one-call create+drive+read door) + the USER TYPES. Everything else
 (SWEEP internals, the finalize mechanics, the SQL statements, the wire
 specs, the ledger claims, the progress plumbing) is an ENGINE INTERNAL:
 import it from its submodule — the documented path — never from here.
 Every root name is a protocol-pin tax paid forever; the internals keep
-their homes WITHOUT the tax:
+their homes without the tax:
 
 * ``api._graph`` owns the recorder + the wiring verbs; ``api._app`` the
   app/decorators/compiled-workflow/channel; ``api._validate`` owns
@@ -30,7 +30,7 @@ their homes WITHOUT the tax:
   ``_childflow`` owns the child flows (the spawn face + the join
   handle); the progress READ surface (``run_display``/``keyed_display``
   — the operator's display contract, the progress guide's taught
-  import) is re-exported HERE from ``_progress_read`` (the LedgerWatch
+  import) is re-exported here from ``_progress_read`` (the LedgerWatch
   F7 fix: the docs' path said "private" while the docs blessed it —
   the public re-export is the one tax paid, the private module stays
   the home).

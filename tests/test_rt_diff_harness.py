@@ -1,10 +1,10 @@
 # ruff: noqa: S608  # Why: schema is a fixed test identifier, not user input; every value is $-bound.
-"""Differential harness: run one scenario against BOTH backends, compare observables.
+"""Differential harness: run one scenario against both backends, compare observables.
 
-The suite's per-mirror tests pin each backend against its OWN expectations, so
+The suite's per-mirror tests pin each backend against its own expectations, so
 a mirror can drift from Postgres while every test stays green (the null-lock
 no-exit cell proved the failure mode live).  This module is the systematic
-differential the suite lacked: a :class:`DiffSide` adapter funnels the SAME
+differential the suite lacked: a :class:`DiffSide` adapter funnels the same
 scenario function through ``InMemoryBackend`` (FakeClock domain) and
 ``PostgresBackend`` (server-clock domain), and :meth:`DiffSide.snapshot`
 projects each side onto a normalized observable dict - statuses, attempt-row
@@ -32,7 +32,7 @@ loaded the runner is:
   0.5 s slack below the span's start);
 * ``"now"`` - within the side's own scenario wall span, or within 0.5 s of
   the snapshot's now;
-* a rounded integer - seconds AFTER the snapshot's now (retry backoffs,
+* a rounded integer - seconds after the snapshot's now (retry backoffs,
   lock leases, result expiries; PG's sub-second statement latency is
   absorbed by the rounding).
 
@@ -209,7 +209,7 @@ def _duration_bucket(ts: datetime | None, anchor: datetime | None, created_at: d
     planted shape, not a canonical one: a synthetic running row whose lease
     is stamped 60 s ahead of a stamp planted 30 s before it reads 90 — the
     planted shape is the observable, the anchor's meaning does not change;
-    a planted row carrying a lease but NO writer stamp measures from
+    a planted row carrying a lease but no writer stamp measures from
     ``created_at`` the same way, which is why the fallback anchor is
     usable on every row and the projection cannot crash on a plant.
 
@@ -486,8 +486,8 @@ class DiffSide:
                     queue=queue,
                     actor=actor,
                 ),
-                # make_job_row generates its OWN id; the twin must store a
-                # row whose id IS the key it is stored under - the PG arm's
+                # make_job_row generates its own id; the twin must store a
+                # row whose id is the key it is stored under - the PG arm's
                 # INSERT writes the same id as its pkey. A mismatch leaves
                 # the mirror holding a row whose identity disagrees with
                 # its storage key (and every attempt/event it later writes).
@@ -499,7 +499,7 @@ class DiffSide:
                 started_at=self.ts(-started_ago_s) if started_ago_s is not None else None,
                 locked_by_worker=wid if status == "running" else None,
                 # The lease co-stamps with created_at - the pair derives
-                # from ONE frozen instant, matching the PG arm's bind of
+                # from one frozen instant, matching the PG arm's bind of
                 # both from the same parameter (the projection reads the
                 # lease's duration against created_at when the row has no
                 # writer stamp, so a server-clock lease beside an
@@ -526,7 +526,7 @@ class DiffSide:
             # every plain value stays $-bound. payload and created_at mirror
             # the memory arm's make_job_row defaults verbatim (empty payload,
             # anchor - 1s): the snapshot projection compares both, so the
-            # two arms must plant the same logical row. The LEASE binds from
+            # two arms must plant the same logical row. The lease binds from
             # the created_at parameter - the pair co-stamps from one bound
             # instant, the way the memory arm stamps both from one frozen
             # instant; a server-clock lease beside an anchor-bound
@@ -918,7 +918,7 @@ class DiffSide:
                     (t for t, b in self._batches_by_token.items() if b == bid),
                     "<batch>",
                 )
-        # The projection is TOTAL over JobRow's fields - one key per field,
+        # The projection is total over JobRow's fields - one key per field,
         # guarded by test_job_observable_projects_every_jobrow_field: a
         # field the projection cannot serialize is a PG↔memory divergence
         # the harness would never catch. Identity and side-local values
@@ -1013,7 +1013,7 @@ class DiffSide:
             "retry_jitter": row.retry_jitter,
             "assignment_routed": row.assignment_routed,
             "archived": row.archived,
-            # The fan-out ledger's pointer, serialized RAW (a plain UUID):
+            # The fan-out ledger's pointer, serialized raw (a plain UUID):
             # linkage is a fact the differential must see even when the
             # parent is dangling — the parent's own row need not be a
             # scenario-registered job, so token_of would erase it into
@@ -1145,9 +1145,9 @@ def _memory_side(actors: Sequence[str]) -> DiffSide:
         for actor in actors
     )
     side = DiffSide("memory", backend, conn=None, schema=None)
-    # Why the private poke instead of calibrate(): the builder is SYNC (its
+    # Why the private poke instead of calibrate(): the builder is sync (its
     # caller composes it into run_differential without an event loop hop),
-    # and calibrate() is async - the frozen FakeClock's now IS the anchor,
+    # and calibrate() is async - the frozen FakeClock's now is the anchor,
     # so the assignment is exactly what calibrate() would await to do.
     side._t0 = _MEM_START  # pyright: ignore[reportPrivateUsage]  # Why: harness-owned anchor seeding; the established same-module pattern.
     return side
@@ -1199,7 +1199,7 @@ async def run_differential(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run ``scenario`` on both backends; return ``(memory_observables, pg_observables)``.
 
-    The SAME function drives both sides through the :class:`DiffSide` adapter,
+    The same function drives both sides through the :class:`DiffSide` adapter,
     so the inputs are identical by construction; only the backend differs.
     The PG side gets a random ``tdf_`` schema with migrations applied, and is
     dropped (CASCADE) in the finally - pool closed first.
@@ -1215,9 +1215,9 @@ async def run_differential(
         # the mirror against anything later reads its writes as "past"
         # purely because the PG side's wall time moved on.
         ref_mem = await mem.now()
-        # Re-anchor the PG side to its OWN scenario's start. The anchor
+        # Re-anchor the PG side to its own scenario's start. The anchor
         # captured at side construction (the calibrate() call) predates the
-        # MEMORY scenario, whose wall time is time the PG side's
+        # memory scenario, whose wall time is time the PG side's
         # action-written timestamps never spanned - the memory side writes
         # its action timestamps at the frozen FakeClock instant no matter
         # how long its own scenario runs. Measuring the co-drive elapsed
@@ -1249,7 +1249,7 @@ async def run_differential(
         # identically and the rounding absorbs only sub-second residual.
         assert pg._t0 is not None  # pyright: ignore[reportPrivateUsage]  # Why: harness-owned anchor; the established same-module pattern.
         # The PG side's bucket reference: the server clock at its own
-        # scenario's end, captured BEFORE the snapshot round trips (their
+        # scenario's end, captured before the snapshot round trips (their
         # duration is runner latency, not scenario time).
         ref_pg = await pg.now()
         elapsed = ref_pg - pg._t0
@@ -1310,13 +1310,13 @@ async def test_diff_harness_baseline_green(pg_dsn: str) -> None:
 async def _fence_stretch_scenario(side: DiffSide) -> None:
     # The immediate enqueue stamps scheduled_at at each side's own now, and
     # the cancel request stamps cancel_requested_at mid-scenario; the forced
-    # 0.75 s wall tail (sleep never wakes early) then puts BOTH writes
+    # 0.75 s wall tail (sleep never wakes early) then puts both writes
     # beyond the 0.5 s fence from the PG side's scenario-end reference - the
     # loaded-runner shape the CI flake on
     # test_diff_sweep1_cancel_carveout_margin hit (its cancel request is
     # stamped two sweeps before the reference; only the bucket strings
     # differed). Offset-bearing writes keep the harness's documented rule:
-    # the dispatch's 60 s lease goes LAST in the scenario, where the
+    # the dispatch's 60 s lease goes last in the scenario, where the
     # reference is captured, so its rounded bucket stays exact.
     await side.enqueue("j1", scheduled_in=None)
     await side.write_cancel_request("j1", "fence-probe")
@@ -1393,7 +1393,7 @@ async def test_job_observable_projects_every_jobrow_field() -> None:
         claim_epoch=7,
         assignment_routed=True,
         archived=True,
-        # The LIB-2 ledger: a NON-default pointer — a default-valued
+        # The LIB-2 ledger: a non-default pointer — a default-valued
         # field proves nothing about the projection.
         parent_id=fanout_parent,
     )

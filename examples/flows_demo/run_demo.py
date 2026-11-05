@@ -9,8 +9,8 @@ see README.md for the two-minute ``docker run``):
 
 The script migrates a fresh schema, arms the retention settings (the
 demo's launch surface — five ``TASKQ_WORKFLOW_*_RETENTION_PERIOD``
-vars, default OFF), seeds the ``actor_config`` rows (the capacity
-terms' projection), then drives ONE run of the demo graph IN-PROCESS
+vars, default off), seeds the ``actor_config`` rows (the capacity
+terms' projection), then drives one run of the demo graph IN-PROCESS
 (the dev door — ``FlowRunner``/``drive``; the rows are the same rows a
 worker process would drive):
 
@@ -38,7 +38,7 @@ import sys
 import asyncpg
 
 #: The retention arms the demo's launch arms (the zero-means-off
-#: convention: a missing or zero value keeps the arm OFF). The leader's
+#: convention: a missing or zero value keeps the arm off). The leader's
 #: sweep loop reads these settings every pass; the demo's act 6 fires
 #: the same arms directly so the effect is observable in one command.
 RETENTION_ENV: dict[str, str] = {
@@ -74,7 +74,7 @@ def _die(message: str) -> None:
 async def _seed_actor_config_rows(pool: asyncpg.Pool, schema: str) -> None:
     """The capacity terms' actor_config face: the boot projection (the
     F3 law's call site) computes the cohorts + their declared terms;
-    the SAME two-phase upsert the worker boot runs lands the rows."""
+    the same two-phase upsert the worker boot runs lands the rows."""
     from examples.flows_demo.app import flows_app
     from taskq.worker.startup import sync_actor_config
     from taskq.workflows._worker_execution import (
@@ -85,7 +85,7 @@ async def _seed_actor_config_rows(pool: asyncpg.Pool, schema: str) -> None:
     register_app(flows_app)  # the isolation law: register, then project
     configs = list(project_workflow_actor_configs())
 
-    # sync_actor_config takes a CONNECTION (its own transactions), never a pool.
+    # sync_actor_config takes a connection (its own transactions), never a pool.
     async with pool.acquire() as conn:
         await sync_actor_config(conn, configs, schema=schema)
 
@@ -150,7 +150,7 @@ async def main() -> None:
         await conn.close()
     print("migrations: applied\n")
 
-    # THE DEMO'S SCHEMA-BOUND PIECES (the reservation's slot rows live here).
+    # the demo's SCHEMA-BOUND pieces (the reservation's slot rows live here).
     gadget = configure(schema)
 
     pool = await asyncpg.create_pool(dsn)
@@ -163,8 +163,8 @@ async def main() -> None:
         run_id = claim.flow_id
         print(f"\nrun created: {claim.kind} — {run_id}")
 
-        # THE FIRST WALL: the drive STOPS AT THE HOLD — the review step
-        # waits on a typed Approval (the quiescent stop is 'held').
+        # the drive stops at the hold — the review step waits on a typed
+        # Approval (the quiescent stop is 'held').
         state = await runner.drive(run_id, until="held", max_ticks=500)
         if state != "held":
             _die(f"the drive ended {state!r} before the review hold — a wedged run is a defect")
@@ -177,15 +177,15 @@ async def main() -> None:
         if not holds:
             _die("the run holds nothing — the HITL gate never minted its hold")
 
-        # THE RESOLVE (the admin's Resolve form writes these same rows:
+        # the resolve (the admin's Resolve form writes these same rows:
         # the typed payload validates through the gate's declared model,
         # the CAS delivers, the audit row lands).
         (hold,) = holds
         verdict = await client.resolve(hold.hold_id, {"verdict": "approve", "note": "ship it"})
         print(f"resolve: {verdict.status}")
 
-        # THE RESUME: the timer fires from the sweep's arm, the capped
-        # publish lands, the run terminalizes.
+        # the timer fires from the sweep's arm, the capped publish lands, the
+        # run terminalizes.
         state = await runner.drive(run_id, until="terminal", max_ticks=3000)
         if state != "terminal":
             _die(f"the resume ended {state!r} — a bounded stop is a defect with a name")
@@ -234,15 +234,14 @@ async def main() -> None:
         print(BANNER)
         print("act 6 — the retention arms (one pass of the leader's sweeps)\n")
 
-        # THE RETENTION ARMS, LIVE: the launch armed the five settings;
-        # here the demo fires ONE pass of each arm — first with the
-        # declared 7-day periods (nothing is aged out yet: the counts
-        # read zero), then with a 1-microsecond period — the smallest
-        # non-OFF value — against TWO runs: the TERMINAL one (its flow
-        # history sweeps) and a LIVE one (a second run parked at the
-        # review hold — its rows are untouchable while the flow runs).
-        # The zero-means-off sentinel: timedelta(0) skips the arm; the
-        # demo's second pass deliberately brushes past it.
+        # the launch armed the five settings; here the demo fires one pass of
+        # each arm — first with the declared 7-day periods (nothing is aged out
+        # yet: the counts read zero), then with a 1-microsecond period — the
+        # smallest non-off value — against two runs: the terminal one (its flow
+        # history sweeps) and a live one (a second run parked at the review
+        # hold — its rows are untouchable while the flow runs). The
+        # zero-means-off sentinel: timedelta(0) skips the arm; the demo's
+        # second pass deliberately brushes past it.
         from datetime import timedelta
 
         from taskq.workflows._sql import WorkflowSql

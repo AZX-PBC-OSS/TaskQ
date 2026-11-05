@@ -291,7 +291,7 @@ async def test_bootstrap_happy_path() -> None:
     await process_scope.shutdown()
 
 
-# ── WorkerSettings registered at PROCESS scope ────────────────────
+# ── WorkerSettings registered at process scope ────────────────────
 
 
 async def test_worker_settings_registered_at_process() -> None:
@@ -417,7 +417,7 @@ async def test_scope_violation_raises_before_taskgroup() -> None:
         registry.validate()
 
 
-# ── Scope teardown LIFO on shutdown ──────────────────────────────
+# ── Scope teardown lifo on shutdown ──────────────────────────────
 
 
 async def test_scope_teardown_lifo() -> None:
@@ -649,9 +649,9 @@ async def test_a_workflow_only_worker_boots_and_stamps_the_capability(
     assert rc == 0
     assert "producer" in loops_started
     assert "consumer" in loops_started
-    # THE DISPATCH'S RAW MATERIAL: the boot projection yields the mounted
-    # app's workflow cohorts from THIS process — the rows the fleet
-    # claim's capability fence admits to this worker.
+    # the boot projection yields the mounted app's workflow cohorts from this
+    # process — the rows the fleet claim's capability fence admits to this
+    # worker.
     assert any(c.actor == "wf" and c.queue == "default" for c in cohorts)
 
 
@@ -868,7 +868,7 @@ async def test_bootstrap_redis_url_without_extra_and_no_redis_limits_boots(
 # ── the extra probe itself, against genuinely absent/present packages ──
 #
 # ``_redis_extra_installed`` answers one question - is the [redis] extra
-# importable HERE - and both answers are pinned against the real function:
+# importable here - and both answers are pinned against the real function:
 # a probe that always answered one way would leave half the bootstrap
 # guards above untestable.
 
@@ -951,7 +951,7 @@ async def test_served_redis_rate_limits_uses_injected_registry() -> None:
     result = _served_redis_rate_limits({served_by_custom.name: served_by_custom}, custom)
     assert result == ["di_custom_redis_bucket_26"]
 
-    # The singleton does NOT have this limit → not detected when scanning
+    # The singleton does not have this limit → not detected when scanning
     # the singleton (this was the bug: the old code always used the singleton)
     assert "di_custom_redis_bucket_26" not in singleton_registry.rate_limits
     result_singleton = _served_redis_rate_limits(
@@ -973,7 +973,7 @@ async def test_served_redis_rate_limits_uses_injected_registry() -> None:
     async def served_by_singleton(payload: EmptyPayload) -> None:
         pass
 
-    # Scanning the custom registry must NOT see the singleton's limit
+    # Scanning the custom registry must not see the singleton's limit
     result_custom = _served_redis_rate_limits(
         {served_by_singleton.name: served_by_singleton}, custom
     )

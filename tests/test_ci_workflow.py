@@ -492,7 +492,7 @@ def test_a_postgres_version_matrix_job_feeds_the_matrix_into_the_test_harness() 
 
 # --- publish attestations gating ---------------------------------------------------------------
 #
-# `github.event_name` inside a called reusable workflow reflects the CALLER's triggering event,
+# `github.event_name` inside a called reusable workflow reflects the caller's triggering event,
 # not the literal string `workflow_call` -- release-please.yml triggers on `push`, so a guard
 # written as `github.event_name != 'workflow_call'` is always true there too, and would silently
 # re-enable attestations on the one path that must not have them. The fix is an explicit input
@@ -583,8 +583,8 @@ def test_every_job_that_runs_the_admin_js_tests_installs_node() -> None:
                 paths = re.findall(r"tests/[A-Za-z0-9_./-]+", script)
                 return not paths or any("web_admin" in p for p in paths)
 
-            # The node demand is per INVOCATION: a job skips node only
-            # when EVERY pytest invocation is path-bound away from
+            # The node demand is per invocation: a job skips node only
+            # when every pytest invocation is path-bound away from
             # tests/web_admin (the docs-examples job's shape) — one
             # whole-suite invocation in the job demands node for the
             # job.

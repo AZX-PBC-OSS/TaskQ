@@ -1,16 +1,16 @@
 """DocShelf's workflow app — the whole product's graphs, wired.
 
-Four workflows on ONE ``WorkflowApp`` (one deps instance at the door):
+Four workflows on one ``WorkflowApp`` (one deps instance at the door):
 
 * ``docshelf_batch`` — the main pipeline: ingest → chunk+extract (the
   map face over documents, the flaky mock API per chunk) → the fan-in
   aggregate → the child-flow face (large documents spawn CHILD FLOWS;
-  the batch joins through ONE typed hold) → classify → the TYPED ROUTE
+  the batch joins through one typed hold) → classify → the TYPED ROUTE
   (contracts → the summary arm, invoices → the ledger arm, unknown →
   the quarantine arm) → the digest (the completion report).
 * ``docshelf_sub_analysis`` — the CHILD FLOW: the expensive sub-analysis
   (1-3 s per doc); its tail records the typed outcome durably and the
-  LAST tail to finish delivers the batch payload into the parent's hold
+  last tail to finish delivers the batch payload into the parent's hold
   — success and failure both, never silent.
 * ``docshelf_reprocess`` — a single-document re-run (the cross-run step
   cache's face: an unchanged document's second run never re-extracts).
@@ -99,12 +99,12 @@ async def feed_in(
     ctx: StepContext, params: DeliveryBatch | None, deps: DocShelfDeps
 ) -> list[DocPayload]:
     """The feed's ingest: IDEMPOTENT registration — a document is
-    registered ONCE and processed ONCE, whoever delivers it. A
+    registered once and processed once, whoever delivers it. A
     re-delivered document (the feed is at-least-once) is named in the
-    receipt's duplicates and does NOT flow downstream (the duplicate-feed
+    receipt's duplicates and does not flow downstream (the duplicate-feed
     drill's zero-double-effects starts here).
 
-    The run's OWN input is the truth: ``deliver_batch`` carries the batch
+    The run's own input is the truth: ``deliver_batch`` carries the batch
     on ``create_flow(input=...)`` and the body reads ``ctx.input`` (the
     wiring's declared batch is the bare-create fallback)."""
     pool = await deps.pool()
@@ -122,9 +122,9 @@ async def feed_in(
 
 
 async def _extract_inner(ctx: StepContext, chunk: ChunkRef, deps: DocShelfDeps) -> ExtractedChunk:
-    """ONE chunk through the mock boundary under the app's inner budget
+    """one chunk through the mock boundary under the app's inner budget
     (the fast absorber — a transient flake or timeout costs a cheap
-    inner retry inside the SAME attempt, never a body re-run; the
+    inner retry inside the same attempt, never a body re-run; the
     framework ladder above it honors the stamped budget — see
     extract_doc_chunks' docstring)."""
     pool = await deps.pool()
@@ -158,17 +158,17 @@ async def _extract_inner(ctx: StepContext, chunk: ChunkRef, deps: DocShelfDeps) 
 async def extract_doc_chunks(
     ctx: StepContext, doc: DocPayload, deps: DocShelfDeps
 ) -> list[ExtractedChunk]:
-    """THE MAP FACE, over documents: each document's chunks extract
+    """MAP FACE, over documents: each document's chunks extract
     through the MOCK BOUNDARY — the flaky, slow, sometimes-hanging
     extraction API under the DECLARED timeout, per chunk.
 
-    THE MAP'S GRANULARITY IS THE DOCUMENT (the partition law: a 500-doc
+    A 500-doc
     batch fans 500 children — the chunk-level fan would fan ~2300 into
-    ONE join and the engine refuses fan-ins past 1000; the document is
+    one join and the engine refuses fan-ins past 1000; the document is
     the honest partition, the docs' own guidance for a map past the
     bound).
 
-    THE EXACTLY-ONCE LEDGER: each chunk's extraction rides a SUBSTEP
+    Each chunk's extraction rides a SUBSTEP
     (the step ledger's own memo — ``ctx.substep``) — a reclaim after a
     SIGKILL re-runs this body and the SUCCEEDED chunks' substeps REPLAY
     their recorded results: the killed body's at-least-once boundary
@@ -180,7 +180,7 @@ async def extract_doc_chunks(
 
     * the INNER budget (``extract_inner_retries``, the app's own): the
       flaky API's transient failures + timeouts are absorbed with a
-      short jittered backoff INSIDE one attempt — a flake costs a cheap
+      short jittered backoff inside one attempt — a flake costs a cheap
       re-call, never a body re-run (the chunk's earlier chunks replay
       free through the substep ledger, but the re-run still re-enters
       the map body). The framework ladder HONORS ITS STAMP now (friction
@@ -232,27 +232,27 @@ async def mk_docwork(
 async def run_sub_analyses(
     ctx: StepContext, work: list[DocWork], deps: DocShelfDeps
 ) -> list[DocVerdict]:
-    """THE CHILD-FLOW FACE — spawn + join, the parent's slot RELEASED:
+    """CHILD-FLOW FACE — spawn + join, the parent's slot RELEASED
 
     the body spawns every child flow (run-key idempotent: a resumed
-    body's re-create returns the SAME run), then waits ONCE on a TYPED
+    body's re-create returns the same run), then waits once on a TYPED
     batch hold. The hold is a row: the worker's slot releases while the
     children run (the slot law the child drill observes, not asserts).
-    The LAST child tail to finish assembles every child's recorded
+    The last child tail to finish assembles every child's recorded
     outcome and delivers the BATCH payload into the hold — the resolve's
     CAS makes the delivery exactly-once (a second assembler's resolve is
-    the defined no-op). THE SHAPE IS THE BATCH JOIN'S OWN DESIGN, NOT A
+    the defined no-op). the SHAPE IS the BATCH JOIN'S own DESIGN, not A
     COLLISION DODGE: the hold identity carries the MAP INDEX
-    (concurrent per-item holds on ONE node key are addressable and
+    (concurrent per-item holds on one node key are addressable and
     individually resolvable, pinned in
     tests/test_wf_holdmap_cures_pins.py), so a wait-per-child would
-    not collide; the batch still joins through ONE hold, ONE
-    resume because the parent consumes ONE batch answer."""
+    not collide; the batch still joins through one hold, one
+    resume because the parent consumes one batch answer."""
     pool = await deps.pool()
     parent = str(ctx.flow_id)
     runner = FlowRunner(SHELF_APP.get("docshelf_sub_analysis"), pool, deps.schema)
 
-    # The DIRECT verdicts first (small documents: no child flow).
+    # The direct verdicts first (small documents: no child flow).
     verdicts: list[DocVerdict] = []
     children: list[DocWork] = []
     for req in work:
@@ -261,7 +261,7 @@ async def run_sub_analyses(
         else:
             children.append(req)
 
-    # THE SPAWN: one child flow per large document.
+        # one child flow per large document.
     for req in children:
         claim = await runner.create_flow(
             input=SubAnalysisIn(
@@ -275,8 +275,8 @@ async def run_sub_analyses(
         await store.record_child_link(pool, deps.schema, str(claim.flow_id), parent, req.doc_id)
 
     if children:
-        # THE JOIN: ONE typed batch hold — the last child tail to finish
-        # assembles every child's recorded outcome and delivers it.
+        # one typed batch hold — the last child tail to finish assembles every
+        # child's recorded outcome and delivers it.
         outcome = await ctx.wait_signal(
             (SubBatchDone,),
             timeout_s=deps.cfg.sub_wait_timeout_s,
@@ -284,7 +284,7 @@ async def run_sub_analyses(
         )
         if isinstance(outcome, Expired):
             # The children's deliveries never assembled (the worst
-            # stall): EVERY child takes the typed failure arm — named,
+            # stall): every child takes the typed failure arm — named,
             # never silent.
             verdicts.extend(
                 DocVerdict(
@@ -466,7 +466,7 @@ async def publish_digest(
     JOIN's SINGLE consumer (a multi-parent join's arg resolution races
     the route join's terminal at scale, so the digest
     reads everything off the arms' outputs). The digest row publishes
-    ONCE per delivery (idempotent upsert)."""
+    once per delivery (idempotent upsert)."""
     raw = ctx.input
     delivery_id = DeliveryBatch.model_validate(raw).delivery_id if raw is not None else "unkeyed"
     # The typed boundary: re-validate the join's packed sum into the
@@ -504,7 +504,7 @@ async def publish_digest(
 
 
 async def sub_tasks(ctx: StepContext, params: SubAnalysisIn | None = None) -> list[SubRequest]:
-    """The child flow's source: the run's OWN input is the truth (the
+    """The child flow's source: the run's own input is the truth (the
     parent spawned this run with the doc's identity)."""
     raw = ctx.input if ctx.input is not None else (params.model_dump() if params else None)
     if raw is None:
@@ -531,9 +531,9 @@ async def sub_tail(
     ctx: StepContext, analyzed: list[SubDone], deps: DocShelfDeps
 ) -> SubAnalysisReport:
     """The child flow's JOIN TAIL: the child's typed outcome lands in the
-    durable result rows; the LAST tail to record assembles the batch and
-    DELIVERS the typed payload into the parent's ONE hold — the failures
-    ride the SAME payload (a child's failure is never silent). The
+    durable result rows; the last tail to record assembles the batch and
+    DELIVERS the typed payload into the parent's one hold — the failures
+    ride the same payload (a child's failure is never silent). The
     absorbed failures read from the join row's own record (the collect's
     bounded summary)."""
     pool = await deps.pool()
@@ -568,7 +568,7 @@ async def sub_tail(
     )
     delivered = False
     if recorded >= inp.expected_siblings:
-        # THE LAST ASSEMBLER: every sibling's outcome is on the rows.
+        # every sibling's outcome is on the rows.
         results = await store.assemble_sub_results(pool, deps.schema, parent_flow_id)
         hitl = HitlClient(pool, schema=deps.schema)
         holds = await hitl.list(run=parent_flow_id)
@@ -580,12 +580,12 @@ async def sub_tail(
             )
             result = await hitl.resolve(mine[0].hold_id, batch.model_dump())
             # 'delivered' = the resume fired; 'no-op' = the CAS lost to an
-            # earlier deliver of the SAME batch (this tail re-ran) — the
+            # earlier deliver of the same batch (this tail re-ran) — the
             # exactly-once face. Both mean the parent has the answer.
             delivered = result.status in ("delivered", "no-op")
     if not delivered and recorded >= inp.expected_siblings:
         # Every sibling recorded but the hold never opened (or the
-        # resolve kept refusing): LOUD — the child's own ladder takes
+        # resolve kept refusing): loud — the child's own ladder takes
         # this; the parent's typed Expired arm is the backstop.
         raise ChildDeliveryLostError(
             f"the sub-analysis batch of {parent_flow_id} assembled but never delivered"
@@ -597,7 +597,7 @@ async def sub_tail(
 
 
 async def unpack_ref(ctx: StepContext, ref: DocRef | None) -> DocRef:
-    """THE UNCACHED UPSTREAM (E18's law): the run's OWN input is the
+    """UNCACHED UPSTREAM (E18's law): the run's own input is the
     truth (the wiring's DocRef is the bare-create fallback); the ref
     enters the DATAFLOW here so the cached step's address can see it —
     ``ctx.input`` never enters a cache address, the WIRED param does."""
@@ -609,7 +609,7 @@ async def unpack_ref(ctx: StepContext, ref: DocRef | None) -> DocRef:
 
 async def reprocess_doc(ctx: StepContext, ref: DocRef, deps: DocShelfDeps) -> IndexedDoc:
     """A single document's (re-)processing: chunk + extract + index.
-    The wiring opts this step INTO the cross-run cache — an unchanged
+    The wiring opts this step into the cross-run cache — an unchanged
     document's re-run never re-extracts (the cache drill measures it).
     The ref rides as a WIRED PARAM (lifted by the uncached unpack_ref
     step — E18's law: the flow input never enters the cache address,
@@ -666,7 +666,7 @@ async def reindex_doc(ctx: StepContext, ref: DocRefSeq, deps: DocShelfDeps) -> D
 async def advance_cursor(
     ctx: StepContext, reindexed: list[DocRefSeq], deps: DocShelfDeps
 ) -> ReindexReport:
-    """The durable cursor's advance — GREATEST: the cursor NEVER rewinds
+    """The durable cursor's advance — GREATEST: the cursor never rewinds
     (a crash mid-flow leaves the cursor where it was; the re-run
     re-processes the increment and advances once)."""
     pool = await deps.pool()
@@ -688,9 +688,9 @@ def docshelf_batch() -> Promise[object]:
         feed_in,
         _EMPTY_BATCH,
         key="ingest",
-        # THE EXTRACTION MAP'S COHORT: the map's children inherit the
-        # SOURCE's actor (one actor, one queue) — the ingest step rides
-        # the extract cohort so the per-document extraction children do.
+        # the map's children inherit the source's actor (one actor, one queue)
+        # — the ingest step rides the extract cohort so the per-document
+        # extraction children do.
         actor="docshelf-extract",
         queue="docshelf-extract",
     )
@@ -729,10 +729,9 @@ def docshelf_batch() -> Promise[object]:
                 body=quarantine_arm, actor="docshelf-quarantine", queue="docshelf-quarantine"
             ),
         },
-        # THE ROUTE'S JOIN PLACEMENT: the derived fan-back-in node rides
-        # the classify cohort (queue='default' would conflict the
-        # inherited actor across two queues — a boot-time discovery only,
-        # so name it HERE).
+        # the derived fan-back-in node rides the classify cohort
+        # (queue='default' would conflict the inherited actor across two queues
+        # — a boot-time discovery only, so name it here).
         queue="docshelf-cpu",
     )
     digest = step(
@@ -811,7 +810,7 @@ def docshelf_reindex() -> Promise[object]:
 @actor(name="docshelf-nightly-tick", queue="docshelf-cron")
 async def docshelf_nightly_tick(payload: NightlyTick) -> NightlyTickResult:
     """The schedule's arm: read the durable cursor, fire the re-index
-    flow keyed BY the cursor (the same slot twice → ONE run — the
+    flow keyed BY the cursor (the same slot twice → one run — the
     run-key arbiter's claim; a redelivered tick cannot double-fire)."""
     pool = await DEPS.pool()
     cursor = await store.read_cursor(pool, DEPS.schema)
@@ -835,19 +834,18 @@ cron(
 
 
 async def deliver_batch(pool: asyncpg.Pool, schema: str, batch: DeliveryBatch) -> list[str]:
-    """THE MOCK FEED'S DELIVERY: at-least-once — the feed keys each run
+    """At-least-once — the feed keys each run
     by the DELIVERY id (+ the page), so a re-delivered delivery cannot
     double-run (the run-key arbiter's claim; the duplicate-feed drill
     exercises it).
 
-    THE PAGE (the adoption's measured scale law, its honest residual):
     one flow's ROUTE fan is safe to ~150 classified elements SOLO — past
-    it, AND under multi-page concurrency, the route join's
+    it, and under multi-page concurrency, the route join's
     fire/arg-resolution raced its consumer (friction F4). The in-process
     face is clean (re-probed at 3 rounds x 200 elements, all green, and
     a substep no longer pins the pool connection across the body); the
     FLEET face was never re-convicted and never disproven, so the feed
-    still pages its deliveries AND delivers the pages ONE AT A TIME
+    still pages its deliveries and delivers the pages one AT A TIME
     (each page's run reaches terminal before the next page fires). The
     zero-loss invariant is per DOCUMENT across the pages. A single-page
     delivery returns without waiting (the crash drills' shape: the flow

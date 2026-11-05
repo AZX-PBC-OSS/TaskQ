@@ -71,7 +71,7 @@ class _ConnFactorySystemExitError(Exception):
 
     A ``notify_conn_factory`` is user code (the credential source, a
     closure over AAD/AWS/Vault), and the reconnect loop's contract is to
-    survive ANY factory failure - logged attempt, backoff, retry. A
+    survive any factory failure - logged attempt, backoff, retry. A
     factory calling ``sys.exit()`` is the factory's own bug, but left raw
     its ``SystemExit`` is delivered into the reconnect frame (a bare
     await under ``asyncio.wait_for``, no task boundary to stop it),
@@ -103,7 +103,7 @@ def _unwrap_conn_factory_system_exit(exc: BaseException) -> BaseException:
     return exc
 
 
-# -- OTel instruments --------------------------------------------
+# -- otel instruments --------------------------------------------
 
 _notify_received_counter = _meter.create_counter(
     name="taskq.notify.received",
@@ -138,7 +138,7 @@ def _observe_connected(options: CallbackOptions) -> Iterable[Observation]:
     for backend in _active_listeners:
         yield Observation(
             1 if _connected_lookup.get(backend, False) else 0,
-            {"schema": backend._schema_name},  # pyright: ignore[reportPrivateUsage]  # Why: OTel gauge callback reads schema_name from the backend instance; the field is private by convention but accessible from module scope by design.
+            {"schema": backend._schema_name},  # pyright: ignore[reportPrivateUsage]  # Why: otel gauge callback reads schema_name from the backend instance; the field is private by convention but accessible from module scope by design.
         )
 
 
@@ -189,7 +189,7 @@ def _make_callback(
         # Guarded: every enqueue in the schema wakes every listener, and a
         # structlog call runs the full processor chain before the stdlib
         # level check drops the record, the level check here is the only
-        # per-notification cost at INFO.
+        # per-notification cost at info.
         if logger.is_enabled_for(logging.DEBUG):
             logger.debug(
                 "notify-received",
@@ -226,7 +226,7 @@ def _make_events_callback(
             return
         try:
             msg: dict[str, object] = json_loads(payload)
-        except Exception:  # Why: a malformed payload on a channel TaskQ does not exclusively own must be dropped WITH its counter, never crash the sync callback asyncpg invokes.
+        except Exception:  # Why: a malformed payload on a channel TaskQ does not exclusively own must be dropped with its counter, never crash the sync callback asyncpg invokes.
             _notify_payload_parse_failed_counter.add(1)
             logger.debug("notify-payload-parse-failed", channel=channel, payload=payload[:200])
             return
@@ -301,7 +301,7 @@ def _make_leader_wake_callback(
 
     Payload is a JSON object, kind ``"leader_resigned"`` (the
     ``{"type": ...}`` convention of the events channels), carrying the
-    resigning worker's id. Three payloads are dropped WITHOUT waking the
+    resigning worker's id. Three payloads are dropped without waking the
     election loop, the same payload-kind discipline the events callback
     applies:
 
@@ -309,12 +309,12 @@ def _make_leader_wake_callback(
       wake aimed at the dispatch channel),
     - a payload of any other ``"type"`` (future events may share the
       channel without a rename),
-    - this worker's OWN echo: the resigner hears its own broadcast and
+    - this worker's own echo: the resigner hears its own broadcast and
       must not wake itself (a pod that just handed the row back must not
       immediately re-win it, and an unassumable holder that hands back
       mid-run would otherwise flap at NOTIFY speed instead of the tick).
 
-    A wake for a term already taken is deliberately NOT filtered here:
+    A wake for a term already taken is deliberately not filtered here:
     the fleet cannot cheaply know it is stale, and the woken follower's
     FENCED elect is the arbiter - it matches no row it may not take and
     no-ops, which is exactly the crash-bound behavior.
@@ -428,7 +428,7 @@ async def reconnect_notify_conn(
             )
         # Why bounded: a hung credential provider or TCP connect parked the
         # health-check reconnect loop here while holding
-        # notify_reconnect_lock. reload_factory_timeout is the SAME
+        # notify_reconnect_lock. reload_factory_timeout is the same
         # bound the SIGHUP reload path applies to every factory call
         # (deps.reload_credentials), not a second mechanism, and its
         # exhaustion here behaves like any factory failure: the retry
@@ -460,7 +460,7 @@ async def reconnect_notify_conn(
                 # the same black-hole shape the health-check query bound
                 # closes, parking
                 # the reconnect loop (and notify_reconnect_lock) past
-                # every other bound. The SAME
+                # every other bound. The same
                 # notify_listener_setup_timeout that bounds the
                 # add_listener beside it applies here (not a second
                 # mechanism); exhaustion is the retry loop's ordinary
@@ -528,8 +528,8 @@ async def _recover_notify_conn(
 ) -> asyncpg.Connection | None:
     """Shared recovery path once the notify conn is judged dead.
 
-    Runs for BOTH triggers of the same failure class: the health-check
-    probe failing mid-run, AND a connection error landing inside the
+    Runs for both triggers of the same failure class: the health-check
+    probe failing mid-run, and a connection error landing inside the
     initial LISTEN setup (a pg_terminate_backend / failover racing
     worker boot - tc5 kills with no grace, so the kill can land between
     or during the setup round trips). Tears down the dead conn
@@ -549,7 +549,7 @@ async def _recover_notify_conn(
         channels=[ch for ch, _ in channels],
     )
     for channel, on_notify in channels:
-        # Why bounded + TimeoutError suppressed: the UNLISTEN is a
+        # Why bounded + TimeoutError suppressed: the unlisten is a
         # best-effort network round trip on a conn already judged
         # dead, unbounded, a wedged conn parks the health check's
         # reconnect path forever. notify_listener_setup_timeout is
@@ -580,7 +580,7 @@ async def _recover_notify_conn(
         try:
             await reconnect_notify_conn(deps, backend, channels)
             return deps.notify_conn
-        except Exception as recovery_exc:  # Why: the retry loop must survive ANY factory/reconnect failure - a credential provider raises non-asyncpg errors (azure ClientAuthenticationError, hvac VaultError, botocore ClientError) and a rejected fresh token raises asyncpg.InvalidPasswordError, which is a PostgresError, NOT a PostgresConnectionError. Catching only asyncpg connection errors here would crash the worker during exactly the IdP outage this loop exists to survive. asyncio.CancelledError is BaseException (3.8+), so shutdown cancellation still propagates.
+        except Exception as recovery_exc:  # Why: the retry loop must survive any factory/reconnect failure - a credential provider raises non-asyncpg errors (azure ClientAuthenticationError, hvac VaultError, botocore ClientError) and a rejected fresh token raises asyncpg.InvalidPasswordError, which is a PostgresError, not a PostgresConnectionError. Catching only asyncpg connection errors here would crash the worker during exactly the IdP outage this loop exists to survive. asyncio.CancelledError is BaseException (3.8+), so shutdown cancellation still propagates.
             # Unwrap the factory-SystemExit carrier first (notify.py's
             # conversion at the factory await raises it): the log and the
             # no-factory fallback check must observe the factory's own
@@ -601,9 +601,9 @@ async def _recover_notify_conn(
                 )
                 return None
             attempt += 1
-            # Multiplicative jitter (±25%) applied AFTER the
+            # Multiplicative jitter (±25%) applied after the
             # exponential doubling (the pristine base doubles below,
-            # unpolluted by previous jitter) and BEFORE the sleep, so
+            # unpolluted by previous jitter) and before the sleep, so
             # the logged delay is the delay actually slept. Applied
             # on every retry including the first: without it a fleet
             # that lost PG in the same instant (failover) retries in
@@ -633,7 +633,7 @@ async def _health_check_loop(
     shutdown: asyncio.Event,
     channels: list[tuple[str, Callable[[asyncpg.Connection, int, str, str], None]]],
 ) -> None:
-    # Deliberately does NOT tick LoopLiveness. This loop is exempt from
+    # Deliberately does not tick LoopLiveness. This loop is exempt from
     # watchdog detector 2 (see _watchdog's module docstring), for three
     # independent reasons, a stale registration force-exits the worker:
     #   1. It returns early on legitimate paths (conn dropped, and the
@@ -661,7 +661,7 @@ async def _health_check_loop(
             # and this loop is deliberately exempt from the watchdog's
             # stale-loop detector, an unbounded probe on a wedged conn
             # parks the health check forever with nothing to recover it.
-            # notify_listener_setup_timeout is the SAME bound this loop
+            # notify_listener_setup_timeout is the same bound this loop
             # family already applies to every bounded execute/registration
             # (the LISTEN at setup and reconnect), not a second
             # mechanism; exhaustion is treated like any dead conn: the
@@ -676,7 +676,7 @@ async def _health_check_loop(
             asyncpg.InterfaceError,
             asyncpg.InternalClientError,  # Why: container stop can leave the protocol in an inconsistent state (e.g. "cannot switch to state 15"); must trigger reconnect, not crash the worker.
             asyncpg.AdminShutdownError,  # Why: graceful PG shutdown raises AdminShutdownError, not PostgresConnectionError; without this the listener crashes the worker.
-            asyncpg.QueryCanceledError,  # Why: the server-side half of the same deadline family TimeoutError opens - a DBA pg_cancel_backend, or a role-level statement_timeout firing while the probe's round trip wedges server-side (a storage stall). It is a PostgresError, NOT a PostgresConnectionError, so the conn-loss arms never see it; uncaught it leaves this loop task, the bootstrap TaskGroup reads a sibling crash, and the worker tears down mid-blip - the exact outcome the AdminShutdownError arm above exists to prevent.
+            asyncpg.QueryCanceledError,  # Why: the server-side half of the same deadline family TimeoutError opens - a dba pg_cancel_backend, or a role-level statement_timeout firing while the probe's round trip wedges server-side (a storage stall). It is a PostgresError, not a PostgresConnectionError, so the conn-loss arms never see it; uncaught it leaves this loop task, the bootstrap TaskGroup reads a sibling crash, and the worker tears down mid-blip - the exact outcome the AdminShutdownError arm above exists to prevent.
             OSError,
         ) as exc:
             recovered = await _recover_notify_conn(deps, backend, shutdown, channels, conn, exc)
@@ -747,17 +747,17 @@ async def notify_listener_loop(
         ) as exc:
             # The chaos window this clause exists for: a connection loss
             # (pg_terminate_backend, failover, container restart) landing
-            # inside the initial LISTEN setup - tc5 kills with NO grace
+            # inside the initial LISTEN setup - tc5 kills with no grace
             # after starting this task, so the kill can land before,
             # between, or during the setup round trips. The round trips
-            # are the SAME unguarded awaits the mid-run health check
+            # are the same unguarded awaits the mid-run health check
             # protects: a loss here raised ConnectionDoesNotExistError /
             # InterfaceError straight out of this task, which in
             # production is a sibling crash in the bootstrap TaskGroup
             # (_guarded counts it, sets shutdown_event, tears the worker
             # down) - the exact opposite of this module's contract
             # ("survives connection loss without crashing the worker").
-            # Route into the SAME recovery path the health check uses:
+            # Route into the same recovery path the health check uses:
             # bounded backoff reconnect, then fall through to the normal
             # TaskGroup; the synthetic wake in reconnect_notify_conn
             # unblocks any subscriber waiting on jobs enqueued meanwhile.
@@ -783,7 +783,7 @@ async def notify_listener_loop(
         _connected_lookup[backend] = False
         _connected_lookup.pop(backend, None)
         for channel, on_notify_callback in channels:
-            # Why bounded + TimeoutError suppressed: the teardown UNLISTEN
+            # Why bounded + TimeoutError suppressed: the teardown unlisten
             # is a best-effort network round trip, unbounded, a wedged
             # notify conn stalls the listener's shutdown past every
             # shutdown budget and the ShutdownWatchdog force-exits the
@@ -795,8 +795,8 @@ async def notify_listener_loop(
                 RuntimeError,
                 AttributeError,
                 TimeoutError,
-                asyncpg.QueryCanceledError,  # Why: the shutdown UNLISTEN is best-effort on a conn being dropped; a server cancel or role-level statement_timeout racing it must not escape this finally - a raise here would REPLACE the in-flight shutdown exception and read as a listener crash instead of a suppressed teardown round trip.
-                OSError,  # Why: same best-effort contract, the socket can die mid-UNLISTEN (the conn-loss family the teardown close already owns).
+                asyncpg.QueryCanceledError,  # Why: the shutdown unlisten is best-effort on a conn being dropped; a server cancel or role-level statement_timeout racing it must not escape this finally - a raise here would replace the in-flight shutdown exception and read as a listener crash instead of a suppressed teardown round trip.
+                OSError,  # Why: same best-effort contract, the socket can die mid-unlisten (the conn-loss family the teardown close already owns).
             ):
                 await asyncio.wait_for(
                     deps.notify_conn.remove_listener(channel, on_notify_callback),  # pyright: ignore[reportArgumentType, reportOptionalMemberAccess]  # Why: stubs over-narrow callback type; notify_conn is non-None after open_worker_deps

@@ -1,11 +1,11 @@
 """The per-step token bucket on the authoring surface: the workflow
-authoring face had NO
+authoring face had no
 rate limit at all — ``taskq.actor``'s ``rate_limits=[TokenBucket(...)]``
 is vanilla-only, ``WorkflowApp.actor()``/``step()``/``RouteArm`` carried
 nothing, and "5 concurrent" (the queue cap) is not "50/min" under the
 LLM fleet's varying latency.
 
-THE SHAPE (ONE mechanism, the authoring face added):
+SHAPE (one mechanism, the authoring face added)
 
 * the authoring surface: ``step(body, rate_limits=[TokenBucket(...)])``,
   ``RouteArm(body=..., rate_limits=[...])`` (the typed route's per-arm
@@ -16,9 +16,9 @@ THE SHAPE (ONE mechanism, the authoring face added):
 * the fork stamps the buckets' NAMES onto the child rows' metadata (the
   static step's row too) — the ROW carries its own admission terms;
 * the claim path honors them: the intercept's rate-limit gate acquires
-  the row's buckets through the SAME registry + the SAME denial path
+  the row's buckets through the same registry + the same denial path
   the queue-concurrency fence rides (``_acquire_for_actor_with_denial_retry``
-  — the AND-composition, the observable deny, the never-bursts cadence);
+  — the and-composition, the observable deny, the never-bursts cadence);
 * the boot collects: the workflow-declared bucket instances register
   into the worker's ``RateLimitRegistry`` (the vanilla actors' own
   collection pass's sibling); a ``str`` name nothing registers is the
@@ -100,7 +100,7 @@ class Audio(BaseModel):
 async def _bucket_registry(
     name: str, capacity: float, refill: float, clock: Clock
 ) -> RateLimitRegistry:
-    """A registry holding ONE memory-backend token bucket (the injected
+    """A registry holding one memory-backend token bucket (the injected
     clock drives it — the deterministic cadence, no store)."""
     registry = RateLimitRegistry()
     registry.register(TokenBucket(name, capacity, refill, backend="memory"))
@@ -167,7 +167,7 @@ def _loads(raw: Any) -> Any:
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-# ── THE AUTHORING FACE ───────────────────────────────────────────────────
+# ── the authoring face ───────────────────────────────────────────────────
 
 
 def test_step_carries_its_rate_limits(cons2_redlog: RedLog) -> None:
@@ -290,7 +290,7 @@ def test_a_keyed_ref_resolves_per_child_at_the_fork() -> None:
         return build(map_source(source, item, rate_limits=[keyed]))
 
     # The wiring accepts the keyed shape; the compiled node carries the
-    # keyed DECLARATION (the per-child resolution happens at the fork —
+    # keyed declaration (the per-child resolution happens at the fork —
     # the fork-stamp pins below hold the row truth).
     node = app.get("cons2_keyed_resolved").nodes["src"]
     assert node.map_rate_limits == (keyed,)
@@ -303,7 +303,7 @@ def test_the_forks_name_read_is_the_instances_names() -> None:
     assert rate_limit_names(()) == ()
 
 
-# ── THE FORK STAMPS THE ROWS ─────────────────────────────────────────────
+# ── the fork stamps the rows ─────────────────────────────────────────────
 
 
 async def test_the_fork_stamps_the_buckets_onto_the_child_rows(
@@ -377,7 +377,7 @@ async def test_a_static_step_row_carries_its_own_bucket_names(
     assert meta.get("rate_limits") == ["cons2-static-stamp"]
 
 
-# ── THE BOOT'S COLLECTION ────────────────────────────────────────────────
+# ── the boot's collection ────────────────────────────────────────────────
 
 
 def test_the_boot_collection_registers_the_instances_and_names_the_unknowns(
@@ -419,7 +419,7 @@ def test_the_boot_collection_registers_the_instances_and_names_the_unknowns(
     assert unknown == ["cons2-foreign"], "the unregistered str name is REPORTED"
 
 
-# ── THE CLAIM PATH HONORS THEM ───────────────────────────────────────────
+# ── the claim path honors them ───────────────────────────────────────────
 
 
 async def test_the_gate_acquires_the_rows_buckets_and_the_deny_is_observable(
@@ -461,7 +461,7 @@ async def test_the_cadence_the_bucket_rate_holds_under_the_burst(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The cadence (the never-bursts pin's pattern): capacity 1, refill
-    1/s — acquire, deny, TIME, acquire. The third admission happens ONLY
+    1/s — acquire, deny, TIME, acquire. The third admission happens only
     after the refill: the bucket's rate is the admission's clock, the
     latency variance cannot buy a burst."""
     clock = FakeClock(_START)
@@ -476,7 +476,7 @@ async def test_the_cadence_the_bucket_rate_holds_under_the_burst(
     )
     assert first.denied is None and second.denied is not None
 
-    clock.advance(timedelta(seconds=1.0))  # ONE token refills — exactly one more admission
+    clock.advance(timedelta(seconds=1.0))  # one token refills — exactly one more admission
     third = await _flow_rate_limit_gate(
         registry, clock, job, CAPABLE_WORKER, _deps(wf_pool, wf_schema), job_log=JOB_LOG
     )
@@ -492,7 +492,7 @@ async def test_an_unknown_bucket_name_is_the_fail_closed_arm(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The unknown name (the refusal/warning face's claim-time teeth): a
-    row naming a bucket NO registry entry backs parks budget-free — the
+    row naming a bucket no registry entry backs parks budget-free — the
     FAIL-CLOSED arm (the dependency arm's shape), LOUD, never a silent
     pass-through (the admitted-never-limited lie), never a crash."""
     clock = FakeClock(_START)
@@ -513,7 +513,7 @@ async def test_the_no_registry_fast_path_still_passes_through(
     wf_schema: str, wf_pool: asyncpg.Pool
 ) -> None:
     """The no-caps fleet's law HOLDS (the vanilla shape): no registry —
-    the gate passes everything through; a job with NO rate_limits
+    the gate passes everything through; a job with no rate_limits
     metadata rides the cap-only path unchanged (byte-identity for the
     queue-concurrency fence's own pins)."""
     clock = FakeClock(_START)

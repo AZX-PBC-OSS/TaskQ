@@ -10,7 +10,7 @@
 
 Plus the actor-declaration collection pass in ``_main``: a same-name
 different-config conflict raises ValueError at bootstrap (fail fast),
-redeclaring the SAME instance on two actors is an idempotent no-op that
+redeclaring the same instance on two actors is an idempotent no-op that
 still counts 2 declarations in the startup log, and a reservation name
 with the reserved queue-cap prefix is rejected.
 """
@@ -99,7 +99,7 @@ def test_default_is_module_singleton() -> None:
 
 
 async def test_main_raises_typeerror_for_factory_provider_before_opening_pools() -> None:
-    """The TypeError fails fast in _main BEFORE open_worker_deps (no PG needed)."""
+    """The TypeError fails fast in _main before open_worker_deps (no PG needed)."""
     from taskq.settings import WorkerSettings
     from taskq.worker.run import _main
 
@@ -118,7 +118,7 @@ async def test_main_raises_typeerror_for_factory_provider_before_opening_pools()
 
 
 async def test_main_raises_typeerror_for_process_scope_provider_before_opening_pools() -> None:
-    """The scope guard fails fast in _main BEFORE open_worker_deps (no PG needed)."""
+    """The scope guard fails fast in _main before open_worker_deps (no PG needed)."""
     from taskq.settings import WorkerSettings
     from taskq.worker.run import _main
 
@@ -162,8 +162,8 @@ async def test_two_actors_same_name_different_config_raises_valueerror() -> None
 
 
 async def test_same_instance_on_two_actors_idempotent_and_counts_declarations() -> None:
-    """The SAME TokenBucket instance declared on two actors: the collection
-    pass completes WITHOUT ValueError (the second declaration is an
+    """The same TokenBucket instance declared on two actors: the collection
+    pass completes without ValueError (the second declaration is an
     idempotent no-op), the instance is registered exactly once in the owned
     registry, and the startup log counts 2 DECLARATIONS (not distinct
     registrations).
@@ -200,16 +200,16 @@ async def test_same_instance_on_two_actors_idempotent_and_counts_declarations() 
         except Exception as exc:
             pool_error = exc
 
-    # (1) The collection pass did NOT raise ValueError - _main failed
+    # (1) The collection pass did not raise ValueError - _main failed
     # later, at open_worker_deps on the unroutable DSN.
     assert pool_error is not None
     assert not isinstance(pool_error, ValueError)
 
-    # Registered exactly once, and it IS the declared instance.
+    # Registered exactly once, and it is the declared instance.
     assert len(own.rate_limits) == 1
     assert own.rate_limits["shared"] is bucket
 
-    # The startup log counts DECLARATIONS: two actors declared the instance,
+    # The startup log counts declarations: two actors declared the instance,
     # so rate_limit_count=2 even though register() stored it once.
     events = [e for e in captured if e.get("event") == "ratelimit-actor-primitives-registered"]
     assert len(events) == 1

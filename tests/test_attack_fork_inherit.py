@@ -14,7 +14,7 @@ The mechanism (``taskq._forkguard``) and its contract:
 - the worker bootstrap and ``TaskQ.open`` install ``at-fork`` hooks and pin
   the owning pid;
 - a forked child that touches a TaskQ wire entry gets a typed refusal
-  (:class:`taskq._forkguard.ForkedInheritedProcessError`) BEFORE a byte
+  (:class:`taskq._forkguard.ForkedInheritedProcessError`) before a byte
   reaches the shared socket - the refusal, not the corruption, is the
   observable;
 - the PARENT is stamped per fork, and the worker's loops report
@@ -76,7 +76,7 @@ def _fresh_guard_state(monkeypatch: pytest.MonkeyPatch):
 
 
 def _exit_child(status: int) -> None:
-    """Terminate the forked child WITHOUT returning into pytest.
+    """Terminate the forked child without returning into pytest.
 
     The suite's root conftest intercepts ``os._exit`` (the watchdog's
     force-exit tripwire) and raises instead of exiting, so a child that
@@ -106,7 +106,7 @@ def _run_in_forked_child(body: "callable") -> str:  # type: ignore[valid-type]  
             os.write(w, verdict.encode())
         except (
             BaseException
-        ) as exc:  # Why: the child reports ANY failure back to the parent, one verdict, one exit.
+        ) as exc:  # Why: the child reports any failure back to the parent, one verdict, one exit.
             with contextlib.suppress(OSError):  # pragma: no cover - the parent vanished mid-write
                 os.write(w, f"exc:{type(exc).__name__}".encode())
         finally:
@@ -152,7 +152,7 @@ def test_uninstalled_guard_is_a_noop() -> None:
 def test_forked_child_is_refused_and_parent_is_not() -> None:
     install_fork_guard()
 
-    # The parent IS the owner: the same check passes here.
+    # The parent is the owner: the same check passes here.
     assert_own_process("parent-owner")
 
     verdict = _run_in_forked_child(lambda: (assert_own_process("child-use"), "allowed")[1])
@@ -203,7 +203,7 @@ def test_refusal_names_the_resource_and_the_remediation() -> None:
 
     verdict = _run_in_forked_child(capture)
     assert "the-inherited-pool" in verdict, verdict
-    assert str(os.getpid()) in verdict, verdict  # the OWNER's pid, seen from the child
+    assert str(os.getpid()) in verdict, verdict  # the owner's pid, seen from the child
 
 
 # ── parent side: the exactly-once stamp ───────────────────────────────
@@ -215,7 +215,7 @@ def test_parent_stamp_is_set_by_the_fork_and_consumed_once() -> None:
 
     pid = os.fork()
     if pid == 0:
-        _exit_child(0)  # Why: the child is scaffolding here; the PARENT's stamp is the pin.
+        _exit_child(0)  # Why: the child is scaffolding here; the parent's stamp is the pin.
     os.waitpid(pid, 0)
 
     first = take_parent_fork_event()
@@ -238,7 +238,7 @@ def test_guarded_connection_class_is_an_asyncpg_connection_subclass() -> None:
 
 
 def test_guarded_wire_refuses_in_the_child_before_the_socket() -> None:
-    """Every wire entry refuses in a forked child WITHOUT a live connection:
+    """Every wire entry refuses in a forked child without a live connection:
     the check runs before the method body touches ``self``, so the pin needs
     no server - a None self would explode inside asyncpg long after the
     refusal must already have fired."""
@@ -260,7 +260,7 @@ def test_guarded_wire_refuses_in_the_child_before_the_socket() -> None:
     # Parent: the check is a pass-through. The None self makes super() blow
     # up one of two CPython ways (TypeError at binding, AttributeError at
     # attribute access) - which one is interpreter noise; what the pin
-    # refuses to accept is the REFUSAL itself.
+    # refuses to accept is the refusal itself.
     import asyncio
 
     with pytest.raises(
@@ -305,7 +305,7 @@ def test_guarded_redis_class_refuses_in_the_child() -> None:
 
 
 def test_forked_child_pipeline_execute_is_refused() -> None:
-    """The D1 pin: redis-py's Pipeline does NOT ride ``send_command``.
+    """The D1 pin: redis-py's Pipeline does not ride ``send_command``.
     ``Pipeline.execute`` -> ``_execute_pipeline`` / ``_execute_transaction``
     packs every queued command and calls
     ``connection.send_packed_command(all_cmds)`` DIRECTLY (redis-py's
@@ -328,7 +328,7 @@ def test_forked_child_pipeline_execute_is_refused() -> None:
 
     class _NoReleasePool(ConnectionPool):
         # Why: the pipeline's reset() releases the connection it never
-        # FETCHED from this pool (the pin injects it), and the real
+        # fetched from this pool (the pin injects it), and the real
         # release() would raise on a connection it does not track - noise
         # that would mask the refusal this pin exists to observe.
         async def release(self, connection: object) -> None:  # type: ignore[override]  # Why: the base pools the parameter; the no-op does not care.
@@ -341,7 +341,7 @@ def test_forked_child_pipeline_execute_is_refused() -> None:
             transaction=False,
             shard_hint=None,
         )
-        # The inherited shape: a connection built in the PARENT, handed to
+        # The inherited shape: a connection built in the parent, handed to
         # the pipeline the way a pooled connection would be - never
         # connected here, so the guard must fire before any socket exists.
         pipe.connection = conn_cls(host="127.0.0.1", port=1)
@@ -399,7 +399,7 @@ def test_wire_calls_pass_through_in_the_owner() -> None:
 
 
 _PROTOCOL_DIRECT_ENTRIES: list[tuple[str, tuple[object, ...], dict[str, object]]] = [
-    # The asyncpg wire entries whose bodies do NOT ride the public query
+    # The asyncpg wire entries whose bodies do not ride the public query
     # methods - every one reaches the protocol object (or the private
     # introspection ``_execute``) directly, so none of the query-method
     # overrides sees it:
@@ -434,7 +434,7 @@ def test_guarded_wire_refuses_on_every_protocol_direct_entry() -> None:
     the Terminate/abort through the protocol - so a forked child's pool
     shutdown would kill the PARENT's connection. Without their own
     overrides all of these are wire entries a forked child can use
-    unrefused. The pin drives EVERY entry through the guarded class (None
+    unrefused. The pin drives every entry through the guarded class (None
     self: any use past the guard would explode inside asyncpg long after
     the refusal must already have fired; ``terminate`` is sync, the rest
     coroutine - the drive awaits whichever the call returns)."""
@@ -478,13 +478,13 @@ def test_guarded_wire_refuses_on_every_protocol_direct_entry() -> None:
 
 
 def test_transaction_default_kwargs_forward_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The transaction override mirrors asyncpg's OWN defaults: an override
+    """The transaction override mirrors asyncpg's own defaults: an override
     that swapped one (deferrable=True) would change every transaction's
     semantics in every TaskQ-built pool. The signature is the contract the
     super() call forwards."""
     import inspect
 
-    monkeypatch.setattr(  # Why: prove the override, not the base, carries the pin - the spy makes a base default swap a DIFFERENT failure than the override's.
+    monkeypatch.setattr(  # Why: prove the override, not the base, carries the pin - the spy makes a base default swap a different failure than the override's.
         asyncpg.Connection,
         "transaction",
         lambda self, **kwargs: "base",
@@ -539,7 +539,7 @@ def _socket_fd_count() -> int:
 async def test_subprocess_default_close_fds_drops_the_inherited_wire(pg_dsn: str) -> None:
     """The gentler cousin's contract, pinned against a live pool: Python's
     ``subprocess`` default (``close_fds=True``) drops every inherited
-    descriptor in the exec'd child - the pool's sockets do NOT leak into
+    descriptor in the exec'd child - the pool's sockets do not leak into
     spawned processes, so a job body that shells out costs an fd-table walk,
     not a wire leak. The close_fds=False arm below shows the shape the
     default protects against."""

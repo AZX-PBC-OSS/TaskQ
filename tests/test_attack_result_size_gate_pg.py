@@ -117,10 +117,10 @@ class TestResultSizeGateBoundary:
         assert row is not None
         assert row["status"] == "succeeded"
         assert row["result_size_bytes"] == _CAP - 1
-        # The FULL value survived: jsonb normalises the text rendering
+        # The full value survived: jsonb normalises the text rendering
         # (PG prints `{"blob": "..."}` with a space, one byte more than
         # the orjson input), so the round-trip proof is dict equality
-        # against the exact input, and result_size_bytes is the INPUT
+        # against the exact input, and result_size_bytes is the input
         # byte length - the same number the gate measured at the
         # boundary, recorded without truncation.
         import orjson

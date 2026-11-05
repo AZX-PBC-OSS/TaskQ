@@ -6,7 +6,7 @@ their declared contract:
 
 * **Outcome admission.** The ``outcome`` parameter was typed
   ``AttemptOutcome`` - eight values - while the SQL arms key on exactly
-  three. With ``outcome='succeeded'`` on a running job, PG fired NO arm
+  three. With ``outcome='succeeded'`` on a running job, PG fired no arm
   (the row stayed ``running``, stranded until the lease sweep, and the
   call returned ``"noop"``) while the in-memory twin silently
   rescheduled the job with no counter increment: an uncounted snooze.
@@ -50,7 +50,7 @@ _START = datetime(2025, 1, 1, tzinfo=UTC)
 _LOCK_LEASE = timedelta(seconds=60)
 
 #: The five ``AttemptOutcome`` execution outcomes - every value the
-#: snooze arms do NOT key on.
+#: snooze arms do not key on.
 _ILLEGAL_OUTCOMES = ("succeeded", "failed", "cancelled", "crashed", "scheduled")
 
 #: The legal set, mirrored from the alias for the message assertion.
@@ -85,7 +85,7 @@ async def test_mark_snoozed_rejects_execution_outcome_loudly(
     backend_pair: Backend, outcome: str
 ) -> None:
     """An execution outcome raises ``ValueError`` naming the legal set on
-    BOTH backends - before the ownership fence, leaving the row
+    both backends - before the ownership fence, leaving the row
     untouched.
 
     Unguarded this is the silent disagreement: PG returns ``"noop"`` and
