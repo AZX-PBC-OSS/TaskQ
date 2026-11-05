@@ -85,7 +85,7 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     silently opened the tier to every ``-m "not integration"`` /
     ``-m "not redis"`` run. Ignoring the directory at collection is
     independent of ``-m``.
-"""
+    """
     # The directory only, never the files inside it: an explicitly passed
     # tier directory (``pytest tests/e2e``) must reach the backstop below,
     # which reports what it strips through pytest_deselected — ignoring the
@@ -104,7 +104,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     ``pytest_ignore_collect`` is not consulted for paths passed explicitly
     on the command line (``pytest tests/e2e``), so an explicit-arg run
     without the tier's flag still collects it. Drop those items here.
-"""
+    """
     gated_flags = {
         flag for _dir, flag in _OPT_IN_TIERS if config.getoption(flag.lstrip("-").replace("-", "_"))
     }
@@ -154,7 +154,7 @@ class _ForceExitIntercepted(SystemExit):
     the exception for its awaiter to see, and the dump already went to
     fd 2 either way. The pytest process — the thing that must report the
     result — always survives.
-"""
+    """
 
 
 def _intercepted_force_exit(code: int) -> None:
@@ -180,7 +180,7 @@ def _intercepted_force_exit(code: int) -> None:
     calling thread instead. Production semantics are untouched — the
     watchdog still force-exits real workers; tests that pin the exit path
     patch ``os._exit`` themselves and simply layer over this one.
-"""
+    """
     frame = sys._getframe(1)
     site = f"{frame.f_code.co_filename}:{frame.f_lineno} ({frame.f_code.co_name})"
     _WATCHDOG_FORCE_EXITS.append((str(code), site))
@@ -219,7 +219,7 @@ def _resolves_only_locally(host: str) -> bool:
 
     A name that cannot be resolved counts as local: it cannot reach anything, so
     it fails on its own with a clearer error than this guard would give.
-"""
+    """
     try:
         resolved = socket.getaddrinfo(host, None)
     except OSError:
@@ -247,7 +247,7 @@ def _is_local_target(address: object) -> bool:
     address families are local by the same reasoning. That is what lets the
     testcontainers fixtures talk to /var/run/docker.sock and what lets
     HealthServer bind its AF_UNIX socket.
-"""
+    """
     if not isinstance(address, tuple) or not address:
         return True
     host = address[0]
@@ -311,7 +311,7 @@ def _no_outbound_network(request: pytest.FixtureRequest) -> Iterator[None]:
     legitimately have patched ``socket.connect`` for this test (chaos injection,
     a stub transport), and restoring the module-level original on the way out
     would silently discard that patch instead of the one this fixture installed.
-"""
+    """
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
 
@@ -355,7 +355,7 @@ def pytest_configure(config: pytest.Config) -> None:
     the backstop for anything the pins cannot see. Retiring the warning does
     not weaken any of that; a warning that fired on every run of every leg
     trained the reader to dismiss it.
-"""
+    """
     os._exit = _intercepted_force_exit  # type: ignore[assignment]  # Why: the seam is deliberate (see _intercepted_force_exit); mypy/pyright see a module builtin reassigned.
 
 
@@ -372,7 +372,7 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     a worker and the controller's own list stays empty. ``workeroutput`` is the
     sanctioned channel back; it is absent on the controller and in serial runs,
     where the list is already the right one.
-"""
+    """
     output = getattr(session.config, "workeroutput", None)
     if output is not None:
         output["taskq_blocked_attempts"] = _BLOCKED_ATTEMPTS
@@ -393,7 +393,7 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
 
     Collects the scattered per-test failures into one place, including the ones
     that happened inside xdist workers (see `pytest_sessionfinish`).
-"""
+    """
     if not _BLOCKED_ATTEMPTS:
         return
     terminalreporter.section("outbound connections blocked", red=True)
