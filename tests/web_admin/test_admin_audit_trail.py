@@ -13,7 +13,6 @@ migrated Postgres lives in tests/test_admin_audit_trail.py.
 # identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
 # header's own rule for the real-PG seeding this file carries).
 
-from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -131,11 +130,6 @@ def _make_app(pool: Any, **kwargs: Any) -> Any:
 
 def _audit_inserts(conn: _RecordingConnection) -> list[tuple[str, tuple[object, ...]]]:
     return [(sql, args) for sql, args in conn.execute_calls if "admin_audit" in sql]
-
-
-def _job_record(jid: Any) -> StubRecord:
-    """The jobs-table row the job detail route's fetchrow returns."""
-    return StubRecord(**asdict(_stub_job_row(jid)))
 
 
 # ── principal_subject normalization ─────────────────────────────────────
@@ -542,46 +536,53 @@ async def test_job_detail_renders_audit_entries(
     assert "duplicate run" in resp.text
 
 
-def test_job_detail_without_audit_table_renders_empty_section(
+async def test_job_detail_without_audit_table_renders_empty_section(
+    pg_dsn: str,
+    module_pg_pool: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A schema the audit migration has not reached degrades to the empty
     section, never a 500 (the same contract the schedules page has for a
-    missing cron_schedules)."""
-    import asyncpg as _asyncpg
+    missing cron_schedules).
+
+    The schema is the honest partially-migrated state: a fresh schema the
+    real chain has applied exactly to ``01.00.19_01`` - ``jobs`` long
+    present, ``admin_audit`` (``01.00.19_03``) not yet - and the real
+    router reads it there. The degrade arm fires on the server's own
+    ``UndefinedTableError``, not a scripted stand-in."""
+    from taskq._ids import new_base62
+    from taskq.migrate import apply_pending
 
     monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
     jid = new_uuid()
+    schema = f"aad_{new_base62()}".lower()
 
-    class _PreMigrationConn(_RecordingConnection):
-        """The schema before the audit migration: the audit statements
-        raise UndefinedTableError, the job rows answer normally.
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await apply_pending(conn, schema=schema, target="01.00.19_01")
+        await conn.execute(
+            f"""INSERT INTO "{schema}".jobs (
+                    id, actor, queue, payload, payload_schema_ver, max_attempts,
+                    retry_kind, status, priority, attempt, metadata,
+                    created_at, scheduled_at)
+                VALUES ($1, 'send_email', 'default', '{{}}'::jsonb, 1, 3,
+                    'transient', 'pending', 0, 0, '{{}}'::jsonb, now(), now())""",
+            jid,
+        )
+    finally:
+        await conn.close()
 
-        fail-closed-exempt: the pre-migration schema injection — the
-        audit table's absence raises UndefinedTableError at the named
-        statements while the job-detail rows answer their scripted
-        shapes, so the page reaches the empty-section degrade. (The
-        deployment state is honest — a schema migrated to the version
-        just before 01.00.19_03 — but producing it needs a partially
-        applied migration chain beside this module's fully applied one;
-        the injection stands in for it at the named statements.)"""
-
-        def __init__(self, *, job: StubRecord | None) -> None:
-            super().__init__()
-            self._job = job
-
-        async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
-            if "admin_audit" in query:
-                raise _asyncpg.exceptions.UndefinedTableError("missing")
-            return self._job
-
-        async def fetch(self, query: str, *args: object) -> list[StubRecord]:
-            if "admin_audit" in query:
-                raise _asyncpg.exceptions.UndefinedTableError("missing")
-            return []
-
-    conn = _PreMigrationConn(job=_job_record(jid))
-    client = _make_app(_RecordingPool(conn))
-    resp = client.get(f"/jobs/{jid}")
-    assert resp.status_code == 200  # pyright: ignore[reportUnknownMemberType]
-    assert "No admin actions recorded." in resp.text  # pyright: ignore[reportUnknownMemberType]
+    app = _pg_app(module_pg_pool, schema)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(f"/jobs/{jid}")
+            assert resp.status_code == 200
+            assert "No admin actions recorded." in resp.text
+    finally:
+        drop_conn = await asyncpg.connect(pg_dsn)
+        try:
+            await drop_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        finally:
+            await drop_conn.close()

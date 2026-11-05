@@ -48,7 +48,7 @@ from taskq._close import CLOSE_TIMEOUT_SECS, worst_case_teardown_tail
 from taskq._ids import new_uuid
 from taskq.backend.clock import SystemClock
 from taskq.settings import WorkerSettings
-from taskq.testing.assertions import wait_for, wait_for_condition
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.in_memory import InMemoryBackend
@@ -123,91 +123,6 @@ def _worker_settings(schema: str) -> WorkerSettings:
         "TASKQ_CLEANUP_GRACE_PERIOD": "0.0",
     }
     return WorkerSettings.load_from_dict(data, validate=False)
-
-
-class _DroppedConn:
-    """A conn the shutdown already lost: closed, no I/O possible.
-
-    fail-closed-exempt: the dropped-conn fault injection — the resign
-    retry arm's premise is a lease whose connection the failure path
-    already dropped (the pod's PG connection died mid-shutdown), so every
-    resign fails without touching the network. A live connection cannot
-    fail deterministically, and the arm's subject is the retry's PACING,
-    not the lease statement's answer; the conn answers no SQL."""
-
-    def __init__(self) -> None:
-        self.fetchval_calls: list[tuple[str, tuple[object, ...]]] = []
-        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
-        self._closed = True
-        self.close_calls = 0
-        self.terminated = False
-
-    async def fetchval(self, sql: str, *args: object) -> object:
-        self.fetchval_calls.append((sql, args))
-        raise AssertionError(f"no live conn: unexpected statement {sql}")
-
-    async def execute(self, sql: str, *args: object) -> str:
-        self.execute_calls.append((sql, args))
-        raise AssertionError(f"no live conn: unexpected statement {sql}")
-
-    async def close(self) -> None:
-        self.close_calls += 1
-
-    def terminate(self) -> None:
-        self.terminated = True
-
-    def is_closed(self) -> bool:
-        return self._closed
-
-
-class _InFlightElectConn:
-    """A conn whose ELECT statement hangs until the test releases it.
-
-    fail-closed-exempt: the in-flight-elect HANG fault injection — the
-    SIGTERM-mid-elect race needs the elect round trip on the wire when
-    the stop signal lands, its win arriving after; a live server cannot
-    park a statement at a named point deterministically. The conn records
-    every statement and answers the elect with a win when released; every
-    other member behaves like a scripted session (the clock read answers,
-    the resign's DELETE counts)."""
-
-    def __init__(self) -> None:
-        self.fetchval_calls: list[tuple[str, tuple[object, ...]]] = []
-        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
-        self._closed = False
-        self.close_calls = 0
-        self.terminated = False
-        self.elect_started = asyncio.Event()
-        self.elect_gate = asyncio.Event()
-        self.won_elected_at = datetime(2025, 1, 1, tzinfo=UTC)
-
-    async def fetchval(self, sql: str, *args: object) -> object:
-        self.fetchval_calls.append((sql, args))
-        if sql.lstrip().upper().startswith(_ELECT_PREFIX) and "maintenance_leader" in sql:
-            self.elect_started.set()
-            await self.elect_gate.wait()
-            # The win comes back after the (test-arranged) stop.
-            return self.won_elected_at
-        if sql.lstrip().upper().startswith("SELECT CLOCK_TIMESTAMP()"):
-            return datetime.now(UTC)
-        return None
-
-    async def execute(self, sql: str, *args: object) -> str:
-        self.execute_calls.append((sql, args))
-        if sql.lstrip().upper().startswith("DELETE FROM"):
-            return "DELETE 1"
-        return "UPDATE 1"
-
-    async def close(self) -> None:
-        self.close_calls += 1
-        self._closed = True
-
-    def terminate(self) -> None:
-        self.terminated = True
-        self._closed = True
-
-    def is_closed(self) -> bool:
-        return self._closed
 
 
 class _LeaderRecordingConn:
@@ -341,6 +256,24 @@ async def _stop_task(task: asyncio.Task[Any], shutdown: asyncio.Event) -> None:
         await asyncio.wait_for(task, timeout=2.0)
 
 
+async def _pid_is_lock_waiter(parker: asyncpg.Connection, pid: int) -> bool:
+    """Whether session *pid* is parked on a lock wait right now.
+
+    Probed through a DIFFERENT session (the parker's): the elect's own
+    connection is busy mid-statement, no second statement can ride it.
+    The exact pid is the scope - the probe cannot satisfy itself on a
+    sibling's waiter because it names one session - and the datname
+    scope is the guard's rule for every pg_stat_activity read (the
+    shared container hosts every worker's database)."""
+    row = await parker.fetchrow(
+        "SELECT wait_event_type FROM pg_stat_activity "
+        "WHERE pid = $1 AND wait_event_type = 'Lock' "
+        "AND datname = current_database()",
+        pid,
+    )
+    return row is not None
+
+
 # ── Pin 1: the park ─────────────────────────────────────────────────────
 
 
@@ -400,38 +333,84 @@ async def test_pin_a_stopping_worker_never_attempts_the_election_again(
 # ── Pin 2: the mid-elect race ───────────────────────────────────────────
 
 
-async def test_pin_elect_in_flight_at_stop_wins_then_is_resigned_never_assumed() -> None:
+async def test_pin_elect_in_flight_at_stop_wins_then_is_resigned_never_assumed(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """SIGTERM mid-elect: the win is handed straight back, nothing assumes.
 
-    The elect statement was on the wire when the stop signal landed and
-    won anyway. The lease must never be held across the drain: the won
-    row is resigned immediately (fenced on the won term, over the conn
-    the elect just used, while the worker-wide shutdown event is still
-    clear), the assume path never runs - no monitor/cron conn opens, no
+    The elect statement is genuinely parked mid-round-trip when the stop
+    signal lands: a second session's UNCOMMITTED insert on the singleton
+    row holds the unique index entry, so the production elect conflicts
+    on it and waits on that transaction (pg_stat_activity: a Lock waiter)
+    - exactly the in-flight point the race names, parked by the server,
+    not by a scripted gate. The parker rolls back, the elect wins with
+    the server's own term, and the win arrives after the stop. The lease
+    must never be held across the drain: the won row is resigned
+    immediately (fenced on the won term, over the conn the elect just
+    used, while the worker-wide shutdown event is still clear), the
+    assume path never runs - no monitor/cron conn opens, no
     courtesy-lock probe issues, ``lead()`` never sets the flag, so no
     leader-gated sweep can start - and the row is available to the
     successor from that instant.
     """
-    conn = _InFlightElectConn()
-    deps = _make_deps(conn, "taskq")
+    schema = module_pg_schema.schema_name
+    conn = _LeaderRecordingConn(clean_pg_conn)
+    deps = _make_deps(conn, schema)
     leader = _make_leader(deps, conn)
+
+    # The elect's insert carries an FK on workers; the parker's row does
+    # too. Both rows exist (committed) before either statement runs.
+    await _seed_worker_row(clean_pg_conn, schema, leader._worker_id)
+    parker_worker = new_uuid()
+    await _seed_worker_row(clean_pg_conn, schema, parker_worker)
+    # The elect's session pid, captured before the loop drives the conn.
+    elect_pid = await clean_pg_conn.fetchval("SELECT pg_backend_pid()")
+
+    parker = await asyncpg.connect(module_pg_schema.pg_dsn)
     shutdown = asyncio.Event()
-    task = asyncio.create_task(leader._election_loop(shutdown))
+    task: asyncio.Task[None] | None = None
     try:
-        # The elect is now in flight. Land the stop while it hangs.
-        await wait_for(conn.elect_started, description="the elect statement to go in flight")
+        # The park: the second session's uncommitted insert occupies the
+        # singleton's unique index entry.
+        await parker.execute("BEGIN")
+        await parker.execute(
+            f"""INSERT INTO "{schema}".maintenance_leader
+                    (singleton, worker_id, elected_at, last_seen_at, expires_at)
+                VALUES (true, $1, clock_timestamp(), clock_timestamp(),
+                    clock_timestamp() + interval '40 seconds')""",
+            parker_worker,
+        )
+        task = asyncio.create_task(leader._election_loop(shutdown))
+        await wait_for_condition(
+            lambda: _elect_attempts(conn) >= 1,
+            description="the election loop's first elect attempt",
+        )
+        await wait_for_condition(
+            lambda: _pid_is_lock_waiter(parker, elect_pid),
+            description="the production elect to park on the parker's uncommitted singleton row",
+        )
+
+        # Land the stop while the elect hangs, then release the parker:
+        # the win comes back after the stop.
         assert _resign_calls(conn) == [], "test premise: no resign before the win"
         deps.shutdown_start_event.set()
-        conn.elect_gate.set()  # the win comes back after the stop
+        await parker.execute("ROLLBACK")
 
         await wait_for_condition(
             lambda: len(_resign_calls(conn)) == 1,
             description="the immediate fenced resign of the won row",
         )
         _resign_sql, resign_args = _resign_calls(conn)[0]
-        assert resign_args == (leader._worker_id, conn.won_elected_at), (
-            "the resign must be fenced on the WON term (worker_id, elected_at), "
-            f"got {resign_args!r}"
+        assert (
+            resign_args[0] == leader._worker_id
+            and isinstance(resign_args[1], datetime)
+            and resign_args[1].tzinfo is not None
+        ), f"the resign must be fenced on the WON term (worker_id, elected_at), got {resign_args!r}"
+        row_count = await parker.fetchval(f'SELECT count(*) FROM "{schema}".maintenance_leader')
+        assert row_count == 0, (
+            "the won row outlived the resign: the fence did not match the "
+            "server's real won term, a dying pod holds leadership"
         )
         assert not deps.is_leader.is_set(), (
             "is_leader was set for a lease the pod is handing straight back: "
@@ -452,8 +431,17 @@ async def test_pin_elect_in_flight_at_stop_wins_then_is_resigned_never_assumed()
         assert conn.close_calls == 0 and not conn.terminated, (
             "the hand-back closed or terminated the conn it rode on"
         )
+        assert _elect_attempts(conn) == 1, (
+            "the loop re-attempted the election after the stop-race resign: "
+            "the park must hold for the rest of the shutdown"
+        )
     finally:
-        await _stop_task(task, shutdown)
+        if task is not None:
+            await _stop_task(task, shutdown)
+        with contextlib.suppress(Exception):
+            await parker.execute("ROLLBACK")
+        with contextlib.suppress(Exception):
+            await parker.close()
 
 
 # ── Pin 3: the early handover ───────────────────────────────────────────
@@ -611,19 +599,23 @@ async def test_pin_handover_demotes_before_the_resign_write_and_cancels_nothing(
 # ── Pin 7: the failed-resign retry is paced, never a hot spin ───────────
 
 
-async def test_pin_a_failed_resign_retries_on_the_tick_cadence_not_hot() -> None:
+async def test_pin_a_failed_resign_retries_on_the_tick_cadence_not_hot(pg_dsn: str) -> None:
     """A resign that cannot reach the database retries paced, attempt-free.
 
     The park's retry loop keeps the fence alive until the resign lands.
     With no conn left to ride (the failure path already dropped them),
-    the resign fails without touching the network - so nothing else in
-    the retry iteration awaits, and an unpaced retry would spin the event
-    loop hot for the whole drain. The retry must wait out the tick
-    cadence between attempts. The ratio does the work: 0.2s holds ~20
-    tick cadences but tens of thousands of hot-loop iterations, a margin
-    no plausible CI load crosses.
+    the resign fails without touching the network - the conn is the real
+    state that names: a live connection the drop already CLOSED, whose
+    ``resign()`` short-circuits on ``is_closed()`` before any wire is
+    touched - so nothing else in the retry iteration awaits, and an
+    unpaced retry would spin the event loop hot for the whole drain. The
+    retry must wait out the tick cadence between attempts. The ratio
+    does the work: 0.2s holds ~20 tick cadences but tens of thousands of
+    hot-loop iterations, a margin no plausible CI load crosses.
     """
-    conn = _DroppedConn()
+    real_conn = await asyncpg.connect(pg_dsn)
+    await real_conn.close()
+    conn = _LeaderRecordingConn(real_conn)
     deps = _make_deps(conn, "taskq")
     leader = _make_leader(deps, conn)
     loop = asyncio.get_running_loop()

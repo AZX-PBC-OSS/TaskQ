@@ -520,13 +520,23 @@ async def test_jobs_page_js_config_carries_raw_filter_values(
 
 
 async def test_every_local_url_on_every_page_resolves_under_a_prefix_deployment(
+    clean_pg_conn: asyncpg.Connection,
     module_pg_pool: asyncpg.Pool,
     module_pg_schema: ModulePgSchema,
 ) -> None:
     """Deployed under a non-root root_path (uvicorn --root-path behind a
     non-stripping proxy), with base_path carrying the full external
     prefix, every local URL every page emits must resolve: a 404ing
-    stylesheet or script is a deployment-breaking render."""
+    stylesheet or script is a deployment-breaking render.
+
+    The walk runs on the clean estate (the house per-test reset): its
+    subject is the page SHELL's emitted URLs - the links a page carries
+    by construction - which must all resolve on their own. A sibling
+    test's residue must not be able to seed a dangling link here: a
+    slot row whose job is gone is a foreign-key state an honest writer
+    cannot produce, and the order-dependent 404 it produced made this
+    pin a coin flip under pytest-randomly instead of the deterministic
+    deployment proof it is."""
     schema = module_pg_schema.schema_name
     external_prefix = "/taskq"
     app = _admin_app(
