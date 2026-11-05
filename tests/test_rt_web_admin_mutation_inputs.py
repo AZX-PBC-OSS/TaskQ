@@ -58,12 +58,20 @@ Papered defects and pins
    covers every write endpoint, which the warning understates.
 """
 
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
+import asyncpg
 import asyncpg.exceptions
+import httpx
 import pytest
 
 pytest.importorskip("fastapi")
@@ -71,10 +79,10 @@ pytest.importorskip("jinja2")
 
 import structlog.testing
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from taskq._ids import new_uuid
 from taskq._json import dumps_str
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.jobs import make_job_row
 from taskq.web.admin import create_router, setup_admin_state
 from taskq.web.admin.auth._session import (
@@ -96,54 +104,74 @@ def _admin_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[
     monkeypatch.setenv("TASKQ_ADMIN_UI_SECURE_COOKIES", "false")
 
 
-# ── Stub doubles ──────────────────────────────────────────────────────────
+# ── the real-PG tier ─────────────────────────────────────────────────────
+#
+# The arms run the real router over the module's real pool (the
+# tests/test_web_admin_integration.py pattern): the detail page's reads
+# answer from the real schema, with the rows a test needs seeded as real
+# rows. The NUL-rejecting backend double stays: it models PG's own jsonb
+# NUL refusal at the backend seam the route reaches through.
 
 
-class _DetailConn:
-    """Fake asyncpg connection serving one job row for the detail query.
-
-    fail-closed-exempt: the mutation-input VALIDATION arms' scripted rows (422 shapes; no PG)
-    """
-
-    def __init__(self, job_row: dict[str, Any] | None) -> None:
-        self._job_row = job_row
-
-    async def fetchrow(self, query: str, *args: object) -> dict[str, Any] | None:
-        if "jobs_archive" in query:
-            return None
-        if ".jobs" in query and "WHERE id" in query:
-            return self._job_row
-        return None
-
-    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
-        return []
-
-    async def fetchval(self, query: str, *args: object) -> object:
-        if query.strip() == "SELECT clock_timestamp()":
-            return datetime.now(UTC)
-        return 0
-
-    async def execute(self, query: str, *args: object) -> str:
-        return "UPDATE 1"
+def _make_app(
+    pool: asyncpg.Pool,
+    schema: str,
+    *,
+    backend: Any | None = None,
+    auth_dependency: Any | None = None,
+) -> FastAPI:
+    bundle = create_router(
+        pool,
+        schema=schema,
+        base_path="",
+        backend=backend,
+        auth_dependency=auth_dependency,
+    )
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return app
 
 
-class _AcquireCtx:
-    def __init__(self, conn: _DetailConn) -> None:
-        self._conn = conn
+@asynccontextmanager
+async def _client(
+    pool: asyncpg.Pool,
+    schema: str,
+    *,
+    backend: Any | None = None,
+    auth_dependency: Any | None = None,
+) -> AsyncGenerator[Any, None]:
+    app = _make_app(pool, schema, backend=backend, auth_dependency=auth_dependency)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
+    ) as c:
+        c.cookies.set("taskq_csrf_token", "rt-csrf")
+        yield c
 
-    async def __aenter__(self) -> _DetailConn:
-        return self._conn
 
-    async def __aexit__(self, *args: object) -> None:
-        pass
+async def _csrf_post(c: Any, path: str, data: dict[str, str] | None = None) -> Any:
+    """CSRF-valid POST that does not follow the 303."""
+    return await c.post(path, data={"csrf_token": "rt-csrf", **(data or {})})
 
 
-class _StubPool:
-    def __init__(self, conn: _DetailConn) -> None:
-        self._conn = conn
-
-    def acquire(self, *, timeout: float | None = None) -> _AcquireCtx:
-        return _AcquireCtx(self._conn)
+async def _seed_big_result_job(
+    conn: asyncpg.Connection, schema: str, job_id: Any, result_json: str
+) -> None:
+    """A complete succeeded jobs row, big result included."""
+    now = datetime.now(UTC)
+    await conn.execute(
+        f"""INSERT INTO "{schema}".jobs (
+                id, actor, queue, payload, payload_schema_ver, max_attempts,
+                retry_kind, status, priority, attempt, metadata, result,
+                result_size_bytes, created_at, scheduled_at, started_at, finished_at)
+            VALUES ($1, 'rt_web_big_result_actor', 'default', '{{}}'::jsonb, 1, 3,
+                'transient', 'succeeded', 0, 1, '{{}}'::jsonb, $2::jsonb, $3,
+                $4, $4, $4, $4)""",
+        job_id,
+        result_json,
+        len(result_json),
+        now,
+    )
 
 
 class _NulRejectingBackend:
@@ -188,77 +216,13 @@ class _RecordingBackend:
         return True
 
 
-def _make_client(
-    pool: _StubPool,
-    *,
-    backend: Any | None = None,
-    auth_dependency: Any | None = None,
-) -> TestClient:
-    bundle = create_router(
-        pool,  # pyright: ignore[reportArgumentType]  # Why: duck-typed stub satisfies the asyncpg.Pool surface the routes read.
-        backend=backend,
-        auth_dependency=auth_dependency,
-    )
-    app = FastAPI()
-    setup_admin_state(app, bundle)
-    app.include_router(bundle.router)
-    return TestClient(app, raise_server_exceptions=False)
-
-
-def _csrf_post(client: TestClient, path: str, data: dict[str, str] | None = None) -> Any:
-    """CSRF-valid POST that does not follow the 303 - the stub pool serves no
-    detail row, so following the redirect would 404 for reasons unrelated to
-    the behavior under test."""
-    client.cookies.set("taskq_csrf_token", "rt-csrf")
-    return client.post(path, data={"csrf_token": "rt-csrf", **(data or {})}, follow_redirects=False)
-
-
-def _big_result_job_row(job_id: Any, result_json: str) -> dict[str, Any]:
-    """A complete jobs-table row for the detail page, big result included."""
-    now = datetime.now(UTC).isoformat()
-    return {
-        "id": str(job_id),
-        "actor": "rt_web_big_result_actor",
-        "queue": "default",
-        "status": "succeeded",
-        "created_at": now,
-        "scheduled_at": now,
-        "started_at": now,
-        "finished_at": now,
-        "attempt": 1,
-        "max_attempts": 3,
-        "priority": 0,
-        "retry_kind": "transient",
-        "schedule_to_close": None,
-        "start_to_close": None,
-        "heartbeat_timeout": None,
-        "identity_key": None,
-        "idempotency_key": None,
-        "idempotency_scope": "",
-        "fairness_key": None,
-        "tags": [],
-        "locked_by_worker": None,
-        "lock_expires_at": None,
-        "cancel_requested_at": None,
-        "cancel_phase": 0,
-        "trace_id": None,
-        "span_id": None,
-        "result_size_bytes": len(result_json),
-        "error_class": None,
-        "error_message": None,
-        "error_traceback": None,
-        "payload": "{}",
-        "metadata": "{}",
-        "result": result_json,
-        "progress_state": None,
-        "progress_seq": 0,
-    }
-
-
 # ── 1. Cancel reason NUL → 400, not an opaque 500 ─────────────────────────
 
 
-def test_cancel_reason_nul_is_400_not_500() -> None:
+async def test_cancel_reason_nul_is_400_not_500(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """A NUL in the cancel reason must be a clean 400 at the route.
 
     CONTRACT: every caller-controlled text that reaches a PG bind is
@@ -274,17 +238,16 @@ def test_cancel_reason_nul_is_400_not_500() -> None:
     """
     job_id = new_uuid()
     backend = _NulRejectingBackend(make_job_row(status="pending"))
-    client = _make_client(_StubPool(_DetailConn(None)), backend=backend)
+    async with _client(module_pg_pool, module_pg_schema.schema_name, backend=backend) as c:
+        # Control: a clean reason cancels fine (proves the route itself works).
+        # reason is a form field now (the job detail page's cancel form collects
+        # it), so it posts in the body, not the query string.
+        ok = await _csrf_post(c, f"/jobs/{job_id}/cancel", data={"reason": "operator-requested"})
+        assert ok.status_code == 303, (
+            f"control pin: a NUL-free reason must cancel (303); got {ok.status_code}"
+        )
 
-    # Control: a clean reason cancels fine (proves the route itself works).
-    # reason is a form field now (the job detail page's cancel form collects
-    # it), so it posts in the body, not the query string.
-    ok = _csrf_post(client, f"/jobs/{job_id}/cancel", data={"reason": "operator-requested"})
-    assert ok.status_code == 303, (
-        f"control pin: a NUL-free reason must cancel (303); got {ok.status_code}"
-    )
-
-    rejected = _csrf_post(client, f"/jobs/{job_id}/cancel", data={"reason": "boom\x00mid"})
+        rejected = await _csrf_post(c, f"/jobs/{job_id}/cancel", data={"reason": "boom\x00mid"})
     assert rejected.status_code == 400, (
         "CONTRACT: POST /jobs/{id}/cancel?reason=…%00… must be rejected with 400 at "
         "the route - reason reaches the job_events jsonb insert "
@@ -304,7 +267,11 @@ def test_cancel_reason_nul_is_400_not_500() -> None:
 # ── 2. Job detail result render must be bounded ───────────────────────────
 
 
-def test_job_detail_result_render_is_bounded() -> None:
+async def test_job_detail_result_render_is_bounded(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """A multi-MB job result must not be rendered verbatim into the page.
 
     CONTRACT: operator-page rendering of stored blobs is display-bounded -
@@ -320,10 +287,10 @@ def test_job_detail_result_render_is_bounded() -> None:
     """
     job_id = new_uuid()
     blob = dumps_str({"rows": "A" * 4_000_000})
-    row = _big_result_job_row(job_id, blob)
-    client = _make_client(_StubPool(_DetailConn(row)))
+    await _seed_big_result_job(clean_pg_conn, module_pg_schema.schema_name, job_id, blob)
 
-    resp = client.get(f"/jobs/{job_id}")
+    async with _client(module_pg_pool, module_pg_schema.schema_name) as c:
+        resp = await c.get(f"/jobs/{job_id}")
     assert resp.status_code == 200, f"the detail page must render; got {resp.status_code}"
     assert len(resp.text) < 1_000_000, (
         "CONTRACT: the job detail page must display-bounded-render stored blobs "
@@ -339,7 +306,9 @@ def test_job_detail_result_render_is_bounded() -> None:
 # ── 3. Rate-limit reset log framing ──────────────────────────────────────
 
 
-def test_rate_limit_reset_log_framing_no_raw_control_chars(
+async def test_rate_limit_reset_log_framing_no_raw_control_chars(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A newline in the bucket_name path param must not forge log lines.
@@ -354,10 +323,9 @@ def test_rate_limit_reset_log_framing_no_raw_control_chars(
     (no parse_text_filter) to the path parameter.
     """
     monkeypatch.setenv("TASKQ_ADMIN_UI_ALLOW_RATE_LIMIT_RESET", "true")
-    client = _make_client(_StubPool(_DetailConn(None)))
-
-    with structlog.testing.capture_logs() as captured:
-        resp = _csrf_post(client, "/rate-limits/forged%0Aevent%3Ainjected/reset")
+    async with _client(module_pg_pool, module_pg_schema.schema_name) as c:
+        with structlog.testing.capture_logs() as captured:
+            resp = await _csrf_post(c, "/rate-limits/forged%0Aevent%3Ainjected/reset")
 
     # The 404-on-unregistered-bucket half is already correct behavior.
     assert resp.status_code == 404, (
@@ -380,7 +348,10 @@ def test_rate_limit_reset_log_framing_no_raw_control_chars(
 # ── 4. Group allowlist gates mutations, not only reads ────────────────────
 
 
-def test_sso_group_allowlist_gates_mutations_not_only_reads() -> None:
+async def test_sso_group_allowlist_gates_mutations_not_only_reads(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """GREEN pin: an out-of-allowlist SSO session is refused on the cancel
     mutation endpoint; an in-allowlist session reaches the handler.
 
@@ -399,25 +370,30 @@ def test_sso_group_allowlist_gates_mutations_not_only_reads() -> None:
         secure_cookie=False,
     )
     dep = create_auth_dependency(manager, frozenset({"ops"}))
-    client = _make_client(_StubPool(_DetailConn(None)), backend=backend, auth_dependency=dep)
+    async with _client(
+        module_pg_pool, module_pg_schema.schema_name, backend=backend, auth_dependency=dep
+    ) as c:
+        outsider = manager.create_session_cookie(
+            IdentityClaims(subject="dev-1", email=None, groups=frozenset({"developers"}), raw={})
+        )
+        c.cookies.set("taskq_session", outsider)
+        denied = await _csrf_post(
+            c, f"/jobs/{job_id}/cancel", data={"reason": "rt-outside-allowlist"}
+        )
+        assert denied.status_code == 401, (
+            "CONTRACT: the SSO group allowlist gates admin mutations, not only reads - "
+            "an authenticated-but-out-of-allowlist session must be refused (401 for "
+            f"non-HTML clients) before the handler runs; got {denied.status_code}"
+        )
+        assert backend.cancel_calls == [], "the refused request must never reach the backend"
 
-    outsider = manager.create_session_cookie(
-        IdentityClaims(subject="dev-1", email=None, groups=frozenset({"developers"}), raw={})
-    )
-    client.cookies.set("taskq_session", outsider)
-    denied = _csrf_post(client, f"/jobs/{job_id}/cancel", data={"reason": "rt-outside-allowlist"})
-    assert denied.status_code == 401, (
-        "CONTRACT: the SSO group allowlist gates admin mutations, not only reads - "
-        "an authenticated-but-out-of-allowlist session must be refused (401 for "
-        f"non-HTML clients) before the handler runs; got {denied.status_code}"
-    )
-    assert backend.cancel_calls == [], "the refused request must never reach the backend"
-
-    member = manager.create_session_cookie(
-        IdentityClaims(subject="op-1", email=None, groups=frozenset({"ops"}), raw={})
-    )
-    client.cookies.set("taskq_session", member)
-    allowed = _csrf_post(client, f"/jobs/{job_id}/cancel", data={"reason": "rt-inside-allowlist"})
+        member = manager.create_session_cookie(
+            IdentityClaims(subject="op-1", email=None, groups=frozenset({"ops"}), raw={})
+        )
+        c.cookies.set("taskq_session", member)
+        allowed = await _csrf_post(
+            c, f"/jobs/{job_id}/cancel", data={"reason": "rt-inside-allowlist"}
+        )
     assert allowed.status_code == 303, (
         f"CONTRACT: an in-allowlist session reaches the cancel handler; got "
         f"{allowed.status_code} {allowed.text[:200]!r}"

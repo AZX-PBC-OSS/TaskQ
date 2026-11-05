@@ -1,9 +1,17 @@
 """Tests for workers, leader, watchdog, and their admin templates."""
 
-from collections.abc import Callable
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
+import uuid
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import asyncpg
+import httpx
 import pytest
 
 pytest.importorskip("fastapi")
@@ -12,6 +20,8 @@ pytest.importorskip("jinja2")
 from fastapi import FastAPI  # Why: importorskip guard must precede.
 from fastapi.testclient import TestClient
 
+from taskq._ids import new_uuid
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.web.admin import (  # Why: importorskip guard must precede.
     create_router,
     setup_admin_state,
@@ -516,180 +526,176 @@ def test_workers_page_non_dict_metadata_defaults_notify_disabled(
     assert "worker-2" in response.text  # pyright: ignore[reportUnknownMemberType]
 
 
-# ── Workers page: running / max column ──────────────────────────────────
+# ── Workers page: running / max column (real PG) ────────────────────────
+#
+# The workers page's own behavior pins run the real router over the
+# module's real pool (the tests/test_web_admin_integration.py pattern):
+# the rows the page reads are seeded with real worker/job inserts, so the
+# rendered running counts, capacity badges and stall tallies are the
+# database's answers computed by the page's own SQL, not a script's.
 
 
-class _WorkersScriptedConn:
-    """Connection returning one preset workers fetch, then empty results.
-
-    fail-closed-exempt: the workers page's scripted rows (the REAL fleet view is tests/test_web_admin_integration.py's)
-    """
-
-    def __init__(self, rows: list[StubRecord], *, schema: str = "taskq") -> None:
-        self._rows = rows
-        self._schema = schema
-
-    async def fetch(self, query: str, *args: object) -> list[StubRecord]:
-        if f'"{self._schema}".workers' in query and "running_count" in query:
-            return self._rows
-        return []
-
-    async def fetchrow(self, query: str, *args: object) -> StubRecord | None:
-        return None
-
-    async def fetchval(self, query: str, *args: object) -> object:
-        if query.strip() == "SELECT clock_timestamp()":
-            return datetime.now(UTC)
-        return None
-
-    async def execute(self, query: str, *args: object) -> str:
-        return ""
-
-
-class _WorkersScriptedAcquireCtx:
-    def __init__(self, conn: _WorkersScriptedConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _WorkersScriptedConn:
-        return self._conn
-
-    async def __aexit__(self, *args: object) -> None:
-        pass
+async def _seed_worker_with_running_jobs(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    metadata: str,
+    running_jobs: int = 0,
+) -> uuid.UUID:
+    """One registered worker with *metadata* and *running_jobs* running rows."""
+    wid = new_uuid()
+    await conn.execute(
+        f"""INSERT INTO "{schema}".workers (id, hostname, pid, queues, metadata)
+            VALUES ($1, $2, $3, $4::text[], $5::jsonb)""",
+        wid,
+        f"worker-{str(wid)[:8]}",
+        1234,
+        ["default"],
+        metadata,
+    )
+    for _ in range(running_jobs):
+        await conn.execute(
+            f"""INSERT INTO "{schema}".jobs (
+                    id, actor, queue, payload, max_attempts, retry_kind,
+                    status, priority, attempt, scheduled_at, schedule_to_close,
+                    locked_by_worker, lock_expires_at, started_at, last_heartbeat_at)
+                VALUES ($1, 'test_actor', 'default', '{{}}'::jsonb, 3, 'transient',
+                    'running', 0, 1, now(), now() + interval '60 seconds',
+                    $2, now() + interval '60 seconds', now(), now())""",
+            new_uuid(),
+            wid,
+        )
+    return wid
 
 
-class _WorkersScriptedPool:
-    def __init__(self, conn: _WorkersScriptedConn) -> None:
-        self._conn = conn
+def _admin_app(pool: asyncpg.Pool, schema: str) -> FastAPI:
+    bundle = create_router(pool, schema=schema, base_path="")
+    app = FastAPI()
+    setup_admin_state(app, bundle)
+    app.include_router(bundle.router)
+    return app
 
-    def acquire(self, *, timeout: float | None = None) -> _WorkersScriptedAcquireCtx:
-        return _WorkersScriptedAcquireCtx(self._conn)
+
+async def _render_workers_page(pool: asyncpg.Pool, schema: str) -> str:
+    app = _admin_app(pool, schema)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/workers")
+    assert resp.status_code == 200
+    return resp.text
 
 
-def test_workers_page_renders_running_over_max(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_workers_page_renders_running_over_max(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The workers table renders the per-worker running row count against the
-    registered max_concapacity: the same population the
-    taskq.worker.active_jobs metric counts per process."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    row = StubRecord(
-        id="11111111-1111-1111-1111-111111111111",
-        hostname="worker-1",
-        pid=1234,
-        queues="default",
-        last_seen_at="2025-01-01T00:00:00+00:00",
-        is_leader=True,
-        running_jobs=2,
+    registered max_concurrency: the same population the
+    taskq.worker.active_jobs metric counts per process. The count is the
+    page's own SQL (the lateral count over the worker's running rows) over
+    real rows."""
+    schema = module_pg_schema.schema_name
+    await _seed_worker_with_running_jobs(
+        clean_pg_conn,
+        schema,
         metadata='{"notify_enabled": true, "max_concurrency": 4}',
+        running_jobs=2,
     )
-    conn = _WorkersScriptedConn([row])
-    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    app.include_router(bundle.router)
-    setup_admin_state(app, bundle)
-    client = TestClient(app)
-    resp = client.get("/workers")
-    assert resp.status_code == 200
-    assert "2 / 4" in resp.text
+    html = await _render_workers_page(module_pg_pool, schema)
+    assert "2 / 4" in html
     # Not at capacity: the neutral badge, not the amber one.
-    assert "bg-amber-100" not in resp.text
+    assert "bg-amber-100" not in html
 
 
-def test_workers_page_flags_a_saturated_worker(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_workers_page_flags_a_saturated_worker(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """A worker whose running rows reach its registered max renders the
     at-capacity badge: the saturation signal the scaling playbook's first
     row reads."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    row = StubRecord(
-        id="22222222-2222-2222-2222-222222222222",
-        hostname="worker-2",
-        pid=5678,
-        queues="default",
-        last_seen_at="2025-01-01T00:00:00+00:00",
-        is_leader=False,
-        running_jobs=4,
+    schema = module_pg_schema.schema_name
+    await _seed_worker_with_running_jobs(
+        clean_pg_conn,
+        schema,
         metadata='{"notify_enabled": true, "max_concurrency": 4}',
+        running_jobs=4,
     )
-    conn = _WorkersScriptedConn([row])
-    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    app.include_router(bundle.router)
-    setup_admin_state(app, bundle)
-    client = TestClient(app)
-    resp = client.get("/workers")
-    assert resp.status_code == 200
-    assert "4 / 4" in resp.text
-    assert "bg-amber-100" in resp.text
+    html = await _render_workers_page(module_pg_pool, schema)
+    assert "4 / 4" in html
+    assert "bg-amber-100" in html
 
 
-def test_workers_page_renders_a_dash_when_metadata_lacks_capacity(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_workers_page_renders_a_dash_when_metadata_lacks_capacity(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """A workers row whose metadata carries no max_concurrency (an older
     registration) still shows its running count, with a dash for the max."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    row = StubRecord(
-        id="33333333-3333-3333-3333-333333333333",
-        hostname="worker-3",
-        pid=99,
-        queues="default",
-        last_seen_at="2025-01-01T00:00:00+00:00",
-        is_leader=False,
-        running_jobs=1,
-        metadata="{}",
-    )
-    conn = _WorkersScriptedConn([row])
-    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    app.include_router(bundle.router)
-    setup_admin_state(app, bundle)
-    client = TestClient(app)
-    resp = client.get("/workers")
-    assert resp.status_code == 200
-    assert "1 /" in resp.text
-    assert "bg-amber-100" not in resp.text
+    schema = module_pg_schema.schema_name
+    await _seed_worker_with_running_jobs(clean_pg_conn, schema, metadata="{}", running_jobs=1)
+    html = await _render_workers_page(module_pg_pool, schema)
+    assert "1 /" in html
+    assert "bg-amber-100" not in html
 
 
-def test_workers_query_counts_running_rows_through_the_partial_index(
-    monkeypatch: pytest.MonkeyPatch,
+class _WorkersStatementRecordingPool:
+    """Recording proxy over the real pool: it records the workers overview's
+    statement and lets the real read proceed untouched - COUNT, DON'T ANSWER
+    (the house pattern of
+    tests/test_cancel_where_bounded.py::_StatementRecordingPool)."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+        self.statements: list[str] = []
+
+    @asynccontextmanager
+    async def acquire(self, **kwargs: object) -> AsyncGenerator[Any, None]:
+        async with self._pool.acquire(**kwargs) as conn:  # type: ignore[call-overload]  # Why: the real pool's acquire timeout kwarg is passed through untouched.
+            outer = self
+
+            class _Recorder:
+                def __init__(self, inner: Any) -> None:
+                    self._inner = inner
+
+                async def fetch(self, sql: str, *args: object) -> Any:
+                    outer.statements.append(sql)
+                    return await self._inner.fetch(sql, *args)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(self._inner, name)
+
+            yield _Recorder(conn)
+
+
+async def test_workers_query_counts_running_rows_through_the_partial_index(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The workers overview's running count rides the
     jobs_locked_by_worker_running_idx partial index (locked_by_worker +
-    status = 'running'), not a scan of the jobs table."""
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    captured: list[str] = []
-
-    class _CapturingConn(_WorkersScriptedConn):
-        async def fetch(self, query: str, *args: object) -> list[StubRecord]:
-            if "running_count" in query:
-                captured.append(query)
-            return await super().fetch(query, *args)
-
-    conn = _CapturingConn(
-        [
-            StubRecord(
-                id="44444444-4444-4444-4444-444444444444",
-                hostname="worker-4",
-                pid=7,
-                queues="default",
-                last_seen_at="2025-01-01T00:00:00+00:00",
-                is_leader=False,
-                running_jobs=0,
-                metadata="{}",
-            )
-        ]
-    )
-    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    app.include_router(bundle.router)
-    setup_admin_state(app, bundle)
-    client = TestClient(app)
-    resp = client.get("/workers")
+    status = 'running'), not a scan of the jobs table. The statement is
+    captured from the real pool, not re-spelled here: a rewritten
+    implementation must stay measured."""
+    schema = module_pg_schema.schema_name
+    await _seed_worker_with_running_jobs(clean_pg_conn, schema, metadata="{}")
+    recording = _WorkersStatementRecordingPool(module_pg_pool)
+    app = _admin_app(recording, schema)  # pyright: ignore[reportArgumentType]  # Why: the recording proxy satisfies the pool surface the router checks out through.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/workers")
     assert resp.status_code == 200
-    assert captured, "the workers overview never ran the running-count query"
-    sql = captured[0]
+    page_sql = [s for s in recording.statements if "running_count" in s]
+    assert page_sql, (
+        f"the workers overview never ran the running-count query: {recording.statements}"
+    )
+    sql = page_sql[0]
     assert "locked_by_worker = w.id" in sql
     assert "status = 'running'" in sql
     assert "count(*)" in sql
@@ -698,80 +704,82 @@ def test_workers_query_counts_running_rows_through_the_partial_index(
 # ── Workers page: stall hotspots column ──────────────────────────────
 
 
-def _hotspot_row(metadata: str) -> StubRecord:
-    return StubRecord(
-        id="33333333-3333-3333-3333-333333333333",
-        hostname="worker-3",
-        pid=99,
-        queues="default",
-        last_seen_at="2025-01-01T00:00:00+00:00",
-        is_leader=False,
-        running_jobs=0,
-        metadata=metadata,
-    )
+async def _hotspot_html(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+    metadata: str,
+) -> str:
+    schema = module_pg_schema.schema_name
+    await _seed_worker_with_running_jobs(clean_pg_conn, schema, metadata=metadata)
+    return await _render_workers_page(module_pg_pool, schema)
 
 
-def _hotspot_client(monkeypatch: pytest.MonkeyPatch, metadata: str) -> Any:
-    monkeypatch.setenv("TASKQ_ENVIRONMENT", "dev")
-    conn = _WorkersScriptedConn([_hotspot_row(metadata)])
-    bundle = create_router(_WorkersScriptedPool(conn))  # pyright: ignore[reportArgumentType]  # Why: test duck-type pool.
-    app = FastAPI()
-    app.include_router(bundle.router)
-    setup_admin_state(app, bundle)
-    return TestClient(app)
-
-
-def test_workers_page_renders_stall_hotspots_hottest_first(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_workers_page_renders_stall_hotspots_hottest_first(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The workers overview renders the stall tally the heartbeat merged
     into the row metadata, hottest actor first, with kind counts."""
-    client = _hotspot_client(
-        monkeypatch,
+    html = await _hotspot_html(
+        clean_pg_conn,
+        module_pg_pool,
+        module_pg_schema,
         '{"notify_enabled": true, "max_concurrency": 4, "loop_stalls": '
         '{"resize_image": {"blocking_call": 2, "gil_held": 1}, '
         '"send_email": {"gil_held": 12}}}',
     )
-    resp = client.get("/workers")
-    assert resp.status_code == 200
     # Hottest first: send_email's 12 beats resize_image's 3.
-    assert resp.text.index("send_email x12 (gil_held)") < resp.text.index(
+    assert html.index("send_email x12 (gil_held)") < html.index(
         "resize_image x3 (blocking_call 2, gil_held 1)"
     )
 
 
-def test_workers_page_hotspots_empty_when_no_tally(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_workers_page_hotspots_empty_when_no_tally(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """A worker that attributed no stalls shows the empty marker, and a
     worker registered before the tally existed (no key at all) too."""
-    client = _hotspot_client(monkeypatch, '{"notify_enabled": true, "max_concurrency": 4}')
-    resp = client.get("/workers")
-    assert resp.status_code == 200
-    assert "x12" not in resp.text
-    assert "Stall hotspots" in resp.text
+    html = await _hotspot_html(
+        clean_pg_conn,
+        module_pg_pool,
+        module_pg_schema,
+        '{"notify_enabled": true, "max_concurrency": 4}',
+    )
+    assert "x12" not in html
+    assert "Stall hotspots" in html
 
 
-def test_workers_page_carries_the_tally_definition_note(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_workers_page_carries_the_tally_definition_note(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The page states what the column counts and what it does not: the
     tally counts ATTRIBUTED stalls, the Running / Max column counts
     running rows."""
-    client = _hotspot_client(monkeypatch, "{}")
-    resp = client.get("/workers")
-    assert "attributed event-loop stalls" in resp.text
-    assert "Running / Max column counts running rows" in resp.text
+    html = await _hotspot_html(clean_pg_conn, module_pg_pool, module_pg_schema, "{}")
+    assert "attributed event-loop stalls" in html
+    assert "Running / Max column counts running rows" in html
 
 
-def test_workers_page_survives_a_malformed_tally(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_workers_page_survives_a_malformed_tally(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
-    """A hand-edited or stale metadata shape (not a dict, bad counts)
-    renders as empty rather than taking down the page."""
-    client = _hotspot_client(
-        monkeypatch,
+    """A stale worker's metadata shape (a tally that is not a dict, bad
+    counts - jsonb admits it) renders as empty rather than taking down the
+    page. Seeded as a real jsonb row: the column holds whatever jsonb
+    accepts, which is exactly the drift the render must survive."""
+    html = await _hotspot_html(
+        clean_pg_conn,
+        module_pg_pool,
+        module_pg_schema,
         '{"notify_enabled": true, "max_concurrency": 4, "loop_stalls": ["not", "a", "dict"]}',
     )
-    resp = client.get("/workers")
-    assert resp.status_code == 200
+    assert "Stall hotspots" in html
+    assert "x12" not in html

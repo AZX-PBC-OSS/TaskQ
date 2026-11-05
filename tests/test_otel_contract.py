@@ -17,12 +17,16 @@ private dependency is gone. What is left to defend is the shape of the two
 dataclasses, which the public path does not promise field-by-field.
 """
 
-import contextlib
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
+
 import dataclasses
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+import asyncpg
 import pytest
 
 pytest.importorskip("opentelemetry.sdk")
@@ -38,14 +42,12 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 import taskq.obs._otel as otel_mod
 from taskq._ids import new_uuid
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.testing.otel import counter_data_points, histogram_points
 
 # The fields TaskQ actually reads, not the full dataclass. A future release may
 # add fields freely; removing or renaming one of these is what breaks us.
 pytestmark = [pytest.mark.otel]
-
-#: A fixed wall-clock anchor for the prune/expiry doubles' DB-clock reads.
-_START = datetime(2026, 1, 1, tzinfo=UTC)
 
 _NUMBER_FIELDS_USED = frozenset({"attributes", "value"})
 _HISTOGRAM_FIELDS_USED = frozenset(
@@ -342,69 +344,86 @@ async def test_mark_interrupted_fenced_out_emits_the_noop_counter(
 
 
 # ── Real path: the leader prune's archive counters ───────────────────────
+#
+# The counter-contract arms run the real sweeps over the module's real
+# pool (the tests/test_leader_prune.py seeding): the rows the sweeps
+# archive and hard-delete are real rows, so the counters' (actor, status)
+# labels and values are the database's own answer.
 
 
-class _PruneScriptedConn:
-    """Conn double for the leader's prune/expiry sweeps.
-        fail-closed-exempt: the prune sweep's scripted rows for the metric-contract arms (the sweep's SQL is tests/test_leader_prune.py's)
+async def _seed_terminal_job(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    status: str,
+    finished_at: datetime,
+    actor: str = "alpha",
+    queue: str = "default",
+) -> Any:
+    jid = new_uuid()
+    now = datetime.now(UTC)
+    await conn.execute(
+        f"""INSERT INTO "{schema}".jobs (
+            id, actor, queue, payload, max_attempts, retry_kind,
+            status, priority, scheduled_at, schedule_to_close,
+            finished_at, metadata, payload_schema_ver
+        ) VALUES (
+            $1, $2, $3, '{{"v": 1}}'::jsonb, 3, 'transient',
+            $4::{schema}.job_status, 0, $5, $6, $7, '{{}}'::jsonb, 1
+        )""",
+        jid,
+        actor,
+        queue,
+        status,
+        now,
+        now + timedelta(hours=1),
+        finished_at,
+    )
+    return jid
 
-    Answers the two infrastructure reads every sweep makes (the GUC
-    probe, the DB-clock read) and routes the batch statements by
-    (arg-shape, status): the archive candidate is
-    ``(status, retention, size)``, the archive write ``(status,
-    archive_interval, ids, retention)``, the expiry batch ``(size,)``.
-    Each scripted answer is returned once (the first matching call);
-    every further matching call answers empty, which ends the drain.
-    """
 
-    def __init__(
-        self,
-        db_now: datetime,
-        *,
-        candidate: list[dict[str, object]] | None = None,
-        write: list[dict[str, object]] | None = None,
-        expiry: list[dict[str, object]] | None = None,
-    ) -> None:
-        self._db_now = db_now
-        self._candidate = list(candidate or [])
-        self._write = list(write or [])
-        self._expiry = list(expiry or [])
-
-    def _answer_once(self, script: list[dict[str, object]]) -> list[dict[str, object]]:
-        if script:
-            rows = list(script)
-            script.clear()
-            return rows
-        return []
-
-    def transaction(self) -> Any:
-        return contextlib.nullcontext()
-
-    async def fetchval(self, _sql: str) -> datetime:
-        return self._db_now
-
-    async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-        if "current_setting" in sql:
-            return [{"current_setting": "30s"}]
-        if len(args) == 3 and args[0] == "succeeded":
-            return self._answer_once(self._candidate)
-        if len(args) == 4 and args[0] == "succeeded":
-            return self._answer_once(self._write)
-        if len(args) == 1:
-            return self._answer_once(self._expiry)
-        return []
-
-    async def execute(self, _sql: str, *_args: object) -> str:
-        return "SELECT 1"
+async def _seed_expired_archive_row(
+    conn: asyncpg.Connection,
+    schema: str,
+    *,
+    status: str,
+    expire_at: datetime,
+    actor: str = "alpha",
+    queue: str = "default",
+) -> Any:
+    jid = new_uuid()
+    now = datetime.now(UTC)
+    await conn.execute(
+        f"""INSERT INTO "{schema}".jobs_archive (
+            id, actor, queue, payload, max_attempts, retry_kind,
+            status, priority, scheduled_at, schedule_to_close,
+            finished_at, archived_at, expire_at, metadata, payload_schema_ver
+        ) VALUES (
+            $1, $2, $3, '{{"v": 1}}'::jsonb, 3, 'transient',
+            $4::{schema}.job_status, 0, $5, $6, $7, $8, $9, '{{}}'::jsonb, 1
+        )""",
+        jid,
+        actor,
+        queue,
+        status,
+        now,
+        now + timedelta(hours=1),
+        now - timedelta(days=40),
+        now - timedelta(days=39),
+        expire_at,
+    )
+    return jid
 
 
 async def test_prune_terminal_jobs_emits_paired_prune_and_archive_counters(
     meter_reader: Any,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The fleet-wide prune arm records ``taskq.pruned.jobs`` and
     ``taskq.archived.jobs`` together, per (actor, status) group, from the
     write statement's RETURNING - the real ``prune_terminal_jobs`` loop,
-    batch statement by batch statement.
+    batch statement by batch statement, over real rows.
 
     Regression caught: the two counters ride the same row loop; a drift
     that records one without the other (a refactor adding an early
@@ -413,17 +432,16 @@ async def test_prune_terminal_jobs_emits_paired_prune_and_archive_counters(
     """
     from taskq.worker._leader_shared import prune_terminal_jobs
 
-    conn = _PruneScriptedConn(
-        _START + timedelta(days=40),
-        candidate=[{"id": new_uuid()}],
-        write=[{"actor": "alpha", "status": "succeeded", "cnt": 2}],
-    )
+    schema = module_pg_schema.schema_name
+    old = datetime.now(UTC) - timedelta(days=40)
+    for _ in range(2):
+        await _seed_terminal_job(clean_pg_conn, schema, status="succeeded", finished_at=old)
 
     result = await prune_terminal_jobs(
-        conn,  # pyright: ignore[reportArgumentType]
+        clean_pg_conn,
         retention_per_status={"succeeded": timedelta(days=1)},
         archive_retention=timedelta(days=30),
-        schema="taskq",
+        schema=schema,
     )
 
     assert result.total_deleted == 2
@@ -439,10 +457,12 @@ async def test_prune_terminal_jobs_emits_paired_prune_and_archive_counters(
 
 async def test_archive_expiry_sweep_emits_the_expiry_counter(
     meter_reader: Any,
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
 ) -> None:
     """The archive expiry sweep records ``taskq.expired_archive.jobs`` per
     status group from the hard-delete's RETURNING, through the real
-    ``archive_expiry_sweep`` drain.
+    ``archive_expiry_sweep`` drain over real expired archive rows.
 
     Regression caught: this is the sweep that hard-deletes expired
     archive rows; its counter disappearing (a refactor renaming the
@@ -451,12 +471,16 @@ async def test_archive_expiry_sweep_emits_the_expiry_counter(
     """
     from taskq.worker._leader_shared import archive_expiry_sweep
 
-    conn = _PruneScriptedConn(
-        _START + timedelta(days=90),
-        expiry=[{"actor": "alpha", "status": "failed", "cnt": 3}],
-    )
+    schema = module_pg_schema.schema_name
+    for _ in range(3):
+        await _seed_expired_archive_row(
+            clean_pg_conn,
+            schema,
+            status="failed",
+            expire_at=datetime.now(UTC) - timedelta(hours=1),
+        )
 
-    result = await archive_expiry_sweep(conn, schema="taskq")  # pyright: ignore[reportArgumentType]
+    result = await archive_expiry_sweep(clean_pg_conn, schema=schema)
 
     assert result.total_deleted == 3
     points = counter_data_points(meter_reader, "taskq.expired_archive.jobs")

@@ -52,6 +52,7 @@ from taskq.ratelimit.refs import KeyedRateLimitRef
 from taskq.ratelimit.registry import RateLimitRegistry
 from taskq.settings import WorkerSettings
 from taskq.testing.clock import FakeClock
+from taskq.testing.fixtures import ModulePgSchema
 
 _START = datetime(2025, 1, 1, tzinfo=UTC)
 
@@ -60,17 +61,11 @@ class _TenantPayload(BaseModel):
     tenant_id: str
 
 
-def _schema() -> str:
-    """This file's dedicated schema (local, per the suite-hygiene rule
-    against module-level schema constants)."""
-    return "taskq_krl_reclaim_unit"
-
-
-def _settings() -> WorkerSettings:
+def _settings(pg_dsn: str, schema: str) -> WorkerSettings:
     return WorkerSettings.load_from_dict(
         {
-            "TASKQ_PG_DSN": "postgresql://u:p@h:5432/db",
-            "TASKQ_SCHEMA_NAME": _schema(),
+            "TASKQ_PG_DSN": pg_dsn,
+            "TASKQ_SCHEMA_NAME": schema,
         },
         validate=False,
     )
@@ -92,56 +87,44 @@ class _RecordedStatement(NamedTuple):
     args: tuple[object, ...]
 
 
-class _RecordingConn:
-    """Connection double that records every statement it is handed.
-        fail-closed-exempt: the keyed-row reclamation's scripted rows and recording (the real reclamation is tests/test_keyed_row_fleet_reclaim.py's)
-
-    ``fetch`` answers a ``DELETE ... RETURNING bucket_name`` with the
-    sliced names echoed back as the deleted rows - the rowcount shape
-    the drain counts; every other fetch returns no rows.
-    """
-
-    def __init__(self) -> None:
-        self.statements: list[_RecordedStatement] = []
-
-    async def execute(self, sql: str, *args: object) -> str:
-        self.statements.append(_RecordedStatement(sql, args))
-        return "OK"
-
-    async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-        self.statements.append(_RecordedStatement(sql, args))
-        if "DELETE" in sql.upper() and args and isinstance(args[0], list):
-            return [{"bucket_name": name} for name in args[0]]
-        return []
-
-    async def fetchval(self, sql: str, *args: object) -> object:
-        self.statements.append(_RecordedStatement(sql, args))
-        return None
-
-    async def fetchrow(self, sql: str, *args: object) -> object | None:
-        self.statements.append(_RecordedStatement(sql, args))
-        return None
-
-    async def close(self) -> None:
-        pass
-
-    def is_closed(self) -> bool:
-        return False
-
-
 class _RecordingPool:
-    """Pool double handing every acquire the same recording connection."""
+    """Recording proxy over the module's real pool - COUNT, DON'T ANSWER
+    (the house pattern of
+    tests/test_cancel_where_bounded.py::_StatementRecordingPool).
 
-    def __init__(self) -> None:
-        self.conn = _RecordingConn()
+    It records every statement the publish and the drain issue, then lets
+    the real statement run untouched: the ``DELETE ... RETURNING
+    bucket_name`` rowcount the drain reports is the database's own answer
+    over real published rows, not an echo of the input."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+        self.statements: list[_RecordedStatement] = []
 
     @asynccontextmanager
     async def acquire(
         self,
-        *,
-        timeout: float | None = None,  # noqa: ASYNC109  # Why: mirrors asyncpg.Pool.acquire signature.
-    ) -> AsyncGenerator[_RecordingConn, None]:
-        yield self.conn
+        **kwargs: object,
+    ) -> AsyncGenerator[Any, None]:
+        async with self._pool.acquire(**kwargs) as conn:  # type: ignore[call-overload]  # Why: the real pool's acquire timeout kwarg passes through untouched.
+            outer = self
+
+            class _Recorder:
+                def __init__(self, inner: Any) -> None:
+                    self._inner = inner
+
+                async def execute(self, sql: str, *args: object) -> str:
+                    outer.statements.append(_RecordedStatement(sql, args))
+                    return await self._inner.execute(sql, *args)
+
+                async def fetch(self, sql: str, *args: object) -> list[object]:
+                    outer.statements.append(_RecordedStatement(sql, args))
+                    return await self._inner.fetch(sql, *args)
+
+                def __getattr__(self, name: str) -> Any:
+                    return getattr(self._inner, name)
+
+            yield _Recorder(conn)
 
 
 class _AcquireRaisingPool:
@@ -157,13 +140,15 @@ async def _materialize(
     pool: _RecordingPool | None,
     *,
     tenant_id: str,
+    pg_dsn: str,
+    schema: str,
 ) -> str:
     """Register a keyed bucket and publish its row without acquiring."""
     return await reg._resolve_rate_limit_name(  # pyright: ignore[reportPrivateUsage]  # Why: materializing a keyed bucket without acquiring, matching test_keyed_reservation_drain_rotation.py's pattern.
         ref,
         _TenantPayload(tenant_id=tenant_id),
-        settings=_settings(),
-        pg_pool=pool,  # type: ignore[arg-type]  # Why: test double for asyncpg.Pool; only acquire()/execute() are reached.
+        settings=_settings(pg_dsn, schema),
+        pg_pool=pool,  # type: ignore[arg-type]  # Why: the recording proxy over the real pool; only acquire()/execute() are reached.
     )
 
 
@@ -175,19 +160,22 @@ def _seed_idle(reg: RateLimitRegistry, *buckets: str) -> None:
 
 def _rate_limit_delete_statements(pool: _RecordingPool) -> list[_RecordedStatement]:
     return [
-        s
-        for s in pool.conn.statements
-        if "DELETE" in s.sql.upper() and "rate_limit_buckets" in s.sql
+        s for s in pool.statements if "DELETE" in s.sql.upper() and "rate_limit_buckets" in s.sql
     ]
 
 
-async def test_evicted_published_keyed_rate_limit_bucket_row_is_drained() -> None:
+async def test_evicted_published_keyed_rate_limit_bucket_row_is_drained(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """Evicting an idle keyed rate limit must feed the pending-reclaim
     drain a ``rate_limit_buckets`` DELETE for its published row - the
-    unit tier of the PG pin in test_rt_keyed_bucket_reclamation.py."""
+    unit tier of the PG pin in test_rt_keyed_bucket_reclamation.py. The
+    publish and the DELETE run against real rows on the module's pool."""
+    schema = module_pg_schema.schema_name
     reg = RateLimitRegistry()
-    pool = _RecordingPool()
-    settings = _settings()
+    pool = _RecordingPool(module_pg_pool)
+    settings = _settings(module_pg_schema.pg_dsn, schema)
 
     acquired = await reg.acquire_for_actor(
         rate_limits=[_ref("krl-reclaim")],
@@ -195,15 +183,15 @@ async def test_evicted_published_keyed_rate_limit_bucket_row_is_drained() -> Non
         job_id=new_uuid(),
         worker_id=new_uuid(),
         payload=_TenantPayload(tenant_id="acme"),
-        pg_pool=pool,  # type: ignore[arg-type]  # Why: test double for asyncpg.Pool; the memory-backed acquire never reads it, only the publish does.
+        pg_pool=pool,  # type: ignore[arg-type]  # Why: the recording proxy satisfies the publish path's acquire()/execute() surface.
         clock=FakeClock(_START),
         settings=settings,
     )
     assert len(acquired) == 1
     bucket = "krl-reclaim:acme"
-    assert any(
-        f'INSERT INTO "{_schema()}".rate_limit_buckets' in s.sql for s in pool.conn.statements
-    ), "fixture broken: the keyed bucket's publish did not land"
+    assert any(f'INSERT INTO "{schema}".rate_limit_buckets' in s.sql for s in pool.statements), (
+        "fixture broken: the keyed bucket's publish did not land"
+    )
 
     evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0))
     assert evicted == 1, "fixture broken: the idle keyed bucket was not evicted"
@@ -214,12 +202,12 @@ async def test_evicted_published_keyed_rate_limit_bucket_row_is_drained() -> Non
         "production"
     )
 
-    deleted = await reg.drain_pending_reservation_reclaims(pool)  # type: ignore[arg-type]  # Why: test double for asyncpg.Pool; acquire()/fetch() are the only members reached.
+    deleted = await reg.drain_pending_reservation_reclaims(pool)  # type: ignore[arg-type]  # Why: the recording proxy; the DELETE's RETURNING is the database's own.
 
     assert deleted == 1, "the drain must report the reclaimed bucket row"
     deletes = _rate_limit_delete_statements(pool)
     assert len(deletes) == 1, "the drain must issue exactly one bucket-row DELETE"
-    assert f'FROM "{_schema()}".rate_limit_buckets' in deletes[0].sql, (
+    assert f'FROM "{schema}".rate_limit_buckets' in deletes[0].sql, (
         "the drain must delete the bucket row from the schema the publish wrote it to"
     )
     assert "bucket_name = ANY($1)" in deletes[0].sql, (
@@ -231,24 +219,32 @@ async def test_evicted_published_keyed_rate_limit_bucket_row_is_drained() -> Non
     assert not reg.has_pending_reservation_reclaims, "the drained bucket must leave the pending set"
 
 
-async def test_re_registered_keyed_bucket_is_dropped_without_a_statement() -> None:
+async def test_re_registered_keyed_bucket_is_dropped_without_a_statement(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """A key that re-activates after eviction owns its row again: the
     drain drops the pending name without touching PG, and nothing
     pending means the next drain acquires no connection at all."""
+    schema = module_pg_schema.schema_name
     reg = RateLimitRegistry()
-    pool = _RecordingPool()
+    pool = _RecordingPool(module_pg_pool)
     ref = _ref("krl-reregistered")
 
-    bucket = await _materialize(reg, ref, pool, tenant_id="k1")
+    bucket = await _materialize(
+        reg, ref, pool, tenant_id="k1", pg_dsn=module_pg_schema.pg_dsn, schema=schema
+    )
     _seed_idle(reg, bucket)
     assert reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0)) == 1
     assert reg.has_pending_reservation_reclaims
 
     # The key re-activates before any drain ran.
-    await _materialize(reg, ref, pool, tenant_id="k1")
-    pool.conn.statements.clear()
+    await _materialize(
+        reg, ref, pool, tenant_id="k1", pg_dsn=module_pg_schema.pg_dsn, schema=schema
+    )
+    pool.statements.clear()
 
-    assert await reg.drain_pending_reservation_reclaims(pool) == 0  # type: ignore[arg-type]  # Why: test double for asyncpg.Pool.
+    assert await reg.drain_pending_reservation_reclaims(pool) == 0  # type: ignore[arg-type]  # Why: the recording proxy.
     assert not _rate_limit_delete_statements(pool), (
         "a re-registered bucket's row must not be deleted - the drain drops "
         "the pending name without a statement"
@@ -260,13 +256,22 @@ async def test_re_registered_keyed_bucket_is_dropped_without_a_statement() -> No
     assert await reg.drain_pending_reservation_reclaims(_AcquireRaisingPool()) == 0  # type: ignore[arg-type]  # Why: a minimal stand-in for asyncpg.Pool; only acquire() is reached, and only if the bug is present.
 
 
-async def test_unpublished_keyed_rate_limit_records_no_pending_reclaim() -> None:
+async def test_unpublished_keyed_rate_limit_records_no_pending_reclaim(
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """A bucket materialized with no PG pool published no row, so its
     eviction records nothing and the drain never reaches a connection."""
     reg = RateLimitRegistry()
     ref = _ref("krl-nopublish")
 
-    await _materialize(reg, ref, None, tenant_id="k1")
+    await _materialize(
+        reg,
+        ref,
+        None,
+        tenant_id="k1",
+        pg_dsn=module_pg_schema.pg_dsn,
+        schema=module_pg_schema.schema_name,
+    )
     assert reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0)) == 1
     assert not reg.has_pending_reservation_reclaims, (
         "evicting a bucket that never published a row must not record a "
@@ -276,16 +281,22 @@ async def test_unpublished_keyed_rate_limit_records_no_pending_reclaim() -> None
     assert await reg.drain_pending_reservation_reclaims(_AcquireRaisingPool()) == 0  # type: ignore[arg-type]  # Why: a minimal stand-in for asyncpg.Pool; only acquire() is reached, and only if the bug is present.
 
 
-async def test_rate_limit_pending_cap_vetoes_eviction() -> None:
+async def test_rate_limit_pending_cap_vetoes_eviction(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """Eviction refuses to record past max_pending_reclaims: the set never
     exceeds the cap, and the overflow entries stay registered (re-scanned
     next sweep) - the fail-closed bound, the reservation twin's veto."""
+    schema = module_pg_schema.schema_name
     reg = RateLimitRegistry()
-    pool = _RecordingPool()
+    pool = _RecordingPool(module_pg_pool)
     ref = _ref("krl-cap")
 
     for i in range(7):
-        await _materialize(reg, ref, pool, tenant_id=f"k{i}")
+        await _materialize(
+            reg, ref, pool, tenant_id=f"k{i}", pg_dsn=module_pg_schema.pg_dsn, schema=schema
+        )
 
     evicted = reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0), max_pending_reclaims=5)
 
@@ -295,20 +306,30 @@ async def test_rate_limit_pending_cap_vetoes_eviction() -> None:
     assert len(reg._keyed_rate_limit_last_used) == 2  # pyright: ignore[reportPrivateUsage]  # Why: the veto is observable as tracked entries the eviction left behind.
 
 
-async def test_drain_delete_slice_is_bounded_by_batch_names() -> None:
+async def test_drain_delete_slice_is_bounded_by_batch_names(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """One drain call's bucket-row DELETE carries at most ``batch_names``
     names - the front of the insertion-ordered pending set - so one tick's
     write set is constant-size against any evicted-key backlog, and the
-    next drain continues where the slice bound stopped the last."""
+    next drain continues where the slice bound stopped the last. The
+    deleted rows are real published rows."""
+    schema = module_pg_schema.schema_name
     reg = RateLimitRegistry()
-    pool = _RecordingPool()
+    pool = _RecordingPool(module_pg_pool)
     ref = _ref("krl-slice")
 
-    buckets = [await _materialize(reg, ref, pool, tenant_id=f"k{i}") for i in range(1, 4)]
+    buckets = [
+        await _materialize(
+            reg, ref, pool, tenant_id=f"k{i}", pg_dsn=module_pg_schema.pg_dsn, schema=schema
+        )
+        for i in range(1, 4)
+    ]
     _seed_idle(reg, *buckets)
     assert reg.evict_idle_keyed_rate_limits(idle_for=timedelta(0)) == 3
 
-    await reg.drain_pending_reservation_reclaims(pool, batch_names=2)  # type: ignore[arg-type]  # Why: test double for asyncpg.Pool.
+    await reg.drain_pending_reservation_reclaims(pool, batch_names=2)  # type: ignore[arg-type]  # Why: the recording proxy.
     deletes = _rate_limit_delete_statements(pool)
     assert len(deletes) == 1
     assert deletes[0].args == (buckets[:2],), (
@@ -318,14 +339,17 @@ async def test_drain_delete_slice_is_bounded_by_batch_names() -> None:
     )
     assert reg.has_pending_reservation_reclaims, "the unsliced tail must stay pending"
 
-    pool.conn.statements.clear()
-    await reg.drain_pending_reservation_reclaims(pool, batch_names=2)  # type: ignore[arg-type]  # Why: test double for asyncpg.Pool.
+    pool.statements.clear()
+    await reg.drain_pending_reservation_reclaims(pool, batch_names=2)  # type: ignore[arg-type]  # Why: the recording proxy.
     deletes = _rate_limit_delete_statements(pool)
     assert deletes[0].args == ([buckets[2]],), "the next drain must continue at the tail"
     assert not reg.has_pending_reservation_reclaims
 
 
-async def test_sweep_loop_drains_pending_rate_limit_reclaims() -> None:
+async def test_sweep_loop_drains_pending_rate_limit_reclaims(
+    module_pg_pool: asyncpg.Pool,
+    module_pg_schema: ModulePgSchema,
+) -> None:
     """The per-worker sweep tick - the production driver - must evict an
     idle keyed rate limit, record its published row as pending, and drain
     it through the dispatcher pool on the same tick (the wiring twin of
@@ -342,21 +366,22 @@ async def test_sweep_loop_drains_pending_rate_limit_reclaims() -> None:
         async def deadline_sweep(self, now: datetime) -> int:
             return 0
 
+    schema = module_pg_schema.schema_name
     reg = RateLimitRegistry()
-    pool = _RecordingPool()
+    pool = _RecordingPool(module_pg_pool)
     settings = WorkerSettings.load_from_dict(
         {
-            "TASKQ_PG_DSN": "postgresql://u:p@h:5432/db",
-            "TASKQ_SCHEMA_NAME": _schema(),
+            "TASKQ_PG_DSN": module_pg_schema.pg_dsn,
+            "TASKQ_SCHEMA_NAME": schema,
             "TASKQ_SWEEP_INTERVAL": "0.05",
         },
         validate=False,
     )
     deps = WorkerDeps(
         settings=settings,
-        dispatcher_pool=pool,  # type: ignore[arg-type]  # Why: test double for asyncpg.Pool
-        heartbeat_pool=_RecordingPool(),  # type: ignore[arg-type]
-        worker_pool=_RecordingPool(),  # type: ignore[arg-type]
+        dispatcher_pool=pool,  # type: ignore[arg-type]  # Why: the recording proxy over the real pool.
+        heartbeat_pool=module_pg_pool,  # type: ignore[arg-type]  # Why: the heartbeat/worker pools are never read by this loop; the real pool satisfies the surface.
+        worker_pool=module_pg_pool,  # type: ignore[arg-type]
         notify_conn=None,
         leader_conn=None,
     )
@@ -368,7 +393,9 @@ async def test_sweep_loop_drains_pending_rate_limit_reclaims() -> None:
         rate_limit_registry=reg,
     )
 
-    bucket = await _materialize(reg, _ref("krl-wiring"), pool, tenant_id="k1")
+    bucket = await _materialize(
+        reg, _ref("krl-wiring"), pool, tenant_id="k1", pg_dsn=module_pg_schema.pg_dsn, schema=schema
+    )
     _seed_idle(reg, bucket)
 
     import taskq.worker._leader_sweeps as sweeps_mod

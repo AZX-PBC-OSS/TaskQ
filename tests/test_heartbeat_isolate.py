@@ -1,12 +1,19 @@
 """Unit tests for isolate_self - pure-Python, no PG required."""
 
-import asyncio
-from typing import cast
+# ruff: noqa: S608  # Why: every schema interpolation is a fixture-derived test
+# identifier, and every value is $-bound (the tests/web_admin/test_batch_detail_pg.py
+# header's own rule for the real-PG seeding this file carries).
 
+import asyncio
+from datetime import UTC, datetime
+from typing import Any, cast
+
+import asyncpg
 import pytest
 
 from taskq._ids import new_uuid
 from taskq.settings import WorkerSettings
+from taskq.testing.fixtures import ModulePgSchema
 from taskq.worker.deps import WorkerDeps
 from taskq.worker.heartbeat import isolate_self
 from tests.conftest import _FakePool
@@ -125,11 +132,13 @@ def _worker_settings(pg_dsn: str, **overrides: str) -> WorkerSettings:
 
 def _make_deps(
     *,
+    schema: str = "taskq",
     lock_lease: float = 60.0,
     heartbeat_interval: float = 10.0,
 ) -> WorkerDeps:
     settings = _worker_settings(
         "postgresql://x:x@localhost/x",
+        SCHEMA_NAME=schema,
         LOCK_LEASE=str(lock_lease),
         HEARTBEAT_INTERVAL=str(heartbeat_interval),
         CANCELLATION_GRACE_PERIOD="0.0",
@@ -458,47 +467,66 @@ async def test_isolate_self_writes_attempt_row_per_job() -> None:
 # ── Test: isolate_self honours case shape ──────────────────────────
 
 
-async def test_isolate_self_honours_fr12_case_shape() -> None:
-    """isolate_self sends the exact disposition UPDATE SQL."""
-    runner = None
+async def test_isolate_self_honours_fr12_case_shape(
+    clean_pg_conn: asyncpg.Connection,
+    module_pg_schema: ModulePgSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """isolate_self sends the exact disposition UPDATE SQL.
 
-    class StubConn(FakeConn):
-        """fail-closed-exempt: the isolate-self's scripted row shape (the lease-reclaim's exact row, no PG)"""
+    Driven for real: one genuinely reclaimable lease-reclaim row seeded in
+    the module's schema, the disposition UPDATE issued over a recording
+    proxy of a real connection (COUNT, DON'T ANSWER) - the captured
+    statement is the one the database really received, and its arbiter
+    RETURNING is the driver's own answer."""
+    runner: list[str] = []
+
+    class _RecordingIsolateConn:
+        """Recording proxy over the real connection: records the
+        disposition UPDATE and lets every statement run."""
+
+        def __init__(self, conn: asyncpg.Connection) -> None:
+            self._conn = conn
 
         async def execute(self, sql: str, *args: object) -> str:
-            nonlocal runner
             if "SET status = CASE" in sql:
-                runner = sql
-            return "UPDATE 1"
+                runner.append(sql)
+            return await self._conn.execute(sql, *args)
 
         async def fetchrow(self, sql: str, *args: object) -> dict[str, object] | None:
-            nonlocal runner
+            row = await self._conn.fetchrow(sql, *args)
             if "SET status = CASE" in sql:
-                # The arbiter rides fetchrow (its RETURNING is the
-                # standing-claim fence's source of truth): the row the
-                # stub's fetch hands out, as the winning transition's
-                # RETURNING view.
-                runner = sql
-                return {
-                    "attempt": 0,
-                    "started_at": "2025-01-01T00:00:00Z",
-                    "status": "pending",
-                }
-            return await super().fetchrow(sql, *args)
+                runner.append(sql)
+            return dict(row) if row is not None else None  # type: ignore[return-value]  # Why: asyncpg Record maps to dict; the isolate reads the mapping shape.
 
-        async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
-            return [
-                {
-                    "id": new_uuid(),
-                    "attempt": 0,
-                    "started_at": "2025-01-01T00:00:00Z",
-                    "max_attempts": 3,
-                    "retry_kind": "transient",
-                    "cancel_phase": 0,
-                }
-            ]
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._conn, name)
 
-    conn = StubConn()
+    # One reclaimable row: running, locked by THIS worker (the isolate
+    # snapshot reads the departing worker's own rows), retry budget left,
+    # no cancel in flight - the lease-reclaim arm's exact shape.
+    schema = module_pg_schema.schema_name
+    jid = new_uuid()
+    isolate_worker = new_uuid()
+    now = datetime.now(UTC)
+    await clean_pg_conn.execute(
+        f"""INSERT INTO "{schema}".workers (id, hostname, pid, queues)
+            VALUES ($1, 'isolate-stale-host', 4242, ARRAY['default']::text[])""",
+        isolate_worker,
+    )
+    await clean_pg_conn.execute(
+        f"""INSERT INTO "{schema}".jobs (
+                id, actor, queue, payload, payload_schema_ver, max_attempts,
+                retry_kind, status, priority, attempt, metadata,
+                created_at, scheduled_at, locked_by_worker, lock_expires_at,
+                started_at, last_heartbeat_at)
+            VALUES ($1, 'isolate_actor', 'default', '{{}}'::jsonb, 1, 3,
+                'transient', 'running', 0, 0, '{{}}'::jsonb,
+                $2::timestamptz, $2, $3, $2::timestamptz - interval '60 seconds', $2, $2)""",
+        jid,
+        now,
+        isolate_worker,
+    )
 
     async def fake_connect(
         dsn: str,
@@ -506,64 +534,60 @@ async def test_isolate_self_honours_fr12_case_shape() -> None:
         timeout: float,
         command_timeout: float | None = None,
         connection_class: type[object]
-        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the fakes accept and ignore it, the connection object they return is what the assertions see.
-    ) -> StubConn:
-        return conn
+        | None = None,  # Why: the isolate connect now threads the fork guard's connection class; the wrapper accepts and ignores it, the real connection is what the assertions see.
+    ) -> _RecordingIsolateConn:
+        return _RecordingIsolateConn(await real_connect(module_pg_schema.pg_dsn))
 
     import asyncpg as apg
 
-    orig_connect = apg.connect
-    apg.connect = fake_connect  # type: ignore[method-assign]
-    try:
-        deps = _make_deps()
-        shutdown = asyncio.Event()
-        await isolate_self(deps, new_uuid(), shutdown)
-        assert runner is not None
-        # The has-budget predicate: 'indefinite' has no attempt ceiling
-        # (its schedule_to_close deadline is its budget), every other
-        # kind is bounded by max_attempts, and 'non_retryable' has no
-        # second attempt at all - see _sweeps._RECLAIM_HAS_BUDGET_SQL,
-        # which this statement shares verbatim.
-        assert "j.retry_kind = 'indefinite'" in runner
-        assert "j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'" in runner
-        # The reclaim delay is derived from the row's own stamped
-        # RetryPolicy curve (retry_base_seconds/retry_cap_seconds/
-        # retry_backoff/retry_jitter), not a hardcoded flat interval:
-        # a crash/heartbeat reclaim reschedules on the same curve an
-        # application-level failure would.
-        assert "clock_timestamp() +" in runner
-        assert "j.retry_base_seconds" in runner
-        assert "j.retry_cap_seconds" in runner
-        assert "j.retry_backoff" in runner
-        assert "j.retry_jitter" in runner
-        assert "interval '5 seconds'" not in runner, (
-            "isolate_self still stamps a hardcoded flat reclaim delay "
-            "instead of deriving it from the job's own RetryPolicy curve"
-        )
-        assert "WHERE j.id = $1" in runner
-        assert "j.locked_by_worker = $2" in runner
-        # pins: operator intent outranks retry budget. The cancel
-        # arm is evaluated before the budget arm; the cancel columns are
-        # preserved on the arm that honours them; the crashed arm
-        # self-describes on the job row (shape-mirror of the sweep's
-        # WorkerCrashed stamp, with the intentionally distinct class).
-        assert "WHEN j.cancel_phase != 0" in runner
-        assert runner.index("WHEN j.cancel_phase != 0") < runner.index(
-            "WHEN (j.retry_kind = 'indefinite'"
-        ), (
-            "the cancel arm must be evaluated before the budget arm: "
-            "budget-first re-pends a cancel-in-flight row and wipes the "
-            "operator's cancel"
-        )
-        assert (
-            "cancel_phase = CASE WHEN j.cancel_phase != 0 THEN j.cancel_phase ELSE 0 END" in runner
-        ), "the cancel arm must preserve the phase as the audit trail"
-        assert "THEN 'HeartbeatLost'" in runner, (
-            "the isolate's crashed arm must self-describe on the job row, "
-            "mirroring the sweep's crashed-arm stamp in shape"
-        )
-    finally:
-        apg.connect = orig_connect  # type: ignore[method-assign]
+    real_connect = apg.connect
+    monkeypatch.setattr(apg, "connect", fake_connect)
+    deps = _make_deps(schema=module_pg_schema.schema_name)
+    shutdown = asyncio.Event()
+    await isolate_self(deps, isolate_worker, shutdown)
+    assert runner, "the disposition UPDATE never ran"
+    sql = runner[0]
+    # The has-budget predicate: 'indefinite' has no attempt ceiling
+    # (its schedule_to_close deadline is its budget), every other
+    # kind is bounded by max_attempts, and 'non_retryable' has no
+    # second attempt at all - see _sweeps._RECLAIM_HAS_BUDGET_SQL,
+    # which this statement shares verbatim.
+    assert "j.retry_kind = 'indefinite'" in sql
+    assert "j.attempt < j.max_attempts AND j.retry_kind != 'non_retryable'" in sql
+    # The reclaim delay is derived from the row's own stamped
+    # RetryPolicy curve (retry_base_seconds/retry_cap_seconds/
+    # retry_backoff/retry_jitter), not a hardcoded flat interval:
+    # a crash/heartbeat reclaim reschedules on the same curve an
+    # application-level failure would.
+    assert "clock_timestamp() +" in sql
+    assert "j.retry_base_seconds" in sql
+    assert "j.retry_cap_seconds" in sql
+    assert "j.retry_backoff" in sql
+    assert "j.retry_jitter" in sql
+    assert "interval '5 seconds'" not in sql, (
+        "isolate_self still stamps a hardcoded flat reclaim delay "
+        "instead of deriving it from the job's own RetryPolicy curve"
+    )
+    assert "WHERE j.id = $1" in sql
+    assert "j.locked_by_worker = $2" in sql
+    # pins: operator intent outranks retry budget. The cancel
+    # arm is evaluated before the budget arm; the cancel columns are
+    # preserved on the arm that honours them; the crashed arm
+    # self-describes on the job row (shape-mirror of the sweep's
+    # WorkerCrashed stamp, with the intentionally distinct class).
+    assert "WHEN j.cancel_phase != 0" in sql
+    assert sql.index("WHEN j.cancel_phase != 0") < sql.index("WHEN (j.retry_kind = 'indefinite'"), (
+        "the cancel arm must be evaluated before the budget arm: "
+        "budget-first re-pends a cancel-in-flight row and wipes the "
+        "operator's cancel"
+    )
+    assert "cancel_phase = CASE WHEN j.cancel_phase != 0 THEN j.cancel_phase ELSE 0 END" in sql, (
+        "the cancel arm must preserve the phase as the audit trail"
+    )
+    assert "THEN 'HeartbeatLost'" in sql, (
+        "the isolate's crashed arm must self-describe on the job row, "
+        "mirroring the sweep's crashed-arm stamp in shape"
+    )
 
 
 # ── Test: asyncio.shield on terminal writes ───────────────────────────────

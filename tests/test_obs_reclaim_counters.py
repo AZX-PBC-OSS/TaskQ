@@ -319,14 +319,23 @@ class _FabricatedTx:
 
 class _FabricatedReturningConn:
     """ConnLike whose sweep fetch returns fabricated RETURNING rows.
-        fail-closed-exempt: a FABRICATED RETURNING row: a row shape no honest driver produces deterministically (the counter-arm's exact input)
+
+    fail-closed-exempt: a RETURNING row carrying an UNMAPPED post-update
+    status. The shape is unproducible by an honest driver deterministically:
+    the claim statement's RETURNING projects ``j.status`` as written by the
+    SAME statement's CASE (worker/_sweeps's _SWEEP_1_SQL), and the map
+    totality pin above ties ``_RECLAIM_DISPOSITIONS`` to exactly those CASE
+    branches in both directions — so a RETURNING row whose status no case
+    branch writes exists only while CASE and map have drifted, a state
+    reachable only by mutating production SQL, never by seeding rows. The
+    arm exists to keep that drift's blast radius pinned (the sweep survives
+    and counts the unknown); the twin arm below simulates the same drift at
+    the map's source module.
 
     The adversarial review shape: everything else answers like Postgres
     would (the statement_timeout probe, set_config, the batched INSERTs,
     the wake NOTIFY), so the sweep runs its REAL Python path against rows
-    the database never wrote: the only way to reach an unmapped
-    post-update status while the CASE still writes the mapped three.
-    """
+    the database never wrote."""
 
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self._rows = rows
@@ -339,7 +348,10 @@ class _FabricatedReturningConn:
     async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
         if "current_setting" in sql:
             return [{"current_setting": "0"}]
-        return self._rows
+        if "RETURNING" in sql:
+            # The claim statement: the sweep's row loop reads these.
+            return self._rows
+        raise AssertionError(f"unmatched statement: {sql}")
 
     async def execute(self, sql: str, *args: object) -> str:
         self.executed_sql.append(sql)

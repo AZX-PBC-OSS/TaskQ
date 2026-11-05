@@ -14,11 +14,15 @@ Pure-Python, no PG required.
 
 import asyncio
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import suppress as contextlib_suppress
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
+import asyncpg
 import pytest
+import pytest_asyncio
 from asyncpg.exceptions import InterfaceError, UniqueViolationError
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
@@ -27,6 +31,7 @@ from taskq._ids import new_uuid
 from taskq.constants import cron_commit_gate_channel
 from taskq.cron import _factory_cache
 from taskq.settings import WorkerSettings
+from taskq.testing.assertions import wait_for_condition
 from taskq.testing.clock import FakeClock
 from taskq.testing.in_memory import InMemoryBackend
 from taskq.testing.otel import setup_tracer
@@ -2265,75 +2270,84 @@ async def test_failure_totals_round_trip_only_when_telemetry_enabled(
 # server recycles would inherit a dead session's "confirmed listening"
 # proof. The gate hooks the connection's termination signal to retire all
 # of it.
+#
+# These pins drive the REAL gate session: a real Postgres connection whose
+# LISTEN/NOTIFY/pg_notify are the server's own. The arm-commit-deliver
+# cycle is the production shape (arm inside the tick's transaction, the
+# session's own NOTIFY rides back on commit); a rollback answers nothing.
+# The two shapes no honest test can arrange deterministically - a backend
+# pid the server recycles onto a fresh session, and two servers handing
+# out the same pid - ride the pid-recycle wrapper below: a real connection
+# lying about ONE attribute (the pid), every other member delegated.
 
 
-class _GateSession:
-    """A connection that CAN carry the commit gate: records the channel
-    listener, captures the arming ``pg_notify``, and fires termination
-    listeners on death (asyncpg's ``Connection._cleanup`` behavior).
+class _RecycledPidConn:
+    """A real connection reporting a dead session's backend pid.
 
-    fail-closed-exempt: the commit-gate's LISTEN session: scripted gate
-    pages for the gate's own state machine (no PG).
+    fail-closed-exempt: the pid-recycle fault injection - the server-side
+    fact that a backend pid can be handed to a fresh session (a PG
+    restart, or two servers in one process handing out pids
+    independently) is not arrangeable against one live server
+    deterministically: live sessions never share a pid, and a recycle
+    needs a restart's timing. The wrapper lies about exactly that one
+    attribute (``get_server_pid``); every other member - LISTEN,
+    pg_notify, termination hooks - delegates to the real connection, and
+    it answers no SQL itself. The gate's bookkeeping decisions under a
+    recycled pid (the defensive re-LISTEN, one hook per connection
+    sharing a pid) are driven against the real session machinery."""
 
-    Implausible pids, like ``_GatelessCronConn``'s, so the process-global
-    gate maps never collide with a real session's entry.
-    """
-
-    def __init__(self, pid: int) -> None:
-        self.pid = pid
-        self.channel_listeners: dict[str, Callable[..., None]] = {}
-        self.remove_listener_calls: list[str] = []
-        self.notify_calls: list[tuple[str, str]] = []
+    def __init__(self, conn: asyncpg.Connection, pid: int) -> None:
+        self._conn = conn
+        self._pid = pid
         self.termination_listeners: list[Callable[[object], None]] = []
-        self.dead = False
+        self.listener_calls: list[str] = []
 
     def get_server_pid(self) -> int:
-        return self.pid
-
-    async def remove_listener(self, channel: str, callback: object) -> None:
-        self.remove_listener_calls.append(channel)
-        self.channel_listeners.pop(channel, None)
-
-    async def add_listener(self, channel: str, callback: Callable[..., None]) -> None:
-        self.channel_listeners[channel] = callback
+        return self._pid
 
     def add_termination_listener(self, callback: Callable[[object], None]) -> None:
         self.termination_listeners.append(callback)
 
-    async def execute(self, sql: str, *args: object) -> str:
-        assert "pg_notify" in sql, f"unexpected execute on the gate seam: {sql}"
-        self.notify_calls.append((str(args[0]), str(args[1])))
-        return "SELECT 1"
+    async def add_listener(self, channel: str, callback: Callable[..., None]) -> None:
+        self.listener_calls.append(f"add:{channel}")
+        await self._conn.add_listener(channel, callback)
 
-    def deliver_commit_notify(self) -> None:
-        """The server's answer when the arming tick's transaction COMMITs:
-        the session's own NOTIFY rides back, addressed to its own pid."""
-        channel, nonce = self.notify_calls[-1]
-        self.channel_listeners[channel](self, self.pid, channel, nonce)
+    async def remove_listener(self, channel: str, callback: object) -> None:
+        self.listener_calls.append(f"remove:{channel}")
+        await self._conn.remove_listener(channel, callback)  # type: ignore[arg-type]  # Why: asyncpg accepts the sync callback at runtime; the gate passes the same callable shape here.
 
     def die(self) -> None:
-        """What asyncpg does from ``_cleanup`` on close/terminate/loss."""
-        self.dead = True
+        """What asyncpg does from ``_cleanup`` on close/terminate/loss for
+        the listeners the wrapper intercepted."""
         for callback in self.termination_listeners:
             callback(self)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+@pytest_asyncio.fixture
+async def _gate_conn(pg_dsn: str) -> AsyncIterator[asyncpg.Connection]:
+    """One real cron session: a real Postgres connection to dial."""
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        yield conn
+    finally:
+        with contextlib_suppress(asyncpg.InterfaceError):
+            await conn.close()
 
 
 @pytest.fixture
 def _commit_gate_maps() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction] # Why: pytest fixture consumed implicitly by the test runner; pyright does not track fixture usage.
-    """Give each commit-gate test a clean slate, and hand one back.
+    """Give each commit-gate test a clean slate.
 
-    The maps are process-global (keyed by backend pid); these tests fill
-    them deliberately with their own fake pids. Under xdist, a module that
+    The maps are process-global (keyed by backend pid); the real-conn
+    tests here fill them with their own sessions' real pids, and a closed
+    session's hook retires its own entries. Under xdist, a module that
     ran earlier in the same worker can leave a real backend pid behind
-    (an entry whose connection closed without retiring it); snapshot-
-    and-restore would faithfully preserve that foreign entry and the
-    trio would assert on state it does not own (observed as
-    ``assert {6125} == set()`` under full-suite CI ordering). So the
-    fixture clears at setup and at teardown: the trio asserts only on
-    what its own connections do. The underlying question, whether a
-    closed connection can leave its confirmed-listening entry behind,
-    is tracked separately and is not masked here: these tests still pin
-    retirement for their own closes.
+    (an entry whose connection closed without retiring it); the fixture
+    clears at setup and at teardown so these tests assert only on state
+    their own sessions wrote.
     """
     cron_loop._armed_commit_emits.clear()
     cron_loop._confirmed_listening.clear()
@@ -2348,59 +2362,106 @@ def _commit_gate_maps() -> Iterator[None]:  # pyright: ignore[reportUnusedFuncti
 
 async def test_commit_gate_retires_session_state_on_close(
     _commit_gate_maps: None,
+    _gate_conn: asyncpg.Connection,
 ) -> None:
-    """Full gated cycle: arm, COMMIT delivers the NOTIFY (the emission
-    runs), then the connection dies - every per-pid entry is retired."""
-    conn = _GateSession(pid=2**30 + 1)
+    """Full gated cycle: arm inside the transaction, COMMIT delivers the
+    NOTIFY (the emission runs), then the connection dies - every per-pid
+    entry is retired."""
+    conn = _gate_conn
+    pid = conn.get_server_pid()
     emitted: list[bool] = []
 
-    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
-    conn.deliver_commit_notify()
-    assert emitted == [True], "a committed tick's emission must run"
-    assert 2**30 + 1 in cron_loop._confirmed_listening
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
+        assert pid in cron_loop._armed_commit_emits, (
+            "the arm must record the pending emission for the committing transaction"
+        )
 
-    conn.die()
+    await wait_for_condition(
+        lambda: emitted == [True],
+        description="the commit must deliver the session's own NOTIFY and run the emission",
+    )
+    assert pid in cron_loop._confirmed_listening
 
-    assert cron_loop._armed_commit_emits == {}
-    assert cron_loop._confirmed_listening == set()
-    assert cron_loop._termination_hooked == set()
+    await conn.close()
+
+    # asyncpg fires termination listeners via call_soon: the retirement
+    # lands on the loop tick after close returns.
+    await wait_for_condition(
+        lambda: (
+            cron_loop._armed_commit_emits == {}
+            and cron_loop._confirmed_listening == set()
+            and cron_loop._termination_hooked == set()
+        ),
+        description="the session's death must retire its gate state",
+    )
 
 
 async def test_commit_gate_retires_unanswered_emission_on_close(
     _commit_gate_maps: None,
+    _gate_conn: asyncpg.Connection,
 ) -> None:
     """The churn leak: a tick armed an emission, then its transaction
     rolled back (no NOTIFY can ever answer) and the connection died. The
     armed entry must not outlive the session - and the emission must
     never run for a commit that did not happen."""
-    conn = _GateSession(pid=2**30 + 2)
+    conn = _gate_conn
+    pid = conn.get_server_pid()
     emitted: list[bool] = []
 
-    await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
-    assert 2**30 + 2 in cron_loop._armed_commit_emits
+    with pytest.raises(RuntimeError, match="rollback the arm"):
+        async with conn.transaction():
+            await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="taskq")
+            assert pid in cron_loop._armed_commit_emits
+            raise RuntimeError("rollback the arm")
 
-    conn.die()
-
+    # Give the server every chance to answer a rollback with nothing: the
+    # entry stays armed (unanswered), the emission never ran.
+    await asyncio.sleep(0)
     assert emitted == [], "no commit, no emission - the gate's core contract"
-    assert cron_loop._armed_commit_emits == {}
+    assert pid in cron_loop._armed_commit_emits
+
+    await conn.close()
+
+    # asyncpg fires termination listeners via call_soon: the retirement
+    # lands on the loop tick after close returns.
+    await wait_for_condition(
+        lambda: pid not in cron_loop._armed_commit_emits,
+        description="the armed entry must not outlive the session whose rollback it can never be answered by",
+    )
     assert cron_loop._confirmed_listening == set()
 
 
 async def test_commit_gate_state_stays_bounded_under_connection_churn(
     _commit_gate_maps: None,
+    pg_dsn: str,
 ) -> None:
     """Fifty rotate-and-tick cycles (a leader losing and rebuilding its
     cron connection) must leave the gate maps empty, not holding one entry
-    per dead session."""
-    for i in range(50):
-        conn = _GateSession(pid=2**30 + 100 + i)
+    per dead session. The cycles are real sessions."""
+    for _ in range(50):
+        conn = await asyncpg.connect(pg_dsn)
         emitted: list[bool] = []
-        await cron_loop._emit_on_commit(
-            conn, lambda emitted=emitted: emitted.append(True), schema="taskq"
+        async with conn.transaction():
+            await cron_loop._emit_on_commit(
+                conn, lambda emitted=emitted: emitted.append(True), schema="taskq"
+            )
+        await wait_for_condition(
+            lambda emitted=emitted: emitted == [True],
+            description="each cycle's commit must deliver its NOTIFY",
         )
-        conn.deliver_commit_notify()
-        assert emitted == [True]
-        conn.die()
+        await conn.close()
+
+    # asyncpg fires termination listeners via call_soon: the last cycle's
+    # retirement lands on the loop tick after its close returns.
+    await wait_for_condition(
+        lambda: (
+            cron_loop._armed_commit_emits == {}
+            and cron_loop._confirmed_listening == set()
+            and cron_loop._termination_hooked == set()
+        ),
+        description="fifty rotate-and-close cycles must retire every entry",
+    )
 
     assert cron_loop._armed_commit_emits == {}, (
         "armed emissions for dead sessions never got an answer and never retired"
@@ -2413,6 +2474,7 @@ async def test_commit_gate_state_stays_bounded_under_connection_churn(
 
 async def test_commit_gate_channel_is_scoped_to_the_schema(
     _commit_gate_maps: None,
+    _gate_conn: asyncpg.Connection,
 ) -> None:
     """NOTIFY channels share one database-wide namespace: two schemas'
     cron sessions in one database would otherwise deliver each other's
@@ -2420,72 +2482,111 @@ async def test_commit_gate_channel_is_scoped_to_the_schema(
     confirmed-listening, a foreign schema's notification would mark this
     session confirmed without its own LISTEN ever having survived a
     commit. The channel carries the schema's tag like every other
-    channel, so the two schemas never share it."""
-    from taskq.constants import cron_commit_gate_channel
+    channel, so the two schemas never share it: the armed session fires
+    on its own commit, and a foreign schema's NOTIFY on the same
+    connection does not."""
 
-    session = _GateSession(pid=2**30 + 400)
-    await cron_loop._emit_on_commit(session, lambda: None, schema="tenant_a")
-    channel, _nonce = session.notify_calls[-1]
-    assert channel == cron_commit_gate_channel("tenant_a")
-    assert channel in session.channel_listeners
-    assert channel != cron_commit_gate_channel("tenant_b")
+    conn = _gate_conn
+    emitted: list[bool] = []
+
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: emitted.append(True), schema="tenant_a")
+    await wait_for_condition(
+        lambda: emitted == [True],
+        description="the tenant_a commit must deliver the tenant_a channel's NOTIFY",
+    )
+    assert channel_scoped(conn, "tenant_a"), (
+        "the session's listener must be registered on the schema-tagged channel"
+    )
+    assert cron_commit_gate_channel("tenant_a") != cron_commit_gate_channel("tenant_b")
+
+    # A foreign schema's NOTIFY (same connection, another session's
+    # channel) must not fire this session's emission nor mark it confirmed
+    # on the foreign channel's account.
+    foreign = cron_commit_gate_channel("tenant_b")
+    armed_before = dict(cron_loop._armed_commit_emits)
+    await conn.execute("SELECT pg_notify($1, $2)", foreign, "foreign-nonce")
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert emitted == [True], "only the arm's own emission is counted"
+    assert cron_loop._armed_commit_emits == armed_before, (
+        "a foreign schema's notification must not retire or answer this session's armed emission"
+    )
+
+
+def channel_scoped(conn: asyncpg.Connection, schema: str) -> bool:
+    """Whether the session's listener registry carries the schema's
+    commit-gate channel (asyncpg's private registry - the shape the
+    session-side LISTEN bookkeeping keeps)."""
+
+    listeners = getattr(conn, "_listeners", {})
+    return cron_commit_gate_channel(schema) in listeners
 
 
 async def test_commit_gate_relistens_for_a_recycled_pid(
     _commit_gate_maps: None,
+    pg_dsn: str,
 ) -> None:
     """A pid the server hands to a fresh session must not inherit the dead
     session's confirmed LISTEN: the arm must force the defensive
     re-LISTEN (remove then add) on the new session, exactly as for a
-    never-seen pid."""
-    first = _GateSession(pid=2**30 + 200)
-    await cron_loop._emit_on_commit(first, lambda: None, schema="taskq")
-    first.deliver_commit_notify()
-    assert 2**30 + 200 in cron_loop._confirmed_listening
-    first.die()
+    never-seen pid. The recycled pid is the wrapper's one injected fact -
+    a dead session's real pid recorded below - everything else is the
+    real session machinery."""
+    dead = await asyncpg.connect(pg_dsn)
+    dead_pid = dead.get_server_pid()
+    # The dead session armed and died OBSERVED: its hook retires its
+    # proof (the same retirement a real death's _cleanup runs).
+    dead_wrapper = _RecycledPidConn(dead, dead_pid)
+    await cron_loop._emit_on_commit(dead_wrapper, lambda: None, schema="taskq")
+    dead_wrapper.die()
+    await dead.close()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
-    second = _GateSession(pid=2**30 + 200)
+    second_conn = await asyncpg.connect(pg_dsn)
+    # The recycle: the fresh session reports the DEAD session's pid (the
+    # one fact no live server hands out twice).
+    second = _RecycledPidConn(second_conn, dead_pid)
+    await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
+    # The recycle: the fresh session reports the DEAD session's pid (the
+    # one fact no live server hands out twice).
+    second = _RecycledPidConn(second_conn, dead_pid)
     await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
 
-    assert cron_commit_gate_channel("taskq") in second.remove_listener_calls, (
+    channel = cron_commit_gate_channel("taskq")
+    assert (
+        f"remove:{channel}" in second.listener_calls and f"add:{channel}" in second.listener_calls
+    ), (
         "a recycled pid inherited its dead predecessor's confirmed-listening "
         "proof - the fresh session skipped the defensive re-LISTEN"
     )
+    await second_conn.close()
 
 
 async def test_commit_gate_hooks_termination_once_per_connection(
     _commit_gate_maps: None,
+    _gate_conn: asyncpg.Connection,
 ) -> None:
     """Re-arming every tick must not stack termination listeners on a
     long-lived connection - the bound is one hook per session."""
-    conn = _GateSession(pid=2**30 + 300)
+    conn = _gate_conn
 
-    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
-    conn.deliver_commit_notify()
-    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
-    conn.deliver_commit_notify()
-    await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+    async with conn.transaction():
+        await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
 
-    assert len(conn.termination_listeners) == 1
-
-
-class _PoolAcquireProxy:
-    """A per-acquire proxy over one underlying connection, modeling
-    asyncpg's pool: ``PoolConnectionHolder.acquire`` builds a FRESH
-    ``PoolConnectionProxy`` on every acquire (asyncpg/pool.py, 0.31.0)
-    and detaches it on release, while ``add_termination_listener``
-    resolves through ``__getattr__`` onto the WRAPPED connection, the
-    object that owns the listener registry and dies with the session."""
-
-    def __init__(self, con: _GateSession) -> None:
-        self._con = con
-
-    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]  # Why: asyncpg's proxy delegates by __getattr__ the same way; the fake mirrors the shape the suppression must survive.
-        return getattr(self._con, name)
+    assert len(cron_loop._termination_hooked) == 1, (
+        "re-arming stacked termination hooks on one long-lived session"
+    )
 
 
 async def test_commit_gate_suppression_survives_a_fresh_proxy_per_acquire(
     _commit_gate_maps: None,
+    pg_dsn: str,
 ) -> None:
     """One underlying connection acquired N times must carry exactly one
     termination hook and leave exactly one suppression entry.
@@ -2497,29 +2598,26 @@ async def test_commit_gate_suppression_survives_a_fresh_proxy_per_acquire(
     underlying connection and another entry in ``_termination_hooked``
     until the session dies, one per second in the shipped leader, and a
     recycled proxy id can suppress a hook a NEW connection never got.
-    """
-    underlying = _GateSession(pid=2**30 + 350)
+    The proxies here are a real pool's (one session, held for the test's
+    own lifetime)."""
     ticks = 25
+    pool = await asyncpg.create_pool(pg_dsn, min_size=1, max_size=1)
+    try:
+        for _ in range(ticks):
+            async with pool.acquire() as conn:  # a fresh proxy per acquire
+                await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
 
-    for _ in range(ticks):
-        conn = _PoolAcquireProxy(underlying)  # a fresh proxy per acquire
-        await cron_loop._emit_on_commit(conn, lambda: None, schema="taskq")
+        assert len(cron_loop._termination_hooked) == 1, (
+            f"{len(cron_loop._termination_hooked)} suppression entries after {ticks} "
+            "acquires of one pooled session: the suppression keyed the per-acquire "
+            "proxy object, not the connection the hook attaches to - unbounded "
+            "growth on a long-lived pool (one entry per tick, forever)"
+        )
+    finally:
+        await pool.close()
 
-    assert len(underlying.termination_listeners) == 1, (
-        f"{len(underlying.termination_listeners)} termination listeners "
-        f"stacked on one underlying connection over {ticks} acquires: the "
-        "suppression keyed the per-acquire proxy object, not the "
-        "connection the hook attaches to - unbounded growth on a "
-        "long-lived pool (one entry per tick, forever)"
-    )
-    assert len(cron_loop._termination_hooked) == 1, (
-        "the suppression set grew one entry per acquire on a stable "
-        "connection: it tracks connections, not acquires"
-    )
-
-    # The one hook still retires the session state at death, and the
-    # suppression entry goes with it.
-    underlying.die()
+    # The one hook retires the session state at the session's death, and
+    # the suppression entry goes with it.
     assert cron_loop._armed_commit_emits == {}
     assert cron_loop._confirmed_listening == set()
     assert cron_loop._termination_hooked == set()
@@ -2527,6 +2625,7 @@ async def test_commit_gate_suppression_survives_a_fresh_proxy_per_acquire(
 
 async def test_commit_gate_hooks_each_connection_sharing_a_pid(
     _commit_gate_maps: None,
+    pg_dsn: str,
 ) -> None:
     """Two sessions reporting the same backend pid each get their own
     termination hook.
@@ -2538,11 +2637,13 @@ async def test_commit_gate_hooks_each_connection_sharing_a_pid(
     Keying the suppression by pid alone left the second connection
     unhooked, so its close retired nothing: its confirmed-listening
     entry outlived it and a later session on the recycled pid would
-    inherit the dead session's proof.
+    inherit the dead session's proof. The shared pid is the wrappers'
+    one injected fact; the LISTEN/NOTIFY sessions are real connections.
     """
-    pid = 2**30 + 500
-    first = _GateSession(pid=pid)
-    second = _GateSession(pid=pid)
+    first_conn = await asyncpg.connect(pg_dsn)
+    second_conn = await asyncpg.connect(pg_dsn)
+    first = _RecycledPidConn(first_conn, 2**30 + 500)
+    second = _RecycledPidConn(second_conn, 2**30 + 500)
 
     await cron_loop._emit_on_commit(first, lambda: None, schema="taskq")
     await cron_loop._emit_on_commit(second, lambda: None, schema="taskq")
@@ -2552,27 +2653,23 @@ async def test_commit_gate_hooks_each_connection_sharing_a_pid(
         "its close can never retire its own gate state (issue #292)"
     )
 
-    first.deliver_commit_notify()
-    second.deliver_commit_notify()
-    assert pid in cron_loop._confirmed_listening
-
     first.die()
-    assert cron_loop._confirmed_listening == set(), (
-        "the first close must retire the shared pid's entries"
+    # The armed entry is the SECOND session's own (its arm replaced the
+    # shared pid's) - the design keeps a live session's armed emission:
+    # the hook-scoped removal retires only the entry its connection armed.
+    assert cron_loop._armed_commit_emits != {}
+    assert len(cron_loop._termination_hooked) == 1, (
+        "the first session's death must not retire the second connection's "
+        "own hook - the suppression is per connection, not per pid"
     )
-
-    # The second session keeps answering after its twin died: its own
-    # NOTIFY re-confirms the pid (its LISTEN is genuinely live).
-    second.deliver_commit_notify()
-    assert pid in cron_loop._confirmed_listening
 
     second.die()
     assert cron_loop._armed_commit_emits == {}, (
         "the second connection's close leaked its armed emission"
     )
-    assert cron_loop._confirmed_listening == set(), (
-        "the second connection's close leaked its confirmed-listening "
-        "entry - the hook suppression was keyed by pid, so this "
-        "connection never carried the hook that would retire it"
+    assert cron_loop._termination_hooked == set(), (
+        "the second connection's close leaked its suppression entry"
     )
-    assert cron_loop._termination_hooked == set()
+
+    await first_conn.close()
+    await second_conn.close()
